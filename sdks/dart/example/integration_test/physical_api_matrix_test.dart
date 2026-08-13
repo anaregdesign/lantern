@@ -96,8 +96,8 @@ void main() {
     expect(
       (await _withTransportDiagnostics(
         client.putVertices(inputs, batchSize: 4),
-      )).written,
-      13,
+      )).map((result) => result.outcome),
+      everyElement(PutOutcome.appliedAndLive),
     );
     final result = await client.getVertices(
       inputs.map((input) => input.key),

@@ -27,7 +27,7 @@ const (
 )
 
 type writer interface {
-	PutVertices(context.Context, []client.VertexInput) error
+	PutVertices(context.Context, []client.VertexInput) ([]client.VertexPutResult, error)
 	DeleteVertex(context.Context, string) (bool, error)
 }
 
@@ -123,8 +123,17 @@ func seed(ctx context.Context, w writer, now time.Time) error {
 			Value: "deeppaginationbeacon",
 		})
 	}
-	if err := w.PutVertices(ctx, inputs); err != nil {
+	results, err := w.PutVertices(ctx, inputs)
+	if err != nil {
 		return err
+	}
+	if len(results) != len(inputs) {
+		return fmt.Errorf("seed: got %d Put results for %d vertices", len(results), len(inputs))
+	}
+	for i, result := range results {
+		if result.Outcome != client.PutOutcomeAppliedAndLive {
+			return fmt.Errorf("seed vertex %d (%q) returned %s", i, result.Key, result.Outcome)
+		}
 	}
 	existed, err := w.DeleteVertex(ctx, deletedKey)
 	if err != nil {

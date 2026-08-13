@@ -20,8 +20,9 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.sweepExpiredTombstonesLocked(time.Now())
-	c.sweepStaleVertexHLCLocked()
+	now := time.Now()
+	c.sweepExpiredTombstonesLocked(now)
+	c.sweepStaleVertexHLCLocked(now)
 
 	// Per-flush endpoint-liveness memo (#839). The sweep consults keep once
 	// per EDGE, which used to cost two dict resolves plus two vertex-cache
@@ -48,7 +49,23 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 	keep := func(tailID, headID vertexID) bool {
 		return liveID(tailID) && liveID(headID)
 	}
-	onDelete := c.headIndexOnFlushDeleteLocked()
+	indexDelete := c.headIndexOnFlushDeleteLocked()
+	onDelete := func(tailID, headID vertexID, w *weight) {
+		if tail, tailOK := c.edges.resolveID(tailID); tailOK {
+			if head, headOK := c.edges.resolveID(headID); headOK {
+				// Any physical bucket removal must retain its non-zero Put
+				// floor—not only TTL-zero removal. A zero-weight live Put,
+				// cancelling contributions, or dangling endpoint sweep can also
+				// delete a bucket whose LWW metadata is still authoritative.
+				if ts := w.lastPutTimestamp(); ts != (hlc.Timestamp{}) {
+					c.recordEdgeCausalBarrierLocked(tail, head, ts)
+				}
+			}
+		}
+		if indexDelete != nil {
+			indexDelete(tailID, headID)
+		}
+	}
 
 	if c.gcEdgeBudget <= 0 {
 		// Full sweep (default): unchanged O(E) behavior and the safety net
@@ -58,6 +75,60 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 		return c.edges.flushFunc(keep, onDelete)
 	}
 	return c.flushIncrementalLocked(keep, onDelete)
+}
+
+// migrateExpiredVertexHLCToBarriersLocked moves a live Put watermark into the
+// retained store as soon as its value is no longer visible. This is the key
+// resurrection invariant: TTL expiry may remove the payload, never its last
+// replicated Put floor. Caller must hold c.mu.Lock.
+func (c *GraphCache[S, T]) migrateExpiredVertexHLCToBarriersLocked(now time.Time) {
+	for key, ts := range c.vertexHLC {
+		if !c.vertices.HasAt(key, now) {
+			c.applyVertexCausalBarrierLocked(key, ts)
+		}
+	}
+}
+
+// migrateExpiredEdgeHLCToBarriersLocked is the edge counterpart used by
+// replication snapshot before it filters expired-but-unflushed buckets. GC
+// performs the same transfer from its delete callback.
+func (c *GraphCache[S, T]) migrateExpiredEdgeHLCToBarriersLocked(now time.Time) {
+	type hidden struct {
+		tail S
+		head S
+		ts   hlc.Timestamp
+	}
+	var hiddenBuckets []hidden
+	c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
+		contribs, ts, nonEmpty := w.snapshotEntry(now)
+		visible := nonEmpty && c.vertices.HasAt(tail, now) && c.vertices.HasAt(head, now)
+		if visible {
+			var sum float32
+			for _, contribution := range contribs {
+				sum += contribution.Weight
+			}
+			visible = sum != 0
+		}
+		if !visible {
+			// A retained barrier can coexist with an Add-only bucket, whose
+			// weight.lastHLC is zero. Once all Add rows are hidden at the
+			// snapshot instant, remove that physical bucket too; otherwise a
+			// later wall-clock rollback could reveal state that the snapshot
+			// receiver never got. Preserve the greatest available Put floor.
+			if barrier, ok := c.edgeCausalBarriers[EdgeKey[S]{Tail: tail, Head: head}]; ok && ts.Less(barrier) {
+				ts = barrier
+			}
+			hiddenBuckets = append(hiddenBuckets, hidden{tail: tail, head: head, ts: ts})
+		}
+		return true
+	})
+	for _, bucket := range hiddenBuckets {
+		if bucket.ts == (hlc.Timestamp{}) {
+			c.deleteEdgeLocked(bucket.tail, bucket.head)
+			continue
+		}
+		c.applyEdgeCausalBarrierLocked(bucket.tail, bucket.head, bucket.ts)
+	}
 }
 
 // flushIncrementalLocked sweeps at most c.gcEdgeBudget tail buckets per call,
@@ -70,7 +141,7 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 // within at most two cycles. Caller must hold c.mu.Lock.
 func (c *GraphCache[S, T]) flushIncrementalLocked(
 	keep func(tailID, headID vertexID) bool,
-	onDelete func(tailID, headID vertexID),
+	onDelete func(tailID, headID vertexID, w *weight),
 ) (zero, dangling int) {
 	if c.gcSweepPos >= len(c.gcSweepPlan) {
 		c.gcSweepPlan = c.edges.tailIDs()
@@ -114,7 +185,7 @@ const (
 // This bounds the map to the live replicated-key set rather than the all-time
 // set, fixing the leak described in issue #700. After a large drain it also
 // reallocates the map so Go can reclaim the oversized bucket array (#727).
-func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked() {
+func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked(now time.Time) {
 	if c.vertexHLC == nil {
 		return
 	}
@@ -126,8 +197,9 @@ func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked() {
 	if before > c.vertexHLCHighWater {
 		c.vertexHLCHighWater = before
 	}
-	for key := range c.vertexHLC {
-		if !c.vertices.Has(key) {
+	for key, ts := range c.vertexHLC {
+		if !c.vertices.HasAt(key, now) {
+			c.recordVertexCausalBarrierLocked(key, ts)
 			delete(c.vertexHLC, key)
 		}
 	}
@@ -190,6 +262,17 @@ func (c *GraphCache[S, T]) snapshotHooks() (func(string, int), func(time.Duratio
 	return c.onExpire, c.onGCDuration
 }
 
+// flushVertices serializes physical vertex expiry with replication snapshots.
+// The inner cache has its own lock, but SnapshotReplication must atomically
+// classify each HLC-tracked identity as either a live frame or a causal
+// barrier. Letting Cache.Flush bypass c.mu could remove a value between that
+// classification and materialization, causing the snapshot to carry neither.
+func (c *GraphCache[S, T]) flushVertices() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.vertices.Flush()
+}
+
 func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -198,7 +281,7 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 		select {
 		case <-ticker.C:
 			start := time.Now()
-			vExpired := c.vertices.Flush()
+			vExpired := c.flushVertices()
 			if vExpired > 0 && c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
 				_ = c.RebuildSearchIndex()
 			}

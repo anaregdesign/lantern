@@ -360,15 +360,22 @@ go get github.com/anaregdesign/lantern/sdks/go
 ```go
 import "github.com/anaregdesign/lantern/sdks/go"
 
-cli, err := client.NewLantern("localhost:6380")
+cli, err := client.NewLantern("http://localhost:6380")
 if err != nil { log.Fatal(err) }
 defer cli.Close()
 
 ctx := context.Background()
 
 // Vertices accept string, int, float, bool, time.Time, time.Duration, []byte, nil.
-_ = cli.PutVertex(ctx, "user:42", "alice", 1*time.Hour)
-_ = cli.PutVertex(ctx, "item:7",  "lamp",  1*time.Hour)
+for _, input := range []struct{ key string; value any }{
+    {"user:42", "alice"},
+    {"item:7", "lamp"},
+} {
+    outcome, err := cli.PutVertex(ctx, input.key, input.value, time.Hour)
+    if err != nil || outcome != client.PutOutcomeAppliedAndLive {
+        log.Fatalf("PutVertex %q: outcome=%s err=%v", input.key, outcome, err)
+    }
+}
 
 // Each AddEdge appends a contribution with its own TTL and returns the live sum.
 _, _ = cli.AddEdge(ctx, "user:42", "item:7", 1.0, 30*time.Minute)
@@ -603,11 +610,11 @@ whichever reads better at the call site.
 | RPC | Purpose |
 |---|---|
 | `GetVertex` / `GetVertices` | Fetch by key; plural reports gaps in `Missing` instead of erroring |
-| `PutVertex` / `PutVertices` | Upsert with TTL; last write wins, or conditional insert with `if_absent` (SET NX) |
+| `PutVertex` / `PutVertices` | Upsert with TTL; returns one server-clock-authoritative outcome per item (`APPLIED_AND_LIVE`, `EXPIRED`, `CONDITION_NOT_MET`, or `SUPERSEDED`) |
 | `DeleteVertex` / `DeleteVertices` | Remove vertices; incident edges reaped on the next GC tick |
 | `GetEdge` / `GetEdges` | Current live weight — the sum of unexpired contributions |
 | `AddEdge` / `AddEdges` | **Append** weighted contributions (the additive model above); returns the post-accumulation live weight |
-| `PutEdge` / `PutEdges` | Idempotent replace under one write lock |
+| `PutEdge` / `PutEdges` | Idempotent replace under one write lock; returns the same index-aligned Put outcomes |
 | `DeleteEdge` / `DeleteEdges` | Remove edges outright |
 | `ScanVertices` / `ScanVertexKeys` / `ScanEdges` | Cursor-paginated prefix enumeration, ascending or descending via `order` (keys-only variant is wire-efficient; edge scans filter on tail and/or head prefix) |
 | `CountVerticesByPrefix` / `DeleteVerticesByPrefix` / `DeleteEdgesByPrefix` | Namespace count / capped bulk delete with `dry_run` (the edge variant removes the tail∩head intersection) |
@@ -618,6 +625,14 @@ whichever reads better at the call site.
 SDK batch writes auto-chunk; a validation interceptor rejects oversize keys
 and batches (`LANTERN_MAX_KEY_LEN`, `LANTERN_MAX_BATCH_SIZE`) and NaN/Inf
 weights before they touch the cache.
+
+Put liveness is decided by one server application-time sample, not the
+caller's clock. A past expiration returns `EXPIRED` and acts as a delete-like
+overwrite of any prior live value. SDKs fail closed on unknown or misaligned
+outcomes. Maintained SDKs additionally downgrade `APPLIED_AND_LIVE` to expired
+when the exact sent deadline has already crossed locally before the call returns;
+offline durable confirmation repeats that upper-bound check at transaction
+commit. Neither layer ever upgrades or hides a bounded server outcome.
 
 ---
 

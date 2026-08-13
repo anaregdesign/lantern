@@ -56,7 +56,7 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 	// Issue writes first so Subscribe can replay them from the
 	// in-memory ring. SubscriberBuffer is sized to fit all entries.
 	for i := 0; i < N; i++ {
-		if err := l.PutVertex(ctx, "k-"+itoa(i), "v", time.Minute); err != nil {
+		if _, err := l.PutVertex(ctx, "k-"+itoa(i), "v", time.Minute); err != nil {
 			t.Fatalf("PutVertex[%d]: %v", i, err)
 		}
 	}
@@ -81,12 +81,12 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 			t.Fatalf("entry[%d] seq=%d want %d", i, got.GetSeq(), prev+1)
 		}
 		prev = got.GetSeq()
-		pv := got.GetOp().GetPutVertices()
-		if pv == nil || len(pv.GetVertices()) != 1 {
-			t.Fatalf("entry[%d] missing PutVertices payload", i)
+		pv := got.GetOp().GetReplicatedPutVertices()
+		if pv == nil || len(pv.GetEntries()) != 1 || pv.GetEntries()[0].GetLive() == nil {
+			t.Fatalf("entry[%d] missing ReplicatedPutVertices live payload", i)
 		}
-		if want := "k-" + itoa(i); pv.GetVertices()[0].GetKey() != want {
-			t.Errorf("entry[%d] key=%q want %q", i, pv.GetVertices()[0].GetKey(), want)
+		if want := "k-" + itoa(i); pv.GetEntries()[0].GetLive().GetKey() != want {
+			t.Errorf("entry[%d] key=%q want %q", i, pv.GetEntries()[0].GetLive().GetKey(), want)
 		}
 	}
 }
@@ -220,7 +220,7 @@ func TestSubscribeSDK_TypedCursorAndGap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for i := 1; i <= 4; i++ {
-		if err := sdk.PutVertex(ctx, "sdk-cursor-"+itoa(i), "v", time.Minute); err != nil {
+		if _, err := sdk.PutVertex(ctx, "sdk-cursor-"+itoa(i), "v", time.Minute); err != nil {
 			t.Fatalf("PutVertex[%d]: %v", i, err)
 		}
 	}
@@ -259,7 +259,7 @@ func TestSubscribeSDK_TypedCursorAndGap(t *testing.T) {
 	gapServer := newConnectTestServer(t, gapService, gapReplication, nil)
 	gapSDK := newConnectClientFor(t, gapServer.url)
 	for i := 1; i <= 4; i++ {
-		if err := gapSDK.PutVertex(ctx, "sdk-gap-"+itoa(i), "v", time.Minute); err != nil {
+		if _, err := gapSDK.PutVertex(ctx, "sdk-gap-"+itoa(i), "v", time.Minute); err != nil {
 			t.Fatalf("gap PutVertex[%d]: %v", i, err)
 		}
 	}

@@ -147,6 +147,133 @@ type EdgeInput struct {
 	Expiration time.Time
 }
 
+// PutOutcome is the server-authoritative result for one idempotent Put.
+// The zero value is never returned by this SDK; receiving UNSPECIFIED or an
+// unknown wire value is treated as a protocol error.
+type PutOutcome uint8
+
+const (
+	PutOutcomeAppliedAndLive PutOutcome = iota + 1
+	PutOutcomeExpired
+	PutOutcomeConditionNotMet
+	PutOutcomeSuperseded
+)
+
+// String returns the stable wire-contract name of the outcome.
+func (o PutOutcome) String() string {
+	switch o {
+	case PutOutcomeAppliedAndLive:
+		return "APPLIED_AND_LIVE"
+	case PutOutcomeExpired:
+		return "EXPIRED"
+	case PutOutcomeConditionNotMet:
+		return "CONDITION_NOT_MET"
+	case PutOutcomeSuperseded:
+		return "SUPERSEDED"
+	default:
+		return fmt.Sprintf("PutOutcome(%d)", o)
+	}
+}
+
+// VertexPutResult identifies one vertex and its application outcome.
+type VertexPutResult struct {
+	Key     string
+	Outcome PutOutcome
+}
+
+// EdgePutResult identifies one edge and its application outcome.
+type EdgePutResult struct {
+	Tail    string
+	Head    string
+	Outcome PutOutcome
+}
+
+func putOutcomeFromProto(outcome pb.PutOutcome) (PutOutcome, error) {
+	switch outcome {
+	case pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE:
+		return PutOutcomeAppliedAndLive, nil
+	case pb.PutOutcome_PUT_OUTCOME_EXPIRED:
+		return PutOutcomeExpired, nil
+	case pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET:
+		return PutOutcomeConditionNotMet, nil
+	case pb.PutOutcome_PUT_OUTCOME_SUPERSEDED:
+		return PutOutcomeSuperseded, nil
+	default:
+		return 0, fmt.Errorf("lantern: server returned unknown Put outcome %d", outcome)
+	}
+}
+
+func vertexPutResults(inputs []VertexInput, outcomes []pb.PutOutcome) ([]VertexPutResult, error) {
+	if len(outcomes) != len(inputs) {
+		return nil, fmt.Errorf("lantern: server returned %d Put outcomes for %d vertices", len(outcomes), len(inputs))
+	}
+	results := make([]VertexPutResult, len(inputs))
+	for i, outcome := range outcomes {
+		typed, err := putOutcomeFromProto(outcome)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = VertexPutResult{Key: inputs[i].Key, Outcome: typed}
+	}
+	return results, nil
+}
+
+func edgePutResults(inputs []EdgeInput, outcomes []pb.PutOutcome) ([]EdgePutResult, error) {
+	if len(outcomes) != len(inputs) {
+		return nil, fmt.Errorf("lantern: server returned %d Put outcomes for %d edges", len(outcomes), len(inputs))
+	}
+	results := make([]EdgePutResult, len(inputs))
+	for i, outcome := range outcomes {
+		typed, err := putOutcomeFromProto(outcome)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = EdgePutResult{Tail: inputs[i].Tail, Head: inputs[i].Head, Outcome: typed}
+	}
+	return results, nil
+}
+
+func clientBoundedPutOutcome(outcome PutOutcome, initiallyLive bool, expiration, observedAt time.Time) PutOutcome {
+	if outcome == PutOutcomeAppliedAndLive && (!initiallyLive || (!expiration.IsZero() && !expiration.After(observedAt))) {
+		return PutOutcomeExpired
+	}
+	return outcome
+}
+
+func initiallyLiveAt(expiration, observedAt time.Time) bool {
+	return expiration.IsZero() || expiration.After(observedAt)
+}
+
+func vertexInitialLiveness(inputs []VertexInput, observedAt time.Time) []bool {
+	live := make([]bool, len(inputs))
+	for i := range inputs {
+		live[i] = initiallyLiveAt(inputs[i].Expiration, observedAt)
+	}
+	return live
+}
+
+func edgeInitialLiveness(inputs []EdgeInput, observedAt time.Time) []bool {
+	live := make([]bool, len(inputs))
+	for i := range inputs {
+		live[i] = initiallyLiveAt(inputs[i].Expiration, observedAt)
+	}
+	return live
+}
+
+func clientBoundedVertexPutResults(results []VertexPutResult, inputs []VertexInput, initiallyLive []bool, observedAt time.Time) []VertexPutResult {
+	for i := range results {
+		results[i].Outcome = clientBoundedPutOutcome(results[i].Outcome, initiallyLive[i], inputs[i].Expiration, observedAt)
+	}
+	return results
+}
+
+func clientBoundedEdgePutResults(results []EdgePutResult, inputs []EdgeInput, initiallyLive []bool, observedAt time.Time) []EdgePutResult {
+	for i := range results {
+		results[i].Outcome = clientBoundedPutOutcome(results[i].Outcome, initiallyLive[i], inputs[i].Expiration, observedAt)
+	}
+	return results
+}
+
 // Lantern is a Connect-Go-backed client for the Lantern graph service.
 // Construct one via NewLantern; share it across goroutines.
 type Lantern struct {
@@ -154,6 +281,7 @@ type Lantern struct {
 	opts       options
 	httpClient *http.Client
 	baseURL    string
+	clock      func() time.Time
 
 	// contribIDs mints the per-call ContribID idempotency keys when
 	// WithIdempotentAdds is set (#588). It is always non-nil after
@@ -193,6 +321,7 @@ func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 		opts:       o,
 		httpClient: o.httpClient,
 		baseURL:    baseURL,
+		clock:      time.Now,
 	}
 	// A per-client random nonce namespaces this client's ContribIDs so two
 	// processes (or two NewLantern calls) never collide their idempotency
@@ -204,6 +333,13 @@ func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 	}
 	l.contribIDs = gen
 	return l, nil
+}
+
+func (l *Lantern) now() time.Time {
+	if l != nil && l.clock != nil {
+		return l.clock()
+	}
+	return time.Now()
 }
 
 // Close releases any idle HTTP/2 connections the SDK is holding. The
@@ -354,121 +490,174 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 // ttl. This keeps the relative-TTL convenience methods consistent with the
 // absolute *At variants, which already treat a zero expiration as permanent.
 func expirationFromTTL(ttl time.Duration) time.Time {
+	return expirationFromTTLAt(ttl, time.Now())
+}
+
+func expirationFromTTLAt(ttl time.Duration, observedAt time.Time) time.Time {
 	if ttl <= 0 {
 		return time.Time{}
 	}
-	return time.Now().Add(ttl)
+	return observedAt.Add(ttl)
 }
 
-// PutVertex upserts a single vertex with a relative TTL. A non-positive ttl
-// stores the vertex permanently (no decay); see expirationFromTTL.
-func (l *Lantern) PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error {
-	return l.PutVertexAt(ctx, key, value, expirationFromTTL(ttl))
+// PutVertex upserts a single vertex with a relative TTL and returns the
+// server-authoritative outcome. A non-positive ttl stores the vertex
+// permanently (no decay); see expirationFromTTL.
+func (l *Lantern) PutVertex(ctx context.Context, key string, value any, ttl time.Duration) (PutOutcome, error) {
+	observedAt := l.now()
+	expiration := expirationFromTTLAt(ttl, observedAt)
+	return l.putVertexAt(ctx, key, value, expiration, initiallyLiveAt(expiration, observedAt))
 }
 
-// PutVertexAt upserts a single vertex with an absolute expiration time.
-func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) error {
+// PutVertexAt upserts a single vertex with an absolute expiration time and
+// returns its bounded, server-authoritative outcome.
+func (l *Lantern) PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error) {
+	return l.putVertexAt(ctx, key, value, expiration, initiallyLiveAt(expiration, l.now()))
+}
+
+func (l *Lantern) putVertexAt(ctx context.Context, key string, value any, expiration time.Time, initiallyLive bool) (PutOutcome, error) {
 	v, err := nativeVertex{key: key, value: value, expiration: expiration}.asVertex()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
-	_, err = unary(ctx, l, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}, l.client.PutVertices)
-	return err
+	resp, err := unary(ctx, l, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}}, l.client.PutVertices)
+	if err != nil {
+		return 0, err
+	}
+	inputs := []VertexInput{{Key: key, Expiration: expiration}}
+	results, err := vertexPutResults(inputs, resp.GetOutcomes())
+	if err != nil {
+		return 0, err
+	}
+	return clientBoundedVertexPutResults(results, inputs, []bool{initiallyLive}, l.now())[0].Outcome, nil
 }
 
 // PutVertexIfAbsent conditionally upserts a single vertex with a relative TTL,
 // applying the write only when no live vertex already exists at key (SET NX,
-// #896). It returns true when the write landed and false when an existing live
-// vertex left the stored value and expiration untouched. "Live" follows the
+// #896). It returns the server-authoritative outcome;
+// PutOutcomeConditionNotMet means an existing live vertex left the stored
+// value and expiration untouched. "Live" follows the
 // server's #750 visibility rule, so an expired-but-uncollected vertex does not
 // block the write. Because the server performs the existence check and the
 // store atomically, this closes the check-then-act race that a
 // GetVertex-then-PutVertex sequence has.
-func (l *Lantern) PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
-	return l.PutVertexIfAbsentAt(ctx, key, value, expirationFromTTL(ttl))
+func (l *Lantern) PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (PutOutcome, error) {
+	observedAt := l.now()
+	expiration := expirationFromTTLAt(ttl, observedAt)
+	return l.putVertexIfAbsentAt(ctx, key, value, expiration, initiallyLiveAt(expiration, observedAt))
 }
 
 // PutVertexIfAbsentAt is PutVertexIfAbsent with an absolute expiration time.
-func (l *Lantern) PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (bool, error) {
+func (l *Lantern) PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error) {
+	return l.putVertexIfAbsentAt(ctx, key, value, expiration, initiallyLiveAt(expiration, l.now()))
+}
+
+func (l *Lantern) putVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time, initiallyLive bool) (PutOutcome, error) {
 	v, err := nativeVertex{key: key, value: value, expiration: expiration}.asVertex()
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	resp, err := unary(ctx, l, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{v}, IfAbsent: true}, l.client.PutVertices)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	return resp.GetWritten() >= 1, nil
+	results, err := vertexPutResults([]VertexInput{{Key: key}}, resp.GetOutcomes())
+	if err != nil {
+		return 0, err
+	}
+	inputs := []VertexInput{{Key: key, Expiration: expiration}}
+	return clientBoundedVertexPutResults(results, inputs, []bool{initiallyLive}, l.now())[0].Outcome, nil
 }
 
 // PutVertices upserts a batch of vertices. Large batches are automatically
 // chunked according to WithBatchChunkSize (default 1000).
 //
 // Partial-write semantics: chunks are sent sequentially. If chunk N fails,
-// the entries from chunks 0..N-1 are already committed server-side. The
-// returned error is a *BatchError whose Written field records the number of
-// successfully committed inputs, so callers can resume with
+// the responses from chunks 0..N-1 have been fully observed and validated.
+// The returned error is a *BatchError whose Written field records that input
+// prefix length, so callers can resume with
 // inputs[err.Written:]. errors.Is / errors.As continue to work against the
 // wrapped SDK sentinel.
-func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) error {
+func (l *Lantern) PutVertices(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error) {
 	if len(inputs) == 0 {
-		return nil
+		return []VertexPutResult{}, nil
 	}
+	initiallyLive := vertexInitialLiveness(inputs, l.now())
 	vs := make([]*pb.Vertex, 0, len(inputs))
 	for _, in := range inputs {
 		v, err := nativeVertex{key: in.Key, value: in.Value, expiration: in.Expiration}.asVertex()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		vs = append(vs, v)
 	}
+	var results []VertexPutResult
 	_, err := runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
-		_, err := unary(ctx, l, &pb.PutVerticesRequest{Vertices: chunk}, l.client.PutVertices)
-		return 0, err
+		resp, err := unary(ctx, l, &pb.PutVerticesRequest{Vertices: chunk}, l.client.PutVertices)
+		if err != nil {
+			return 0, err
+		}
+		offset := len(results)
+		chunkResults, err := vertexPutResults(inputs[offset:offset+len(chunk)], resp.GetOutcomes())
+		if err != nil {
+			return 0, err
+		}
+		results = append(results, chunkResults...)
+		return int32(len(chunk)), nil
 	})
-	return err
+	return clientBoundedVertexPutResults(results, inputs[:len(results)], initiallyLive[:len(results)], l.now()), err
 }
 
 // PutVerticesIfAbsent conditionally upserts a batch of vertices, applying each
 // write only when no live vertex already exists at its key (SET NX, #896).
 // Large batches are automatically chunked according to WithBatchChunkSize.
 //
-// It returns written — the number of vertices that were actually stored — and
-// skipped — the keys left untouched because a live vertex already existed
-// there (summed/collected across chunks). "Live" follows the server's #750
-// visibility rule, so expired-but-uncollected vertices do not block writes.
-// Each key's existence check and store happen atomically server-side, closing
-// the check-then-act race of a GetVertices-then-PutVertices sequence.
+// It returns one request-index-aligned VertexPutResult for every input.
+// PutOutcomeConditionNotMet identifies keys left untouched because a live
+// vertex already existed. "Live" follows the server's #750 visibility rule,
+// so expired-but-uncollected vertices do not block writes. Each key's
+// existence check and store happen atomically server-side, closing the
+// check-then-act race of a GetVertices-then-PutVertices sequence.
 //
 // Partial-write semantics match PutVertices: chunks are sent sequentially and
 // on failure the returned error is a *BatchError whose Written field records
-// the number of inputs in the fully committed chunks, so callers can resume
-// with inputs[err.Written:].
-func (l *Lantern) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) (written int, skipped []string, err error) {
+// the number of inputs in fully observed prior chunks. The failed current
+// chunk may already have committed without a usable response. Its original
+// outcomes cannot be recovered by replay: an explicit retry performs a new
+// condition evaluation and may return PutOutcomeConditionNotMet. Reconcile
+// current state before choosing whether to retry inputs[err.Written:].
+func (l *Lantern) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error) {
 	if len(inputs) == 0 {
-		return 0, nil, nil
+		return []VertexPutResult{}, nil
 	}
+	initiallyLive := vertexInitialLiveness(inputs, l.now())
 	vs := make([]*pb.Vertex, 0, len(inputs))
 	for _, in := range inputs {
 		v, verr := nativeVertex{key: in.Key, value: in.Value, expiration: in.Expiration}.asVertex()
 		if verr != nil {
-			return 0, nil, verr
+			return nil, verr
 		}
 		vs = append(vs, v)
 	}
-	written, err = runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
+	var results []VertexPutResult
+	_, err := runBatchWrite(ctx, l, vs, func(ctx context.Context, chunk []*pb.Vertex) (int32, error) {
 		resp, rerr := unary(ctx, l, &pb.PutVerticesRequest{Vertices: chunk, IfAbsent: true}, l.client.PutVertices)
 		if rerr != nil {
 			return 0, rerr
 		}
-		skipped = append(skipped, resp.GetSkippedKeys()...)
-		return resp.GetWritten(), nil
+		offset := len(results)
+		chunkResults, rerr := vertexPutResults(inputs[offset:offset+len(chunk)], resp.GetOutcomes())
+		if rerr != nil {
+			return 0, rerr
+		}
+		results = append(results, chunkResults...)
+		return int32(len(chunk)), nil
 	})
-	return written, skipped, err
+	return clientBoundedVertexPutResults(results, inputs[:len(results)], initiallyLive[:len(results)], l.now()), err
 }
 
 // DeleteVertex removes the vertex identified by key. The returned
@@ -493,8 +682,9 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 // skipped — they do not appear in the count and do not produce errors.
 //
 // Partial-write semantics: chunks are sent sequentially. On failure the
-// returned error is a *BatchError whose Written field records the number of
-// keys already deleted, so callers can resume with keys[err.Written:].
+// returned error is a *BatchError whose Written field records the input-prefix
+// length whose chunk responses were fully observed, so callers can resume
+// with keys[err.Written:].
 func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error) {
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []string) (int32, error) {
 		resp, err := unary(ctx, l, &pb.DeleteVerticesRequest{Keys: chunk}, l.client.DeleteVertices)
@@ -704,36 +894,63 @@ func (g *contribIDGen) next(n int) [][]byte {
 
 // PutEdge overwrites the (tail, head) pair. A non-positive ttl stores the
 // edge permanently (no decay); see expirationFromTTL.
-func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) error {
-	return l.PutEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
+func (l *Lantern) PutEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) (PutOutcome, error) {
+	observedAt := l.now()
+	expiration := expirationFromTTLAt(ttl, observedAt)
+	return l.putEdgeAt(ctx, tail, head, weight, expiration, initiallyLiveAt(expiration, observedAt))
 }
 
 // PutEdgeAt is PutEdge with an absolute expiration.
-func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) error {
-	ctx, cancel := l.applyTimeout(ctx)
-	defer cancel()
-	_, err := unary(ctx, l, &pb.PutEdgesRequest{
-		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
-	}, l.client.PutEdges)
-	return err
+func (l *Lantern) PutEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time) (PutOutcome, error) {
+	return l.putEdgeAt(ctx, tail, head, weight, expiration, initiallyLiveAt(expiration, l.now()))
 }
 
-// PutEdges overwrites a batch of edges. Automatically chunked.
+func (l *Lantern) putEdgeAt(ctx context.Context, tail string, head string, weight float32, expiration time.Time, initiallyLive bool) (PutOutcome, error) {
+	ctx, cancel := l.applyTimeout(ctx)
+	defer cancel()
+	resp, err := unary(ctx, l, &pb.PutEdgesRequest{
+		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
+	}, l.client.PutEdges)
+	if err != nil {
+		return 0, err
+	}
+	inputs := []EdgeInput{{Tail: tail, Head: head, Expiration: expiration}}
+	results, err := edgePutResults(inputs, resp.GetOutcomes())
+	if err != nil {
+		return 0, err
+	}
+	return clientBoundedEdgePutResults(results, inputs, []bool{initiallyLive}, l.now())[0].Outcome, nil
+}
+
+// PutEdges overwrites a batch of edges and returns one request-index-aligned
+// authoritative outcome per input. Automatically chunked.
 //
 // Partial-write semantics: chunks are sent sequentially. On failure the
-// returned error is a *BatchError whose Written field records the number of
-// edges already overwritten, so callers can resume with inputs[err.Written:].
+// returned error is a *BatchError whose Written field records the input-prefix
+// length whose outcome vectors were fully observed and validated, so callers
+// can resume with inputs[err.Written:].
 // Unlike AddEdges, PutEdges is idempotent, so a full retry from index 0 is
 // also safe (it will overwrite the already-committed prefix).
-func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) error {
+func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) ([]EdgePutResult, error) {
 	if len(inputs) == 0 {
-		return nil
+		return []EdgePutResult{}, nil
 	}
+	initiallyLive := edgeInitialLiveness(inputs, l.now())
+	var results []EdgePutResult
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
-		_, err := unary(ctx, l, &pb.PutEdgesRequest{Edges: chunk}, l.client.PutEdges)
-		return 0, err
+		resp, err := unary(ctx, l, &pb.PutEdgesRequest{Edges: chunk}, l.client.PutEdges)
+		if err != nil {
+			return 0, err
+		}
+		offset := len(results)
+		chunkResults, err := edgePutResults(inputs[offset:offset+len(chunk)], resp.GetOutcomes())
+		if err != nil {
+			return 0, err
+		}
+		results = append(results, chunkResults...)
+		return int32(len(chunk)), nil
 	})
-	return err
+	return clientBoundedEdgePutResults(results, inputs[:len(results)], initiallyLive[:len(results)], l.now()), err
 }
 
 // DeleteEdge removes the (tail, head) edge. The returned bool reports
@@ -762,8 +979,9 @@ type EdgeRef struct {
 // skipped — they do not appear in the count and do not produce errors.
 //
 // Partial-write semantics: chunks are sent sequentially. On failure the
-// returned error is a *BatchError whose Written field records the number of
-// edges already deleted, so callers can resume with refs[err.Written:].
+// returned error is a *BatchError whose Written field records the input-prefix
+// length whose chunk responses were fully observed, so callers can resume
+// with refs[err.Written:].
 func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) {
 	if len(refs) == 0 {
 		return 0, nil

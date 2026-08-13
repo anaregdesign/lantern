@@ -38,7 +38,7 @@ func TestMCP_TraversalFamilies_EndToEnd(t *testing.T) {
 	cs, ctx := newMCPClientSession(t, lan)
 
 	for _, key := range []string{"a", "b", "c", "d"} {
-		if err := lan.PutVertex(ctx, key, key, time.Hour); err != nil {
+		if _, err := lan.PutVertex(ctx, key, key, time.Hour); err != nil {
 			t.Fatalf("PutVertex(%s): %v", key, err)
 		}
 	}

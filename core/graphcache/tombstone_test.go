@@ -82,6 +82,115 @@ func TestDeleteEdgeHLC_BlocksOlderAddAndPut(t *testing.T) {
 	}
 }
 
+func TestDeleteHLCSupersedesCausalBarrierWithBoundedTombstone(t *testing.T) {
+	barrierTS := hlc.Timestamp{WallNs: 20}
+	deleteTS := hlc.Timestamp{WallNs: 30}
+	olderTS := hlc.Timestamp{WallNs: 10}
+	tombstoneExpiration := time.Now().Add(time.Hour)
+	liveExpiration := time.Now().Add(time.Hour)
+	expired := time.Now().Add(-time.Hour)
+
+	t.Run("vertex", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if !c.PutVertexWithExpirationHLC("v", "dead", expired, barrierTS) {
+			t.Fatal("expired Put rejected")
+		}
+		c.DeleteVertexHLC("v", deleteTS, tombstoneExpiration)
+		if vertices, _ := c.CausalBarrierCounts(); vertices != 0 {
+			t.Fatalf("vertex barriers after Delete = %d, want 0", vertices)
+		}
+		if c.PutVertexWithExpirationHLC("v", "older", liveExpiration, olderTS) {
+			t.Fatal("bounded tombstone did not fence older vertex Put")
+		}
+	})
+
+	t.Run("edge", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if !c.PutEdgeWithExpirationHLC("tail", "head", 1, expired, barrierTS) {
+			t.Fatal("expired Put rejected")
+		}
+		c.DeleteEdgeHLC("tail", "head", deleteTS, tombstoneExpiration)
+		if _, edges := c.CausalBarrierCounts(); edges != 0 {
+			t.Fatalf("edge barriers after Delete = %d, want 0", edges)
+		}
+		if c.PutEdgeWithExpirationHLC("tail", "head", 9, liveExpiration, olderTS) {
+			t.Fatal("bounded tombstone did not fence older edge Put")
+		}
+	})
+}
+
+func TestDeleteHLCRejectsOlderBeforePhysicalMutation(t *testing.T) {
+	older := hlc.Timestamp{WallNs: 10}
+	floor := hlc.Timestamp{WallNs: 20}
+	tombstoneExpiration := time.Now().Add(time.Hour)
+	liveExpiration := time.Now().Add(time.Hour)
+	expired := time.Now().Add(-time.Hour)
+
+	t.Run("vertex live and barrier", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if !c.PutVertexWithExpirationHLC("live", "value", liveExpiration, floor) ||
+			!c.PutVertexWithExpirationHLC("barrier", "dead", expired, floor) {
+			t.Fatal("seed Put rejected")
+		}
+		if c.DeleteVertexHLC("live", older, tombstoneExpiration) {
+			t.Fatal("older singular Delete reported live removal")
+		}
+		if value, ok := c.GetVertex("live"); !ok || value != "value" {
+			t.Fatalf("older Delete changed newer live vertex: %q/%v", value, ok)
+		}
+		if got := c.DeleteVerticesHLC([]string{"live", "barrier", "barrier"}, older, tombstoneExpiration); got != 0 {
+			t.Fatalf("older batch Delete removed %d vertices, want 0", got)
+		}
+		if _, ok := c.GetVertex("live"); !ok {
+			t.Fatal("older batch Delete removed newer live vertex")
+		}
+		if got := c.vertexCausalBarriers["barrier"]; got != floor {
+			t.Fatalf("older batch Delete changed barrier to %+v, want %+v", got, floor)
+		}
+		if got := c.DeleteVerticesHLC([]string{"live", "live", "barrier", "barrier"}, floor, tombstoneExpiration); got != 1 {
+			t.Fatalf("equal duplicate batch Delete count = %d, want 1", got)
+		}
+		if vertices, _ := c.CausalBarrierCounts(); vertices != 0 {
+			t.Fatalf("equal Delete left %d vertex barriers", vertices)
+		}
+	})
+
+	t.Run("edge live and barrier", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if !c.PutEdgeWithExpirationHLC("live-tail", "live-head", 2, liveExpiration, floor) ||
+			!c.PutEdgeWithExpirationHLC("barrier-tail", "barrier-head", 1, expired, floor) {
+			t.Fatal("seed Put rejected")
+		}
+		if c.DeleteEdgeHLC("live-tail", "live-head", older, tombstoneExpiration) {
+			t.Fatal("older singular Delete reported live removal")
+		}
+		if weight, ok := c.GetWeight("live-tail", "live-head"); !ok || weight != 2 {
+			t.Fatalf("older Delete changed newer live edge: %v/%v", weight, ok)
+		}
+		keys := []EdgeKey[string]{
+			{Tail: "live-tail", Head: "live-head"},
+			{Tail: "barrier-tail", Head: "barrier-head"},
+			{Tail: "barrier-tail", Head: "barrier-head"},
+		}
+		if got := c.DeleteEdgesHLC(keys, older, tombstoneExpiration); got != 0 {
+			t.Fatalf("older batch Delete removed %d edges, want 0", got)
+		}
+		if weight, ok := c.GetWeight("live-tail", "live-head"); !ok || weight != 2 {
+			t.Fatalf("older batch Delete changed newer edge: %v/%v", weight, ok)
+		}
+		if got := c.edgeCausalBarriers[EdgeKey[string]{Tail: "barrier-tail", Head: "barrier-head"}]; got != floor {
+			t.Fatalf("older batch Delete changed barrier to %+v, want %+v", got, floor)
+		}
+		keys = append(keys, EdgeKey[string]{Tail: "live-tail", Head: "live-head"})
+		if got := c.DeleteEdgesHLC(keys, floor, tombstoneExpiration); got != 1 {
+			t.Fatalf("equal duplicate batch Delete count = %d, want 1", got)
+		}
+		if _, edges := c.CausalBarrierCounts(); edges != 0 {
+			t.Fatalf("equal Delete left %d edge barriers", edges)
+		}
+	})
+}
+
 // An expired tombstone (expiration in the past) must not block a
 // strictly-older Put — sweepExpiredTombstonesLocked drops it lazily, and
 // vertexTombstoneLocked treats already-expired entries as absent.

@@ -658,6 +658,33 @@ func TestInvertedIndexPrepared(t *testing.T) {
 		// Empty batch is a no-op and must not panic.
 		idx.IndexManyPrepared(nil)
 	})
+
+	t.Run("caller supplied application time is shared by validation and commit", func(t *testing.T) {
+		late := time.Now()
+		early := late.Add(-2 * time.Minute)
+		expiration := late.Add(-time.Minute)
+		idx := NewInvertedIndex[string, Text](
+			fakeAnalyzer{}, nil, compareStringID,
+			WithIndexClock(func() time.Time { return late }),
+		)
+		items := []PreparedItem[string]{
+			{ID: "rollback", Prepared: mustPrepare(t, idx, Text("rollbackterm")), Expiration: expiration},
+		}
+		if err := idx.ValidateManyPreparedAt(items, early); err != nil {
+			t.Fatalf("ValidateManyPreparedAt: %v", err)
+		}
+		idx.IndexManyPreparedValidatedAt(items, early)
+		results, _, err := idx.SearchMatchTopKContextAt(
+			context.Background(), "rollbackterm", 10, nil,
+			MatchOptions{}, Budget{}, early,
+		)
+		if err != nil {
+			t.Fatalf("SearchMatchTopKContextAt: %v", err)
+		}
+		if got := idsOf(results); !equalStrings(got, []string{"rollback"}) {
+			t.Fatalf("search at application time = %v, want [rollback]", got)
+		}
+	})
 }
 
 // --- Memory benchmarks (epic #782) -----------------------------------------

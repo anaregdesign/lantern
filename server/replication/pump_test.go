@@ -13,13 +13,22 @@ import (
 // re-apply routed to, so applySnapshotEdge's LWW-vs-G-Set routing can be
 // asserted in isolation.
 type recordingApplier struct {
-	putEdges []recordedEdge
-	addEdges []recordedEdge
+	putEdges      []recordedEdge
+	addEdges      []recordedEdge
+	vertexBarrier []recordedVertexBarrier
+	edgeBarrier   []recordedEdge
+}
+
+type recordedVertexBarrier struct {
+	key string
+	ts  hlc.Timestamp
 }
 
 type recordedEdge struct {
 	tail, head string
 	cid        graphcache.ContribID
+	expiration time.Time
+	ts         hlc.Timestamp
 }
 
 func (r *recordingApplier) PutVertexWithExpirationHLC(string, *pb.Vertex, time.Time, hlc.Timestamp) bool {
@@ -31,9 +40,39 @@ func (r *recordingApplier) AddEdgeWithExpirationContribHLC(tail, head string, _ 
 	return true
 }
 
-func (r *recordingApplier) PutEdgeWithExpirationHLC(tail, head string, _ float32, _ time.Time, _ hlc.Timestamp) bool {
-	r.putEdges = append(r.putEdges, recordedEdge{tail: tail, head: head})
+func (r *recordingApplier) PutEdgeWithExpirationHLC(tail, head string, _ float32, expiration time.Time, ts hlc.Timestamp) bool {
+	r.putEdges = append(r.putEdges, recordedEdge{tail: tail, head: head, expiration: expiration, ts: ts})
 	return true
+}
+
+func (r *recordingApplier) ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool {
+	r.vertexBarrier = append(r.vertexBarrier, recordedVertexBarrier{key: key, ts: ts})
+	return true
+}
+
+func (r *recordingApplier) ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool {
+	r.edgeBarrier = append(r.edgeBarrier, recordedEdge{tail: tail, head: head, ts: ts})
+	return true
+}
+
+func TestApplySnapshotCausalBarriers(t *testing.T) {
+	r := &recordingApplier{}
+	ts := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0x20}}
+	r.ApplyVertexCausalBarrierHLC("barrier-vertex", ts)
+	r.ApplyEdgeCausalBarrierHLC("barrier-tail", "barrier-head", ts)
+	if len(r.addEdges) != 0 || len(r.putEdges) != 0 {
+		t.Fatalf("barrier leaked into live apply seams: add=%d put=%d", len(r.addEdges), len(r.putEdges))
+	}
+	if len(r.vertexBarrier) != 1 || r.vertexBarrier[0].key != "barrier-vertex" || r.vertexBarrier[0].ts != ts {
+		t.Fatalf("vertex barrier = %+v", r.vertexBarrier)
+	}
+	if len(r.edgeBarrier) != 1 {
+		t.Fatalf("edge barrier count = %d, want 1", len(r.edgeBarrier))
+	}
+	got := r.edgeBarrier[0]
+	if got.tail != "barrier-tail" || got.head != "barrier-head" || got.ts != ts {
+		t.Fatalf("edge barrier = %+v", got)
+	}
 }
 
 // TestApplySnapshotEdge pins the #735 fix: a Put-origin (LWW, zero ContribID)
@@ -148,4 +187,83 @@ func TestResumeAfterSnapshot(t *testing.T) {
 			t.Fatalf("maximum cutoffs resumed at %+v, want no wrap", got)
 		}
 	})
+}
+
+func TestSnapshotReplayStateFailClosed(t *testing.T) {
+	header := &pb.SnapshotHeader{}
+	footer := func(v, e, vb, eb uint64) *pb.SnapshotFooter {
+		return &pb.SnapshotFooter{
+			VertexCount: v, EdgeCount: e,
+			VertexCausalBarrierCount: vb, EdgeCausalBarrierCount: eb,
+		}
+	}
+
+	t.Run("complete ordered stream", func(t *testing.T) {
+		var state snapshotReplayState
+		if err := state.acceptHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range []struct {
+			kind  string
+			phase snapshotFramePhase
+		}{
+			{"vertex causal barrier", snapshotPhaseVertexBarrier},
+			{"edge causal barrier", snapshotPhaseEdgeBarrier},
+			{"vertex", snapshotPhaseVertex},
+			{"edge", snapshotPhaseEdge},
+		} {
+			if err := state.acceptBody(step.kind, step.phase); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state.counts = snapshotReplayCounts{vertices: 1, edges: 2, vertexBarrier: 3, edgeBarrier: 4}
+		if err := state.acceptFooter(footer(1, 2, 3, 4)); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.validateComplete(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		run  func(*snapshotReplayState) error
+	}{
+		{"body before header", func(s *snapshotReplayState) error { return s.acceptBody("vertex", snapshotPhaseVertex) }},
+		{"missing header", func(s *snapshotReplayState) error { return s.validateComplete() }},
+		{"missing footer", func(s *snapshotReplayState) error { _ = s.acceptHeader(header); return s.validateComplete() }},
+		{"duplicate header", func(s *snapshotReplayState) error { _ = s.acceptHeader(header); return s.acceptHeader(header) }},
+		{"duplicate footer", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptFooter(footer(0, 0, 0, 0))
+			return s.acceptFooter(footer(0, 0, 0, 0))
+		}},
+		{"body after footer", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptFooter(footer(0, 0, 0, 0))
+			return s.acceptBody("edge", snapshotPhaseEdge)
+		}},
+		{"barrier after live vertex", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptBody("vertex", snapshotPhaseVertex)
+			return s.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier)
+		}},
+		{"vertex after live edge", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptBody("edge", snapshotPhaseEdge)
+			return s.acceptBody("vertex", snapshotPhaseVertex)
+		}},
+		{"footer count mismatch", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			s.counts.vertices = 1
+			_ = s.acceptFooter(footer(0, 0, 0, 0))
+			return s.validateComplete()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(&snapshotReplayState{}); err == nil {
+				t.Fatal("protocol violation was accepted")
+			}
+		})
+	}
 }

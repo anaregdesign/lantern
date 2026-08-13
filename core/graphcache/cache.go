@@ -20,6 +20,10 @@ type GraphCache[S comparable, T any] struct {
 	defaultTTL time.Duration
 	vertices   *cache.Cache[S, T]
 	edges      *edgeCache[S]
+	// applicationClock is sampled only while the final aggregate write lock is
+	// held by outcome-bearing Put batches. Nil selects time.Now. Tests replace
+	// it to pin expiry-boundary behavior without sleeping.
+	applicationClock func() time.Time
 	// dict is the shared vertex-id allocator. Both the vertex cache and the
 	// edge cache reference each key through this dictionary so the heavy
 	// edge maps can be keyed by uint32 instead of S. The vertex cache holds
@@ -117,6 +121,21 @@ type GraphCache[S comparable, T any] struct {
 	vertexTombstones map[S]tombstoneEntry
 	edgeTombstones   map[EdgeKey[S]]tombstoneEntry
 
+	// vertexCausalBarriers / edgeCausalBarriers retain the HLC of an
+	// accepted Put whose absolute expiration was already dead at the final
+	// application sample. Such a Put is a delete-like LWW overwrite: it must
+	// remove the previous value and continue to fence strictly-older replicas
+	// even though there is deliberately no live cache entry to carry the HLC.
+	//
+	// Unlike delete tombstones these barriers have no wall-clock retention
+	// deadline. Reaping one merely because GC removed an expired bucket would
+	// let a delayed older Put resurrect data after clock rollback or snapshot
+	// bootstrap. They are allocated only on the replicated/HLC path, so the
+	// non-replicated hot path still pays a single nil check in its write helper.
+	// Replication snapshots export them separately from the live graph.
+	vertexCausalBarriers map[S]hlc.Timestamp
+	edgeCausalBarriers   map[EdgeKey[S]]hlc.Timestamp
+
 	// gcEdgeBudget bounds the incremental GC edge sweep (#744). When it is
 	// <= 0 (the default) flush() performs a full O(E) sweep every tick — the
 	// historical behavior and the safety net. When set to a positive N via
@@ -135,6 +154,13 @@ type GraphCache[S comparable, T any] struct {
 	gcEdgeBudget int
 	gcSweepPlan  []vertexID
 	gcSweepPos   int
+}
+
+func (c *GraphCache[S, T]) applicationTime() time.Time {
+	if c.applicationClock != nil {
+		return c.applicationClock()
+	}
+	return time.Now()
 }
 
 func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
@@ -228,10 +254,11 @@ func (c *GraphCache[S, T]) upsertVertexStorageLocked(key S, value T, expiration 
 // under a churn of short-lived writes (#698). A born-expired write therefore
 // deletes any existing entry for the key and stores nothing.
 //
-// The replicated apply path (PutVertexWithExpirationHLC) deliberately does NOT
-// route through here: it must preserve LWW/HLC/tombstone causality and records
-// a per-key watermark after the store, so it keeps calling putVertexLocked
-// directly. Caller must hold c.mu.
+// The replicated singular path (PutVertexWithExpirationHLC) has its own
+// causality wrapper. The plural HLC outcome path uses
+// putLocalVertexLockedAtMode with its final application sample, then records
+// the accepted HLC watermark even for a delete-like expired overwrite. Caller
+// must hold c.mu.
 func (c *GraphCache[S, T]) putLocalVertexLocked(key S, value T, expiration time.Time) bool {
 	return c.putLocalVertexLockedAt(key, value, expiration, time.Now())
 }
@@ -413,7 +440,7 @@ func (c *GraphCache[S, T]) AddEdge(tail, head S, w float32) {
 func (c *GraphCache[S, T]) PutEdgeWithExpiration(tail, head S, w float32, expiration time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.putEdgeLocked(tail, head, w, expiration)
+	c.putEdgeLockedAt(tail, head, w, expiration, c.applicationTime())
 }
 
 // AddEdgeWithExpirationContrib is the dedup-aware additive write used by
@@ -445,6 +472,10 @@ func (c *GraphCache[S, T]) DeleteVertex(key S) bool {
 	}
 
 	deleted := c.vertices.Delete(key)
+	c.clearVertexCausalBarrierLocked(key)
+	if c.vertexHLC != nil {
+		delete(c.vertexHLC, key)
+	}
 	c.rebuildIncompleteSearchLocked()
 	return deleted
 }
@@ -454,5 +485,7 @@ func (c *GraphCache[S, T]) DeleteEdge(tail, head S) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.deleteEdgeLocked(tail, head)
+	deleted := c.deleteEdgeLocked(tail, head)
+	c.clearEdgeCausalBarrierLocked(tail, head)
+	return deleted
 }

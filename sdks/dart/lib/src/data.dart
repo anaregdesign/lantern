@@ -244,8 +244,9 @@ final class VertexInput {
   /// Creates a vertex write.
   ///
   /// Omitting both expiration fields means permanent storage. [expiresIn]
-  /// is evaluated from the client's injected clock exactly once per logical
-  /// call. Device-clock skew therefore affects relative TTLs.
+  /// is evaluated from one sample of the client's injected clock per logical
+  /// call. Put responses sample it again to enforce local expiration as an
+  /// upper bound. Device-clock skew therefore affects relative TTLs.
   const VertexInput({
     required this.key,
     required this.value,
@@ -340,19 +341,82 @@ final class GetVerticesResult {
   final List<String> missing;
 }
 
-/// Result of a plural vertex put.
-final class PutVerticesResult {
-  /// Creates an immutable plural vertex put result.
-  PutVerticesResult({
-    required this.written,
-    required Iterable<String> skippedKeys,
-  }) : skippedKeys = List.unmodifiable(skippedKeys);
+/// Server-authoritative result of one idempotent Put.
+enum PutOutcome {
+  /// The item was written and live when the server applied it.
+  appliedAndLive,
 
-  /// Number of values actually written.
-  final int written;
+  /// The absolute expiration was not live at server application time.
+  expired,
 
-  /// Existing keys skipped by a conditional put.
-  final List<String> skippedKeys;
+  /// `ifAbsent` observed an existing live item and preserved it.
+  conditionNotMet,
+
+  /// A newer causal write or tombstone preserved the existing state.
+  superseded,
+}
+
+/// Result of one vertex Put, including its request identity.
+final class VertexPutResult {
+  /// Creates one vertex Put result.
+  const VertexPutResult({required this.key, required this.outcome});
+
+  /// Vertex key from the request.
+  final String key;
+
+  /// Server-authoritative application outcome.
+  final PutOutcome outcome;
+}
+
+/// Result of one edge Put, including its request identity.
+final class EdgePutResult {
+  /// Creates one edge Put result.
+  const EdgePutResult({
+    required this.tail,
+    required this.head,
+    required this.outcome,
+  });
+
+  /// Tail key from the request.
+  final String tail;
+
+  /// Head key from the request.
+  final String head;
+
+  /// Server-authoritative application outcome.
+  final PutOutcome outcome;
+}
+
+PutOutcome _putOutcomeFromProto($graph.PutOutcome outcome) {
+  if (outcome == $graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE) {
+    return PutOutcome.appliedAndLive;
+  }
+  if (outcome == $graph.PutOutcome.PUT_OUTCOME_EXPIRED) {
+    return PutOutcome.expired;
+  }
+  if (outcome == $graph.PutOutcome.PUT_OUTCOME_CONDITION_NOT_MET) {
+    return PutOutcome.conditionNotMet;
+  }
+  if (outcome == $graph.PutOutcome.PUT_OUTCOME_SUPERSEDED) {
+    return PutOutcome.superseded;
+  }
+  throw _internalSdkException(
+    'server returned unknown Put outcome ${outcome.value}',
+  );
+}
+
+PutOutcome _clientBoundedPutOutcome(
+  PutOutcome outcome,
+  bool initiallyLive,
+  DateTime? expiration,
+  DateTime observedAt,
+) {
+  if (outcome == PutOutcome.appliedAndLive &&
+      (!initiallyLive ||
+          (expiration != null && !expiration.isAfter(observedAt)))) {
+    return PutOutcome.expired;
+  }
+  return outcome;
 }
 
 /// Present and missing edges from a plural read.
@@ -386,12 +450,20 @@ final class AddEdgesResult {
   final List<double> effectiveWeights;
 }
 
-/// A plural write failed after one or more prior chunks committed.
+/// A plural write failed after one or more prior chunk responses were observed.
 final class BatchException implements Exception {
   /// Creates a partial-progress error.
   const BatchException({required this.committed, required this.cause});
 
-  /// Number of writes confirmed committed before the failed chunk.
+  /// Input-prefix length whose responses were fully observed and validated
+  /// before the failed chunk.
+  ///
+  /// This is not an [PutOutcome.appliedAndLive] count: a completed Put chunk
+  /// can contain any bounded per-item outcome.
+  ///
+  /// For a conditional Put the failed chunk itself is ambiguous: it may have
+  /// committed without a response, and replay cannot recover its original
+  /// per-item outcomes.
   final int committed;
 
   /// Typed failure reported by the failed chunk.

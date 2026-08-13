@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
+
+	"connectrpc.com/connect"
 )
 
 // ApplyMutation is the internal entry point used by the peer-pump (#184)
@@ -144,6 +147,42 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 		opName = "PutVertices"
 
+	case *pb.MutationOp_ReplicatedPutVertices:
+		// Each entry is an origin-authoritative outcome. Replay the full
+		// interleaved sequence through one GraphCache lock so duplicate keys
+		// retain request order and a clock-behind receiver cannot turn a causal
+		// barrier back into a live value.
+		entries := op.ReplicatedPutVertices.GetEntries()
+		items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(entries))
+		for _, entry := range entries {
+			if entry == nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex entry"))
+			}
+			switch outcome := entry.GetOutcome().(type) {
+			case *pb.ReplicatedPutVertex_Live:
+				v := outcome.Live
+				if v == nil {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex live payload"))
+				}
+				items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: v.GetKey(), Value: v, Expiration: prototime.Expiration(v.GetExpiration())})
+			case *pb.ReplicatedPutVertex_CausalBarrier:
+				barrier := outcome.CausalBarrier
+				if barrier == nil {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex causal barrier"))
+				}
+				items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: barrier.GetKey(), CausalBarrier: true})
+			default:
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutVertex entry has no outcome"))
+			}
+		}
+		rejected := s.cache.PutVerticesWithExpirationHLC(items, ts)
+		if useTomb && s.onTombstoneClampReject != nil {
+			for i := 0; i < rejected; i++ {
+				s.onTombstoneClampReject()
+			}
+		}
+		opName = "ReplicatedPutVertices"
+
 	case *pb.MutationOp_DeleteVertex:
 		if useTomb {
 			s.cache.DeleteVertexHLC(op.DeleteVertex.GetKey(), ts, tombExp)
@@ -182,15 +221,10 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		if cID.IsZero() {
 			cID = contribIDFor(origin, seq, 0)
 		}
-		if useTomb {
-			applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
-				prototime.Expiration(e.GetExpiration()), cID, ts)
-			if !applied && s.onTombstoneClampReject != nil {
-				s.onTombstoneClampReject()
-			}
-		} else {
-			s.cache.AddEdgeWithExpirationContrib(e.GetTail(), e.GetHead(), e.GetWeight(),
-				prototime.Expiration(e.GetExpiration()), cID)
+		applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
+			prototime.Expiration(e.GetExpiration()), cID, ts)
+		if !applied && useTomb && s.onTombstoneClampReject != nil {
+			s.onTombstoneClampReject()
 		}
 		opName = "AddEdge"
 
@@ -224,19 +258,16 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 				ContribID:  cID,
 			})
 		}
-		if useTomb {
-			// The batch return counts every item that added no weight —
-			// tombstone-dropped or ContribID-deduped — which is exactly the
-			// per-item applied=false set the singular loop fed the hook. The
-			// effective-weight slice (#897) is irrelevant on the apply path.
-			_, noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
-			if s.onTombstoneClampReject != nil {
-				for i := 0; i < noWeight; i++ {
-					s.onTombstoneClampReject()
-				}
+		// The HLC path is required even when tombstone retention is disabled:
+		// permanent Put causal barriers independently fence older additive
+		// contributions. The batch return counts every item that added no
+		// weight; only expose that through the tombstone-specific hook when D4
+		// is enabled.
+		_, noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+		if useTomb && s.onTombstoneClampReject != nil {
+			for i := 0; i < noWeight; i++ {
+				s.onTombstoneClampReject()
 			}
-		} else {
-			s.cache.AddEdgesWithExpirationContrib(items)
 		}
 		opName = "AddEdges"
 
@@ -275,6 +306,38 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			}
 		}
 		opName = "PutEdges"
+
+	case *pb.MutationOp_ReplicatedPutEdges:
+		entries := op.ReplicatedPutEdges.GetEntries()
+		items := make([]graphcache.EdgeItem[string], 0, len(entries))
+		for _, entry := range entries {
+			if entry == nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge entry"))
+			}
+			switch outcome := entry.GetOutcome().(type) {
+			case *pb.ReplicatedPutEdge_Live:
+				e := outcome.Live
+				if e == nil {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge live payload"))
+				}
+				items = append(items, graphcache.EdgeItem[string]{Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(), Expiration: prototime.Expiration(e.GetExpiration())})
+			case *pb.ReplicatedPutEdge_CausalBarrier:
+				barrier := outcome.CausalBarrier
+				if barrier == nil {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge causal barrier"))
+				}
+				items = append(items, graphcache.EdgeItem[string]{Tail: barrier.GetTail(), Head: barrier.GetHead(), CausalBarrier: true})
+			default:
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutEdge entry has no outcome"))
+			}
+		}
+		rejected := s.cache.PutEdgesWithExpirationHLC(items, ts)
+		if useTomb && s.onTombstoneClampReject != nil {
+			for i := 0; i < rejected; i++ {
+				s.onTombstoneClampReject()
+			}
+		}
+		opName = "ReplicatedPutEdges"
 
 	case *pb.MutationOp_DeleteEdge:
 		k := op.DeleteEdge

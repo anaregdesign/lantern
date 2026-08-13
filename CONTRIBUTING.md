@@ -153,7 +153,7 @@ module's coverage rises durably):
 | `root` | 31% |
 | `core` | 84% |
 | `mcp` | 84% |
-| `pb` | 5% |
+| `pb` | 15% |
 | `sdks-go` | 37% |
 | `server` | 52% |
 

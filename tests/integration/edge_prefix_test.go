@@ -29,7 +29,7 @@ func seedPrefixEdges(t *testing.T, ctx context.Context, l *client.Lantern, pairs
 	for i, p := range pairs {
 		edges[i] = client.EdgeInput{Tail: p[0], Head: p[1], Weight: 1, Expiration: exp}
 	}
-	if err := l.PutEdges(ctx, edges); err != nil {
+	if _, err := l.PutEdges(ctx, edges); err != nil {
 		t.Fatalf("PutEdges: %v", err)
 	}
 }

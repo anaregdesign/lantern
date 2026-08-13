@@ -331,6 +331,7 @@ func (c *GraphCache[S, T]) DeleteEdgesByPrefix(ctx context.Context, tailPrefix, 
 		if c.deleteEdgeLocked(victims[i].tail, victims[i].head) {
 			n++
 		}
+		c.clearEdgeCausalBarrierLocked(victims[i].tail, victims[i].head)
 	}
 	return n
 }
@@ -357,10 +358,17 @@ func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefi
 	}
 	n := 0
 	for i := range victims {
+		if !c.edgeDeleteWriteAllowedLocked(victims[i].tail, victims[i].head, ts) {
+			continue
+		}
 		if c.deleteEdgeLocked(victims[i].tail, victims[i].head) {
 			n++
 		}
 		c.setEdgeTombstoneLocked(victims[i].tail, victims[i].head, ts, expiration)
+		key := EdgeKey[S]{Tail: victims[i].tail, Head: victims[i].head}
+		if barrier, ok := c.edgeCausalBarriers[key]; ok && !ts.Less(barrier) {
+			c.clearEdgeCausalBarrierLocked(victims[i].tail, victims[i].head)
+		}
 	}
 	return n, nil
 }

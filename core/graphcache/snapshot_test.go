@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 // vertexByKey indexes a vertex snapshot by key for order-independent
@@ -25,6 +27,27 @@ func edgeByEndpoints(es []SnapshotEdge[string]) map[EdgeKey[string]]SnapshotEdge
 		m[EdgeKey[string]{Tail: e.Tail, Head: e.Head}] = e
 	}
 	return m
+}
+
+func replayReplicationSnapshot(dst *GraphCache[string, string], snapshot ReplicationSnapshot[string, string]) {
+	for _, barrier := range snapshot.Barriers.Vertices {
+		dst.ApplyVertexCausalBarrierHLC(barrier.Key, barrier.HLC)
+	}
+	for _, barrier := range snapshot.Barriers.Edges {
+		dst.ApplyEdgeCausalBarrierHLC(barrier.Tail, barrier.Head, barrier.HLC)
+	}
+	for _, vertex := range snapshot.Graph.Vertices {
+		dst.PutVertexWithExpirationHLC(vertex.Key, vertex.Value, vertex.Expiration, vertex.HLC)
+	}
+	for _, edge := range snapshot.Graph.Edges {
+		for _, contribution := range edge.Contributions {
+			if contribution.ContribID.IsZero() {
+				dst.PutEdgeWithExpirationHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, edge.HLC)
+				continue
+			}
+			dst.AddEdgeWithExpirationContribHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, contribution.ContribID, edge.HLC)
+		}
+	}
 }
 
 func TestGraphCache_SnapshotGraph(t *testing.T) {
@@ -148,6 +171,200 @@ func TestGraphCache_SnapshotGraph(t *testing.T) {
 
 		if got := c.SnapshotGraph(); len(got.Vertices) == 0 {
 			t.Error("expected some vertices after concurrent writes")
+		}
+	})
+}
+
+func TestGraphCache_SnapshotReplicationRetainsCausalFloors(t *testing.T) {
+	newer := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0x20}}
+	older := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0x10}}
+	live := time.Now().Add(time.Hour)
+
+	t.Run("expired but unflushed live Put becomes terminal barrier", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		expiration := time.Now().Add(30 * time.Millisecond)
+		if !c.PutVertexWithExpirationHLC("v", "value", expiration, newer) {
+			t.Fatal("vertex Put rejected")
+		}
+		if !c.PutEdgeWithExpirationHLC("tail", "head", 2, expiration, newer) {
+			t.Fatal("edge Put rejected")
+		}
+		time.Sleep(60 * time.Millisecond)
+
+		snapshot := c.SnapshotReplication()
+		if len(snapshot.Graph.Vertices) != 0 || len(snapshot.Graph.Edges) != 0 ||
+			len(snapshot.Barriers.Vertices) != 1 || len(snapshot.Barriers.Edges) != 1 {
+			t.Fatalf("replication snapshot = %+v", snapshot)
+		}
+		// PutEdge auto-created expired endpoint slots that carry no Put HLC;
+		// they are unrelated to v's causal floor and are reclaimed by ordinary
+		// vertex GC. The HLC-tracked payload and edge bucket themselves must be
+		// gone so a backward clock jump cannot reveal them again.
+		if _, ok := c.vertices.GetAt("v", expiration.Add(-time.Second)); ok || c.edges.count() != 0 {
+			t.Fatalf("migration left rollback-visible HLC state: vertex=%v edges=%d", ok, c.edges.count())
+		}
+		if c.PutVertexWithExpirationHLC("v", "older", live, older) {
+			t.Fatal("older vertex resurrected after snapshot migration")
+		}
+		if c.PutEdgeWithExpirationHLC("tail", "head", 9, live, older) {
+			t.Fatal("older edge resurrected after snapshot migration")
+		}
+	})
+
+	t.Run("dangling Put edge is represented by barrier", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		if !c.PutEdgeWithExpirationHLC("tail", "head", 2, live, newer) {
+			t.Fatal("edge Put rejected")
+		}
+		if !c.DeleteVertex("head") {
+			t.Fatal("head delete failed")
+		}
+		snapshot := c.SnapshotReplication()
+		if len(snapshot.Graph.Edges) != 0 || len(snapshot.Barriers.Edges) != 1 {
+			t.Fatalf("dangling replication snapshot = %+v", snapshot)
+		}
+		if c.PutEdgeWithExpirationHLC("tail", "head", 9, live, older) {
+			t.Fatal("older edge resurrected after dangling snapshot migration")
+		}
+	})
+
+	t.Run("Put floor survives after its row expires but Add remains live", func(t *testing.T) {
+		source := NewGraphCache[string, string](time.Hour)
+		if err := source.PutVerticesWithExpiration([]VertexItem[string, string]{
+			{Key: "tail", Value: "tail", Expiration: live},
+			{Key: "head", Value: "head", Expiration: live},
+		}); err != nil {
+			t.Fatalf("Put endpoints: %v", err)
+		}
+		putExpiration := time.Now().Add(40 * time.Millisecond)
+		if !source.PutEdgeWithExpirationHLC("tail", "head", 2, putExpiration, newer) {
+			t.Fatal("Put edge rejected")
+		}
+		var addID ContribID
+		addID[0] = 0x30
+		if !source.AddEdgeWithExpirationContribHLC("tail", "head", 3, live, addID, hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("Add edge rejected")
+		}
+		time.Sleep(80 * time.Millisecond)
+
+		snapshot := source.SnapshotReplication()
+		if len(snapshot.Barriers.Edges) != 1 || len(snapshot.Graph.Edges) != 1 {
+			t.Fatalf("snapshot barrier/edge counts = %d/%d, want 1/1", len(snapshot.Barriers.Edges), len(snapshot.Graph.Edges))
+		}
+		edge := snapshot.Graph.Edges[0]
+		if edge.HLC != newer {
+			t.Fatalf("SnapshotEdge.HLC = %+v, want Put floor %+v", edge.HLC, newer)
+		}
+		if len(edge.Contributions) != 1 || edge.Contributions[0].ContribID != addID {
+			t.Fatalf("SnapshotEdge contributions = %+v, want surviving Add only", edge.Contributions)
+		}
+
+		follower := NewGraphCache[string, string](time.Hour)
+		replayReplicationSnapshot(follower, snapshot)
+		if got, ok := follower.GetWeight("tail", "head"); !ok || got != 3 {
+			t.Fatalf("follower edge = (%v,%v), want (3,true)", got, ok)
+		}
+		if _, edges := follower.CausalBarrierCounts(); edges != 1 {
+			t.Fatalf("follower edge barriers = %d, want 1", edges)
+		}
+		if follower.PutEdgeWithExpirationHLC("tail", "head", 9, live, older) {
+			t.Fatal("follower accepted Put older than the expired Put floor")
+		}
+
+		// A second bootstrap is idempotent: the Add's ContribID deduplicates,
+		// and the retained barrier is emitted again by the follower.
+		repeated := follower.SnapshotReplication()
+		replayReplicationSnapshot(follower, repeated)
+		if got, ok := follower.GetWeight("tail", "head"); !ok || got != 3 {
+			t.Fatalf("edge after repeated replay = (%v,%v), want (3,true)", got, ok)
+		}
+	})
+
+	t.Run("barrier coexists with equal Add and frame uses greatest Put floor", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		if !c.ApplyEdgeCausalBarrierHLC("tail", "head", newer) {
+			t.Fatal("barrier rejected")
+		}
+		var addID ContribID
+		addID[0] = 0x20
+		if !c.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, addID, newer) {
+			t.Fatal("Add equal to barrier should be accepted")
+		}
+		snapshot := c.SnapshotReplication()
+		if len(snapshot.Barriers.Edges) != 1 || len(snapshot.Graph.Edges) != 1 || snapshot.Graph.Edges[0].HLC != newer {
+			t.Fatalf("equal Add snapshot = %+v", snapshot)
+		}
+
+		higher := hlc.Timestamp{WallNs: 30, NodeID: hlc.NodeID{0x30}}
+		if !c.PutEdgeWithExpirationHLC("tail", "head", 4, live, higher) {
+			t.Fatal("newer Put rejected")
+		}
+		snapshot = c.SnapshotReplication()
+		if len(snapshot.Barriers.Edges) != 1 || snapshot.Barriers.Edges[0].HLC != higher || snapshot.Graph.Edges[0].HLC != higher {
+			t.Fatalf("live Put snapshot did not carry greatest floor: %+v", snapshot)
+		}
+	})
+
+	t.Run("hidden Add bucket beside retained barrier is terminally removed", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		if !c.ApplyEdgeCausalBarrierHLC("tail", "head", newer) {
+			t.Fatal("barrier rejected")
+		}
+		var addID ContribID
+		addID[0] = 0x31
+		expiration := time.Now().Add(40 * time.Millisecond)
+		if !c.AddEdgeWithExpirationContribHLC("tail", "head", 3, expiration, addID, hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("Add rejected")
+		}
+		time.Sleep(80 * time.Millisecond)
+		snapshot := c.SnapshotReplication()
+		if len(snapshot.Graph.Edges) != 0 || len(snapshot.Barriers.Edges) != 1 {
+			t.Fatalf("hidden Add snapshot = %+v", snapshot)
+		}
+		if c.edges.count() != 0 {
+			t.Fatalf("hidden Add bucket remains physical: %d", c.edges.count())
+		}
+		if _, _, ok := c.GetEdgeDetail("tail", "head"); ok {
+			t.Fatal("hidden Add edge visible after terminal migration")
+		}
+	})
+
+	t.Run("implicit Add endpoint preserves an older vertex Put floor", func(t *testing.T) {
+		source := NewGraphCache[string, string](time.Hour)
+		if !source.ApplyVertexCausalBarrierHLC("tail", newer) {
+			t.Fatal("vertex barrier rejected")
+		}
+		var addID ContribID
+		addID[0] = 0x32
+		if !source.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, addID, hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("Add rejected")
+		}
+		if !source.DeleteEdge("tail", "head") {
+			t.Fatal("DeleteEdge rejected")
+		}
+
+		snapshot := source.SnapshotReplication()
+		if len(snapshot.Barriers.Vertices) != 1 {
+			t.Fatalf("vertex barrier count = %d, want 1", len(snapshot.Barriers.Vertices))
+		}
+		vertices := vertexByKey(snapshot.Graph.Vertices)
+		endpoint, ok := vertices["tail"]
+		if !ok || endpoint.HLC != newer {
+			t.Fatalf("tail endpoint snapshot = %+v, present=%v; want HLC %+v", endpoint, ok, newer)
+		}
+
+		follower := NewGraphCache[string, string](time.Hour)
+		replayReplicationSnapshot(follower, snapshot)
+		if _, ok := follower.GetVertex("tail"); !ok {
+			t.Fatal("follower lost implicit endpoint")
+		}
+		if follower.PutVertexWithExpirationHLC("tail", "older", live, older) {
+			t.Fatal("follower accepted Put older than endpoint's retained floor")
+		}
+		repeated := follower.SnapshotReplication()
+		replayReplicationSnapshot(follower, repeated)
+		if follower.PutVertexWithExpirationHLC("tail", "older-again", live, older) {
+			t.Fatal("repeated snapshot lost implicit endpoint floor")
 		}
 	})
 }

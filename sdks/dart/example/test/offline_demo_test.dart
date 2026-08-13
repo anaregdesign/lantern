@@ -324,19 +324,21 @@ final class _FakeRemote implements OfflineRemote {
   }
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
     if (vertexPutFailures.isNotEmpty) throw vertexPutFailures.removeAt(0);
     vertices[vertex.key] = vertex;
+    return PutOutcome.appliedAndLive;
   }
 
   @override
-  Future<void> putEdge(
+  Future<PutOutcome> putEdge(
     Edge edge, {
     LanternCancellationToken? cancellation,
   }) async {
     edges[EdgeRef(edge.tail, edge.head)] = edge;
+    return PutOutcome.appliedAndLive;
   }
 }

@@ -70,17 +70,28 @@ export interface PutVertexBody {
   vertex?: Vertex;
 }
 
-export interface PutVertexResponse {
-  vertex?: Vertex;
-}
+export type PutOutcome =
+  | "appliedAndLive"
+  | "expired"
+  | "conditionNotMet"
+  | "superseded";
+
+export type VertexPutResult = {
+  key: string;
+  outcome: PutOutcome;
+};
+
+export type PutVertexResponse = {
+  outcome: PutOutcome;
+};
 
 export interface PutVerticesRequest {
   vertices?: Vertex[];
 }
 
-export interface PutVerticesResponse {
-  vertices?: Vertex[];
-}
+export type PutVerticesResponse = {
+  results: VertexPutResult[];
+};
 
 export interface DeleteVertexResponse {
   existed?: boolean;
@@ -171,17 +182,23 @@ export interface PutEdgeBody {
   edge?: Edge;
 }
 
-export interface PutEdgeResponse {
-  edge?: Edge;
-}
+export type EdgePutResult = {
+  tail: string;
+  head: string;
+  outcome: PutOutcome;
+};
+
+export type PutEdgeResponse = {
+  outcome: PutOutcome;
+};
 
 export interface PutEdgesRequest {
   edges?: Edge[];
 }
 
-export interface PutEdgesResponse {
-  edges?: Edge[];
-}
+export type PutEdgesResponse = {
+  results: EdgePutResult[];
+};
 
 export interface ScanEdgesRequest {
   tailPrefix?: string;

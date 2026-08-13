@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -22,6 +23,15 @@ import (
 // implementation (see replication_test.go).
 type Sender[T any] interface {
 	Send(*T) error
+}
+
+// causalBarrierSnapshotter is optional so lightweight test backends do not
+// need to model replication-only retained state. The production GraphCache
+// satisfies it. Barriers are streamed before live entries, allowing a receiver
+// to retain the older floor and then apply a newer live value for the same
+// identity without losing either fact.
+type causalBarrierSnapshotter interface {
+	SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex]
 }
 
 // ReplicationServiceName is the fully-qualified RPC service name for the
@@ -297,8 +307,62 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 		return err
 	}
 
-	vertices := s.backend.SnapshotVertices()
+	var barriers graphcache.CausalBarrierSnapshot[string]
+	var graph graphcache.GraphSnapshot[string, *pb.Vertex]
+	if snapshotter, ok := s.backend.(causalBarrierSnapshotter); ok {
+		snapshot := snapshotter.SnapshotReplication()
+		barriers = snapshot.Barriers
+		graph = snapshot.Graph
+	} else {
+		// Compatibility seam for narrow fake backends. Production GraphCache
+		// always implements SnapshotReplication so causal + live state share one
+		// lock pass.
+		graph = graphcache.GraphSnapshot[string, *pb.Vertex]{
+			Vertices: s.backend.SnapshotVertices(),
+			Edges:    s.backend.SnapshotEdges(),
+		}
+	}
+	var vertexBarrierCount uint64
+	for _, barrier := range barriers.Vertices {
+		if err := ctx.Err(); err != nil {
+			return ctxToConnect(err)
+		}
+		entry := &pb.SnapshotResponse{
+			Entry: &pb.SnapshotResponse_VertexCausalBarrier{
+				VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{
+					Key: barrier.Key,
+					Hlc: hlcToProto(barrier.HLC),
+				},
+			},
+		}
+		if err := stream.Send(entry); err != nil {
+			return err
+		}
+		vertexBarrierCount++
+	}
+
+	var edgeBarrierCount uint64
+	for _, barrier := range barriers.Edges {
+		if err := ctx.Err(); err != nil {
+			return ctxToConnect(err)
+		}
+		entry := &pb.SnapshotResponse{
+			Entry: &pb.SnapshotResponse_EdgeCausalBarrier{
+				EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{
+					Tail: barrier.Tail,
+					Head: barrier.Head,
+					Hlc:  hlcToProto(barrier.HLC),
+				},
+			},
+		}
+		if err := stream.Send(entry); err != nil {
+			return err
+		}
+		edgeBarrierCount++
+	}
+
 	var vertexCount uint64
+	vertices := graph.Vertices
 	for _, v := range vertices {
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
@@ -317,8 +381,8 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 		vertexCount++
 	}
 
-	edges := s.backend.SnapshotEdges()
 	var edgeCount uint64
+	edges := graph.Edges
 	for _, e := range edges {
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
@@ -350,8 +414,10 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 	footer := &pb.SnapshotResponse{
 		Entry: &pb.SnapshotResponse_Footer{
 			Footer: &pb.SnapshotFooter{
-				VertexCount: vertexCount,
-				EdgeCount:   edgeCount,
+				VertexCount:              vertexCount,
+				EdgeCount:                edgeCount,
+				VertexCausalBarrierCount: vertexBarrierCount,
+				EdgeCausalBarrierCount:   edgeBarrierCount,
 			},
 		},
 	}

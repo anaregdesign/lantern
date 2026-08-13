@@ -79,14 +79,19 @@ abstract interface class OfflineRemote {
     LanternCancellationToken? cancellation,
   });
 
-  /// Writes one already expiration-resolved vertex.
-  Future<void> putVertex(
+  /// Writes one already expiration-resolved vertex and returns the
+  /// server-authoritative application outcome.
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   });
 
-  /// Writes one already expiration-resolved edge.
-  Future<void> putEdge(Edge edge, {LanternCancellationToken? cancellation});
+  /// Writes one already expiration-resolved edge and returns the
+  /// server-authoritative application outcome.
+  Future<PutOutcome> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  });
 }
 
 /// [OfflineRemote] adapter over the official [LanternClient].
@@ -153,12 +158,12 @@ final class LanternClientOfflineRemote implements OfflineRemote {
   }
 
   @override
-  Future<void> putEdge(
+  Future<PutOutcome> putEdge(
     Edge edge, {
     LanternCancellationToken? cancellation,
   }) async {
     try {
-      await client.putEdge(
+      return await client.putEdge(
         EdgeInput(
           tail: edge.tail,
           head: edge.head,
@@ -173,12 +178,12 @@ final class LanternClientOfflineRemote implements OfflineRemote {
   }
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
     try {
-      await client.putVertex(
+      return await client.putVertex(
         VertexInput(
           key: vertex.key,
           value: vertex.value,

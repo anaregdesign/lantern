@@ -7,7 +7,9 @@
 //	if err != nil { log.Fatal(err) }
 //	defer c.Close()
 //
-//	c.PutVertex(ctx, "user:42", "alice", time.Minute)
+//	outcome, err := c.PutVertex(ctx, "user:42", "alice", time.Minute)
+//	if err != nil { log.Fatal(err) }
+//	if outcome != client.PutOutcomeAppliedAndLive { log.Fatalf("Put returned %s", outcome) }
 //	v, _ := c.GetVertex(ctx, "user:42")
 //	fmt.Println(client.StringValue(v))
 //
@@ -68,6 +70,7 @@
 //	-------------------------------------------  ------------------------------
 //	Get*/Scan*/Count*/Search*/Illuminate/status  yes (reads are idempotent)
 //	Put*/Delete*/DeleteVerticesByPrefix          yes (idempotent by semantics)
+//	PutVertexIfAbsent/PutVerticesIfAbsent        no (response loss changes outcome)
 //	AddEdge/AddEdgeAt/AddEdges                    only under WithIdempotentAdds
 //	                                             (or explicit ContribIDs): the
 //	                                             per-edge keys let a retry record

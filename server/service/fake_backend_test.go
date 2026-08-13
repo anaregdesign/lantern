@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/cache"
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -108,15 +109,28 @@ func (f *fakeBackend) GetVertex(key string) (*pb.Vertex, bool) {
 }
 
 func (f *fakeBackend) PutVerticesWithExpiration(items []graphcache.VertexItem[string, *pb.Vertex]) {
+	_, _ = f.PutVerticesWithExpirationOutcomesChecked(items)
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex]) ([]graphcache.PutOutcome, error) {
 	f.putVerticesCalls++
-	for _, it := range items {
+	now := time.Now()
+	outcomes := make([]graphcache.PutOutcome, len(items))
+	for i, it := range items {
+		if !cache.IsLiveAt(it.Expiration, now) {
+			delete(f.vertices, it.Key)
+			outcomes[i] = graphcache.PutOutcomeExpired
+			continue
+		}
 		f.vertices[it.Key] = it.Value
+		outcomes[i] = graphcache.PutOutcomeAppliedAndLive
 	}
+	return outcomes, nil
 }
 
 func (f *fakeBackend) PutVerticesWithExpirationChecked(items []graphcache.VertexItem[string, *pb.Vertex]) error {
-	f.PutVerticesWithExpiration(items)
-	return nil
+	_, err := f.PutVerticesWithExpirationOutcomesChecked(items)
+	return err
 }
 
 func (f *fakeBackend) PutVerticesWithExpirationIfAbsent(items []graphcache.VertexItem[string, *pb.Vertex]) (int, []string) {
@@ -135,8 +149,37 @@ func (f *fakeBackend) PutVerticesWithExpirationIfAbsent(items []graphcache.Verte
 }
 
 func (f *fakeBackend) PutVerticesWithExpirationIfAbsentChecked(items []graphcache.VertexItem[string, *pb.Vertex]) (int, []string, error) {
-	written, skipped := f.PutVerticesWithExpirationIfAbsent(items)
-	return written, skipped, nil
+	outcomes, err := f.PutVerticesWithExpirationIfAbsentOutcomesChecked(items)
+	var written int
+	var skipped []string
+	for i, outcome := range outcomes {
+		switch outcome {
+		case graphcache.PutOutcomeAppliedAndLive:
+			written++
+		case graphcache.PutOutcomeConditionNotMet:
+			skipped = append(skipped, items[i].Key)
+		}
+	}
+	return written, skipped, err
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsentOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex]) ([]graphcache.PutOutcome, error) {
+	f.putVerticesCalls++
+	now := time.Now()
+	outcomes := make([]graphcache.PutOutcome, len(items))
+	for i, it := range items {
+		if _, ok := f.vertices[it.Key]; ok {
+			outcomes[i] = graphcache.PutOutcomeConditionNotMet
+			continue
+		}
+		if !cache.IsLiveAt(it.Expiration, now) {
+			outcomes[i] = graphcache.PutOutcomeExpired
+			continue
+		}
+		f.vertices[it.Key] = it.Value
+		outcomes[i] = graphcache.PutOutcomeAppliedAndLive
+	}
+	return outcomes, nil
 }
 
 func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLC(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) ([]int, []string) {
@@ -157,6 +200,17 @@ func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLC(items []graphcache.Ve
 func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLCChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) ([]int, []string, error) {
 	written, skipped := f.PutVerticesWithExpirationIfAbsentHLC(items, ts)
 	return written, skipped, nil
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) ([]int, []graphcache.PutOutcome, error) {
+	outcomes, err := f.PutVerticesWithExpirationIfAbsentOutcomesChecked(items)
+	var written []int
+	for i, outcome := range outcomes {
+		if outcome == graphcache.PutOutcomeAppliedAndLive {
+			written = append(written, i)
+		}
+	}
+	return written, outcomes, err
 }
 
 func (f *fakeBackend) DeleteVertices(keys []string) int {
@@ -211,13 +265,28 @@ func (f *fakeBackend) AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[
 }
 
 func (f *fakeBackend) PutEdgesWithExpiration(items []graphcache.EdgeItem[string]) {
+	f.PutEdgesWithExpirationOutcomes(items)
+}
+
+func (f *fakeBackend) PutEdgesWithExpirationOutcomes(items []graphcache.EdgeItem[string]) []graphcache.PutOutcome {
 	f.putEdgesCalls++
-	for _, it := range items {
+	now := time.Now()
+	outcomes := make([]graphcache.PutOutcome, len(items))
+	for i, it := range items {
+		if !cache.IsLiveAt(it.Expiration, now) {
+			if row := f.edges[it.Tail]; row != nil {
+				delete(row, it.Head)
+			}
+			outcomes[i] = graphcache.PutOutcomeExpired
+			continue
+		}
 		if f.edges[it.Tail] == nil {
 			f.edges[it.Tail] = map[string]float32{}
 		}
 		f.edges[it.Tail][it.Head] = it.Weight
+		outcomes[i] = graphcache.PutOutcomeAppliedAndLive
 	}
+	return outcomes
 }
 
 func (f *fakeBackend) DeleteEdges(keys []graphcache.EdgeKey[string]) int {
@@ -646,6 +715,15 @@ func (f *fakeBackend) PutVerticesWithExpirationHLCChecked(items []graphcache.Ver
 	return f.PutVerticesWithExpirationHLC(items, ts), nil
 }
 
+func (f *fakeBackend) PutVerticesWithExpirationHLCOutcomes(items []graphcache.VertexItem[string, *pb.Vertex], _ hlc.Timestamp) []graphcache.PutOutcome {
+	outcomes, _ := f.PutVerticesWithExpirationOutcomesChecked(items)
+	return outcomes
+}
+
+func (f *fakeBackend) PutVerticesWithExpirationHLCOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) ([]graphcache.PutOutcome, error) {
+	return f.PutVerticesWithExpirationHLCOutcomes(items, ts), nil
+}
+
 func (f *fakeBackend) SearchIndexMemoryStats() search.IndexMemoryStats {
 	return f.searchStats
 }
@@ -655,8 +733,20 @@ func (f *fakeBackend) PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[stri
 	return 0
 }
 
+func (f *fakeBackend) PutEdgesWithExpirationHLCOutcomes(items []graphcache.EdgeItem[string], _ hlc.Timestamp) []graphcache.PutOutcome {
+	return f.PutEdgesWithExpirationOutcomes(items)
+}
+
 func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], _ hlc.Timestamp) ([]float32, int) {
 	return f.AddEdgesWithExpirationContrib(items)
+}
+
+func (f *fakeBackend) ApplyVertexCausalBarrierHLC(key string, _ hlc.Timestamp) bool {
+	return f.DeleteVertices([]string{key}) > 0
+}
+
+func (f *fakeBackend) ApplyEdgeCausalBarrierHLC(tail, head string, _ hlc.Timestamp) bool {
+	return f.DeleteEdges([]graphcache.EdgeKey[string]{{Tail: tail, Head: head}}) > 0
 }
 
 // Tombstone-aware entry points (#183). The fake intentionally collapses
@@ -744,4 +834,8 @@ func (f *fakeBackend) EdgeCount() int {
 		n += len(heads)
 	}
 	return n
+}
+
+func (f *fakeBackend) CapacityFootprint() (vertices, edges int) {
+	return f.VertexCount(), f.EdgeCount()
 }

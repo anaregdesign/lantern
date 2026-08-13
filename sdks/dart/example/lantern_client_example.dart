@@ -7,13 +7,16 @@ Future<void> main() async {
     Uri.parse('https://lantern.example.com'),
   );
   try {
-    await client.putVertex(
+    final outcome = await client.putVertex(
       VertexInput(
         key: 'user:42',
         value: VertexValue.string('alice'),
         expiresIn: const Duration(minutes: 30),
       ),
     );
+    if (outcome != PutOutcome.appliedAndLive) {
+      throw StateError('user:42 was not live after Put: $outcome');
+    }
     final vertex = await client.getVertex('user:42');
     stdout.writeln((vertex.value as StringValue).value);
   } finally {

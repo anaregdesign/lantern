@@ -52,7 +52,10 @@ void main() {
       VertexInput(key: '${prefix}nil', value: VertexValue.nil()),
       VertexInput(key: '${prefix}unset', value: VertexValue.unset()),
     ];
-    expect((await client.putVertices(inputs)).written, inputs.length);
+    expect(
+      (await client.putVertices(inputs)).map((result) => result.outcome),
+      everyElement(PutOutcome.appliedAndLive),
+    );
     expect(
       (await client.getVertices(inputs.map((input) => input.key))).missing,
       isEmpty,

@@ -402,6 +402,147 @@ void main() {
     },
   );
 
+  test('server EXPIRED survives response loss for Vertex and Edge', () async {
+    final endpointValue =
+        Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
+    if (endpointValue == null || endpointValue.isEmpty) {
+      markTestSkipped('set LANTERN_DART_REAL_WIRE_ENDPOINT');
+      return;
+    }
+    final endpoint = Uri.parse(endpointValue);
+    final client = LanternClient.connect(
+      endpoint,
+      allowInsecure: endpoint.scheme == 'http',
+    );
+    addTearDown(client.close);
+    await client.ping();
+
+    final prefix =
+        'dart-offline-expired-wire:'
+        '${DateTime.now().microsecondsSinceEpoch}:';
+    final vertexKey = '${prefix}vertex';
+    final edgeRef = EdgeRef('${prefix}tail', '${prefix}head');
+    expect(
+      await client.putVertex(
+        VertexInput(
+          key: vertexKey,
+          value: VertexValue.string('old'),
+          expiresIn: const Duration(minutes: 5),
+        ),
+      ),
+      PutOutcome.appliedAndLive,
+    );
+    expect(
+      await client.putEdge(
+        EdgeInput(
+          tail: edgeRef.tail,
+          head: edgeRef.head,
+          weight: 9,
+          expiresIn: const Duration(minutes: 5),
+        ),
+      ),
+      PutOutcome.appliedAndLive,
+    );
+
+    // The offline device is behind the server: this deadline appears live
+    // locally while it is already expired at the authoritative server.
+    var deviceNow = DateTime.now().toUtc().subtract(const Duration(hours: 2));
+    final serverExpiredAt = deviceNow.add(const Duration(hours: 1));
+    final dropping = _ResponseDroppingRemote(
+      LanternClientOfflineRemote(client),
+      dropNextPutVertex: true,
+      dropNextPutEdge: true,
+    );
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: dropping,
+      config: OfflineConfig(
+        clock: () => deviceNow,
+        jitter: (ceiling) => ceiling,
+        baseRetryDelay: const Duration(microseconds: 1),
+      ),
+    );
+    addTearDown(repository.dispose);
+
+    expect(
+      (await repository.readVertex(
+        'expired-wire',
+        vertexKey,
+        policy: OfflineReadPolicy.serverOnly,
+      )).state,
+      OfflineReadState.fresh,
+    );
+    expect(
+      (await repository.readEdge(
+        'expired-wire',
+        edgeRef,
+        policy: OfflineReadPolicy.serverOnly,
+      )).state,
+      OfflineReadState.fresh,
+    );
+    final vertexWrite = await repository.putVertex(
+      partitionId: 'expired-wire',
+      input: VertexInput(
+        key: vertexKey,
+        value: VertexValue.string('expired'),
+        expiresAt: serverExpiredAt,
+      ),
+    );
+    final edgeWrite = await repository.putEdge(
+      partitionId: 'expired-wire',
+      input: EdgeInput(
+        tail: edgeRef.tail,
+        head: edgeRef.head,
+        weight: 1,
+        expiresAt: serverExpiredAt,
+      ),
+    );
+
+    // Both delete-like commits happen, but their first responses are lost.
+    // Replaying obtains EXPIRED again and safely terminalizes each intent.
+    expect(await repository.drain('expired-wire'), 0);
+    expect(await repository.listPending('expired-wire'), hasLength(2));
+    deviceNow = deviceNow.add(const Duration(seconds: 1));
+    expect(await repository.drain('expired-wire'), 0);
+    expect(await repository.listPending('expired-wire'), isEmpty);
+    for (final operationId in <String>[
+      vertexWrite.operationId,
+      edgeWrite.operationId,
+    ]) {
+      final status = await repository.getWriteStatus(
+        'expired-wire',
+        operationId,
+      );
+      expect(status!.items.single.state, OfflineWriteState.expired);
+      expect(status.items.single.attemptCount, 2);
+      expect(status.items.single.diagnosticCode, 'put_expired');
+    }
+    expect(
+      (await repository.readVertex(
+        'expired-wire',
+        vertexKey,
+        policy: OfflineReadPolicy.cacheOnly,
+      )).state,
+      OfflineReadState.unknown,
+    );
+    expect(
+      (await repository.readEdge(
+        'expired-wire',
+        edgeRef,
+        policy: OfflineReadPolicy.cacheOnly,
+      )).state,
+      OfflineReadState.unknown,
+    );
+    await expectLater(
+      client.getVertex(vertexKey),
+      throwsA(isA<LanternNotFoundException>()),
+    );
+    await expectLater(
+      client.getEdge(edgeRef),
+      throwsA(isA<LanternNotFoundException>()),
+    );
+  });
+
   test(
     'wipe quiesces a delayed response after the real server commit',
     () async {
@@ -706,13 +847,13 @@ final class _ResponseDroppingRemote implements OfflineRemote {
       delegate.probe(cancellation: cancellation);
 
   @override
-  Future<void> putEdge(
+  Future<PutOutcome> putEdge(
     Edge edge, {
     LanternCancellationToken? cancellation,
   }) async {
     putEdgeCalls++;
     edgeExpirations.add(edge.expiration);
-    await delegate.putEdge(edge, cancellation: cancellation);
+    final outcome = await delegate.putEdge(edge, cancellation: cancellation);
     if (dropNextPutEdge) {
       dropNextPutEdge = false;
       throw OfflineRemoteFailure(
@@ -720,15 +861,19 @@ final class _ResponseDroppingRemote implements OfflineRemote {
         StateError('response dropped after real commit'),
       );
     }
+    return outcome;
   }
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
     putVertexCalls++;
-    await delegate.putVertex(vertex, cancellation: cancellation);
+    final outcome = await delegate.putVertex(
+      vertex,
+      cancellation: cancellation,
+    );
     if (dropNextPutVertex) {
       dropNextPutVertex = false;
       throw OfflineRemoteFailure(
@@ -736,6 +881,7 @@ final class _ResponseDroppingRemote implements OfflineRemote {
         StateError('response dropped after real commit'),
       );
     }
+    return outcome;
   }
 }
 
@@ -762,15 +908,20 @@ final class _CommittedResponseGateRemote implements OfflineRemote {
       delegate.probe(cancellation: cancellation);
 
   @override
-  Future<void> putEdge(Edge edge, {LanternCancellationToken? cancellation}) =>
-      delegate.putEdge(edge, cancellation: cancellation);
+  Future<PutOutcome> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  }) => delegate.putEdge(edge, cancellation: cancellation);
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
-    await delegate.putVertex(vertex, cancellation: cancellation);
+    final outcome = await delegate.putVertex(
+      vertex,
+      cancellation: cancellation,
+    );
     if (!serverCommitted.isCompleted) serverCommitted.complete();
     final canceled = Completer<void>();
     final removeCancellation = cancellation?.listen((_) {
@@ -788,6 +939,7 @@ final class _CommittedResponseGateRemote implements OfflineRemote {
     } finally {
       removeCancellation?.call();
     }
+    return outcome;
   }
 }
 
@@ -815,11 +967,13 @@ final class _FailingAfterRemote implements OfflineRemote {
       delegate.probe(cancellation: cancellation);
 
   @override
-  Future<void> putEdge(Edge edge, {LanternCancellationToken? cancellation}) =>
-      delegate.putEdge(edge, cancellation: cancellation);
+  Future<PutOutcome> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  }) => delegate.putEdge(edge, cancellation: cancellation);
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) {

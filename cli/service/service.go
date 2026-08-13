@@ -155,9 +155,14 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrPutVertex
 			}
-			if err := c.client.PutVertex(ctx, p.Key, p.Value, p.TTL); err != nil {
+			outcome, err := c.client.PutVertex(ctx, p.Key, p.Value, p.TTL)
+			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
+			}
+			if err := requireAppliedPut("vertex", outcome); err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return ErrPutVertex
 			}
 			// Echo the applied TTL/expiry so a decaying write is never
 			// silent (#653) — the REPL's "OK (<elapsed>)" status alone
@@ -170,9 +175,14 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrPutEdge
 			}
-			if err := c.client.PutEdge(ctx, p.Tail, p.Head, p.Weight, p.TTL); err != nil {
+			outcome, err := c.client.PutEdge(ctx, p.Tail, p.Head, p.Weight, p.TTL)
+			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
+			}
+			if err := requireAppliedPut("edge", outcome); err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return ErrPutEdge
 			}
 			fmt.Println(formatWriteEcho(fmt.Sprintf("put edge %q -> %q (weight %g)", p.Tail, p.Head, p.Weight), p.TTL, time.Now()))
 			return nil
@@ -566,4 +576,11 @@ func formatWriteEcho(subject string, ttl time.Duration, now time.Time) string {
 		return fmt.Sprintf("%s (no ttl)", subject)
 	}
 	return fmt.Sprintf("%s (ttl %s, expires %s)", subject, ttl, now.Add(ttl).Format(time.RFC3339))
+}
+
+func requireAppliedPut(subject string, outcome client.PutOutcome) error {
+	if outcome != client.PutOutcomeAppliedAndLive {
+		return fmt.Errorf("put %s was not live after server application: %s", subject, outcome)
+	}
+	return nil
 }

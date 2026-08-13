@@ -23,6 +23,8 @@ class FakeOfflineRemote implements OfflineRemote {
   final List<OfflineRemoteFailure> edgePutFailures = <OfflineRemoteFailure>[];
   final List<OfflineRemoteFailure> vertexGetFailures = <OfflineRemoteFailure>[];
   final List<OfflineRemoteFailure> edgeGetFailures = <OfflineRemoteFailure>[];
+  final List<PutOutcome> vertexPutOutcomes = <PutOutcome>[];
+  final List<PutOutcome> edgePutOutcomes = <PutOutcome>[];
   int vertexPutCalls = 0;
   int edgePutCalls = 0;
   final List<OfflineRemoteFailure> probeFailures = <OfflineRemoteFailure>[];
@@ -59,23 +61,39 @@ class FakeOfflineRemote implements OfflineRemote {
   }
 
   @override
-  Future<void> putEdge(
+  Future<PutOutcome> putEdge(
     Edge edge, {
     LanternCancellationToken? cancellation,
   }) async {
     edgePutCalls++;
     if (edgePutFailures.isNotEmpty) throw edgePutFailures.removeAt(0);
-    edges[EdgeRef(edge.tail, edge.head)] = edge;
+    final outcome = edgePutOutcomes.isEmpty
+        ? PutOutcome.appliedAndLive
+        : edgePutOutcomes.removeAt(0);
+    if (outcome == PutOutcome.appliedAndLive) {
+      edges[EdgeRef(edge.tail, edge.head)] = edge;
+    } else if (outcome == PutOutcome.expired) {
+      edges.remove(EdgeRef(edge.tail, edge.head));
+    }
+    return outcome;
   }
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
     vertexPutCalls++;
     if (vertexPutFailures.isNotEmpty) throw vertexPutFailures.removeAt(0);
-    vertices[vertex.key] = vertex;
+    final outcome = vertexPutOutcomes.isEmpty
+        ? PutOutcome.appliedAndLive
+        : vertexPutOutcomes.removeAt(0);
+    if (outcome == PutOutcome.appliedAndLive) {
+      vertices[vertex.key] = vertex;
+    } else if (outcome == PutOutcome.expired) {
+      vertices.remove(vertex.key);
+    }
+    return outcome;
   }
 }
 

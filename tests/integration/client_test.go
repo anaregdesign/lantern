@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestLantern_PutGetDeleteVertex(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := l.PutVertex(ctx, "k", "v", time.Minute); err != nil {
+	if _, err := l.PutVertex(ctx, "k", "v", time.Minute); err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
 
@@ -44,8 +45,7 @@ func TestLantern_PutGetDeleteVertex(t *testing.T) {
 }
 
 // TestRawConnect_PermanentExpiration exercises the absent-Timestamp wire
-// contract over real Connect/h2c. It also fixes the plural response boundary:
-// a born-expired item is accepted but does not count as written.
+// contract over real Connect/h2c and exact index-aligned Put outcomes.
 func TestRawConnect_PermanentExpiration(t *testing.T) {
 	c, _ := newRawConnectClient(t, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -62,8 +62,9 @@ func TestRawConnect_PermanentExpiration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutVertices: %v", err)
 	}
-	if got := put.Msg.GetWritten(); got != 2 {
-		t.Fatalf("PutVertices.Written = %d, want 2", got)
+	wantOutcomes := []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE, pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE, pb.PutOutcome_PUT_OUTCOME_EXPIRED}
+	if got := put.Msg.GetOutcomes(); !slices.Equal(got, wantOutcomes) {
+		t.Fatalf("PutVertices.Outcomes = %v, want %v", got, wantOutcomes)
 	}
 
 	gotVertices, err := c.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{
@@ -82,10 +83,14 @@ func TestRawConnect_PermanentExpiration(t *testing.T) {
 		t.Fatalf("GetVertices.Missing = %v, want [born-expired]", got)
 	}
 
-	if _, err := c.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+	putEdge, err := c.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
 		Tail: "permanent", Head: "edge-head", Weight: 1,
-	}})); err != nil {
+	}}))
+	if err != nil {
 		t.Fatalf("PutEdge: %v", err)
+	}
+	if got := putEdge.Msg.GetOutcome(); got != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatalf("PutEdge.Outcome = %v, want APPLIED_AND_LIVE", got)
 	}
 	gotEdge, err := c.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
 		Tail: "permanent", Head: "edge-head",
@@ -96,12 +101,42 @@ func TestRawConnect_PermanentExpiration(t *testing.T) {
 	if gotEdge.Msg.GetEdge().GetExpiration() != nil {
 		t.Fatal("permanent edge unexpectedly gained an expiration")
 	}
+
+	// Absolute timestamps come from the caller's clock. A device behind the
+	// server can submit an already-expired deadline; the server, not that
+	// device, decides EXPIRED. The mixed response stays index aligned and the
+	// expired overwrite removes the prior live edge.
+	future := timestamppb.New(time.Now().Add(time.Minute))
+	mixedEdges, err := c.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{
+		Edges: []*pb.Edge{
+			{Tail: "permanent", Head: "edge-head", Weight: 2, Expiration: past},
+			{Tail: "clock-ahead", Head: "live-edge", Weight: 3, Expiration: future},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("PutEdges(mixed clock): %v", err)
+	}
+	wantEdgeOutcomes := []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED, pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}
+	if got := mixedEdges.Msg.GetOutcomes(); !slices.Equal(got, wantEdgeOutcomes) {
+		t.Fatalf("PutEdges.Outcomes = %v, want %v", got, wantEdgeOutcomes)
+	}
+	gotEdges, err := c.GetEdges(ctx, connect.NewRequest(&pb.GetEdgesRequest{Edges: []*pb.EdgeKey{
+		{Tail: "permanent", Head: "edge-head"},
+		{Tail: "clock-ahead", Head: "live-edge"},
+	}}))
+	if err != nil {
+		t.Fatalf("GetEdges: %v", err)
+	}
+	if len(gotEdges.Msg.GetEdges()) != 1 || gotEdges.Msg.GetEdges()[0].GetTail() != "clock-ahead" {
+		t.Fatalf("GetEdges.Edges = %v, want clock-ahead edge only", gotEdges.Msg.GetEdges())
+	}
+	if got := gotEdges.Msg.GetMissing(); len(got) != 1 || got[0].GetTail() != "permanent" || got[0].GetHead() != "edge-head" {
+		t.Fatalf("GetEdges.Missing = %v, want permanent->edge-head", got)
+	}
 }
 
 // TestLantern_PutVertexIfAbsent exercises the SET NX surface (#896) end to end
-// through the SDK: PutVertexIfAbsent reports written via a bool, a second
-// attempt over a live key is a no-op leaving the value untouched, and the
-// plural PutVerticesIfAbsent reports the written count plus the skipped keys.
+// through the SDK with typed, server-authoritative outcomes.
 func TestLantern_PutVertexIfAbsent(t *testing.T) {
 	l, cleanup := newInProcessClient(t)
 	defer cleanup()
@@ -109,20 +144,20 @@ func TestLantern_PutVertexIfAbsent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	written, err := l.PutVertexIfAbsent(ctx, "k", "one", time.Minute)
+	outcome, err := l.PutVertexIfAbsent(ctx, "k", "one", time.Minute)
 	if err != nil {
 		t.Fatalf("PutVertexIfAbsent: %v", err)
 	}
-	if !written {
-		t.Fatal("first PutVertexIfAbsent written = false, want true")
+	if outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("first outcome = %v, want applied", outcome)
 	}
 
-	written, err = l.PutVertexIfAbsent(ctx, "k", "two", time.Minute)
+	outcome, err = l.PutVertexIfAbsent(ctx, "k", "two", time.Minute)
 	if err != nil {
 		t.Fatalf("PutVertexIfAbsent(repeat): %v", err)
 	}
-	if written {
-		t.Fatal("second PutVertexIfAbsent written = true, want false (key already live)")
+	if outcome != client.PutOutcomeConditionNotMet {
+		t.Fatalf("second outcome = %v, want condition-not-met", outcome)
 	}
 
 	v, err := l.GetVertex(ctx, "k")
@@ -134,18 +169,16 @@ func TestLantern_PutVertexIfAbsent(t *testing.T) {
 	}
 
 	// Plural: "k" is live (skipped), "fresh" is new (written).
-	n, skipped, err := l.PutVerticesIfAbsent(ctx, []client.VertexInput{
+	results, err := l.PutVerticesIfAbsent(ctx, []client.VertexInput{
 		{Key: "fresh", Value: "a", Expiration: time.Now().Add(time.Minute)},
 		{Key: "k", Value: "b", Expiration: time.Now().Add(time.Minute)},
 	})
 	if err != nil {
 		t.Fatalf("PutVerticesIfAbsent: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("PutVerticesIfAbsent written = %d, want 1", n)
-	}
-	if len(skipped) != 1 || skipped[0] != "k" {
-		t.Errorf("PutVerticesIfAbsent skipped = %v, want [k]", skipped)
+	want := []client.VertexPutResult{{Key: "fresh", Outcome: client.PutOutcomeAppliedAndLive}, {Key: "k", Outcome: client.PutOutcomeConditionNotMet}}
+	if !slices.Equal(results, want) {
+		t.Errorf("PutVerticesIfAbsent results = %v, want %v", results, want)
 	}
 }
 
@@ -172,7 +205,7 @@ func TestLantern_AddPutDeleteEdge(t *testing.T) {
 	}
 
 	// PutEdge replaces.
-	if err := l.PutEdge(ctx, "a", "b", 9, time.Minute); err != nil {
+	if _, err := l.PutEdge(ctx, "a", "b", 9, time.Minute); err != nil {
 		t.Fatalf("PutEdge: %v", err)
 	}
 	e, err = l.GetEdge(ctx, "a", "b")
@@ -199,14 +232,14 @@ func TestLantern_Illuminate(t *testing.T) {
 	defer cancel()
 
 	for _, k := range []string{"a", "b", "c"} {
-		if err := l.PutVertex(ctx, k, k, time.Minute); err != nil {
+		if _, err := l.PutVertex(ctx, k, k, time.Minute); err != nil {
 			t.Fatalf("PutVertex %s: %v", k, err)
 		}
 	}
-	if err := l.PutEdge(ctx, "a", "b", 1, time.Minute); err != nil {
+	if _, err := l.PutEdge(ctx, "a", "b", 1, time.Minute); err != nil {
 		t.Fatalf("PutEdge a->b: %v", err)
 	}
-	if err := l.PutEdge(ctx, "b", "c", 1, time.Minute); err != nil {
+	if _, err := l.PutEdge(ctx, "b", "c", 1, time.Minute); err != nil {
 		t.Fatalf("PutEdge b->c: %v", err)
 	}
 
@@ -235,12 +268,12 @@ func TestLantern_Illuminate_EqualScoresUseAscendingKeys(t *testing.T) {
 	defer cancel()
 
 	for _, key := range []string{"seed", "alpha", "bravo", "charlie", "delta"} {
-		if err := l.PutVertex(ctx, key, key, time.Minute); err != nil {
+		if _, err := l.PutVertex(ctx, key, key, time.Minute); err != nil {
 			t.Fatalf("PutVertex %q: %v", key, err)
 		}
 	}
 	for _, key := range []string{"delta", "bravo", "alpha", "charlie"} {
-		if err := l.PutEdge(ctx, "seed", key, 1, time.Minute); err != nil {
+		if _, err := l.PutEdge(ctx, "seed", key, 1, time.Minute); err != nil {
 			t.Fatalf("PutEdge seed->%s: %v", key, err)
 		}
 	}
@@ -300,10 +333,10 @@ func TestLantern_GetVertices_BatchPartialMiss(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := l.PutVertex(ctx, "a", int64(1), time.Minute); err != nil {
+	if _, err := l.PutVertex(ctx, "a", int64(1), time.Minute); err != nil {
 		t.Fatalf("PutVertex a: %v", err)
 	}
-	if err := l.PutVertex(ctx, "b", "two", time.Minute); err != nil {
+	if _, err := l.PutVertex(ctx, "b", "two", time.Minute); err != nil {
 		t.Fatalf("PutVertex b: %v", err)
 	}
 
@@ -358,9 +391,8 @@ func TestLantern_ErrorSentinels(t *testing.T) {
 	} else if !errors.Is(err, client.ErrNotFound) {
 		t.Errorf("want errors.Is(err, ErrNotFound); got %v", err)
 	}
-
 	// InvalidArgument: empty key trips ValidationInterceptor (checkKey).
-	err := l.PutVertex(ctx, "", "v", time.Minute)
+	_, err := l.PutVertex(ctx, "", "v", time.Minute)
 	if err == nil {
 		t.Fatal("expected error for empty key")
 	}

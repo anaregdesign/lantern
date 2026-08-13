@@ -1292,10 +1292,10 @@ class PutVertexRequest extends $pb.GeneratedMessage {
 
 class PutVertexResponse extends $pb.GeneratedMessage {
   factory PutVertexResponse({
-    $core.bool? written,
+    PutOutcome? outcome,
   }) {
     final result = create();
-    if (written != null) result.written = written;
+    if (outcome != null) result.outcome = outcome;
     return result;
   }
 
@@ -1312,7 +1312,10 @@ class PutVertexResponse extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'PutVertexResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..aOB(1, _omitFieldNames ? '' : 'written')
+    ..e<PutOutcome>(1, _omitFieldNames ? '' : 'outcome', $pb.PbFieldType.OE,
+        defaultOrMaker: PutOutcome.PUT_OUTCOME_UNSPECIFIED,
+        valueOf: PutOutcome.valueOf,
+        enumValues: PutOutcome.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1336,18 +1339,15 @@ class PutVertexResponse extends $pb.GeneratedMessage {
       $pb.GeneratedMessage.$_defaultFor<PutVertexResponse>(create);
   static PutVertexResponse? _defaultInstance;
 
-  /// True when the write was applied; false when it was skipped — either
-  /// because if_absent found a live vertex already at the key, or because the
-  /// vertex was born expired (expiration already past) and discarded. Always
-  /// true for an unconditional put with a live expiration.
+  /// Server-authoritative result for vertex in the request.
   @$pb.TagNumber(1)
-  $core.bool get written => $_getBF(0);
+  PutOutcome get outcome => $_getN(0);
   @$pb.TagNumber(1)
-  set written($core.bool value) => $_setBool(0, value);
+  set outcome(PutOutcome value) => $_setField(1, value);
   @$pb.TagNumber(1)
-  $core.bool hasWritten() => $_has(0);
+  $core.bool hasOutcome() => $_has(0);
   @$pb.TagNumber(1)
-  void clearWritten() => $_clearField(1);
+  void clearOutcome() => $_clearField(1);
 }
 
 /// PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
@@ -1407,8 +1407,8 @@ class PutVerticesRequest extends $pb.GeneratedMessage {
   $pb.PbList<Vertex> get vertices => $_getList(0);
 
   /// When true, each write applies only if no live vertex exists at its key;
-  /// keys with a live vertex are left untouched and reported in
-  /// PutVerticesResponse.skipped_keys.
+  /// keys with a live vertex are left untouched and reported as
+  /// PUT_OUTCOME_CONDITION_NOT_MET at the matching response index.
   @$pb.TagNumber(2)
   $core.bool get ifAbsent => $_getBF(1);
   @$pb.TagNumber(2)
@@ -1421,12 +1421,10 @@ class PutVerticesRequest extends $pb.GeneratedMessage {
 
 class PutVerticesResponse extends $pb.GeneratedMessage {
   factory PutVerticesResponse({
-    $core.int? written,
-    $core.Iterable<$core.String>? skippedKeys,
+    $core.Iterable<PutOutcome>? outcomes,
   }) {
     final result = create();
-    if (written != null) result.written = written;
-    if (skippedKeys != null) result.skippedKeys.addAll(skippedKeys);
+    if (outcomes != null) result.outcomes.addAll(outcomes);
     return result;
   }
 
@@ -1443,8 +1441,10 @@ class PutVerticesResponse extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'PutVerticesResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..a<$core.int>(1, _omitFieldNames ? '' : 'written', $pb.PbFieldType.O3)
-    ..pPS(2, _omitFieldNames ? '' : 'skippedKeys')
+    ..pc<PutOutcome>(1, _omitFieldNames ? '' : 'outcomes', $pb.PbFieldType.KE,
+        valueOf: PutOutcome.valueOf,
+        enumValues: PutOutcome.values,
+        defaultEnumValue: PutOutcome.PUT_OUTCOME_UNSPECIFIED)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1468,23 +1468,11 @@ class PutVerticesResponse extends $pb.GeneratedMessage {
       $pb.GeneratedMessage.$_defaultFor<PutVerticesResponse>(create);
   static PutVerticesResponse? _defaultInstance;
 
-  /// Number of vertices actually written. For an unconditional put this equals
-  /// the request size on success; under if_absent it excludes skipped keys. A
-  /// vertex whose expiration is already past is discarded and counts as neither
-  /// written nor skipped (it appears in neither this count nor skipped_keys).
+  /// Index-aligned with request.vertices and always the same length. This makes
+  /// mixed live/expired/conditional batches unambiguous even with duplicate
+  /// keys. An empty request returns an empty list.
   @$pb.TagNumber(1)
-  $core.int get written => $_getIZ(0);
-  @$pb.TagNumber(1)
-  set written($core.int value) => $_setSignedInt32(0, value);
-  @$pb.TagNumber(1)
-  $core.bool hasWritten() => $_has(0);
-  @$pb.TagNumber(1)
-  void clearWritten() => $_clearField(1);
-
-  /// Keys skipped because a live vertex already existed (if_absent only). A
-  /// born-expired vertex is NOT reported here — it is silently discarded.
-  @$pb.TagNumber(2)
-  $pb.PbList<$core.String> get skippedKeys => $_getList(1);
+  $pb.PbList<PutOutcome> get outcomes => $_getList(0);
 }
 
 /// DeleteVertexRequest removes the vertex at `key`. Edges incident to the
@@ -4369,7 +4357,13 @@ class PutEdgeRequest extends $pb.GeneratedMessage {
 }
 
 class PutEdgeResponse extends $pb.GeneratedMessage {
-  factory PutEdgeResponse() => create();
+  factory PutEdgeResponse({
+    PutOutcome? outcome,
+  }) {
+    final result = create();
+    if (outcome != null) result.outcome = outcome;
+    return result;
+  }
 
   PutEdgeResponse._();
 
@@ -4384,6 +4378,10 @@ class PutEdgeResponse extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'PutEdgeResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
+    ..e<PutOutcome>(1, _omitFieldNames ? '' : 'outcome', $pb.PbFieldType.OE,
+        defaultOrMaker: PutOutcome.PUT_OUTCOME_UNSPECIFIED,
+        valueOf: PutOutcome.valueOf,
+        enumValues: PutOutcome.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4406,6 +4404,16 @@ class PutEdgeResponse extends $pb.GeneratedMessage {
   static PutEdgeResponse getDefault() => _defaultInstance ??=
       $pb.GeneratedMessage.$_defaultFor<PutEdgeResponse>(create);
   static PutEdgeResponse? _defaultInstance;
+
+  /// Server-authoritative result for edge in the request.
+  @$pb.TagNumber(1)
+  PutOutcome get outcome => $_getN(0);
+  @$pb.TagNumber(1)
+  set outcome(PutOutcome value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOutcome() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOutcome() => $_clearField(1);
 }
 
 /// PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
@@ -4463,10 +4471,10 @@ class PutEdgesRequest extends $pb.GeneratedMessage {
 
 class PutEdgesResponse extends $pb.GeneratedMessage {
   factory PutEdgesResponse({
-    $core.int? written,
+    $core.Iterable<PutOutcome>? outcomes,
   }) {
     final result = create();
-    if (written != null) result.written = written;
+    if (outcomes != null) result.outcomes.addAll(outcomes);
     return result;
   }
 
@@ -4483,7 +4491,10 @@ class PutEdgesResponse extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'PutEdgesResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..a<$core.int>(1, _omitFieldNames ? '' : 'written', $pb.PbFieldType.O3)
+    ..pc<PutOutcome>(1, _omitFieldNames ? '' : 'outcomes', $pb.PbFieldType.KE,
+        valueOf: PutOutcome.valueOf,
+        enumValues: PutOutcome.values,
+        defaultEnumValue: PutOutcome.PUT_OUTCOME_UNSPECIFIED)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4507,15 +4518,10 @@ class PutEdgesResponse extends $pb.GeneratedMessage {
       $pb.GeneratedMessage.$_defaultFor<PutEdgesResponse>(create);
   static PutEdgesResponse? _defaultInstance;
 
-  /// Number of edges accepted (overwritten or created).
+  /// Index-aligned with request.edges and always the same length. An empty
+  /// request returns an empty list.
   @$pb.TagNumber(1)
-  $core.int get written => $_getIZ(0);
-  @$pb.TagNumber(1)
-  set written($core.int value) => $_setSignedInt32(0, value);
-  @$pb.TagNumber(1)
-  $core.bool hasWritten() => $_has(0);
-  @$pb.TagNumber(1)
-  void clearWritten() => $_clearField(1);
+  $pb.PbList<PutOutcome> get outcomes => $_getList(0);
 }
 
 /// GetServerStatusRequest carries no parameters — the response is a

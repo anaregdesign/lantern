@@ -3,7 +3,24 @@ package cmd
 import (
 	"encoding/json"
 	"testing"
+
+	client "github.com/anaregdesign/lantern/sdks/go"
 )
+
+func TestRequireLivePutResults(t *testing.T) {
+	if err := requireLiveVertexResults([]client.VertexPutResult{{Key: "v", Outcome: client.PutOutcomeAppliedAndLive}}); err != nil {
+		t.Fatalf("live vertex result: %v", err)
+	}
+	if err := requireLiveVertexResults([]client.VertexPutResult{{Key: "v", Outcome: client.PutOutcomeExpired}}); err == nil {
+		t.Fatal("expired vertex result was reported as successful")
+	}
+	if err := requireLiveEdgeResults([]client.EdgePutResult{{Tail: "a", Head: "b", Outcome: client.PutOutcomeAppliedAndLive}}); err != nil {
+		t.Fatalf("live edge result: %v", err)
+	}
+	if err := requireLiveEdgeResults([]client.EdgePutResult{{Tail: "a", Head: "b", Outcome: client.PutOutcomeSuperseded}}); err == nil {
+		t.Fatal("superseded edge result was reported as successful")
+	}
+}
 
 // FuzzBulkVertexLine fuzzes the per-line decode pipeline of `bulk vertices`:
 // json.Unmarshal into vertexLine, then parseTTL + expirationFromTTL. A

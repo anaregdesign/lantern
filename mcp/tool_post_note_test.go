@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/anaregdesign/lantern/mcp/internal/identity"
+	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
 func TestPostNote(t *testing.T) {
@@ -65,5 +66,17 @@ func TestPostNote(t *testing.T) {
 		h := newContextHarness(t)
 		h.callExpectError(t, "post_note", map[string]any{"text": " ", "ttl": "turn"})
 		h.callExpectError(t, "post_note", map[string]any{"text": "x", "ttl": "forever"})
+	})
+
+	t.Run("expired Put never reports or links a note", func(t *testing.T) {
+		h := newContextHarness(t)
+		h.fake.putVertexOutcome = client.PutOutcomeExpired
+		res := h.callExpectError(t, "post_note", map[string]any{"text": "skew", "ttl": "turn"})
+		if len(h.fake.lastAddEdges) != 0 {
+			t.Fatal("note links were added after EXPIRED Put")
+		}
+		if !strings.Contains(contentText(res), "expired") {
+			t.Fatalf("error = %q, want expired outcome", contentText(res))
+		}
 	})
 }

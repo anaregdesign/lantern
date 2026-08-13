@@ -76,7 +76,7 @@ func TestClient_GetVertex_NotFoundWrapped(t *testing.T) {
 
 func TestClient_ValidationInterceptor_RejectsLongKey(t *testing.T) {
 	c := newOptsClient(t, provider.ValidationLimits{MaxKeyLen: 4, MaxBatchSize: 10})
-	err := c.PutVertex(context.Background(), "way-too-long-key", 1, time.Minute)
+	_, err := c.PutVertex(context.Background(), "way-too-long-key", 1, time.Minute)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -102,7 +102,7 @@ func TestClient_BatchChunking(t *testing.T) {
 			Expiration: time.Now().Add(time.Minute),
 		})
 	}
-	if err := c.PutVertices(ctx, inputs); err != nil {
+	if _, err := c.PutVertices(ctx, inputs); err != nil {
 		t.Fatalf("PutVertices: %v", err)
 	}
 	for i := 0; i < 8; i++ {

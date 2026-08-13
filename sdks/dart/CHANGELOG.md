@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Return bounded, server-clock-authoritative per-item outcomes from every
+  Vertex/Edge Put facade, with consistent immutable Lists for plural calls and
+  fail-closed unknown/length handling.
 - Expose detachable, fan-out-safe `LanternCancellationToken.listen` lifecycle
   notifications so companion packages can isolate shared work from individual
   callers without polling.

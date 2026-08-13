@@ -6,6 +6,20 @@ import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_example/main.dart';
 
 void main() {
+  test('Put example helpers reject non-live outcomes', () {
+    expect(
+      () => requireAppliedPut('vertex v', PutOutcome.expired),
+      throwsStateError,
+    );
+    expect(
+      () => requireAppliedVertexPuts([
+        VertexPutResult(key: 'v', outcome: PutOutcome.superseded),
+      ]),
+      throwsStateError,
+    );
+    requireAppliedPut('vertex v', PutOutcome.appliedAndLive);
+  });
+
   testWidgets('missing runtime configuration fails closed with guidance', (
     tester,
   ) async {

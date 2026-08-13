@@ -61,8 +61,8 @@ var descriptions = map[string]string{
 	"LANTERN_LLM_AZURE_CLIENT_ID":         "Entra application (client) id for auth=azure-client-secret.",
 	"LANTERN_LLM_AZURE_CLIENT_SECRET":     "Entra client secret for auth=azure-client-secret.",
 	"LANTERN_LLM_GOOGLE_CREDENTIALS_FILE": "Service-account key file path for auth=google-service-account (google-adc reads the ambient environment instead).",
-	"LANTERN_MAX_VERTICES":                "Soft cap on live vertices (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap. Conservative pre-check: edge writes count both endpoints as potentially new.",
-	"LANTERN_MAX_EDGES":                   "Soft cap on live edges (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap.",
+	"LANTERN_MAX_VERTICES":                "Soft local-admission cap on live vertex identities plus retained vertex Put causal-barrier entries (0 = unlimited). Tombstones are excluded; replication apply and backup restore bypass the cap, so this is not a total causal-metadata/heap bound (#1204). A live identity that coexists with a retained barrier is conservatively counted twice; edge-write pre-checks also count both endpoints as potentially new.",
+	"LANTERN_MAX_EDGES":                   "Soft local-admission cap on live edge identities plus retained edge Put causal-barrier entries (0 = unlimited). Tombstones are excluded; replication apply and backup restore bypass the cap, so this is not a total causal-metadata/heap bound (#1204). A live additive edge that coexists with a retained barrier is conservatively counted twice.",
 	"LANTERN_ILLUMINATE_MAX_STEP":         "Upper bound on the Illuminate BFS step parameter.",
 	"LANTERN_ILLUMINATE_MAX_K":            "Upper bound on the Illuminate k parameter.",
 
@@ -101,7 +101,7 @@ var descriptions = map[string]string{
 	"LANTERN_MUTATION_LOG_CAPACITY":          "Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds.",
 	"LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER": "Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped.",
 	"LANTERN_NODE_ID":                        "Stable 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset.",
-	"LANTERN_TOMBSTONE_TTL":                  "Delete-tombstone retention window and the upper bound on caller-supplied expirations.",
+	"LANTERN_TOMBSTONE_TTL":                  "Delete-tombstone retention window (D4) and upper bound on caller-supplied expirations. An equal/newer exact Delete transitions a retained Put causal barrier into this bounded tombstone; prefix Delete cannot find barrier-only identities. Tombstones are excluded from LANTERN_MAX_VERTICES/LANTERN_MAX_EDGES but still consume heap (#1204).",
 
 	"LANTERN_PEERS":                      "Comma-separated static peer list (host:port) for the replication pump; empty = single instance.",
 	"LANTERN_PEER_DISCOVERY":             "Peer discovery mode: static or dns.",

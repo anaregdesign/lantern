@@ -101,6 +101,14 @@ client's nested retry policy is suppressed. Each `attemptCount` increment is one
 completed durable adapter attempt that permits at most one singular RPC; a
 credential-provider or cancellation failure can finish before any wire send.
 There are no hidden nested transport attempts.
+Replay consumes the online SDK's server-authoritative `PutOutcome` without
+changing snapshot schema v5. `appliedAndLive` confirms only while the resolved
+expiration is live before send, at response observation, and at the local
+commit; a clock rollback cannot revive an already expired sample. `expired`
+terminalizes and invalidates older confirmed cache state. `conditionNotMet`
+and `superseded` become inspectable dead letters because the attempted value is
+not the authoritative server value. An observed outcome consumes one attempt;
+local pre-send expiration consumes none.
 `Unauthenticated` sets a durable partition pause without burning an attempt;
 the partition auth epoch also cancels same-batch sibling token acquisition
 before another send can start.

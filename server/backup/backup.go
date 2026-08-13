@@ -11,8 +11,9 @@
 // so files are byte-identical to `lantern-cli dump --format proto` and
 // interchange with the CLI. Restore replays frames through the in-process
 // RestoreVertices / PutEdges. Vertex restore preserves graph convergence even
-// when local search-index limits differ, while the born-expired skip (#698)
-// still prevents an entry whose TTL elapsed since the dump from resurrecting.
+// when local search-index limits differ, while the born-expired delete-like
+// application (#698) prevents an entry whose TTL elapsed since the dump from
+// resurrecting and removes any older live local state.
 //
 // Shared storage is never assumed safe for concurrent writes (networked
 // or FUSE-backed filesystems generally have no reliable file locking), so
@@ -269,7 +270,11 @@ func (b *Backupper) apply(ctx context.Context, vertices []*pb.Vertex, edges []*p
 		if err != nil {
 			return stats, fmt.Errorf("backup: restore vertices: %w", err)
 		}
-		stats.Vertices += int(resp.GetWritten())
+		live, err := countLivePutOutcomes(resp.GetOutcomes(), end-i)
+		if err != nil {
+			return stats, fmt.Errorf("backup: restore vertices outcomes: %w", err)
+		}
+		stats.Vertices += live
 	}
 	for i := 0; i < len(edges); i += restoreChunkSize {
 		end := min(i+restoreChunkSize, len(edges))
@@ -277,7 +282,11 @@ func (b *Backupper) apply(ctx context.Context, vertices []*pb.Vertex, edges []*p
 		if err != nil {
 			return stats, fmt.Errorf("backup: restore PutEdges: %w", err)
 		}
-		stats.Edges += int(resp.GetWritten())
+		live, err := countLivePutOutcomes(resp.GetOutcomes(), end-i)
+		if err != nil {
+			return stats, fmt.Errorf("backup: restore PutEdges outcomes: %w", err)
+		}
+		stats.Edges += live
 	}
 	if err := b.svc.CompleteSearchIndexRecovery(); err != nil {
 		b.logger.Warn("backup: restored graph but search index remains incomplete",
@@ -288,6 +297,27 @@ func (b *Backupper) apply(ctx context.Context, vertices []*pb.Vertex, edges []*p
 			slog.Int("edges_written", stats.Edges))
 	}
 	return stats, nil
+}
+
+func countLivePutOutcomes(outcomes []pb.PutOutcome, expected int) (int, error) {
+	if len(outcomes) != expected {
+		return 0, fmt.Errorf("got %d Put outcomes for %d records", len(outcomes), expected)
+	}
+	var live int
+	for i, outcome := range outcomes {
+		switch outcome {
+		case pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE:
+			live++
+		case pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+			pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+			pb.PutOutcome_PUT_OUTCOME_SUPERSEDED:
+			// A bounded non-live result is valid but does not contribute to
+			// restore statistics.
+		default:
+			return 0, fmt.Errorf("record %d has unknown Put outcome %d", i, outcome)
+		}
+	}
+	return live, nil
 }
 
 // fileName builds this instance's dump filename for the given instant. The

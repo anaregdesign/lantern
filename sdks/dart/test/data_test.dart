@@ -19,7 +19,12 @@ void main() {
           LanternService.putVertices,
           (request, context) {
             encoded = request.vertices.toList();
-            return graph.PutVerticesResponse(written: request.vertices.length);
+            return graph.PutVerticesResponse(
+              outcomes: List<graph.PutOutcome>.filled(
+                request.vertices.length,
+                graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+              ),
+            );
           },
         )
         .build();
@@ -58,7 +63,7 @@ void main() {
       VertexInput(key: 'unset', value: VertexValue.unset()),
     ]);
 
-    expect(result.written, 13);
+    expect(result, hasLength(13));
     expect(encoded.map((value) => value.whichValue()), [
       graph.Vertex_Value.float64,
       graph.Vertex_Value.float32,

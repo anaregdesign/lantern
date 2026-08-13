@@ -208,6 +208,15 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 		defer c.searchCommitMu.Unlock()
 	}
 	deleted := len(c.vertices.DeleteMany(victims))
+	// Prefix enumeration only discovers live identities; clear causal state
+	// for those exact victims in no-tombstone mode. Barrier-only identities
+	// are intentionally undiscoverable here and require exact Delete.
+	for _, key := range victims {
+		c.clearVertexCausalBarrierLocked(key)
+		if c.vertexHLC != nil {
+			delete(c.vertexHLC, key)
+		}
+	}
 	c.rebuildIncompleteSearchLocked()
 	return deleted
 }

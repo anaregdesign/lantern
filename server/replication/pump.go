@@ -64,6 +64,8 @@ type SnapshotApplier interface {
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, exp time.Time, ts hlc.Timestamp) bool
 	AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, cid graphcache.ContribID, ts hlc.Timestamp) bool
 	PutEdgeWithExpirationHLC(tail, head string, w float32, exp time.Time, ts hlc.Timestamp) bool
+	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
+	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 }
 
 type searchIndexRecovery interface {
@@ -73,6 +75,103 @@ type searchIndexRecovery interface {
 
 type snapshotWatermarkApplier interface {
 	ApplySnapshotWatermarks(cutoffs map[string]uint64, ts hlc.Timestamp) error
+}
+
+type snapshotFramePhase uint8
+
+const (
+	snapshotPhaseVertexBarrier snapshotFramePhase = iota + 1
+	snapshotPhaseEdgeBarrier
+	snapshotPhaseVertex
+	snapshotPhaseEdge
+	snapshotPhaseFooter
+)
+
+type snapshotReplayCounts struct {
+	vertices      uint64
+	edges         uint64
+	vertexBarrier uint64
+	edgeBarrier   uint64
+}
+
+// snapshotReplayState is shared by pump and anti-entropy Snapshot consumers.
+// It fail-closes on truncation, duplicate framing, and body reordering before
+// either caller advances durable resume watermarks.
+type snapshotReplayState struct {
+	gotHeader bool
+	sawFooter bool
+	phase     snapshotFramePhase
+	header    *pb.SnapshotHeader
+	counts    snapshotReplayCounts
+	want      snapshotReplayCounts
+}
+
+func snapshotProtocolError(format string, args ...any) error {
+	return connect.NewError(connect.CodeInternal, fmt.Errorf("snapshot: "+format, args...))
+}
+
+func (s *snapshotReplayState) acceptHeader(header *pb.SnapshotHeader) error {
+	if header == nil {
+		return snapshotProtocolError("nil header frame")
+	}
+	if s.gotHeader || s.phase != 0 || s.sawFooter {
+		return snapshotProtocolError("duplicate or out-of-order header frame")
+	}
+	s.gotHeader = true
+	s.header = header
+	return nil
+}
+
+func (s *snapshotReplayState) acceptBody(kind string, next snapshotFramePhase) error {
+	if !s.gotHeader {
+		return snapshotProtocolError("%s frame before header", kind)
+	}
+	if s.sawFooter {
+		return snapshotProtocolError("%s frame after footer", kind)
+	}
+	if next < s.phase {
+		return snapshotProtocolError("out-of-order %s frame", kind)
+	}
+	s.phase = next
+	return nil
+}
+
+func (s *snapshotReplayState) acceptFooter(footer *pb.SnapshotFooter) error {
+	if footer == nil {
+		return snapshotProtocolError("nil footer frame")
+	}
+	if !s.gotHeader {
+		return snapshotProtocolError("footer frame before header")
+	}
+	if s.sawFooter {
+		return snapshotProtocolError("duplicate footer frame")
+	}
+	s.sawFooter = true
+	s.phase = snapshotPhaseFooter
+	s.want = snapshotReplayCounts{
+		vertices:      footer.GetVertexCount(),
+		edges:         footer.GetEdgeCount(),
+		vertexBarrier: footer.GetVertexCausalBarrierCount(),
+		edgeBarrier:   footer.GetEdgeCausalBarrierCount(),
+	}
+	return nil
+}
+
+func (s *snapshotReplayState) validateComplete() error {
+	if !s.gotHeader {
+		return snapshotProtocolError("stream ended before header")
+	}
+	if !s.sawFooter {
+		return snapshotProtocolError("stream ended before footer")
+	}
+	if s.counts != s.want {
+		return snapshotProtocolError(
+			"footer count mismatch: applied vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d; footer vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d",
+			s.counts.vertices, s.counts.edges, s.counts.vertexBarrier, s.counts.edgeBarrier,
+			s.want.vertices, s.want.edges, s.want.vertexBarrier, s.want.edgeBarrier,
+		)
+	}
+	return nil
 }
 
 // applySnapshotEdge re-applies one snapshot edge contribution into the local
@@ -490,49 +589,61 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		recovery.BeginSearchIndexRecovery()
 	}
 	start := time.Now()
-	var (
-		gotHeader    bool
-		header       *pb.SnapshotHeader
-		vertexCount  uint64
-		edgeCount    uint64
-		sawFooter    bool
-		footerCounts struct{ v, e uint64 }
-	)
+	var replay snapshotReplayState
 	for stream.Receive() {
 		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
-			if gotHeader {
-				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: duplicate header frame"))
+			if err := replay.acceptHeader(e.Header); err != nil {
+				return nil, err
 			}
-			gotHeader = true
-			header = e.Header
+		case *pb.SnapshotResponse_VertexCausalBarrier:
+			if err := replay.acceptBody("vertex causal barrier", snapshotPhaseVertexBarrier); err != nil {
+				return nil, err
+			}
+			barrier := e.VertexCausalBarrier
+			if barrier == nil {
+				return nil, snapshotProtocolError("nil vertex causal barrier")
+			}
+			p.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), snapshotHLC(barrier.GetHlc()))
+			replay.counts.vertexBarrier++
+		case *pb.SnapshotResponse_EdgeCausalBarrier:
+			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
+				return nil, err
+			}
+			barrier := e.EdgeCausalBarrier
+			if barrier == nil {
+				return nil, snapshotProtocolError("nil edge causal barrier")
+			}
+			p.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), snapshotHLC(barrier.GetHlc()))
+			replay.counts.edgeBarrier++
 		case *pb.SnapshotResponse_Vertex:
-			if !gotHeader {
-				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame before header"))
-			}
-			if sawFooter {
-				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: vertex frame after footer"))
+			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
+				return nil, err
 			}
 			sv := e.Vertex
+			if sv == nil || sv.GetVertex() == nil {
+				return nil, snapshotProtocolError("nil vertex payload")
+			}
 			v := sv.GetVertex()
-			if v != nil {
-				p.snap.PutVertexWithExpirationHLC(
-					v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
-					snapshotHLC(sv.GetHlc()),
-				)
-				vertexCount++
-			}
+			p.snap.PutVertexWithExpirationHLC(
+				v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
+				snapshotHLC(sv.GetHlc()),
+			)
+			replay.counts.vertices++
 		case *pb.SnapshotResponse_Edge:
-			if !gotHeader {
-				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame before header"))
-			}
-			if sawFooter {
-				return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: edge frame after footer"))
+			if err := replay.acceptBody("edge", snapshotPhaseEdge); err != nil {
+				return nil, err
 			}
 			se := e.Edge
+			if se == nil || len(se.GetContributions()) == 0 {
+				return nil, snapshotProtocolError("nil or empty live edge payload")
+			}
 			edgeHLC := snapshotHLC(se.GetHlc())
 			for _, c := range se.GetContributions() {
+				if c == nil {
+					return nil, snapshotProtocolError("nil live edge contribution")
+				}
 				var cid graphcache.ContribID
 				copy(cid[:], c.GetContribId())
 				applySnapshotEdge(
@@ -540,32 +651,20 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 					prototime.Expiration(c.GetExpiration()), cid, edgeHLC,
 				)
 			}
-			edgeCount++
+			replay.counts.edges++
 		case *pb.SnapshotResponse_Footer:
-			sawFooter = true
-			footerCounts.v = e.Footer.GetVertexCount()
-			footerCounts.e = e.Footer.GetEdgeCount()
+			if err := replay.acceptFooter(e.Footer); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, snapshotProtocolError("unknown or empty response frame %T", e)
 		}
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
-	if !gotHeader {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before header"))
-	}
-	if !sawFooter {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("snapshot: stream ended before footer"))
-	}
-	if footerCounts.v != vertexCount || footerCounts.e != edgeCount {
-		// Count mismatch is a soft warning, not a hard error — the
-		// applied data still converges via HLC/ContribID. Surface it
-		// so operators notice corrupt snapshots.
-		p.cfg.Logger.Warn("replication pump: snapshot count mismatch",
-			slog.String("peer", addr),
-			slog.Uint64("vertices_applied", vertexCount),
-			slog.Uint64("vertices_footer", footerCounts.v),
-			slog.Uint64("edges_applied", edgeCount),
-			slog.Uint64("edges_footer", footerCounts.e))
+	if err := replay.validateComplete(); err != nil {
+		return nil, err
 	}
 	if recovery != nil {
 		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
@@ -574,12 +673,12 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		}
 	}
 	if p.marks != nil {
-		if err := p.marks.ApplySnapshotWatermarks(header.GetCutoffSeqPerOrigin(), snapshotHLC(header.GetCutoffHlc())); err != nil {
+		if err := p.marks.ApplySnapshotWatermarks(replay.header.GetCutoffSeqPerOrigin(), snapshotHLC(replay.header.GetCutoffHlc())); err != nil {
 			return nil, err
 		}
 	}
-	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, vertexCount, edgeCount, time.Since(start))
-	return header, nil
+	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, replay.counts.vertices, replay.counts.edges, time.Since(start))
+	return replay.header, nil
 }
 
 type snapshotResumeCursor struct {

@@ -93,4 +93,19 @@ func TestClaim(t *testing.T) {
 		h := newContextHarness(t)
 		h.callExpectError(t, "claim", map[string]any{"resource": ""})
 	})
+
+	t.Run("expired Put never grants or links a claim", func(t *testing.T) {
+		h := newContextHarness(t)
+		h.fake.getVertexFn = func(_ context.Context, _ string) (*client.Vertex, error) {
+			return nil, client.ErrNotFound
+		}
+		h.fake.putVertexOutcome = client.PutOutcomeExpired
+		res := h.callExpectError(t, "claim", map[string]any{"resource": "repo.lantern.clock"})
+		if h.fake.addEdgeCalls != 0 {
+			t.Fatal("claim activity edge was added after EXPIRED Put")
+		}
+		if got := contentText(res); got == "" {
+			t.Fatal("expired claim returned an empty error")
+		}
+	})
 }

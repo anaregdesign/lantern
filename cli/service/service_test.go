@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/cli/parser"
+	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
 // TestFormatWriteEcho pins the REPL success-echo formatting (#653): a
@@ -47,6 +48,15 @@ func TestFormatWriteEcho(t *testing.T) {
 			t.Errorf("formatWriteEcho() = %q, want %q", got, want)
 		}
 	})
+}
+
+func TestRequireAppliedPut(t *testing.T) {
+	if err := requireAppliedPut("vertex", client.PutOutcomeAppliedAndLive); err != nil {
+		t.Fatalf("applied Put: %v", err)
+	}
+	if err := requireAppliedPut("vertex", client.PutOutcomeExpired); err == nil {
+		t.Fatal("expired Put was reported as successful")
+	}
 }
 
 // TestRunArgs pins the one-liner dispatch entry point (#672). RunArgs feeds

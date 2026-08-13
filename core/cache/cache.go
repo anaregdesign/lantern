@@ -288,10 +288,17 @@ func (c *Cache[S, T]) Count() int {
 // snapshot path (#184), which iterates under the GraphCache write lock
 // where this constraint is trivially satisfied.
 func (c *Cache[S, T]) Range(fn func(key S, value T, expiration time.Time) bool) {
+	c.RangeAt(time.Now(), fn)
+}
+
+// RangeAt is Range with one caller-supplied liveness instant. Compound
+// snapshots use it to classify every record at the same point in time and to
+// keep primary data aligned with separately-retained causal metadata.
+func (c *Cache[S, T]) RangeAt(now time.Time, fn func(key S, value T, expiration time.Time) bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for k, v := range c.cache {
-		if v.IsExpired() {
+		if !IsLiveAt(v.expiration, now) {
 			continue
 		}
 		if !fn(k, v.value, v.expiration) {

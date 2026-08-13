@@ -56,17 +56,17 @@ extension LanternCrud on LanternClient {
     return GetVerticesResult(vertices: vertices, missing: missing);
   }
 
-  /// Unconditionally writes one vertex and reports whether it remained live.
-  Future<bool> putVertex(
+  /// Unconditionally writes one vertex and returns its authoritative outcome.
+  Future<PutOutcome> putVertex(
     VertexInput input, {
     LanternCallOptions? options,
   }) async {
     final result = await putVertices([input], options: options);
-    return result.written == 1;
+    return result.single.outcome;
   }
 
   /// Unconditionally writes vertices in bounded chunks.
-  Future<PutVerticesResult> putVertices(
+  Future<List<VertexPutResult>> putVertices(
     Iterable<VertexInput> inputs, {
     int batchSize = defaultBatchSize,
     LanternCallOptions? options,
@@ -78,16 +78,21 @@ extension LanternCrud on LanternClient {
   );
 
   /// Writes one vertex only when no live value exists.
-  Future<bool> putVertexIfAbsent(
+  Future<PutOutcome> putVertexIfAbsent(
     VertexInput input, {
     LanternCallOptions? options,
   }) async {
     final result = await putVerticesIfAbsent([input], options: options);
-    return result.written == 1;
+    return result.single.outcome;
   }
 
   /// Conditionally writes vertices in bounded chunks.
-  Future<PutVerticesResult> putVerticesIfAbsent(
+  ///
+  /// If a later chunk fails, [BatchException.committed] covers only prior
+  /// chunks whose responses were observed. The failed chunk may already have
+  /// committed; retry evaluates the condition again and cannot recover the
+  /// original per-item outcomes. Reconcile server state before retrying it.
+  Future<List<VertexPutResult>> putVerticesIfAbsent(
     Iterable<VertexInput> inputs, {
     int batchSize = defaultBatchSize,
     LanternCallOptions? options,
@@ -98,7 +103,7 @@ extension LanternCrud on LanternClient {
     options: options,
   );
 
-  Future<PutVerticesResult> _putVertices(
+  Future<List<VertexPutResult>> _putVertices(
     Iterable<VertexInput> inputs, {
     required bool ifAbsent,
     required int batchSize,
@@ -107,10 +112,11 @@ extension LanternCrud on LanternClient {
     _ensureOpen();
     final input = List<VertexInput>.unmodifiable(inputs);
     _validateBatch(input.length, batchSize);
-    final expirations = _resolveExpirations(input, _clock());
+    final sampledAt = _clock().toUtc();
+    final expirations = _resolveExpirations(input, sampledAt);
+    final initiallyLive = _initialLiveness(expirations, sampledAt);
     final callOptions = _freezeCallOptions(options);
-    final skippedKeys = <String>[];
-    var written = 0;
+    final results = <VertexPutResult>[];
     for (var offset = 0; offset < input.length; offset += batchSize) {
       try {
         _throwIfCanceled(callOptions?.cancellation);
@@ -134,13 +140,40 @@ extension LanternCrud on LanternClient {
             onTrailer: onTrailer,
           ),
         );
-        written += response.written;
-        skippedKeys.addAll(response.skippedKeys);
+        if (response.outcomes.length != end - offset) {
+          throw _internalSdkException(
+            'server returned misaligned vertex Put outcomes',
+          );
+        }
+        final chunkResults = <VertexPutResult>[];
+        for (var index = 0; index < response.outcomes.length; index++) {
+          final inputIndex = offset + index;
+          chunkResults.add(
+            VertexPutResult(
+              key: input[inputIndex].key,
+              outcome: _putOutcomeFromProto(response.outcomes[index]),
+            ),
+          );
+        }
+        results.addAll(chunkResults);
       } on Exception catch (error) {
-        _throwBatchOrCause(written, error);
+        _throwBatchOrCause(results.length, error);
       }
     }
-    return PutVerticesResult(written: written, skippedKeys: skippedKeys);
+    if (results.isEmpty) return List.unmodifiable(results);
+    final observedAt = _clock().toUtc();
+    return List.unmodifiable([
+      for (var index = 0; index < results.length; index++)
+        VertexPutResult(
+          key: results[index].key,
+          outcome: _clientBoundedPutOutcome(
+            results[index].outcome,
+            initiallyLive[index],
+            expirations[index],
+            observedAt,
+          ),
+        ),
+    ]);
   }
 
   /// Deletes one vertex and reports whether it existed.
@@ -306,13 +339,16 @@ extension LanternCrud on LanternClient {
     return AddEdgesResult(written: written, effectiveWeights: weights);
   }
 
-  /// Idempotently overwrites one edge.
-  Future<void> putEdge(EdgeInput edge, {LanternCallOptions? options}) async {
-    await putEdges([edge], options: options);
+  /// Idempotently overwrites one edge and returns its authoritative outcome.
+  Future<PutOutcome> putEdge(
+    EdgeInput edge, {
+    LanternCallOptions? options,
+  }) async {
+    return (await putEdges([edge], options: options)).single.outcome;
   }
 
-  /// Idempotently overwrites edges and returns the number accepted.
-  Future<int> putEdges(
+  /// Idempotently overwrites edges with index-aligned authoritative outcomes.
+  Future<List<EdgePutResult>> putEdges(
     Iterable<EdgeInput> edges, {
     int batchSize = defaultBatchSize,
     LanternCallOptions? options,
@@ -320,9 +356,11 @@ extension LanternCrud on LanternClient {
     _ensureOpen();
     final input = List<EdgeInput>.unmodifiable(edges);
     _validateBatch(input.length, batchSize);
-    final expirations = _resolveExpirations(input, _clock());
+    final sampledAt = _clock().toUtc();
+    final expirations = _resolveExpirations(input, sampledAt);
+    final initiallyLive = _initialLiveness(expirations, sampledAt);
     final callOptions = _freezeCallOptions(options);
-    var written = 0;
+    final results = <EdgePutResult>[];
     for (var offset = 0; offset < input.length; offset += batchSize) {
       try {
         _throwIfCanceled(callOptions?.cancellation);
@@ -343,12 +381,43 @@ extension LanternCrud on LanternClient {
             onTrailer: onTrailer,
           ),
         );
-        written += response.written;
+        if (response.outcomes.length != end - offset) {
+          throw _internalSdkException(
+            'server returned misaligned edge Put outcomes',
+          );
+        }
+        final chunkResults = <EdgePutResult>[];
+        for (var index = 0; index < response.outcomes.length; index++) {
+          final inputIndex = offset + index;
+          final inputEdge = input[inputIndex];
+          chunkResults.add(
+            EdgePutResult(
+              tail: inputEdge.tail,
+              head: inputEdge.head,
+              outcome: _putOutcomeFromProto(response.outcomes[index]),
+            ),
+          );
+        }
+        results.addAll(chunkResults);
       } on Exception catch (error) {
-        _throwBatchOrCause(written, error);
+        _throwBatchOrCause(results.length, error);
       }
     }
-    return written;
+    if (results.isEmpty) return List.unmodifiable(results);
+    final observedAt = _clock().toUtc();
+    return List.unmodifiable([
+      for (var index = 0; index < results.length; index++)
+        EdgePutResult(
+          tail: results[index].tail,
+          head: results[index].head,
+          outcome: _clientBoundedPutOutcome(
+            results[index].outcome,
+            initiallyLive[index],
+            expirations[index],
+            observedAt,
+          ),
+        ),
+    ]);
   }
 
   /// Deletes one edge and reports whether it existed.
@@ -474,6 +543,14 @@ List<DateTime?> _resolveExpirations<T>(List<T> inputs, DateTime sampledNow) {
     return expiresAt == null ? null : _normalizeTimestamp(expiresAt);
   }, growable: false);
 }
+
+List<bool> _initialLiveness(List<DateTime?> expirations, DateTime sampledAt) =>
+    List<bool>.generate(
+      expirations.length,
+      (index) =>
+          expirations[index] == null || expirations[index]!.isAfter(sampledAt),
+      growable: false,
+    );
 
 List<int>? _validatedContribId(EdgeInput edge) {
   final value = edge._contribId;

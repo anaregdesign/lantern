@@ -145,6 +145,24 @@ const MutationOp$json = {
       '9': 0,
       '10': 'deleteEdgesByPrefix'
     },
+    {
+      '1': 'replicated_put_vertices',
+      '3': 13,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedPutVertices',
+      '9': 0,
+      '10': 'replicatedPutVertices'
+    },
+    {
+      '1': 'replicated_put_edges',
+      '3': 14,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedPutEdges',
+      '9': 0,
+      '10': 'replicatedPutEdges'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -168,7 +186,144 @@ final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
     'UgpkZWxldGVFZGdlEkEKDGRlbGV0ZV9lZGdlcxgLIAEoCzIcLmdyYXBoLnYxLkRlbGV0ZUVkZ2'
     'VzUmVxdWVzdEgAUgtkZWxldGVFZGdlcxJbChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgL'
     'MiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIAFITZGVsZXRlRWRnZXNCeV'
-    'ByZWZpeEIECgJvcA==');
+    'ByZWZpeBJZChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxp'
+    'Y2F0ZWRQdXRWZXJ0aWNlc0gAUhVyZXBsaWNhdGVkUHV0VmVydGljZXMSUAoUcmVwbGljYXRlZF'
+    '9wdXRfZWRnZXMYDiABKAsyHC5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZXNIAFIScmVwbGlj'
+    'YXRlZFB1dEVkZ2VzQgQKAm9w');
+
+@$core.Deprecated('Use vertexCausalBarrierDescriptor instead')
+const VertexCausalBarrier$json = {
+  '1': 'VertexCausalBarrier',
+  '2': [
+    {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+  ],
+};
+
+/// Descriptor for `VertexCausalBarrier`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List vertexCausalBarrierDescriptor = $convert
+    .base64Decode('ChNWZXJ0ZXhDYXVzYWxCYXJyaWVyEhAKA2tleRgBIAEoCVIDa2V5');
+
+@$core.Deprecated('Use replicatedPutVertexDescriptor instead')
+const ReplicatedPutVertex$json = {
+  '1': 'ReplicatedPutVertex',
+  '2': [
+    {
+      '1': 'live',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Vertex',
+      '9': 0,
+      '10': 'live'
+    },
+    {
+      '1': 'causal_barrier',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.VertexCausalBarrier',
+      '9': 0,
+      '10': 'causalBarrier'
+    },
+  ],
+  '8': [
+    {'1': 'outcome'},
+  ],
+};
+
+/// Descriptor for `ReplicatedPutVertex`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedPutVertexDescriptor = $convert.base64Decode(
+    'ChNSZXBsaWNhdGVkUHV0VmVydGV4EiYKBGxpdmUYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXhIAF'
+    'IEbGl2ZRJGCg5jYXVzYWxfYmFycmllchgCIAEoCzIdLmdyYXBoLnYxLlZlcnRleENhdXNhbEJh'
+    'cnJpZXJIAFINY2F1c2FsQmFycmllckIJCgdvdXRjb21l');
+
+@$core.Deprecated('Use replicatedPutVerticesDescriptor instead')
+const ReplicatedPutVertices$json = {
+  '1': 'ReplicatedPutVertices',
+  '2': [
+    {
+      '1': 'entries',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedPutVertex',
+      '10': 'entries'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedPutVertices`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedPutVerticesDescriptor = $convert.base64Decode(
+    'ChVSZXBsaWNhdGVkUHV0VmVydGljZXMSNwoHZW50cmllcxgBIAMoCzIdLmdyYXBoLnYxLlJlcG'
+    'xpY2F0ZWRQdXRWZXJ0ZXhSB2VudHJpZXM=');
+
+@$core.Deprecated('Use edgeCausalBarrierDescriptor instead')
+const EdgeCausalBarrier$json = {
+  '1': 'EdgeCausalBarrier',
+  '2': [
+    {'1': 'tail', '3': 1, '4': 1, '5': 9, '10': 'tail'},
+    {'1': 'head', '3': 2, '4': 1, '5': 9, '10': 'head'},
+  ],
+};
+
+/// Descriptor for `EdgeCausalBarrier`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List edgeCausalBarrierDescriptor = $convert.base64Decode(
+    'ChFFZGdlQ2F1c2FsQmFycmllchISCgR0YWlsGAEgASgJUgR0YWlsEhIKBGhlYWQYAiABKAlSBG'
+    'hlYWQ=');
+
+@$core.Deprecated('Use replicatedPutEdgeDescriptor instead')
+const ReplicatedPutEdge$json = {
+  '1': 'ReplicatedPutEdge',
+  '2': [
+    {
+      '1': 'live',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Edge',
+      '9': 0,
+      '10': 'live'
+    },
+    {
+      '1': 'causal_barrier',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.EdgeCausalBarrier',
+      '9': 0,
+      '10': 'causalBarrier'
+    },
+  ],
+  '8': [
+    {'1': 'outcome'},
+  ],
+};
+
+/// Descriptor for `ReplicatedPutEdge`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedPutEdgeDescriptor = $convert.base64Decode(
+    'ChFSZXBsaWNhdGVkUHV0RWRnZRIkCgRsaXZlGAEgASgLMg4uZ3JhcGgudjEuRWRnZUgAUgRsaX'
+    'ZlEkQKDmNhdXNhbF9iYXJyaWVyGAIgASgLMhsuZ3JhcGgudjEuRWRnZUNhdXNhbEJhcnJpZXJI'
+    'AFINY2F1c2FsQmFycmllckIJCgdvdXRjb21l');
+
+@$core.Deprecated('Use replicatedPutEdgesDescriptor instead')
+const ReplicatedPutEdges$json = {
+  '1': 'ReplicatedPutEdges',
+  '2': [
+    {
+      '1': 'entries',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedPutEdge',
+      '10': 'entries'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedPutEdges`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedPutEdgesDescriptor = $convert.base64Decode(
+    'ChJSZXBsaWNhdGVkUHV0RWRnZXMSNQoHZW50cmllcxgBIAMoCzIbLmdyYXBoLnYxLlJlcGxpY2'
+    'F0ZWRQdXRFZGdlUgdlbnRyaWVz');
 
 @$core.Deprecated('Use mutationDescriptor instead')
 const Mutation$json = {
@@ -314,13 +469,29 @@ const SnapshotFooter$json = {
   '2': [
     {'1': 'vertex_count', '3': 1, '4': 1, '5': 4, '10': 'vertexCount'},
     {'1': 'edge_count', '3': 2, '4': 1, '5': 4, '10': 'edgeCount'},
+    {
+      '1': 'vertex_causal_barrier_count',
+      '3': 3,
+      '4': 1,
+      '5': 4,
+      '10': 'vertexCausalBarrierCount'
+    },
+    {
+      '1': 'edge_causal_barrier_count',
+      '3': 4,
+      '4': 1,
+      '5': 4,
+      '10': 'edgeCausalBarrierCount'
+    },
   ],
 };
 
 /// Descriptor for `SnapshotFooter`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List snapshotFooterDescriptor = $convert.base64Decode(
     'Cg5TbmFwc2hvdEZvb3RlchIhCgx2ZXJ0ZXhfY291bnQYASABKARSC3ZlcnRleENvdW50Eh0KCm'
-    'VkZ2VfY291bnQYAiABKARSCWVkZ2VDb3VudA==');
+    'VkZ2VfY291bnQYAiABKARSCWVkZ2VDb3VudBI9Cht2ZXJ0ZXhfY2F1c2FsX2JhcnJpZXJfY291'
+    'bnQYAyABKARSGHZlcnRleENhdXNhbEJhcnJpZXJDb3VudBI5ChllZGdlX2NhdXNhbF9iYXJyaW'
+    'VyX2NvdW50GAQgASgEUhZlZGdlQ2F1c2FsQmFycmllckNvdW50');
 
 @$core.Deprecated('Use snapshotVertexDescriptor instead')
 const SnapshotVertex$json = {
@@ -349,6 +520,28 @@ const SnapshotVertex$json = {
 final $typed_data.Uint8List snapshotVertexDescriptor = $convert.base64Decode(
     'Cg5TbmFwc2hvdFZlcnRleBIoCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXhSBnZlcn'
     'RleBIoCgNobGMYAiABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSA2hsYw==');
+
+@$core.Deprecated('Use snapshotVertexCausalBarrierDescriptor instead')
+const SnapshotVertexCausalBarrier$json = {
+  '1': 'SnapshotVertexCausalBarrier',
+  '2': [
+    {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+    {
+      '1': 'hlc',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.HLCTimestamp',
+      '10': 'hlc'
+    },
+  ],
+};
+
+/// Descriptor for `SnapshotVertexCausalBarrier`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotVertexCausalBarrierDescriptor =
+    $convert.base64Decode(
+        'ChtTbmFwc2hvdFZlcnRleENhdXNhbEJhcnJpZXISEAoDa2V5GAEgASgJUgNrZXkSKAoDaGxjGA'
+        'IgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wUgNobGM=');
 
 @$core.Deprecated('Use snapshotEdgeContributionDescriptor instead')
 const SnapshotEdgeContribution$json = {
@@ -405,6 +598,28 @@ final $typed_data.Uint8List snapshotEdgeDescriptor = $convert.base64Decode(
     'bnMYBCADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb25SDWNvbnRyaWJ1dG'
     'lvbnM=');
 
+@$core.Deprecated('Use snapshotEdgeCausalBarrierDescriptor instead')
+const SnapshotEdgeCausalBarrier$json = {
+  '1': 'SnapshotEdgeCausalBarrier',
+  '2': [
+    {'1': 'tail', '3': 1, '4': 1, '5': 9, '10': 'tail'},
+    {'1': 'head', '3': 2, '4': 1, '5': 9, '10': 'head'},
+    {
+      '1': 'hlc',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.HLCTimestamp',
+      '10': 'hlc'
+    },
+  ],
+};
+
+/// Descriptor for `SnapshotEdgeCausalBarrier`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotEdgeCausalBarrierDescriptor = $convert.base64Decode(
+    'ChlTbmFwc2hvdEVkZ2VDYXVzYWxCYXJyaWVyEhIKBHRhaWwYASABKAlSBHRhaWwSEgoEaGVhZB'
+    'gCIAEoCVIEaGVhZBIoCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSA2hsYw==');
+
 @$core.Deprecated('Use snapshotResponseDescriptor instead')
 const SnapshotResponse$json = {
   '1': 'SnapshotResponse',
@@ -445,6 +660,24 @@ const SnapshotResponse$json = {
       '9': 0,
       '10': 'footer'
     },
+    {
+      '1': 'vertex_causal_barrier',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotVertexCausalBarrier',
+      '9': 0,
+      '10': 'vertexCausalBarrier'
+    },
+    {
+      '1': 'edge_causal_barrier',
+      '3': 6,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotEdgeCausalBarrier',
+      '9': 0,
+      '10': 'edgeCausalBarrier'
+    },
   ],
   '8': [
     {'1': 'entry'},
@@ -456,8 +689,11 @@ final $typed_data.Uint8List snapshotResponseDescriptor = $convert.base64Decode(
     'ChBTbmFwc2hvdFJlc3BvbnNlEjIKBmhlYWRlchgBIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90SG'
     'VhZGVySABSBmhlYWRlchIyCgZ2ZXJ0ZXgYAiABKAsyGC5ncmFwaC52MS5TbmFwc2hvdFZlcnRl'
     'eEgAUgZ2ZXJ0ZXgSLAoEZWRnZRgDIAEoCzIWLmdyYXBoLnYxLlNuYXBzaG90RWRnZUgAUgRlZG'
-    'dlEjIKBmZvb3RlchgEIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90Rm9vdGVySABSBmZvb3RlckIH'
-    'CgVlbnRyeQ==');
+    'dlEjIKBmZvb3RlchgEIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90Rm9vdGVySABSBmZvb3RlchJb'
+    'ChV2ZXJ0ZXhfY2F1c2FsX2JhcnJpZXIYBSABKAsyJS5ncmFwaC52MS5TbmFwc2hvdFZlcnRleE'
+    'NhdXNhbEJhcnJpZXJIAFITdmVydGV4Q2F1c2FsQmFycmllchJVChNlZGdlX2NhdXNhbF9iYXJy'
+    'aWVyGAYgASgLMiMuZ3JhcGgudjEuU25hcHNob3RFZGdlQ2F1c2FsQmFycmllckgAUhFlZGdlQ2'
+    'F1c2FsQmFycmllckIHCgVlbnRyeQ==');
 
 @$core.Deprecated('Use peerStatusRequestDescriptor instead')
 const PeerStatusRequest$json = {
@@ -572,6 +808,12 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.DeleteEdgesRequest': $0.DeleteEdgesRequest$json,
   '.graph.v1.EdgeKey': $0.EdgeKey$json,
   '.graph.v1.DeleteEdgesByPrefixRequest': $0.DeleteEdgesByPrefixRequest$json,
+  '.graph.v1.ReplicatedPutVertices': ReplicatedPutVertices$json,
+  '.graph.v1.ReplicatedPutVertex': ReplicatedPutVertex$json,
+  '.graph.v1.VertexCausalBarrier': VertexCausalBarrier$json,
+  '.graph.v1.ReplicatedPutEdges': ReplicatedPutEdges$json,
+  '.graph.v1.ReplicatedPutEdge': ReplicatedPutEdge$json,
+  '.graph.v1.EdgeCausalBarrier': EdgeCausalBarrier$json,
   '.graph.v1.SnapshotRequest': SnapshotRequest$json,
   '.graph.v1.SnapshotResponse': SnapshotResponse$json,
   '.graph.v1.SnapshotHeader': SnapshotHeader$json,
@@ -581,6 +823,8 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SnapshotEdge': SnapshotEdge$json,
   '.graph.v1.SnapshotEdgeContribution': SnapshotEdgeContribution$json,
   '.graph.v1.SnapshotFooter': SnapshotFooter$json,
+  '.graph.v1.SnapshotVertexCausalBarrier': SnapshotVertexCausalBarrier$json,
+  '.graph.v1.SnapshotEdgeCausalBarrier': SnapshotEdgeCausalBarrier$json,
   '.graph.v1.PeerStatusRequest': PeerStatusRequest$json,
   '.graph.v1.PeerStatusResponse': PeerStatusResponse$json,
   '.graph.v1.OriginState': OriginState$json,

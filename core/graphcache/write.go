@@ -3,6 +3,7 @@ package graphcache
 import (
 	"time"
 
+	"github.com/anaregdesign/lantern/core/cache"
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
@@ -80,10 +81,24 @@ func (c *GraphCache[S, T]) tryAddExistingEdgeContrib(tail, head S, w float32, ex
 // onEdgeDeletedLocked: the head key is unchanged, so the head-side prefix index
 // is untouched and its insert path is idempotent.
 func (c *GraphCache[S, T]) putEdgeLocked(tail, head S, w float32, expiration time.Time) {
+	c.putEdgeLockedAt(tail, head, w, expiration, time.Now())
+}
+
+// putEdgeLockedAt applies the delete-like semantics of an edge Put against the
+// caller's authoritative application sample. A dead-on-arrival candidate
+// removes any previous bucket but never creates a bucket or endpoint vertices;
+// therefore a later wall-clock rollback cannot make it visible again. Caller
+// must hold c.mu.
+func (c *GraphCache[S, T]) putEdgeLockedAt(tail, head S, w float32, expiration, now time.Time) (stored bool) {
+	if !cache.IsLiveAt(expiration, now) {
+		c.deleteEdgeLocked(tail, head)
+		return false
+	}
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
 	created, tailID, headID := c.edges.putWithExpiration(tail, head, w, expiration)
 	c.onEdgeAddedLocked(created, tailID, headID, head)
+	return true
 }
 
 // putEdgeHLCLocked applies replicated LWW Put semantics after endpoint

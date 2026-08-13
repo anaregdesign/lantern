@@ -85,8 +85,12 @@ func registerClaim(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			return nil, claimOutput{}, fmt.Errorf("claim: %w", err)
 		}
 		d, _ := r.ResolveCapped(ttl.Turn)
-		if err := lc.PutVertex(ctx, key, payload, d); err != nil {
+		outcome, err := lc.PutVertex(ctx, key, payload, d)
+		if err != nil {
 			return nil, claimOutput{}, mapSDKError("claim", err)
+		}
+		if err := requireAppliedPut("claim", outcome); err != nil {
+			return nil, claimOutput{}, err
 		}
 		// The activity edge makes the lease visible in whats_happening's
 		// neighborhood, not just under the claims. prefix.

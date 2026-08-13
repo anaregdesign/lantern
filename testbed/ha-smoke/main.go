@@ -45,17 +45,21 @@ func main() {
 		{"nil", nil},
 	}
 	for _, p := range puts {
-		if err := rr.PutVertex(ctx, p.key, p.val, 1*time.Minute); err != nil {
+		outcome, err := rr.PutVertex(ctx, p.key, p.val, 1*time.Minute)
+		if err != nil {
 			log.Fatalf("PutVertex %q: %v", p.key, err)
 		}
+		requireApplied("PutVertex "+p.key, outcome)
 	}
 	fmt.Printf("✓ PutVertex × %d via round-robin\n", len(puts))
 
 	// 3) Build a small graph: A -> B -> C, plus an additive duplicate A -> B.
 	for _, k := range []string{"A", "B", "C"} {
-		if err := rr.PutVertex(ctx, k, k, 1*time.Minute); err != nil {
+		outcome, err := rr.PutVertex(ctx, k, k, 1*time.Minute)
+		if err != nil {
 			log.Fatalf("PutVertex %q: %v", k, err)
 		}
+		requireApplied("PutVertex "+k, outcome)
 	}
 	if _, err := rr.AddEdge(ctx, "A", "B", 1.0, 1*time.Minute); err != nil {
 		log.Fatalf("AddEdge A->B: %v", err)
@@ -148,4 +152,10 @@ func main() {
 	}
 
 	fmt.Println("\nALL CHECKS PASSED")
+}
+
+func requireApplied(operation string, outcome client.PutOutcome) {
+	if outcome != client.PutOutcomeAppliedAndLive {
+		log.Fatalf("%s returned %s", operation, outcome)
+	}
 }

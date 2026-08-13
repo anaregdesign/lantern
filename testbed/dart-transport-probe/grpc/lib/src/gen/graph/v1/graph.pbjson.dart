@@ -61,6 +61,24 @@ final $typed_data.Uint8List weightingDescriptor = $convert.base64Decode(
     'CglXZWlnaHRpbmcSGQoVV0VJR0hUSU5HX1VOU1BFQ0lGSUVEEAASEQoNV0VJR0hUSU5HX1JBVx'
     'ABEhMKD1dFSUdIVElOR19URklERhACEhIKDldFSUdIVElOR19CTTI1EAM=');
 
+@$core.Deprecated('Use putOutcomeDescriptor instead')
+const PutOutcome$json = {
+  '1': 'PutOutcome',
+  '2': [
+    {'1': 'PUT_OUTCOME_UNSPECIFIED', '2': 0},
+    {'1': 'PUT_OUTCOME_APPLIED_AND_LIVE', '2': 1},
+    {'1': 'PUT_OUTCOME_EXPIRED', '2': 2},
+    {'1': 'PUT_OUTCOME_CONDITION_NOT_MET', '2': 3},
+    {'1': 'PUT_OUTCOME_SUPERSEDED', '2': 4},
+  ],
+};
+
+/// Descriptor for `PutOutcome`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List putOutcomeDescriptor = $convert.base64Decode(
+    'CgpQdXRPdXRjb21lEhsKF1BVVF9PVVRDT01FX1VOU1BFQ0lGSUVEEAASIAocUFVUX09VVENPTU'
+    'VfQVBQTElFRF9BTkRfTElWRRABEhcKE1BVVF9PVVRDT01FX0VYUElSRUQQAhIhCh1QVVRfT1VU'
+    'Q09NRV9DT05ESVRJT05fTk9UX01FVBADEhoKFlBVVF9PVVRDT01FX1NVUEVSU0VERUQQBA==');
+
 @$core.Deprecated('Use scanOrderDescriptor instead')
 const ScanOrder$json = {
   '1': 'ScanOrder',
@@ -549,13 +567,21 @@ final $typed_data.Uint8List putVertexRequestDescriptor = $convert.base64Decode(
 const PutVertexResponse$json = {
   '1': 'PutVertexResponse',
   '2': [
-    {'1': 'written', '3': 1, '4': 1, '5': 8, '10': 'written'},
+    {
+      '1': 'outcome',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.PutOutcome',
+      '10': 'outcome'
+    },
   ],
 };
 
 /// Descriptor for `PutVertexResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putVertexResponseDescriptor = $convert.base64Decode(
-    'ChFQdXRWZXJ0ZXhSZXNwb25zZRIYCgd3cml0dGVuGAEgASgIUgd3cml0dGVu');
+    'ChFQdXRWZXJ0ZXhSZXNwb25zZRIuCgdvdXRjb21lGAEgASgOMhQuZ3JhcGgudjEuUHV0T3V0Y2'
+    '9tZVIHb3V0Y29tZQ==');
 
 @$core.Deprecated('Use putVerticesRequestDescriptor instead')
 const PutVerticesRequest$json = {
@@ -582,15 +608,21 @@ final $typed_data.Uint8List putVerticesRequestDescriptor = $convert.base64Decode
 const PutVerticesResponse$json = {
   '1': 'PutVerticesResponse',
   '2': [
-    {'1': 'written', '3': 1, '4': 1, '5': 5, '10': 'written'},
-    {'1': 'skipped_keys', '3': 2, '4': 3, '5': 9, '10': 'skippedKeys'},
+    {
+      '1': 'outcomes',
+      '3': 1,
+      '4': 3,
+      '5': 14,
+      '6': '.graph.v1.PutOutcome',
+      '10': 'outcomes'
+    },
   ],
 };
 
 /// Descriptor for `PutVerticesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putVerticesResponseDescriptor = $convert.base64Decode(
-    'ChNQdXRWZXJ0aWNlc1Jlc3BvbnNlEhgKB3dyaXR0ZW4YASABKAVSB3dyaXR0ZW4SIQoMc2tpcH'
-    'BlZF9rZXlzGAIgAygJUgtza2lwcGVkS2V5cw==');
+    'ChNQdXRWZXJ0aWNlc1Jlc3BvbnNlEjAKCG91dGNvbWVzGAEgAygOMhQuZ3JhcGgudjEuUHV0T3'
+    'V0Y29tZVIIb3V0Y29tZXM=');
 
 @$core.Deprecated('Use deleteVertexRequestDescriptor instead')
 const DeleteVertexRequest$json = {
@@ -1279,11 +1311,22 @@ final $typed_data.Uint8List putEdgeRequestDescriptor = $convert.base64Decode(
 @$core.Deprecated('Use putEdgeResponseDescriptor instead')
 const PutEdgeResponse$json = {
   '1': 'PutEdgeResponse',
+  '2': [
+    {
+      '1': 'outcome',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.PutOutcome',
+      '10': 'outcome'
+    },
+  ],
 };
 
 /// Descriptor for `PutEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List putEdgeResponseDescriptor =
-    $convert.base64Decode('Cg9QdXRFZGdlUmVzcG9uc2U=');
+final $typed_data.Uint8List putEdgeResponseDescriptor = $convert.base64Decode(
+    'Cg9QdXRFZGdlUmVzcG9uc2USLgoHb3V0Y29tZRgBIAEoDjIULmdyYXBoLnYxLlB1dE91dGNvbW'
+    'VSB291dGNvbWU=');
 
 @$core.Deprecated('Use putEdgesRequestDescriptor instead')
 const PutEdgesRequest$json = {
@@ -1309,13 +1352,21 @@ final $typed_data.Uint8List putEdgesRequestDescriptor = $convert.base64Decode(
 const PutEdgesResponse$json = {
   '1': 'PutEdgesResponse',
   '2': [
-    {'1': 'written', '3': 1, '4': 1, '5': 5, '10': 'written'},
+    {
+      '1': 'outcomes',
+      '3': 1,
+      '4': 3,
+      '5': 14,
+      '6': '.graph.v1.PutOutcome',
+      '10': 'outcomes'
+    },
   ],
 };
 
 /// Descriptor for `PutEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putEdgesResponseDescriptor = $convert.base64Decode(
-    'ChBQdXRFZGdlc1Jlc3BvbnNlEhgKB3dyaXR0ZW4YASABKAVSB3dyaXR0ZW4=');
+    'ChBQdXRFZGdlc1Jlc3BvbnNlEjAKCG91dGNvbWVzGAEgAygOMhQuZ3JhcGgudjEuUHV0T3V0Y2'
+    '9tZVIIb3V0Y29tZXM=');
 
 @$core.Deprecated('Use getServerStatusRequestDescriptor instead')
 const GetServerStatusRequest$json = {

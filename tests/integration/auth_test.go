@@ -48,7 +48,7 @@ func TestAuth_SDKRoundTrip(t *testing.T) {
 
 	t.Run("tokenless unary rejected", func(t *testing.T) {
 		l := newConnectClientFor(t, srv.url)
-		err := l.PutVertex(ctx, "k", "v", time.Minute)
+		_, err := l.PutVertex(ctx, "k", "v", time.Minute)
 		if !errors.Is(err, client.ErrUnauthenticated) && connectCode(err) != connect.CodeUnauthenticated {
 			t.Fatalf("tokenless put: got %v, want Unauthenticated", err)
 		}
@@ -73,7 +73,7 @@ func TestAuth_SDKRoundTrip(t *testing.T) {
 
 	t.Run("token accepted end to end", func(t *testing.T) {
 		l := newConnectClientFor(t, srv.url, client.WithAuthToken(testToken))
-		if err := l.PutVertex(ctx, "authed", "v", time.Minute); err != nil {
+		if _, err := l.PutVertex(ctx, "authed", "v", time.Minute); err != nil {
 			t.Fatalf("authed put: %v", err)
 		}
 		if _, err := l.GetVertex(ctx, "authed"); err != nil {
@@ -83,7 +83,7 @@ func TestAuth_SDKRoundTrip(t *testing.T) {
 
 	t.Run("rotation: stale-but-configured token accepted", func(t *testing.T) {
 		l := newConnectClientFor(t, srv.url, client.WithAuthToken("stale-rotated-out"))
-		if err := l.PutVertex(ctx, "rotated", "v", time.Minute); err != nil {
+		if _, err := l.PutVertex(ctx, "rotated", "v", time.Minute); err != nil {
 			t.Fatalf("rotation token put: %v", err)
 		}
 	})
@@ -95,7 +95,7 @@ func TestAuth_SDKRoundTrip(t *testing.T) {
 			t.Fatalf("NewLanternFailover: %v", err)
 		}
 		t.Cleanup(func() { _ = lf.Close() })
-		if err := lf.PutVertex(ctx, "via-failover", "v", time.Minute); err != nil {
+		if _, err := lf.PutVertex(ctx, "via-failover", "v", time.Minute); err != nil {
 			t.Fatalf("failover put: %v", err)
 		}
 	})

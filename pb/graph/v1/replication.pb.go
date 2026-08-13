@@ -115,6 +115,8 @@ type MutationOp struct {
 	//	*MutationOp_DeleteEdge
 	//	*MutationOp_DeleteEdges
 	//	*MutationOp_DeleteEdgesByPrefix
+	//	*MutationOp_ReplicatedPutVertices
+	//	*MutationOp_ReplicatedPutEdges
 	Op            isMutationOp_Op `protobuf_oneof:"op"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -265,6 +267,24 @@ func (x *MutationOp) GetDeleteEdgesByPrefix() *DeleteEdgesByPrefixRequest {
 	return nil
 }
 
+func (x *MutationOp) GetReplicatedPutVertices() *ReplicatedPutVertices {
+	if x != nil {
+		if x, ok := x.Op.(*MutationOp_ReplicatedPutVertices); ok {
+			return x.ReplicatedPutVertices
+		}
+	}
+	return nil
+}
+
+func (x *MutationOp) GetReplicatedPutEdges() *ReplicatedPutEdges {
+	if x != nil {
+		if x, ok := x.Op.(*MutationOp_ReplicatedPutEdges); ok {
+			return x.ReplicatedPutEdges
+		}
+	}
+	return nil
+}
+
 type isMutationOp_Op interface {
 	isMutationOp_Op()
 }
@@ -317,6 +337,18 @@ type MutationOp_DeleteEdgesByPrefix struct {
 	DeleteEdgesByPrefix *DeleteEdgesByPrefixRequest `protobuf:"bytes,12,opt,name=delete_edges_by_prefix,json=deleteEdgesByPrefix,proto3,oneof"`
 }
 
+type MutationOp_ReplicatedPutVertices struct {
+	// Put batches accepted by the server use an ordered, outcome-bearing wire
+	// form. Live payloads and causal barriers remain interleaved in original
+	// request order, so duplicate identities replay exactly as committed even
+	// when the receiver's wall clock differs from the origin's.
+	ReplicatedPutVertices *ReplicatedPutVertices `protobuf:"bytes,13,opt,name=replicated_put_vertices,json=replicatedPutVertices,proto3,oneof"`
+}
+
+type MutationOp_ReplicatedPutEdges struct {
+	ReplicatedPutEdges *ReplicatedPutEdges `protobuf:"bytes,14,opt,name=replicated_put_edges,json=replicatedPutEdges,proto3,oneof"`
+}
+
 func (*MutationOp_PutVertex) isMutationOp_Op() {}
 
 func (*MutationOp_PutVertices) isMutationOp_Op() {}
@@ -341,6 +373,358 @@ func (*MutationOp_DeleteEdges) isMutationOp_Op() {}
 
 func (*MutationOp_DeleteEdgesByPrefix) isMutationOp_Op() {}
 
+func (*MutationOp_ReplicatedPutVertices) isMutationOp_Op() {}
+
+func (*MutationOp_ReplicatedPutEdges) isMutationOp_Op() {}
+
+type VertexCausalBarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VertexCausalBarrier) Reset() {
+	*x = VertexCausalBarrier{}
+	mi := &file_graph_v1_replication_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VertexCausalBarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VertexCausalBarrier) ProtoMessage() {}
+
+func (x *VertexCausalBarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VertexCausalBarrier.ProtoReflect.Descriptor instead.
+func (*VertexCausalBarrier) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *VertexCausalBarrier) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type ReplicatedPutVertex struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Outcome:
+	//
+	//	*ReplicatedPutVertex_Live
+	//	*ReplicatedPutVertex_CausalBarrier
+	Outcome       isReplicatedPutVertex_Outcome `protobuf_oneof:"outcome"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicatedPutVertex) Reset() {
+	*x = ReplicatedPutVertex{}
+	mi := &file_graph_v1_replication_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicatedPutVertex) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicatedPutVertex) ProtoMessage() {}
+
+func (x *ReplicatedPutVertex) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicatedPutVertex.ProtoReflect.Descriptor instead.
+func (*ReplicatedPutVertex) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ReplicatedPutVertex) GetOutcome() isReplicatedPutVertex_Outcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return nil
+}
+
+func (x *ReplicatedPutVertex) GetLive() *Vertex {
+	if x != nil {
+		if x, ok := x.Outcome.(*ReplicatedPutVertex_Live); ok {
+			return x.Live
+		}
+	}
+	return nil
+}
+
+func (x *ReplicatedPutVertex) GetCausalBarrier() *VertexCausalBarrier {
+	if x != nil {
+		if x, ok := x.Outcome.(*ReplicatedPutVertex_CausalBarrier); ok {
+			return x.CausalBarrier
+		}
+	}
+	return nil
+}
+
+type isReplicatedPutVertex_Outcome interface {
+	isReplicatedPutVertex_Outcome()
+}
+
+type ReplicatedPutVertex_Live struct {
+	Live *Vertex `protobuf:"bytes,1,opt,name=live,proto3,oneof"`
+}
+
+type ReplicatedPutVertex_CausalBarrier struct {
+	CausalBarrier *VertexCausalBarrier `protobuf:"bytes,2,opt,name=causal_barrier,json=causalBarrier,proto3,oneof"`
+}
+
+func (*ReplicatedPutVertex_Live) isReplicatedPutVertex_Outcome() {}
+
+func (*ReplicatedPutVertex_CausalBarrier) isReplicatedPutVertex_Outcome() {}
+
+type ReplicatedPutVertices struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entries       []*ReplicatedPutVertex `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicatedPutVertices) Reset() {
+	*x = ReplicatedPutVertices{}
+	mi := &file_graph_v1_replication_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicatedPutVertices) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicatedPutVertices) ProtoMessage() {}
+
+func (x *ReplicatedPutVertices) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicatedPutVertices.ProtoReflect.Descriptor instead.
+func (*ReplicatedPutVertices) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ReplicatedPutVertices) GetEntries() []*ReplicatedPutVertex {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+type EdgeCausalBarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tail          string                 `protobuf:"bytes,1,opt,name=tail,proto3" json:"tail,omitempty"`
+	Head          string                 `protobuf:"bytes,2,opt,name=head,proto3" json:"head,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EdgeCausalBarrier) Reset() {
+	*x = EdgeCausalBarrier{}
+	mi := &file_graph_v1_replication_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EdgeCausalBarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EdgeCausalBarrier) ProtoMessage() {}
+
+func (x *EdgeCausalBarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EdgeCausalBarrier.ProtoReflect.Descriptor instead.
+func (*EdgeCausalBarrier) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *EdgeCausalBarrier) GetTail() string {
+	if x != nil {
+		return x.Tail
+	}
+	return ""
+}
+
+func (x *EdgeCausalBarrier) GetHead() string {
+	if x != nil {
+		return x.Head
+	}
+	return ""
+}
+
+type ReplicatedPutEdge struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Outcome:
+	//
+	//	*ReplicatedPutEdge_Live
+	//	*ReplicatedPutEdge_CausalBarrier
+	Outcome       isReplicatedPutEdge_Outcome `protobuf_oneof:"outcome"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicatedPutEdge) Reset() {
+	*x = ReplicatedPutEdge{}
+	mi := &file_graph_v1_replication_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicatedPutEdge) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicatedPutEdge) ProtoMessage() {}
+
+func (x *ReplicatedPutEdge) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicatedPutEdge.ProtoReflect.Descriptor instead.
+func (*ReplicatedPutEdge) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ReplicatedPutEdge) GetOutcome() isReplicatedPutEdge_Outcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return nil
+}
+
+func (x *ReplicatedPutEdge) GetLive() *Edge {
+	if x != nil {
+		if x, ok := x.Outcome.(*ReplicatedPutEdge_Live); ok {
+			return x.Live
+		}
+	}
+	return nil
+}
+
+func (x *ReplicatedPutEdge) GetCausalBarrier() *EdgeCausalBarrier {
+	if x != nil {
+		if x, ok := x.Outcome.(*ReplicatedPutEdge_CausalBarrier); ok {
+			return x.CausalBarrier
+		}
+	}
+	return nil
+}
+
+type isReplicatedPutEdge_Outcome interface {
+	isReplicatedPutEdge_Outcome()
+}
+
+type ReplicatedPutEdge_Live struct {
+	Live *Edge `protobuf:"bytes,1,opt,name=live,proto3,oneof"`
+}
+
+type ReplicatedPutEdge_CausalBarrier struct {
+	CausalBarrier *EdgeCausalBarrier `protobuf:"bytes,2,opt,name=causal_barrier,json=causalBarrier,proto3,oneof"`
+}
+
+func (*ReplicatedPutEdge_Live) isReplicatedPutEdge_Outcome() {}
+
+func (*ReplicatedPutEdge_CausalBarrier) isReplicatedPutEdge_Outcome() {}
+
+type ReplicatedPutEdges struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entries       []*ReplicatedPutEdge   `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicatedPutEdges) Reset() {
+	*x = ReplicatedPutEdges{}
+	mi := &file_graph_v1_replication_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicatedPutEdges) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicatedPutEdges) ProtoMessage() {}
+
+func (x *ReplicatedPutEdges) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicatedPutEdges.ProtoReflect.Descriptor instead.
+func (*ReplicatedPutEdges) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ReplicatedPutEdges) GetEntries() []*ReplicatedPutEdge {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
 // Mutation is the unit of replication: a sequenced, HLC-stamped,
 // origin-tagged graph write. `seq` is assigned by the originating node's
 // mutation log (see core/mutationlog) and is strictly monotone within a
@@ -364,7 +748,7 @@ type Mutation struct {
 
 func (x *Mutation) Reset() {
 	*x = Mutation{}
-	mi := &file_graph_v1_replication_proto_msgTypes[2]
+	mi := &file_graph_v1_replication_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -376,7 +760,7 @@ func (x *Mutation) String() string {
 func (*Mutation) ProtoMessage() {}
 
 func (x *Mutation) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[2]
+	mi := &file_graph_v1_replication_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -389,7 +773,7 @@ func (x *Mutation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Mutation.ProtoReflect.Descriptor instead.
 func (*Mutation) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{2}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Mutation) GetSeq() uint64 {
@@ -468,7 +852,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_graph_v1_replication_proto_msgTypes[3]
+	mi := &file_graph_v1_replication_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -480,7 +864,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[3]
+	mi := &file_graph_v1_replication_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -493,7 +877,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{3}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SubscribeRequest) GetFromSeqPerOrigin() map[string]uint64 {
@@ -520,7 +904,7 @@ type SubscribeResponse struct {
 
 func (x *SubscribeResponse) Reset() {
 	*x = SubscribeResponse{}
-	mi := &file_graph_v1_replication_proto_msgTypes[4]
+	mi := &file_graph_v1_replication_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -532,7 +916,7 @@ func (x *SubscribeResponse) String() string {
 func (*SubscribeResponse) ProtoMessage() {}
 
 func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[4]
+	mi := &file_graph_v1_replication_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -545,7 +929,7 @@ func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{4}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SubscribeResponse) GetMutation() *Mutation {
@@ -567,7 +951,7 @@ type SnapshotRequest struct {
 
 func (x *SnapshotRequest) Reset() {
 	*x = SnapshotRequest{}
-	mi := &file_graph_v1_replication_proto_msgTypes[5]
+	mi := &file_graph_v1_replication_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -579,7 +963,7 @@ func (x *SnapshotRequest) String() string {
 func (*SnapshotRequest) ProtoMessage() {}
 
 func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[5]
+	mi := &file_graph_v1_replication_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -592,7 +976,7 @@ func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRequest.ProtoReflect.Descriptor instead.
 func (*SnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{5}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{11}
 }
 
 // SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
@@ -626,7 +1010,7 @@ type SnapshotHeader struct {
 
 func (x *SnapshotHeader) Reset() {
 	*x = SnapshotHeader{}
-	mi := &file_graph_v1_replication_proto_msgTypes[6]
+	mi := &file_graph_v1_replication_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -638,7 +1022,7 @@ func (x *SnapshotHeader) String() string {
 func (*SnapshotHeader) ProtoMessage() {}
 
 func (x *SnapshotHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[6]
+	mi := &file_graph_v1_replication_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -651,7 +1035,7 @@ func (x *SnapshotHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotHeader.ProtoReflect.Descriptor instead.
 func (*SnapshotHeader) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{6}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SnapshotHeader) GetCutoffSeqPerOrigin() map[string]uint64 {
@@ -680,16 +1064,18 @@ func (x *SnapshotHeader) GetCutoffLocalSeq() uint64 {
 // truncation (channel-close, send-error mid-stream) without re-walking
 // their freshly-imported state.
 type SnapshotFooter struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	VertexCount   uint64                 `protobuf:"varint,1,opt,name=vertex_count,json=vertexCount,proto3" json:"vertex_count,omitempty"`
-	EdgeCount     uint64                 `protobuf:"varint,2,opt,name=edge_count,json=edgeCount,proto3" json:"edge_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	VertexCount              uint64                 `protobuf:"varint,1,opt,name=vertex_count,json=vertexCount,proto3" json:"vertex_count,omitempty"`
+	EdgeCount                uint64                 `protobuf:"varint,2,opt,name=edge_count,json=edgeCount,proto3" json:"edge_count,omitempty"`
+	VertexCausalBarrierCount uint64                 `protobuf:"varint,3,opt,name=vertex_causal_barrier_count,json=vertexCausalBarrierCount,proto3" json:"vertex_causal_barrier_count,omitempty"`
+	EdgeCausalBarrierCount   uint64                 `protobuf:"varint,4,opt,name=edge_causal_barrier_count,json=edgeCausalBarrierCount,proto3" json:"edge_causal_barrier_count,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *SnapshotFooter) Reset() {
 	*x = SnapshotFooter{}
-	mi := &file_graph_v1_replication_proto_msgTypes[7]
+	mi := &file_graph_v1_replication_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -701,7 +1087,7 @@ func (x *SnapshotFooter) String() string {
 func (*SnapshotFooter) ProtoMessage() {}
 
 func (x *SnapshotFooter) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[7]
+	mi := &file_graph_v1_replication_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -714,7 +1100,7 @@ func (x *SnapshotFooter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotFooter.ProtoReflect.Descriptor instead.
 func (*SnapshotFooter) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{7}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SnapshotFooter) GetVertexCount() uint64 {
@@ -727,6 +1113,20 @@ func (x *SnapshotFooter) GetVertexCount() uint64 {
 func (x *SnapshotFooter) GetEdgeCount() uint64 {
 	if x != nil {
 		return x.EdgeCount
+	}
+	return 0
+}
+
+func (x *SnapshotFooter) GetVertexCausalBarrierCount() uint64 {
+	if x != nil {
+		return x.VertexCausalBarrierCount
+	}
+	return 0
+}
+
+func (x *SnapshotFooter) GetEdgeCausalBarrierCount() uint64 {
+	if x != nil {
+		return x.EdgeCausalBarrierCount
 	}
 	return 0
 }
@@ -747,7 +1147,7 @@ type SnapshotVertex struct {
 
 func (x *SnapshotVertex) Reset() {
 	*x = SnapshotVertex{}
-	mi := &file_graph_v1_replication_proto_msgTypes[8]
+	mi := &file_graph_v1_replication_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -759,7 +1159,7 @@ func (x *SnapshotVertex) String() string {
 func (*SnapshotVertex) ProtoMessage() {}
 
 func (x *SnapshotVertex) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[8]
+	mi := &file_graph_v1_replication_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -772,7 +1172,7 @@ func (x *SnapshotVertex) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotVertex.ProtoReflect.Descriptor instead.
 func (*SnapshotVertex) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{8}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SnapshotVertex) GetVertex() *Vertex {
@@ -783,6 +1183,62 @@ func (x *SnapshotVertex) GetVertex() *Vertex {
 }
 
 func (x *SnapshotVertex) GetHlc() *HLCTimestamp {
+	if x != nil {
+		return x.Hlc
+	}
+	return nil
+}
+
+// SnapshotVertexCausalBarrier carries the retained LWW floor of a PutVertex
+// that was accepted but already expired at its final application instant. It
+// has no Vertex payload because the overwrite must remain absent; receivers
+// record only (key, hlc) and reject later strictly-older live writes.
+type SnapshotVertexCausalBarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Hlc           *HLCTimestamp          `protobuf:"bytes,2,opt,name=hlc,proto3" json:"hlc,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotVertexCausalBarrier) Reset() {
+	*x = SnapshotVertexCausalBarrier{}
+	mi := &file_graph_v1_replication_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotVertexCausalBarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotVertexCausalBarrier) ProtoMessage() {}
+
+func (x *SnapshotVertexCausalBarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotVertexCausalBarrier.ProtoReflect.Descriptor instead.
+func (*SnapshotVertexCausalBarrier) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *SnapshotVertexCausalBarrier) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *SnapshotVertexCausalBarrier) GetHlc() *HLCTimestamp {
 	if x != nil {
 		return x.Hlc
 	}
@@ -810,7 +1266,7 @@ type SnapshotEdgeContribution struct {
 
 func (x *SnapshotEdgeContribution) Reset() {
 	*x = SnapshotEdgeContribution{}
-	mi := &file_graph_v1_replication_proto_msgTypes[9]
+	mi := &file_graph_v1_replication_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -822,7 +1278,7 @@ func (x *SnapshotEdgeContribution) String() string {
 func (*SnapshotEdgeContribution) ProtoMessage() {}
 
 func (x *SnapshotEdgeContribution) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[9]
+	mi := &file_graph_v1_replication_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -835,7 +1291,7 @@ func (x *SnapshotEdgeContribution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEdgeContribution.ProtoReflect.Descriptor instead.
 func (*SnapshotEdgeContribution) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{9}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SnapshotEdgeContribution) GetWeight() float32 {
@@ -876,7 +1332,7 @@ type SnapshotEdge struct {
 
 func (x *SnapshotEdge) Reset() {
 	*x = SnapshotEdge{}
-	mi := &file_graph_v1_replication_proto_msgTypes[10]
+	mi := &file_graph_v1_replication_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -888,7 +1344,7 @@ func (x *SnapshotEdge) String() string {
 func (*SnapshotEdge) ProtoMessage() {}
 
 func (x *SnapshotEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[10]
+	mi := &file_graph_v1_replication_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -901,7 +1357,7 @@ func (x *SnapshotEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEdge.ProtoReflect.Descriptor instead.
 func (*SnapshotEdge) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{10}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SnapshotEdge) GetTail() string {
@@ -932,11 +1388,75 @@ func (x *SnapshotEdge) GetContributions() []*SnapshotEdgeContribution {
 	return nil
 }
 
+// SnapshotEdgeCausalBarrier is the edge sibling of
+// SnapshotVertexCausalBarrier. It carries no contribution and must not create
+// endpoint vertices or an edge bucket when replayed.
+type SnapshotEdgeCausalBarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tail          string                 `protobuf:"bytes,1,opt,name=tail,proto3" json:"tail,omitempty"`
+	Head          string                 `protobuf:"bytes,2,opt,name=head,proto3" json:"head,omitempty"`
+	Hlc           *HLCTimestamp          `protobuf:"bytes,3,opt,name=hlc,proto3" json:"hlc,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotEdgeCausalBarrier) Reset() {
+	*x = SnapshotEdgeCausalBarrier{}
+	mi := &file_graph_v1_replication_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotEdgeCausalBarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotEdgeCausalBarrier) ProtoMessage() {}
+
+func (x *SnapshotEdgeCausalBarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotEdgeCausalBarrier.ProtoReflect.Descriptor instead.
+func (*SnapshotEdgeCausalBarrier) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *SnapshotEdgeCausalBarrier) GetTail() string {
+	if x != nil {
+		return x.Tail
+	}
+	return ""
+}
+
+func (x *SnapshotEdgeCausalBarrier) GetHead() string {
+	if x != nil {
+		return x.Head
+	}
+	return ""
+}
+
+func (x *SnapshotEdgeCausalBarrier) GetHlc() *HLCTimestamp {
+	if x != nil {
+		return x.Hlc
+	}
+	return nil
+}
+
 // SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 // order is always: exactly one SnapshotHeader, then zero or more
-// SnapshotVertex frames, then zero or more SnapshotEdge frames, then
-// exactly one SnapshotFooter. Receivers SHOULD treat any other order as a
-// protocol violation.
+// SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
+// frames, zero or more SnapshotVertex frames, zero or more SnapshotEdge
+// frames, then exactly one SnapshotFooter. Receivers MUST treat any other
+// order as a protocol violation.
 type SnapshotResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Entry:
@@ -945,6 +1465,8 @@ type SnapshotResponse struct {
 	//	*SnapshotResponse_Vertex
 	//	*SnapshotResponse_Edge
 	//	*SnapshotResponse_Footer
+	//	*SnapshotResponse_VertexCausalBarrier
+	//	*SnapshotResponse_EdgeCausalBarrier
 	Entry         isSnapshotResponse_Entry `protobuf_oneof:"entry"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -952,7 +1474,7 @@ type SnapshotResponse struct {
 
 func (x *SnapshotResponse) Reset() {
 	*x = SnapshotResponse{}
-	mi := &file_graph_v1_replication_proto_msgTypes[11]
+	mi := &file_graph_v1_replication_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -964,7 +1486,7 @@ func (x *SnapshotResponse) String() string {
 func (*SnapshotResponse) ProtoMessage() {}
 
 func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[11]
+	mi := &file_graph_v1_replication_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -977,7 +1499,7 @@ func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotResponse.ProtoReflect.Descriptor instead.
 func (*SnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{11}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SnapshotResponse) GetEntry() isSnapshotResponse_Entry {
@@ -1023,6 +1545,24 @@ func (x *SnapshotResponse) GetFooter() *SnapshotFooter {
 	return nil
 }
 
+func (x *SnapshotResponse) GetVertexCausalBarrier() *SnapshotVertexCausalBarrier {
+	if x != nil {
+		if x, ok := x.Entry.(*SnapshotResponse_VertexCausalBarrier); ok {
+			return x.VertexCausalBarrier
+		}
+	}
+	return nil
+}
+
+func (x *SnapshotResponse) GetEdgeCausalBarrier() *SnapshotEdgeCausalBarrier {
+	if x != nil {
+		if x, ok := x.Entry.(*SnapshotResponse_EdgeCausalBarrier); ok {
+			return x.EdgeCausalBarrier
+		}
+	}
+	return nil
+}
+
 type isSnapshotResponse_Entry interface {
 	isSnapshotResponse_Entry()
 }
@@ -1043,6 +1583,14 @@ type SnapshotResponse_Footer struct {
 	Footer *SnapshotFooter `protobuf:"bytes,4,opt,name=footer,proto3,oneof"`
 }
 
+type SnapshotResponse_VertexCausalBarrier struct {
+	VertexCausalBarrier *SnapshotVertexCausalBarrier `protobuf:"bytes,5,opt,name=vertex_causal_barrier,json=vertexCausalBarrier,proto3,oneof"`
+}
+
+type SnapshotResponse_EdgeCausalBarrier struct {
+	EdgeCausalBarrier *SnapshotEdgeCausalBarrier `protobuf:"bytes,6,opt,name=edge_causal_barrier,json=edgeCausalBarrier,proto3,oneof"`
+}
+
 func (*SnapshotResponse_Header) isSnapshotResponse_Entry() {}
 
 func (*SnapshotResponse_Vertex) isSnapshotResponse_Entry() {}
@@ -1050,6 +1598,10 @@ func (*SnapshotResponse_Vertex) isSnapshotResponse_Entry() {}
 func (*SnapshotResponse_Edge) isSnapshotResponse_Entry() {}
 
 func (*SnapshotResponse_Footer) isSnapshotResponse_Entry() {}
+
+func (*SnapshotResponse_VertexCausalBarrier) isSnapshotResponse_Entry() {}
+
+func (*SnapshotResponse_EdgeCausalBarrier) isSnapshotResponse_Entry() {}
 
 // PeerStatusRequest is intentionally empty — the responder always
 // returns its full per-origin map. Future revisions may add an
@@ -1062,7 +1614,7 @@ type PeerStatusRequest struct {
 
 func (x *PeerStatusRequest) Reset() {
 	*x = PeerStatusRequest{}
-	mi := &file_graph_v1_replication_proto_msgTypes[12]
+	mi := &file_graph_v1_replication_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1074,7 +1626,7 @@ func (x *PeerStatusRequest) String() string {
 func (*PeerStatusRequest) ProtoMessage() {}
 
 func (x *PeerStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[12]
+	mi := &file_graph_v1_replication_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1087,7 +1639,7 @@ func (x *PeerStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerStatusRequest.ProtoReflect.Descriptor instead.
 func (*PeerStatusRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{12}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{20}
 }
 
 // OriginState is the responder's last-applied position for a single
@@ -1106,7 +1658,7 @@ type OriginState struct {
 
 func (x *OriginState) Reset() {
 	*x = OriginState{}
-	mi := &file_graph_v1_replication_proto_msgTypes[13]
+	mi := &file_graph_v1_replication_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1118,7 +1670,7 @@ func (x *OriginState) String() string {
 func (*OriginState) ProtoMessage() {}
 
 func (x *OriginState) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[13]
+	mi := &file_graph_v1_replication_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1131,7 +1683,7 @@ func (x *OriginState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OriginState.ProtoReflect.Descriptor instead.
 func (*OriginState) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{13}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *OriginState) GetOrigin() []byte {
@@ -1175,7 +1727,7 @@ type PeerStatusResponse struct {
 
 func (x *PeerStatusResponse) Reset() {
 	*x = PeerStatusResponse{}
-	mi := &file_graph_v1_replication_proto_msgTypes[14]
+	mi := &file_graph_v1_replication_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1187,7 +1739,7 @@ func (x *PeerStatusResponse) String() string {
 func (*PeerStatusResponse) ProtoMessage() {}
 
 func (x *PeerStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[14]
+	mi := &file_graph_v1_replication_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1200,7 +1752,7 @@ func (x *PeerStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerStatusResponse.ProtoReflect.Descriptor instead.
 func (*PeerStatusResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{14}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *PeerStatusResponse) GetSelfOrigin() []byte {
@@ -1232,7 +1784,7 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\fHLCTimestamp\x12\x17\n" +
 	"\awall_ns\x18\x01 \x01(\x03R\x06wallNs\x12\x18\n" +
 	"\alogical\x18\x02 \x01(\rR\alogical\x12\x17\n" +
-	"\anode_id\x18\x03 \x01(\fR\x06nodeId\"\xcc\x06\n" +
+	"\anode_id\x18\x03 \x01(\fR\x06nodeId\"\xf9\a\n" +
 	"\n" +
 	"MutationOp\x12;\n" +
 	"\n" +
@@ -1249,8 +1801,27 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	" \x01(\v2\x1b.graph.v1.DeleteEdgeRequestH\x00R\n" +
 	"deleteEdge\x12A\n" +
 	"\fdelete_edges\x18\v \x01(\v2\x1c.graph.v1.DeleteEdgesRequestH\x00R\vdeleteEdges\x12[\n" +
-	"\x16delete_edges_by_prefix\x18\f \x01(\v2$.graph.v1.DeleteEdgesByPrefixRequestH\x00R\x13deleteEdgesByPrefixB\x04\n" +
-	"\x02op\"\x84\x01\n" +
+	"\x16delete_edges_by_prefix\x18\f \x01(\v2$.graph.v1.DeleteEdgesByPrefixRequestH\x00R\x13deleteEdgesByPrefix\x12Y\n" +
+	"\x17replicated_put_vertices\x18\r \x01(\v2\x1f.graph.v1.ReplicatedPutVerticesH\x00R\x15replicatedPutVertices\x12P\n" +
+	"\x14replicated_put_edges\x18\x0e \x01(\v2\x1c.graph.v1.ReplicatedPutEdgesH\x00R\x12replicatedPutEdgesB\x04\n" +
+	"\x02op\"'\n" +
+	"\x13VertexCausalBarrier\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"\x90\x01\n" +
+	"\x13ReplicatedPutVertex\x12&\n" +
+	"\x04live\x18\x01 \x01(\v2\x10.graph.v1.VertexH\x00R\x04live\x12F\n" +
+	"\x0ecausal_barrier\x18\x02 \x01(\v2\x1d.graph.v1.VertexCausalBarrierH\x00R\rcausalBarrierB\t\n" +
+	"\aoutcome\"P\n" +
+	"\x15ReplicatedPutVertices\x127\n" +
+	"\aentries\x18\x01 \x03(\v2\x1d.graph.v1.ReplicatedPutVertexR\aentries\";\n" +
+	"\x11EdgeCausalBarrier\x12\x12\n" +
+	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
+	"\x04head\x18\x02 \x01(\tR\x04head\"\x8a\x01\n" +
+	"\x11ReplicatedPutEdge\x12$\n" +
+	"\x04live\x18\x01 \x01(\v2\x0e.graph.v1.EdgeH\x00R\x04live\x12D\n" +
+	"\x0ecausal_barrier\x18\x02 \x01(\v2\x1b.graph.v1.EdgeCausalBarrierH\x00R\rcausalBarrierB\t\n" +
+	"\aoutcome\"K\n" +
+	"\x12ReplicatedPutEdges\x125\n" +
+	"\aentries\x18\x01 \x03(\v2\x1b.graph.v1.ReplicatedPutEdgeR\aentries\"\x84\x01\n" +
 	"\bMutation\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12(\n" +
 	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\x12\x16\n" +
@@ -1272,13 +1843,18 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x10cutoff_local_seq\x18\x03 \x01(\x04R\x0ecutoffLocalSeq\x1aE\n" +
 	"\x17CutoffSeqPerOriginEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"R\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xcc\x01\n" +
 	"\x0eSnapshotFooter\x12!\n" +
 	"\fvertex_count\x18\x01 \x01(\x04R\vvertexCount\x12\x1d\n" +
 	"\n" +
-	"edge_count\x18\x02 \x01(\x04R\tedgeCount\"d\n" +
+	"edge_count\x18\x02 \x01(\x04R\tedgeCount\x12=\n" +
+	"\x1bvertex_causal_barrier_count\x18\x03 \x01(\x04R\x18vertexCausalBarrierCount\x129\n" +
+	"\x19edge_causal_barrier_count\x18\x04 \x01(\x04R\x16edgeCausalBarrierCount\"d\n" +
 	"\x0eSnapshotVertex\x12(\n" +
 	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\x12(\n" +
+	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"Y\n" +
+	"\x1bSnapshotVertexCausalBarrier\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12(\n" +
 	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"\x8d\x01\n" +
 	"\x18SnapshotEdgeContribution\x12\x16\n" +
 	"\x06weight\x18\x01 \x01(\x02R\x06weight\x12:\n" +
@@ -1291,12 +1867,18 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\x12(\n" +
 	"\x03hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\x12H\n" +
-	"\rcontributions\x18\x04 \x03(\v2\".graph.v1.SnapshotEdgeContributionR\rcontributions\"\xe5\x01\n" +
+	"\rcontributions\x18\x04 \x03(\v2\".graph.v1.SnapshotEdgeContributionR\rcontributions\"m\n" +
+	"\x19SnapshotEdgeCausalBarrier\x12\x12\n" +
+	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
+	"\x04head\x18\x02 \x01(\tR\x04head\x12(\n" +
+	"\x03hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"\x99\x03\n" +
 	"\x10SnapshotResponse\x122\n" +
 	"\x06header\x18\x01 \x01(\v2\x18.graph.v1.SnapshotHeaderH\x00R\x06header\x122\n" +
 	"\x06vertex\x18\x02 \x01(\v2\x18.graph.v1.SnapshotVertexH\x00R\x06vertex\x12,\n" +
 	"\x04edge\x18\x03 \x01(\v2\x16.graph.v1.SnapshotEdgeH\x00R\x04edge\x122\n" +
-	"\x06footer\x18\x04 \x01(\v2\x18.graph.v1.SnapshotFooterH\x00R\x06footerB\a\n" +
+	"\x06footer\x18\x04 \x01(\v2\x18.graph.v1.SnapshotFooterH\x00R\x06footer\x12[\n" +
+	"\x15vertex_causal_barrier\x18\x05 \x01(\v2%.graph.v1.SnapshotVertexCausalBarrierH\x00R\x13vertexCausalBarrier\x12U\n" +
+	"\x13edge_causal_barrier\x18\x06 \x01(\v2#.graph.v1.SnapshotEdgeCausalBarrierH\x00R\x11edgeCausalBarrierB\a\n" +
 	"\x05entry\"\x13\n" +
 	"\x11PeerStatusRequest\"s\n" +
 	"\vOriginState\x12\x16\n" +
@@ -1327,81 +1909,102 @@ func file_graph_v1_replication_proto_rawDescGZIP() []byte {
 	return file_graph_v1_replication_proto_rawDescData
 }
 
-var file_graph_v1_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_graph_v1_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_graph_v1_replication_proto_goTypes = []any{
 	(*HLCTimestamp)(nil),                  // 0: graph.v1.HLCTimestamp
 	(*MutationOp)(nil),                    // 1: graph.v1.MutationOp
-	(*Mutation)(nil),                      // 2: graph.v1.Mutation
-	(*SubscribeRequest)(nil),              // 3: graph.v1.SubscribeRequest
-	(*SubscribeResponse)(nil),             // 4: graph.v1.SubscribeResponse
-	(*SnapshotRequest)(nil),               // 5: graph.v1.SnapshotRequest
-	(*SnapshotHeader)(nil),                // 6: graph.v1.SnapshotHeader
-	(*SnapshotFooter)(nil),                // 7: graph.v1.SnapshotFooter
-	(*SnapshotVertex)(nil),                // 8: graph.v1.SnapshotVertex
-	(*SnapshotEdgeContribution)(nil),      // 9: graph.v1.SnapshotEdgeContribution
-	(*SnapshotEdge)(nil),                  // 10: graph.v1.SnapshotEdge
-	(*SnapshotResponse)(nil),              // 11: graph.v1.SnapshotResponse
-	(*PeerStatusRequest)(nil),             // 12: graph.v1.PeerStatusRequest
-	(*OriginState)(nil),                   // 13: graph.v1.OriginState
-	(*PeerStatusResponse)(nil),            // 14: graph.v1.PeerStatusResponse
-	nil,                                   // 15: graph.v1.SubscribeRequest.FromSeqPerOriginEntry
-	nil,                                   // 16: graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
-	(*PutVertexRequest)(nil),              // 17: graph.v1.PutVertexRequest
-	(*PutVerticesRequest)(nil),            // 18: graph.v1.PutVerticesRequest
-	(*DeleteVertexRequest)(nil),           // 19: graph.v1.DeleteVertexRequest
-	(*DeleteVerticesRequest)(nil),         // 20: graph.v1.DeleteVerticesRequest
-	(*DeleteVerticesByPrefixRequest)(nil), // 21: graph.v1.DeleteVerticesByPrefixRequest
-	(*AddEdgeRequest)(nil),                // 22: graph.v1.AddEdgeRequest
-	(*AddEdgesRequest)(nil),               // 23: graph.v1.AddEdgesRequest
-	(*PutEdgeRequest)(nil),                // 24: graph.v1.PutEdgeRequest
-	(*PutEdgesRequest)(nil),               // 25: graph.v1.PutEdgesRequest
-	(*DeleteEdgeRequest)(nil),             // 26: graph.v1.DeleteEdgeRequest
-	(*DeleteEdgesRequest)(nil),            // 27: graph.v1.DeleteEdgesRequest
-	(*DeleteEdgesByPrefixRequest)(nil),    // 28: graph.v1.DeleteEdgesByPrefixRequest
-	(*Vertex)(nil),                        // 29: graph.v1.Vertex
-	(*timestamppb.Timestamp)(nil),         // 30: google.protobuf.Timestamp
+	(*VertexCausalBarrier)(nil),           // 2: graph.v1.VertexCausalBarrier
+	(*ReplicatedPutVertex)(nil),           // 3: graph.v1.ReplicatedPutVertex
+	(*ReplicatedPutVertices)(nil),         // 4: graph.v1.ReplicatedPutVertices
+	(*EdgeCausalBarrier)(nil),             // 5: graph.v1.EdgeCausalBarrier
+	(*ReplicatedPutEdge)(nil),             // 6: graph.v1.ReplicatedPutEdge
+	(*ReplicatedPutEdges)(nil),            // 7: graph.v1.ReplicatedPutEdges
+	(*Mutation)(nil),                      // 8: graph.v1.Mutation
+	(*SubscribeRequest)(nil),              // 9: graph.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),             // 10: graph.v1.SubscribeResponse
+	(*SnapshotRequest)(nil),               // 11: graph.v1.SnapshotRequest
+	(*SnapshotHeader)(nil),                // 12: graph.v1.SnapshotHeader
+	(*SnapshotFooter)(nil),                // 13: graph.v1.SnapshotFooter
+	(*SnapshotVertex)(nil),                // 14: graph.v1.SnapshotVertex
+	(*SnapshotVertexCausalBarrier)(nil),   // 15: graph.v1.SnapshotVertexCausalBarrier
+	(*SnapshotEdgeContribution)(nil),      // 16: graph.v1.SnapshotEdgeContribution
+	(*SnapshotEdge)(nil),                  // 17: graph.v1.SnapshotEdge
+	(*SnapshotEdgeCausalBarrier)(nil),     // 18: graph.v1.SnapshotEdgeCausalBarrier
+	(*SnapshotResponse)(nil),              // 19: graph.v1.SnapshotResponse
+	(*PeerStatusRequest)(nil),             // 20: graph.v1.PeerStatusRequest
+	(*OriginState)(nil),                   // 21: graph.v1.OriginState
+	(*PeerStatusResponse)(nil),            // 22: graph.v1.PeerStatusResponse
+	nil,                                   // 23: graph.v1.SubscribeRequest.FromSeqPerOriginEntry
+	nil,                                   // 24: graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
+	(*PutVertexRequest)(nil),              // 25: graph.v1.PutVertexRequest
+	(*PutVerticesRequest)(nil),            // 26: graph.v1.PutVerticesRequest
+	(*DeleteVertexRequest)(nil),           // 27: graph.v1.DeleteVertexRequest
+	(*DeleteVerticesRequest)(nil),         // 28: graph.v1.DeleteVerticesRequest
+	(*DeleteVerticesByPrefixRequest)(nil), // 29: graph.v1.DeleteVerticesByPrefixRequest
+	(*AddEdgeRequest)(nil),                // 30: graph.v1.AddEdgeRequest
+	(*AddEdgesRequest)(nil),               // 31: graph.v1.AddEdgesRequest
+	(*PutEdgeRequest)(nil),                // 32: graph.v1.PutEdgeRequest
+	(*PutEdgesRequest)(nil),               // 33: graph.v1.PutEdgesRequest
+	(*DeleteEdgeRequest)(nil),             // 34: graph.v1.DeleteEdgeRequest
+	(*DeleteEdgesRequest)(nil),            // 35: graph.v1.DeleteEdgesRequest
+	(*DeleteEdgesByPrefixRequest)(nil),    // 36: graph.v1.DeleteEdgesByPrefixRequest
+	(*Vertex)(nil),                        // 37: graph.v1.Vertex
+	(*Edge)(nil),                          // 38: graph.v1.Edge
+	(*timestamppb.Timestamp)(nil),         // 39: google.protobuf.Timestamp
 }
 var file_graph_v1_replication_proto_depIdxs = []int32{
-	17, // 0: graph.v1.MutationOp.put_vertex:type_name -> graph.v1.PutVertexRequest
-	18, // 1: graph.v1.MutationOp.put_vertices:type_name -> graph.v1.PutVerticesRequest
-	19, // 2: graph.v1.MutationOp.delete_vertex:type_name -> graph.v1.DeleteVertexRequest
-	20, // 3: graph.v1.MutationOp.delete_vertices:type_name -> graph.v1.DeleteVerticesRequest
-	21, // 4: graph.v1.MutationOp.delete_vertices_by_prefix:type_name -> graph.v1.DeleteVerticesByPrefixRequest
-	22, // 5: graph.v1.MutationOp.add_edge:type_name -> graph.v1.AddEdgeRequest
-	23, // 6: graph.v1.MutationOp.add_edges:type_name -> graph.v1.AddEdgesRequest
-	24, // 7: graph.v1.MutationOp.put_edge:type_name -> graph.v1.PutEdgeRequest
-	25, // 8: graph.v1.MutationOp.put_edges:type_name -> graph.v1.PutEdgesRequest
-	26, // 9: graph.v1.MutationOp.delete_edge:type_name -> graph.v1.DeleteEdgeRequest
-	27, // 10: graph.v1.MutationOp.delete_edges:type_name -> graph.v1.DeleteEdgesRequest
-	28, // 11: graph.v1.MutationOp.delete_edges_by_prefix:type_name -> graph.v1.DeleteEdgesByPrefixRequest
-	0,  // 12: graph.v1.Mutation.hlc:type_name -> graph.v1.HLCTimestamp
-	1,  // 13: graph.v1.Mutation.op:type_name -> graph.v1.MutationOp
-	15, // 14: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
-	2,  // 15: graph.v1.SubscribeResponse.mutation:type_name -> graph.v1.Mutation
-	16, // 16: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
-	0,  // 17: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
-	29, // 18: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
-	0,  // 19: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
-	30, // 20: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
-	0,  // 21: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
-	9,  // 22: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
-	6,  // 23: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
-	8,  // 24: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
-	10, // 25: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
-	7,  // 26: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
-	0,  // 27: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
-	13, // 28: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
-	3,  // 29: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
-	5,  // 30: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
-	12, // 31: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
-	4,  // 32: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
-	11, // 33: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
-	14, // 34: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
-	32, // [32:35] is the sub-list for method output_type
-	29, // [29:32] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	25, // 0: graph.v1.MutationOp.put_vertex:type_name -> graph.v1.PutVertexRequest
+	26, // 1: graph.v1.MutationOp.put_vertices:type_name -> graph.v1.PutVerticesRequest
+	27, // 2: graph.v1.MutationOp.delete_vertex:type_name -> graph.v1.DeleteVertexRequest
+	28, // 3: graph.v1.MutationOp.delete_vertices:type_name -> graph.v1.DeleteVerticesRequest
+	29, // 4: graph.v1.MutationOp.delete_vertices_by_prefix:type_name -> graph.v1.DeleteVerticesByPrefixRequest
+	30, // 5: graph.v1.MutationOp.add_edge:type_name -> graph.v1.AddEdgeRequest
+	31, // 6: graph.v1.MutationOp.add_edges:type_name -> graph.v1.AddEdgesRequest
+	32, // 7: graph.v1.MutationOp.put_edge:type_name -> graph.v1.PutEdgeRequest
+	33, // 8: graph.v1.MutationOp.put_edges:type_name -> graph.v1.PutEdgesRequest
+	34, // 9: graph.v1.MutationOp.delete_edge:type_name -> graph.v1.DeleteEdgeRequest
+	35, // 10: graph.v1.MutationOp.delete_edges:type_name -> graph.v1.DeleteEdgesRequest
+	36, // 11: graph.v1.MutationOp.delete_edges_by_prefix:type_name -> graph.v1.DeleteEdgesByPrefixRequest
+	4,  // 12: graph.v1.MutationOp.replicated_put_vertices:type_name -> graph.v1.ReplicatedPutVertices
+	7,  // 13: graph.v1.MutationOp.replicated_put_edges:type_name -> graph.v1.ReplicatedPutEdges
+	37, // 14: graph.v1.ReplicatedPutVertex.live:type_name -> graph.v1.Vertex
+	2,  // 15: graph.v1.ReplicatedPutVertex.causal_barrier:type_name -> graph.v1.VertexCausalBarrier
+	3,  // 16: graph.v1.ReplicatedPutVertices.entries:type_name -> graph.v1.ReplicatedPutVertex
+	38, // 17: graph.v1.ReplicatedPutEdge.live:type_name -> graph.v1.Edge
+	5,  // 18: graph.v1.ReplicatedPutEdge.causal_barrier:type_name -> graph.v1.EdgeCausalBarrier
+	6,  // 19: graph.v1.ReplicatedPutEdges.entries:type_name -> graph.v1.ReplicatedPutEdge
+	0,  // 20: graph.v1.Mutation.hlc:type_name -> graph.v1.HLCTimestamp
+	1,  // 21: graph.v1.Mutation.op:type_name -> graph.v1.MutationOp
+	23, // 22: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
+	8,  // 23: graph.v1.SubscribeResponse.mutation:type_name -> graph.v1.Mutation
+	24, // 24: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
+	0,  // 25: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
+	37, // 26: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
+	0,  // 27: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
+	0,  // 28: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	39, // 29: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
+	0,  // 30: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
+	16, // 31: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
+	0,  // 32: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	12, // 33: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
+	14, // 34: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
+	17, // 35: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
+	13, // 36: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
+	15, // 37: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
+	18, // 38: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
+	0,  // 39: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
+	21, // 40: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
+	9,  // 41: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
+	11, // 42: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
+	20, // 43: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
+	10, // 44: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
+	19, // 45: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
+	22, // 46: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
+	44, // [44:47] is the sub-list for method output_type
+	41, // [41:44] is the sub-list for method input_type
+	41, // [41:41] is the sub-list for extension type_name
+	41, // [41:41] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_replication_proto_init() }
@@ -1423,12 +2026,24 @@ func file_graph_v1_replication_proto_init() {
 		(*MutationOp_DeleteEdge)(nil),
 		(*MutationOp_DeleteEdges)(nil),
 		(*MutationOp_DeleteEdgesByPrefix)(nil),
+		(*MutationOp_ReplicatedPutVertices)(nil),
+		(*MutationOp_ReplicatedPutEdges)(nil),
 	}
-	file_graph_v1_replication_proto_msgTypes[11].OneofWrappers = []any{
+	file_graph_v1_replication_proto_msgTypes[3].OneofWrappers = []any{
+		(*ReplicatedPutVertex_Live)(nil),
+		(*ReplicatedPutVertex_CausalBarrier)(nil),
+	}
+	file_graph_v1_replication_proto_msgTypes[6].OneofWrappers = []any{
+		(*ReplicatedPutEdge_Live)(nil),
+		(*ReplicatedPutEdge_CausalBarrier)(nil),
+	}
+	file_graph_v1_replication_proto_msgTypes[19].OneofWrappers = []any{
 		(*SnapshotResponse_Header)(nil),
 		(*SnapshotResponse_Vertex)(nil),
 		(*SnapshotResponse_Edge)(nil),
 		(*SnapshotResponse_Footer)(nil),
+		(*SnapshotResponse_VertexCausalBarrier)(nil),
+		(*SnapshotResponse_EdgeCausalBarrier)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1436,7 +2051,7 @@ func file_graph_v1_replication_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_replication_proto_rawDesc), len(file_graph_v1_replication_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

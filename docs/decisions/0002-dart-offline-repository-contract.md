@@ -3,8 +3,8 @@
 - Status: Accepted; amended to Put-only first release
 - Date: 2026-07-12
 - Accepted: 2026-07-19
-- Amended: 2026-08-11
-- Issues: #1021, #1175
+- Amended: 2026-08-13
+- Issues: #1021, #1175, #1178
 
 ## Context
 
@@ -242,6 +242,26 @@ one item per RPC and commits each record's resulting state transactionally
 after its response. A 1,001-item restart scenario proves that already-confirmed
 items are not replayed while remaining Put items resume safely. A crash
 therefore does not rebuild already-confirmed items into a later batch.
+
+`OfflineRemote.putVertex` and `putEdge` return the online SDK's
+server-authoritative `PutOutcome`; the adapter explicitly disables nested
+online retries. `appliedAndLive` becomes `confirmed` only when the absolute
+expiration is live at the pre-send, response, and local-commit samples.
+`expired` becomes terminal `expired` and invalidates any older confirmed cache
+entry. `conditionNotMet` and `superseded` become retained, inspectable
+`deadLetter` records with bounded content-free diagnostics because the server
+preserved state other than the attempted entity. They also invalidate older
+confirmed cache state. Receiving any outcome consumes one completed adapter
+attempt; proving local expiration before transport consumes none.
+
+The confirmation transaction validates the record identity, partition
+generation, active lease, auth-pause state, and lease owner before applying an
+outcome. Its transition time is the monotone maximum of the response sample,
+commit sample, enqueue time, and prior operation update. A response observed
+after expiration therefore stays expired even if the device clock rolls back
+before commit. A stale lease, wiped generation, or auth epoch cannot publish a
+late outcome. Response loss remains retryable; the Repository never fabricates
+an outcome that it did not observe.
 
 The codec retains `AddEdgeIntent` and its exact contribution ID only to read
 snapshots produced by the earlier experimental implementation. Snapshot open

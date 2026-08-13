@@ -10,7 +10,8 @@
  *   import { connect } from "lantern-sdk";
  *   const client = connect("http://localhost:6380");
  *   try {
- *     await client.putVertex({ key: "hello", value: "world" });
+ *     const outcome = await client.putVertex({ key: "hello", value: "world" });
+ *     if (outcome !== "appliedAndLive") throw new Error(`Put returned ${outcome}`);
  *     const v = await client.getVertex("hello");
  *   } finally {
  *     client.close();
@@ -54,7 +55,7 @@ export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
 }
 
 export { Lantern } from "./client.js";
-export type { LanternArgs } from "./client.js";
+export type { EdgePutResult, LanternArgs, PutOutcome, VertexPutResult } from "./client.js";
 export {
   createIncrementalSearch,
   DEFAULT_DEBOUNCE_MS,

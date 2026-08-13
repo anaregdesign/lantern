@@ -13,11 +13,12 @@ import (
 // propagated the response shape into the MCP tool result.
 type fakeLantern struct {
 	// PutVertex
-	putVertexErr   error
-	lastPutKey     string
-	lastPutValue   any
-	lastPutTTL     time.Duration
-	putVertexCalls int
+	putVertexErr     error
+	putVertexOutcome client.PutOutcome
+	lastPutKey       string
+	lastPutValue     any
+	lastPutTTL       time.Duration
+	putVertexCalls   int
 
 	// GetVertex
 	getVertexFn func(ctx context.Context, key string) (*client.Vertex, error)
@@ -74,12 +75,16 @@ type fakeLantern struct {
 	pingErr error
 }
 
-func (f *fakeLantern) PutVertex(_ context.Context, key string, value any, ttl time.Duration) error {
+func (f *fakeLantern) PutVertex(_ context.Context, key string, value any, ttl time.Duration) (client.PutOutcome, error) {
 	f.putVertexCalls++
 	f.lastPutKey = key
 	f.lastPutValue = value
 	f.lastPutTTL = ttl
-	return f.putVertexErr
+	outcome := f.putVertexOutcome
+	if outcome == 0 {
+		outcome = client.PutOutcomeAppliedAndLive
+	}
+	return outcome, f.putVertexErr
 }
 
 func (f *fakeLantern) GetVertex(ctx context.Context, key string) (*client.Vertex, error) {

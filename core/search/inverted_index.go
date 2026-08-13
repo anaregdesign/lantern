@@ -477,20 +477,34 @@ func (idx *InvertedIndex[S, D]) IndexManyPrepared(items []PreparedItem[S]) error
 // writers with an outer lock may use this to preserve a larger transaction's
 // atomicity before applying the same batch.
 func (idx *InvertedIndex[S, D]) ValidateManyPrepared(items []PreparedItem[S]) error {
+	return idx.ValidateManyPreparedAt(items, idx.clock())
+}
+
+// ValidateManyPreparedAt is ValidateManyPrepared with a caller-supplied
+// liveness instant. Layered stores use the same final-lock sample for their
+// primary storage, outcome, validation, and index commit; this prevents a wall
+// clock rollback from validating a live value as expired (or the reverse).
+func (idx *InvertedIndex[S, D]) ValidateManyPreparedAt(items []PreparedItem[S], now time.Time) error {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return idx.validatePreparedLocked(items, idx.clock())
+	return idx.validatePreparedLocked(items, now)
 }
 
 // IndexManyPreparedValidated applies a batch previously accepted by
 // ValidateManyPrepared. The caller must serialize intervening writers.
 func (idx *InvertedIndex[S, D]) IndexManyPreparedValidated(items []PreparedItem[S]) {
+	idx.IndexManyPreparedValidatedAt(items, idx.clock())
+}
+
+// IndexManyPreparedValidatedAt is IndexManyPreparedValidated with the exact
+// liveness instant used by the preceding ValidateManyPreparedAt call. The
+// caller must serialize intervening writers just like the clock-owning facade.
+func (idx *InvertedIndex[S, D]) IndexManyPreparedValidatedAt(items []PreparedItem[S], now time.Time) {
 	if len(items) == 0 {
 		return
 	}
 	idx.lockWrite()
 	defer idx.mu.Unlock()
-	now := idx.clock()
 	for _, item := range finalPreparedItems(items) {
 		idx.indexPreparedLocked(item, now)
 	}

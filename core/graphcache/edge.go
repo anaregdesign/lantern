@@ -198,6 +198,16 @@ func (w *weight) putWithExpirationHLC(value float32, expiration time.Time, ts hl
 	return true
 }
 
+// lastPutTimestamp returns the causal floor carried by this bucket without
+// reconciling its TTL contributions. Accepted-expired Put uses it before
+// physically deleting a bucket, so a strictly older overwrite cannot erase a
+// newer live register merely because the candidate itself has no live value.
+func (w *weight) lastPutTimestamp() hlc.Timestamp {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastHLC
+}
+
 func (w *weight) isZero() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -797,6 +807,28 @@ func (c *edgeCache[S]) putWithExpirationHLC(tail, head S, w float32, expiration 
 	return created, tailID, headID, applied
 }
 
+// lastPutHLC returns the LWW floor for an existing edge bucket. A present
+// bucket whose floor is the zero timestamp still returns ok=true; callers must
+// distinguish physical presence from whether any replicated Put has occurred.
+func (c *edgeCache[S]) lastPutHLC(tail, head S) (hlc.Timestamp, bool) {
+	tailID, headID, ok := c.lookupIDs(tail, head)
+	if !ok {
+		return hlc.Timestamp{}, false
+	}
+	c.mu.RLock()
+	heads, ok := c.tf[tailID]
+	if !ok {
+		c.mu.RUnlock()
+		return hlc.Timestamp{}, false
+	}
+	edge, ok := heads[headID]
+	c.mu.RUnlock()
+	if !ok {
+		return hlc.Timestamp{}, false
+	}
+	return edge.lastPutTimestamp(), true
+}
+
 func (c *edgeCache[S]) addWithTTL(tail, head S, w float32, ttl time.Duration) {
 	c.addWithExpiration(tail, head, w, time.Now().Add(ttl))
 }
@@ -884,7 +916,7 @@ func (c *edgeCache[S]) flush() int {
 // The typical caller (GraphCache.Watch) wraps the call in the surrounding
 // GraphCache.mu.Lock() so the predicate can read sibling state (e.g. the
 // vertex cache) without further locking.
-func (c *edgeCache[S]) flushFunc(keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID)) (zero, dangling int) {
+func (c *edgeCache[S]) flushFunc(keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID, w *weight)) (zero, dangling int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -915,7 +947,7 @@ func (c *edgeCache[S]) tailIDs() []vertexID {
 // same zero-weight + keep-predicate sweep, but only to the supplied tail
 // buckets. Tails absent from tf (deleted since the plan was built) are skipped.
 // Counts and onDelete semantics match flushFunc exactly.
-func (c *edgeCache[S]) flushTails(tailIDs []vertexID, keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID)) (zero, dangling int) {
+func (c *edgeCache[S]) flushTails(tailIDs []vertexID, keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID, w *weight)) (zero, dangling int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -936,19 +968,19 @@ func (c *edgeCache[S]) flushTails(tailIDs []vertexID, keep func(tail, head verte
 // onDelete, if non-nil, fires once per removal before the underlying delete.
 // Caller must hold c.mu write-locked. Shared by flushFunc (full walk) and
 // flushTails (bounded incremental walk).
-func (c *edgeCache[S]) sweepHeadsLocked(tailID vertexID, heads map[vertexID]*weight, keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID)) (zero, dangling int) {
+func (c *edgeCache[S]) sweepHeadsLocked(tailID vertexID, heads map[vertexID]*weight, keep func(tail, head vertexID) bool, onDelete func(tail, head vertexID, w *weight)) (zero, dangling int) {
 	for headID, w := range heads {
 		switch {
 		case w.isZero():
 			if onDelete != nil {
-				onDelete(tailID, headID)
+				onDelete(tailID, headID, w)
 			}
 			if c.deleteLocked(tailID, headID) {
 				zero++
 			}
 		case keep != nil && !keep(tailID, headID):
 			if onDelete != nil {
-				onDelete(tailID, headID)
+				onDelete(tailID, headID, w)
 			}
 			if c.deleteLocked(tailID, headID) {
 				dangling++
