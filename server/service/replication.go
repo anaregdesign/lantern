@@ -370,7 +370,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 		entry := &pb.SnapshotResponse{
 			Entry: &pb.SnapshotResponse_Vertex{
 				Vertex: &pb.SnapshotVertex{
-					Vertex: v.Value,
+					Vertex: replicationSnapshotVertex(v),
 					Hlc:    hlcToProto(v.HLC),
 				},
 			},
@@ -422,6 +422,26 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 		},
 	}
 	return stream.Send(footer)
+}
+
+// replicationSnapshotVertex converts GraphCache's nil value sentinel into the
+// public Vertex nil-value arm. Edge writes auto-create endpoint vertices with a
+// nil *pb.Vertex payload, but a SnapshotVertex wire frame must remain
+// self-describing: the receiver needs both the key and expiration and rejects a
+// nil payload as a truncated/corrupt frame. Non-nil values already carry their
+// exact public representation and can be streamed unchanged.
+func replicationSnapshotVertex(v graphcache.SnapshotVertex[string, *pb.Vertex]) *pb.Vertex {
+	if v.Value != nil {
+		return v.Value
+	}
+	vertex := &pb.Vertex{
+		Key:   v.Key,
+		Value: &pb.Vertex_Nil{Nil: true},
+	}
+	if !v.Expiration.IsZero() {
+		vertex.Expiration = timestamppb.New(v.Expiration)
+	}
+	return vertex
 }
 
 // PeerStatus implements pb.LanternReplicationServiceServer.

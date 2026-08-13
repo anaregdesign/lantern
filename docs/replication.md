@@ -492,6 +492,14 @@ Framing contract:
   causal barriers. Pump and anti-entropy consumers reject count mismatches,
   duplicate/missing header/footer frames, or any out-of-order body frame before
   advancing resume watermarks.
+- Every live vertex frame is self-describing and non-nil. In particular,
+  endpoint vertices auto-created by `PutEdge*` / `AddEdge*` are serialized as a
+  concrete `Vertex` carrying the endpoint key, expiration, and `nil` value arm;
+  the internal `*Vertex == nil` sentinel is never exposed on the wire. A nil
+  `SnapshotVertex.vertex` is a truncated/corrupt frame and consumers fail
+  closed. This invariant is load-bearing for gap recovery because edge-only
+  working sets contain implicit endpoints even when no `PutVertex*` call has
+  occurred.
 - Retained Put causal barriers are streamed **before live entries**.
   They use explicit `SnapshotVertexCausalBarrier` and
   `SnapshotEdgeCausalBarrier` oneof arms, never overloaded live
@@ -528,8 +536,9 @@ Implementation notes:
   the retained barrier maps. Capturing barriers and live state in separate
   lock passes is forbidden: TTL/GC could move a floor between the passes and
   make the snapshot omit both representations. The completed owned slices are
-  then streamed frame-by-frame, honouring `stream.Context()` cancellation
-  between sends.
+  then streamed frame-by-frame, canonicalizing implicit nil-valued endpoint
+  vertices at the service boundary and honouring `stream.Context()`
+  cancellation between sends.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,
   one-peer-at-a-time operation, so the O(N+E) overhead is acceptable.
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
