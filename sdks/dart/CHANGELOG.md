@@ -6,8 +6,8 @@
   notifications so companion packages can isolate shared work from individual
   callers without polling.
 - Add the per-call `LanternCallOptions.retry` override so a higher-level durable
-  coordinator can suppress the client's retry policy and own one exact wire
-  attempt budget.
+  coordinator can suppress the client's retry policy. Each RPC is attempted at
+  most once, while a chunked plural logical call may still issue multiple RPCs.
 
 ## 0.1.3
 

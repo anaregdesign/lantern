@@ -1678,6 +1678,235 @@ void main() {
   });
 
   test(
+    'blocked dead-letter authorization is quiesced before wipe and ID reuse',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final remote = FakeOfflineRemote();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'old', value: VertexValue.string('old')),
+      );
+      remote.vertexPutFailures.add(
+        failure(OfflineRemoteErrorKind.invalidArgument),
+      );
+      await repository.drain('p');
+      final old = await store.transaction(
+        (transaction) => transaction.outbox('p').single,
+      );
+      final authorization = Completer<bool>();
+      final authorizerStarted = Completer<void>();
+      final inspection = repository.inspectDeadLetter(
+        'p',
+        old.recordId,
+        authorize: (_) {
+          authorizerStarted.complete();
+          return authorization.future;
+        },
+      );
+      final canceledInspection = expectLater(
+        inspection,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      await authorizerStarted.future;
+
+      var wipeCompleted = false;
+      final wiping = repository.wipePartition('p').whenComplete(() {
+        wipeCompleted = true;
+      });
+      await canceledInspection;
+      await wiping.timeout(const Duration(seconds: 1));
+      expect(wipeCompleted, isTrue);
+
+      await _seedDeadLetter(
+        store,
+        partitionId: 'p',
+        recordId: old.recordId,
+        operationId: old.operationId,
+        key: 'new',
+        now: initial,
+      );
+      authorization.complete(true);
+      await Future<void>.delayed(Duration.zero);
+      final replacement = await repository.inspectDeadLetter(
+        'p',
+        old.recordId,
+        authorize: (_) async => true,
+      );
+      expect(
+        replacement,
+        isA<OfflinePutVertexIntent>().having(
+          (intent) => intent.vertex.key,
+          'key',
+          'new',
+        ),
+      );
+    },
+  );
+
+  test(
+    'dead-letter inspection rejects a same ID reused during authorization',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      await _seedDeadLetter(
+        store,
+        partitionId: 'p',
+        recordId: 'same-record',
+        operationId: 'same-operation',
+        key: 'old',
+        now: initial,
+      );
+
+      final inspected = await repository.inspectDeadLetter(
+        'p',
+        'same-record',
+        authorize: (_) async {
+          await store.transaction((transaction) {
+            transaction.wipePartition('p');
+          });
+          await _seedDeadLetter(
+            store,
+            partitionId: 'p',
+            recordId: 'same-record',
+            operationId: 'same-operation',
+            key: 'new',
+            now: initial,
+          );
+          return true;
+        },
+      );
+
+      expect(inspected, isNull);
+      expect(
+        await repository.inspectDeadLetter(
+          'p',
+          'same-record',
+          authorize: (_) async => true,
+        ),
+        isA<OfflinePutVertexIntent>().having(
+          (intent) => intent.vertex.key,
+          'key',
+          'new',
+        ),
+      );
+    },
+  );
+
+  test(
+    'Store-facing recovery calls are quiesced by lifecycle closure',
+    () async {
+      Future<void> verify({
+        required String name,
+        required bool deadLetter,
+        required bool dispose,
+        required Future<void> Function(
+          OfflineLanternRepository repository,
+          OfflineWriteHandle handle,
+          String recordId,
+        )
+        action,
+      }) async {
+        final clock = MutableClock(initial);
+        final store = _GateNextTransactionStore();
+        final remote = FakeOfflineRemote();
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: testConfig(clock),
+        );
+        final handle = await repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(key: name, value: VertexValue.string(name)),
+        );
+        if (deadLetter) {
+          remote.vertexPutFailures.add(
+            failure(OfflineRemoteErrorKind.invalidArgument),
+          );
+          await repository.drain('p');
+        }
+        final recordId = await store.transaction(
+          (transaction) => transaction.outbox('p').single.recordId,
+        );
+        store.holdNext();
+        final active = action(repository, handle, recordId);
+        await store.blocked;
+        var lifecycleCompleted = false;
+        final lifecycle =
+            (dispose ? repository.dispose() : repository.wipePartition('p'))
+                .whenComplete(() {
+                  lifecycleCompleted = true;
+                });
+        await Future<void>.delayed(Duration.zero);
+        expect(lifecycleCompleted, isFalse, reason: name);
+        store.release();
+        await active;
+        await lifecycle;
+        await repository.dispose();
+      }
+
+      await verify(
+        name: 'get-status',
+        deadLetter: false,
+        dispose: false,
+        action: (repository, handle, _) => repository
+            .getWriteStatus('p', handle.operationId)
+            .then<void>((status) => expect(status, isNotNull)),
+      );
+      await verify(
+        name: 'list-pending',
+        deadLetter: false,
+        dispose: true,
+        action: (repository, _, _) => repository
+            .listPending('p')
+            .then<void>((items) => expect(items, hasLength(1))),
+      );
+      await verify(
+        name: 'list-dead-letters',
+        deadLetter: true,
+        dispose: false,
+        action: (repository, _, _) => repository
+            .listDeadLetters('p')
+            .then<void>((items) => expect(items, hasLength(1))),
+      );
+      await verify(
+        name: 'retry-dead-letter',
+        deadLetter: true,
+        dispose: true,
+        action: (repository, _, recordId) =>
+            repository.retryDeadLetter('p', recordId),
+      );
+      await verify(
+        name: 'delete-dead-letter',
+        deadLetter: true,
+        dispose: false,
+        action: (repository, _, recordId) =>
+            repository.deleteDeadLetter('p', recordId),
+      );
+      await verify(
+        name: 'auth-pause-status',
+        deadLetter: false,
+        dispose: true,
+        action: (repository, _, _) => repository
+            .isReplayPausedForAuth('p')
+            .then<void>((paused) => expect(paused, isFalse)),
+      );
+    },
+  );
+
+  test(
     'wiping a prefix partition does not close another status stream',
     () async {
       final clock = MutableClock(initial);
@@ -2156,6 +2385,99 @@ void main() {
       throwsA(isA<OfflineDisposedException>()),
     );
   });
+}
+
+Future<void> _seedDeadLetter(
+  OfflineStore store, {
+  required String partitionId,
+  required String recordId,
+  required String operationId,
+  required String key,
+  required DateTime now,
+}) => store.transaction((transaction) {
+  final generation = transaction.generation(partitionId);
+  final record = transaction.enqueue(
+    OfflineOutboxRecord(
+      recordId: recordId,
+      operationId: operationId,
+      itemIndex: 0,
+      partitionId: partitionId,
+      intent: OfflinePutVertexIntent(
+        Vertex(key: key, value: VertexValue.string(key), expiration: null),
+      ),
+      enqueuedAt: now,
+      ordinal: 0,
+      state: OfflineOutboxState.deadLetter,
+      attemptCount: 1,
+      generation: generation,
+      deadLetteredAt: now,
+      diagnosticCode: 'invalid_argument',
+    ),
+  );
+  transaction.putOperation(
+    OfflineOperationRecord(
+      partitionId: partitionId,
+      generation: generation,
+      operationId: operationId,
+      items: <OfflineWriteStatus>[
+        OfflineWriteStatus(
+          recordId: record.recordId,
+          operationId: operationId,
+          itemIndex: 0,
+          state: OfflineWriteState.deadLetter,
+          attemptCount: 1,
+          diagnosticCode: 'invalid_argument',
+        ),
+      ],
+      updatedAt: now,
+      terminalAt: now,
+    ),
+  );
+});
+
+final class _GateNextTransactionStore implements OfflineStore {
+  final InMemoryOfflineStore _delegate = InMemoryOfflineStore();
+  Completer<void>? _nextGate;
+  Completer<void>? _activeGate;
+  Completer<void>? _blocked;
+
+  Future<void> get blocked =>
+      _blocked?.future ??
+      Future<void>.error(StateError('no transaction is held'));
+
+  void holdNext() {
+    if (_nextGate != null || _activeGate != null) {
+      throw StateError('a transaction is already held');
+    }
+    _nextGate = Completer<void>();
+    _blocked = Completer<void>();
+  }
+
+  void release() {
+    final gate = _activeGate;
+    if (gate == null) throw StateError('no transaction is active');
+    if (!gate.isCompleted) gate.complete();
+  }
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) =>
+      _delegate.changes(partitionId);
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) async {
+    final gate = _nextGate;
+    if (gate != null) {
+      _nextGate = null;
+      _activeGate = gate;
+      final blocked = _blocked!;
+      if (!blocked.isCompleted) blocked.complete();
+      await gate.future;
+      if (identical(_activeGate, gate)) _activeGate = null;
+    }
+    return _delegate.transaction(action);
+  }
 }
 
 final class _ThrowingDiagnostics implements OfflineDiagnostics {

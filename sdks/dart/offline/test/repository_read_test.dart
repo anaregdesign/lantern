@@ -822,6 +822,43 @@ void main() {
     await repository.wipePartition('never-started');
   });
 
+  test(
+    'never-started concurrent wipes share the partition runtime bound',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _GatedTransactionStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxActivePartitionRuntimes: 1,
+        ),
+      );
+      addTearDown(repository.dispose);
+
+      final first = repository.wipePartition('first');
+      await Future<void>.delayed(Duration.zero);
+      expect(store.transactionCalls, 1);
+      expect(
+        () => repository.wipePartition('second'),
+        throwsA(isA<OfflineCapacityException>()),
+      );
+      expect(store.transactionCalls, 1);
+
+      store.release();
+      await first;
+      store.hold();
+      final reused = repository.wipePartition('second');
+      await Future<void>.delayed(Duration.zero);
+      expect(store.transactionCalls, 2);
+      store.release();
+      await reused;
+    },
+  );
+
   test('pause, resume, and final cancel release the store listener', () async {
     final clock = MutableClock(initial);
     final store = _TrackingStore();

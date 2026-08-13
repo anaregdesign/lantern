@@ -92,8 +92,9 @@ abstract interface class OfflineRemote {
 /// [OfflineRemote] adapter over the official [LanternClient].
 ///
 /// The wrapped client invokes its configured [TokenProvider] at send time. The
-/// adapter disables the client's nested retry policy so each method is exactly
-/// one wire attempt; [OfflineLanternRepository] owns durable retry accounting.
+/// adapter disables the client's nested retry policy. Each singular adapter
+/// method issues at most one RPC attempt; [OfflineLanternRepository] owns
+/// durable retry accounting.
 /// The adapter neither reads nor persists credentials.
 final class LanternClientOfflineRemote implements OfflineRemote {
   /// Wraps one online Lantern client.

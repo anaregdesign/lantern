@@ -467,15 +467,20 @@ final class OfflineLanternRepository {
   }) {
     _validatePartition(partitionId);
     _ensurePartitionActive(partitionId);
-    return _partitionRuntime(partitionId).scheduleReplay(
+    final runtime = _partitionRuntime(partitionId);
+    return runtime.scheduleReplay(
       cancellation,
-      (ownedCancellation) =>
-          _drainOwned(partitionId, cancellation: ownedCancellation),
+      (ownedCancellation) => _drainOwned(
+        partitionId,
+        runtime: runtime,
+        cancellation: ownedCancellation,
+      ),
     );
   }
 
   Future<int> _drainOwned(
     String partitionId, {
+    required _PartitionRuntime runtime,
     required LanternCancellationToken cancellation,
   }) async {
     if (await _isReplayPausedForAuth(partitionId)) {
@@ -486,6 +491,7 @@ final class OfflineLanternRepository {
     var pausedForAuth = false;
     while (!pausedForAuth) {
       _throwIfCanceled(cancellation);
+      final authEpoch = runtime.authEpoch;
       await _expireOrAgeOut(partitionId);
       final claimResult = await store.transaction((transaction) {
         final sampledAt = config.clock().toUtc();
@@ -550,6 +556,8 @@ final class OfflineLanternRepository {
             partitionId,
             record,
             owner: owner,
+            runtime: runtime,
+            authEpoch: authEpoch,
             cancellation: cancellation,
           ),
         ),
@@ -569,15 +577,18 @@ final class OfflineLanternRepository {
   }) {
     _validatePartition(partitionId);
     _ensurePartitionActive(partitionId);
-    return _partitionRuntime(partitionId).scheduleReplay(cancellation, (
-      ownedCancellation,
-    ) async {
+    final runtime = _partitionRuntime(partitionId);
+    return runtime.scheduleReplay(cancellation, (ownedCancellation) async {
       if (await _isReplayPausedForAuth(partitionId)) {
         throw const OfflineAuthPausedException();
       }
       _throwIfCanceled(ownedCancellation);
       await remote.probe(cancellation: ownedCancellation);
-      return _drainOwned(partitionId, cancellation: ownedCancellation);
+      return _drainOwned(
+        partitionId,
+        runtime: runtime,
+        cancellation: ownedCancellation,
+      );
     });
   }
 
@@ -597,11 +608,15 @@ final class OfflineLanternRepository {
   }) {
     _validatePartition(partitionId);
     _ensurePartitionActive(partitionId);
-    return _partitionRuntime(partitionId).scheduleReplay(cancellation, (
-      ownedCancellation,
-    ) async {
+    final runtime = _partitionRuntime(partitionId);
+    return runtime.scheduleReplay(cancellation, (ownedCancellation) async {
       await _clearReplayAuthPause(partitionId);
-      return _drainOwned(partitionId, cancellation: ownedCancellation);
+      runtime.resumeAuth();
+      return _drainOwned(
+        partitionId,
+        runtime: runtime,
+        cancellation: ownedCancellation,
+      );
     });
   }
 
@@ -715,9 +730,11 @@ final class OfflineLanternRepository {
       });
       if (inspected == null) return null;
       _throwIfCanceled(cancellation);
-      if (!await authorize(inspected.summary)) {
-        throw const OfflineAuthorizationException();
-      }
+      final authorized = await _awaitWithCancellation(
+        Future<bool>.sync(() => authorize(inspected.summary)),
+        cancellation,
+      );
+      if (!authorized) throw const OfflineAuthorizationException();
       _throwIfCanceled(cancellation);
       final unchanged = await store.transaction((transaction) {
         final current = transaction.getOutbox(partitionId, recordId);
@@ -1757,52 +1774,102 @@ final class OfflineLanternRepository {
     String partitionId,
     OfflineOutboxRecord claimed, {
     required String owner,
+    required _PartitionRuntime runtime,
+    required _ReplayAuthEpoch authEpoch,
     required LanternCancellationToken? cancellation,
   }) async {
-    late final _ReplayPermit permit;
-    try {
-      permit = await _replayLimiter.acquire(partitionId, cancellation);
-    } on OfflineCapacityException {
-      await _releaseClaim(partitionId, claimed, owner);
-      _recordDiagnostic(
-        const OfflineDiagnosticEvent(
-          kind: OfflineDiagnosticKind.capacityRejected,
-        ),
-      );
-      rethrow;
-    } on OfflineCanceledException {
-      await _releaseClaim(partitionId, claimed, owner);
-      rethrow;
-    } on OfflineDisposedException {
-      await _releaseClaim(partitionId, claimed, owner);
-      rethrow;
-    }
+    final sendCancellation = LanternCancellationToken();
+    final removeCallerCancellation = cancellation?.listen(
+      sendCancellation.cancel,
+    );
+    final removeAuthCancellation = authEpoch.cancellation.listen(
+      sendCancellation.cancel,
+    );
+    _ReplayPermit? permit;
     _LeaseRenewal? renewal;
     try {
-      _throwIfCanceled(cancellation);
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      try {
+        permit = await _replayLimiter.acquire(partitionId, sendCancellation);
+      } on OfflineCapacityException {
+        await _releaseClaim(partitionId, claimed, owner);
+        _recordDiagnostic(
+          const OfflineDiagnosticEvent(
+            kind: OfflineDiagnosticKind.capacityRejected,
+          ),
+        );
+        rethrow;
+      } on OfflineCanceledException {
+        if (authEpoch.pauseInProgress) {
+          return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+        }
+        await _releaseClaim(partitionId, claimed, owner);
+        rethrow;
+      } on OfflineDisposedException {
+        await _releaseClaim(partitionId, claimed, owner);
+        rethrow;
+      }
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      _throwIfCanceled(sendCancellation);
       final claimState = await _claimSendState(partitionId, claimed, owner);
       if (claimState == _ClaimSendState.pausedForAuth) {
-        await _pauseClaimForAuth(partitionId, claimed, owner);
-        return const _ReplayOutcome(pausedForAuth: true);
+        if (runtime.beginAuthPause(authEpoch)) {
+          runtime.completeAuthPause(authEpoch);
+        }
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
       }
       if (claimState == _ClaimSendState.stale) {
         await _releaseClaim(partitionId, claimed, owner);
         return const _ReplayOutcome();
       }
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      _throwIfCanceled(sendCancellation);
       renewal = _startLeaseRenewal(partitionId, claimed, owner);
       return await _replayOne(
         partitionId,
         claimed,
         owner: owner,
-        cancellation: cancellation,
+        runtime: runtime,
+        authEpoch: authEpoch,
+        cancellation: sendCancellation,
       );
+    } on OfflineCanceledException {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      await _releaseClaim(partitionId, claimed, owner);
+      rethrow;
     } finally {
       if (renewal != null) {
         await renewal.stop();
         _leaseRenewals.remove(renewal);
       }
-      permit.release();
+      permit?.release();
+      removeAuthCancellation();
+      removeCallerCancellation?.call();
     }
+  }
+
+  Future<_ReplayOutcome> _settleAuthEpochClaim(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    _ReplayAuthEpoch authEpoch,
+  ) async {
+    await authEpoch.settled;
+    if (authEpoch.pausedDurably) {
+      await _pauseClaimForAuth(partitionId, claimed, owner);
+      return const _ReplayOutcome(pausedForAuth: true);
+    }
+    await _releaseClaim(partitionId, claimed, owner);
+    authEpoch.throwFailureIfAny();
+    return const _ReplayOutcome();
   }
 
   Future<_ClaimSendState> _claimSendState(
@@ -1873,6 +1940,8 @@ final class OfflineLanternRepository {
     String partitionId,
     OfflineOutboxRecord claimed, {
     required String owner,
+    required _PartitionRuntime runtime,
+    required _ReplayAuthEpoch authEpoch,
     required LanternCancellationToken? cancellation,
   }) async {
     if (claimed.intent is OfflineAddEdgeIntent) {
@@ -1971,8 +2040,18 @@ final class OfflineLanternRepository {
       }
       return _ReplayOutcome(confirmed: applied);
     } on OfflineRemoteFailure catch (failure) {
-      return _recordReplayFailure(partitionId, claimed, owner, failure);
+      return _recordReplayFailure(
+        partitionId,
+        claimed,
+        owner,
+        failure,
+        runtime,
+        authEpoch,
+      );
     } on OfflineCanceledException {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
       await _releaseClaim(partitionId, claimed, owner);
       rethrow;
     }
@@ -2097,10 +2176,24 @@ final class OfflineLanternRepository {
     OfflineOutboxRecord claimed,
     String owner,
     OfflineRemoteFailure failure,
+    _PartitionRuntime runtime,
+    _ReplayAuthEpoch authEpoch,
   ) async {
     if (failure.kind == OfflineRemoteErrorKind.canceled) {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
       await _releaseClaim(partitionId, claimed, owner);
       throw const OfflineCanceledException();
+    }
+    if (failure.kind == OfflineRemoteErrorKind.unauthenticated) {
+      return _recordAuthFailure(
+        partitionId,
+        claimed,
+        owner,
+        runtime,
+        authEpoch,
+      );
     }
     final outcome = await store.transaction((transaction) {
       final sampledAt = config.clock().toUtc();
@@ -2115,26 +2208,6 @@ final class OfflineLanternRepository {
         return const _ReplayOutcome();
       }
       final transitionAt = _transitionTime(transaction, current, sampledAt);
-      if (failure.kind == OfflineRemoteErrorKind.unauthenticated) {
-        transaction.setReplayPausedForAuth(partitionId, true);
-        transaction.updateOutbox(
-          current.copyWith(
-            state: OfflineOutboxState.enqueued,
-            clearLeaseOwner: true,
-            clearLeaseUntil: true,
-            diagnosticCode: _authPauseDiagnostic,
-          ),
-        );
-        _updateOperationStatus(
-          transaction,
-          current,
-          OfflineWriteState.pausedForAuth,
-          attemptCount: current.attemptCount,
-          diagnosticCode: _authPauseDiagnostic,
-          now: transitionAt,
-        );
-        return const _ReplayOutcome(pausedForAuth: true);
-      }
       final attempts = current.attemptCount + 1;
       final terminal =
           failure.kind == OfflineRemoteErrorKind.invalidArgument ||
@@ -2183,14 +2256,7 @@ final class OfflineLanternRepository {
       );
       return const _ReplayOutcome(retryScheduled: true);
     });
-    if (outcome.pausedForAuth) {
-      _emit(
-        claimed,
-        OfflineWriteState.pausedForAuth,
-        attemptCount: claimed.attemptCount,
-        diagnosticCode: _authPauseDiagnostic,
-      );
-    } else if (outcome.deadLetter) {
+    if (outcome.deadLetter) {
       _emit(
         claimed,
         OfflineWriteState.deadLetter,
@@ -2206,6 +2272,71 @@ final class OfflineLanternRepository {
       );
     }
     return outcome;
+  }
+
+  Future<_ReplayOutcome> _recordAuthFailure(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    _PartitionRuntime runtime,
+    _ReplayAuthEpoch authEpoch,
+  ) async {
+    if (!runtime.beginAuthPause(authEpoch)) {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      await _releaseClaim(partitionId, claimed, owner);
+      return const _ReplayOutcome();
+    }
+    try {
+      final now = config.clock().toUtc();
+      final paused = await store.transaction((transaction) {
+        final current = transaction.getOutbox(partitionId, claimed.recordId);
+        if (current == null ||
+            current.generation != claimed.generation ||
+            current.state != OfflineOutboxState.sending ||
+            current.leaseOwner != owner ||
+            current.leaseUntil == null ||
+            !now.isBefore(current.leaseUntil!) ||
+            transaction.generation(partitionId) != claimed.generation) {
+          return false;
+        }
+        transaction.setReplayPausedForAuth(partitionId, true);
+        transaction.updateOutbox(
+          current.copyWith(
+            state: OfflineOutboxState.enqueued,
+            clearLeaseOwner: true,
+            clearLeaseUntil: true,
+            diagnosticCode: _authPauseDiagnostic,
+          ),
+        );
+        _updateOperationStatus(
+          transaction,
+          current,
+          OfflineWriteState.pausedForAuth,
+          attemptCount: current.attemptCount,
+          diagnosticCode: _authPauseDiagnostic,
+          now: now,
+        );
+        return true;
+      });
+      if (!paused) {
+        runtime.abortAuthPause(authEpoch);
+        return const _ReplayOutcome();
+      }
+      runtime.completeAuthPause(authEpoch);
+      _emit(
+        claimed,
+        OfflineWriteState.pausedForAuth,
+        attemptCount: claimed.attemptCount,
+        diagnosticCode: _authPauseDiagnostic,
+      );
+      return const _ReplayOutcome(pausedForAuth: true);
+    } catch (error, stackTrace) {
+      runtime.failAuthPause(authEpoch, error, stackTrace);
+      await _releaseClaim(partitionId, claimed, owner);
+      rethrow;
+    }
   }
 
   Future<bool> _isReplayPausedForAuth(String partitionId) => store.transaction(
@@ -3209,10 +3340,42 @@ final class _PartitionRuntime {
   var _replayRequests = 0;
   var _closing = false;
   Object _closingError = const OfflineCanceledException();
+  var _nextAuthEpoch = 0;
+  late _ReplayAuthEpoch _authEpoch = _ReplayAuthEpoch(_nextAuthEpoch);
 
   bool get isClosing => _closing;
 
   bool get canEvict => !_closing && _active == 0 && _replayRequests == 0;
+
+  _ReplayAuthEpoch get authEpoch => _authEpoch;
+
+  bool beginAuthPause(_ReplayAuthEpoch epoch) =>
+      identical(_authEpoch, epoch) && epoch.beginPause();
+
+  void completeAuthPause(_ReplayAuthEpoch epoch) {
+    if (identical(_authEpoch, epoch)) epoch.completeDurablePause();
+  }
+
+  void abortAuthPause(_ReplayAuthEpoch epoch) {
+    epoch.completeAborted();
+    if (identical(_authEpoch, epoch)) _replaceAuthEpoch();
+  }
+
+  void failAuthPause(
+    _ReplayAuthEpoch epoch,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    epoch.completeFailure(error, stackTrace);
+    if (identical(_authEpoch, epoch)) _replaceAuthEpoch();
+  }
+
+  void resumeAuth() => _replaceAuthEpoch();
+
+  void _replaceAuthEpoch() {
+    _nextAuthEpoch += 1;
+    _authEpoch = _ReplayAuthEpoch(_nextAuthEpoch);
+  }
 
   Future<T> run<T>(
     LanternCancellationToken? callerCancellation,
@@ -3294,20 +3457,78 @@ final class _PartitionRuntime {
   }
 }
 
-Future<void> _awaitWithCancellation(
-  Future<void> future,
+enum _ReplayAuthEpochState { active, pausing, paused, aborted, failed }
+
+final class _ReplayAuthEpoch {
+  _ReplayAuthEpoch(this.value);
+
+  final int value;
+  final LanternCancellationToken cancellation = LanternCancellationToken();
+  final Completer<void> _settled = Completer<void>();
+  var _state = _ReplayAuthEpochState.active;
+  Object? _failure;
+  StackTrace? _failureStackTrace;
+
+  bool get pauseInProgress => _state != _ReplayAuthEpochState.active;
+
+  bool get pausedDurably => _state == _ReplayAuthEpochState.paused;
+
+  Future<void> get settled => _settled.future;
+
+  bool beginPause() {
+    if (_state != _ReplayAuthEpochState.active) return false;
+    _state = _ReplayAuthEpochState.pausing;
+    cancellation.cancel(const OfflineAuthPausedException());
+    return true;
+  }
+
+  void completeDurablePause() {
+    if (_state != _ReplayAuthEpochState.pausing) return;
+    _state = _ReplayAuthEpochState.paused;
+    _completeSettled();
+  }
+
+  void completeAborted() {
+    if (_state != _ReplayAuthEpochState.pausing) return;
+    _state = _ReplayAuthEpochState.aborted;
+    _completeSettled();
+  }
+
+  void completeFailure(Object error, StackTrace stackTrace) {
+    if (_state != _ReplayAuthEpochState.pausing) return;
+    _failure = error;
+    _failureStackTrace = stackTrace;
+    _state = _ReplayAuthEpochState.failed;
+    _completeSettled();
+  }
+
+  void throwFailureIfAny() {
+    final failure = _failure;
+    if (failure != null) {
+      Error.throwWithStackTrace(failure, _failureStackTrace!);
+    }
+  }
+
+  void _completeSettled() {
+    if (!_settled.isCompleted) _settled.complete();
+  }
+}
+
+Future<T> _awaitWithCancellation<T>(
+  Future<T> future,
   LanternCancellationToken cancellation,
 ) async {
   _throwIfCanceled(cancellation);
-  final canceled = Completer<void>();
+  final canceled = Completer<T>();
   final removeCancellation = cancellation.listen((_) {
     if (!canceled.isCompleted) {
       canceled.completeError(const OfflineCanceledException());
     }
   });
   try {
-    await Future.any<void>(<Future<void>>[future, canceled.future]);
+    final result = await Future.any<T>(<Future<T>>[future, canceled.future]);
     _throwIfCanceled(cancellation);
+    return result;
   } finally {
     removeCancellation();
   }

@@ -70,7 +70,7 @@ void main() {
     expect(calls, 3);
   });
 
-  test('per-call suppression performs exactly one wire attempt', () async {
+  test('single-RPC suppression performs exactly one wire attempt', () async {
     var calls = 0;
     final transport = FakeTransportBuilder()
         .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
@@ -92,6 +92,56 @@ void main() {
       throwsA(isA<LanternUnavailableException>()),
     );
     expect(calls, 1);
+  });
+
+  test('retry suppression applies per RPC across a chunked call', () async {
+    final callsByChunk = <String, int>{};
+    final transport = FakeTransportBuilder()
+        .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+          LanternService.putVertices,
+          (request, context) {
+            final chunk = request.vertices
+                .map((vertex) => vertex.key)
+                .join(',');
+            callsByChunk[chunk] = (callsByChunk[chunk] ?? 0) + 1;
+            if (request.vertices.length == 1 &&
+                request.vertices.first.key == 'third') {
+              throw connect.ConnectException(
+                connect.Code.unavailable,
+                'second chunk unavailable',
+              );
+            }
+            return graph.PutVerticesResponse(written: request.vertices.length);
+          },
+        )
+        .build();
+    final client = _client(
+      transport,
+      retryPolicy: _fastRetry,
+      defaultTimeout: null,
+    );
+
+    await expectLater(
+      client.putVertices(
+        <VertexInput>[
+          VertexInput(key: 'first', value: VertexValue.nil()),
+          VertexInput(key: 'second', value: VertexValue.nil()),
+          VertexInput(key: 'third', value: VertexValue.nil()),
+        ],
+        batchSize: 2,
+        options: LanternCallOptions(retry: false),
+      ),
+      throwsA(
+        isA<BatchException>()
+            .having((error) => error.committed, 'committed', 2)
+            .having(
+              (error) => error.cause,
+              'cause',
+              isA<LanternUnavailableException>(),
+            ),
+      ),
+    );
+    expect(callsByChunk, <String, int>{'first,second': 1, 'third': 1});
   });
 
   test('scan stream preserves per-call retry suppression', () async {

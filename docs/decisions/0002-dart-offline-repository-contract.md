@@ -345,9 +345,13 @@ without application-owned OS background task or push infrastructure.
 
 Every replay entry point joins one per-partition serialized lifecycle and one
 repository-wide/per-partition send limiter. Durable sends suppress the online
-client's retry policy, so one offline attempt is one wire attempt. An
+client's retry policy; each singular adapter send therefore attempts at most one
+RPC, and every `attemptCount` increment maps to one RPC rather than hidden nested
+attempts. An
 Unauthenticated outcome atomically sets partition-level durable pause metadata;
-ordinary drain/start/probe paths cannot clear it or acquire another token.
+the partition auth epoch cancels same-batch sibling token acquisition before
+another send starts. Ordinary drain/start/probe paths cannot clear the pause or
+acquire another token.
 After credentials rotate, only explicit `resume` clears the pause.
 Offline backoff is a durable `nextAttemptAt` eligibility boundary, not a live
 per-record Timer; canceling foreground work therefore leaves no sleeping worker.

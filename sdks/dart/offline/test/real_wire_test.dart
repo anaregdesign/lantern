@@ -93,6 +93,87 @@ void main() {
   });
 
   test(
+    'auth pause cancels a same-batch sibling before its token can send',
+    () async {
+      var requests = 0;
+      final secondProviderStarted = Completer<void>();
+      final blockedToken = Completer<String?>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        if (!blockedToken.isCompleted) blockedToken.complete('rotated-token');
+        await server.close(force: true);
+      });
+      server.listen((request) async {
+        requests += 1;
+        await secondProviderStarted.future;
+        request.response
+          ..statusCode = HttpStatus.unauthorized
+          ..headers.contentType = ContentType.json
+          ..write('{"code":"unauthenticated","message":"expired"}');
+        await request.response.close();
+      });
+      var providerCalls = 0;
+      final client = LanternClient.connect(
+        Uri.parse('http://${server.address.host}:${server.port}'),
+        allowInsecure: true,
+        tokenProvider: () {
+          providerCalls += 1;
+          if (providerCalls == 1) return 'expired-token';
+          if (!secondProviderStarted.isCompleted) {
+            secondProviderStarted.complete();
+          }
+          return blockedToken.future;
+        },
+        defaultTimeout: null,
+      );
+      addTearDown(client.close);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: LanternClientOfflineRemote(client),
+        config: OfflineConfig(maxConcurrency: 2, maxConcurrencyPerPartition: 2),
+      );
+      addTearDown(repository.dispose);
+      await repository.putVertices(
+        partitionId: 'user',
+        inputs: <VertexInput>[
+          VertexInput(key: 'first', value: VertexValue.nil()),
+          VertexInput(key: 'second', value: VertexValue.nil()),
+        ],
+      );
+
+      expect(
+        await repository.drain('user').timeout(const Duration(seconds: 2)),
+        0,
+      );
+      expect(providerCalls, 2);
+      expect(requests, 1);
+      expect(await repository.isReplayPausedForAuth('user'), isTrue);
+      final durable = await repository.store.transaction((transaction) {
+        return (
+          outbox: transaction.outbox('user'),
+          operations: transaction.operations('user'),
+        );
+      });
+      expect(
+        durable.outbox.map((record) => record.attemptCount),
+        everyElement(0),
+      );
+      expect(
+        durable.outbox.map((record) => record.state),
+        everyElement(OfflineOutboxState.enqueued),
+      );
+      expect(
+        durable.operations.single.items.map((item) => item.state),
+        everyElement(OfflineWriteState.pausedForAuth),
+      );
+
+      blockedToken.complete('rotated-token');
+      await Future<void>.delayed(Duration.zero);
+      expect(requests, 1);
+    },
+  );
+
+  test(
     'online adapter suppresses nested retries and keeps typed cause',
     () async {
       var attempts = 0;

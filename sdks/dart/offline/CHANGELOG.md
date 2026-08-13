@@ -26,7 +26,8 @@
   server-authoritative operation receipts.
 - Serialize and bound replay across every foreground entry point, make
   authentication pause durable until explicit resume, suppress nested online
-  retries, bound and evict process-local partition runtimes, and quiesce active,
+  retries, cancel same-batch sibling token acquisition through a partition auth
+  epoch, bound and evict process-local partition runtimes, and quiesce active,
   deferred, and watched partition work before wipe or repository disposal.
 
 ## 0.1.0

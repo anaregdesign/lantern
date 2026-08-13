@@ -97,9 +97,12 @@ scoped by partition, operation, and entity, so each observation inspects at most
 
 The Repository serializes replay entry points per partition and applies one
 repository-wide/per-partition send limit to every entry point. A wrapped online
-client's nested retry policy is suppressed, so each durable `attemptCount`
-corresponds to exactly one wire attempt and preserves its typed terminal cause.
+client's nested retry policy is suppressed. Each durable send uses one singular
+adapter method whose RPC is attempted at most once, so every `attemptCount`
+increment maps to one RPC rather than hidden nested attempts.
 `Unauthenticated` sets a durable partition pause without burning an attempt;
+the partition auth epoch also cancels same-batch sibling token acquisition
+before another send can start.
 `drain`, `start`, and `probeAndDrain` then fail with
 `OfflineAuthPausedException` without acquiring a token or sending. Rotate the
 credential and call `resume` explicitly to clear the pause.

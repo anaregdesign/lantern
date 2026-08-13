@@ -148,10 +148,11 @@ final class LanternCallOptions {
   /// Caller-controlled cancellation token.
   final LanternCancellationToken? cancellation;
 
-  /// Whether this logical call may use the client's configured retry policy.
+  /// Whether each RPC issued by this call may use the configured retry policy.
   ///
   /// Set this to false when a higher-level durable coordinator owns the retry
-  /// budget and must account for exactly one wire attempt per call.
+  /// budget. Every RPC is then attempted at most once; a chunked plural call
+  /// may still issue multiple RPCs.
   final bool retry;
 }
 
