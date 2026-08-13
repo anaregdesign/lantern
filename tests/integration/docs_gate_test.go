@@ -216,6 +216,13 @@ func TestDartWorkflowGate(t *testing.T) {
 		"name: Start iOS simulator boot",
 		"name: Wait for iOS simulator",
 		"flutter build ios --debug --no-codesign --no-pub",
+		"name: Run classified iOS native smoke",
+		`bash tool/ios_smoke_ci.sh run-attempt "$DEVICE_ID" initial`,
+		"name: Create independently clean retry simulator",
+		"name: Retry classified iOS native smoke on fresh simulator",
+		"name: Finalize bounded iOS launch diagnostics",
+		"name: Upload bounded iOS launch diagnostics",
+		"name: Require classified iOS smoke success",
 		"name: Record exact Android revision evidence",
 		"name: Record exact iOS revision evidence",
 		`--arg commit "$GITHUB_SHA"`,
@@ -278,7 +285,12 @@ func TestDartWorkflowGate(t *testing.T) {
 		"name: Start Lantern",
 		"name: Check and build iOS example",
 		"name: Wait for iOS simulator",
-		"name: Run iOS native smoke",
+		"name: Run classified iOS native smoke",
+		"name: Create independently clean retry simulator",
+		"name: Retry classified iOS native smoke on fresh simulator",
+		"name: Finalize bounded iOS launch diagnostics",
+		"name: Upload bounded iOS launch diagnostics",
+		"name: Require classified iOS smoke success",
 	} {
 		index := strings.Index(ios, step)
 		if index < 0 {
@@ -289,11 +301,64 @@ func TestDartWorkflowGate(t *testing.T) {
 		}
 		last = index
 	}
+	for _, contract := range []string{
+		"timeout-minutes: 45",
+		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 90",
+		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480",
+		"steps.ios_smoke_initial.outputs.classification == 'launch_stall'",
+		`test "$retry_device" != "$DEVICE_ID"`,
+		"if: always()",
+		"lantern-ios-smoke-diagnostics-${{ github.sha }}-${{ github.run_attempt }}",
+		"if: always() && steps.ios_diagnostics_finalize.outcome == 'success'",
+		`echo "SMOKE_DEVICE_ID=$RETRY_DEVICE_ID"`,
+		`--arg id "$SMOKE_DEVICE_ID"`,
+		`xcrun simctl delete "$retry_device"`,
+		"- name: Record exact iOS revision evidence\n        if: success()",
+		"- name: Upload sanitized iOS revision evidence\n        if: success()",
+	} {
+		if !strings.Contains(ios, contract) {
+			t.Errorf("iOS job is missing classified launch contract %q", contract)
+		}
+	}
+	if strings.Contains(ios, `simctl erase "$DEVICE_ID"`) {
+		t.Error("iOS launch retry still erases and reuses the wedged simulator")
+	}
+
+	helper, err := os.ReadFile(filepath.Join(repoRoot, "sdks", "dart", "example", "tool", "ios_smoke_ci.sh"))
+	if err != nil {
+		t.Fatalf("read iOS smoke helper: %v", err)
+	}
+	helperText := string(helper)
+	for _, contract := range []string{
+		"MOBILE_SMOKE_BODY_STARTED",
+		"Xcode build done.",
+		"record_classification launch_stall",
+		"classification=test_failure",
+		"capture_diagnostics",
+		"finalize_diagnostics",
+		"count > 32 || total > 2097152",
+		"simctl listapps",
+		"simctl get_app_container",
+		"log show --last 5m",
+		"<redacted-url>",
+		"simctl create",
+		`[[ "$retry_device" != "$source_device" ]]`,
+	} {
+		if !strings.Contains(helperText, contract) {
+			t.Errorf("iOS smoke helper is missing contract %q", contract)
+		}
+	}
+	if got := strings.Count(helperText, `if ! kill -0 "$runner_pid" 2>/dev/null; then`); got != 2 {
+		t.Errorf("iOS smoke helper must recheck runner liveness before both timeout kills; got %d checks", got)
+	}
 
 	for _, contract := range []string{
 		"routes backend/search-only changes through the current-Dart unit and real-wire gates",
 		"stable `Gate` job",
 		"required result set for either scope",
+		"Only that silent `launch_stall` may retry",
+		"newly\ncreated simulator",
+		"diagnostics are always\nuploaded",
 	} {
 		if !strings.Contains(string(contributing), contract) {
 			t.Errorf("CONTRIBUTING.md is missing Dart workflow contract %q", contract)
