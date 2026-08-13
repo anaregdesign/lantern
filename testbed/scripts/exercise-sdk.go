@@ -512,7 +512,7 @@ func putError[T any](result T, err error) error {
 	switch typed := any(result).(type) {
 	case client.PutOutcome:
 		if typed != client.PutOutcomeAppliedAndLive {
-			return fmt.Errorf("Put returned %s", typed)
+			return fmt.Errorf("put returned %s", typed)
 		}
 	case []client.VertexPutResult:
 		for i, item := range typed {
