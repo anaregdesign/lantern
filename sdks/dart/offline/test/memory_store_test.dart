@@ -929,7 +929,7 @@ void main() {
     );
   });
 
-  test('new legacy Add enqueue and schema-v4 restore fail closed', () async {
+  test('new legacy Add enqueue and schema-v4+ restore fail closed', () async {
     final legacy = OfflineOutboxRecord(
       recordId: 'legacy-add-rejected',
       operationId: 'legacy-add-operation',
@@ -977,11 +977,21 @@ void main() {
               ),
             )
             as Map<String, Object?>;
-    encoded['schema'] = InMemoryOfflineStore.snapshotSchemaVersion;
-    expect(
-      () => InMemoryOfflineStore.fromSnapshot(jsonEncode(encoded)),
-      throwsA(isA<OfflineCodecException>()),
-    );
+    for (final schema in <int>[4, InMemoryOfflineStore.snapshotSchemaVersion]) {
+      final candidate = jsonDecode(jsonEncode(encoded)) as Map<String, Object?>;
+      candidate['schema'] = schema;
+      if (schema == InMemoryOfflineStore.snapshotSchemaVersion) {
+        final partition =
+            (candidate['partitions']! as List<Object?>).single!
+                as Map<String, Object?>;
+        partition['replayPausedForAuth'] = false;
+      }
+      expect(
+        () => InMemoryOfflineStore.fromSnapshot(jsonEncode(candidate)),
+        throwsA(isA<OfflineCodecException>()),
+        reason: 'schema v$schema must never migrate Add',
+      );
+    }
   });
 
   test('operation and record identity collisions fail atomically', () async {
@@ -1221,7 +1231,7 @@ void main() {
 
   test('snapshot restore fails closed on schema and corruption', () {
     expect(
-      () => InMemoryOfflineStore.fromSnapshot('{"schema":5,"partitions":[]}'),
+      () => InMemoryOfflineStore.fromSnapshot('{"schema":6,"partitions":[]}'),
       throwsA(isA<OfflineSchemaException>()),
     );
     expect(
@@ -1247,7 +1257,9 @@ void main() {
       final partition =
           (snapshot['partitions']! as List<Object?>).single!
               as Map<String, Object?>;
-      partition.remove('operations');
+      partition
+        ..remove('operations')
+        ..remove('replayPausedForAuth');
       final outbox = partition['outbox']! as List<Object?>;
       final encoded =
           jsonDecode(outbox.single! as String) as Map<String, Object?>;
@@ -1583,7 +1595,9 @@ void main() {
     v2['schema'] = 1;
     final partitions = v2['partitions']! as List<Object?>;
     for (final value in partitions) {
-      (value! as Map<String, Object?>).remove('operations');
+      (value! as Map<String, Object?>)
+        ..remove('operations')
+        ..remove('replayPausedForAuth');
     }
     final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(v2));
     final operation = await restored.transaction(
@@ -1645,10 +1659,11 @@ void main() {
       final legacy =
           jsonDecode(await store.exportSnapshot()) as Map<String, Object?>;
       legacy['schema'] = 1;
-      final partition =
-          (legacy['partitions']! as List<Object?>).single!
-              as Map<String, Object?>;
-      partition.remove('operations');
+      for (final value in legacy['partitions']! as List<Object?>) {
+        (value! as Map<String, Object?>)
+          ..remove('operations')
+          ..remove('replayPausedForAuth');
+      }
       final encoded = jsonEncode(legacy);
 
       final first = InMemoryOfflineStore.fromSnapshot(encoded);
@@ -1673,6 +1688,91 @@ void main() {
       expect(await first.exportSnapshot(), await second.exportSnapshot());
     },
   );
+
+  test('legacy restore recovers auth pause and v5 rejects drift', () async {
+    final store = InMemoryOfflineStore();
+    await store.transaction<void>((transaction) {
+      final assigned = transaction.enqueue(
+        OfflineOutboxRecord(
+          recordId: 'auth-record',
+          operationId: 'auth-operation',
+          itemIndex: 0,
+          partitionId: 'p',
+          intent: OfflinePutVertexIntent(
+            Vertex(
+              key: 'auth-key',
+              value: VertexValue.string('value'),
+              expiration: null,
+            ),
+          ),
+          enqueuedAt: now,
+          ordinal: 0,
+          state: OfflineOutboxState.enqueued,
+          attemptCount: 0,
+          generation: 0,
+          diagnosticCode: 'unauthenticated',
+        ),
+      );
+      transaction.putOperation(
+        OfflineOperationRecord(
+          partitionId: 'p',
+          generation: 0,
+          operationId: assigned.operationId,
+          items: <OfflineWriteStatus>[
+            OfflineWriteStatus(
+              recordId: assigned.recordId,
+              operationId: assigned.operationId,
+              itemIndex: 0,
+              state: OfflineWriteState.pausedForAuth,
+              attemptCount: 0,
+              diagnosticCode: 'unauthenticated',
+            ),
+          ],
+          updatedAt: now,
+        ),
+      );
+      transaction.setReplayPausedForAuth('p', true);
+    });
+    final canonical =
+        jsonDecode(await store.exportSnapshot()) as Map<String, Object?>;
+
+    for (var schema = 1; schema <= 4; schema++) {
+      final legacy = jsonDecode(jsonEncode(canonical)) as Map<String, Object?>;
+      legacy['schema'] = schema;
+      final partition =
+          (legacy['partitions']! as List<Object?>).single!
+              as Map<String, Object?>;
+      partition.remove('replayPausedForAuth');
+      if (schema == 1) partition.remove('operations');
+
+      final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(legacy));
+      final state = await restored.transaction((transaction) {
+        return (
+          paused: transaction.replayPausedForAuth('p'),
+          outbox: transaction.outbox('p').single,
+          operation: transaction.getOperation('p', 'auth-operation')!,
+        );
+      });
+      expect(state.paused, isTrue, reason: 'schema v$schema');
+      expect(state.outbox.diagnosticCode, 'unauthenticated');
+      expect(
+        state.operation.items.single.state,
+        OfflineWriteState.pausedForAuth,
+      );
+    }
+
+    final contradictory =
+        jsonDecode(jsonEncode(canonical)) as Map<String, Object?>;
+    final contradictoryPartition =
+        (contradictory['partitions']! as List<Object?>).single!
+            as Map<String, Object?>;
+    contradictoryPartition['replayPausedForAuth'] = false;
+    expect(
+      () => InMemoryOfflineStore.fromSnapshot(jsonEncode(contradictory)),
+      throwsA(isA<OfflineCodecException>()),
+      reason: 'canonical auth metadata cannot contradict the partition flag',
+    );
+  });
 
   test(
     'schema v1 migration quarantines legacy Add while reconstructing status',

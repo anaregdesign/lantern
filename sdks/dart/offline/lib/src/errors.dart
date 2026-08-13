@@ -83,6 +83,12 @@ final class OfflineCanceledException extends OfflineException {
   const OfflineCanceledException() : super('canceled');
 }
 
+/// Replay is durably paused until credentials rotate and resume is explicit.
+final class OfflineAuthPausedException extends OfflineException {
+  /// Creates an authentication-pause failure.
+  const OfflineAuthPausedException() : super('auth_paused');
+}
+
 /// Repository work was requested after process-local disposal.
 final class OfflineDisposedException extends OfflineException {
   /// Creates a disposed-repository failure.

@@ -91,8 +91,11 @@ abstract interface class OfflineRemote {
 
 /// [OfflineRemote] adapter over the official [LanternClient].
 ///
-/// The wrapped client invokes its configured [TokenProvider] for each remote
-/// attempt. The adapter neither reads nor persists credentials.
+/// The wrapped client invokes its configured [TokenProvider] at send time. The
+/// adapter disables the client's nested retry policy. Each singular adapter
+/// method issues at most one RPC attempt; [OfflineLanternRepository] owns
+/// durable retry accounting.
+/// The adapter neither reads nor persists credentials.
 final class LanternClientOfflineRemote implements OfflineRemote {
   /// Wraps one online Lantern client.
   const LanternClientOfflineRemote(this.client);
@@ -104,7 +107,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
   Future<void> probe({LanternCancellationToken? cancellation}) async {
     try {
       await client.ping(
-        options: LanternCallOptions(cancellation: cancellation),
+        options: LanternCallOptions(cancellation: cancellation, retry: false),
       );
     } catch (error) {
       throw _mapFailure(error);
@@ -120,7 +123,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
       return OfflineRemotePresent<Edge>(
         await client.getEdge(
           edge,
-          options: LanternCallOptions(cancellation: cancellation),
+          options: LanternCallOptions(cancellation: cancellation, retry: false),
         ),
       );
     } on LanternNotFoundException {
@@ -139,7 +142,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
       return OfflineRemotePresent<Vertex>(
         await client.getVertex(
           key,
-          options: LanternCallOptions(cancellation: cancellation),
+          options: LanternCallOptions(cancellation: cancellation, retry: false),
         ),
       );
     } on LanternNotFoundException {
@@ -162,7 +165,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
           weight: edge.weight,
           expiresAt: edge.expiration,
         ),
-        options: LanternCallOptions(cancellation: cancellation),
+        options: LanternCallOptions(cancellation: cancellation, retry: false),
       );
     } catch (error) {
       throw _mapFailure(error);
@@ -181,7 +184,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
           value: vertex.value,
           expiresAt: vertex.expiration,
         ),
-        options: LanternCallOptions(cancellation: cancellation),
+        options: LanternCallOptions(cancellation: cancellation, retry: false),
       );
     } catch (error) {
       throw _mapFailure(error);

@@ -229,17 +229,22 @@ extension _RetryClient on LanternClient {
       return LanternCallOptions(
         deadline: deadline,
         cancellation: options?.cancellation,
+        retry: options?.retry ?? true,
       );
     }
     final timeout = options?.timeout ?? _defaultTimeout;
     if (timeout == null) {
-      return options?.cancellation == null
+      return options?.cancellation == null && (options?.retry ?? true)
           ? null
-          : LanternCallOptions(cancellation: options?.cancellation);
+          : LanternCallOptions(
+              cancellation: options?.cancellation,
+              retry: options?.retry ?? true,
+            );
     }
     return LanternCallOptions(
       deadline: DateTime.now().add(timeout),
       cancellation: options?.cancellation,
+      retry: options?.retry ?? true,
     );
   }
 
@@ -250,7 +255,8 @@ extension _RetryClient on LanternClient {
     required Future<T> Function() attempt,
   }) async {
     final policy = _retryPolicy;
-    if (policy == null ||
+    if (options?.retry == false ||
+        policy == null ||
         !RetryRegistry._allows(method, additiveSafe: additiveSafe)) {
       return attempt();
     }

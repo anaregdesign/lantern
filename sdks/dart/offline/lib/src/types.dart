@@ -450,7 +450,7 @@ final class OfflineOutboxRecord {
   /// Current outbox lifecycle state.
   final OfflineOutboxState state;
 
-  /// Number of network attempts already sent.
+  /// Completed durable adapter attempts, each permitting at most one RPC.
   final int attemptCount;
 
   /// Partition generation that owns this record.
@@ -651,7 +651,7 @@ final class OfflineWriteStatus {
   /// Current lifecycle state.
   final OfflineWriteState state;
 
-  /// Completed network attempt count.
+  /// Completed durable adapter attempt count.
   final int attemptCount;
 
   /// Content-free bounded diagnostic code.
@@ -834,7 +834,7 @@ final class DeadLetterSummary {
   /// Age at inspection time.
   final Duration age;
 
-  /// Completed network attempts.
+  /// Completed durable adapter attempts.
   final int attemptCount;
 
   /// Content-free failure code.
@@ -869,7 +869,7 @@ final class PendingSummary {
   /// Age at inspection time.
   final Duration age;
 
-  /// Completed network attempts.
+  /// Completed durable adapter attempts.
   final int attemptCount;
 
   /// Content-free retry or pause code.
@@ -974,6 +974,11 @@ final class OfflineConfig {
     this.deadLetterRetention = const Duration(days: 30),
     this.operationRetention = const Duration(days: 30),
     this.maxConcurrency = 4,
+    int? maxConcurrencyPerPartition,
+    this.maxQueuedReplaySends = 128,
+    this.maxQueuedReplaySendsPerPartition = 32,
+    this.maxQueuedReplaysPerPartition = 1,
+    this.maxActivePartitionRuntimes = 128,
     this.maxReadConcurrency = 8,
     this.maxReadConcurrencyPerPartition = 4,
     this.maxQueuedReads = 128,
@@ -995,6 +1000,8 @@ final class OfflineConfig {
   }) : clock = clock ?? _utcNow,
        idGenerator = idGenerator ?? _opaqueId,
        jitter = jitter ?? _fullJitter,
+       maxConcurrencyPerPartition =
+           maxConcurrencyPerPartition ?? maxConcurrency,
        leaseRenewalInterval =
            leaseRenewalInterval ??
            Duration(microseconds: leaseDuration.inMicroseconds ~/ 3) {
@@ -1006,6 +1013,12 @@ final class OfflineConfig {
         deadLetterRetention <= Duration.zero ||
         operationRetention <= Duration.zero ||
         maxConcurrency < 1 ||
+        this.maxConcurrencyPerPartition < 1 ||
+        this.maxConcurrencyPerPartition > maxConcurrency ||
+        maxQueuedReplaySends < 0 ||
+        maxQueuedReplaySendsPerPartition < 0 ||
+        maxQueuedReplaysPerPartition < 0 ||
+        maxActivePartitionRuntimes < 1 ||
         maxReadConcurrency < 1 ||
         maxReadConcurrencyPerPartition < 1 ||
         maxQueuedReads < 0 ||
@@ -1043,8 +1056,23 @@ final class OfflineConfig {
   /// Maximum retention after every item in an operation becomes terminal.
   final Duration operationRetention;
 
-  /// Maximum independent ordering keys sent concurrently by one drain.
+  /// Maximum replay sends active across the repository.
   final int maxConcurrency;
+
+  /// Maximum replay sends active for one partition.
+  final int maxConcurrencyPerPartition;
+
+  /// Maximum replay sends waiting across the repository.
+  final int maxQueuedReplaySends;
+
+  /// Maximum replay sends waiting for one partition.
+  final int maxQueuedReplaySendsPerPartition;
+
+  /// Maximum serialized replay invocations waiting for one partition.
+  final int maxQueuedReplaysPerPartition;
+
+  /// Maximum partitions with active or queued process-local work.
+  final int maxActivePartitionRuntimes;
 
   /// Maximum distinct remote reads active across the repository.
   final int maxReadConcurrency;

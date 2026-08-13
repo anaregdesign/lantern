@@ -119,13 +119,18 @@ final class LanternCancellationToken {
   }
 }
 
-/// Per-call deadline and cancellation overrides.
+/// Per-call deadline, cancellation, and retry overrides.
 final class LanternCallOptions {
   /// Creates call options.
   ///
   /// [timeout] and [deadline] are mutually exclusive. A per-call value replaces
   /// the client's default timeout; cancellation always composes with it.
-  LanternCallOptions({this.timeout, this.deadline, this.cancellation}) {
+  LanternCallOptions({
+    this.timeout,
+    this.deadline,
+    this.cancellation,
+    this.retry = true,
+  }) {
     if (timeout != null && deadline != null) {
       throw ArgumentError('timeout and deadline are mutually exclusive');
     }
@@ -142,6 +147,13 @@ final class LanternCallOptions {
 
   /// Caller-controlled cancellation token.
   final LanternCancellationToken? cancellation;
+
+  /// Whether each RPC issued by this call may use the configured retry policy.
+  ///
+  /// Set this to false when a higher-level durable coordinator owns the retry
+  /// budget. Every RPC is then attempted at most once; a chunked plural call
+  /// may still issue multiple RPCs.
+  final bool retry;
 }
 
 /// Stable SDK error categories suitable for mobile UI handling.

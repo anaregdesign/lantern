@@ -15,7 +15,7 @@ import 'types.dart';
 /// not be used as a production persistence adapter.
 final class InMemoryOfflineStore implements OfflineStore {
   /// Current canonical reference-store snapshot schema.
-  static const int snapshotSchemaVersion = 4;
+  static const int snapshotSchemaVersion = 5;
 
   /// Creates an empty reference store with explicit capacity bounds.
   InMemoryOfflineStore({this.limits = const OfflineStoreLimits()}) {
@@ -156,6 +156,23 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     _ensureOpen();
     _validatePartition(partitionId);
     return _state.partition(partitionId).generation;
+  }
+
+  @override
+  bool replayPausedForAuth(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    return _state.partition(partitionId).replayPausedForAuth;
+  }
+
+  @override
+  void setReplayPausedForAuth(String partitionId, bool paused) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final partition = _state.partition(partitionId);
+    if (partition.replayPausedForAuth == paused) return;
+    partition.replayPausedForAuth = paused;
+    _changedPartitions.add(partitionId);
   }
 
   @override
@@ -687,6 +704,9 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     if (leaseUntil == null) return const <OfflineOutboxRecord>[];
     _validateLeaseOwnerCapacity(owner, _limits);
     final partition = _state.partition(partitionId);
+    if (partition.replayPausedForAuth) {
+      return const <OfflineOutboxRecord>[];
+    }
     final all = partition.outbox.values.toList()..sort(_compareOutbox);
     var changed = false;
     for (final record in all) {
@@ -1020,6 +1040,7 @@ final class _MemoryPartition {
   int generation;
   int version = 0;
   int nextOrdinal = 0;
+  bool replayPausedForAuth = false;
 
   void putOutbox(OfflineOutboxRecord record) {
     final previous = outbox[record.recordId];
@@ -1215,7 +1236,8 @@ final class _MemoryPartition {
   _MemoryPartition copy() {
     final result = _MemoryPartition(generation: generation)
       ..version = version
-      ..nextOrdinal = nextOrdinal;
+      ..nextOrdinal = nextOrdinal
+      ..replayPausedForAuth = replayPausedForAuth;
     result.cache.addAll(
       cache.map((key, value) => MapEntry(key, _copyCacheRecord(value))),
     );
@@ -1608,6 +1630,7 @@ String _encodeMemoryState(_MemoryState state) {
             'generation': partition.generation,
             'version': partition.version,
             'nextOrdinal': partition.nextOrdinal,
+            'replayPausedForAuth': partition.replayPausedForAuth,
             'cache': cacheKeys
                 .map(
                   (key) =>
@@ -1637,6 +1660,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
     if (schema != 1 &&
         schema != 2 &&
         schema != 3 &&
+        schema != 4 &&
         schema != InMemoryOfflineStore.snapshotSchemaVersion) {
       throw const OfflineSchemaException();
     }
@@ -1658,6 +1682,17 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
                 'cache',
                 'outbox',
               }
+            : schema == InMemoryOfflineStore.snapshotSchemaVersion
+            ? const <String>{
+                'partitionId',
+                'generation',
+                'version',
+                'nextOrdinal',
+                'replayPausedForAuth',
+                'cache',
+                'outbox',
+                'operations',
+              }
             : const <String>{
                 'partitionId',
                 'generation',
@@ -1675,7 +1710,11 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       final generation = _snapshotNonNegativeInt(encoded['generation']);
       final partition = _MemoryPartition(generation: generation)
         ..version = _snapshotNonNegativeInt(encoded['version'])
-        ..nextOrdinal = _snapshotNonNegativeInt(encoded['nextOrdinal']);
+        ..nextOrdinal = _snapshotNonNegativeInt(encoded['nextOrdinal'])
+        ..replayPausedForAuth =
+            schema == InMemoryOfflineStore.snapshotSchemaVersion
+            ? _snapshotBool(encoded['replayPausedForAuth'])
+            : false;
       final cache = _snapshotStrings(encoded['cache']);
       for (final item in cache) {
         final record = OfflineCodec.decodeCacheRecord(item);
@@ -1690,11 +1729,10 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       var largestOrdinal = 0;
       for (final item in outbox) {
         final decodedRecord = OfflineCodec.decodeOutboxRecord(item);
-        if (schema == InMemoryOfflineStore.snapshotSchemaVersion &&
-            decodedRecord.intent is OfflineAddEdgeIntent) {
+        if (schema >= 4 && decodedRecord.intent is OfflineAddEdgeIntent) {
           throw const OfflineCodecException();
         }
-        final record = schema < InMemoryOfflineStore.snapshotSchemaVersion
+        final record = schema < 4
             ? _quarantineLegacyAdd(decodedRecord)
             : decodedRecord;
         if (record.partitionId != partitionId ||
@@ -1729,7 +1767,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
           }
           partition.operations[operation.operationId] = operation;
         }
-        _migrateLegacyAddOperations(partition);
+        if (schema < 4) _migrateLegacyAddOperations(partition);
         for (final record in partition.outbox.values) {
           final operation = partition.operations[record.operationId];
           if (operation == null ||
@@ -1740,7 +1778,15 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         }
       }
       if (schema < 4) _migrateLegacyDeadLetterTransitions(partition);
+      if (schema < InMemoryOfflineStore.snapshotSchemaVersion) {
+        _migrateReplayAuthPause(partition);
+      }
       _validatePartitionGraph(partition, legacySnapshot: schema < 4);
+      if (schema == InMemoryOfflineStore.snapshotSchemaVersion &&
+          !partition.replayPausedForAuth &&
+          _hasReplayAuthPauseMarker(partition)) {
+        throw const OfflineCodecException();
+      }
       partition.rebuildIndexes();
       state.partitions[partitionId] = partition;
     }
@@ -1882,6 +1928,47 @@ bool _outboxStatusMatches(
       status.state == OfflineWriteState.deadLetter,
     OfflineOutboxState.expired => status.state == OfflineWriteState.expired,
   };
+}
+
+void _migrateReplayAuthPause(_MemoryPartition partition) {
+  var paused = false;
+  for (final record in partition.outbox.values.toList(growable: false)) {
+    if (record.state != OfflineOutboxState.enqueued) continue;
+    final operation = partition.operations[record.operationId];
+    final item = operation != null && record.itemIndex < operation.items.length
+        ? operation.items[record.itemIndex]
+        : null;
+    final operationPaused =
+        item?.recordId == record.recordId &&
+        item?.state == OfflineWriteState.pausedForAuth &&
+        item?.diagnosticCode == 'unauthenticated';
+    final outboxPaused = record.diagnosticCode == 'unauthenticated';
+    if (!operationPaused && !outboxPaused) continue;
+    paused = true;
+    if (record.diagnosticCode != 'unauthenticated') {
+      partition.outbox[record.recordId] = record.copyWith(
+        diagnosticCode: 'unauthenticated',
+      );
+    }
+  }
+  partition.replayPausedForAuth = paused;
+}
+
+bool _hasReplayAuthPauseMarker(_MemoryPartition partition) {
+  for (final record in partition.outbox.values) {
+    if (record.state != OfflineOutboxState.enqueued) continue;
+    final operation = partition.operations[record.operationId];
+    if (operation == null || record.itemIndex >= operation.items.length) {
+      continue;
+    }
+    final status = operation.items[record.itemIndex];
+    if (record.diagnosticCode == 'unauthenticated' ||
+        (status.state == OfflineWriteState.pausedForAuth &&
+            status.diagnosticCode == 'unauthenticated')) {
+      return true;
+    }
+  }
+  return false;
 }
 
 OfflineOutboxRecord _quarantineLegacyAdd(OfflineOutboxRecord record) {
@@ -2117,6 +2204,11 @@ int _snapshotNonNegativeInt(Object? value) {
   if (value is! int || value < 0 || value > 0x7fffffffffffffff) {
     throw const OfflineCodecException();
   }
+  return value;
+}
+
+bool _snapshotBool(Object? value) {
+  if (value is! bool) throw const OfflineCodecException();
   return value;
 }
 

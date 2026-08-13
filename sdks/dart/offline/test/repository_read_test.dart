@@ -330,13 +330,13 @@ void main() {
       'late',
       policy: OfflineReadPolicy.serverOnly,
     );
+    final canceledReading = expectLater(
+      reading,
+      throwsA(isA<OfflineCanceledException>()),
+    );
     await remote.started.future;
     await repository.wipePartition('p');
-    remote.complete(
-      Vertex(key: 'late', value: VertexValue.string('late'), expiration: null),
-    );
-    final snapshot = await reading;
-    expect(snapshot.state, OfflineReadState.unknown);
+    await canceledReading;
     expect(
       await store.transaction(
         (transaction) =>
@@ -479,7 +479,7 @@ void main() {
   });
 
   test(
-    'dispose fails a deferred caller even when the prior flight never settles',
+    'dispose fails a deferred caller and quiesces the prior flight',
     () async {
       final clock = MutableClock(initial);
       final remote = _CancellationIgnoringReadRemote();
@@ -519,6 +519,54 @@ void main() {
       remote.release();
       await Future<void>.delayed(Duration.zero);
       expect(remote.startCount, 1);
+    },
+  );
+
+  test(
+    'wipe cancels deferred read before ignored transport cancellation settles',
+    () async {
+      final clock = MutableClock(initial);
+      var credential = 'old-token';
+      final remote = _CredentialIgnoringReadRemote(() => credential);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: remote,
+        config: testConfig(clock),
+      );
+      final firstCancellation = LanternCancellationToken();
+      final first = repository.readVertex(
+        'p',
+        'shared',
+        policy: OfflineReadPolicy.serverOnly,
+        cancellation: firstCancellation,
+      );
+      await remote.started.future;
+      firstCancellation.cancel();
+      await expectLater(first, throwsA(isA<OfflineCanceledException>()));
+      await remote.cancellationObserved.future;
+
+      final deferred = repository.readVertex(
+        'p',
+        'shared',
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      final deferredExpectation = expectLater(
+        deferred,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      var wipeCompleted = false;
+      final wiping = repository.wipePartition('p').whenComplete(() {
+        wipeCompleted = true;
+      });
+      await deferredExpectation;
+      credential = 'new-token';
+      await Future<void>.delayed(Duration.zero);
+      expect(wipeCompleted, isFalse);
+
+      remote.release();
+      await wiping;
+      expect(remote.startCount, 1);
+      expect(remote.credentials, <String>['old-token']);
     },
   );
 
@@ -610,6 +658,73 @@ void main() {
   );
 
   test(
+    'wipe closes registered watches and rejects late registration',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _TrackingStore();
+      final remote = _CredentialIgnoringReadRemote(() => 'token');
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: testConfig(clock),
+      );
+      final operation = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'write', value: VertexValue.nil()),
+      );
+      final registeredValue = Completer<void>();
+      final registeredDone = Completer<void>();
+      final registered = repository
+          .watchVertex(
+            'p',
+            'registered',
+            initialPolicy: OfflineReadPolicy.cacheOnly,
+          )
+          .listen((_) {
+            if (!registeredValue.isCompleted) registeredValue.complete();
+          }, onDone: registeredDone.complete);
+      await registeredValue.future;
+      expect(store.activeChangeSubscriptions, 1);
+
+      final lateVertex = repository.watchVertex(
+        'p',
+        'late-vertex',
+        initialPolicy: OfflineReadPolicy.cacheOnly,
+      );
+      final lateEdge = repository.watchEdge(
+        'p',
+        const EdgeRef('late-tail', 'late-head'),
+        initialPolicy: OfflineReadPolicy.cacheOnly,
+      );
+      final lateWrite = repository.watchWrite('p', operation.operationId);
+      final blockedRead = repository.readVertex(
+        'p',
+        'blocked',
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      final blockedExpectation = expectLater(
+        blockedRead,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      await remote.started.future;
+
+      final wiping = repository.wipePartition('p');
+      await registeredDone.future;
+      for (final stream in <Stream<Object?>>[lateVertex, lateEdge, lateWrite]) {
+        await expectLater(
+          stream.first,
+          throwsA(isA<OfflineCanceledException>()),
+        );
+      }
+      expect(store.activeChangeSubscriptions, 0);
+      remote.release();
+      await blockedExpectation;
+      await wiping;
+      await registered.cancel();
+    },
+  );
+
+  test(
     'watchers enforce repository, partition, and active-partition bounds',
     () async {
       final clock = MutableClock(initial);
@@ -648,6 +763,99 @@ void main() {
             .first,
         isA<OfflineSnapshot<Vertex>>(),
       );
+    },
+  );
+
+  test('partition runtimes are bounded and reuse idle capacity', () async {
+    final clock = MutableClock(initial);
+    final store = _GatedTransactionStore();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: FakeOfflineRemote(),
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+        maxActivePartitionRuntimes: 2,
+      ),
+    );
+
+    final first = repository.putVertex(
+      partitionId: 'transient-a',
+      input: VertexInput(key: 'a', value: VertexValue.nil()),
+    );
+    final second = repository.putVertex(
+      partitionId: 'transient-b',
+      input: VertexInput(key: 'b', value: VertexValue.nil()),
+    );
+    expect(store.transactionCalls, 2);
+    await expectLater(
+      repository.putVertex(
+        partitionId: 'rejected',
+        input: VertexInput(key: 'c', value: VertexValue.nil()),
+      ),
+      throwsA(isA<OfflineCapacityException>()),
+    );
+    expect(store.transactionCalls, 2);
+    store.release();
+    await Future.wait(<Future<Object?>>[first, second]);
+    expect(
+      await store.transaction((transaction) => transaction.outbox('rejected')),
+      isEmpty,
+    );
+
+    store.hold();
+    final reusedA = repository.putVertex(
+      partitionId: 'reused-a',
+      input: VertexInput(key: 'd', value: VertexValue.nil()),
+    );
+    final reusedB = repository.putVertex(
+      partitionId: 'reused-b',
+      input: VertexInput(key: 'e', value: VertexValue.nil()),
+    );
+    store.release();
+    final reused = await Future.wait(<Future<OfflineWriteHandle>>[
+      reusedA,
+      reusedB,
+    ]);
+    expect(reused.map((handle) => handle.recordId), everyElement(isNotEmpty));
+    await repository.wipePartition('never-started');
+  });
+
+  test(
+    'never-started concurrent wipes share the partition runtime bound',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _GatedTransactionStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxActivePartitionRuntimes: 1,
+        ),
+      );
+      addTearDown(repository.dispose);
+
+      final first = repository.wipePartition('first');
+      await Future<void>.delayed(Duration.zero);
+      expect(store.transactionCalls, 1);
+      expect(
+        () => repository.wipePartition('second'),
+        throwsA(isA<OfflineCapacityException>()),
+      );
+      expect(store.transactionCalls, 1);
+
+      store.release();
+      await first;
+      store.hold();
+      final reused = repository.wipePartition('second');
+      await Future<void>.delayed(Duration.zero);
+      expect(store.transactionCalls, 2);
+      store.release();
+      await reused;
     },
   );
 
@@ -839,9 +1047,6 @@ void main() {
 
 final class _DelayedReadRemote extends FakeOfflineRemote {
   final Completer<void> started = Completer<void>();
-  final Completer<Vertex> _response = Completer<Vertex>();
-
-  void complete(Vertex vertex) => _response.complete(vertex);
 
   @override
   Future<OfflineRemoteRead<Vertex>> getVertex(
@@ -849,7 +1054,17 @@ final class _DelayedReadRemote extends FakeOfflineRemote {
     LanternCancellationToken? cancellation,
   }) async {
     if (!started.isCompleted) started.complete();
-    return OfflineRemotePresent<Vertex>(await _response.future);
+    final canceled = Completer<OfflineRemoteRead<Vertex>>();
+    final removeCancellation = cancellation?.listen((_) {
+      if (!canceled.isCompleted) {
+        canceled.completeError(failure(OfflineRemoteErrorKind.canceled));
+      }
+    });
+    try {
+      return await canceled.future;
+    } finally {
+      removeCancellation?.call();
+    }
   }
 }
 
@@ -954,6 +1169,43 @@ final class _CancellationIgnoringReadRemote extends FakeOfflineRemote {
     if (!started.isCompleted) started.complete();
     final removeCancellationListener = cancellation?.listen((_) {
       if (!cancellationObserved.isCompleted) cancellationObserved.complete();
+      release();
+    });
+    try {
+      return await _response.future;
+    } finally {
+      removeCancellationListener?.call();
+    }
+  }
+}
+
+final class _CredentialIgnoringReadRemote extends FakeOfflineRemote {
+  _CredentialIgnoringReadRemote(this.credentialProvider);
+
+  final String Function() credentialProvider;
+  final Completer<void> started = Completer<void>();
+  final Completer<void> cancellationObserved = Completer<void>();
+  final Completer<OfflineRemoteRead<Vertex>> _response =
+      Completer<OfflineRemoteRead<Vertex>>();
+  final List<String> credentials = <String>[];
+  var startCount = 0;
+
+  void release() {
+    if (!_response.isCompleted) {
+      _response.complete(const OfflineRemoteMissing<Vertex>());
+    }
+  }
+
+  @override
+  Future<OfflineRemoteRead<Vertex>> getVertex(
+    String key, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    startCount += 1;
+    credentials.add(credentialProvider());
+    if (!started.isCompleted) started.complete();
+    final removeCancellationListener = cancellation?.listen((_) {
+      if (!cancellationObserved.isCompleted) cancellationObserved.complete();
     });
     try {
       return await _response.future;
@@ -1050,6 +1302,33 @@ final class _TrackingStore implements OfflineStore {
   Future<T> transaction<T>(
     FutureOr<T> Function(OfflineStoreTransaction transaction) action,
   ) => _delegate.transaction(action);
+}
+
+final class _GatedTransactionStore implements OfflineStore {
+  final InMemoryOfflineStore _delegate = InMemoryOfflineStore();
+  Completer<void> _gate = Completer<void>();
+  var transactionCalls = 0;
+
+  void hold() {
+    if (_gate.isCompleted) _gate = Completer<void>();
+  }
+
+  void release() {
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) =>
+      _delegate.changes(partitionId);
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) async {
+    transactionCalls += 1;
+    await _gate.future;
+    return _delegate.transaction(action);
+  }
 }
 
 final class _ControlledCancelStore implements OfflineStore {

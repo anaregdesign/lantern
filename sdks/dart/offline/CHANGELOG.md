@@ -9,7 +9,7 @@
   expired capacity without replay, retain dead letters from their transition
   time, use scoped deadline indexes for bounded due work, and bound
   process-local status/change notification resources.
-- Add outbox codec schema v2 and reference snapshot schema v4 for exact
+- Add outbox codec schema v2 and reference snapshot schema v5 for exact
   dead-letter transition retention with conservative legacy migration.
 - Preserve typed cancellation through the online adapter, isolate same-key
   single-flight waiters, cancel transport only after the final waiter leaves,
@@ -18,11 +18,17 @@
   `putVertex`, `putVertices`, `putEdge`, and `putEdges`, and remove offline Add
   enqueue/replay plus Add estimate metadata. Direct-online Add in
   `lantern_client` is unchanged.
-- Add snapshot schema v3 migration for experimental legacy Add records. They
+- Add snapshot schema v5 durable auth-pause metadata and recover equivalent
+  pause state from v1-v4 operation metadata. Legacy Add records in v1-v3
   become inspectable terminal `unsupported_add` dead letters with no overlay,
-  retry attempt, or remote call; generic retry fails with
+  retry attempt, or remote call; v4+ Add fails closed and generic retry fails with
   `OfflineUnsupportedOperationException` until #1115 provides
   server-authoritative operation receipts.
+- Serialize and bound replay across every foreground entry point, make
+  authentication pause durable until explicit resume, suppress nested online
+  retries, cancel same-batch sibling token acquisition through a partition auth
+  epoch, bound and evict process-local partition runtimes, and quiesce active,
+  deferred, and watched partition work before wipe or repository disposal.
 
 ## 0.1.0
 
