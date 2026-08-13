@@ -1951,17 +1951,17 @@ final class OfflineLanternRepository {
         claimed.attemptCount >= _maxDurableAttemptCount) {
       return _deadLetterAttemptsExhausted(partitionId, claimed, owner);
     }
-    final now = config.clock().toUtc();
-    if (!_live(claimed.absoluteExpiration, now)) {
+    final initialObservedAt = config.clock().toUtc();
+    if (!_live(claimed.absoluteExpiration, initialObservedAt)) {
       await _expireRecord(partitionId, claimed, owner);
       return const _ReplayOutcome();
     }
-    if (now.difference(claimed.enqueuedAt) >= config.maxAge) {
+    if (initialObservedAt.difference(claimed.enqueuedAt) >= config.maxAge) {
       await _expireOrAgeOut(partitionId, recordId: claimed.recordId);
       return const _ReplayOutcome(deadLetter: true);
     }
     try {
-      final Object? confirmedEntity = switch (claimed.intent) {
+      final remoteResult = switch (claimed.intent) {
         OfflinePutVertexIntent(:final vertex) => await _putVertexRemote(
           vertex,
           cancellation,
@@ -1974,20 +1974,41 @@ final class OfflineLanternRepository {
           'legacy Add reached the remote replay switch',
         ),
       };
-      var cacheRejected = false;
-      final applied = await store.transaction((transaction) {
-        final committedAt = config.clock().toUtc();
+      final responseObservedAt = config.clock().toUtc();
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      final terminal = await store.transaction((transaction) {
+        final commitObservedAt = config.clock().toUtc();
         final current = transaction.getOutbox(partitionId, claimed.recordId);
         if (current == null ||
             current.generation != claimed.generation ||
             current.state != OfflineOutboxState.sending ||
             current.leaseOwner != owner ||
             current.leaseUntil == null ||
-            !committedAt.isBefore(current.leaseUntil!) ||
-            transaction.generation(partitionId) != claimed.generation) {
-          return false;
+            transaction.generation(partitionId) != claimed.generation ||
+            transaction.replayPausedForAuth(partitionId)) {
+          return null;
         }
-        if (_live(claimed.absoluteExpiration, committedAt)) {
+        final transitionAt = _transitionTime(
+          transaction,
+          current,
+          _latestTime(<DateTime>[responseObservedAt, commitObservedAt]),
+        );
+        if (!transitionAt.isBefore(current.leaseUntil!)) return null;
+        final liveThroughCommit =
+            _live(claimed.absoluteExpiration, initialObservedAt) &&
+            _live(claimed.absoluteExpiration, responseObservedAt) &&
+            _live(claimed.absoluteExpiration, commitObservedAt) &&
+            _live(claimed.absoluteExpiration, transitionAt);
+        final disposition = _putDisposition(
+          remoteResult.outcome,
+          liveThroughCommit: liveThroughCommit,
+        );
+        final attempts = current.attemptCount + 1;
+        var cacheRejected = false;
+        final deleteOutbox = disposition.state != OfflineWriteState.deadLetter;
+        if (disposition.state == OfflineWriteState.confirmed) {
           try {
             transaction.putCache(
               partitionId,
@@ -1995,9 +2016,9 @@ final class OfflineLanternRepository {
                 partitionId: partitionId,
                 generation: claimed.generation,
                 key: claimed.intent.key,
-                entity: confirmedEntity!,
-                validatedAt: committedAt,
-                lastAccessAt: committedAt,
+                entity: remoteResult.entity,
+                validatedAt: transitionAt,
+                lastAccessAt: transitionAt,
               ),
             );
           } on OfflineCapacityException {
@@ -2005,29 +2026,56 @@ final class OfflineLanternRepository {
             // its value cannot fit the bounded cache.
             cacheRejected = true;
           }
+        } else {
+          // EXPIRED is an accepted delete-like Put, while CONDITION_NOT_MET
+          // and SUPERSEDED prove that the attempted entity is not the
+          // authoritative server state. In every case an older confirmed
+          // cache entry is no longer trustworthy.
+          transaction.deleteCache(partitionId, claimed.intent.key);
+          if (disposition.state == OfflineWriteState.deadLetter) {
+            transaction.updateOutbox(
+              current.copyWith(
+                state: OfflineOutboxState.deadLetter,
+                attemptCount: attempts,
+                clearNextAttemptAt: true,
+                clearLeaseOwner: true,
+                clearLeaseUntil: true,
+                deadLetteredAt: transitionAt,
+                diagnosticCode: disposition.diagnosticCode,
+              ),
+            );
+          }
         }
         _updateOperationStatus(
           transaction,
           current,
-          OfflineWriteState.confirmed,
-          attemptCount: current.attemptCount + 1,
-          now: committedAt,
+          disposition.state,
+          attemptCount: attempts,
+          diagnosticCode: disposition.diagnosticCode,
+          now: transitionAt,
         );
-        transaction.deleteOutbox(partitionId, claimed.recordId);
-        return true;
+        if (deleteOutbox) {
+          transaction.deleteOutbox(partitionId, claimed.recordId);
+        }
+        return (
+          state: disposition.state,
+          diagnosticCode: disposition.diagnosticCode,
+          cacheRejected: cacheRejected,
+        );
       });
-      if (cacheRejected) {
+      if (terminal?.cacheRejected ?? false) {
         _recordDiagnostic(
           const OfflineDiagnosticEvent(
             kind: OfflineDiagnosticKind.capacityRejected,
           ),
         );
       }
-      if (applied) {
+      if (terminal != null) {
         _emit(
           claimed,
-          OfflineWriteState.confirmed,
+          terminal.state,
           attemptCount: claimed.attemptCount + 1,
+          diagnosticCode: terminal.diagnosticCode,
         );
       } else {
         _recordDiagnostic(
@@ -2038,7 +2086,10 @@ final class OfflineLanternRepository {
           ),
         );
       }
-      return _ReplayOutcome(confirmed: applied);
+      return _ReplayOutcome(
+        confirmed: terminal?.state == OfflineWriteState.confirmed,
+        deadLetter: terminal?.state == OfflineWriteState.deadLetter,
+      );
     } on OfflineRemoteFailure catch (failure) {
       return _recordReplayFailure(
         partitionId,
@@ -2155,20 +2206,20 @@ final class OfflineLanternRepository {
     return _ReplayOutcome(deadLetter: applied);
   }
 
-  Future<Object?> _putVertexRemote(
+  Future<({Object entity, PutOutcome outcome})> _putVertexRemote(
     Vertex vertex,
     LanternCancellationToken? cancellation,
   ) async {
-    await remote.putVertex(vertex, cancellation: cancellation);
-    return vertex;
+    final outcome = await remote.putVertex(vertex, cancellation: cancellation);
+    return (entity: vertex, outcome: outcome);
   }
 
-  Future<Object?> _putEdgeRemote(
+  Future<({Object entity, PutOutcome outcome})> _putEdgeRemote(
     Edge edge,
     LanternCancellationToken? cancellation,
   ) async {
-    await remote.putEdge(edge, cancellation: cancellation);
-    return edge;
+    final outcome = await remote.putEdge(edge, cancellation: cancellation);
+    return (entity: edge, outcome: outcome);
   }
 
   Future<_ReplayOutcome> _recordReplayFailure(
@@ -3774,6 +3825,32 @@ DateTime? _resolveExpiration(
   }
   return resolved;
 }
+
+({OfflineWriteState state, String? diagnosticCode}) _putDisposition(
+  PutOutcome outcome, {
+  required bool liveThroughCommit,
+}) => switch (outcome) {
+  PutOutcome.appliedAndLive when liveThroughCommit => (
+    state: OfflineWriteState.confirmed,
+    diagnosticCode: null,
+  ),
+  PutOutcome.appliedAndLive => (
+    state: OfflineWriteState.expired,
+    diagnosticCode: 'expired_at_commit',
+  ),
+  PutOutcome.expired => (
+    state: OfflineWriteState.expired,
+    diagnosticCode: 'put_expired',
+  ),
+  PutOutcome.conditionNotMet => (
+    state: OfflineWriteState.deadLetter,
+    diagnosticCode: 'condition_not_met',
+  ),
+  PutOutcome.superseded => (
+    state: OfflineWriteState.deadLetter,
+    diagnosticCode: 'put_superseded',
+  ),
+};
 
 String _diagnosticCode(OfflineRemoteErrorKind kind) => switch (kind) {
   OfflineRemoteErrorKind.unavailable => 'unavailable',

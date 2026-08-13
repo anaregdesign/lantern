@@ -598,7 +598,8 @@ enum OfflineWriteState {
   /// A bounded replay lease is actively sending.
   sending,
 
-  /// The remote response was transactionally confirmed locally.
+  /// The server reported `appliedAndLive`, every local expiration sample was
+  /// still live, and the response was transactionally confirmed locally.
   confirmed,
 
   /// A retryable transport failure scheduled a retry.
@@ -607,10 +608,12 @@ enum OfflineWriteState {
   /// Authentication paused replay without burning an attempt.
   pausedForAuth,
 
-  /// The item became inspectable and requires explicit action.
+  /// The server preserved another state, or a permanent failure made this
+  /// item inspectable and require explicit action.
   deadLetter,
 
-  /// The item reached its resolved absolute expiration.
+  /// The item reached its resolved absolute expiration locally or the server
+  /// authoritatively reported that its Put was expired.
   expired,
 
   /// A legacy snapshot no longer contained this item's terminal outcome.

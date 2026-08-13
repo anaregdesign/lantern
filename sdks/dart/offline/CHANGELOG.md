@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Consume server-authoritative Put outcomes during replay: confirm only a
+  still-live `appliedAndLive`, terminalize `expired`, quarantine
+  `conditionNotMet`/`superseded`, invalidate contradicted cache entries, and
+  keep response/commit time monotone across wall-clock rollback.
 - Reject retained operation/record identity collisions atomically with bounded
   generated-ID retries, seal transactions after callbacks, and fail closed on
   contradictory restored durable-state graphs.

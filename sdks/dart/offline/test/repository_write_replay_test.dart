@@ -752,6 +752,201 @@ void main() {
   });
 
   test(
+    'authoritative Put outcomes preserve item order and terminalize exactly',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore(
+        limits: const OfflineStoreLimits(maxDiagnosticCodeBytes: 19),
+      );
+      await store.transaction<void>((transaction) {
+        transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: 0,
+            key: const OfflineEntityKey.vertex('condition'),
+            entity: Vertex(
+              key: 'condition',
+              value: VertexValue.string('old'),
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+        transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: 0,
+            key: const OfflineEntityKey.edge('tail', 'head'),
+            entity: Edge(
+              tail: 'tail',
+              head: 'head',
+              weight: 9,
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+      });
+      final remote = FakeOfflineRemote()
+        ..vertexPutOutcomes.addAll(<PutOutcome>[
+          PutOutcome.appliedAndLive,
+          PutOutcome.expired,
+          PutOutcome.conditionNotMet,
+          PutOutcome.superseded,
+        ])
+        ..edgePutOutcomes.add(PutOutcome.expired);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxConcurrency: 1,
+          maxConcurrencyPerPartition: 1,
+        ),
+      );
+      addTearDown(repository.dispose);
+      final vertices = await repository.putVertices(
+        partitionId: 'p',
+        inputs: <VertexInput>[
+          VertexInput(key: 'applied', value: VertexValue.string('new')),
+          VertexInput(key: 'expired', value: VertexValue.string('new')),
+          VertexInput(key: 'condition', value: VertexValue.string('new')),
+          VertexInput(key: 'superseded', value: VertexValue.string('new')),
+        ],
+      );
+      final edge = await repository.putEdge(
+        partitionId: 'p',
+        input: EdgeInput(tail: 'tail', head: 'head', weight: 1),
+      );
+
+      expect(await repository.drain('p'), 1);
+      final vertexStatus = await repository.getWriteStatus(
+        'p',
+        vertices.operationId,
+      );
+      expect(vertexStatus!.items.map((item) => item.state), <OfflineWriteState>[
+        OfflineWriteState.confirmed,
+        OfflineWriteState.expired,
+        OfflineWriteState.deadLetter,
+        OfflineWriteState.deadLetter,
+      ]);
+      expect(
+        vertexStatus.items.map((item) => item.attemptCount),
+        everyElement(1),
+      );
+      expect(vertexStatus.items.map((item) => item.diagnosticCode), <String?>[
+        null,
+        'put_expired',
+        'condition_not_met',
+        'put_superseded',
+      ]);
+      final edgeStatus = await repository.getWriteStatus('p', edge.operationId);
+      expect(edgeStatus!.items.single.state, OfflineWriteState.expired);
+      expect(edgeStatus.items.single.attemptCount, 1);
+      expect(edgeStatus.items.single.diagnosticCode, 'put_expired');
+
+      final deadLetters = await store.transaction(
+        (transaction) => transaction
+            .outbox('p')
+            .where((record) => record.state == OfflineOutboxState.deadLetter)
+            .toList(growable: false),
+      );
+      expect(deadLetters, hasLength(2));
+      expect(
+        deadLetters.map((record) => record.deadLetteredAt),
+        everyElement(initial),
+      );
+      expect(deadLetters.map((record) => record.diagnosticCode), <String?>[
+        'condition_not_met',
+        'put_superseded',
+      ]);
+      expect(
+        deadLetters.map((record) => record.diagnosticCode!.length),
+        everyElement(lessThanOrEqualTo(19)),
+      );
+      expect(
+        (await repository.readVertex(
+          'p',
+          'condition',
+          policy: OfflineReadPolicy.cacheOnly,
+        )).state,
+        OfflineReadState.unknown,
+      );
+      expect(
+        (await repository.readEdge(
+          'p',
+          const EdgeRef('tail', 'head'),
+          policy: OfflineReadPolicy.cacheOnly,
+        )).state,
+        OfflineReadState.unknown,
+      );
+    },
+  );
+
+  test(
+    'response and commit expiration samples remain sticky across rollback',
+    () async {
+      Future<void> verify({required bool expireBeforeResponse}) async {
+        final clock = MutableClock(initial);
+        final store = _GateNextTransactionStore();
+        final response = Completer<void>();
+        final remote = _DelayedRemote(response);
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: testConfig(clock),
+        );
+        final write = await repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(
+            key: expireBeforeResponse ? 'response' : 'commit',
+            value: VertexValue.string('value'),
+            expiresAt: initial.add(const Duration(seconds: 1)),
+          ),
+        );
+        final draining = repository.drain('p');
+        await remote.started.future;
+        store.holdNext();
+        if (expireBeforeResponse) {
+          clock.advance(const Duration(seconds: 2));
+        }
+        response.complete();
+        await store.blocked;
+        if (expireBeforeResponse) {
+          clock.now = initial;
+        } else {
+          clock.advance(const Duration(seconds: 2));
+        }
+        store.release();
+
+        expect(await draining, 0);
+        final status = await repository.getWriteStatus('p', write.operationId);
+        expect(status!.items.single.state, OfflineWriteState.expired);
+        expect(status.items.single.attemptCount, 1);
+        expect(status.items.single.diagnosticCode, 'expired_at_commit');
+        expect(
+          (await repository.readVertex(
+            'p',
+            expireBeforeResponse ? 'response' : 'commit',
+            policy: OfflineReadPolicy.cacheOnly,
+          )).state,
+          OfflineReadState.unknown,
+        );
+        await repository.dispose();
+      }
+
+      await verify(expireBeforeResponse: true);
+      await verify(expireBeforeResponse: false);
+    },
+  );
+
+  test(
     'observation expires idle work, reclaims capacity, and closes status',
     () async {
       final clock = MutableClock(initial);
@@ -946,6 +1141,9 @@ void main() {
     );
     expect(await repository.drain('p'), 0);
     expect(remote.vertexPutCalls, 0);
+    final status = await repository.getWriteStatus('p', handle.operationId);
+    expect(status!.items.single.attemptCount, 0);
+    expect(status.items.single.diagnosticCode, 'expired');
     final snapshot = await store.exportSnapshot();
     expect(() => InMemoryOfflineStore.fromSnapshot(snapshot), returnsNormally);
   });
@@ -1543,7 +1741,7 @@ void main() {
           leaseDuration: const Duration(seconds: 1),
         ),
       );
-      await repository.putVertex(
+      final write = await repository.putVertex(
         partitionId: 'p',
         input: VertexInput(key: 'lease', value: VertexValue.string('lease')),
       );
@@ -1561,6 +1759,9 @@ void main() {
       completer.complete();
       expect(await draining, 1);
       expect(remote.vertexPutCalls, 2);
+      final status = await repository.getWriteStatus('p', write.operationId);
+      expect(status!.items.single.state, OfflineWriteState.confirmed);
+      expect(status.items.single.attemptCount, 1);
       expect(
         (await repository.readVertex(
           'p',
@@ -2502,7 +2703,7 @@ final class _ConcurrentRemote extends FakeOfflineRemote {
   }
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
@@ -2526,6 +2727,7 @@ final class _ConcurrentRemote extends FakeOfflineRemote {
     try {
       await Future.any<void>(<Future<void>>[_release.future, canceled.future]);
       vertices[vertex.key] = vertex;
+      return PutOutcome.appliedAndLive;
     } finally {
       removeCancellation?.call();
       active -= 1;
@@ -2551,7 +2753,7 @@ final class _CredentialRecordingRemote extends FakeOfflineRemote {
   }
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
@@ -2575,6 +2777,7 @@ final class _CredentialRecordingRemote extends FakeOfflineRemote {
       }
     }
     vertices[vertex.key] = vertex;
+    return PutOutcome.appliedAndLive;
   }
 }
 
@@ -2587,7 +2790,7 @@ final class _AuthGateRemote extends FakeOfflineRemote {
   }
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
@@ -2627,7 +2830,7 @@ final class _DelayedRemote extends FakeOfflineRemote {
   final Completer<void> started = Completer<void>();
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
@@ -2641,6 +2844,7 @@ final class _DelayedRemote extends FakeOfflineRemote {
     });
     try {
       await Future.any<void>(<Future<void>>[completer.future, canceled.future]);
+      return PutOutcome.appliedAndLive;
     } finally {
       removeCancellation?.call();
     }
@@ -2651,7 +2855,7 @@ final class _CancelableRemote extends FakeOfflineRemote {
   final Completer<void> started = Completer<void>();
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {
@@ -2673,7 +2877,7 @@ final class _GatedFailureRemote extends FakeOfflineRemote {
   final Completer<void> release = Completer<void>();
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
   }) async {

@@ -177,14 +177,14 @@ final class _ImmediateRemote implements OfflineRemote {
   Future<void> probe({LanternCancellationToken? cancellation}) async {}
 
   @override
-  Future<void> putEdge(
+  Future<PutOutcome> putEdge(
     Edge edge, {
     LanternCancellationToken? cancellation,
-  }) async {}
+  }) async => PutOutcome.appliedAndLive;
 
   @override
-  Future<void> putVertex(
+  Future<PutOutcome> putVertex(
     Vertex vertex, {
     LanternCancellationToken? cancellation,
-  }) async {}
+  }) async => PutOutcome.appliedAndLive;
 }
