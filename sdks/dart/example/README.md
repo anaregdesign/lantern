@@ -119,7 +119,10 @@ flutter build ios --debug --no-codesign
 
 The native real-wire smoke is in
 `integration_test/mobile_smoke_test.dart`; it covers offline enqueue, cached
-pending state, probe-gated replay, confirmation, and the direct online surface.
+pending state, probe-gated replay, confirmation, authoritative server expiry
+under a behind-device clock, watch cleanup, wipe-before-send, and the direct
+online surface. Hosted Android/iOS jobs attach content-free evidence manifests
+to the exact tested commit and toolchain; they are simulator evidence only.
 See
 [physical-device-smoke.md](physical-device-smoke.md) for the required device
 matrix and evidence format.

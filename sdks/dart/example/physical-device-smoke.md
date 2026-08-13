@@ -1,9 +1,9 @@
 # Physical-device smoke evidence
 
-This evidence is a release prerequisite for `lantern_client` v0.1.0. Simulator
-and emulator CI cannot prove physical iOS local-network privacy, radio changes,
-or Android Doze behavior. Record actual device output here; do not infer a pass
-from a build artifact.
+Physical evidence is a release prerequisite whenever the mobile or offline
+contract changes. Simulator and emulator CI cannot prove physical iOS
+local-network privacy, radio changes, or Android Doze behavior. Record actual
+device output here; do not infer a pass from a build artifact.
 
 ## Run command
 
@@ -17,13 +17,69 @@ flutter test integration_test/mobile_smoke_test.dart -d <device-id> \
 Run the example UI separately with `flutter run` to exercise lifecycle and
 failure-state scenarios that the compact smoke does not automate.
 
+Every current release run must record the full 40-character commit SHA (never
+"working tree based on"), Flutter and Dart versions plus framework revision,
+application package ID, device model/OS without a device identifier, test
+target and scenarios, UTC time, network topology, and a pass/fail result. Keep
+the artifact content-free: no endpoint, token, partition/key/value, certificate,
+device identifier, or raw server trace. The Android/iOS CI jobs emit the same
+shape for emulator/simulator runs and bind it to `GITHUB_SHA`; those artifacts
+prove reproducibility but do not count as physical-device evidence.
+
+Run from a clean checkout and capture `git rev-parse HEAD` before the test. The
+sanitized artifact uses this minimum JSON shape (one file per platform):
+
+```json
+{
+  "schema": 1,
+  "kind": "physical_mobile_revision_evidence",
+  "contentFree": true,
+  "physicalDevice": true,
+  "repository": "anaregdesign/lantern",
+  "commit": "<40-character SHA>",
+  "recordedAt": "<UTC RFC 3339>",
+  "toolchain": {
+    "flutter": "<version>",
+    "flutterRevision": "<40-character revision>",
+    "dart": "<version>"
+  },
+  "application": {
+    "packageId": "<checked-in Android or iOS package ID>",
+    "target": "integration_test/mobile_smoke_test.dart"
+  },
+  "platform": {
+    "kind": "<physical-android or physical-ios>",
+    "model": "<model>",
+    "os": "<version without a device identifier>"
+  },
+  "network": {
+    "transport": "Connect/HTTPS",
+    "topology": "<sanitized LAN or trusted-tunnel description>",
+    "authenticated": true
+  },
+  "scenarios": [
+    "online_exact_values",
+    "offline_put_replay",
+    "authoritative_server_expiry",
+    "watch_cleanup",
+    "wipe_before_send"
+  ],
+  "result": "passed"
+}
+```
+
+Reject the record if the checkout is dirty, the SHA/toolchain/package does not
+match the tested binary, or any required scenario did not pass. Never replace
+the placeholders with an endpoint or identifier.
+
 When Flutter classifies a cabled iOS device as wirelessly tethered, use the
 checked-in host driver with `flutter drive --publish-port`,
 `--driver=test_driver/integration_test.dart`, and
 `--target=integration_test/mobile_smoke_test.dart`. If mDNS discovery is
 unavailable, build the same integration-test target in profile mode, install it
 with `xcrun devicectl device install app`, and launch it with CoreDevice. Keep
-the server trace as the real-wire evidence.
+only a sanitized content-free RPC category/status summary as real-wire evidence;
+do not attach the raw server trace.
 
 ## Required matrix
 
@@ -188,8 +244,11 @@ This recorded run predates the Put-only amendment in #1175 and is retained only
 as historical lifecycle/probe evidence; it does not validate the current
 offline mutation contract. The maintained mobile smoke now locally commits
 `PutVertex` and `PutEdge`, observes their exact pending cache values, then probes
-and drains. That revised scenario must be rerun on a physical device before it
-is recorded as current release evidence. The example uses
+and drains. It also proves server-authoritative expiration under a deliberately
+behind device clock, releases a watch, and wipes an unsent Put with zero remote
+mutation. That revised scenario must be rerun from the exact #1162 candidate SHA
+on a physical device before it is recorded as current release evidence. The
+example uses
 `InMemoryOfflineStore`; process-restart durability remains covered by the
 storage-neutral fresh-process, Put response-loss, legacy-Add quarantine, and
 adapter conformance tests rather than being claimed from this device run.

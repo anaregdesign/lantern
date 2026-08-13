@@ -4,7 +4,10 @@
   "limits": {
     "enqueueMillis": 5000,
     "replayMillis": 30000,
+    "recoveryMillis": 5000,
+    "disposeMillis": 5000,
     "cacheReadP99Micros": 50000,
+    "entityWatchP99Micros": 100000,
     "rssDeltaBytes": 536870912,
     "snapshotBytes": 4194304
   }

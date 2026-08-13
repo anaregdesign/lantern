@@ -219,6 +219,226 @@ void main() {
     },
   );
 
+  test('offline mapper unwraps a real retry-exhausted failure', () async {
+    var attempts = 0;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      attempts += 1;
+      request.response
+        ..statusCode = HttpStatus.serviceUnavailable
+        ..headers.contentType = ContentType.json
+        ..write('{"code":"unavailable","message":"down"}');
+      await request.response.close();
+    });
+    final client = LanternClient.connect(
+      Uri.parse('http://${server.address.host}:${server.port}'),
+      allowInsecure: true,
+      retryPolicy: const RetryPolicy(
+        maxAttempts: 2,
+        baseDelay: Duration(microseconds: 1),
+        maxDelay: Duration(microseconds: 1),
+      ),
+    );
+    addTearDown(client.close);
+
+    late LanternRetryExhaustedException exhausted;
+    try {
+      await client.getVertex('retry-exhausted');
+      fail('the real transport must exhaust its bounded attempts');
+    } on LanternRetryExhaustedException catch (error) {
+      exhausted = error;
+    }
+
+    expect(attempts, 2);
+    expect(
+      mapLanternClientFailure(exhausted),
+      isA<OfflineRemoteFailure>()
+          .having(
+            (failure) => failure.kind,
+            'kind',
+            OfflineRemoteErrorKind.unavailable,
+          )
+          .having((failure) => failure.cause, 'cause', same(exhausted)),
+    );
+  });
+
+  test('online adapter maps typed Connect failures exactly', () async {
+    final responses = <({int status, String code})>[
+      (status: HttpStatus.badRequest, code: 'invalid_argument'),
+      (status: HttpStatus.tooManyRequests, code: 'resource_exhausted'),
+      (status: HttpStatus.forbidden, code: 'permission_denied'),
+      (status: HttpStatus.serviceUnavailable, code: 'unavailable'),
+    ];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((request) async {
+      final response = responses.removeAt(0);
+      request.response
+        ..statusCode = response.status
+        ..headers.contentType = ContentType.json
+        ..write('{"code":"${response.code}","message":"mapped"}');
+      await request.response.close();
+    });
+    final client = LanternClient.connect(
+      Uri.parse('http://${server.address.host}:${server.port}'),
+      allowInsecure: true,
+      defaultTimeout: null,
+    );
+    addTearDown(client.close);
+    final remote = LanternClientOfflineRemote(client);
+
+    for (final expected in <({OfflineRemoteErrorKind kind, Type cause})>[
+      (
+        kind: OfflineRemoteErrorKind.invalidArgument,
+        cause: LanternInvalidArgumentException,
+      ),
+      (
+        kind: OfflineRemoteErrorKind.resourceExhausted,
+        cause: LanternResourceExhaustedException,
+      ),
+      (
+        kind: OfflineRemoteErrorKind.permanent,
+        cause: LanternPermissionDeniedException,
+      ),
+      (
+        kind: OfflineRemoteErrorKind.unavailable,
+        cause: LanternUnavailableException,
+      ),
+    ]) {
+      await expectLater(
+        remote.getVertex('mapped'),
+        throwsA(
+          isA<OfflineRemoteFailure>()
+              .having((failure) => failure.kind, 'kind', expected.kind)
+              .having(
+                (failure) => failure.cause.runtimeType,
+                'cause type',
+                expected.cause,
+              ),
+        ),
+      );
+    }
+    expect(responses, isEmpty);
+  });
+
+  test('online adapter preserves deadline classification', () async {
+    final requestStarted = Completer<void>();
+    final releaseResponse = Completer<void>();
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      if (!releaseResponse.isCompleted) releaseResponse.complete();
+      await server.close(force: true);
+    });
+    server.listen((request) async {
+      if (!requestStarted.isCompleted) requestStarted.complete();
+      await releaseResponse.future;
+      try {
+        request.response
+          ..statusCode = HttpStatus.serviceUnavailable
+          ..headers.contentType = ContentType.json
+          ..write('{"code":"unavailable","message":"late"}');
+        await request.response.close();
+      } on Object {
+        // The deadline closes the request before teardown releases the handler.
+      }
+    });
+    final client = LanternClient.connect(
+      Uri.parse('http://${server.address.host}:${server.port}'),
+      allowInsecure: true,
+      defaultTimeout: const Duration(milliseconds: 100),
+    );
+    addTearDown(client.close);
+    final operation = LanternClientOfflineRemote(client).getVertex('deadline');
+    await requestStarted.future;
+    await expectLater(
+      operation,
+      throwsA(
+        isA<OfflineRemoteFailure>()
+            .having(
+              (failure) => failure.kind,
+              'kind',
+              OfflineRemoteErrorKind.deadlineExceeded,
+            )
+            .having(
+              (failure) => failure.cause,
+              'cause',
+              isA<LanternDeadlineExceededException>(),
+            ),
+      ),
+    );
+
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: LanternClientOfflineRemote(client),
+    );
+    addTearDown(repository.dispose);
+    await repository.putVertex(
+      partitionId: 'deadline',
+      input: VertexInput(key: 'deadline-put', value: VertexValue.nil()),
+    );
+    expect(await repository.drain('deadline'), 0);
+    final pending = (await repository.listPending('deadline')).single;
+    expect(pending.attemptCount, 1);
+    expect(pending.diagnosticCode, 'deadline_exceeded');
+  });
+
+  test(
+    'online adapter reacquires a rotated token after auth failure',
+    () async {
+      var requests = 0;
+      final authorizations = <String?>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        requests += 1;
+        authorizations.add(
+          request.headers.value(HttpHeaders.authorizationHeader),
+        );
+        request.response.headers.contentType = ContentType.json;
+        if (requests == 1) {
+          request.response
+            ..statusCode = HttpStatus.unauthorized
+            ..write('{"code":"unauthenticated","message":"rotate"}');
+        } else {
+          request.response
+            ..statusCode = HttpStatus.notFound
+            ..write('{"code":"not_found","message":"missing"}');
+        }
+        await request.response.close();
+      });
+      var token = 'expired-token';
+      final client = LanternClient.connect(
+        Uri.parse('http://${server.address.host}:${server.port}'),
+        allowInsecure: true,
+        tokenProvider: () => token,
+        defaultTimeout: null,
+      );
+      addTearDown(client.close);
+      final remote = LanternClientOfflineRemote(client);
+
+      await expectLater(
+        remote.getVertex('auth'),
+        throwsA(
+          isA<OfflineRemoteFailure>().having(
+            (failure) => failure.kind,
+            'kind',
+            OfflineRemoteErrorKind.unauthenticated,
+          ),
+        ),
+      );
+      token = 'rotated-token';
+      expect(
+        await remote.getVertex('auth'),
+        isA<OfflineRemoteMissing<Vertex>>(),
+      );
+      expect(authorizations, <String>[
+        'Bearer expired-token',
+        'Bearer rotated-token',
+      ]);
+    },
+  );
+
   test('each offline attempt permits at most one wire send', () async {
     var sends = 0;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -307,7 +527,7 @@ void main() {
   );
 
   test(
-    'real server commit plus response loss replays PutVertex and PutEdge',
+    'response-dropping proxy loses committed PutVertex and PutEdge responses',
     () async {
       final endpointValue =
           Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
@@ -316,25 +536,29 @@ void main() {
         return;
       }
       final endpoint = Uri.parse(endpointValue);
-      final client = LanternClient.connect(
+      final serverClient = LanternClient.connect(
         endpoint,
         allowInsecure: endpoint.scheme == 'http',
         idempotentAdds: true,
       );
+      addTearDown(serverClient.close);
+      await serverClient.ping();
+
+      final proxy = await _ResponseDroppingProxy.bind(
+        endpoint,
+        drops: const <String, int>{'PutVertices': 1, 'PutEdges': 1},
+      );
+      addTearDown(proxy.close);
+      final client = LanternClient.connect(proxy.endpoint, allowInsecure: true);
       addTearDown(client.close);
       await client.ping();
 
       final online = LanternClientOfflineRemote(client);
-      final dropping = _ResponseDroppingRemote(
-        online,
-        dropNextPutVertex: true,
-        dropNextPutEdge: true,
-      );
       final store = InMemoryOfflineStore();
       final enqueueNow = DateTime.now().toUtc();
       final repository = OfflineLanternRepository(
         store: store,
-        remote: dropping,
+        remote: online,
         config: OfflineConfig(
           clock: () => enqueueNow,
           jitter: (ceiling) => ceiling,
@@ -364,23 +588,45 @@ void main() {
         ),
       );
       expect(await repository.drain('wire'), 0);
-      expect(dropping.putVertexCalls, 1);
-      expect(dropping.putEdgeCalls, 1);
+      expect(proxy.forwarded('PutVertices'), 1);
+      expect(proxy.forwarded('PutEdges'), 1);
+      expect(proxy.dropped('PutVertices'), 1);
+      expect(proxy.dropped('PutEdges'), 1);
       final beforeRestart = await store.transaction(
         (transaction) => transaction.outbox('wire'),
       );
       expect(beforeRestart, hasLength(2));
+      expect(
+        beforeRestart.map((record) => record.attemptCount),
+        everyElement(1),
+      );
+      expect(
+        beforeRestart.map((record) => record.diagnosticCode),
+        everyElement('unavailable'),
+      );
+      final firstVertex = beforeRestart
+          .map((record) => record.intent)
+          .whereType<OfflinePutVertexIntent>()
+          .single;
       final firstEdge = beforeRestart
           .map((record) => record.intent)
           .whereType<OfflinePutEdgeIntent>()
           .single;
+      expect(
+        (await serverClient.getVertex(vertexKey)).value,
+        isA<StringValue>().having((value) => value.value, 'value', 'committed'),
+        reason: 'the upstream server committed before the proxy disconnected',
+      );
+      expect(
+        (await serverClient.getEdge(EdgeRef(tail, head))).weight,
+        Float32Value(0.75).value,
+      );
 
       final snapshot = await store.exportSnapshot();
       await repository.dispose();
-      final recording = _ResponseDroppingRemote(online);
       final restarted = OfflineLanternRepository(
         store: InMemoryOfflineStore.fromSnapshot(snapshot),
-        remote: recording,
+        remote: online,
         config: OfflineConfig(
           clock: () => enqueueNow.add(const Duration(seconds: 2)),
           jitter: (_) => Duration.zero,
@@ -388,16 +634,23 @@ void main() {
       );
       addTearDown(restarted.dispose);
       expect(await restarted.drain('wire'), 2);
-      expect(
-        recording.edgeExpirations.single,
-        firstEdge.edge.expiration,
-        reason: 'replay must not rebase the once-resolved TTL',
-      );
+      expect(proxy.forwarded('PutVertices'), 2);
+      expect(proxy.forwarded('PutEdges'), 2);
 
-      final vertex = await client.getVertex(vertexKey);
+      final vertex = await serverClient.getVertex(vertexKey);
       expect((vertex.value as StringValue).value, 'committed');
-      final edge = await client.getEdge(EdgeRef(tail, head));
+      expect(
+        vertex.expiration,
+        firstVertex.vertex.expiration,
+        reason: 'replay must not rebase the once-resolved Vertex TTL',
+      );
+      final edge = await serverClient.getEdge(EdgeRef(tail, head));
       expect(edge.weight, Float32Value(0.75).value);
+      expect(
+        edge.expiration,
+        firstEdge.edge.expiration,
+        reason: 'replay must not rebase the once-resolved Edge TTL',
+      );
       expect(await restarted.listPending('wire'), isEmpty);
     },
   );
@@ -410,12 +663,12 @@ void main() {
       return;
     }
     final endpoint = Uri.parse(endpointValue);
-    final client = LanternClient.connect(
+    final serverClient = LanternClient.connect(
       endpoint,
       allowInsecure: endpoint.scheme == 'http',
     );
-    addTearDown(client.close);
-    await client.ping();
+    addTearDown(serverClient.close);
+    await serverClient.ping();
 
     final prefix =
         'dart-offline-expired-wire:'
@@ -423,7 +676,7 @@ void main() {
     final vertexKey = '${prefix}vertex';
     final edgeRef = EdgeRef('${prefix}tail', '${prefix}head');
     expect(
-      await client.putVertex(
+      await serverClient.putVertex(
         VertexInput(
           key: vertexKey,
           value: VertexValue.string('old'),
@@ -433,7 +686,7 @@ void main() {
       PutOutcome.appliedAndLive,
     );
     expect(
-      await client.putEdge(
+      await serverClient.putEdge(
         EdgeInput(
           tail: edgeRef.tail,
           head: edgeRef.head,
@@ -448,14 +701,16 @@ void main() {
     // locally while it is already expired at the authoritative server.
     var deviceNow = DateTime.now().toUtc().subtract(const Duration(hours: 2));
     final serverExpiredAt = deviceNow.add(const Duration(hours: 1));
-    final dropping = _ResponseDroppingRemote(
-      LanternClientOfflineRemote(client),
-      dropNextPutVertex: true,
-      dropNextPutEdge: true,
+    final proxy = await _ResponseDroppingProxy.bind(
+      endpoint,
+      drops: const <String, int>{'PutVertices': 1, 'PutEdges': 1},
     );
+    addTearDown(proxy.close);
+    final client = LanternClient.connect(proxy.endpoint, allowInsecure: true);
+    addTearDown(client.close);
     final repository = OfflineLanternRepository(
       store: InMemoryOfflineStore(),
-      remote: dropping,
+      remote: LanternClientOfflineRemote(client),
       config: OfflineConfig(
         clock: () => deviceNow,
         jitter: (ceiling) => ceiling,
@@ -501,7 +756,15 @@ void main() {
     // Both delete-like commits happen, but their first responses are lost.
     // Replaying obtains EXPIRED again and safely terminalizes each intent.
     expect(await repository.drain('expired-wire'), 0);
-    expect(await repository.listPending('expired-wire'), hasLength(2));
+    final responseLost = await repository.listPending('expired-wire');
+    expect(responseLost, hasLength(2));
+    expect(responseLost.map((record) => record.attemptCount), everyElement(1));
+    expect(
+      responseLost.map((record) => record.diagnosticCode),
+      everyElement('unavailable'),
+    );
+    expect(proxy.dropped('PutVertices'), 1);
+    expect(proxy.dropped('PutEdges'), 1);
     deviceNow = deviceNow.add(const Duration(seconds: 1));
     expect(await repository.drain('expired-wire'), 0);
     expect(await repository.listPending('expired-wire'), isEmpty);
@@ -534,11 +797,11 @@ void main() {
       OfflineReadState.unknown,
     );
     await expectLater(
-      client.getVertex(vertexKey),
+      serverClient.getVertex(vertexKey),
       throwsA(isA<LanternNotFoundException>()),
     );
     await expectLater(
-      client.getEdge(edgeRef),
+      serverClient.getEdge(edgeRef),
       throwsA(isA<LanternNotFoundException>()),
     );
   });
@@ -597,19 +860,19 @@ void main() {
         return;
       }
       final endpoint = Uri.parse(endpointValue);
-      final client = LanternClient.connect(
+      final serverClient = LanternClient.connect(
         endpoint,
         allowInsecure: endpoint.scheme == 'http',
         idempotentAdds: true,
       );
-      addTearDown(client.close);
-      await client.ping();
+      addTearDown(serverClient.close);
+      await serverClient.ping();
 
       final prefix =
           'dart-offline-add-quarantine:'
           '${DateTime.now().microsecondsSinceEpoch}:';
       final edgeRef = EdgeRef('${prefix}tail', '${prefix}head');
-      addTearDown(() => client.deleteEdge(edgeRef));
+      addTearDown(() => serverClient.deleteEdge(edgeRef));
       final contributionId = Uint8List.fromList(
         List<int>.generate(24, (index) => index + 1),
       );
@@ -660,10 +923,21 @@ void main() {
         ],
       );
 
-      // The direct-online commit succeeds, but the retained retry record above
-      // models the old adapter losing that response before local confirmation.
-      expect(
-        await client.addEdge(
+      final proxy = await _ResponseDroppingProxy.bind(
+        endpoint,
+        drops: const <String, int>{'AddEdges': 1},
+      );
+      addTearDown(proxy.close);
+      final legacyClient = LanternClient.connect(
+        proxy.endpoint,
+        allowInsecure: true,
+        idempotentAdds: true,
+        retryPolicy: const RetryPolicy(maxAttempts: 1),
+      );
+      addTearDown(legacyClient.close);
+
+      await expectLater(
+        legacyClient.addEdge(
           EdgeInput(
             tail: edgeRef.tail,
             head: edgeRef.head,
@@ -672,16 +946,30 @@ void main() {
             contribId: contributionId,
           ),
         ),
-        Float32Value(0.5).value,
+        throwsA(
+          isA<LanternRetryExhaustedException>()
+              .having((error) => error.attempts, 'attempts', 1)
+              .having(
+                (error) => error.cause,
+                'cause',
+                isA<LanternUnavailableException>(),
+              ),
+        ),
       );
-      expect(await client.deleteEdge(edgeRef), isTrue);
+      expect(proxy.dropped('AddEdges'), 1);
+      expect(
+        (await serverClient.getEdge(edgeRef)).weight,
+        Float32Value(0.5).value,
+        reason: 'Add committed upstream before its response was dropped',
+      );
+      expect(await serverClient.deleteEdge(edgeRef), isTrue);
       await expectLater(
-        client.getEdge(edgeRef),
+        serverClient.getEdge(edgeRef),
         throwsA(isA<LanternNotFoundException>()),
       );
 
-      final recording = _ResponseDroppingRemote(
-        LanternClientOfflineRemote(client),
+      final recording = _RecordingRemote(
+        LanternClientOfflineRemote(serverClient),
       );
       final restarted = OfflineLanternRepository(
         store: legacyStore,
@@ -710,7 +998,7 @@ void main() {
       expect(status.items.single.attemptCount, 1);
       expect(status.items.single.diagnosticCode, 'unsupported_add');
       await expectLater(
-        client.getEdge(edgeRef),
+        serverClient.getEdge(edgeRef),
         throwsA(isA<LanternNotFoundException>()),
       );
     },
@@ -816,19 +1104,12 @@ void main() {
   );
 }
 
-final class _ResponseDroppingRemote implements OfflineRemote {
-  _ResponseDroppingRemote(
-    this.delegate, {
-    this.dropNextPutVertex = false,
-    this.dropNextPutEdge = false,
-  });
+final class _RecordingRemote implements OfflineRemote {
+  _RecordingRemote(this.delegate);
 
   final OfflineRemote delegate;
-  bool dropNextPutVertex;
-  bool dropNextPutEdge;
   int putVertexCalls = 0;
   int putEdgeCalls = 0;
-  final List<DateTime?> edgeExpirations = <DateTime?>[];
 
   @override
   Future<OfflineRemoteRead<Edge>> getEdge(
@@ -852,16 +1133,7 @@ final class _ResponseDroppingRemote implements OfflineRemote {
     LanternCancellationToken? cancellation,
   }) async {
     putEdgeCalls++;
-    edgeExpirations.add(edge.expiration);
-    final outcome = await delegate.putEdge(edge, cancellation: cancellation);
-    if (dropNextPutEdge) {
-      dropNextPutEdge = false;
-      throw OfflineRemoteFailure(
-        OfflineRemoteErrorKind.unavailable,
-        StateError('response dropped after real commit'),
-      );
-    }
-    return outcome;
+    return delegate.putEdge(edge, cancellation: cancellation);
   }
 
   @override
@@ -870,18 +1142,115 @@ final class _ResponseDroppingRemote implements OfflineRemote {
     LanternCancellationToken? cancellation,
   }) async {
     putVertexCalls++;
-    final outcome = await delegate.putVertex(
-      vertex,
-      cancellation: cancellation,
-    );
-    if (dropNextPutVertex) {
-      dropNextPutVertex = false;
-      throw OfflineRemoteFailure(
-        OfflineRemoteErrorKind.unavailable,
-        StateError('response dropped after real commit'),
+    return delegate.putVertex(vertex, cancellation: cancellation);
+  }
+}
+
+/// A loopback HTTP proxy that consumes an upstream response and then closes the
+/// downstream socket before writing any status line or response bytes.
+///
+/// This keeps response-loss evidence on the transport boundary: the Lantern
+/// server has completed the real Connect request while the SDK adapter sees
+/// only a disconnected downstream connection.
+final class _ResponseDroppingProxy {
+  _ResponseDroppingProxy._(
+    this._server,
+    this._upstreamEndpoint,
+    Map<String, int> drops,
+  ) : _remainingDrops = Map<String, int>.of(drops) {
+    _upstream.autoUncompress = false;
+    _server.listen((request) => unawaited(_forward(request)));
+  }
+
+  static Future<_ResponseDroppingProxy> bind(
+    Uri upstreamEndpoint, {
+    required Map<String, int> drops,
+  }) async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    return _ResponseDroppingProxy._(server, upstreamEndpoint, drops);
+  }
+
+  final HttpServer _server;
+  final Uri _upstreamEndpoint;
+  final HttpClient _upstream = HttpClient();
+  final Map<String, int> _remainingDrops;
+  final Map<String, int> _forwarded = <String, int>{};
+  final Map<String, int> _dropped = <String, int>{};
+
+  Uri get endpoint =>
+      Uri(scheme: 'http', host: _server.address.host, port: _server.port);
+
+  int forwarded(String rpc) => _forwarded[rpc] ?? 0;
+
+  int dropped(String rpc) => _dropped[rpc] ?? 0;
+
+  Future<void> close() async {
+    await _server.close(force: true);
+    _upstream.close(force: true);
+  }
+
+  Future<void> _forward(HttpRequest downstream) async {
+    final rpc = downstream.uri.pathSegments.isEmpty
+        ? ''
+        : downstream.uri.pathSegments.last;
+    _forwarded[rpc] = (_forwarded[rpc] ?? 0) + 1;
+    try {
+      final target = _upstreamEndpoint.resolveUri(downstream.uri);
+      final upstreamRequest = await _upstream.openUrl(
+        downstream.method,
+        target,
       );
+      _copyHeaders(downstream.headers, upstreamRequest.headers);
+      await upstreamRequest.addStream(downstream);
+      final upstreamResponse = await upstreamRequest.close();
+      final responseBytes = await upstreamResponse.fold<BytesBuilder>(
+        BytesBuilder(copy: false),
+        (builder, bytes) => builder..add(bytes),
+      );
+
+      final remaining = _remainingDrops[rpc] ?? 0;
+      if (remaining > 0) {
+        _remainingDrops[rpc] = remaining - 1;
+        _dropped[rpc] = (_dropped[rpc] ?? 0) + 1;
+        final socket = await downstream.response.detachSocket(
+          writeHeaders: false,
+        );
+        socket.destroy();
+        return;
+      }
+
+      downstream.response.statusCode = upstreamResponse.statusCode;
+      _copyHeaders(upstreamResponse.headers, downstream.response.headers);
+      downstream.response.add(responseBytes.takeBytes());
+      await downstream.response.close();
+    } on Object {
+      try {
+        downstream.response.statusCode = HttpStatus.badGateway;
+        await downstream.response.close();
+      } on Object {
+        // The deliberately disconnected response has no writable downstream.
+      }
     }
-    return outcome;
+  }
+
+  static void _copyHeaders(HttpHeaders source, HttpHeaders target) {
+    const ignored = <String>{
+      'connection',
+      'content-length',
+      'host',
+      'keep-alive',
+      'proxy-authenticate',
+      'proxy-authorization',
+      'te',
+      'trailer',
+      'transfer-encoding',
+      'upgrade',
+    };
+    source.forEach((name, values) {
+      if (!ignored.contains(name.toLowerCase())) {
+        target.set(name, values);
+      }
+    });
   }
 }
 

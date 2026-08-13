@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -144,10 +145,88 @@ void main() {
       await client.getEdge(EdgeRef(offlineEdge.tail, offlineEdge.head)),
       isA<Edge>().having((value) => value.weight, 'weight', 0.5),
     );
+
+    // The device clock is deliberately behind the server. The resolved
+    // expiration remains locally live, but the authoritative server outcome
+    // must terminalize both items as expired and remove any older cache state.
+    final skewedNow = DateTime.now().toUtc().subtract(const Duration(hours: 2));
+    final serverExpiredAt = skewedNow.add(const Duration(hours: 1));
+    final skewed = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: LanternClientOfflineRemote(client),
+      config: OfflineConfig(clock: () => skewedNow),
+    );
+    addTearDown(skewed.dispose);
+    final expiredVertexKey = '${prefix}server-expired-vertex';
+    final expiredEdge = EdgeRef(
+      '${prefix}server-expired-tail',
+      '${prefix}server-expired-head',
+    );
+    final expiredVertex = await skewed.putVertex(
+      partitionId: partition,
+      input: VertexInput(
+        key: expiredVertexKey,
+        value: VertexValue.string('must-not-confirm'),
+        expiresAt: serverExpiredAt,
+      ),
+    );
+    final expiredEdgeWrite = await skewed.putEdge(
+      partitionId: partition,
+      input: EdgeInput(
+        tail: expiredEdge.tail,
+        head: expiredEdge.head,
+        weight: 3,
+        expiresAt: serverExpiredAt,
+      ),
+    );
+    expect(await skewed.drain(partition), 0);
+    for (final operationId in <String>[
+      expiredVertex.operationId,
+      expiredEdgeWrite.operationId,
+    ]) {
+      expect(
+        (await skewed.getWriteStatus(
+          partition,
+          operationId,
+        ))!.items.single.state,
+        OfflineWriteState.expired,
+      );
+    }
+    await expectLater(
+      client.getVertex(expiredVertexKey),
+      throwsA(isA<LanternNotFoundException>()),
+    );
+    await expectLater(
+      client.getEdge(expiredEdge),
+      throwsA(isA<LanternNotFoundException>()),
+    );
+
+    // A pending item that is wiped before replay owns no remote side effect.
+    final wipedKey = '${prefix}wiped-before-send';
+    await offline.putVertex(
+      partitionId: partition,
+      input: VertexInput(
+        key: wipedKey,
+        value: VertexValue.string('local-only'),
+      ),
+    );
+    final watched = Completer<OfflineSnapshot<Vertex>>();
+    final watch = offline.watchVertex(partition, wipedKey).listen((snapshot) {
+      if (!watched.isCompleted) watched.complete(snapshot);
+    });
+    expect((await watched.future).hasPendingWrites, isTrue);
+    await watch.cancel();
+    await offline.wipePartition(partition);
+    expect(await offline.listPending(partition), isEmpty);
+    await expectLater(
+      client.getVertex(wipedKey),
+      throwsA(isA<LanternNotFoundException>()),
+    );
     // ignore: avoid_print
     print(
       'MOBILE_SMOKE_PASS vertices=${inputs.length} edge=1 scan=true bfs=true '
-      'offline_cache=true offline_replay=true',
+      'offline_cache=true offline_replay=true authoritative_expiry=true '
+      'watch_cleanup=true wipe_zero_send=true',
     );
   });
 }

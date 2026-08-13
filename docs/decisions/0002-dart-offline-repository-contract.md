@@ -4,7 +4,7 @@
 - Date: 2026-07-12
 - Accepted: 2026-07-19
 - Amended: 2026-08-13
-- Issues: #1021, #1175, #1178
+- Issues: #1021, #1175, #1178, #1180
 
 ## Context
 
@@ -71,6 +71,14 @@ The reusable contract also requires globally unique retained operation/record
 identities, sealed transaction objects after either commit or rollback,
 defensive byte ownership, bounded notification resources, and indexed bounded
 deadline queries used by lazy expiration.
+It races serialized claimers, checks positive and negative lease CAS paths,
+proves release/reclaim and generation barriers, verifies no-gap monotone change
+delivery through wipe, saturates and releases notification controllers, and
+checks operation/dead-letter retention boundaries before forcing
+cache/outbox/operation capacity and reopening the exact accepted state. Adapter
+tests configure their limits below the suite's explicit probe
+bounds (or raise those bounds through its named arguments); an implementation
+that silently behaves as unbounded fails conformance.
 
 Every successful `OfflineStore.transaction` validates the complete durable
 graph for each changed partition and for durable-only mutations such as
@@ -112,6 +120,11 @@ never live unconfirmed outbox records.
 Restore validates the complete record/operation/ordinal/generation/lease/state
 graph before exposing it; duplicate record identities or contradictory status
 metadata fail closed.
+The reference gate passes canonical bytes through a file to a new Dart VM,
+recovers an expired lease there, and re-exports canonical state. That proves
+stable IDs, ordinal, float payload, TTL, operation topology, and process-neutral
+codec/state-machine behavior. It deliberately does not claim fsync, OS-kill,
+disk-full, or interrupted-migration durability; those belong to #1163.
 
 `lantern_client_offline` takes an injected transactional `OfflineStore`; it
 does not bundle a database. The storage-neutral contract graduates only after
@@ -133,8 +146,9 @@ concern.
 
 ## Read-cache contract
 
-Every record belongs to a non-empty application-defined `partitionId` that
-identifies the signed-in user and tenant. A canonical storage key is:
+Every record belongs to a non-empty application-defined `partitionId`. It is a
+local persistence namespace selected by the application, not proof of a
+signed-in user or tenant. A canonical storage key is:
 
 ```
 lantern-cache / schemaVersion / partitionId / entityKind / entityKey
@@ -264,8 +278,9 @@ Put is safe to replay to its final state. The coordinator may batch compatible
 records as a future transport optimization, but the accepted baseline sends
 one item per RPC and commits each record's resulting state transactionally
 after its response. A 1,001-item restart scenario proves that already-confirmed
-items are not replayed while remaining Put items resume safely. A crash
-therefore does not rebuild already-confirmed items into a later batch.
+items are not replayed while remaining Put items resume safely. A reopen
+supplied by an adapter therefore must not rebuild already-confirmed
+items into a later batch; #1163 owns OS-kill/fsync proof for SQLite.
 
 `OfflineRemote.putVertex` and `putEdge` return the online SDK's
 server-authoritative `PutOutcome`; the adapter explicitly disables nested
@@ -286,6 +301,11 @@ after expiration therefore stays expired even if the device clock rolls back
 before commit. A stale lease, wiped generation, or auth epoch cannot publish a
 late outcome. Response loss remains retryable; the Repository never fabricates
 an outcome that it did not observe.
+The blocking wire test sends Put through a loopback HTTP proxy to the real
+Connect server, consumes the upstream response, then destroys the downstream
+socket without sending a status line. It verifies the server commit directly
+before reopening and replaying. Throwing after a successful adapter call is not
+accepted as transport-loss evidence.
 
 The codec retains `AddEdgeIntent` and its exact contribution ID only to read
 snapshots produced by the earlier experimental implementation. Snapshot open
@@ -403,7 +423,10 @@ per-record Timer; canceling foreground work therefore leaves no sleeping worker.
 
 `partitionId` is exclusively a local persistence namespace and never crosses
 the Lantern wire; it is not a server tenant, identity, or authorization
-boundary. Logout first marks the partition runtime closing, then cancels and
+boundary. The application, gateway, credential scope, and storage/security
+domain own tenant isolation; two tenants must not share those boundaries merely
+because their records use different partition IDs. Logout first marks the
+partition runtime closing, then cancels and
 awaits its token acquisition, reads, sends, probes, lease renewal, and watchers,
 and only then wipes local state and advances generation. Credentials may rotate
 after that Future completes. A server-accepted mutation cannot be recalled, so
@@ -415,7 +438,7 @@ Repository disposal follows the same quiescence rule for every partition.
 | Threat/failure | Required control |
 | --- | --- |
 | Token disclosure from disk | Never serialize tokens; call `TokenProvider` at send time and keep auth metadata out of diagnostics. |
-| Cross-user/tenant data leak | Partition every key/record; atomically wipe on logout/user switch; do not reuse a partition identifier. |
+| Cross-user/tenant data leak | Isolate application/gateway credentials and the storage/security domain; partition every local key/record; atomically wipe on logout/user switch; do not reuse a partition identifier. |
 | Device backup or file extraction | Application chooses encryption and platform key storage; document backup exclusion/rotation policy. |
 | Corrupt/tampered record | Authenticated storage where required, strict schema/length/range checks, quarantine/dead-letter without sending. |
 | Crash between network commit and local confirmation | Put replays to the same final state; Add remains outside the offline API until server-authoritative receipts exist; unsafe conditional/Delete operations remain explicit ambiguous. |
@@ -473,19 +496,19 @@ from an earlier scope, but none may add implicit persistence to
 3. [#1113](https://github.com/anaregdesign/lantern/issues/1113) adds a maintained
    Flutter integration with foreground-resume replay and dead-letter controls,
    excluding OS background delivery promises.
-4. [#1114](https://github.com/anaregdesign/lantern/issues/1114) combines the
-   storage-neutral crash/conformance gates with the maintained example running
-   on at least one physical Android or iOS device, then decides whether the
-   package contract is ready for separate release planning. Production adapter,
-   Keychain/Keystore, and publication work remain separate follow-up scopes.
+4. [#1114](https://github.com/anaregdesign/lantern/issues/1114) is historical
+   physical-device evidence for the online SDK and the earlier offline MVP. The
+   current Put-only release candidate is qualified by #1180 and must record its
+   own exact-revision physical run before #1162 publishes it.
 5. [#1115](https://github.com/anaregdesign/lantern/issues/1115) adds
    server-authoritative operation receipts so mutations whose public result is
    ambiguous after response loss can be reconciled safely. Offline Add remains
    disabled until those receipts define authoritative TTL/outcome semantics and
    the offline package adds response-loss, restart, and conformance evidence.
 6. [#1116](https://github.com/anaregdesign/lantern/issues/1116) adds a
-   client-facing revision/change stream for explicit mutations and HA
-   convergence. It does not synthesize an event when TTL expires.
+   client-facing revision/change stream for explicit Put, Add, Delete, prefix
+   Delete, and HA-arrival invalidation. TTL expiration remains enforced locally
+   and is not synthesized as a CDC mutation.
 7. [#1162](https://github.com/anaregdesign/lantern/issues/1162) owns hosted
    dependency conversion, versioning, pub.dev OIDC, and the independent
    `sdks/dart/offline/vX.Y.Z` release contract.

@@ -123,7 +123,12 @@ minimum/current Dart, package-quality, Android, and iOS matrix. The stable `Gate
 checks the required result set for either scope. The experimental
 `sdks/dart/offline/` child runs from its own working directory at minimum/current
 Dart, including fresh-process canonical snapshot tests and real-server
-committed-response-loss replay. Its path dependency and `publish_to: none` remain
+committed-response-loss replay. Android and iOS jobs upload content-free JSON
+manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
+application package, platform kind, scenario set, and pass result. Simulator
+manifests do not substitute for the sanitized exact-revision physical-device
+record required before an offline release. Its path dependency and
+`publish_to: none` remain
 intentional until the separate release Issue accepts hosted dependency conversion
 after ADR 0002's physical-device graduation gate; the parent `lantern_client`
 publish archive must continue to exclude `offline/`. The maintained Flutter app
@@ -308,7 +313,8 @@ The `server/` module is never tagged independently — it ships under the root t
 buildx under QEMU is slow; if a root tag already pushed the amd64 image, bump the patch
 number rather than force-moving the tag.
 
-`mcp/`, `admin/`, and `sdks/dart/` are cut **independently** of the root cadence:
+`mcp/`, `admin/`, `sdks/dart/`, and the future offline core are cut
+**independently** of the root cadence:
 
 - `mcp/vX.Y.Z` triggers `mcp-publish.yml` → `ghcr.io/anaregdesign/lantern-mcp` (multi-arch
   + cosign). The MCP server only imports `pb/` and `sdks/go/`, so a `sdks/go` bump is the
@@ -327,6 +333,12 @@ number rather than force-moving the tag.
   pub.dev automated publishing for repository `anaregdesign/lantern` and tag pattern
   `sdks/dart/v{{version}}`. The workflow creates/updates the GitHub Release only after
   pub.dev confirms the version exists; its title is exactly the tag.
+- `sdks/dart/offline/vX.Y.Z` is reserved for the storage-neutral
+  `lantern_client_offline` core owned by #1162. It does not include SQLite,
+  encryption, secure storage, or another production adapter; #1163 owns the
+  separately versioned SQLite package. Until #1162 converts the parent
+  dependency to a hosted constraint and installs its bootstrap/OIDC workflow,
+  keep `publish_to: none` and do not create an offline tag or Release.
 
 **Dart publishing status.** The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
@@ -336,7 +348,8 @@ manual `dart pub publish`. Immediately before tagging, check
 already exist. Never force-move a published Dart tag/version—bump patch.
 
 **Release title convention (locked).** Every GitHub Release title MUST equal its tag name
-verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `sdks/dart/v0.1.0`, `mcp/v0.1.0`, `admin/v0.1.0`, …) —
+verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `sdks/dart/v0.1.0`,
+`sdks/dart/offline/v0.1.0`, `mcp/v0.1.0`, `admin/v0.1.0`, …) —
 no friendly aliases. The container-publishing workflows enforce this via
 `gh release create --title "$TAG"`; when creating SDK releases manually, pass the same
 `--title "$TAG"`.
