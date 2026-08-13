@@ -378,7 +378,7 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 		// the single authoritative sample for a successful commit is taken below
 		// after every final lock is held.
 		planningTime := time.Now()
-		accepted, _, skipped := c.planVerticesIfAbsentLocked(items, ts, useHLC, planningTime, nil)
+		accepted, _, _ := c.planVerticesIfAbsentLocked(items, ts, useHLC, planningTime, nil)
 		missing := missingPreparedIndexesAt(preparation, items, accepted, planningTime)
 		if len(missing) > 0 {
 			unlock()
@@ -405,7 +405,6 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 			c.prepareSearchDocsBounded(items, missing, applicationTime, preparation)
 			continue
 		}
-		accepted, skipped = finalAccepted, finalSkipped
 		indexItems, err := preparedItemsForIndexesAt(items, finalApplied, preparation, applicationTime)
 		if err != nil {
 			if c.searchIndex != nil {
@@ -446,7 +445,7 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 			c.searchCommitMu.Unlock()
 		}
 		unlock()
-		return accepted, skipped, nil
+		return finalAccepted, finalSkipped, nil
 	}
 }
 
