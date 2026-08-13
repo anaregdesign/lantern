@@ -40,6 +40,37 @@ final class OfflineCapacityException extends OfflineException {
   const OfflineCapacityException() : super('capacity');
 }
 
+/// The durable identity family that collided with retained work.
+enum OfflineIdentityKind {
+  /// A logical operation ID collided.
+  operation,
+
+  /// An individual outbox record ID collided.
+  record,
+}
+
+/// A durable operation or record identity is already owned by other work.
+final class OfflineIdentityConflictException extends OfflineException {
+  /// Creates a fail-closed identity-collision failure.
+  const OfflineIdentityConflictException(this.kind)
+    : super('identity_conflict');
+
+  /// Collision family without exposing the identity itself.
+  final OfflineIdentityKind kind;
+}
+
+/// A bounded generated-ID allocation attempt could not find a free identity.
+final class OfflineIdGenerationException extends OfflineException {
+  /// Creates a generated-identity exhaustion failure.
+  const OfflineIdGenerationException() : super('id_generation_exhausted');
+}
+
+/// A transaction callback tried to use its transaction after it completed.
+final class OfflineTransactionClosedException extends OfflineException {
+  /// Creates a sealed-transaction failure.
+  const OfflineTransactionClosedException() : super('transaction_closed');
+}
+
 /// A caller is not authorized to inspect a sensitive dead-letter intent.
 final class OfflineAuthorizationException extends OfflineException {
   /// Creates an authorization failure.

@@ -59,7 +59,66 @@ void main() {
     'legacy Add is never overlaid or sent and becomes inspectable terminal work',
     () async {
       final clock = MutableClock(initial);
-      final store = InMemoryOfflineStore();
+      final legacyAdd = OfflineOutboxRecord(
+        recordId: 'legacy-add',
+        operationId: 'mixed-operation',
+        itemIndex: 0,
+        partitionId: 'p',
+        intent: OfflineAddEdgeIntent(
+          Edge(
+            tail: 'a',
+            head: 'b',
+            weight: Float32Value(0.5).value,
+            expiration: initial.add(const Duration(hours: 1)),
+          ),
+          Uint8List.fromList(List<int>.generate(24, (index) => index + 1)),
+        ),
+        enqueuedAt: initial,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 0,
+        generation: 0,
+      );
+      final safePut = OfflineOutboxRecord(
+        recordId: 'safe-put',
+        operationId: 'mixed-operation',
+        itemIndex: 1,
+        partitionId: 'p',
+        intent: OfflinePutVertexIntent(
+          Vertex(
+            key: 'safe',
+            value: VertexValue.string('value'),
+            expiration: null,
+          ),
+        ),
+        enqueuedAt: initial,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 0,
+        generation: 0,
+      );
+      final store = restoreLegacySnapshot(
+        schema: 3,
+        outbox: <OfflineOutboxRecord>[legacyAdd, safePut],
+        operations: <OfflineOperationRecord>[
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: 'mixed-operation',
+            items: <OfflineWriteStatus>[
+              for (final record in <OfflineOutboxRecord>[legacyAdd, safePut])
+                OfflineWriteStatus(
+                  recordId: record.recordId,
+                  operationId: record.operationId,
+                  itemIndex: record.itemIndex,
+                  state: OfflineWriteState.locallyCommitted,
+                  attemptCount: 0,
+                ),
+            ],
+            updatedAt: initial,
+          ),
+        ],
+      );
       final remote = FakeOfflineRemote();
       final repository = OfflineLanternRepository(
         store: store,
@@ -67,70 +126,6 @@ void main() {
         config: testConfig(clock),
       );
       addTearDown(repository.dispose);
-      late final OfflineOutboxRecord legacyAdd;
-      await store.transaction((transaction) {
-        final assigned = transaction.enqueueAll(<OfflineOutboxRecord>[
-          OfflineOutboxRecord(
-            recordId: 'legacy-add',
-            operationId: 'mixed-operation',
-            itemIndex: 0,
-            partitionId: 'p',
-            intent: OfflineAddEdgeIntent(
-              Edge(
-                tail: 'a',
-                head: 'b',
-                weight: Float32Value(0.5).value,
-                expiration: initial.add(const Duration(hours: 1)),
-              ),
-              Uint8List.fromList(List<int>.generate(24, (index) => index + 1)),
-            ),
-            enqueuedAt: initial,
-            ordinal: 0,
-            state: OfflineOutboxState.enqueued,
-            attemptCount: 0,
-            generation: 0,
-          ),
-          OfflineOutboxRecord(
-            recordId: 'safe-put',
-            operationId: 'mixed-operation',
-            itemIndex: 1,
-            partitionId: 'p',
-            intent: OfflinePutVertexIntent(
-              Vertex(
-                key: 'safe',
-                value: VertexValue.string('value'),
-                expiration: null,
-              ),
-            ),
-            enqueuedAt: initial,
-            ordinal: 0,
-            state: OfflineOutboxState.enqueued,
-            attemptCount: 0,
-            generation: 0,
-          ),
-        ]);
-        legacyAdd = assigned.first;
-        transaction.putOperation(
-          OfflineOperationRecord(
-            partitionId: 'p',
-            generation: 0,
-            operationId: 'mixed-operation',
-            items: assigned
-                .map(
-                  (record) => OfflineWriteStatus(
-                    recordId: record.recordId,
-                    operationId: record.operationId,
-                    itemIndex: record.itemIndex,
-                    state: OfflineWriteState.locallyCommitted,
-                    attemptCount: 0,
-                  ),
-                )
-                .toList(growable: false),
-            updatedAt: initial,
-          ),
-        );
-      });
-
       final beforeDrain = await repository.readEdge(
         'p',
         const EdgeRef('a', 'b'),
@@ -288,6 +283,151 @@ void main() {
     },
   );
 
+  test('dead-letter retention starts at its terminal transition', () async {
+    final clock = MutableClock(initial);
+    final remote = FakeOfflineRemote();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: remote,
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+        maxAge: const Duration(hours: 2),
+        deadLetterRetention: const Duration(hours: 1),
+      ),
+    );
+    addTearDown(repository.dispose);
+    await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(key: 'late-dead', value: VertexValue.string('value')),
+    );
+    clock.advance(const Duration(minutes: 59));
+    remote.vertexPutFailures.add(
+      failure(OfflineRemoteErrorKind.invalidArgument),
+    );
+    expect(await repository.drain('p'), 0);
+
+    clock.advance(const Duration(minutes: 2));
+    expect(await repository.listDeadLetters('p'), hasLength(1));
+    clock.advance(const Duration(minutes: 59));
+    expect(await repository.listDeadLetters('p'), isEmpty);
+  });
+
+  test(
+    'dead-letter transition time is sampled inside its transaction',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _TransactionSignalingStore(InMemoryOfflineStore());
+      final remote = _GatedFailureRemote();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          deadLetterRetention: const Duration(seconds: 1),
+        ),
+      );
+      addTearDown(repository.dispose);
+      await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'blocked-failure', value: VertexValue.nil()),
+      );
+      final draining = repository.drain('p');
+      await remote.started.future;
+
+      final blockerStarted = Completer<void>();
+      final releaseBlocker = Completer<void>();
+      final blocker = store.transaction<void>((_) async {
+        blockerStarted.complete();
+        await releaseBlocker.future;
+      });
+      await blockerStarted.future;
+      final failureTransactionQueued = store.signalNextTransaction();
+      remote.release.complete();
+      await failureTransactionQueued;
+      clock.advance(const Duration(seconds: 2));
+      releaseBlocker.complete();
+      await blocker;
+
+      expect(await draining, 0);
+      final retained = await store.transaction(
+        (transaction) => transaction.outbox('p').single,
+      );
+      expect(retained.state, OfflineOutboxState.deadLetter);
+      expect(retained.deadLetteredAt, clock.now);
+      expect(await repository.listDeadLetters('p'), hasLength(1));
+    },
+  );
+
+  test('clock rollback after claim keeps retry metadata monotone', () async {
+    final clock = MutableClock(initial);
+    final store = InMemoryOfflineStore();
+    final remote = _GatedFailureRemote(OfflineRemoteErrorKind.unavailable);
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: remote,
+      config: testConfig(clock),
+    );
+    addTearDown(repository.dispose);
+    await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(key: 'rollback-retry', value: VertexValue.nil()),
+    );
+    final draining = repository.drain('p');
+    await remote.started.future;
+    clock.advance(const Duration(minutes: -1));
+    remote.release.complete();
+
+    expect(await draining, 0);
+    expect(remote.vertexPutCalls, 1);
+    final retry = await store.transaction(
+      (transaction) => transaction.outbox('p').single,
+    );
+    expect(retry.state, OfflineOutboxState.enqueued);
+    expect(retry.nextAttemptAt, isNotNull);
+    expect(retry.nextAttemptAt!.isBefore(retry.enqueuedAt), isFalse);
+    final snapshot = await store.exportSnapshot();
+    expect(() => InMemoryOfflineStore.fromSnapshot(snapshot), returnsNormally);
+  });
+
+  test('retry deadlines saturate inside the durable time range', () async {
+    final nearMaximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 998);
+    final maximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 999);
+    final clock = MutableClock(nearMaximum);
+    final store = InMemoryOfflineStore();
+    final remote = FakeOfflineRemote()
+      ..vertexPutFailures.add(failure(OfflineRemoteErrorKind.unavailable));
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: remote,
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (ceiling) => ceiling,
+        baseRetryDelay: const Duration(seconds: 1),
+        maxRetryDelay: const Duration(seconds: 1),
+      ),
+    );
+    addTearDown(repository.dispose);
+    await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(key: 'maximum-retry', value: VertexValue.nil()),
+    );
+
+    expect(await repository.drain('p'), 0);
+    expect(remote.vertexPutCalls, 1);
+    final retry = await store.transaction(
+      (transaction) => transaction.outbox('p').single,
+    );
+    expect(retry.state, OfflineOutboxState.enqueued);
+    expect(retry.nextAttemptAt, maximum);
+    final snapshot = await store.exportSnapshot();
+    expect(() => InMemoryOfflineStore.fromSnapshot(snapshot), returnsNormally);
+  });
+
   test('expiration removes a pending overlay before replay', () async {
     final clock = MutableClock(initial);
     final repository = OfflineLanternRepository(
@@ -320,6 +460,659 @@ void main() {
     expect(expiredOverlay.state, OfflineReadState.unknown);
     expect(expiredOverlay.value, isNull);
   });
+
+  test(
+    'observation expires idle work, reclaims capacity, and closes status',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore(
+        limits: const OfflineStoreLimits(
+          maxOutboxRecords: 1,
+          maxOutboxRecordsPerPartition: 1,
+        ),
+      );
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      final first = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(
+          key: 'short',
+          value: VertexValue.string('short'),
+          expiresIn: const Duration(seconds: 1),
+        ),
+      );
+      final statuses = first.statuses.toList();
+
+      clock.advance(const Duration(seconds: 1));
+      expect(await repository.listPending('p'), isEmpty);
+      expect(
+        (await repository.getWriteStatus(
+          'p',
+          first.operationId,
+        ))!.items.single.state,
+        OfflineWriteState.expired,
+      );
+      expect(
+        (await statuses).map((status) => status.state),
+        <OfflineWriteState>[
+          OfflineWriteState.locallyCommitted,
+          OfflineWriteState.expired,
+        ],
+      );
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        isEmpty,
+      );
+
+      final second = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'next', value: VertexValue.string('next')),
+      );
+      expect(second.recordId, isNot(first.recordId));
+      expect(await repository.listPending('p'), hasLength(1));
+    },
+  );
+
+  test(
+    'immediately expired enqueue returns a closed terminal stream',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore(
+        limits: const OfflineStoreLimits(
+          maxOutboxRecords: 0,
+          maxOutboxRecordsPerPartition: 0,
+        ),
+      );
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+
+      final handle = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(
+          key: 'expired',
+          value: VertexValue.string('expired'),
+          expiresAt: initial,
+        ),
+      );
+      final statuses = await handle.statuses.toList();
+      expect(statuses, hasLength(1));
+      expect(statuses.single.state, OfflineWriteState.expired);
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'enqueue uses commit time without rebasing its absolute expiration',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore(
+        limits: const OfflineStoreLimits(
+          maxOutboxRecords: 1,
+          maxOutboxRecordsPerPartition: 1,
+        ),
+      );
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      final blockerStarted = Completer<void>();
+      final releaseBlocker = Completer<void>();
+      final blocker = store.transaction<void>((_) async {
+        blockerStarted.complete();
+        await releaseBlocker.future;
+      });
+      await blockerStarted.future;
+
+      final pending = repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(
+          key: 'crossed-before-commit',
+          value: VertexValue.string('value'),
+          expiresIn: const Duration(seconds: 1),
+        ),
+      );
+      clock.advance(const Duration(seconds: 1));
+      releaseBlocker.complete();
+      await blocker;
+      final first = await pending;
+
+      expect(
+        (await first.statuses.toList()).single.state,
+        OfflineWriteState.expired,
+      );
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        isEmpty,
+      );
+      await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'capacity-reused', value: VertexValue.nil()),
+      );
+      expect(await repository.listPending('p'), hasLength(1));
+    },
+  );
+
+  test('clock rollback cannot revive an already expired enqueue', () async {
+    final clock = MutableClock(initial);
+    final store = InMemoryOfflineStore(
+      limits: const OfflineStoreLimits(
+        maxOutboxRecords: 0,
+        maxOutboxRecordsPerPartition: 0,
+      ),
+    );
+    final remote = FakeOfflineRemote();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: remote,
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+        maxWriteStatusControllers: 1,
+      ),
+    );
+    addTearDown(repository.dispose);
+    final blockerStarted = Completer<void>();
+    final releaseBlocker = Completer<void>();
+    final blocker = store.transaction<void>((_) async {
+      blockerStarted.complete();
+      await releaseBlocker.future;
+    });
+    await blockerStarted.future;
+
+    final pending = repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(
+        key: 'cannot-revive',
+        value: VertexValue.string('value'),
+        expiresAt: initial,
+      ),
+    );
+    clock.advance(const Duration(seconds: -1));
+    releaseBlocker.complete();
+    await blocker;
+    final handle = await pending;
+
+    expect(
+      (await handle.statuses.toList()).single.state,
+      OfflineWriteState.expired,
+    );
+    expect(
+      await store.transaction((transaction) => transaction.outbox('p')),
+      isEmpty,
+    );
+    expect(await repository.drain('p'), 0);
+    expect(remote.vertexPutCalls, 0);
+    final snapshot = await store.exportSnapshot();
+    expect(() => InMemoryOfflineStore.fromSnapshot(snapshot), returnsNormally);
+  });
+
+  test(
+    'repository rejects out-of-range expirations without durable work',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+
+      for (final expiration in <DateTime>[
+        DateTime.utc(0),
+        DateTime.utc(10000),
+      ]) {
+        await expectLater(
+          repository.putVertex(
+            partitionId: 'p',
+            input: VertexInput(
+              key: 'invalid-${expiration.year}',
+              value: VertexValue.nil(),
+              expiresAt: expiration,
+            ),
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+      }
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        isEmpty,
+      );
+      expect(
+        await store.transaction((transaction) => transaction.operations('p')),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'observation uses transaction time after waiting behind the store',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      final write = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(
+          key: 'crossed-before-observation',
+          value: VertexValue.string('value'),
+          expiresIn: const Duration(seconds: 1),
+        ),
+      );
+      final statuses = write.statuses.toList();
+      final blockerStarted = Completer<void>();
+      final releaseBlocker = Completer<void>();
+      final blocker = store.transaction<void>((_) async {
+        blockerStarted.complete();
+        await releaseBlocker.future;
+      });
+      await blockerStarted.future;
+
+      final observed = repository.getWriteStatus('p', write.operationId);
+      clock.advance(const Duration(seconds: 1));
+      releaseBlocker.complete();
+      await blocker;
+
+      expect((await observed)!.items.single.state, OfflineWriteState.expired);
+      expect(
+        (await statuses).map((status) => status.state),
+        <OfflineWriteState>[
+          OfflineWriteState.locallyCommitted,
+          OfflineWriteState.expired,
+        ],
+      );
+    },
+  );
+
+  test(
+    'born-expired plural handles allocate no live status controllers',
+    () async {
+      final clock = MutableClock(initial);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxWriteStatusControllers: 1,
+        ),
+      );
+      addTearDown(repository.dispose);
+
+      final expired = await repository.putVertices(
+        partitionId: 'p',
+        inputs: List<VertexInput>.generate(
+          64,
+          (index) => VertexInput(
+            key: 'expired-$index',
+            value: VertexValue.string('expired'),
+            expiresAt: initial,
+          ),
+        ),
+      );
+      expect(
+        (await expired.items.last.statuses.toList()).single.state,
+        OfflineWriteState.expired,
+      );
+      expect(
+        (await expired.items.last.statuses.toList()).single.state,
+        OfflineWriteState.expired,
+      );
+
+      final live = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'live', value: VertexValue.string('live')),
+      );
+      expect(
+        (await live.statuses.first).state,
+        OfflineWriteState.locallyCommitted,
+      );
+    },
+  );
+
+  test('watchWrite observes idle expiration and closes', () async {
+    final clock = MutableClock(initial);
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: FakeOfflineRemote(),
+      config: testConfig(clock),
+    );
+    addTearDown(repository.dispose);
+    final write = await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(
+        key: 'watched-expiration',
+        value: VertexValue.string('value'),
+        expiresIn: const Duration(seconds: 1),
+      ),
+    );
+    clock.advance(const Duration(seconds: 1));
+
+    final statuses = await repository
+        .watchWrite('p', write.operationId)
+        .toList();
+    expect(statuses, hasLength(1));
+    expect(statuses.single.items.single.state, OfflineWriteState.expired);
+  });
+
+  test(
+    'watchWrite reports synchronous store capacity and releases watcher',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore(
+        limits: const OfflineStoreLimits(maxChangeControllers: 1),
+      );
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      final held = store.changes('held').listen((_) {});
+      final terminal = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(
+          key: 'already-expired',
+          value: VertexValue.nil(),
+          expiresAt: initial,
+        ),
+      );
+
+      await expectLater(
+        repository.watchWrite('p', terminal.operationId).toList(),
+        throwsA(isA<OfflineCapacityException>()),
+      );
+      await held.cancel();
+      final recovered = await repository
+          .watchWrite('p', terminal.operationId)
+          .toList();
+      expect(recovered.single.isTerminal, isTrue);
+    },
+  );
+
+  test(
+    'lazy maintenance scans a bounded page and prioritizes a target operation',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _InspectingStore(InMemoryOfflineStore());
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxAge: const Duration(hours: 1),
+          maxSweepRecordsPerObservation: 2,
+        ),
+      );
+      addTearDown(repository.dispose);
+      for (var index = 0; index < 12; index++) {
+        await repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(
+            key: 'queued-$index',
+            value: VertexValue.string('value'),
+          ),
+        );
+      }
+      clock.advance(const Duration(hours: 1));
+      store.resetInspection();
+
+      await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'fresh', value: VertexValue.string('fresh')),
+      );
+      expect(store.outboxRecordsInspected, 2);
+      expect(store.operationRecordsInspected, lessThanOrEqualTo(2));
+      final retained = await store.inner.transaction(
+        (transaction) => transaction.outbox('p'),
+      );
+      expect(
+        retained.where(
+          (record) => record.state == OfflineOutboxState.deadLetter,
+        ),
+        hasLength(2),
+      );
+      final target = retained.lastWhere(
+        (record) =>
+            record.state == OfflineOutboxState.enqueued &&
+            record.intent.key.vertexKey != 'fresh',
+      );
+      store.resetInspection();
+
+      final targetStatus = await repository.getWriteStatus(
+        'p',
+        target.operationId,
+      );
+      expect(store.outboxRecordsInspected, 1);
+      expect(targetStatus!.items.single.state, OfflineWriteState.deadLetter);
+    },
+  );
+
+  test(
+    'operation deadline index finds an expired tail beyond the sweep limit',
+    () async {
+      final clock = MutableClock(initial);
+      final store = _InspectingStore(InMemoryOfflineStore());
+      await store.inner.transaction((transaction) {
+        final assigned = transaction.enqueueAll(
+          List<OfflineOutboxRecord>.generate(260, (index) {
+            final isTail = index >= 256;
+            return OfflineOutboxRecord(
+              recordId: 'mixed-record-$index',
+              operationId: 'mixed-large-operation',
+              itemIndex: index,
+              partitionId: 'p',
+              intent: OfflinePutVertexIntent(
+                Vertex(
+                  key: 'mixed-key-$index',
+                  value: VertexValue.string('value'),
+                  expiration: isTail
+                      ? initial.add(const Duration(seconds: 1))
+                      : null,
+                ),
+              ),
+              enqueuedAt: initial,
+              ordinal: 0,
+              state: isTail
+                  ? OfflineOutboxState.enqueued
+                  : OfflineOutboxState.deadLetter,
+              attemptCount: 0,
+              generation: 0,
+              deadLetteredAt: isTail ? null : initial,
+              diagnosticCode: isTail ? null : 'seed',
+            );
+          }),
+        );
+        transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: 'mixed-large-operation',
+            items: assigned
+                .map(
+                  (record) => OfflineWriteStatus(
+                    recordId: record.recordId,
+                    operationId: record.operationId,
+                    itemIndex: record.itemIndex,
+                    state: record.state == OfflineOutboxState.deadLetter
+                        ? OfflineWriteState.deadLetter
+                        : OfflineWriteState.locallyCommitted,
+                    attemptCount: 0,
+                    diagnosticCode: record.diagnosticCode,
+                  ),
+                )
+                .toList(growable: false),
+            updatedAt: initial,
+          ),
+        );
+      });
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxSweepRecordsPerObservation: 2,
+        ),
+      );
+      addTearDown(repository.dispose);
+      clock.advance(const Duration(seconds: 1));
+      store.resetInspection();
+
+      final statuses = await repository
+          .watchWrite('p', 'mixed-large-operation')
+          .toList();
+      expect(store.outboxRecordsInspected, 4);
+      expect(store.maxOutboxBatchInspected, 2);
+      expect(statuses.last.isTerminal, isTrue);
+      expect(statuses.last.deadLetterCount, 256);
+      expect(statuses.last.expiredCount, 4);
+    },
+  );
+
+  test(
+    'generated identity collisions exhaust a bounded retry atomically',
+    () async {
+      final clock = MutableClock(initial);
+      final ids = <String>['op', 'record', 'op', 'record', 'op', 'record'];
+      var index = 0;
+      final store = InMemoryOfflineStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: () => ids[index++],
+          jitter: (_) => Duration.zero,
+          maxGeneratedIdAttempts: 2,
+        ),
+      );
+      addTearDown(repository.dispose);
+      await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'first', value: VertexValue.string('first')),
+      );
+      await expectLater(
+        repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(
+            key: 'second',
+            value: VertexValue.string('second'),
+          ),
+        ),
+        throwsA(isA<OfflineIdGenerationException>()),
+      );
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'caller operation ID collisions never replace retained intent',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      final original = await repository.putVertex(
+        partitionId: 'p',
+        operationId: 'caller-operation',
+        input: VertexInput(key: 'original', value: VertexValue.string('value')),
+      );
+      for (final key in <String>['original', 'different']) {
+        await expectLater(
+          repository.putVertex(
+            partitionId: 'p',
+            operationId: 'caller-operation',
+            input: VertexInput(key: key, value: VertexValue.string('value')),
+          ),
+          throwsA(
+            isA<OfflineIdentityConflictException>().having(
+              (error) => error.kind,
+              'kind',
+              OfflineIdentityKind.operation,
+            ),
+          ),
+        );
+      }
+      final retained = await store.transaction(
+        (transaction) => transaction.outbox('p').single,
+      );
+      expect(retained.recordId, original.recordId);
+      expect(retained.intent.key.vertexKey, 'original');
+    },
+  );
+
+  test(
+    'terminal status controllers release their configured capacity',
+    () async {
+      final clock = MutableClock(initial);
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxWriteStatusControllers: 1,
+        ),
+      );
+      addTearDown(repository.dispose);
+      final first = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'first', value: VertexValue.string('first')),
+      );
+      await expectLater(
+        repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(
+            key: 'blocked',
+            value: VertexValue.string('blocked'),
+          ),
+        ),
+        throwsA(isA<OfflineCapacityException>()),
+      );
+      expect(await repository.drain('p'), 1);
+      await Future<void>.delayed(Duration.zero);
+
+      final lateStatuses = await first.statuses.toList();
+      expect(lateStatuses.single.state, OfflineWriteState.confirmed);
+      await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'after', value: VertexValue.string('after')),
+      );
+      expect(await repository.listPending('p'), hasLength(1));
+    },
+  );
 
   test(
     'wipe rejects late responses and canceled drain sends nothing',
@@ -366,6 +1159,39 @@ void main() {
       );
     },
   );
+
+  test('released claim exports a self-consistent restart snapshot', () async {
+    final clock = MutableClock(initial);
+    final store = InMemoryOfflineStore();
+    final remote = _CancelableRemote();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: remote,
+      config: testConfig(clock),
+    );
+    addTearDown(repository.dispose);
+    final write = await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(key: 'cancel', value: VertexValue.string('cancel')),
+    );
+    final cancellation = LanternCancellationToken();
+    final draining = repository.drain('p', cancellation: cancellation);
+    await remote.started.future;
+    cancellation.cancel();
+    await expectLater(draining, throwsA(isA<OfflineCanceledException>()));
+
+    final restored = InMemoryOfflineStore.fromSnapshot(
+      await store.exportSnapshot(),
+    );
+    final record = await restored.transaction(
+      (transaction) => transaction.outbox('p').single,
+    );
+    final operation = await restored.transaction(
+      (transaction) => transaction.getOperation('p', write.operationId)!,
+    );
+    expect(record.diagnosticCode, 'canceled');
+    expect(operation.items.single.diagnosticCode, 'canceled');
+  });
 
   test(
     'late responses after lease expiration are rejected then safely replayed',
@@ -590,6 +1416,150 @@ void main() {
     expect(remote.vertexPutCalls, 1);
   });
 
+  for (final remoteWouldFail in <bool>[false, true]) {
+    test('max durable attempt count is terminal before wire '
+        '(remoteWouldFail: $remoteWouldFail)', () async {
+      const maximum = 0x7fffffffffffffff;
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      await store.transaction<void>((transaction) {
+        final assigned = transaction.enqueue(
+          OfflineOutboxRecord(
+            recordId: 'max-attempt-record',
+            operationId: 'max-attempt-operation',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflinePutVertexIntent(
+              Vertex(
+                key: 'max-attempt',
+                value: VertexValue.nil(),
+                expiration: null,
+              ),
+            ),
+            enqueuedAt: initial,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: maximum,
+            generation: 0,
+          ),
+        );
+        transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: assigned.operationId,
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: assigned.recordId,
+                operationId: assigned.operationId,
+                itemIndex: 0,
+                state: OfflineWriteState.locallyCommitted,
+                attemptCount: maximum,
+              ),
+            ],
+            updatedAt: initial,
+          ),
+        );
+      });
+      final remote = FakeOfflineRemote();
+      if (remoteWouldFail) {
+        remote.vertexPutFailures.add(
+          failure(OfflineRemoteErrorKind.unavailable),
+        );
+      }
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxAttempts: maximum,
+        ),
+      );
+      addTearDown(repository.dispose);
+
+      expect(await repository.drain('p'), 0);
+      expect(remote.vertexPutCalls, 0);
+      final terminal = await store.transaction(
+        (transaction) => transaction.outbox('p').single,
+      );
+      expect(terminal.state, OfflineOutboxState.deadLetter);
+      expect(terminal.attemptCount, maximum);
+      expect(terminal.leaseOwner, isNull);
+      expect(terminal.leaseUntil, isNull);
+      expect(terminal.diagnosticCode, 'max_attempts');
+      final snapshot = await store.exportSnapshot();
+      expect(
+        () => InMemoryOfflineStore.fromSnapshot(snapshot),
+        returnsNormally,
+      );
+    });
+  }
+
+  test('a lower restart attempt budget terminalizes before wire', () async {
+    const completedAttempts = 8;
+    final clock = MutableClock(initial);
+    final store = InMemoryOfflineStore();
+    await store.transaction<void>((transaction) {
+      final assigned = transaction.enqueue(
+        OfflineOutboxRecord(
+          recordId: 'downgraded-attempt-record',
+          operationId: 'downgraded-attempt-operation',
+          itemIndex: 0,
+          partitionId: 'p',
+          intent: OfflinePutVertexIntent(
+            Vertex(
+              key: 'downgraded-attempt',
+              value: VertexValue.nil(),
+              expiration: null,
+            ),
+          ),
+          enqueuedAt: initial,
+          ordinal: 0,
+          state: OfflineOutboxState.enqueued,
+          attemptCount: completedAttempts,
+          generation: 0,
+        ),
+      );
+      transaction.putOperation(
+        OfflineOperationRecord(
+          partitionId: 'p',
+          generation: 0,
+          operationId: assigned.operationId,
+          items: <OfflineWriteStatus>[
+            OfflineWriteStatus(
+              recordId: assigned.recordId,
+              operationId: assigned.operationId,
+              itemIndex: 0,
+              state: OfflineWriteState.locallyCommitted,
+              attemptCount: completedAttempts,
+            ),
+          ],
+          updatedAt: initial,
+        ),
+      );
+    });
+    final remote = FakeOfflineRemote();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore.fromSnapshot(await store.exportSnapshot()),
+      remote: remote,
+      config: OfflineConfig(
+        clock: clock.call,
+        idGenerator: testConfig(clock).idGenerator,
+        jitter: (_) => Duration.zero,
+        maxAttempts: completedAttempts,
+      ),
+    );
+    addTearDown(repository.dispose);
+
+    expect(await repository.drain('p'), 0);
+    expect(remote.vertexPutCalls, 0);
+    final deadLetters = await repository.listDeadLetters('p');
+    expect(deadLetters.single.attemptCount, completedAttempts);
+    expect(deadLetters.single.diagnosticCode, 'max_attempts');
+  });
+
   test(
     'durable operation status survives repository and store restart',
     () async {
@@ -647,6 +1617,54 @@ void main() {
       );
       expect(durable!.isTerminal, isTrue);
       expect(durable.confirmedCount, 2);
+    },
+  );
+
+  test(
+    'mixed expiration aggregate remains deterministic across restart',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final first = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      final operation = await first.putVertices(
+        partitionId: 'p',
+        operationId: 'mixed-expiration',
+        inputs: <VertexInput>[
+          VertexInput(
+            key: 'short',
+            value: VertexValue.string('short'),
+            expiresIn: const Duration(seconds: 1),
+          ),
+          VertexInput(key: 'live', value: VertexValue.string('live')),
+        ],
+      );
+      clock.advance(const Duration(seconds: 1));
+      expect(await first.listPending('p'), hasLength(1));
+      await first.dispose();
+
+      final restoredStore = InMemoryOfflineStore.fromSnapshot(
+        await store.exportSnapshot(),
+      );
+      final restarted = OfflineLanternRepository(
+        store: restoredStore,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      addTearDown(restarted.dispose);
+      final before = await restarted.getWriteStatus('p', operation.operationId);
+      expect(before!.items.map((item) => item.state), <OfflineWriteState>[
+        OfflineWriteState.expired,
+        OfflineWriteState.locallyCommitted,
+      ]);
+      expect(await restarted.drain('p'), 1);
+      final after = await restarted.getWriteStatus('p', operation.operationId);
+      expect(after!.isTerminal, isTrue);
+      expect(after.expiredCount, 1);
+      expect(after.confirmedCount, 1);
     },
   );
 
@@ -725,6 +1743,86 @@ void main() {
       throwsA(isA<OfflineDisposedException>()),
     );
   });
+
+  test(
+    'dispose rejects an enqueue queued behind the store atomically',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(clock),
+      );
+      final blockerStarted = Completer<void>();
+      final releaseBlocker = Completer<void>();
+      final blocker = store.transaction<void>((_) async {
+        blockerStarted.complete();
+        await releaseBlocker.future;
+      });
+      await blockerStarted.future;
+      final pending = repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'disposed-enqueue', value: VertexValue.nil()),
+      );
+
+      final disposing = repository.dispose();
+      releaseBlocker.complete();
+      await blocker;
+      await disposing;
+      await expectLater(pending, throwsA(isA<OfflineDisposedException>()));
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        isEmpty,
+      );
+      expect(
+        await store.transaction((transaction) => transaction.operations('p')),
+        isEmpty,
+      );
+    },
+  );
+
+  test('dispose triggered by an enqueue commit returns its handle', () async {
+    final clock = MutableClock(initial);
+    final store = InMemoryOfflineStore();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: FakeOfflineRemote(),
+      config: testConfig(clock),
+    );
+    final disposalStarted = Completer<Future<void>>();
+    final changes = store.changes('p').listen((_) {
+      if (!disposalStarted.isCompleted) {
+        disposalStarted.complete(repository.dispose());
+      }
+    });
+    addTearDown(changes.cancel);
+
+    final handle = await repository.putVertex(
+      partitionId: 'p',
+      input: VertexInput(
+        key: 'committed-before-dispose',
+        value: VertexValue.nil(),
+      ),
+    );
+    await (await disposalStarted.future);
+
+    final records = await store.transaction(
+      (transaction) => transaction.outbox('p'),
+    );
+    expect(records.single.recordId, handle.recordId);
+    expect(
+      (await handle.statuses.toList()).single.state,
+      OfflineWriteState.locallyCommitted,
+    );
+    expect(
+      () => repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'after-dispose', value: VertexValue.nil()),
+      ),
+      throwsA(isA<OfflineDisposedException>()),
+    );
+  });
 }
 
 final class _ThrowingDiagnostics implements OfflineDiagnostics {
@@ -751,4 +1849,279 @@ final class _DelayedRemote extends FakeOfflineRemote {
     if (!started.isCompleted) started.complete();
     return completer.future;
   }
+}
+
+final class _CancelableRemote extends FakeOfflineRemote {
+  final Completer<void> started = Completer<void>();
+
+  @override
+  Future<void> putVertex(
+    Vertex vertex, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    vertexPutCalls++;
+    if (!started.isCompleted) started.complete();
+    final canceled = Completer<void>();
+    final remove = cancellation?.listen((_) => canceled.complete());
+    await canceled.future;
+    remove?.call();
+    throw failure(OfflineRemoteErrorKind.canceled);
+  }
+}
+
+final class _GatedFailureRemote extends FakeOfflineRemote {
+  _GatedFailureRemote([this.kind = OfflineRemoteErrorKind.invalidArgument]);
+
+  final OfflineRemoteErrorKind kind;
+  final Completer<void> started = Completer<void>();
+  final Completer<void> release = Completer<void>();
+
+  @override
+  Future<void> putVertex(
+    Vertex vertex, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    vertexPutCalls++;
+    started.complete();
+    await release.future;
+    throw failure(kind);
+  }
+}
+
+final class _TransactionSignalingStore implements OfflineStore {
+  _TransactionSignalingStore(this.inner);
+
+  final InMemoryOfflineStore inner;
+  Completer<void>? _nextTransaction;
+
+  Future<void> signalNextTransaction() {
+    final completer = Completer<void>();
+    _nextTransaction = completer;
+    return completer.future;
+  }
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) =>
+      inner.changes(partitionId);
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) {
+    _nextTransaction?.complete();
+    _nextTransaction = null;
+    return inner.transaction(action);
+  }
+}
+
+final class _InspectingStore implements OfflineStore {
+  _InspectingStore(this.inner);
+
+  final InMemoryOfflineStore inner;
+  int outboxRecordsInspected = 0;
+  int maxOutboxBatchInspected = 0;
+  int operationRecordsInspected = 0;
+
+  void resetInspection() {
+    outboxRecordsInspected = 0;
+    maxOutboxBatchInspected = 0;
+    operationRecordsInspected = 0;
+  }
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) =>
+      inner.changes(partitionId);
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) => inner.transaction(
+    (transaction) => action(_InspectingTransaction(this, transaction)),
+  );
+}
+
+final class _InspectingTransaction implements OfflineStoreTransaction {
+  const _InspectingTransaction(this.store, this.inner);
+
+  final _InspectingStore store;
+  final OfflineStoreTransaction inner;
+
+  @override
+  List<OfflineOutboxRecord> dueOutbox(
+    String partitionId, {
+    String? operationId,
+    OfflineEntityKey? key,
+    required DateTime now,
+    required Duration maxAge,
+    required Duration deadLetterRetention,
+    required int limit,
+  }) {
+    final records = inner.dueOutbox(
+      partitionId,
+      operationId: operationId,
+      key: key,
+      now: now,
+      maxAge: maxAge,
+      deadLetterRetention: deadLetterRetention,
+      limit: limit,
+    );
+    store.outboxRecordsInspected += records.length;
+    if (records.length > store.maxOutboxBatchInspected) {
+      store.maxOutboxBatchInspected = records.length;
+    }
+    return records;
+  }
+
+  @override
+  List<OfflineOperationRecord> dueOperations(
+    String partitionId, {
+    required DateTime now,
+    required Duration retention,
+    required int limit,
+  }) {
+    final operations = inner.dueOperations(
+      partitionId,
+      now: now,
+      retention: retention,
+      limit: limit,
+    );
+    store.operationRecordsInspected += operations.length;
+    return operations;
+  }
+
+  @override
+  List<OfflineOutboxRecord> claim(
+    String partitionId, {
+    required String owner,
+    required DateTime now,
+    required Duration maxAge,
+    required Duration leaseDuration,
+    required int limit,
+  }) => inner.claim(
+    partitionId,
+    owner: owner,
+    now: now,
+    maxAge: maxAge,
+    leaseDuration: leaseDuration,
+    limit: limit,
+  );
+
+  @override
+  void deleteCache(String partitionId, OfflineEntityKey key) =>
+      inner.deleteCache(partitionId, key);
+
+  @override
+  void deleteOperation(String partitionId, String operationId) =>
+      inner.deleteOperation(partitionId, operationId);
+
+  @override
+  void deleteOutbox(String partitionId, String recordId) =>
+      inner.deleteOutbox(partitionId, recordId);
+
+  @override
+  OfflineCacheRecord? getCache(String partitionId, OfflineEntityKey key) =>
+      inner.getCache(partitionId, key);
+
+  @override
+  OfflineOperationRecord? getOperation(
+    String partitionId,
+    String operationId,
+  ) => inner.getOperation(partitionId, operationId);
+
+  @override
+  OfflineOutboxRecord? getOutbox(String partitionId, String recordId) =>
+      inner.getOutbox(partitionId, recordId);
+
+  @override
+  int generation(String partitionId) => inner.generation(partitionId);
+
+  @override
+  bool hasOutboxForOperation(String partitionId, String operationId) =>
+      inner.hasOutboxForOperation(partitionId, operationId);
+
+  @override
+  OfflineOutboxRecord enqueue(OfflineOutboxRecord record) =>
+      inner.enqueue(record);
+
+  @override
+  List<OfflineOutboxRecord> enqueueAll(List<OfflineOutboxRecord> records) =>
+      inner.enqueueAll(records);
+
+  @override
+  List<OfflineOperationRecord> operations(String partitionId) =>
+      inner.operations(partitionId);
+
+  @override
+  List<OfflineOutboxRecord> outbox(String partitionId) =>
+      inner.outbox(partitionId);
+
+  @override
+  List<OfflineOutboxRecord> outboxForKey(
+    String partitionId,
+    OfflineEntityKey key,
+  ) => inner.outboxForKey(partitionId, key);
+
+  @override
+  void putCache(String partitionId, OfflineCacheRecord record) =>
+      inner.putCache(partitionId, record);
+
+  @override
+  void putOperation(OfflineOperationRecord record) =>
+      inner.putOperation(record);
+
+  @override
+  bool renewLease(
+    String partitionId,
+    String recordId, {
+    required String owner,
+    required int generation,
+    required DateTime now,
+    required Duration leaseDuration,
+  }) => inner.renewLease(
+    partitionId,
+    recordId,
+    owner: owner,
+    generation: generation,
+    now: now,
+    leaseDuration: leaseDuration,
+  );
+
+  @override
+  OfflineOperationScanPage scanOperations(
+    String partitionId, {
+    String? afterOperationId,
+    required int limit,
+  }) => inner.scanOperations(
+    partitionId,
+    afterOperationId: afterOperationId,
+    limit: limit,
+  );
+
+  @override
+  OfflineOutboxScanPage scanOutbox(
+    String partitionId, {
+    OfflineOutboxCursor? after,
+    String? operationId,
+    OfflineEntityKey? key,
+    required int limit,
+  }) => inner.scanOutbox(
+    partitionId,
+    after: after,
+    operationId: operationId,
+    key: key,
+    limit: limit,
+  );
+
+  @override
+  void touchCache(
+    String partitionId,
+    OfflineEntityKey key,
+    DateTime accessedAt,
+  ) => inner.touchCache(partitionId, key, accessedAt);
+
+  @override
+  void updateOutbox(OfflineOutboxRecord record) => inner.updateOutbox(record);
+
+  @override
+  void wipePartition(String partitionId) => inner.wipePartition(partitionId);
 }

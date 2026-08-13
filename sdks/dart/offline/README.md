@@ -48,6 +48,9 @@ Per-item handle streams are process-local conveniences. `getWriteStatus` and
 `watchWrite` read a content-free durable operation aggregate, preserve mixed
 plural progress, and remain reconstructible after a new repository process.
 Terminal operation metadata has explicit retention and capacity limits.
+Caller-supplied operation IDs and generated record IDs are collision checked
+inside the enqueue transaction. Collisions fail with a typed error and never
+replace retained work; generated IDs use a bounded retry budget.
 
 `putVertices` and `putEdges` atomically enqueue every item in one logical
 operation with stable item indexes. Relative TTL is resolved to one absolute
@@ -84,24 +87,37 @@ from explicit foreground work, or `probeAndDrain` to require a successful real
 Lantern health probe first. Use `listPending`, `listDeadLetters`,
 `inspectDeadLetter`, `retryDeadLetter`, and `deleteDeadLetter` for recovery UI;
 sensitive intent inspection requires an application authorization callback.
+Public read, list, status, watch, enqueue, and replay entry points lazily sweep
+expired work transactionally, so TTL expiry and capacity reclamation do not
+depend on a network drain. Dead-letter retention begins at the dead-letter
+transition rather than at original enqueue. Adapter-owned deadline indexes are
+scoped by partition, operation, and entity, so each observation inspects at most
+`maxSweepRecordsPerObservation` due records without walking live FIFO entries.
 
 `OfflineConfig` makes cache freshness, negative-cache TTL, replay attempts and
 age, dead-letter/operation retention, lease duration/renewal, read/replay
-concurrency, queue/watch limits, and jitter explicit. `OfflineStoreLimits`
-bounds global and per-partition cache, outbox, and operation-metadata bytes and
-record counts. Confirmed cache and retained terminal operation entries may be
-evicted under pressure; live outbox and non-terminal operation records are
-never discarded to admit a new write.
+concurrency, queue/watch/status-controller limits, bounded sweep work, and jitter
+explicit. `OfflineStoreLimits` bounds global and per-partition cache, outbox,
+and operation-metadata bytes and record counts, plus per-record lease-owner and
+diagnostic-code bytes. Outbox admission charges each immutable payload for its
+full bounded lifecycle envelope, so claim, retry, and dead-letter metadata
+cannot make an accepted snapshot exceed the same configured byte limits.
+Confirmed cache and retained terminal operation entries may be evicted under
+pressure; live outbox and non-terminal operation records are never discarded
+to admit a new write.
 
 `InMemoryOfflineStore` is useful for deterministic tests and examples only; it
 does not survive process termination. Production adapters must preserve the
 `OfflineStore` transaction, generation, byte-accounting, lease, and canonical
 codec contracts. Adapter packages can invoke `runStoreConformanceSuite` from
 their own tests. `exportSnapshot` and `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v3
+only for deterministic fresh-process conformance tests; snapshot schema v4
 persists operation aggregates, transactionally migrates active v1 metadata,
-and quarantines legacy Add records from v1/v2 snapshots. They are not a
-persistence adapter. The checked-in
+quarantines legacy Add records from v1/v2 snapshots, migrates v1 outbox
+retention metadata conservatively, and fails closed when cache, outbox,
+operation, ordinal, generation, lease, or state relationships contradict each
+other. Transaction objects are sealed after both commit and rollback. The
+reference snapshot is not a persistence adapter. The checked-in
 `tool/performance_probe.dart` records content-free p50/p95/p99, RSS, replay,
 enqueue, and snapshot-size evidence against conservative bounds. See the ADR at
 `docs/decisions/0002-dart-offline-repository-contract.md`.

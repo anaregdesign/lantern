@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Reject retained operation/record identity collisions atomically with bounded
+  generated-ID retries, seal transactions after callbacks, and fail closed on
+  contradictory restored durable-state graphs.
+- Sweep expiration and retention at public observation/control points, reclaim
+  expired capacity without replay, retain dead letters from their transition
+  time, use scoped deadline indexes for bounded due work, and bound
+  process-local status/change notification resources.
+- Add outbox codec schema v2 and reference snapshot schema v4 for exact
+  dead-letter transition retention with conservative legacy migration.
 - Preserve typed cancellation through the online adapter, isolate same-key
   single-flight waiters, cancel transport only after the final waiter leaves,
   and close idle watches immediately without missing initial store changes.

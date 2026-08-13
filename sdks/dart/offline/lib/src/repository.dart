@@ -38,10 +38,9 @@ final class OfflineLanternRepository {
   /// Explicit cache, replay, clock, and diagnostics policy.
   final OfflineConfig config;
   bool _disposed;
-  final Map<_WriteStatusKey, StreamController<OfflineWriteStatus>>
-  _writeStatuses = <_WriteStatusKey, StreamController<OfflineWriteStatus>>{};
-  final Map<_WriteStatusKey, OfflineWriteStatus> _latestWriteStatuses =
-      <_WriteStatusKey, OfflineWriteStatus>{};
+  final Map<_WriteStatusKey, _WriteStatusChannel> _writeStatuses =
+      <_WriteStatusKey, _WriteStatusChannel>{};
+  int _reservedWriteStatusControllers = 0;
   final Map<_ReadFlightKey, _ReadFlight> _singleFlights =
       <_ReadFlightKey, _ReadFlight>{};
   final Set<_ReadFlightWaiter> _deferredReadWaiters = <_ReadFlightWaiter>{};
@@ -51,6 +50,7 @@ final class OfflineLanternRepository {
   final Set<Future<void> Function()> _watchDisposers =
       <Future<void> Function()>{};
   final Set<_LeaseRenewal> _leaseRenewals = <_LeaseRenewal>{};
+  final Set<Future<void>> _inFlightEnqueues = <Future<void>>{};
 
   /// Reads one vertex according to [policy].
   ///
@@ -298,6 +298,14 @@ final class OfflineLanternRepository {
     _validatePartition(partitionId);
     _validateId(operationId);
     _ensureActive();
+    await _expireOrAgeOut(partitionId, operationId: operationId);
+    return _loadWriteStatus(partitionId, operationId);
+  }
+
+  Future<OfflineOperationStatus?> _loadWriteStatus(
+    String partitionId,
+    String operationId,
+  ) async {
     final record = await store.transaction(
       (transaction) => transaction.getOperation(partitionId, operationId),
     );
@@ -350,30 +358,30 @@ final class OfflineLanternRepository {
     }
 
     Future<void> start() async {
-      changes = store
-          .changes(partitionId)
-          .listen(
-            (_) {
-              changeTail = changeTail.then((_) async {
-                if (canceled) return;
-                try {
-                  await emit();
-                } catch (error, stackTrace) {
-                  if (!canceled && !controller.isClosed) {
-                    controller.addError(error, stackTrace);
-                    await finish();
-                  }
-                }
-              });
-            },
-            onError: (Object error, StackTrace stackTrace) {
-              if (!canceled && !controller.isClosed) {
-                controller.addError(error, stackTrace);
-                unawaited(finish());
-              }
-            },
-          );
       try {
+        changes = store
+            .changes(partitionId)
+            .listen(
+              (_) {
+                changeTail = changeTail.then((_) async {
+                  if (canceled) return;
+                  try {
+                    await emit();
+                  } catch (error, stackTrace) {
+                    if (!canceled && !controller.isClosed) {
+                      controller.addError(error, stackTrace);
+                      await finish();
+                    }
+                  }
+                });
+              },
+              onError: (Object error, StackTrace stackTrace) {
+                if (!canceled && !controller.isClosed) {
+                  controller.addError(error, stackTrace);
+                  unawaited(finish());
+                }
+              },
+            );
         await emit();
       } catch (error, stackTrace) {
         if (!canceled && !controller.isClosed) {
@@ -426,14 +434,14 @@ final class OfflineLanternRepository {
       _throwIfCanceled(cancellation);
       await _expireOrAgeOut(partitionId);
       final claimResult = await store.transaction((transaction) {
-        final now = config.clock().toUtc();
+        final sampledAt = config.clock().toUtc();
         final recovered = transaction
             .outbox(partitionId)
             .where(
               (record) =>
                   record.state == OfflineOutboxState.sending &&
                   record.leaseUntil != null &&
-                  !now.isBefore(record.leaseUntil!),
+                  !sampledAt.isBefore(record.leaseUntil!),
             )
             .toList(growable: false);
         for (final record in recovered) {
@@ -442,13 +450,14 @@ final class OfflineLanternRepository {
             record,
             OfflineWriteState.locallyCommitted,
             attemptCount: record.attemptCount,
-            now: now,
+            now: _transitionTime(transaction, record, sampledAt),
           );
         }
         final claimed = transaction.claim(
           partitionId,
           owner: owner,
-          now: now,
+          now: sampledAt,
+          maxAge: config.maxAge,
           leaseDuration: config.leaseDuration,
           limit: config.maxConcurrency,
         );
@@ -458,7 +467,7 @@ final class OfflineLanternRepository {
             record,
             OfflineWriteState.sending,
             attemptCount: record.attemptCount,
-            now: now,
+            now: _transitionTime(transaction, record, sampledAt),
           );
         }
         return (claimed: claimed, recovered: recovered);
@@ -527,14 +536,17 @@ final class OfflineLanternRepository {
   Future<List<PendingSummary>> listPending(String partitionId) async {
     _validatePartition(partitionId);
     _ensureActive();
-    final now = config.clock().toUtc();
+    await _expireOrAgeOut(partitionId);
     return store.transaction((transaction) {
+      final now = config.clock().toUtc();
       return transaction
           .outbox(partitionId)
           .where(
             (record) =>
-                record.state == OfflineOutboxState.enqueued ||
-                record.state == OfflineOutboxState.sending,
+                (record.state == OfflineOutboxState.enqueued ||
+                    record.state == OfflineOutboxState.sending) &&
+                _live(record.absoluteExpiration, now) &&
+                now.difference(record.enqueuedAt) < config.maxAge,
           )
           .map(
             (record) => PendingSummary(
@@ -555,17 +567,23 @@ final class OfflineLanternRepository {
   Future<List<DeadLetterSummary>> listDeadLetters(String partitionId) async {
     _validatePartition(partitionId);
     _ensureActive();
-    final now = config.clock().toUtc();
+    await _expireOrAgeOut(partitionId);
     return store.transaction((transaction) {
+      final now = config.clock().toUtc();
       return transaction
           .outbox(partitionId)
-          .where((record) => record.state == OfflineOutboxState.deadLetter)
+          .where(
+            (record) =>
+                record.state == OfflineOutboxState.deadLetter &&
+                now.difference(record.deadLetteredAt!) <
+                    config.deadLetterRetention,
+          )
           .map(
             (record) => DeadLetterSummary(
               recordId: record.recordId,
               category: record.intent.category,
               state: record.state,
-              age: now.difference(record.enqueuedAt),
+              age: now.difference(record.deadLetteredAt!),
               attemptCount: record.attemptCount,
               diagnosticCode: record.diagnosticCode,
             ),
@@ -582,6 +600,7 @@ final class OfflineLanternRepository {
   }) async {
     _validatePartition(partitionId);
     _ensureActive();
+    await _expireOrAgeOut(partitionId, recordId: recordId);
     final inspected = await store.transaction((transaction) {
       final record = transaction.getOutbox(partitionId, recordId);
       if (record == null || record.state != OfflineOutboxState.deadLetter) {
@@ -591,7 +610,7 @@ final class OfflineLanternRepository {
         recordId: record.recordId,
         category: record.intent.category,
         state: record.state,
-        age: config.clock().toUtc().difference(record.enqueuedAt),
+        age: config.clock().toUtc().difference(record.deadLetteredAt!),
         attemptCount: record.attemptCount,
         diagnosticCode: record.diagnosticCode,
       );
@@ -616,6 +635,7 @@ final class OfflineLanternRepository {
   Future<void> retryDeadLetter(String partitionId, String recordId) async {
     _validatePartition(partitionId);
     _ensureActive();
+    await _expireOrAgeOut(partitionId, recordId: recordId);
     final result = await store.transaction((transaction) {
       final record = transaction.getOutbox(partitionId, recordId);
       if (record == null || record.state != OfflineOutboxState.deadLetter) {
@@ -644,6 +664,7 @@ final class OfflineLanternRepository {
           clearNextAttemptAt: true,
           clearLeaseOwner: true,
           clearLeaseUntil: true,
+          clearDeadLetteredAt: true,
           clearDiagnosticCode: true,
         ),
       );
@@ -670,6 +691,7 @@ final class OfflineLanternRepository {
   Future<void> deleteDeadLetter(String partitionId, String recordId) async {
     _validatePartition(partitionId);
     _ensureActive();
+    await _expireOrAgeOut(partitionId, recordId: recordId);
     await store.transaction((transaction) {
       final record = transaction.getOutbox(partitionId, recordId);
       if (record == null || record.state != OfflineOutboxState.deadLetter) {
@@ -701,7 +723,6 @@ final class OfflineLanternRepository {
         .toList(growable: false);
     for (final id in ids) {
       await _writeStatuses.remove(id)?.close();
-      _latestWriteStatuses.remove(id);
     }
     _recordDiagnostic(
       const OfflineDiagnosticEvent(kind: OfflineDiagnosticKind.partitionWiped),
@@ -712,9 +733,10 @@ final class OfflineLanternRepository {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    final controllers = _writeStatuses.values.toList(growable: false);
+    final enqueues = _inFlightEnqueues.toList(growable: false);
+    if (enqueues.isNotEmpty) await Future.wait(enqueues);
+    final channels = _writeStatuses.values.toList(growable: false);
     _writeStatuses.clear();
-    _latestWriteStatuses.clear();
     final flights = _singleFlights.values.toSet().toList(growable: false);
     _singleFlights.clear();
     final deferredReadWaiters = _deferredReadWaiters.toList(growable: false);
@@ -740,8 +762,8 @@ final class OfflineLanternRepository {
     for (final renewal in renewals) {
       await renewal.stop();
     }
-    for (final controller in controllers) {
-      if (!controller.isClosed) await controller.close();
+    for (final channel in channels) {
+      await channel.close();
     }
   }
 
@@ -923,6 +945,7 @@ final class OfflineLanternRepository {
     required bool allowStale,
     required LanternCancellationToken? cancellation,
   }) async {
+    await _expireOrAgeOut(partitionId, entityKey: OfflineEntityKey.vertex(key));
     final local = await _localVertex(partitionId, key);
     if (_usesLocalFirst(policy) && _eligible(local, allowStale: allowStale)) {
       return local;
@@ -999,7 +1022,7 @@ final class OfflineLanternRepository {
               key: OfflineEntityKey.vertex(key),
               validatedAt: now,
               lastAccessAt: now,
-              missingUntil: now.add(config.missingTtl),
+              missingUntil: _durableDeadline(now, config.missingTtl),
             ),
           );
           if (stored == _CacheStoreOutcome.staleGeneration) {
@@ -1050,6 +1073,10 @@ final class OfflineLanternRepository {
     required bool allowStale,
     required LanternCancellationToken? cancellation,
   }) async {
+    await _expireOrAgeOut(
+      partitionId,
+      entityKey: OfflineEntityKey.edge(edge.tail, edge.head),
+    );
     final local = await _localEdge(partitionId, edge);
     if (_usesLocalFirst(policy) && _eligible(local, allowStale: allowStale)) {
       return local;
@@ -1129,7 +1156,7 @@ final class OfflineLanternRepository {
               key: OfflineEntityKey.edge(edge.tail, edge.head),
               validatedAt: now,
               lastAccessAt: now,
-              missingUntil: now.add(config.missingTtl),
+              missingUntil: _durableDeadline(now, config.missingTtl),
             ),
           );
           if (stored == _CacheStoreOutcome.staleGeneration) {
@@ -1178,8 +1205,8 @@ final class OfflineLanternRepository {
     String key, {
     OfflineSnapshot<Vertex>? fallback,
   }) async {
-    final now = config.clock().toUtc();
     final snapshot = await store.transaction((transaction) {
+      final now = config.clock().toUtc();
       final identity = OfflineEntityKey.vertex(key);
       final record = transaction.getCache(partitionId, identity);
       var base = record == null && fallback != null
@@ -1211,8 +1238,8 @@ final class OfflineLanternRepository {
     EdgeRef edge, {
     OfflineSnapshot<Edge>? fallback,
   }) async {
-    final now = config.clock().toUtc();
     final snapshot = await store.transaction((transaction) {
+      final now = config.clock().toUtc();
       final identity = OfflineEntityKey.edge(edge.tail, edge.head);
       final record = transaction.getCache(partitionId, identity);
       var base = record == null && fallback != null
@@ -1340,56 +1367,118 @@ final class OfflineLanternRepository {
     List<OfflineIntent Function()> intentBuilders, {
     required DateTime now,
     required String? operationId,
+  }) {
+    final operation = _enqueueOperationOwned(
+      partitionId,
+      intentBuilders,
+      now: now,
+      operationId: operationId,
+    );
+    late final Future<void> settled;
+    settled = operation
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+        .whenComplete(() => _inFlightEnqueues.remove(settled));
+    _inFlightEnqueues.add(settled);
+    return operation;
+  }
+
+  Future<OfflineWriteOperation> _enqueueOperationOwned(
+    String partitionId,
+    List<OfflineIntent Function()> intentBuilders, {
+    required DateTime now,
+    required String? operationId,
   }) async {
     if (intentBuilders.isEmpty) throw const OfflineArgumentException();
-    final opId = operationId ?? config.idGenerator();
-    _validateId(opId);
-    final recordIds = List<String>.generate(
-      intentBuilders.length,
-      (_) => config.idGenerator(),
-      growable: false,
-    );
-    for (final recordId in recordIds) {
-      _validateId(recordId);
+    await _expireOrAgeOut(partitionId);
+    _ensureActive();
+    final intents = intentBuilders
+        .map((builder) => builder())
+        .toList(growable: false);
+    final liveControllerCount = intents
+        .where((intent) => _live(intent.expiration, now))
+        .length;
+    if (_writeStatuses.length +
+            _reservedWriteStatusControllers +
+            liveControllerCount >
+        config.maxWriteStatusControllers) {
+      _recordDiagnostic(
+        const OfflineDiagnosticEvent(
+          kind: OfflineDiagnosticKind.capacityRejected,
+        ),
+      );
+      throw const OfflineCapacityException();
     }
+    _reservedWriteStatusControllers += liveControllerCount;
+    late final String opId;
     late final List<OfflineOutboxRecord> records;
     try {
-      records = await store.transaction((transaction) {
-        final generation = transaction.generation(partitionId);
-        final pending = List<OfflineOutboxRecord>.generate(
-          intentBuilders.length,
-          (index) {
-            final intent = intentBuilders[index]();
-            final state = !_live(intent.expiration, now)
-                ? OfflineOutboxState.expired
-                : OfflineOutboxState.enqueued;
-            return OfflineOutboxRecord(
-              recordId: recordIds[index],
-              operationId: opId,
-              itemIndex: index,
-              partitionId: partitionId,
-              intent: intent,
-              enqueuedAt: now,
-              ordinal: 0,
-              state: state,
-              attemptCount: 0,
-              generation: generation,
-              diagnosticCode: state == OfflineOutboxState.expired
-                  ? 'expired'
-                  : null,
-            );
-          },
+      for (var attempt = 0; ; attempt++) {
+        final candidateOperationId = operationId ?? config.idGenerator();
+        _validateId(candidateOperationId);
+        final recordIds = List<String>.generate(
+          intents.length,
+          (_) => config.idGenerator(),
           growable: false,
         );
-        final assigned = transaction.enqueueAll(pending);
-        for (final record in assigned) {
-          if (record.state == OfflineOutboxState.expired) {
-            transaction.deleteOutbox(partitionId, record.recordId);
+        for (final recordId in recordIds) {
+          _validateId(recordId);
+        }
+        try {
+          final assigned = await store.transaction((transaction) {
+            _ensureActive();
+            final committedAt = config.clock().toUtc();
+            final generation = transaction.generation(partitionId);
+            final pending = List<OfflineOutboxRecord>.generate(intents.length, (
+              index,
+            ) {
+              final intent = intents[index];
+              final state =
+                  !_live(intent.expiration, now) ||
+                      !_live(intent.expiration, committedAt)
+                  ? OfflineOutboxState.expired
+                  : OfflineOutboxState.enqueued;
+              return OfflineOutboxRecord(
+                recordId: recordIds[index],
+                operationId: candidateOperationId,
+                itemIndex: index,
+                partitionId: partitionId,
+                intent: intent,
+                enqueuedAt: now,
+                ordinal: 0,
+                state: state,
+                attemptCount: 0,
+                generation: generation,
+                diagnosticCode: state == OfflineOutboxState.expired
+                    ? 'expired'
+                    : null,
+              );
+            }, growable: false);
+            final result = transaction.enqueueAll(pending);
+            for (final record in result) {
+              if (record.state == OfflineOutboxState.expired) {
+                transaction.deleteOutbox(partitionId, record.recordId);
+              }
+            }
+            _putInitialOperation(
+              transaction,
+              result,
+              committedAt.isAfter(now) ? committedAt : now,
+            );
+            return result;
+          });
+          opId = candidateOperationId;
+          records = assigned;
+          break;
+        } on OfflineIdentityConflictException catch (conflict) {
+          if (conflict.kind == OfflineIdentityKind.operation &&
+              operationId != null) {
+            rethrow;
+          }
+          if (attempt + 1 >= config.maxGeneratedIdAttempts) {
+            throw const OfflineIdGenerationException();
           }
         }
-        _putInitialOperation(transaction, assigned, now);
-        return assigned;
-      });
+      }
     } on OfflineCapacityException {
       _recordDiagnostic(
         const OfflineDiagnosticEvent(
@@ -1397,14 +1486,19 @@ final class OfflineLanternRepository {
         ),
       );
       rethrow;
+    } finally {
+      _reservedWriteStatusControllers -= liveControllerCount;
     }
     final handles = <OfflineWriteHandle>[];
     for (final record in records) {
       final initial = record.state == OfflineOutboxState.expired
           ? OfflineWriteState.expired
           : OfflineWriteState.locallyCommitted;
+      final handle = initial == OfflineWriteState.expired
+          ? _terminalHandle(record, initial)
+          : _handle(partitionId, record, initial);
       _emit(record, initial, attemptCount: record.attemptCount);
-      handles.add(_handle(partitionId, record, initial));
+      handles.add(handle);
     }
     return OfflineWriteOperation(operationId: opId, items: handles);
   }
@@ -1438,10 +1532,18 @@ final class OfflineLanternRepository {
     if (claimed.intent is OfflineAddEdgeIntent) {
       return _deadLetterUnsupportedAdd(partitionId, claimed, owner);
     }
+    if (claimed.attemptCount >= config.maxAttempts ||
+        claimed.attemptCount >= _maxDurableAttemptCount) {
+      return _deadLetterAttemptsExhausted(partitionId, claimed, owner);
+    }
     final now = config.clock().toUtc();
     if (!_live(claimed.absoluteExpiration, now)) {
       await _expireRecord(partitionId, claimed, owner);
       return const _ReplayOutcome();
+    }
+    if (now.difference(claimed.enqueuedAt) >= config.maxAge) {
+      await _expireOrAgeOut(partitionId, recordId: claimed.recordId);
+      return const _ReplayOutcome(deadLetter: true);
     }
     try {
       final Object? confirmedEntity = switch (claimed.intent) {
@@ -1535,24 +1637,26 @@ final class OfflineLanternRepository {
     OfflineOutboxRecord claimed,
     String owner,
   ) async {
-    final now = config.clock().toUtc();
     final applied = await store.transaction((transaction) {
+      final sampledAt = config.clock().toUtc();
       final current = transaction.getOutbox(partitionId, claimed.recordId);
       if (current == null ||
           current.generation != claimed.generation ||
           current.state != OfflineOutboxState.sending ||
           current.leaseOwner != owner ||
           current.leaseUntil == null ||
-          !now.isBefore(current.leaseUntil!) ||
+          !sampledAt.isBefore(current.leaseUntil!) ||
           transaction.generation(partitionId) != claimed.generation) {
         return false;
       }
+      final transitionAt = _transitionTime(transaction, current, sampledAt);
       transaction.updateOutbox(
         current.copyWith(
           state: OfflineOutboxState.deadLetter,
           clearNextAttemptAt: true,
           clearLeaseOwner: true,
           clearLeaseUntil: true,
+          deadLetteredAt: transitionAt,
           diagnosticCode: 'unsupported_add',
         ),
       );
@@ -1562,7 +1666,7 @@ final class OfflineLanternRepository {
         OfflineWriteState.deadLetter,
         attemptCount: current.attemptCount,
         diagnosticCode: 'unsupported_add',
-        now: now,
+        now: transitionAt,
       );
       return true;
     });
@@ -1572,6 +1676,55 @@ final class OfflineLanternRepository {
         OfflineWriteState.deadLetter,
         attemptCount: claimed.attemptCount,
         diagnosticCode: 'unsupported_add',
+      );
+    }
+    return _ReplayOutcome(deadLetter: applied);
+  }
+
+  Future<_ReplayOutcome> _deadLetterAttemptsExhausted(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+  ) async {
+    final applied = await store.transaction((transaction) {
+      final sampledAt = config.clock().toUtc();
+      final current = transaction.getOutbox(partitionId, claimed.recordId);
+      if (current == null ||
+          current.generation != claimed.generation ||
+          current.state != OfflineOutboxState.sending ||
+          current.leaseOwner != owner ||
+          current.leaseUntil == null ||
+          !sampledAt.isBefore(current.leaseUntil!) ||
+          transaction.generation(partitionId) != claimed.generation) {
+        return false;
+      }
+      final transitionAt = _transitionTime(transaction, current, sampledAt);
+      transaction.updateOutbox(
+        current.copyWith(
+          state: OfflineOutboxState.deadLetter,
+          clearNextAttemptAt: true,
+          clearLeaseOwner: true,
+          clearLeaseUntil: true,
+          deadLetteredAt: transitionAt,
+          diagnosticCode: 'max_attempts',
+        ),
+      );
+      _updateOperationStatus(
+        transaction,
+        current,
+        OfflineWriteState.deadLetter,
+        attemptCount: current.attemptCount,
+        diagnosticCode: 'max_attempts',
+        now: transitionAt,
+      );
+      return true;
+    });
+    if (applied) {
+      _emit(
+        claimed,
+        OfflineWriteState.deadLetter,
+        attemptCount: claimed.attemptCount,
+        diagnosticCode: 'max_attempts',
       );
     }
     return _ReplayOutcome(deadLetter: applied);
@@ -1603,24 +1756,26 @@ final class OfflineLanternRepository {
       await _releaseClaim(partitionId, claimed, owner);
       throw const OfflineCanceledException();
     }
-    final now = config.clock().toUtc();
     final outcome = await store.transaction((transaction) {
+      final sampledAt = config.clock().toUtc();
       final current = transaction.getOutbox(partitionId, claimed.recordId);
       if (current == null ||
           current.generation != claimed.generation ||
           current.state != OfflineOutboxState.sending ||
           current.leaseOwner != owner ||
           current.leaseUntil == null ||
-          !now.isBefore(current.leaseUntil!) ||
+          !sampledAt.isBefore(current.leaseUntil!) ||
           transaction.generation(partitionId) != claimed.generation) {
         return const _ReplayOutcome();
       }
+      final transitionAt = _transitionTime(transaction, current, sampledAt);
       if (failure.kind == OfflineRemoteErrorKind.unauthenticated) {
         transaction.updateOutbox(
           current.copyWith(
             state: OfflineOutboxState.enqueued,
             clearLeaseOwner: true,
             clearLeaseUntil: true,
+            diagnosticCode: 'unauthenticated',
           ),
         );
         _updateOperationStatus(
@@ -1629,7 +1784,7 @@ final class OfflineLanternRepository {
           OfflineWriteState.pausedForAuth,
           attemptCount: current.attemptCount,
           diagnosticCode: 'unauthenticated',
-          now: now,
+          now: transitionAt,
         );
         return const _ReplayOutcome(pausedForAuth: true);
       }
@@ -1638,14 +1793,16 @@ final class OfflineLanternRepository {
           failure.kind == OfflineRemoteErrorKind.invalidArgument ||
           failure.kind == OfflineRemoteErrorKind.permanent ||
           attempts >= config.maxAttempts ||
-          now.difference(current.enqueuedAt) >= config.maxAge;
+          sampledAt.difference(current.enqueuedAt) >= config.maxAge;
       if (terminal) {
         transaction.updateOutbox(
           current.copyWith(
             state: OfflineOutboxState.deadLetter,
             attemptCount: attempts,
+            clearNextAttemptAt: true,
             clearLeaseOwner: true,
             clearLeaseUntil: true,
+            deadLetteredAt: transitionAt,
             diagnosticCode: _diagnosticCode(failure.kind),
           ),
         );
@@ -1655,7 +1812,7 @@ final class OfflineLanternRepository {
           OfflineWriteState.deadLetter,
           attemptCount: attempts,
           diagnosticCode: _diagnosticCode(failure.kind),
-          now: now,
+          now: transitionAt,
         );
         return const _ReplayOutcome(deadLetter: true);
       }
@@ -1663,7 +1820,7 @@ final class OfflineLanternRepository {
         current.copyWith(
           state: OfflineOutboxState.enqueued,
           attemptCount: attempts,
-          nextAttemptAt: now.add(_retryDelay(attempts)),
+          nextAttemptAt: _durableDeadline(transitionAt, _retryDelay(attempts)),
           clearLeaseOwner: true,
           clearLeaseUntil: true,
           diagnosticCode: _diagnosticCode(failure.kind),
@@ -1675,7 +1832,7 @@ final class OfflineLanternRepository {
         OfflineWriteState.retryScheduled,
         attemptCount: attempts,
         diagnosticCode: _diagnosticCode(failure.kind),
-        now: now,
+        now: transitionAt,
       );
       return const _ReplayOutcome(retryScheduled: true);
     });
@@ -1723,6 +1880,7 @@ final class OfflineLanternRepository {
             state: OfflineOutboxState.enqueued,
             clearLeaseOwner: true,
             clearLeaseUntil: true,
+            diagnosticCode: 'canceled',
           ),
         );
         _updateOperationStatus(
@@ -1747,13 +1905,36 @@ final class OfflineLanternRepository {
     }
   }
 
-  Future<void> _expireOrAgeOut(String partitionId) async {
-    final now = config.clock().toUtc();
+  Future<void> _expireOrAgeOut(
+    String partitionId, {
+    String? operationId,
+    String? recordId,
+    OfflineEntityKey? entityKey,
+  }) async {
     final terminal = await store.transaction((transaction) {
+      final now = config.clock().toUtc();
       final statuses = <(OfflineOutboxRecord, OfflineWriteState)>[];
-      for (final record in transaction.outbox(partitionId)) {
+      final records = <OfflineOutboxRecord>[];
+      if (recordId != null) {
+        final record = transaction.getOutbox(partitionId, recordId);
+        if (record != null) records.add(record);
+      } else {
+        records.addAll(
+          transaction.dueOutbox(
+            partitionId,
+            operationId: operationId,
+            key: entityKey,
+            now: now,
+            maxAge: config.maxAge,
+            deadLetterRetention: config.deadLetterRetention,
+            limit: config.maxSweepRecordsPerObservation,
+          ),
+        );
+      }
+      for (final record in records) {
         if (record.state == OfflineOutboxState.deadLetter &&
-            now.difference(record.enqueuedAt) >= config.deadLetterRetention) {
+            now.difference(record.deadLetteredAt!) >=
+                config.deadLetterRetention) {
           transaction.deleteOutbox(partitionId, record.recordId);
           continue;
         }
@@ -1773,11 +1954,14 @@ final class OfflineLanternRepository {
           transaction.deleteOutbox(partitionId, record.recordId);
           statuses.add((record, OfflineWriteState.expired));
         } else if (now.difference(record.enqueuedAt) >= config.maxAge) {
+          final transitionAt = _transitionTime(transaction, record, now);
           transaction.updateOutbox(
             record.copyWith(
               state: OfflineOutboxState.deadLetter,
+              clearNextAttemptAt: true,
               clearLeaseOwner: true,
               clearLeaseUntil: true,
+              deadLetteredAt: transitionAt,
               diagnosticCode: 'max_age',
             ),
           );
@@ -1787,19 +1971,32 @@ final class OfflineLanternRepository {
             OfflineWriteState.deadLetter,
             attemptCount: record.attemptCount,
             diagnosticCode: 'max_age',
-            now: now,
+            now: transitionAt,
           );
           statuses.add((record, OfflineWriteState.deadLetter));
         }
       }
-      final retainedOperationIds = transaction
-          .outbox(partitionId)
-          .map((record) => record.operationId)
-          .toSet();
-      for (final operation in transaction.operations(partitionId)) {
+      final operationRecords = <OfflineOperationRecord>[];
+      if (operationId != null) {
+        final operation = transaction.getOperation(partitionId, operationId);
+        if (operation != null) operationRecords.add(operation);
+      } else {
+        operationRecords.addAll(
+          transaction.dueOperations(
+            partitionId,
+            now: now,
+            retention: config.operationRetention,
+            limit: config.maxSweepRecordsPerObservation,
+          ),
+        );
+      }
+      for (final operation in operationRecords) {
         final terminalAt = operation.terminalAt;
         if (terminalAt != null &&
-            !retainedOperationIds.contains(operation.operationId) &&
+            !transaction.hasOutboxForOperation(
+              partitionId,
+              operation.operationId,
+            ) &&
             now.difference(terminalAt) >= config.operationRetention) {
           transaction.deleteOperation(partitionId, operation.operationId);
         }
@@ -1960,16 +2157,39 @@ final class OfflineLanternRepository {
       operationId: outbox.operationId,
       items: items,
     );
+    final transitionAt = _latestTime(<DateTime>[
+      now,
+      outbox.enqueuedAt,
+      operation.updatedAt,
+    ]);
     transaction.putOperation(
       OfflineOperationRecord(
         partitionId: operation.partitionId,
         generation: operation.generation,
         operationId: operation.operationId,
         items: items,
-        updatedAt: now,
-        terminalAt: status.isTerminal ? operation.terminalAt ?? now : null,
+        updatedAt: transitionAt,
+        terminalAt: status.isTerminal
+            ? operation.terminalAt ?? transitionAt
+            : null,
       ),
     );
+  }
+
+  DateTime _transitionTime(
+    OfflineStoreTransaction transaction,
+    OfflineOutboxRecord outbox,
+    DateTime sampledAt,
+  ) {
+    final operation = transaction.getOperation(
+      outbox.partitionId,
+      outbox.operationId,
+    );
+    return _latestTime(<DateTime>[
+      sampledAt,
+      outbox.enqueuedAt,
+      if (operation != null) operation.updatedAt,
+    ]);
   }
 
   OfflineWriteHandle _handle(
@@ -1978,10 +2198,6 @@ final class OfflineLanternRepository {
     OfflineWriteState initial,
   ) {
     final id = _WriteStatusKey(partitionId, record.recordId);
-    final controller = _writeStatuses.putIfAbsent(
-      id,
-      () => StreamController<OfflineWriteStatus>.broadcast(),
-    );
     final first = OfflineWriteStatus(
       recordId: record.recordId,
       operationId: record.operationId,
@@ -1990,28 +2206,41 @@ final class OfflineLanternRepository {
       attemptCount: record.attemptCount,
       diagnosticCode: record.diagnosticCode,
     );
-    _latestWriteStatuses[id] = first;
+    final channel = _writeStatuses.putIfAbsent(
+      id,
+      () => _WriteStatusChannel(first),
+    );
     return OfflineWriteHandle(
       recordId: record.recordId,
       operationId: record.operationId,
       itemIndex: record.itemIndex,
-      statuses: _statuses(id, first, controller.stream),
+      statuses: channel.statuses,
     );
   }
 
-  Stream<OfflineWriteStatus> _statuses(
-    _WriteStatusKey id,
-    OfflineWriteStatus fallback,
-    Stream<OfflineWriteStatus> changes,
-  ) => Stream<OfflineWriteStatus>.multi((controller) {
-    controller.add(_latestWriteStatuses[id] ?? fallback);
-    final subscription = changes.listen(
-      controller.add,
-      onError: controller.addError,
-      onDone: controller.close,
+  OfflineWriteHandle _terminalHandle(
+    OfflineOutboxRecord record,
+    OfflineWriteState state,
+  ) {
+    final status = OfflineWriteStatus(
+      recordId: record.recordId,
+      operationId: record.operationId,
+      itemIndex: record.itemIndex,
+      state: state,
+      attemptCount: record.attemptCount,
+      diagnosticCode: record.diagnosticCode,
     );
-    controller.onCancel = subscription.cancel;
-  }, isBroadcast: true);
+    return OfflineWriteHandle(
+      recordId: record.recordId,
+      operationId: record.operationId,
+      itemIndex: record.itemIndex,
+      statuses: Stream<OfflineWriteStatus>.multi((controller) {
+        controller
+          ..add(status)
+          ..close();
+      }, isBroadcast: true),
+    );
+  }
 
   void _emit(
     OfflineOutboxRecord record,
@@ -2028,9 +2257,8 @@ final class OfflineLanternRepository {
       attemptCount: attemptCount,
       diagnosticCode: diagnosticCode,
     );
-    _latestWriteStatuses[id] = status;
-    final controller = _writeStatuses[id];
-    if (controller != null && !controller.isClosed) controller.add(status);
+    final channel = _writeStatuses[id];
+    channel?.add(status);
     _recordDiagnostic(
       OfflineDiagnosticEvent(
         kind: OfflineDiagnosticKind.writeTransition,
@@ -2042,8 +2270,13 @@ final class OfflineLanternRepository {
     if (state == OfflineWriteState.confirmed ||
         state == OfflineWriteState.deadLetter ||
         state == OfflineWriteState.expired) {
-      if (controller != null && !controller.isClosed) {
-        unawaited(controller.close());
+      if (channel != null) {
+        if (identical(_writeStatuses[id], channel)) {
+          _writeStatuses.remove(id);
+        }
+        unawaited(channel.close());
+      } else {
+        _writeStatuses.remove(id);
       }
     }
   }
@@ -2203,7 +2436,8 @@ final class OfflineLanternRepository {
             (record.state == OfflineOutboxState.enqueued ||
                 record.state == OfflineOutboxState.sending) &&
             record.intent is! OfflineAddEdgeIntent &&
-            _live(record.absoluteExpiration, now),
+            _live(record.absoluteExpiration, now) &&
+            now.difference(record.enqueuedAt) < config.maxAge,
       )
       .toList(growable: false);
 
@@ -2580,12 +2814,21 @@ DateTime? _resolveExpiration(
       throw const OfflineArgumentException();
     }
     try {
-      return now.add(expiresIn).toUtc();
+      final resolved = now.add(expiresIn).toUtc();
+      if (!_durableTimestamp(resolved)) {
+        throw const OfflineArgumentException();
+      }
+      return resolved;
     } catch (_) {
       throw const OfflineArgumentException();
     }
   }
-  return expiresAt?.toUtc();
+  if (expiresAt == null) return null;
+  final resolved = expiresAt.toUtc();
+  if (!_durableTimestamp(resolved)) {
+    throw const OfflineArgumentException();
+  }
+  return resolved;
 }
 
 String _diagnosticCode(OfflineRemoteErrorKind kind) => switch (kind) {
@@ -2597,6 +2840,36 @@ String _diagnosticCode(OfflineRemoteErrorKind kind) => switch (kind) {
   OfflineRemoteErrorKind.permanent => 'permanent',
   OfflineRemoteErrorKind.unknown => 'unknown',
 };
+
+const int _maxDurableAttemptCount = 0x7fffffffffffffff;
+
+bool _durableTimestamp(DateTime value) =>
+    value.isUtc && value.year >= 1 && value.year <= 9999;
+
+final DateTime _maximumDurableTimestamp = DateTime.utc(
+  9999,
+  12,
+  31,
+  23,
+  59,
+  59,
+  999,
+  999,
+);
+
+DateTime _durableDeadline(DateTime base, Duration delay) {
+  try {
+    final candidate = base.add(delay);
+    return candidate.isAfter(_maximumDurableTimestamp)
+        ? _maximumDurableTimestamp
+        : candidate;
+  } on Object {
+    return _maximumDurableTimestamp;
+  }
+}
+
+DateTime _latestTime(Iterable<DateTime> values) =>
+    values.reduce((latest, value) => value.isAfter(latest) ? value : latest);
 
 void _validatePartition(String partitionId) {
   if (partitionId.isEmpty) throw const OfflineArgumentException();
@@ -2629,6 +2902,33 @@ final class _WriteStatusKey {
 
   @override
   int get hashCode => Object.hash(partitionId, recordId);
+}
+
+final class _WriteStatusChannel {
+  _WriteStatusChannel(this._latest);
+
+  OfflineWriteStatus _latest;
+  final StreamController<OfflineWriteStatus> _controller =
+      StreamController<OfflineWriteStatus>.broadcast();
+
+  Stream<OfflineWriteStatus> get statuses =>
+      Stream<OfflineWriteStatus>.multi((controller) {
+        controller.add(_latest);
+        final subscription = _controller.stream.listen(
+          controller.add,
+          onError: controller.addError,
+          onDone: controller.close,
+        );
+        controller.onCancel = subscription.cancel;
+      }, isBroadcast: true);
+
+  void add(OfflineWriteStatus status) {
+    _latest = status;
+    if (!_controller.isClosed) _controller.add(status);
+  }
+
+  Future<void> close() =>
+      _controller.isClosed ? Future<void>.value() : _controller.close();
 }
 
 final class _ReadFlight {

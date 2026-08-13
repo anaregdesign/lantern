@@ -8,15 +8,19 @@ import 'types.dart';
 
 /// Canonical strict JSON codec for offline cache and outbox records.
 ///
-/// Version one deliberately fails closed on unknown schema, discriminator,
-/// field, float payload, range, or byte encoding. It preserves every public
-/// [VertexValue] kind, including nil versus unset and exact IEEE float bits.
-/// Legacy Add intents remain decodable only so stores can quarantine them.
+/// Each record family deliberately fails closed on unknown schema,
+/// discriminator, field, float payload, range, or byte encoding. It preserves
+/// every public [VertexValue] kind, including nil versus unset and exact IEEE
+/// float bits. Legacy Add intents and v1 outbox records remain decodable only
+/// so stores can migrate them safely.
 final class OfflineCodec {
   OfflineCodec._();
 
   /// Current persisted JSON schema version.
   static const int schemaVersion = 1;
+
+  /// Current outbox record schema version.
+  static const int outboxSchemaVersion = 2;
 
   /// Encodes one exact confirmed cache record to canonical JSON.
   static String encodeCacheRecord(OfflineCacheRecord record) =>
@@ -61,33 +65,38 @@ final class OfflineCodec {
   static String encodeOutboxRecord(OfflineOutboxRecord record) =>
       jsonEncode(_outboxToMap(record));
 
-  /// Decodes one strict v1 outbox record.
+  /// Decodes one strict outbox record, including the v1 retention migration.
   static OfflineOutboxRecord decodeOutboxRecord(String source) {
     final value = _decodeObject(source);
-    _expectKeys(value, _outboxKeys);
-    _expectSchema(value, 'outbox');
+    final schema = _recordSchema(value, 'outbox', supported: const <int>{1, 2});
+    _expectKeys(value, schema == 1 ? _outboxKeysV1 : _outboxKeys);
     final state = _outboxState(_string(value['state']));
-    final record = OfflineOutboxRecord(
-      recordId: _nonEmpty(value['recordId']),
-      operationId: _nonEmpty(value['operationId']),
-      itemIndex: _nonNegativeInt(value['itemIndex']),
-      partitionId: _nonEmpty(value['partitionId']),
-      intent: _intentFromMap(_object(value['intent'])),
-      enqueuedAt: _timeFromString(value['enqueuedAt']),
-      ordinal: _positiveInt(value['ordinal']),
-      state: state,
-      attemptCount: _nonNegativeInt(value['attemptCount']),
-      generation: _nonNegativeInt(value['generation']),
-      nextAttemptAt: _nullableTime(value['nextAttemptAt']),
-      leaseOwner: _nullableString(value['leaseOwner']),
-      leaseUntil: _nullableTime(value['leaseUntil']),
-      diagnosticCode: _nullableString(value['diagnosticCode']),
-    );
-    final hasLease = record.leaseOwner != null && record.leaseUntil != null;
-    if ((state == OfflineOutboxState.sending) != hasLease) {
+    final enqueuedAt = _timeFromString(value['enqueuedAt']);
+    try {
+      return OfflineOutboxRecord(
+        recordId: _nonEmpty(value['recordId']),
+        operationId: _nonEmpty(value['operationId']),
+        itemIndex: _nonNegativeInt(value['itemIndex']),
+        partitionId: _nonEmpty(value['partitionId']),
+        intent: _intentFromMap(_object(value['intent'])),
+        enqueuedAt: enqueuedAt,
+        ordinal: _positiveInt(value['ordinal']),
+        state: state,
+        attemptCount: _nonNegativeInt(value['attemptCount']),
+        generation: _nonNegativeInt(value['generation']),
+        nextAttemptAt: _nullableTime(value['nextAttemptAt']),
+        leaseOwner: _nullableString(value['leaseOwner']),
+        leaseUntil: _nullableTime(value['leaseUntil']),
+        deadLetteredAt: schema == 1
+            ? state == OfflineOutboxState.deadLetter
+                  ? enqueuedAt
+                  : null
+            : _nullableTime(value['deadLetteredAt']),
+        diagnosticCode: _nullableString(value['diagnosticCode']),
+      );
+    } on OfflineArgumentException {
       throw const OfflineCodecException();
     }
-    return record;
   }
 
   /// Encodes one content-free durable operation aggregate.
@@ -104,22 +113,22 @@ final class OfflineCodec {
     if (rawItems is! List<Object?> || rawItems.isEmpty) {
       throw const OfflineCodecException();
     }
-    final items = <OfflineWriteStatus>[];
-    for (final rawItem in rawItems) {
-      final item = _object(rawItem);
-      _expectKeys(item, _operationItemKeys);
-      items.add(
-        OfflineWriteStatus(
-          recordId: _nonEmpty(item['recordId']),
-          operationId: operationId,
-          itemIndex: _nonNegativeInt(item['itemIndex']),
-          state: _writeState(_string(item['state'])),
-          attemptCount: _nonNegativeInt(item['attemptCount']),
-          diagnosticCode: _nullableString(item['diagnosticCode']),
-        ),
-      );
-    }
     try {
+      final items = <OfflineWriteStatus>[];
+      for (final rawItem in rawItems) {
+        final item = _object(rawItem);
+        _expectKeys(item, _operationItemKeys);
+        items.add(
+          OfflineWriteStatus(
+            recordId: _nonEmpty(item['recordId']),
+            operationId: operationId,
+            itemIndex: _nonNegativeInt(item['itemIndex']),
+            state: _writeState(_string(item['state'])),
+            attemptCount: _nonNegativeInt(item['attemptCount']),
+            diagnosticCode: _nullableString(item['diagnosticCode']),
+          ),
+        );
+      }
       return OfflineOperationRecord(
         partitionId: _nonEmpty(value['partitionId']),
         generation: _nonNegativeInt(value['generation']),
@@ -148,7 +157,7 @@ const Set<String> _cacheKeys = <String>{
   'versionTag',
 };
 
-const Set<String> _outboxKeys = <String>{
+const Set<String> _outboxKeysV1 = <String>{
   'schema',
   'type',
   'recordId',
@@ -166,6 +175,8 @@ const Set<String> _outboxKeys = <String>{
   'leaseUntil',
   'diagnosticCode',
 };
+
+const Set<String> _outboxKeys = <String>{..._outboxKeysV1, 'deadLetteredAt'};
 
 const Set<String> _operationKeys = <String>{
   'schema',
@@ -205,7 +216,7 @@ Map<String, Object?> _cacheToMap(OfflineCacheRecord record) =>
 
 Map<String, Object?> _outboxToMap(OfflineOutboxRecord record) =>
     <String, Object?>{
-      'schema': OfflineCodec.schemaVersion,
+      'schema': OfflineCodec.outboxSchemaVersion,
       'type': 'outbox',
       'recordId': record.recordId,
       'operationId': record.operationId,
@@ -224,6 +235,9 @@ Map<String, Object?> _outboxToMap(OfflineOutboxRecord record) =>
       'leaseUntil': record.leaseUntil == null
           ? null
           : _timeToString(record.leaseUntil!),
+      'deadLetteredAt': record.deadLetteredAt == null
+          ? null
+          : _timeToString(record.deadLetteredAt!),
       'diagnosticCode': record.diagnosticCode,
     };
 
@@ -558,6 +572,18 @@ void _expectSchema(Map<String, Object?> value, String type) {
   if (value['schema'] != OfflineCodec.schemaVersion || value['type'] != type) {
     throw const OfflineCodecException();
   }
+}
+
+int _recordSchema(
+  Map<String, Object?> value,
+  String type, {
+  required Set<int> supported,
+}) {
+  final schema = value['schema'];
+  if (schema is! int || !supported.contains(schema) || value['type'] != type) {
+    throw const OfflineCodecException();
+  }
+  return schema;
 }
 
 String _string(Object? value) {

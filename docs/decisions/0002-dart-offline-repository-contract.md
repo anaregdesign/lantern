@@ -47,10 +47,11 @@ not make Add part of the durable offline contract.
 
 The accepted contract now has an experimental pure-Dart reference core at
 `sdks/dart/offline` (`lantern_client_offline`, `publish_to: none`). It supplies
-the v1 fail-closed JSON codec and deterministic fixtures, immutable public
-ports/types, a non-production `InMemoryOfflineStore`, confirmed-cache policy
-engine, latency-compensated Put overlays, and explicit bounded replay over
-an injected `OfflineRemote`. It is intentionally not a persistence or
+the fail-closed cache-v1/outbox-v2 JSON codecs and deterministic fixtures,
+immutable public ports/types, a non-production `InMemoryOfflineStore`,
+confirmed-cache policy engine, latency-compensated Put overlays, and explicit
+bounded replay over an injected `OfflineRemote`. It is intentionally not a
+persistence or
 encryption implementation.
 
 The first-release core admits only unconditional `PutVertex` and `PutEdge`; it
@@ -64,19 +65,28 @@ production adapters must preserve its serializable transaction, defensive-byte,
 partition-generation, durable FIFO ordinal, capacity, renewable lease,
 operation/dead-letter retention, and codec semantics. They can execute
 `runStoreConformanceSuite` in their own test runner against an empty adapter.
+The reusable contract also requires globally unique retained operation/record
+identities, sealed transaction objects after either commit or rollback,
+defensive byte ownership, bounded notification resources, and indexed bounded
+deadline queries used by lazy expiration.
 
 The package has no storage key API and makes no encryption claim. Applications
 must provide at-rest encryption and key lifecycle policy in their store adapter.
 Schema open/migration failures must fail closed as `OfflineSchemaException`;
-malformed record bytes or v1/v2/v3 reference snapshots must fail closed as
+malformed record bytes or v1/v2/v3/v4 reference snapshots must fail closed as
 `OfflineCodecException` and must never be sent to `OfflineRemote`. Reference
-snapshot schema v3 preserves operation aggregates and quarantines every legacy
-Add as an inspectable terminal `unsupported_add` dead letter. Opening schema v1
-or v2 performs that migration transactionally; v1 also reconstructs active
+snapshot schema v4 persists the exact dead-letter transition time, preserves
+operation aggregates, and quarantines every legacy Add as an inspectable
+terminal `unsupported_add` dead letter. Opening schema v1, v2, or v3 performs
+that migration transactionally with a conservative transition-time fallback;
+v1 also reconstructs active
 operation metadata and marks outcomes no longer present in the legacy outbox as
 `outcomeUnknown`. Cache and outbox capacity failures use
 `OfflineCapacityException`; adapters may evict only confirmed cache records,
 never live unconfirmed outbox records.
+Restore validates the complete record/operation/ordinal/generation/lease/state
+graph before exposing it; duplicate record identities or contradictory status
+metadata fail closed.
 
 `lantern_client_offline` takes an injected transactional `OfflineStore`; it
 does not bundle a database. The storage-neutral contract graduates only after
@@ -182,6 +192,9 @@ convenience. Enqueue, claim, confirmation, retry, authentication pause,
 dead-letter, expiry, and lease recovery update outbox and aggregate metadata
 atomically. Terminal aggregates have bounded retention and may be evicted;
 non-terminal aggregates may not be evicted to admit new work.
+Operation and record IDs remain unique across both live outbox and retained
+aggregate metadata. Caller collisions fail atomically; generated IDs retry only
+within an explicit bound and then fail without replacing previous intent.
 
 The storage model contains:
 
@@ -201,6 +214,7 @@ final class OutboxRecord {
   OutboxState state;
   String? leaseOwner;
   DateTime? leaseUntil;
+  DateTime? deadLetteredAt;     // exact transition used for retention
   String? diagnosticCode;       // credential/content-free
 }
 ```
@@ -314,6 +328,11 @@ burning attempts. Resource exhaustion follows explicit app policy. Permanent
 invalid argument and unmigratable/corrupt payloads go to dead-letter. Capacity,
 maximum attempts/age, lease duration, concurrency, and dead-letter retention
 are required constructor configuration, not hidden constants.
+Public reads, status/watch, recovery controls, enqueue, and replay perform a
+bounded lazy sweep. Store adapters provide deadline indexes scoped by partition,
+operation, and entity so a due record is found without linearly scanning live
+FIFO predecessors. Expired records stop consuming unconfirmed capacity, and
+dead-letter retention starts at `deadLetteredAt`, not original enqueue.
 
 Replay starts from an explicit foreground action/resume or after an actual
 successful Lantern probe. A network-type plugin may reduce futile attempts but
@@ -360,6 +379,14 @@ without application-owned OS background task or push infrastructure.
    request. A legacy Add from a v1/v2 snapshot becomes an inspectable terminal
    `unsupported_add` dead letter with attempt count unchanged and zero remote
    calls, while supported Put siblings in the same operation still replay.
+9. **Idle expiry at scale:** with more records than one sweep limit and only a
+   late operation item due, a status/watch observation reaches that item through
+   the deadline index, persists `Expired`, reclaims outbox capacity, and closes
+   a terminal aggregate without a drain.
+10. **Identity/transaction misuse:** retained operation or record collisions
+    never replace intent, generated-ID exhaustion is atomic, and a transaction
+    escaped from either a committed or rolled-back callback rejects every read
+    and mutation.
 
 ## Follow-up scopes
 

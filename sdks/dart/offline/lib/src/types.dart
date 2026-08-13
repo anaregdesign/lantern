@@ -156,6 +156,9 @@ final class OfflineCacheRecord {
     if (key.kind == OfflineEntityKind.edge && edge == null) {
       throw const OfflineArgumentException();
     }
+    if (!_isOptionalDurableTimestamp(expiration)) {
+      throw const OfflineArgumentException();
+    }
   }
 
   /// Creates a bounded negative cache marker.
@@ -235,12 +238,22 @@ final class OfflineCacheRecord {
         );
 
   void _validateCacheMetadata() {
-    if (partitionId.isEmpty || generation < 0) {
+    if (partitionId.isEmpty ||
+        generation < 0 ||
+        generation > _maxDurableInt ||
+        !_isDurableTimestamp(validatedAt) ||
+        !_isDurableTimestamp(lastAccessAt) ||
+        !_isOptionalDurableTimestamp(missingUntil)) {
       throw const OfflineArgumentException();
     }
   }
 
-  static DateTime _validMissingUntil(DateTime value) => value;
+  static DateTime _validMissingUntil(DateTime value) {
+    if (!_isDurableTimestamp(value)) {
+      throw const OfflineArgumentException();
+    }
+    return value;
+  }
 }
 
 /// The supported, durable mutation category.
@@ -273,7 +286,11 @@ sealed class OfflineIntent {
 /// An unconditional persisted vertex replacement.
 final class OfflinePutVertexIntent extends OfflineIntent {
   /// Creates a vertex replacement intent from an exact vertex.
-  OfflinePutVertexIntent(Vertex vertex) : vertex = copyOfflineVertex(vertex);
+  OfflinePutVertexIntent(Vertex vertex) : vertex = copyOfflineVertex(vertex) {
+    if (!_isOptionalDurableTimestamp(this.vertex.expiration)) {
+      throw const OfflineArgumentException();
+    }
+  }
 
   /// Exact target vertex.
   final Vertex vertex;
@@ -291,7 +308,11 @@ final class OfflinePutVertexIntent extends OfflineIntent {
 /// An idempotent persisted edge replacement.
 final class OfflinePutEdgeIntent extends OfflineIntent {
   /// Creates an edge replacement intent from an exact edge.
-  OfflinePutEdgeIntent(Edge edge) : edge = copyOfflineEdge(edge);
+  OfflinePutEdgeIntent(Edge edge) : edge = copyOfflineEdge(edge) {
+    if (!_isOptionalDurableTimestamp(this.edge.expiration)) {
+      throw const OfflineArgumentException();
+    }
+  }
 
   /// Exact target edge.
   final Edge edge;
@@ -317,7 +338,8 @@ final class OfflineAddEdgeIntent extends OfflineIntent {
     : edge = copyOfflineEdge(edge),
       _contributionId = Uint8List.fromList(contributionId) {
     if (_contributionId.length != 24 ||
-        !_contributionId.any((byte) => byte != 0)) {
+        !_contributionId.any((byte) => byte != 0) ||
+        !_isOptionalDurableTimestamp(this.edge.expiration)) {
       throw const OfflineArgumentException();
     }
   }
@@ -371,8 +393,38 @@ final class OfflineOutboxRecord {
     this.nextAttemptAt,
     this.leaseOwner,
     this.leaseUntil,
+    this.deadLetteredAt,
     this.diagnosticCode,
-  }) : intent = copyOfflineIntent(intent);
+  }) : intent = copyOfflineIntent(intent) {
+    final hasLease = leaseOwner != null && leaseUntil != null;
+    if (recordId.isEmpty ||
+        operationId.isEmpty ||
+        itemIndex < 0 ||
+        itemIndex > _maxDurableInt ||
+        partitionId.isEmpty ||
+        !_isDurableTimestamp(enqueuedAt) ||
+        ordinal < 0 ||
+        ordinal > _maxDurableInt ||
+        attemptCount < 0 ||
+        attemptCount > _maxDurableInt ||
+        generation < 0 ||
+        generation > _maxDurableInt ||
+        (leaseOwner == null) != (leaseUntil == null) ||
+        (state == OfflineOutboxState.sending) != hasLease ||
+        (leaseOwner != null && leaseOwner!.isEmpty) ||
+        !_isOptionalDurableTimestamp(nextAttemptAt) ||
+        (nextAttemptAt != null &&
+            (state != OfflineOutboxState.enqueued ||
+                nextAttemptAt!.isBefore(enqueuedAt))) ||
+        !_isOptionalDurableTimestamp(leaseUntil) ||
+        (leaseUntil != null && !leaseUntil!.isAfter(enqueuedAt)) ||
+        !_isOptionalDurableTimestamp(deadLetteredAt) ||
+        (deadLetteredAt != null && deadLetteredAt!.isBefore(enqueuedAt)) ||
+        (state == OfflineOutboxState.deadLetter) != (deadLetteredAt != null) ||
+        diagnosticCode?.isEmpty == true) {
+      throw const OfflineArgumentException();
+    }
+  }
 
   /// Stable opaque item identifier.
   final String recordId;
@@ -413,6 +465,9 @@ final class OfflineOutboxRecord {
   /// Current bounded lease expiration.
   final DateTime? leaseUntil;
 
+  /// First transition time into [OfflineOutboxState.deadLetter].
+  final DateTime? deadLetteredAt;
+
   /// Content-free terminal diagnostic code.
   final String? diagnosticCode;
 
@@ -429,6 +484,8 @@ final class OfflineOutboxRecord {
     bool clearLeaseOwner = false,
     DateTime? leaseUntil,
     bool clearLeaseUntil = false,
+    DateTime? deadLetteredAt,
+    bool clearDeadLetteredAt = false,
     String? diagnosticCode,
     bool clearDiagnosticCode = false,
   }) => OfflineOutboxRecord(
@@ -447,6 +504,9 @@ final class OfflineOutboxRecord {
         : nextAttemptAt ?? this.nextAttemptAt,
     leaseOwner: clearLeaseOwner ? null : leaseOwner ?? this.leaseOwner,
     leaseUntil: clearLeaseUntil ? null : leaseUntil ?? this.leaseUntil,
+    deadLetteredAt: clearDeadLetteredAt
+        ? null
+        : deadLetteredAt ?? this.deadLetteredAt,
     diagnosticCode: clearDiagnosticCode
         ? null
         : diagnosticCode ?? this.diagnosticCode,
@@ -560,14 +620,24 @@ enum OfflineWriteState {
 /// One immutable write status transition.
 final class OfflineWriteStatus {
   /// Creates a write status transition.
-  const OfflineWriteStatus({
+  OfflineWriteStatus({
     required this.recordId,
     required this.operationId,
     required this.itemIndex,
     required this.state,
     required this.attemptCount,
     this.diagnosticCode,
-  });
+  }) {
+    if (recordId.isEmpty ||
+        operationId.isEmpty ||
+        itemIndex < 0 ||
+        itemIndex > _maxDurableInt ||
+        attemptCount < 0 ||
+        attemptCount > _maxDurableInt ||
+        diagnosticCode?.isEmpty == true) {
+      throw const OfflineArgumentException();
+    }
+  }
 
   /// Stable item identifier.
   final String recordId;
@@ -598,9 +668,12 @@ final class OfflineOperationStatus {
     if (operationId.isEmpty || this.items.isEmpty) {
       throw const OfflineArgumentException();
     }
+    final recordIds = <String>{};
     for (var index = 0; index < this.items.length; index++) {
       final item = this.items[index];
-      if (item.operationId != operationId || item.itemIndex != index) {
+      if (item.operationId != operationId ||
+          item.itemIndex != index ||
+          !recordIds.add(item.recordId)) {
         throw const OfflineArgumentException();
       }
     }
@@ -645,8 +718,10 @@ final class OfflineOperationRecord {
     );
     if (partitionId.isEmpty ||
         generation < 0 ||
-        updatedAt != updatedAt.toUtc() ||
-        (terminalAt != null && terminalAt != terminalAt!.toUtc()) ||
+        generation > _maxDurableInt ||
+        !_isDurableTimestamp(updatedAt) ||
+        !_isOptionalDurableTimestamp(terminalAt) ||
+        (terminalAt != null && terminalAt!.isAfter(updatedAt)) ||
         (terminalAt != null) != status.isTerminal) {
       throw const OfflineArgumentException();
     }
@@ -676,6 +751,7 @@ final class OfflineOperationRecord {
 }
 
 extension on OfflineWriteState {
+  /// Whether this status no longer owns replayable outbox work.
   bool get isTerminal =>
       this == OfflineWriteState.confirmed ||
       this == OfflineWriteState.deadLetter ||
@@ -820,43 +896,71 @@ final class OfflineStoreLimits {
     this.maxOutboxBytesPerPartition = 8 * 1024 * 1024,
     this.maxOperationRecordsPerPartition = 1000,
     this.maxOperationBytesPerPartition = 8 * 1024 * 1024,
+    this.maxLeaseOwnerBytes = 256,
+    this.maxDiagnosticCodeBytes = 128,
+    this.maxChangeControllers = 256,
   });
 
   /// Maximum confirmed cache records across the store.
   final int maxCacheRecords;
 
-  /// Maximum confirmed cache bytes across the store.
+  /// Maximum admission-reserved confirmed-cache bytes across the store.
+  ///
+  /// Each record reserves the maximum encoded last-access timestamp so a later
+  /// LRU touch cannot make a canonical snapshot exceed its admission limit.
   final int maxCacheBytes;
 
   /// Maximum outbox items across the store.
   final int maxOutboxRecords;
 
-  /// Maximum outbox bytes across the store.
+  /// Maximum admission-reserved outbox bytes across the store.
+  ///
+  /// Each retained record is charged for its immutable payload plus the full
+  /// bounded lifecycle envelope, not only its current encoded state.
   final int maxOutboxBytes;
 
   /// Maximum durable operation aggregates across the store.
   final int maxOperationRecords;
 
-  /// Maximum durable operation metadata bytes across the store.
+  /// Maximum admission-reserved durable operation bytes across the store.
+  ///
+  /// Each aggregate reserves the full bounded lifecycle envelope for every
+  /// item plus both mutable timestamps.
   final int maxOperationBytes;
 
   /// Maximum confirmed cache records in one partition.
   final int maxCacheRecordsPerPartition;
 
-  /// Maximum confirmed cache bytes in one partition.
+  /// Maximum admission-reserved confirmed-cache bytes in one partition.
   final int maxCacheBytesPerPartition;
 
   /// Maximum outbox items in one partition.
   final int maxOutboxRecordsPerPartition;
 
-  /// Maximum outbox bytes in one partition.
+  /// Maximum admission-reserved outbox bytes in one partition.
   final int maxOutboxBytesPerPartition;
 
   /// Maximum durable operation aggregates in one partition.
   final int maxOperationRecordsPerPartition;
 
-  /// Maximum durable operation metadata bytes in one partition.
+  /// Maximum admission-reserved durable operation bytes in one partition.
   final int maxOperationBytesPerPartition;
+
+  /// Maximum UTF-8 bytes in one outbox lease owner.
+  ///
+  /// Outbox byte admission reserves this full amount so a later claim cannot
+  /// exceed the store's global or per-partition byte budget.
+  final int maxLeaseOwnerBytes;
+
+  /// Maximum UTF-8 bytes in one outbox diagnostic code.
+  ///
+  /// Outbox byte admission reserves this full amount so retry and terminal
+  /// transitions cannot exceed the store's byte budgets. The minimum is 19,
+  /// which admits every SDK-owned lifecycle and migration diagnostic.
+  final int maxDiagnosticCodeBytes;
+
+  /// Maximum partitions with an active reference-store change controller.
+  final int maxChangeControllers;
 }
 
 /// Repository behavior, retry, and cache bounds.
@@ -877,6 +981,9 @@ final class OfflineConfig {
     this.maxWatchers = 256,
     this.maxWatchersPerPartition = 64,
     this.maxActiveWatcherPartitions = 16,
+    this.maxWriteStatusControllers = 1024,
+    this.maxGeneratedIdAttempts = 8,
+    this.maxSweepRecordsPerObservation = 256,
     this.leaseDuration = const Duration(seconds: 30),
     Duration? leaseRenewalInterval,
     this.baseRetryDelay = const Duration(milliseconds: 100),
@@ -894,6 +1001,7 @@ final class OfflineConfig {
     if (maxCacheAge < Duration.zero ||
         missingTtl <= Duration.zero ||
         maxAttempts < 1 ||
+        maxAttempts > _maxDurableInt ||
         maxAge <= Duration.zero ||
         deadLetterRetention <= Duration.zero ||
         operationRetention <= Duration.zero ||
@@ -905,6 +1013,9 @@ final class OfflineConfig {
         maxWatchers < 1 ||
         maxWatchersPerPartition < 1 ||
         maxActiveWatcherPartitions < 1 ||
+        maxWriteStatusControllers < 1 ||
+        maxGeneratedIdAttempts < 1 ||
+        maxSweepRecordsPerObservation < 1 ||
         leaseDuration <= Duration.zero ||
         this.leaseRenewalInterval <= Duration.zero ||
         this.leaseRenewalInterval >= leaseDuration ||
@@ -956,6 +1067,15 @@ final class OfflineConfig {
   /// Maximum partitions that may own active entity snapshot watchers.
   final int maxActiveWatcherPartitions;
 
+  /// Maximum live per-item process-local status controllers.
+  final int maxWriteStatusControllers;
+
+  /// Maximum attempts to allocate each generated operation or record ID.
+  final int maxGeneratedIdAttempts;
+
+  /// Maximum due records and retained operations mutated by one lazy sweep.
+  final int maxSweepRecordsPerObservation;
+
   /// Lease duration protecting one claimed send.
   final Duration leaseDuration;
 
@@ -997,6 +1117,14 @@ Duration _fullJitter(Duration ceiling) {
 }
 
 int _utf8Length(String value) => utf8.encode(value).length;
+
+const int _maxDurableInt = 0x7fffffffffffffff;
+
+bool _isDurableTimestamp(DateTime value) =>
+    value.isUtc && value.year >= 1 && value.year <= 9999;
+
+bool _isOptionalDurableTimestamp(DateTime? value) =>
+    value == null || _isDurableTimestamp(value);
 
 /// Creates a defensive exact vertex copy for storage boundaries.
 Vertex copyOfflineVertex(Vertex vertex) => Vertex(
