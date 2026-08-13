@@ -1,16 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-- Return bounded, server-clock-authoritative per-item outcomes from every
-  Vertex/Edge Put facade, with consistent immutable Lists for plural calls and
-  fail-closed unknown/length handling.
+- Return bounded, server-clock-authoritative per-item `PutOutcome` values from
+  every Vertex/Edge Put facade, replacing the earlier aggregate/bool return
+  shapes. Plural calls now return request-aligned immutable Lists and fail
+  closed on unknown or length-misaligned outcomes.
 - Expose detachable, fan-out-safe `LanternCancellationToken.listen` lifecycle
   notifications so companion packages can isolate shared work from individual
   callers without polling.
 - Add the per-call `LanternCallOptions.retry` override so a higher-level durable
   coordinator can suppress the client's retry policy. Each RPC is attempted at
   most once, while a chunked plural logical call may still issue multiple RPCs.
+- Add optional causal-metadata capacity and retention snapshots to
+  `ServerStatus`, while preserving `null` as the signal that an older server
+  does not support the status surface.
+- Make the pub.dev archive dependency-closed: exclude the repository-only
+  Flutter/offline packages and retain a standalone online example.
 
 ## 0.1.3
 
