@@ -6,7 +6,7 @@ import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegen
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
-import type { AddEdgeRequest, AddEdgesRequest, DeleteEdgeRequest, DeleteEdgesByPrefixRequest, DeleteEdgesRequest, DeleteVertexRequest, DeleteVerticesByPrefixRequest, DeleteVerticesRequest, PutEdgeRequest, PutEdgesRequest, PutVertexRequest, PutVerticesRequest, Vertex } from "./graph_pb.js";
+import type { AddEdgeRequest, AddEdgesRequest, DeleteEdgeRequest, DeleteEdgesByPrefixRequest, DeleteEdgesRequest, DeleteVertexRequest, DeleteVerticesByPrefixRequest, DeleteVerticesRequest, Edge, PutEdgeRequest, PutEdgesRequest, PutVertexRequest, PutVerticesRequest, Vertex } from "./graph_pb.js";
 import { file_graph_v1_graph } from "./graph_pb.js";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file graph/v1/replication.proto.
  */
 export const file_graph_v1_replication: GenFile = /*@__PURE__*/
-  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqoFCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIAEIECgJvcCJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AisgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5EhYKDmZyb21fbG9jYWxfc2VxGAIgASgEGjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IuIBCg5TbmFwc2hvdEhlYWRlchJPChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIqCgpjdXRvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEhgKEGN1dG9mZl9sb2NhbF9zZXEYAyABKAQaOQoXQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgEOgI4ASI6Cg5TbmFwc2hvdEZvb3RlchIUCgx2ZXJ0ZXhfY291bnQYASABKAQSEgoKZWRnZV9jb3VudBgCIAEoBCJXCg5TbmFwc2hvdFZlcnRleBIgCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXgSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIm4KGFNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbhIOCgZ3ZWlnaHQYASABKAISLgoKZXhwaXJhdGlvbhgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEgoKY29udHJpYl9pZBgDIAEoDCKKAQoMU25hcHNob3RFZGdlEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXASOQoNY29udHJpYnV0aW9ucxgEIAMoCzIiLmdyYXBoLnYxLlNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbiLHAQoQU25hcHNob3RSZXNwb25zZRIqCgZoZWFkZXIYASABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlckgAEioKBnZlcnRleBgCIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4SAASJgoEZWRnZRgDIAEoCzIWLmdyYXBoLnYxLlNuYXBzaG90RWRnZUgAEioKBmZvb3RlchgEIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90Rm9vdGVySABCBwoFZW50cnkiEwoRUGVlclN0YXR1c1JlcXVlc3QiWQoLT3JpZ2luU3RhdGUSDgoGb3JpZ2luGAEgASgMEhAKCGxhc3Rfc2VxGAIgASgEEigKCGxhc3RfaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wInQKElBlZXJTdGF0dXNSZXNwb25zZRITCgtzZWxmX29yaWdpbhgBIAEoDBImCgdvcmlnaW5zGAIgAygLMhUuZ3JhcGgudjEuT3JpZ2luU3RhdGUSIQoZc2VhcmNoX2NvbmZpZ19maW5nZXJwcmludBgDIAEoCTLxAQoZTGFudGVyblJlcGxpY2F0aW9uU2VydmljZRJGCglTdWJzY3JpYmUSGi5ncmFwaC52MS5TdWJzY3JpYmVSZXF1ZXN0GhsuZ3JhcGgudjEuU3Vic2NyaWJlUmVzcG9uc2UwARJDCghTbmFwc2hvdBIZLmdyYXBoLnYxLlNuYXBzaG90UmVxdWVzdBoaLmdyYXBoLnYxLlNuYXBzaG90UmVzcG9uc2UwARJHCgpQZWVyU3RhdHVzEhsuZ3JhcGgudjEuUGVlclN0YXR1c1JlcXVlc3QaHC5ncmFwaC52MS5QZWVyU3RhdHVzUmVzcG9uc2VCYQoMY29tLmdyYXBoLnYxQhBSZXBsaWNhdGlvblByb3RvUAGiAgNHWFiqAghHcmFwaC5WMcoCCEdyYXBoXFYx4gIUR3JhcGhcVjFcR1BCTWV0YWRhdGHqAglHcmFwaDo6VjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_graph_v1_graph]);
+  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqwGCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIABJCChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0aWNlc0gAEjwKFHJlcGxpY2F0ZWRfcHV0X2VkZ2VzGA4gASgLMhwuZ3JhcGgudjEuUmVwbGljYXRlZFB1dEVkZ2VzSABCBAoCb3AiIgoTVmVydGV4Q2F1c2FsQmFycmllchILCgNrZXkYASABKAkiewoTUmVwbGljYXRlZFB1dFZlcnRleBIgCgRsaXZlGAEgASgLMhAuZ3JhcGgudjEuVmVydGV4SAASNwoOY2F1c2FsX2JhcnJpZXIYAiABKAsyHS5ncmFwaC52MS5WZXJ0ZXhDYXVzYWxCYXJyaWVySABCCQoHb3V0Y29tZSJHChVSZXBsaWNhdGVkUHV0VmVydGljZXMSLgoHZW50cmllcxgBIAMoCzIdLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0ZXgiLwoRRWRnZUNhdXNhbEJhcnJpZXISDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJInUKEVJlcGxpY2F0ZWRQdXRFZGdlEh4KBGxpdmUYASABKAsyDi5ncmFwaC52MS5FZGdlSAASNQoOY2F1c2FsX2JhcnJpZXIYAiABKAsyGy5ncmFwaC52MS5FZGdlQ2F1c2FsQmFycmllckgAQgkKB291dGNvbWUiQgoSUmVwbGljYXRlZFB1dEVkZ2VzEiwKB2VudHJpZXMYASADKAsyGy5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZSJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AisgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5EhYKDmZyb21fbG9jYWxfc2VxGAIgASgEGjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IuIBCg5TbmFwc2hvdEhlYWRlchJPChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIqCgpjdXRvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEhgKEGN1dG9mZl9sb2NhbF9zZXEYAyABKAQaOQoXQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgEOgI4ASKCAQoOU25hcHNob3RGb290ZXISFAoMdmVydGV4X2NvdW50GAEgASgEEhIKCmVkZ2VfY291bnQYAiABKAQSIwobdmVydGV4X2NhdXNhbF9iYXJyaWVyX2NvdW50GAMgASgEEiEKGWVkZ2VfY2F1c2FsX2JhcnJpZXJfY291bnQYBCABKAQiVwoOU25hcHNob3RWZXJ0ZXgSIAoGdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydGV4EiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJPChtTbmFwc2hvdFZlcnRleENhdXNhbEJhcnJpZXISCwoDa2V5GAEgASgJEiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJuChhTbmFwc2hvdEVkZ2VDb250cmlidXRpb24SDgoGd2VpZ2h0GAEgASgCEi4KCmV4cGlyYXRpb24YAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmNvbnRyaWJfaWQYAyABKAwiigEKDFNuYXBzaG90RWRnZRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSIwoDaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEjkKDWNvbnRyaWJ1dGlvbnMYBCADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb24iXAoZU25hcHNob3RFZGdlQ2F1c2FsQmFycmllchIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSIwoDaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wItMCChBTbmFwc2hvdFJlc3BvbnNlEioKBmhlYWRlchgBIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90SGVhZGVySAASKgoGdmVydGV4GAIgASgLMhguZ3JhcGgudjEuU25hcHNob3RWZXJ0ZXhIABImCgRlZGdlGAMgASgLMhYuZ3JhcGgudjEuU25hcHNob3RFZGdlSAASKgoGZm9vdGVyGAQgASgLMhguZ3JhcGgudjEuU25hcHNob3RGb290ZXJIABJGChV2ZXJ0ZXhfY2F1c2FsX2JhcnJpZXIYBSABKAsyJS5ncmFwaC52MS5TbmFwc2hvdFZlcnRleENhdXNhbEJhcnJpZXJIABJCChNlZGdlX2NhdXNhbF9iYXJyaWVyGAYgASgLMiMuZ3JhcGgudjEuU25hcHNob3RFZGdlQ2F1c2FsQmFycmllckgAQgcKBWVudHJ5IhMKEVBlZXJTdGF0dXNSZXF1ZXN0IlkKC09yaWdpblN0YXRlEg4KBm9yaWdpbhgBIAEoDBIQCghsYXN0X3NlcRgCIAEoBBIoCghsYXN0X2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJ0ChJQZWVyU3RhdHVzUmVzcG9uc2USEwoLc2VsZl9vcmlnaW4YASABKAwSJgoHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlEiEKGXNlYXJjaF9jb25maWdfZmluZ2VycHJpbnQYAyABKAky8QEKGUxhbnRlcm5SZXBsaWNhdGlvblNlcnZpY2USRgoJU3Vic2NyaWJlEhouZ3JhcGgudjEuU3Vic2NyaWJlUmVxdWVzdBobLmdyYXBoLnYxLlN1YnNjcmliZVJlc3BvbnNlMAESQwoIU25hcHNob3QSGS5ncmFwaC52MS5TbmFwc2hvdFJlcXVlc3QaGi5ncmFwaC52MS5TbmFwc2hvdFJlc3BvbnNlMAESRwoKUGVlclN0YXR1cxIbLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXF1ZXN0GhwuZ3JhcGgudjEuUGVlclN0YXR1c1Jlc3BvbnNlQmEKDGNvbS5ncmFwaC52MUIQUmVwbGljYXRpb25Qcm90b1ABogIDR1hYqgIIR3JhcGguVjHKAghHcmFwaFxWMeICFEdyYXBoXFYxXEdQQk1ldGFkYXRh6gIJR3JhcGg6OlYxYgZwcm90bzM", [file_google_protobuf_timestamp, file_graph_v1_graph]);
 
 /**
  * HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
@@ -141,6 +141,23 @@ export type MutationOp = Message<"graph.v1.MutationOp"> & {
      */
     value: DeleteEdgesByPrefixRequest;
     case: "deleteEdgesByPrefix";
+  } | {
+    /**
+     * Put batches accepted by the server use an ordered, outcome-bearing wire
+     * form. Live payloads and causal barriers remain interleaved in original
+     * request order, so duplicate identities replay exactly as committed even
+     * when the receiver's wall clock differs from the origin's.
+     *
+     * @generated from field: graph.v1.ReplicatedPutVertices replicated_put_vertices = 13;
+     */
+    value: ReplicatedPutVertices;
+    case: "replicatedPutVertices";
+  } | {
+    /**
+     * @generated from field: graph.v1.ReplicatedPutEdges replicated_put_edges = 14;
+     */
+    value: ReplicatedPutEdges;
+    case: "replicatedPutEdges";
   } | { case: undefined; value?: undefined };
 };
 
@@ -150,6 +167,137 @@ export type MutationOp = Message<"graph.v1.MutationOp"> & {
  */
 export const MutationOpSchema: GenMessage<MutationOp> = /*@__PURE__*/
   messageDesc(file_graph_v1_replication, 1);
+
+/**
+ * @generated from message graph.v1.VertexCausalBarrier
+ */
+export type VertexCausalBarrier = Message<"graph.v1.VertexCausalBarrier"> & {
+  /**
+   * @generated from field: string key = 1;
+   */
+  key: string;
+};
+
+/**
+ * Describes the message graph.v1.VertexCausalBarrier.
+ * Use `create(VertexCausalBarrierSchema)` to create a new message.
+ */
+export const VertexCausalBarrierSchema: GenMessage<VertexCausalBarrier> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 2);
+
+/**
+ * @generated from message graph.v1.ReplicatedPutVertex
+ */
+export type ReplicatedPutVertex = Message<"graph.v1.ReplicatedPutVertex"> & {
+  /**
+   * @generated from oneof graph.v1.ReplicatedPutVertex.outcome
+   */
+  outcome: {
+    /**
+     * @generated from field: graph.v1.Vertex live = 1;
+     */
+    value: Vertex;
+    case: "live";
+  } | {
+    /**
+     * @generated from field: graph.v1.VertexCausalBarrier causal_barrier = 2;
+     */
+    value: VertexCausalBarrier;
+    case: "causalBarrier";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message graph.v1.ReplicatedPutVertex.
+ * Use `create(ReplicatedPutVertexSchema)` to create a new message.
+ */
+export const ReplicatedPutVertexSchema: GenMessage<ReplicatedPutVertex> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 3);
+
+/**
+ * @generated from message graph.v1.ReplicatedPutVertices
+ */
+export type ReplicatedPutVertices = Message<"graph.v1.ReplicatedPutVertices"> & {
+  /**
+   * @generated from field: repeated graph.v1.ReplicatedPutVertex entries = 1;
+   */
+  entries: ReplicatedPutVertex[];
+};
+
+/**
+ * Describes the message graph.v1.ReplicatedPutVertices.
+ * Use `create(ReplicatedPutVerticesSchema)` to create a new message.
+ */
+export const ReplicatedPutVerticesSchema: GenMessage<ReplicatedPutVertices> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 4);
+
+/**
+ * @generated from message graph.v1.EdgeCausalBarrier
+ */
+export type EdgeCausalBarrier = Message<"graph.v1.EdgeCausalBarrier"> & {
+  /**
+   * @generated from field: string tail = 1;
+   */
+  tail: string;
+
+  /**
+   * @generated from field: string head = 2;
+   */
+  head: string;
+};
+
+/**
+ * Describes the message graph.v1.EdgeCausalBarrier.
+ * Use `create(EdgeCausalBarrierSchema)` to create a new message.
+ */
+export const EdgeCausalBarrierSchema: GenMessage<EdgeCausalBarrier> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 5);
+
+/**
+ * @generated from message graph.v1.ReplicatedPutEdge
+ */
+export type ReplicatedPutEdge = Message<"graph.v1.ReplicatedPutEdge"> & {
+  /**
+   * @generated from oneof graph.v1.ReplicatedPutEdge.outcome
+   */
+  outcome: {
+    /**
+     * @generated from field: graph.v1.Edge live = 1;
+     */
+    value: Edge;
+    case: "live";
+  } | {
+    /**
+     * @generated from field: graph.v1.EdgeCausalBarrier causal_barrier = 2;
+     */
+    value: EdgeCausalBarrier;
+    case: "causalBarrier";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message graph.v1.ReplicatedPutEdge.
+ * Use `create(ReplicatedPutEdgeSchema)` to create a new message.
+ */
+export const ReplicatedPutEdgeSchema: GenMessage<ReplicatedPutEdge> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 6);
+
+/**
+ * @generated from message graph.v1.ReplicatedPutEdges
+ */
+export type ReplicatedPutEdges = Message<"graph.v1.ReplicatedPutEdges"> & {
+  /**
+   * @generated from field: repeated graph.v1.ReplicatedPutEdge entries = 1;
+   */
+  entries: ReplicatedPutEdge[];
+};
+
+/**
+ * Describes the message graph.v1.ReplicatedPutEdges.
+ * Use `create(ReplicatedPutEdgesSchema)` to create a new message.
+ */
+export const ReplicatedPutEdgesSchema: GenMessage<ReplicatedPutEdges> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 7);
 
 /**
  * Mutation is the unit of replication: a sequenced, HLC-stamped,
@@ -193,7 +341,7 @@ export type Mutation = Message<"graph.v1.Mutation"> & {
  * Use `create(MutationSchema)` to create a new message.
  */
 export const MutationSchema: GenMessage<Mutation> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 2);
+  messageDesc(file_graph_v1_replication, 8);
 
 /**
  * SubscribeRequest opens a stream of replicated mutations starting at
@@ -256,7 +404,7 @@ export type SubscribeRequest = Message<"graph.v1.SubscribeRequest"> & {
  * Use `create(SubscribeRequestSchema)` to create a new message.
  */
 export const SubscribeRequestSchema: GenMessage<SubscribeRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 3);
+  messageDesc(file_graph_v1_replication, 9);
 
 /**
  * SubscribeResponse carries one replicated mutation per message.
@@ -275,7 +423,7 @@ export type SubscribeResponse = Message<"graph.v1.SubscribeResponse"> & {
  * Use `create(SubscribeResponseSchema)` to create a new message.
  */
 export const SubscribeResponseSchema: GenMessage<SubscribeResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 4);
+  messageDesc(file_graph_v1_replication, 10);
 
 /**
  * SnapshotRequest opens a server-streaming snapshot of the entire live
@@ -293,7 +441,7 @@ export type SnapshotRequest = Message<"graph.v1.SnapshotRequest"> & {
  * Use `create(SnapshotRequestSchema)` to create a new message.
  */
 export const SnapshotRequestSchema: GenMessage<SnapshotRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 5);
+  messageDesc(file_graph_v1_replication, 11);
 
 /**
  * SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
@@ -342,7 +490,7 @@ export type SnapshotHeader = Message<"graph.v1.SnapshotHeader"> & {
  * Use `create(SnapshotHeaderSchema)` to create a new message.
  */
 export const SnapshotHeaderSchema: GenMessage<SnapshotHeader> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 6);
+  messageDesc(file_graph_v1_replication, 12);
 
 /**
  * SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -362,6 +510,16 @@ export type SnapshotFooter = Message<"graph.v1.SnapshotFooter"> & {
    * @generated from field: uint64 edge_count = 2;
    */
   edgeCount: bigint;
+
+  /**
+   * @generated from field: uint64 vertex_causal_barrier_count = 3;
+   */
+  vertexCausalBarrierCount: bigint;
+
+  /**
+   * @generated from field: uint64 edge_causal_barrier_count = 4;
+   */
+  edgeCausalBarrierCount: bigint;
 };
 
 /**
@@ -369,7 +527,7 @@ export type SnapshotFooter = Message<"graph.v1.SnapshotFooter"> & {
  * Use `create(SnapshotFooterSchema)` to create a new message.
  */
 export const SnapshotFooterSchema: GenMessage<SnapshotFooter> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 7);
+  messageDesc(file_graph_v1_replication, 13);
 
 /**
  * SnapshotVertex is the snapshot-time representation of a single live
@@ -398,7 +556,34 @@ export type SnapshotVertex = Message<"graph.v1.SnapshotVertex"> & {
  * Use `create(SnapshotVertexSchema)` to create a new message.
  */
 export const SnapshotVertexSchema: GenMessage<SnapshotVertex> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 8);
+  messageDesc(file_graph_v1_replication, 14);
+
+/**
+ * SnapshotVertexCausalBarrier carries the retained LWW floor of a PutVertex
+ * that was accepted but already expired at its final application instant. It
+ * has no Vertex payload because the overwrite must remain absent; receivers
+ * record only (key, hlc) and reject later strictly-older live writes.
+ *
+ * @generated from message graph.v1.SnapshotVertexCausalBarrier
+ */
+export type SnapshotVertexCausalBarrier = Message<"graph.v1.SnapshotVertexCausalBarrier"> & {
+  /**
+   * @generated from field: string key = 1;
+   */
+  key: string;
+
+  /**
+   * @generated from field: graph.v1.HLCTimestamp hlc = 2;
+   */
+  hlc?: HLCTimestamp | undefined;
+};
+
+/**
+ * Describes the message graph.v1.SnapshotVertexCausalBarrier.
+ * Use `create(SnapshotVertexCausalBarrierSchema)` to create a new message.
+ */
+export const SnapshotVertexCausalBarrierSchema: GenMessage<SnapshotVertexCausalBarrier> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 15);
 
 /**
  * SnapshotEdgeContribution is one additive (or LWW-imported) entry inside
@@ -437,7 +622,7 @@ export type SnapshotEdgeContribution = Message<"graph.v1.SnapshotEdgeContributio
  * Use `create(SnapshotEdgeContributionSchema)` to create a new message.
  */
 export const SnapshotEdgeContributionSchema: GenMessage<SnapshotEdgeContribution> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 9);
+  messageDesc(file_graph_v1_replication, 16);
 
 /**
  * SnapshotEdge is the snapshot-time representation of a single live edge.
@@ -475,14 +660,46 @@ export type SnapshotEdge = Message<"graph.v1.SnapshotEdge"> & {
  * Use `create(SnapshotEdgeSchema)` to create a new message.
  */
 export const SnapshotEdgeSchema: GenMessage<SnapshotEdge> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 10);
+  messageDesc(file_graph_v1_replication, 17);
+
+/**
+ * SnapshotEdgeCausalBarrier is the edge sibling of
+ * SnapshotVertexCausalBarrier. It carries no contribution and must not create
+ * endpoint vertices or an edge bucket when replayed.
+ *
+ * @generated from message graph.v1.SnapshotEdgeCausalBarrier
+ */
+export type SnapshotEdgeCausalBarrier = Message<"graph.v1.SnapshotEdgeCausalBarrier"> & {
+  /**
+   * @generated from field: string tail = 1;
+   */
+  tail: string;
+
+  /**
+   * @generated from field: string head = 2;
+   */
+  head: string;
+
+  /**
+   * @generated from field: graph.v1.HLCTimestamp hlc = 3;
+   */
+  hlc?: HLCTimestamp | undefined;
+};
+
+/**
+ * Describes the message graph.v1.SnapshotEdgeCausalBarrier.
+ * Use `create(SnapshotEdgeCausalBarrierSchema)` to create a new message.
+ */
+export const SnapshotEdgeCausalBarrierSchema: GenMessage<SnapshotEdgeCausalBarrier> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 18);
 
 /**
  * SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
  * order is always: exactly one SnapshotHeader, then zero or more
- * SnapshotVertex frames, then zero or more SnapshotEdge frames, then
- * exactly one SnapshotFooter. Receivers SHOULD treat any other order as a
- * protocol violation.
+ * SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
+ * frames, zero or more SnapshotVertex frames, zero or more SnapshotEdge
+ * frames, then exactly one SnapshotFooter. Receivers MUST treat any other
+ * order as a protocol violation.
  *
  * @generated from message graph.v1.SnapshotResponse
  */
@@ -514,6 +731,18 @@ export type SnapshotResponse = Message<"graph.v1.SnapshotResponse"> & {
      */
     value: SnapshotFooter;
     case: "footer";
+  } | {
+    /**
+     * @generated from field: graph.v1.SnapshotVertexCausalBarrier vertex_causal_barrier = 5;
+     */
+    value: SnapshotVertexCausalBarrier;
+    case: "vertexCausalBarrier";
+  } | {
+    /**
+     * @generated from field: graph.v1.SnapshotEdgeCausalBarrier edge_causal_barrier = 6;
+     */
+    value: SnapshotEdgeCausalBarrier;
+    case: "edgeCausalBarrier";
   } | { case: undefined; value?: undefined };
 };
 
@@ -522,7 +751,7 @@ export type SnapshotResponse = Message<"graph.v1.SnapshotResponse"> & {
  * Use `create(SnapshotResponseSchema)` to create a new message.
  */
 export const SnapshotResponseSchema: GenMessage<SnapshotResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 11);
+  messageDesc(file_graph_v1_replication, 19);
 
 /**
  * PeerStatusRequest is intentionally empty — the responder always
@@ -539,7 +768,7 @@ export type PeerStatusRequest = Message<"graph.v1.PeerStatusRequest"> & {
  * Use `create(PeerStatusRequestSchema)` to create a new message.
  */
 export const PeerStatusRequestSchema: GenMessage<PeerStatusRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 12);
+  messageDesc(file_graph_v1_replication, 20);
 
 /**
  * OriginState is the responder's last-applied position for a single
@@ -572,7 +801,7 @@ export type OriginState = Message<"graph.v1.OriginState"> & {
  * Use `create(OriginStateSchema)` to create a new message.
  */
 export const OriginStateSchema: GenMessage<OriginState> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 13);
+  messageDesc(file_graph_v1_replication, 21);
 
 /**
  * PeerStatusResponse carries the responder's per-origin convergence
@@ -610,7 +839,7 @@ export type PeerStatusResponse = Message<"graph.v1.PeerStatusResponse"> & {
  * Use `create(PeerStatusResponseSchema)` to create a new message.
  */
 export const PeerStatusResponseSchema: GenMessage<PeerStatusResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 14);
+  messageDesc(file_graph_v1_replication, 22);
 
 /**
  * LanternReplicationService carries the peer-to-peer (and CDC) replication

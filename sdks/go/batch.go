@@ -7,13 +7,17 @@ import (
 // runBatchWrite splits items into chunks of l.opts.batchChunkSize, invokes
 // fn for each chunk with the per-call timeout applied, sums the returned
 // per-chunk counts, and wraps any failure as a *BatchError whose Written
-// field records the number of inputs that were fully committed before the
-// failing chunk.
+// field records the input-prefix length whose responses were fully observed
+// and validated before the failing chunk.
 //
-// Used by PutVertices / DeleteVertices / AddEdges / PutEdges / DeleteEdges:
-// the four pure writes ignore the returned int (fn returns 0), and the two
-// deletes use it to report the server-side "actually existed and removed"
-// count.
+// Used by PutVertices / DeleteVertices / AddEdges / PutEdges / DeleteEdges.
+// Put callbacks return len(chunk), so a successfully validated outcome vector
+// advances BatchError.Written by the exact observed prefix; Add callbacks
+// return the server count/effective cardinality they expose, and deletes return
+// the server-side "actually existed and removed" count. A failure while
+// validating the current response leaves that entire chunk outside Written:
+// its original per-item outcomes are ambiguous and conditional Put must not be
+// blindly replayed to reconstruct them.
 func runBatchWrite[T any](
 	ctx context.Context,
 	l *Lantern,

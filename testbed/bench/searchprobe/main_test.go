@@ -81,11 +81,27 @@ func mustStringVertex(key, value string) *client.Vertex {
 type fakeWriter struct {
 	inputs     []client.VertexInput
 	deletedKey string
+	putOutcome client.PutOutcome
 }
 
-func (f *fakeWriter) PutVertices(_ context.Context, inputs []client.VertexInput) error {
+func (f *fakeWriter) PutVertices(_ context.Context, inputs []client.VertexInput) ([]client.VertexPutResult, error) {
 	f.inputs = append([]client.VertexInput(nil), inputs...)
-	return nil
+	results := make([]client.VertexPutResult, len(inputs))
+	outcome := f.putOutcome
+	if outcome == 0 {
+		outcome = client.PutOutcomeAppliedAndLive
+	}
+	for i, input := range inputs {
+		results[i] = client.VertexPutResult{Key: input.Key, Outcome: outcome}
+	}
+	return results, nil
+}
+
+func TestSeedRejectsNonLivePutOutcome(t *testing.T) {
+	f := &fakeWriter{putOutcome: client.PutOutcomeExpired}
+	if err := seed(context.Background(), f, time.Now()); err == nil {
+		t.Fatal("seed accepted expired Put outcome")
+	}
 }
 
 func (f *fakeWriter) DeleteVertex(_ context.Context, key string) (bool, error) {

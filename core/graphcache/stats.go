@@ -47,6 +47,27 @@ func (c *GraphCache[S, T]) VertexHLCHighWater() int {
 	return c.vertexHLCHighWater
 }
 
+// CausalBarrierCounts returns the retained accepted-expired Put LWW floors for
+// vertices and edges. Unlike VertexHLCCount these entries intentionally do not
+// follow the live set and are not reaped by TTL GC; exposing both cardinalities
+// lets operators account for their unbounded-by-time memory contract.
+func (c *GraphCache[S, T]) CausalBarrierCounts() (vertices, edges int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.vertexCausalBarriers), len(c.edgeCausalBarriers)
+}
+
+// CapacityFootprint returns the identities retained by the live graph or by
+// accepted-expired/expired-live causal barriers under one lock sample. The
+// counts are deliberately conservative: an identity represented in both live
+// additive edge state and a retained Put barrier is counted twice, matching
+// the soft-cap admission policy's preference for bounded heap over precision.
+func (c *GraphCache[S, T]) CapacityFootprint() (vertices, edges int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.vertices.Count() + len(c.vertexCausalBarriers), c.edges.count() + len(c.edgeCausalBarriers)
+}
+
 // SearchIndexStats returns the current number of distinct terms and indexed
 // documents in the optional search index. Both values are 0 when the search
 // index is disabled. Safe for concurrent use; intended for Prometheus gauge

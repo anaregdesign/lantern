@@ -267,6 +267,8 @@ func TestDomainMetrics_HotPathFamilies(t *testing.T) {
 		"lantern_search_index_state",
 		"lantern_vertex_hlc_entries",
 		"lantern_vertex_hlc_entries_high_water",
+		"lantern_vertex_causal_barrier_entries",
+		"lantern_edge_causal_barrier_entries",
 	} {
 		if !names[want] {
 			t.Errorf("metric family %q not registered", want)
@@ -397,6 +399,7 @@ func TestDomainMetrics_VertexHLCHighWaterGauge(t *testing.T) {
 	// per-cycle peak stays high (Go never shrinks the map's bucket array).
 	m.BindVertexHLCSampler(func() int { return 7 })
 	m.BindVertexHLCHighWaterSampler(func() int { return 240_000 })
+	m.BindCausalBarrierSampler(func() (int, int) { return 11, 13 })
 	m.tick()
 
 	mfs, err := reg.Gather()
@@ -410,6 +413,8 @@ func TestDomainMetrics_VertexHLCHighWaterGauge(t *testing.T) {
 	for _, want := range []string{
 		"lantern_vertex_hlc_entries",
 		"lantern_vertex_hlc_entries_high_water",
+		"lantern_vertex_causal_barrier_entries",
+		"lantern_edge_causal_barrier_entries",
 	} {
 		if !names[want] {
 			t.Errorf("metric family %q not registered", want)
@@ -421,6 +426,12 @@ func TestDomainMetrics_VertexHLCHighWaterGauge(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.vertexHLCHighWater); got != 240_000 {
 		t.Errorf("vertex_hlc_entries_high_water = %v, want 240000 (per-cycle peak)", got)
+	}
+	if got := testutil.ToFloat64(m.vertexCausalBarriers); got != 11 {
+		t.Errorf("vertex_causal_barrier_entries = %v, want 11", got)
+	}
+	if got := testutil.ToFloat64(m.edgeCausalBarriers); got != 13 {
+		t.Errorf("edge_causal_barrier_entries = %v, want 13", got)
 	}
 }
 
@@ -516,7 +527,7 @@ func TestDomainMetrics_ReplicationObservabilityFamilies(t *testing.T) {
 	m.OnPumpConnect("peer-b:7000")
 	m.OnPumpSnapshotReplayed("peer-a:7000", 100, 250, 5*time.Millisecond)
 	m.OnPumpDisconnect("peer-b:7000", "ctx_cancel")
-	for _, op := range []string{"PutVertex", "PutVertices", "AddEdge", "DeleteEdges"} {
+	for _, op := range []string{"PutVertex", "PutVertices", "ReplicatedPutVertices", "ReplicatedPutEdges", "AddEdge", "DeleteEdges"} {
 		m.OnReplicationApply(op)
 	}
 	m.OnReplicationApply("bogus-op") // → "unknown"
@@ -589,6 +600,8 @@ func TestDomainMetrics_ReplicationObservabilityFamilies(t *testing.T) {
 	}{
 		{"PutVertex", 1},
 		{"PutVertices", 1},
+		{"ReplicatedPutVertices", 1},
+		{"ReplicatedPutEdges", 1},
 		{"AddEdge", 1},
 		{"DeleteEdges", 1},
 		{"unknown", 1},

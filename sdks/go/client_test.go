@@ -70,6 +70,230 @@ func TestExpirationFromTTL(t *testing.T) {
 			t.Fatalf("expirationFromTTL(%v) = %v, want within [%v, %v]", ttl, got, before, after)
 		}
 	})
+	t.Run("explicit sample is used exactly", func(t *testing.T) {
+		sampledAt := time.Date(2026, 8, 13, 1, 2, 3, 4, time.UTC)
+		if got, want := expirationFromTTLAt(time.Minute, sampledAt), sampledAt.Add(time.Minute); !got.Equal(want) {
+			t.Fatalf("expirationFromTTLAt = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestPutOutcomeMappingFailsClosed(t *testing.T) {
+	vertexInputs := []VertexInput{{Key: "a"}, {Key: "b"}, {Key: "a"}}
+	vertexOutcomes := []pb.PutOutcome{
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+		pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+	}
+	results, err := vertexPutResults(vertexInputs, vertexOutcomes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []VertexPutResult{
+		{Key: "a", Outcome: PutOutcomeAppliedAndLive},
+		{Key: "b", Outcome: PutOutcomeExpired},
+		{Key: "a", Outcome: PutOutcomeConditionNotMet},
+	}
+	for i := range want {
+		if results[i] != want[i] {
+			t.Fatalf("results[%d] = %+v, want %+v", i, results[i], want[i])
+		}
+	}
+
+	if _, err := vertexPutResults(vertexInputs, vertexOutcomes[:1]); err == nil {
+		t.Fatal("vertexPutResults accepted a length mismatch")
+	}
+	if _, err := vertexPutResults(vertexInputs[:1], []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_UNSPECIFIED}); err == nil {
+		t.Fatal("vertexPutResults accepted UNSPECIFIED")
+	}
+	edgeInputs := []EdgeInput{{Tail: "t", Head: "h"}}
+	if _, err := edgePutResults(edgeInputs, nil); err == nil {
+		t.Fatal("edgePutResults accepted a length mismatch")
+	}
+	if _, err := edgePutResults(edgeInputs, []pb.PutOutcome{pb.PutOutcome(255)}); err == nil {
+		t.Fatal("edgePutResults accepted an unknown outcome")
+	}
+}
+
+func TestPutOutcomeString(t *testing.T) {
+	tests := []struct {
+		outcome PutOutcome
+		want    string
+	}{
+		{PutOutcomeAppliedAndLive, "APPLIED_AND_LIVE"},
+		{PutOutcomeExpired, "EXPIRED"},
+		{PutOutcomeConditionNotMet, "CONDITION_NOT_MET"},
+		{PutOutcomeSuperseded, "SUPERSEDED"},
+		{PutOutcome(99), "PutOutcome(99)"},
+	}
+	for _, tt := range tests {
+		if got := tt.outcome.String(); got != tt.want {
+			t.Errorf("PutOutcome(%d).String() = %q, want %q", tt.outcome, got, tt.want)
+		}
+	}
+}
+
+func TestPutOutcomeUsesClientExpirationAsUpperBoundAfterDelayedResponse(t *testing.T) {
+	sentAt := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	expiration := sentAt.Add(time.Second)
+	receivedAt := expiration.Add(time.Second)
+
+	vertices := clientBoundedVertexPutResults(
+		[]VertexPutResult{{Key: "v", Outcome: PutOutcomeAppliedAndLive}},
+		[]VertexInput{{Key: "v", Expiration: expiration}},
+		[]bool{true},
+		receivedAt,
+	)
+	if vertices[0].Outcome != PutOutcomeExpired {
+		t.Fatalf("delayed vertex outcome = %s, want EXPIRED", vertices[0].Outcome)
+	}
+	edges := clientBoundedEdgePutResults(
+		[]EdgePutResult{{Tail: "a", Head: "b", Outcome: PutOutcomeAppliedAndLive}},
+		[]EdgeInput{{Tail: "a", Head: "b", Expiration: expiration}},
+		[]bool{true},
+		receivedAt,
+	)
+	if edges[0].Outcome != PutOutcomeExpired {
+		t.Fatalf("delayed edge outcome = %s, want EXPIRED", edges[0].Outcome)
+	}
+
+	if got := clientBoundedPutOutcome(PutOutcomeConditionNotMet, false, expiration, receivedAt); got != PutOutcomeConditionNotMet {
+		t.Fatalf("condition precedence changed to %s", got)
+	}
+	if got := clientBoundedPutOutcome(PutOutcomeAppliedAndLive, true, time.Time{}, receivedAt); got != PutOutcomeAppliedAndLive {
+		t.Fatalf("permanent outcome changed to %s", got)
+	}
+
+	// A wall-clock rollback after dispatch must not resurrect an expiration
+	// that was already dead at the request-time sample.
+	rolledBackAt := sentAt.Add(-time.Second)
+	if got := clientBoundedPutOutcome(PutOutcomeAppliedAndLive, false, expiration, rolledBackAt); got != PutOutcomeExpired {
+		t.Fatalf("clock rollback changed initially-expired outcome to %s, want EXPIRED", got)
+	}
+}
+
+type appliedPutClient struct {
+	graphv1connect.LanternServiceClient
+}
+
+func (appliedPutClient) PutVertices(_ context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
+	outcomes := make([]pb.PutOutcome, len(req.Msg.GetVertices()))
+	for i := range outcomes {
+		outcomes[i] = pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE
+	}
+	return connect.NewResponse(&pb.PutVerticesResponse{Outcomes: outcomes}), nil
+}
+
+func (appliedPutClient) PutEdges(_ context.Context, req *connect.Request[pb.PutEdgesRequest]) (*connect.Response[pb.PutEdgesResponse], error) {
+	outcomes := make([]pb.PutOutcome, len(req.Msg.GetEdges()))
+	for i := range outcomes {
+		outcomes[i] = pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE
+	}
+	return connect.NewResponse(&pb.PutEdgesResponse{Outcomes: outcomes}), nil
+}
+
+func TestPutOutcomeClockRollbackAcrossPublicFacades(t *testing.T) {
+	base := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	expiration := base.Add(time.Second)
+	initial := expiration.Add(time.Second)
+	rolledBack := base
+
+	type invoke func(*Lantern) ([]PutOutcome, error)
+	tests := []struct {
+		name string
+		call invoke
+	}{
+		{
+			name: "vertex singular",
+			call: func(l *Lantern) ([]PutOutcome, error) {
+				outcome, err := l.PutVertexAt(context.Background(), "v", "value", expiration)
+				return []PutOutcome{outcome}, err
+			},
+		},
+		{
+			name: "vertex plural",
+			call: func(l *Lantern) ([]PutOutcome, error) {
+				results, err := l.PutVertices(context.Background(), []VertexInput{
+					{Key: "a", Value: "a", Expiration: expiration},
+					{Key: "b", Value: "b", Expiration: expiration},
+				})
+				outcomes := make([]PutOutcome, len(results))
+				for i := range results {
+					outcomes[i] = results[i].Outcome
+				}
+				return outcomes, err
+			},
+		},
+		{
+			name: "conditional singular",
+			call: func(l *Lantern) ([]PutOutcome, error) {
+				outcome, err := l.PutVertexIfAbsentAt(context.Background(), "nx", "value", expiration)
+				return []PutOutcome{outcome}, err
+			},
+		},
+		{
+			name: "conditional plural",
+			call: func(l *Lantern) ([]PutOutcome, error) {
+				results, err := l.PutVerticesIfAbsent(context.Background(), []VertexInput{
+					{Key: "nx-a", Value: "a", Expiration: expiration},
+					{Key: "nx-b", Value: "b", Expiration: expiration},
+				})
+				outcomes := make([]PutOutcome, len(results))
+				for i := range results {
+					outcomes[i] = results[i].Outcome
+				}
+				return outcomes, err
+			},
+		},
+		{
+			name: "edge singular",
+			call: func(l *Lantern) ([]PutOutcome, error) {
+				outcome, err := l.PutEdgeAt(context.Background(), "a", "b", 1, expiration)
+				return []PutOutcome{outcome}, err
+			},
+		},
+		{
+			name: "edge plural",
+			call: func(l *Lantern) ([]PutOutcome, error) {
+				results, err := l.PutEdges(context.Background(), []EdgeInput{
+					{Tail: "a", Head: "b", Weight: 1, Expiration: expiration},
+					{Tail: "c", Head: "d", Weight: 2, Expiration: expiration},
+				})
+				outcomes := make([]PutOutcome, len(results))
+				for i := range results {
+					outcomes[i] = results[i].Outcome
+				}
+				return outcomes, err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := mustLantern(t)
+			l.client = appliedPutClient{}
+			clockCalls := 0
+			l.clock = func() time.Time {
+				clockCalls++
+				if clockCalls == 1 {
+					return initial
+				}
+				return rolledBack
+			}
+			outcomes, err := tt.call(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, outcome := range outcomes {
+				if outcome != PutOutcomeExpired {
+					t.Fatalf("outcomes[%d] = %s, want EXPIRED", i, outcome)
+				}
+			}
+			if clockCalls != 2 {
+				t.Fatalf("clock calls = %d, want request and final samples", clockCalls)
+			}
+		})
+	}
 }
 
 // mustLantern builds a *Lantern against a never-dialed local URL. The

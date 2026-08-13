@@ -28,7 +28,10 @@ import { connect } from "lantern-sdk";
 
 const client = connect("http://localhost:6380");
 try {
-  await client.putVertex({ key: "hello", value: "world", ttlSeconds: 60 });
+  const outcome = await client.putVertex({ key: "hello", value: "world", ttlSeconds: 60 });
+  if (outcome !== "appliedAndLive") {
+    throw new Error(`hello was not live after Put: ${outcome}`);
+  }
 
   const v = await client.getVertex("hello");
   console.log(v.key, v.value); // "hello" "world"
@@ -77,14 +80,21 @@ type than `number` / `bigint` would infer.
 `putVertices`, `deleteVertices`, `addEdges`, `putEdges`, and `deleteEdges`
 split inputs into chunks (default 1000, override via
 `ConnectOptions.batchChunkSize`). On a chunk failure the call throws
-`BatchError`, which carries `.written` — the count of items successfully
-committed before the error — and the underlying `cause`. Resume with
+`BatchError`, which carries `.written` — the input-prefix length whose
+responses were fully observed and validated before the error — and the
+underlying `cause`. It is not an `appliedAndLive` count. Resume with
 `inputs.slice(err.written)`. A full retry from index 0 is safe for the
 idempotent batch ops (`putVertices`, `putEdges`, `deleteVertices`,
 `deleteEdges`) but **not** for a plain `addEdges`, whose already-applied
 prefix would be double-counted — attach contrib ids (see
 [Idempotent additive edges](#idempotent-additive-edges)) to make `addEdges`
 retries safe too.
+
+`putVerticesIfAbsent` is deliberately not described as safely resumable. If a
+response is lost after the server commits the failed chunk, its original
+per-item outcomes are unknown; replay evaluates the condition again and can
+return `"conditionNotMet"` for an originally applied item. Reconcile current
+state before explicitly retrying that suffix.
 
 ```ts
 import { BatchError } from "lantern-sdk";
@@ -93,7 +103,7 @@ try {
   await client.putEdges(edges);
 } catch (err) {
   if (err instanceof BatchError) {
-    console.warn(`committed ${err.written} before: ${err.cause}`);
+    console.warn(`completed ${err.written} before: ${err.cause}`);
   } else {
     throw err;
   }
@@ -102,17 +112,27 @@ try {
 
 ## Conditional writes (SET NX)
 
+All idempotent Put calls return a bounded server-authoritative outcome:
+`"appliedAndLive"`, `"expired"`, `"conditionNotMet"`, or `"superseded"`.
+Plural Vertex and Edge Puts return request-index-aligned result arrays carrying
+the original key or `(tail, head)`. Unknown, unspecified, or misaligned wire
+responses throw `LanternError`. The server clock decides liveness at
+application time; an unconditional born-expired Put reports `"expired"` and
+removes any prior live item. Before the SDK call returns, it also treats the exact
+absolute expiration it sent as a local upper bound: `"appliedAndLive"` becomes
+`"expired"` if that instant has already passed locally. Other bounded outcomes
+are never reclassified, so a conservative client clock cannot hide
+`"conditionNotMet"` or `"superseded"`.
+
 `putVertexIfAbsent` / `putVerticesIfAbsent` apply a write only when **no live
 vertex already exists** at the key — the Redis `SET NX` pattern (#896). They
 close the check-then-act race of a `getVertex` → `putVertex` sequence: the
 server performs the existence check and the store atomically, so two callers
 racing to create the same marker can't both win.
 
-`putVertexIfAbsent` resolves to a `boolean` (`true` when the write landed,
-`false` when a live vertex was already there and left untouched).
-`putVerticesIfAbsent` resolves to `{ written, skippedKeys }`, where `written`
-counts the vertices actually stored and `skippedKeys` lists the keys skipped
-because a live vertex already existed.
+`putVertexIfAbsent` resolves to the same typed outcome. A live existing value
+returns `"conditionNotMet"` and is left untouched. `putVerticesIfAbsent`
+returns one `VertexPutResult` per input, including duplicate keys.
 
 ```ts
 // Enqueue-dedup marker: only the first caller proceeds.
@@ -121,14 +141,17 @@ const first = await client.putVertexIfAbsent({
   value: true,
   ttlSeconds: 300,
 });
-if (first) {
+if (first === "appliedAndLive") {
   // we own the marker — enqueue the background job
 }
 
-const { written, skippedKeys } = await client.putVerticesIfAbsent([
+const results = await client.putVerticesIfAbsent([
   { key: "settings:a", value: "default-a" },
   { key: "settings:b", value: "default-b" },
 ]);
+for (const result of results) {
+  console.log(result.key, result.outcome);
+}
 ```
 
 "Live" follows the server's live-visibility rule, so an expired-but-uncollected

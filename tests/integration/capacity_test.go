@@ -40,16 +40,15 @@ func TestCapacityCap_SDKSurface(t *testing.T) {
 	defer cancel()
 
 	longExp := time.Now().Add(time.Minute)
-	if err := l.PutVertices(ctx, []client.VertexInput{
+	if _, err := l.PutVertices(ctx, []client.VertexInput{
 		{Key: "keep-1", Value: "v", Expiration: longExp},
 		{Key: "keep-2", Value: "v", Expiration: longExp},
 		{Key: "short", Value: "v", Expiration: time.Now().Add(300 * time.Millisecond)},
 	}); err != nil {
 		t.Fatalf("fill to cap: %v", err)
 	}
-
-	// At capacity: the typed sentinel must surface through the SDK.
-	err := l.PutVertex(ctx, "overflow", "v", time.Minute)
+	_, // At capacity: the typed sentinel must surface through the SDK.
+		err := l.PutVertex(ctx, "overflow", "v", time.Minute)
 	if !errors.Is(err, client.ErrResourceExhausted) {
 		t.Fatalf("at-cap put: got %v, want errors.Is ErrResourceExhausted", err)
 	}
@@ -58,7 +57,7 @@ func TestCapacityCap_SDKSurface(t *testing.T) {
 	// it, the same write goes through with no deletes issued.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		err = l.PutVertex(ctx, "overflow", "v", time.Minute)
+		_, err = l.PutVertex(ctx, "overflow", "v", time.Minute)
 		if err == nil {
 			break
 		}
@@ -70,16 +69,15 @@ func TestCapacityCap_SDKSurface(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-
-	// Back at capacity; a delete frees a slot immediately.
-	err = l.PutVertex(ctx, "one-more", "v", time.Minute)
+	_, // Back at capacity; a delete frees a slot immediately.
+		err = l.PutVertex(ctx, "one-more", "v", time.Minute)
 	if !errors.Is(err, client.ErrResourceExhausted) {
 		t.Fatalf("re-filled cap: got %v, want ErrResourceExhausted", err)
 	}
 	if _, err := l.DeleteVertex(ctx, "keep-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if err := l.PutVertex(ctx, "one-more", "v", time.Minute); err != nil {
+	if _, err := l.PutVertex(ctx, "one-more", "v", time.Minute); err != nil {
 		t.Fatalf("put after delete: %v", err)
 	}
 }

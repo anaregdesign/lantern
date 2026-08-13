@@ -21,18 +21,13 @@ import (
 type Backend interface {
 	// vertex reads/writes
 	GetVertex(key string) (*pb.Vertex, bool)
-	PutVerticesWithExpirationChecked(items []graphcache.VertexItem[string, *pb.Vertex]) error
-	// PutVerticesWithExpirationIfAbsentChecked writes each vertex only when no live
-	// vertex exists at its key (SET NX, #896). It returns the number written
-	// and the keys skipped because a live vertex already existed. Used by the
-	// LOCAL write path when replication is off (clock nil).
-	PutVerticesWithExpirationIfAbsentChecked(items []graphcache.VertexItem[string, *pb.Vertex]) (written int, skipped []string, err error)
-	// PutVerticesWithExpirationIfAbsentHLCChecked is the replication-aware sibling:
-	// it stamps each accepted write with ts so the origin participates in LWW,
-	// and returns the request-order indices of items that passed the absence
-	// check (so the caller can replicate only that subset) plus the skipped
-	// keys. Used when replication is enabled (clock non-nil).
-	PutVerticesWithExpirationIfAbsentHLCChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (writtenIdx []int, skipped []string, err error)
+	PutVerticesWithExpirationOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex]) ([]graphcache.PutOutcome, error)
+	// The conditional exact-outcome paths preserve request alignment. The HLC
+	// sibling also returns the live-written indices for legacy accounting; an
+	// EXPIRED outcome is nevertheless an accepted delete-like mutation and the
+	// service must replicate it alongside APPLIED_AND_LIVE.
+	PutVerticesWithExpirationIfAbsentOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex]) ([]graphcache.PutOutcome, error)
+	PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (writtenIdx []int, outcomes []graphcache.PutOutcome, err error)
 	DeleteVertices(keys []string) int
 
 	// edge reads/writes
@@ -45,7 +40,7 @@ type Backend interface {
 	// each edge (#897) plus the count of items suppressed by a matching live
 	// ContribID. Items with a zero ContribID keep legacy additive semantics.
 	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) (effective []float32, deduped int)
-	PutEdgesWithExpiration(items []graphcache.EdgeItem[string])
+	PutEdgesWithExpirationOutcomes(items []graphcache.EdgeItem[string]) []graphcache.PutOutcome
 	DeleteEdges(keys []graphcache.EdgeKey[string]) int
 
 	// replicated-write entry points used by ApplyMutation (#182).
@@ -81,14 +76,19 @@ type Backend interface {
 	//
 	// Since #840 these batch methods also serve the replication apply path
 	// (ApplyMutation), which previously looped the singular HLC methods. The
-	// Put* variants return the number of items rejected by the tombstone
-	// fence or LWW watermark — the same set the singular methods report as
-	// applied=false — so the apply path fires its clamp-reject metric once
-	// per rejected item with unchanged meaning.
+	// Legacy Put* variants return the number rejected by the tombstone fence or
+	// LWW watermark so apply metrics retain their meaning. Outcome-bearing
+	// variants instead return one exact, request-index-aligned result; EXPIRED
+	// is accepted and delete-like, while only SUPERSEDED is a causal rejection.
 	PutVerticesWithExpirationHLC(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) int
 	PutVerticesWithExpirationHLCChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (int, error)
+	PutVerticesWithExpirationHLCOutcomes(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) []graphcache.PutOutcome
+	PutVerticesWithExpirationHLCOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) ([]graphcache.PutOutcome, error)
 	PutEdgesWithExpirationHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) int
+	PutEdgesWithExpirationHLCOutcomes(items []graphcache.EdgeItem[string], ts hlc.Timestamp) []graphcache.PutOutcome
 	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
+	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
+	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 
 	// tombstone-aware Delete*/Add* entry points used by ApplyMutation
 	// when LANTERN_TOMBSTONE_TTL is configured (#183). DeleteVertexHLC,
@@ -243,5 +243,6 @@ type Backend interface {
 	// to populate the admin UI's at-a-glance counters.
 	VertexCount() int
 	EdgeCount() int
+	CapacityFootprint() (vertices, edges int)
 	SearchIndexMemoryStats() search.IndexMemoryStats
 }

@@ -35,28 +35,28 @@ func TestCLI_FamilyVerbs_RealWire(t *testing.T) {
 	defer cancel()
 
 	for _, k := range []string{"a", "b", "c", "cm:a1", "cm:a2", "cm:a3", "cm:b1", "cm:b2", "cm:b3"} {
-		if err := l.PutVertex(ctx, k, k, time.Minute); err != nil {
+		if _, err := l.PutVertex(ctx, k, k, time.Minute); err != nil {
 			t.Fatalf("PutVertex %s: %v", k, err)
 		}
 	}
-	if err := l.PutEdge(ctx, "a", "b", 1, time.Minute); err != nil {
+	if _, err := l.PutEdge(ctx, "a", "b", 1, time.Minute); err != nil {
 		t.Fatalf("PutEdge a->b: %v", err)
 	}
-	if err := l.PutEdge(ctx, "b", "c", 1, time.Minute); err != nil {
+	if _, err := l.PutEdge(ctx, "b", "c", 1, time.Minute); err != nil {
 		t.Fatalf("PutEdge b->c: %v", err)
 	}
 	for _, pair := range [][2]string{
 		{"cm:a1", "cm:a2"}, {"cm:a2", "cm:a1"}, {"cm:a2", "cm:a3"}, {"cm:a3", "cm:a2"}, {"cm:a1", "cm:a3"}, {"cm:a3", "cm:a1"},
 		{"cm:b1", "cm:b2"}, {"cm:b2", "cm:b1"}, {"cm:b2", "cm:b3"}, {"cm:b3", "cm:b2"}, {"cm:b1", "cm:b3"}, {"cm:b3", "cm:b1"},
 	} {
-		if err := l.PutEdge(ctx, pair[0], pair[1], 5, time.Minute); err != nil {
+		if _, err := l.PutEdge(ctx, pair[0], pair[1], 5, time.Minute); err != nil {
 			t.Fatalf("PutEdge %s->%s: %v", pair[0], pair[1], err)
 		}
 	}
-	if err := l.PutEdge(ctx, "cm:a1", "cm:b1", 0.1, time.Minute); err != nil {
+	if _, err := l.PutEdge(ctx, "cm:a1", "cm:b1", 0.1, time.Minute); err != nil {
 		t.Fatalf("PutEdge cm:a1->cm:b1: %v", err)
 	}
-	if err := l.PutEdge(ctx, "cm:b1", "cm:a1", 0.1, time.Minute); err != nil {
+	if _, err := l.PutEdge(ctx, "cm:b1", "cm:a1", 0.1, time.Minute); err != nil {
 		t.Fatalf("PutEdge cm:b1->cm:a1: %v", err)
 	}
 

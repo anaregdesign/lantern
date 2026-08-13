@@ -95,6 +95,39 @@ whether re-applying an already-seen mutation is a no-op.
 | `DeleteVertex(es)` | Tombstone (LWW) | A tombstone is itself an entry with HLC. Any `Put*` / `Add*` whose HLC < tombstone HLC is dropped. Tombstone TTL = D4. |
 | `DeleteEdge(s)` | Tombstone (LWW) on `(tail, head)` | Same as vertex tombstone. |
 
+An unconditional Put whose absolute expiration is already past at the
+serving node is still an accepted LWW mutation. It returns `EXPIRED`, removes
+the previous value/edge at that identity, records its HLC, and is replicated.
+This delete-like overwrite is distinct from a tombstone (it has no independent
+tombstone retention window). Its HLC is retained as a causal barrier even
+though no live cache entry/bucket is created, and ordinary TTL GC never reaps
+that barrier. Otherwise a delayed HLC-older live Put could resurrect the
+identity after GC or a local clock rollback. The barrier is part of replication
+Snapshot bootstrap state (see §8); it is not exposed by graph reads or
+`BackupSnapshot`. Omitting the accepted-expired mutation from the mutation log
+would likewise let a peer retain an older live value. `if_absent` evaluates its
+condition first: an existing live vertex returns `CONDITION_NOT_MET` and is
+preserved; an absent born-expired candidate returns `EXPIRED` without creating
+live state.
+
+The barrier is a state transition, not a permanent second representation of
+the identity. An equal/newer live Put supersedes the floor and removes the
+barrier. An explicit singular/plural Delete with an HLC at least as new as the
+floor instead replaces the barrier with a normal D4-bounded tombstone; the
+Delete may report that no live value existed while still completing this
+causal transition. A strictly older Put or Delete is rejected and leaves the
+barrier intact. Prefix Delete RPCs enumerate the live prefix indexes, so they
+cannot discover or reclaim an identity represented only by a barrier. Use an
+exact-key/pair Delete when bounded D4 retention is required for such an
+identity.
+
+The convergence classifications in the table apply to homogeneous histories:
+Put-only LWW/barrier histories and Add-only contribution histories. Edge
+histories delivered in arbitrary orders that mix `PutEdge` with `AddEdge`, or
+`DeleteEdge` with `AddEdge`, are not yet a supported convergence contract.
+That reset-aware contribution model is tracked in
+[#1203](https://github.com/anaregdesign/lantern/issues/1203).
+
 Reads (`GetVertex(es)`, `GetEdge(s)`, `Illuminate`, `SearchVertices`) are
 local-only — they never block on peers and never read-repair. Read-after-write
 across nodes is **eventual**, bounded by the readiness gate (invariant 4) plus
@@ -251,7 +284,32 @@ message MutationOp {
     PutEdgesRequest                put_edges                 = 9;
     DeleteEdgeRequest              delete_edge               = 10;
     DeleteEdgesRequest             delete_edges              = 11;
+    DeleteEdgesByPrefixRequest     delete_edges_by_prefix    = 12;
+    ReplicatedPutVertices          replicated_put_vertices   = 13;
+    ReplicatedPutEdges             replicated_put_edges      = 14;
   }
+}
+
+message VertexCausalBarrier { string key = 1; }
+message ReplicatedPutVertex {
+  oneof outcome {
+    Vertex live = 1;
+    VertexCausalBarrier causal_barrier = 2;
+  }
+}
+message ReplicatedPutVertices {
+  repeated ReplicatedPutVertex entries = 1;
+}
+
+message EdgeCausalBarrier { string tail = 1; string head = 2; }
+message ReplicatedPutEdge {
+  oneof outcome {
+    Edge live = 1;
+    EdgeCausalBarrier causal_barrier = 2;
+  }
+}
+message ReplicatedPutEdges {
+  repeated ReplicatedPutEdge entries = 1;
 }
 
 message Mutation {
@@ -270,19 +328,18 @@ Deviations from the §7 conceptual sketch (recorded as part of #178):
   appear on the wire — per-origin `(origin, seq)` already plays the
   contribution-ID role and the request payload is carried directly by the
   `MutationOp` oneof.
-- `MutationOp` reuses the existing write-RPC request messages so the
-  server handlers can be invoked verbatim when applying replicated
-  mutations.
-
-message HLC {
-  uint64 wall_millis = 1;
-  uint32 logical = 2;
-}
-```
-
-> The shipped HLC type is `HLCTimestamp` with `int64 wall_ns` (not millis)
-> and an explicit `bytes node_id`; the §7/§8.1 sketch above is retained
-> as historical context. See §8.1 for the wire shape that ships.
+- Most `MutationOp` arms reuse the existing write-RPC request messages.
+  Accepted Put requests are the intentional exception: the origin emits one
+  ordered, authoritative `ReplicatedPutVertices` or `ReplicatedPutEdges`
+  mutation. Its `live` and `causal_barrier` entries remain interleaved in the
+  accepted items' original request order. This preserves duplicate-identity
+  sequencing inside a batch and prevents a receiver's wall clock from
+  reclassifying the origin's accepted-expired decision. `CONDITION_NOT_MET`
+  and `SUPERSEDED` items made no committed state transition, so they are not
+  replicated. If no item committed, no mutation is logged.
+- A receiver applies all ordered authoritative entries under one graph-cache
+  lock with the mutation HLC. It must not regroup live entries and barriers by
+  outcome: doing so changes the result for duplicate keys/pairs in one request.
 
 ### 8.2 Subscribe (server streaming)
 
@@ -378,7 +435,9 @@ message SnapshotResponse {
     SnapshotHeader header = 1;   // first frame: origin/local cutoffs + cutoff_hlc
     SnapshotVertex vertex = 2;   // body: live vertex with stored HLC
     SnapshotEdge   edge   = 3;   // body: edge with per-contribution payloads
-    SnapshotFooter footer = 4;   // last frame: streamed vertex/edge counts
+    SnapshotFooter footer = 4;   // last frame: all four streamed counts
+    SnapshotVertexCausalBarrier vertex_causal_barrier = 5;
+    SnapshotEdgeCausalBarrier edge_causal_barrier = 6;
   }
 }
 
@@ -390,6 +449,13 @@ message SnapshotHeader {
   map<string, uint64> cutoff_seq_per_origin = 1;
   HLCTimestamp cutoff_hlc = 2;
   uint64 cutoff_local_seq = 3; // same-responder log position
+}
+
+message SnapshotFooter {
+  uint64 vertex_count = 1;
+  uint64 edge_count = 2;
+  uint64 vertex_causal_barrier_count = 3;
+  uint64 edge_causal_barrier_count = 4;
 }
 
 message SnapshotEdge {
@@ -421,9 +487,18 @@ Framing contract:
   per-origin map remains the portable CDC/failover watermark.
   An empty map means the primary has not yet applied any origin
   (cold cluster); the consumer should pass an empty Subscribe cursor.
-- The **footer** is always the last frame. It reports the actually
-  streamed vertex and edge counts so consumers can detect truncation
-  without parsing a sentinel-typed body frame.
+- The **footer** is always the last frame. It reports four separate actually
+  streamed counts: live vertices, live edges, vertex causal barriers, and edge
+  causal barriers. Pump and anti-entropy consumers reject count mismatches,
+  duplicate/missing header/footer frames, or any out-of-order body frame before
+  advancing resume watermarks.
+- Retained Put causal barriers are streamed **before live entries**.
+  They use explicit `SnapshotVertexCausalBarrier` and
+  `SnapshotEdgeCausalBarrier` oneof arms, never overloaded live
+  `SnapshotVertex` / `SnapshotEdge` shapes. Receivers replay them through
+  dedicated causal-barrier seams that create no vertex, endpoint, edge bucket,
+  or Search document. Sending barriers first preserves an older retained floor
+  when the same identity also has a newer live value.
 - The snapshot deliberately preserves **per-contribution decomposition**:
   each `SnapshotEdge` carries its full list of live `SnapshotEdgeContribution`
   rows rather than a pre-summed weight. The consumer replays each
@@ -431,23 +506,62 @@ Framing contract:
   `ContribID` dedup makes the snapshot-then-Subscribe-tail handoff
   idempotent: any contribution that also appears in the replayed tail is
   detected and dropped at apply time.
+- A live additive edge may coexist with a retained Put barrier. Because the
+  current contribution rows do not carry individual HLCs, the source stamps
+  `SnapshotEdge.hlc` with `max(bucket.lastPutHLC, retainedBarrierHLC)`.
+  Barrier-first replay then admits the contributions at the equal floor while
+  continuing to reject a delayed older Put. This **max-floor** rule preserves
+  bootstrap state; it does not claim arbitrary-order convergence for mixed
+  Put/Add or Delete/Add histories (see #1203).
 
 Implementation notes:
 
 - The handler is `LanternReplicationService.Snapshot` in
   `server/service/replication.go`. It holds references to the same
   `Backend` and `*hlc.Clock` the write path uses; both are wired in
-  `server/cmd/wire.go`. `Snapshot` materialises vertices and edges via
-  `Backend.SnapshotVertices()` / `Backend.SnapshotEdges()` (which lock
-  the GraphCache once each) and streams them frame-by-frame, honouring
-  `stream.Context()` cancellation between sends.
+  `server/cmd/wire.go`. Production uses `GraphCache.SnapshotReplication()`:
+  one sampled wall instant and one continuous graph write lock cover barrier
+  migration plus materialisation of the barrier and live slices. Before it
+  copies state, the method moves every Put floor whose payload is no longer
+  visible (expired vertex, or expired/zero-weight/dangling edge bucket) into
+  the retained barrier maps. Capturing barriers and live state in separate
+  lock passes is forbidden: TTL/GC could move a floor between the passes and
+  make the snapshot omit both representations. The completed owned slices are
+  then streamed frame-by-frame, honouring `stream.Context()` cancellation
+  between sends.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,
   one-peer-at-a-time operation, so the O(N+E) overhead is acceptable.
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
   path is exercised at scale (tracked alongside #190).
-- Tombstones are NOT carried as standalone frames. The cache snapshot
-  returns only live state; the receiver re-derives tombstones from the
-  Subscribe tail beginning at the per-origin cutoff + 1.
+- Tombstones are NOT carried as standalone frames. Delete tombstones remain
+  bounded by D4 and the receiver re-derives them from the Subscribe tail
+  beginning at the per-origin cutoff + 1. Put causal barriers — whether born
+  expired or migrated when a live payload becomes non-visible — are different:
+  they are unbounded LWW floors and are carried by the marker frames above so
+  snapshot/bootstrap cannot reopen a resurrection window.
+
+Retention and memory:
+
+- A causal barrier has no time-based GC. It remains until an equal/newer
+  accepted live Put supersedes it or an equal/newer explicit Delete replaces it
+  with a D4-bounded tombstone. Reaping it any other way would permit an
+  indefinitely delayed older replica write to resurrect data. Memory is
+  therefore `O(Vb + Eb)` in retained barrier identities, in addition to the
+  live graph and bounded delete tombstones. Prefix Delete cannot perform the
+  transition for barrier-only identities because those identities are absent
+  from the live prefix indexes.
+- `LANTERN_MAX_VERTICES` and `LANTERN_MAX_EDGES` admission counts include live
+  identities plus retained causal-barrier entries. Delete tombstones are
+  excluded. Consequently, an accepted explicit Delete can free a live/barrier
+  admission slot by moving the floor into the D4 store, but the tombstone still
+  consumes heap until expiry. The soft caps are not a total causal-metadata or
+  byte budget; a separate hard metadata cap is follow-up
+  [#1204](https://github.com/anaregdesign/lantern/issues/1204).
+- Operators should compare the vertex/edge causal-barrier entry gauges with
+  write/outcome traffic and heap trends. Sustained growth means the workload is
+  leaving many identities at non-visible Put floors. Use explicit Delete with
+  the configured tombstone horizon when bounded retention is the intended
+  policy.
 
 ## 9. Bootstrap flow
 
@@ -551,16 +665,24 @@ Lantern is **AP** in CAP terms. During a partition:
   response as a cluster-wide snapshot or compare its numeric score with another
   replica. Cursor sessions and signing keys are endpoint-local; failover must
   discard a continuation and restart from page one.
-- `Add*` writes on both sides combine cleanly when the partition heals
-  (G-Set union). No data is lost.
-- `Put*` writes on both sides converge to the higher-HLC value. The losing
-  side's value is silently overwritten — this is intentional LWW semantics.
-- `Delete*` followed by `Put*` on the **other** side of the partition is the
-  only true hazard. If `Delete` HLC > later `Put` HLC on the other side, the
-  `Put` will be dropped after heal. If the partition lasts **longer than
-  `tombstone_ttl` (D4, default 1 year / 8760h)**, the tombstone may GC before the other
-  side learns about it, resurrecting the deleted entry. Operators must keep
-  partition duration < tombstone TTL or extend D4.
+- For an edge identity with an Add-only history, `AddEdge*` writes on both
+  sides combine by G-Set union when the partition heals. No contribution is
+  lost.
+- For Put-only LWW/barrier histories, `Put*` writes converge to the higher-HLC
+  outcome. The losing side's live value or accepted-expired floor is silently
+  superseded — this is intentional LWW semantics.
+- Put/Delete LWW histories converge while the Delete tombstone is retained. If
+  `Delete` HLC is newer, an older remote Put is dropped after heal. If the
+  partition lasts **longer than `tombstone_ttl` (D4, default 1 year / 8760h)**,
+  the tombstone may GC before the other side learns about it, allowing a stale
+  value to resurrect. Operators must keep partition duration below the
+  tombstone TTL or extend D4.
+- Arbitrary delivery orders mixing `PutEdge` and `AddEdge`, or `DeleteEdge`
+  and `AddEdge`, for the same identity are a known unsupported HA boundary.
+  Current Put/Delete floors and Add contributions are not a reset-aware CRDT,
+  so different arrival orders can produce different final weights. Do not use
+  these mixed operation families concurrently across replicas until #1203 is
+  complete.
 
 The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_seq` and
 `lantern_anti_entropy_gaps_found_total`) and recovery (forced re-snapshot).
@@ -577,6 +699,7 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
+| Mixed `PutEdge`/`AddEdge` or `DeleteEdge`/`AddEdge` delivered in different orders | Replica edge weights differ after lag reaches zero | Unsupported pending #1203. Quiesce writes for that edge identity and force a snapshot from the authoritative replica. |
 
 ## 12. Deployment-topology suitability matrix
 

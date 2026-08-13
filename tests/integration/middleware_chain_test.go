@@ -37,7 +37,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 	defer cancel()
 
 	t.Run("happy path round-trip", func(t *testing.T) {
-		if err := c.PutVertex(ctx, "k", "hello", time.Minute); err != nil {
+		if _, err := c.PutVertex(ctx, "k", "hello", time.Minute); err != nil {
 			t.Fatalf("PutVertex: %v", err)
 		}
 		v, err := c.GetVertex(ctx, "k")
@@ -61,7 +61,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 		// Force a single oversized request by raising the SDK chunk
 		// size; the default would split into 5+1 and pass.
 		bigClient := newConnectClientFor(t, srv.url, client.WithBatchChunkSize(100))
-		err := bigClient.PutVertices(ctx, inputs)
+		_, err := bigClient.PutVertices(ctx, inputs)
 		if !errors.Is(err, client.ErrInvalidArgument) {
 			t.Fatalf("PutVertices(6) err = %v, want errors.Is(err, ErrInvalidArgument)", err)
 		}
@@ -77,7 +77,7 @@ func TestIntegration_FullMiddlewareChain(t *testing.T) {
 	t.Run("rate limiter trips under burst", func(t *testing.T) {
 		var hit bool
 		for i := 0; i < 20; i++ {
-			err := c.PutVertex(ctx, "rl", int64(i), time.Minute)
+			_, err := c.PutVertex(ctx, "rl", int64(i), time.Minute)
 			if errors.Is(err, client.ErrResourceExhausted) {
 				hit = true
 				break
@@ -112,7 +112,7 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 	t.Run("delete vertices round-trip", func(t *testing.T) {
 		keys := []string{"d1", "d2", "d3"}
 		for _, k := range keys {
-			if err := c.PutVertex(ctx, k, int64(1), time.Minute); err != nil {
+			if _, err := c.PutVertex(ctx, k, int64(1), time.Minute); err != nil {
 				t.Fatalf("PutVertex(%s): %v", k, err)
 			}
 		}
@@ -130,14 +130,14 @@ func TestIntegration_BatchDeletes(t *testing.T) {
 
 	t.Run("delete edges round-trip", func(t *testing.T) {
 		for _, k := range []string{"ea", "eb", "ex"} {
-			if err := c.PutVertex(ctx, k, int64(0), time.Minute); err != nil {
+			if _, err := c.PutVertex(ctx, k, int64(0), time.Minute); err != nil {
 				t.Fatalf("PutVertex(%s): %v", k, err)
 			}
 		}
-		if err := c.PutEdge(ctx, "ea", "eb", 1.0, time.Minute); err != nil {
+		if _, err := c.PutEdge(ctx, "ea", "eb", 1.0, time.Minute); err != nil {
 			t.Fatalf("PutEdge: %v", err)
 		}
-		if err := c.PutEdge(ctx, "ea", "ex", 1.0, time.Minute); err != nil {
+		if _, err := c.PutEdge(ctx, "ea", "ex", 1.0, time.Minute); err != nil {
 			t.Fatalf("PutEdge: %v", err)
 		}
 		refs := []client.EdgeRef{{Tail: "ea", Head: "eb"}, {Tail: "ea", Head: "ex"}}

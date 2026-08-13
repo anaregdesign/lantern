@@ -12,6 +12,7 @@
 //
 //	reads (Get*/Scan*/Count*/Search*/Illuminate/status)  retryable
 //	PutVertex(es)/PutEdge(s)/Delete*                     retryable (idempotent semantics)
+//	PutVertex(es) with if_absent                         never (response loss changes the outcome)
 //	AddEdge/AddEdges                                     retryable ONLY when every edge in the
 //	                                                     request carries a ContribID (WithIdempotentAdds
 //	                                                     stamps them; without one a retry double-counts)
@@ -171,9 +172,12 @@ func requestRetryable(req any) bool {
 			}
 		}
 		return len(r.GetEdges()) > 0
+	case *pb.PutVertexRequest:
+		return !r.GetIfAbsent()
+	case *pb.PutVerticesRequest:
+		return !r.GetIfAbsent()
 	case *pb.GetVertexRequest, *pb.GetVerticesRequest,
 		*pb.GetEdgeRequest, *pb.GetEdgesRequest,
-		*pb.PutVertexRequest, *pb.PutVerticesRequest,
 		*pb.PutEdgeRequest, *pb.PutEdgesRequest,
 		*pb.DeleteVertexRequest, *pb.DeleteVerticesRequest,
 		*pb.DeleteEdgeRequest, *pb.DeleteEdgesRequest,
@@ -215,9 +219,9 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"PutVertex":              retryAlways,
 	"PutVertexAt":            retryAlways,
 	"PutVertices":            retryAlways,
-	"PutVertexIfAbsent":      retryAlways, // #896: idempotent from the caller's view (converges to "key exists")
-	"PutVertexIfAbsentAt":    retryAlways,
-	"PutVerticesIfAbsent":    retryAlways,
+	"PutVertexIfAbsent":      retryNever,
+	"PutVertexIfAbsentAt":    retryNever,
+	"PutVerticesIfAbsent":    retryNever,
 	"PutEdge":                retryAlways,
 	"PutEdgeAt":              retryAlways,
 	"PutEdges":               retryAlways,

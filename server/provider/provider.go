@@ -624,6 +624,9 @@ func NewDomainMetrics(
 	m.BindVertexHLCHighWaterSampler(func() int {
 		return cache.VertexHLCHighWater()
 	})
+	m.BindCausalBarrierSampler(func() (int, int) {
+		return cache.CausalBarrierCounts()
+	})
 	return m
 }
 

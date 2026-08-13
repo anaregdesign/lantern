@@ -8,6 +8,7 @@ import {
   SearchContinuationLimitedError,
   SearchCursorStaleError,
 } from "lantern-sdk/web";
+import type { PutOutcome } from "./types";
 
 /**
  * Adapter that translates the SDK's typed error hierarchy
@@ -130,5 +131,19 @@ export class LanternApiError extends Error {
    */
   static notFound(rpc: string, message: string): LanternApiError {
     return new LanternApiError(rpc, "not_found", message);
+  }
+
+  /** Builds a bounded diagnostic for a Put that returned a non-live outcome. */
+  static putNotApplied(
+    rpc: string,
+    identity: string,
+    outcome: Exclude<PutOutcome, "appliedAndLive">,
+  ): LanternApiError {
+    const code = `put_${outcome.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}`;
+    return new LanternApiError(
+      rpc,
+      code,
+      `${identity} was not live after server application: ${outcome}`,
+    );
   }
 }

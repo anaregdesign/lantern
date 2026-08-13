@@ -45,10 +45,10 @@ func TestAddDecayingEdge_ExternallyObservableDecay(t *testing.T) {
 	// isolating edge-weight decay as the only variable.
 	seedEndpoints := func(t *testing.T, l *client.Lantern, tail, head string) {
 		t.Helper()
-		if err := l.PutVertex(ctx, tail, 1, time.Hour); err != nil {
+		if _, err := l.PutVertex(ctx, tail, 1, time.Hour); err != nil {
 			t.Fatalf("PutVertex %s: %v", tail, err)
 		}
-		if err := l.PutVertex(ctx, head, 2, time.Hour); err != nil {
+		if _, err := l.PutVertex(ctx, head, 2, time.Hour); err != nil {
 			t.Fatalf("PutVertex %s: %v", head, err)
 		}
 	}
@@ -127,10 +127,10 @@ func TestAddDecayingEdge_TombstoneTTLRejection(t *testing.T) {
 	// Endpoints are seeded within the 3s retention window (the tombstone TTL
 	// clamps every expiration, endpoints included) and read back immediately,
 	// so they are live when we assert the edge was not written.
-	if err := l.PutVertex(ctx, "x", 1, 2*time.Second); err != nil {
+	if _, err := l.PutVertex(ctx, "x", 1, 2*time.Second); err != nil {
 		t.Fatalf("PutVertex x: %v", err)
 	}
-	if err := l.PutVertex(ctx, "y", 2, 2*time.Second); err != nil {
+	if _, err := l.PutVertex(ctx, "y", 2, 2*time.Second); err != nil {
 		t.Fatalf("PutVertex y: %v", err)
 	}
 

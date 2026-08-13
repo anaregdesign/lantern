@@ -27,7 +27,7 @@ func TestBatchError_PartialWrite(t *testing.T) {
 		{Key: "", Value: "v", Expiration: exp}, // empty key trips the server-side validator
 		{Key: "ok-4", Value: "v", Expiration: exp},
 	}
-	err := l.PutVertices(ctx, inputs)
+	_, err := l.PutVertices(ctx, inputs)
 	if err == nil {
 		t.Fatal("PutVertices: expected BatchError, got nil")
 	}

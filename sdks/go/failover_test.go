@@ -15,8 +15,14 @@ import (
 // only the methods it exercises. It mirrors the fake used by the MCP
 // failover tests before the logic moved into the SDK (#592).
 type fakeNode struct {
-	getVertexFn  func(ctx context.Context, key string) (*Vertex, error)
-	searchPageFn func(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error)
+	getVertexFn           func(ctx context.Context, key string) (*Vertex, error)
+	putVertexAtFn         func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
+	putVertexIfAbsentAtFn func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
+	putVerticesFn         func(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
+	putVerticesIfAbsentFn func(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
+	putEdgeAtFn           func(ctx context.Context, tail, head string, weight float32, expiration time.Time) (PutOutcome, error)
+	putEdgesFn            func(ctx context.Context, inputs []EdgeInput) ([]EdgePutResult, error)
+	searchPageFn          func(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error)
 	// addEdgeAtWithIDsFn / addEdgesWithIDsFn drive the id-accepting seams the
 	// failover ring actually calls for additive writes (#916); the failover
 	// AddEdge/AddEdgeAt/AddEdges methods route through these, so tests wire
@@ -27,17 +33,36 @@ type fakeNode struct {
 	closed             int
 }
 
-func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) error { return nil }
-func (f *fakeNode) PutVertexAt(context.Context, string, any, time.Time) error   { return nil }
-func (f *fakeNode) PutVertices(context.Context, []VertexInput) error            { return nil }
-func (f *fakeNode) PutVertexIfAbsent(context.Context, string, any, time.Duration) (bool, error) {
-	return true, nil
+func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) (PutOutcome, error) {
+	return PutOutcomeAppliedAndLive, nil
 }
-func (f *fakeNode) PutVertexIfAbsentAt(context.Context, string, any, time.Time) (bool, error) {
-	return true, nil
+
+func (f *fakeNode) PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error) {
+	if f.putVertexAtFn != nil {
+		return f.putVertexAtFn(ctx, key, value, expiration)
+	}
+	return PutOutcomeAppliedAndLive, nil
 }
-func (f *fakeNode) PutVerticesIfAbsent(context.Context, []VertexInput) (int, []string, error) {
-	return 0, nil, nil
+func (f *fakeNode) PutVertices(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error) {
+	if f.putVerticesFn != nil {
+		return f.putVerticesFn(ctx, inputs)
+	}
+	return nil, nil
+}
+func (f *fakeNode) PutVertexIfAbsent(context.Context, string, any, time.Duration) (PutOutcome, error) {
+	return PutOutcomeAppliedAndLive, nil
+}
+func (f *fakeNode) PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error) {
+	if f.putVertexIfAbsentAtFn != nil {
+		return f.putVertexIfAbsentAtFn(ctx, key, value, expiration)
+	}
+	return PutOutcomeAppliedAndLive, nil
+}
+func (f *fakeNode) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error) {
+	if f.putVerticesIfAbsentFn != nil {
+		return f.putVerticesIfAbsentFn(ctx, inputs)
+	}
+	return nil, nil
 }
 func (f *fakeNode) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 	if f.getVertexFn != nil {
@@ -88,12 +113,22 @@ func (f *fakeNode) addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids 
 	}
 	return nil, nil
 }
-func (f *fakeNode) PutEdge(context.Context, string, string, float32, time.Duration) error {
-	return nil
+func (f *fakeNode) PutEdge(context.Context, string, string, float32, time.Duration) (PutOutcome, error) {
+	return PutOutcomeAppliedAndLive, nil
 }
-func (f *fakeNode) PutEdgeAt(context.Context, string, string, float32, time.Time) error { return nil }
-func (f *fakeNode) PutEdges(context.Context, []EdgeInput) error                         { return nil }
-func (f *fakeNode) GetEdge(context.Context, string, string) (*Edge, error)              { return nil, nil }
+func (f *fakeNode) PutEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (PutOutcome, error) {
+	if f.putEdgeAtFn != nil {
+		return f.putEdgeAtFn(ctx, tail, head, weight, expiration)
+	}
+	return PutOutcomeAppliedAndLive, nil
+}
+func (f *fakeNode) PutEdges(ctx context.Context, inputs []EdgeInput) ([]EdgePutResult, error) {
+	if f.putEdgesFn != nil {
+		return f.putEdgesFn(ctx, inputs)
+	}
+	return nil, nil
+}
+func (f *fakeNode) GetEdge(context.Context, string, string) (*Edge, error) { return nil, nil }
 func (f *fakeNode) GetEdges(context.Context, []EdgeRef) ([]*Edge, []EdgeRef, error) {
 	return nil, nil, nil
 }
@@ -339,6 +374,129 @@ func TestFailover_AdditiveWriteRotatesOnUnavailable(t *testing.T) {
 	}
 	if n0 != 1 || n1 != 1 {
 		t.Fatalf("call counts n0=%d n1=%d, want 1 and 1 (rotate on unavailable)", n0, n1)
+	}
+}
+
+func TestFailoverIfAbsentDoesNotReplayAmbiguousOutcome(t *testing.T) {
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{putVertexIfAbsentAtFn: func(context.Context, string, any, time.Time) (PutOutcome, error) {
+		firstCalls++
+		return 0, unavailableErr()
+	}}
+	second := &fakeNode{putVertexIfAbsentAtFn: func(context.Context, string, any, time.Time) (PutOutcome, error) {
+		secondCalls++
+		return PutOutcomeConditionNotMet, nil
+	}}
+	f := &Failover{nodes: []failoverNode{first, second}, retry: testRetryPolicy(3)}
+
+	if outcome, err := f.PutVertexIfAbsent(context.Background(), "k", "v", time.Minute); !errors.Is(err, ErrUnavailable) || outcome != 0 {
+		t.Fatalf("PutVertexIfAbsent = (%v, %v), want ambiguous ErrUnavailable", outcome, err)
+	}
+	if firstCalls != 1 || secondCalls != 0 {
+		t.Fatalf("call counts first=%d second=%d, want 1/0 (no replay or rotation)", firstCalls, secondCalls)
+	}
+}
+
+func TestFailoverRelativePutTTLResolvedOnceBeforeRingWalk(t *testing.T) {
+	const ttl = time.Minute
+
+	t.Run("vertex", func(t *testing.T) {
+		var expirations []time.Time
+		record := func(outcome PutOutcome, err error) *fakeNode {
+			return &fakeNode{putVertexAtFn: func(_ context.Context, _ string, _ any, expiration time.Time) (PutOutcome, error) {
+				expirations = append(expirations, expiration)
+				time.Sleep(time.Millisecond)
+				return outcome, err
+			}}
+		}
+		before := time.Now().Add(ttl)
+		f := &Failover{nodes: []failoverNode{
+			record(0, unavailableErr()),
+			record(PutOutcomeAppliedAndLive, nil),
+		}}
+		outcome, err := f.PutVertex(context.Background(), "k", "v", ttl)
+		after := time.Now().Add(ttl)
+		if err != nil || outcome != PutOutcomeAppliedAndLive {
+			t.Fatalf("PutVertex = (%s, %v), want APPLIED_AND_LIVE, nil", outcome, err)
+		}
+		if len(expirations) != 2 || !expirations[0].Equal(expirations[1]) {
+			t.Fatalf("ring attempts saw expirations %v, want one identical absolute expiration", expirations)
+		}
+		if expirations[0].Before(before) || expirations[0].After(after) {
+			t.Fatalf("resolved expiration %v outside [%v, %v]", expirations[0], before, after)
+		}
+	})
+
+	t.Run("conditional vertex", func(t *testing.T) {
+		var expiration time.Time
+		f := &Failover{nodes: []failoverNode{&fakeNode{
+			putVertexIfAbsentAtFn: func(_ context.Context, _ string, _ any, observed time.Time) (PutOutcome, error) {
+				expiration = observed
+				return PutOutcomeAppliedAndLive, nil
+			},
+		}}}
+		before := time.Now().Add(ttl)
+		outcome, err := f.PutVertexIfAbsent(context.Background(), "k", "v", ttl)
+		after := time.Now().Add(ttl)
+		if err != nil || outcome != PutOutcomeAppliedAndLive {
+			t.Fatalf("PutVertexIfAbsent = (%s, %v), want APPLIED_AND_LIVE, nil", outcome, err)
+		}
+		if expiration.Before(before) || expiration.After(after) {
+			t.Fatalf("resolved expiration %v outside [%v, %v]", expiration, before, after)
+		}
+	})
+
+	t.Run("edge", func(t *testing.T) {
+		var expirations []time.Time
+		record := func(outcome PutOutcome, err error) *fakeNode {
+			return &fakeNode{putEdgeAtFn: func(_ context.Context, _, _ string, _ float32, expiration time.Time) (PutOutcome, error) {
+				expirations = append(expirations, expiration)
+				time.Sleep(time.Millisecond)
+				return outcome, err
+			}}
+		}
+		before := time.Now().Add(ttl)
+		f := &Failover{nodes: []failoverNode{
+			record(0, unavailableErr()),
+			record(PutOutcomeAppliedAndLive, nil),
+		}}
+		outcome, err := f.PutEdge(context.Background(), "a", "b", 1, ttl)
+		after := time.Now().Add(ttl)
+		if err != nil || outcome != PutOutcomeAppliedAndLive {
+			t.Fatalf("PutEdge = (%s, %v), want APPLIED_AND_LIVE, nil", outcome, err)
+		}
+		if len(expirations) != 2 || !expirations[0].Equal(expirations[1]) {
+			t.Fatalf("ring attempts saw expirations %v, want one identical absolute expiration", expirations)
+		}
+		if expirations[0].Before(before) || expirations[0].After(after) {
+			t.Fatalf("resolved expiration %v outside [%v, %v]", expirations[0], before, after)
+		}
+	})
+}
+
+func TestFailoverPutOutcomeClockRollbackPreservesInitialLiveness(t *testing.T) {
+	base := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	expiration := base.Add(time.Second)
+	clockCalls := 0
+	f := &Failover{
+		nodes: []failoverNode{&fakeNode{}},
+		clock: func() time.Time {
+			clockCalls++
+			if clockCalls == 1 {
+				return expiration.Add(time.Second)
+			}
+			return base
+		},
+	}
+	outcome, err := f.PutVertexAt(context.Background(), "k", "v", expiration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != PutOutcomeExpired {
+		t.Fatalf("PutVertexAt outcome = %s, want EXPIRED after clock rollback", outcome)
+	}
+	if clockCalls != 2 {
+		t.Fatalf("clock calls = %d, want request and final samples", clockCalls)
 	}
 }
 

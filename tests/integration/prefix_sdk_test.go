@@ -29,7 +29,7 @@ func seedPrefixVertices(t *testing.T, ctx context.Context, l *client.Lantern, ke
 	for i, k := range keys {
 		inputs[i] = client.VertexInput{Key: k, Value: k, Expiration: exp}
 	}
-	if err := l.PutVertices(ctx, inputs); err != nil {
+	if _, err := l.PutVertices(ctx, inputs); err != nil {
 		t.Fatalf("PutVertices: %v", err)
 	}
 }

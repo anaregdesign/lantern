@@ -57,7 +57,7 @@ func waitReady(ep string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		cli, err := client.NewLantern(ep)
 		if err == nil {
-			if err := cli.PutVertex(ctx, "__probe__", 1, 5*time.Second); err == nil {
+			if outcome, err := cli.PutVertex(ctx, "__probe__", 1, 5*time.Second); err == nil && outcome == client.PutOutcomeAppliedAndLive {
 				_, _ = cli.DeleteVertex(ctx, "__probe__")
 				_ = cli.Close()
 				return
@@ -71,9 +71,11 @@ func waitReady(ep string, timeout time.Duration) {
 
 func seedBaseline(ctx context.Context, c *client.Lantern) {
 	for _, k := range []string{"v1", "v2", "v3"} {
-		if err := c.PutVertex(ctx, k, k+"-baseline", 5*time.Minute); err != nil {
+		outcome, err := c.PutVertex(ctx, k, k+"-baseline", 5*time.Minute)
+		if err != nil {
 			log.Fatalf("seed PutVertex %q: %v", k, err)
 		}
+		requireApplied("seed PutVertex "+k, outcome)
 	}
 	if _, err := c.AddEdge(ctx, "v1", "v2", 1.0, 5*time.Minute); err != nil {
 		log.Fatalf("seed AddEdge v1->v2: %v", err)
@@ -94,9 +96,11 @@ func writeDuringOutage(ctx context.Context, eps []string) {
 	}
 	defer func() { _ = cli.Close() }()
 	for _, k := range []string{"new1", "new2", "new3", "new4", "new5"} {
-		if err := cli.PutVertex(ctx, k, k+"-during-outage", 5*time.Minute); err != nil {
+		outcome, err := cli.PutVertex(ctx, k, k+"-during-outage", 5*time.Minute)
+		if err != nil {
 			log.Fatalf("outage-write PutVertex %q: %v", k, err)
 		}
+		requireApplied("outage-write PutVertex "+k, outcome)
 	}
 	if _, err := cli.AddEdge(ctx, "v3", "new1", 3.0, 5*time.Minute); err != nil {
 		log.Fatalf("outage-write AddEdge v3->new1: %v", err)
@@ -105,8 +109,16 @@ func writeDuringOutage(ctx context.Context, eps []string) {
 		log.Fatalf("outage-write AddEdge new1->new2: %v", err)
 	}
 	// Mutate a baseline vertex during outage to check converging replace.
-	if err := cli.PutVertex(ctx, "v1", "v1-mutated", 5*time.Minute); err != nil {
+	outcome, err := cli.PutVertex(ctx, "v1", "v1-mutated", 5*time.Minute)
+	if err != nil {
 		log.Fatalf("outage-write PutVertex v1 mutate: %v", err)
+	}
+	requireApplied("outage-write PutVertex v1 mutate", outcome)
+}
+
+func requireApplied(operation string, outcome client.PutOutcome) {
+	if outcome != client.PutOutcomeAppliedAndLive {
+		log.Fatalf("%s returned %s", operation, outcome)
 	}
 }
 

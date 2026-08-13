@@ -1,5 +1,6 @@
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { requireAppliedPutOutcome } from "./put-outcome";
 import { flatVertexToSdkInput } from "./to-flat";
 import type { PutVertexBody, PutVertexResponse, Vertex } from "./types";
 
@@ -12,9 +13,8 @@ export type { PutVertexBody, PutVertexResponse, Vertex } from "./types";
  * the edit-vertex form does not have to re-stitch the key into the
  * payload before sending (#409).
  *
- * Returns the wire response shape (empty object today, kept as
- * `PutVertexResponse` for upward compatibility with future write-side
- * acknowledgements).
+ * Returns the authoritative outcome and fails closed when the server did not
+ * leave the value live, so the editor cannot display a false success.
  */
 export async function putVertex(
   client: LanternClient,
@@ -24,8 +24,16 @@ export async function putVertex(
 ): Promise<PutVertexResponse> {
   const flat: Vertex = { ...(body.vertex ?? {}), key };
   try {
-    await client.putVertex(flatVertexToSdkInput(flat), init?.signal);
-    return {};
+    const outcome = await client.putVertex(
+      flatVertexToSdkInput(flat),
+      init?.signal,
+    );
+    requireAppliedPutOutcome(
+      "PutVertex",
+      `vertex ${JSON.stringify(key)}`,
+      outcome,
+    );
+    return { outcome };
   } catch (err) {
     throw LanternApiError.fromUnknown("PutVertex", err);
   }

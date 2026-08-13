@@ -30,7 +30,7 @@ func TestTopVerticesByDegree_E2E(t *testing.T) {
 	defer cancel()
 
 	for _, k := range []string{"n:a", "n:b", "n:c", "n:d", "x:1", "x:2"} {
-		if err := sdk.PutVertex(ctx, k, k, time.Minute); err != nil {
+		if _, err := sdk.PutVertex(ctx, k, k, time.Minute); err != nil {
 			t.Fatalf("PutVertex %s: %v", k, err)
 		}
 	}

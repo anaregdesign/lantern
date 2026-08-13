@@ -1,5 +1,6 @@
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { requireAppliedPutOutcome } from "./put-outcome";
 import { flatVertexToSdkInput } from "./to-flat";
 import type { PutVerticesRequest, PutVerticesResponse } from "./types";
 
@@ -20,8 +21,15 @@ export async function putVertices(
 ): Promise<PutVerticesResponse> {
   const inputs = (request.vertices ?? []).map(flatVertexToSdkInput);
   try {
-    await client.putVertices(inputs, init?.signal);
-    return {};
+    const results = await client.putVertices(inputs, init?.signal);
+    for (const [index, result] of results.entries()) {
+      requireAppliedPutOutcome(
+        "PutVertices",
+        `vertex ${index} (${JSON.stringify(result.key)})`,
+        result.outcome,
+      );
+    }
+    return { results };
   } catch (err) {
     throw LanternApiError.fromUnknown("PutVertices", err);
   }

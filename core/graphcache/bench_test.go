@@ -835,7 +835,7 @@ func BenchmarkPutVerticesIndexedBatchPreparation(b *testing.B) {
 				b.ResetTimer()
 				for range b.N {
 					if scenario.skipped {
-						if _, _, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, observe); err != nil {
+						if _, _, err := c.putVerticesIfAbsentChecked(items, hlc.Timestamp{}, false, observe, nil); err != nil {
 							b.Fatal(err)
 						}
 						continue
@@ -928,6 +928,67 @@ func BenchmarkApplyPutVerticesHLC(b *testing.B) {
 			<-done
 		})
 	}
+}
+
+// BenchmarkCausalBarrierHotPaths isolates the #1178 overhead on replicated
+// Put admission. Live writes are measured with an unallocated barrier map and
+// with unrelated retained barriers; unique expired writes measure the metadata
+// insertion path itself. SnapshotReplication covers a mixed live/barrier image
+// because bootstrap is the only O(N+E) reader of these maps.
+func BenchmarkCausalBarrierHotPaths(b *testing.B) {
+	exp := time.Now().Add(time.Hour)
+	ts := hlc.Timestamp{WallNs: 20}
+
+	for _, populated := range []bool{false, true} {
+		name := "NilMap"
+		if populated {
+			name = "PopulatedMap"
+		}
+		b.Run("LivePut/"+name, func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			if populated {
+				for i := 0; i < 1024; i++ {
+					c.recordVertexCausalBarrierLocked(makeKey("bench://barrier", i, 40), ts)
+				}
+			}
+			item := []VertexItem[string, string]{{Key: "hot", Value: "value", Expiration: exp}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				c.PutVerticesWithExpirationHLC(item, hlc.Timestamp{WallNs: int64(21 + i)})
+			}
+		})
+	}
+
+	b.Run("UniqueExpiredBarrierInsert", func(b *testing.B) {
+		c := NewGraphCache[string, string](time.Hour)
+		items := make([]VertexItem[string, string], b.N)
+		for i := range items {
+			items[i] = VertexItem[string, string]{Key: makeKey("bench://expired", i, 40), CausalBarrier: true}
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := range items {
+			c.PutVerticesWithExpirationHLC(items[i:i+1], ts)
+		}
+	})
+
+	b.Run("SnapshotReplicationMixed1k", func(b *testing.B) {
+		c := NewGraphCache[string, string](time.Hour)
+		liveItems := make([]VertexItem[string, string], 1000)
+		for i := range liveItems {
+			liveItems[i] = VertexItem[string, string]{Key: makeKey("bench://live", i, 40), Value: "v", Expiration: exp}
+		}
+		c.PutVerticesWithExpirationHLC(liveItems, ts)
+		for i := 0; i < 1000; i++ {
+			c.ApplyVertexCausalBarrierHLC(makeKey("bench://dead", i, 40), ts)
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = c.SnapshotReplication()
+		}
+	})
 }
 
 // BenchmarkLocalCommunity pits the #845 sweep-cut extraction against plain

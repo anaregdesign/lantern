@@ -37,6 +37,7 @@ import {
   LanternService,
   MatchMode as PbMatchMode,
   Objective as PbObjective,
+  PutOutcome as PbPutOutcome,
   Reduction as PbReduction,
   ScanOrder as PbScanOrder,
   SearchHitProjectionStatus as PbSearchHitProjectionStatus,
@@ -63,8 +64,9 @@ import {
   Weighting,
   fromEdgeJson,
   fromVertexJson,
+  edgeInputToJsonAt,
   toEdgeJson,
-  toVertexJson,
+  vertexInputToJsonAt,
   edgeRecordToJson,
   vertexRecordToJson,
   type Edge,
@@ -75,6 +77,57 @@ import {
   type Vertex,
   type VertexInput,
 } from "./values.js";
+
+/** Server-authoritative result for one idempotent Put. */
+export type PutOutcome = "appliedAndLive" | "expired" | "conditionNotMet" | "superseded";
+
+/** Index-aligned result of one vertex Put. */
+export interface VertexPutResult {
+  key: string;
+  outcome: PutOutcome;
+}
+
+/** Index-aligned result of one edge Put. */
+export interface EdgePutResult {
+  tail: string;
+  head: string;
+  outcome: PutOutcome;
+}
+
+function putOutcomeFromWire(outcome: PbPutOutcome): PutOutcome {
+  switch (outcome) {
+    case PbPutOutcome.APPLIED_AND_LIVE:
+      return "appliedAndLive";
+    case PbPutOutcome.EXPIRED:
+      return "expired";
+    case PbPutOutcome.CONDITION_NOT_MET:
+      return "conditionNotMet";
+    case PbPutOutcome.SUPERSEDED:
+      return "superseded";
+    default:
+      throw new LanternError(`server returned unknown Put outcome ${outcome}`);
+  }
+}
+
+function expirationFromJson(json: Record<string, unknown>): Date | null {
+  const value = json.expiration;
+  return typeof value === "string" ? new Date(value) : null;
+}
+
+function clientBoundedPutOutcome(
+  outcome: PutOutcome,
+  initiallyLive: boolean,
+  expiration: Date | null,
+  observedAt: Date,
+): PutOutcome {
+  if (
+    outcome === "appliedAndLive" &&
+    (!initiallyLive || (expiration !== null && expiration.getTime() <= observedAt.getTime()))
+  ) {
+    return "expired";
+  }
+  return outcome;
+}
 import {
   type ConnectOptions,
   DEFAULT_BATCH_CHUNK_SIZE,
@@ -417,28 +470,21 @@ export class Lantern {
     });
   }
 
-  async putVertex(input: VertexInput, signal?: AbortSignal): Promise<void> {
-    const vertex = fromJson(VertexSchema, toVertexJson(input) as JsonValue);
-    return this.invoke(async () => {
-      await this.client.putVertex({ vertex }, this.callOpts(signal));
-    });
+  async putVertex(input: VertexInput, signal?: AbortSignal): Promise<PutOutcome> {
+    return (await this.putVertices([input], signal))[0]!.outcome;
   }
 
   /**
    * Conditionally upserts a single vertex, applying the write only when no
-   * live vertex already exists at its key (SET NX, #896). Resolves to `true`
-   * when the write landed and `false` when an existing live vertex left the
-   * stored value and expiration untouched. "Live" follows the server's #750
+   * live vertex already exists at its key (SET NX, #896). Resolves to the
+   * server-authoritative outcome; `conditionNotMet` means an existing live
+   * vertex left the stored value and expiration untouched. "Live" follows the server's #750
    * visibility rule, so an expired-but-uncollected vertex does not block the
    * write. The server performs the existence check and the store atomically,
    * closing the check-then-act race a getVertex-then-putVertex sequence has.
    */
-  async putVertexIfAbsent(input: VertexInput, signal?: AbortSignal): Promise<boolean> {
-    const vertex = fromJson(VertexSchema, toVertexJson(input) as JsonValue);
-    return this.invoke(async () => {
-      const resp = await this.client.putVertex({ vertex, ifAbsent: true }, this.callOpts(signal));
-      return resp.written;
-    });
+  async putVertexIfAbsent(input: VertexInput, signal?: AbortSignal): Promise<PutOutcome> {
+    return (await this.putVerticesIfAbsent([input], signal))[0]!.outcome;
   }
 
   async deleteVertex(key: string, signal?: AbortSignal): Promise<boolean> {
@@ -465,12 +511,47 @@ export class Lantern {
     return { found, missing };
   }
 
-  async putVertices(inputs: readonly VertexInput[], signal?: AbortSignal): Promise<void> {
-    if (inputs.length === 0) return;
-    await this.runBatchWrite(inputs, async (chunk) => {
-      const vertices = chunk.map((vi) => fromJson(VertexSchema, toVertexJson(vi) as JsonValue));
-      await this.client.putVertices({ vertices }, this.callOpts(signal));
+  async putVertices(
+    inputs: readonly VertexInput[],
+    signal?: AbortSignal,
+  ): Promise<VertexPutResult[]> {
+    if (inputs.length === 0) return [];
+    const sampledAtMs = Date.now();
+    const prepared = inputs.map((input) => {
+      const json = vertexInputToJsonAt(input, sampledAtMs) as Record<string, unknown>;
+      const expiration = expirationFromJson(json);
+      return {
+        input,
+        json,
+        expiration,
+        initiallyLive: expiration === null || expiration.getTime() > sampledAtMs,
+      };
     });
+    const results: VertexPutResult[] = [];
+    await this.runBatchWrite(prepared, async (chunk) => {
+      const vertices = chunk.map((value) => fromJson(VertexSchema, value.json as JsonValue));
+      const resp = await this.client.putVertices({ vertices }, this.callOpts(signal));
+      if (resp.outcomes.length !== chunk.length) {
+        throw new LanternError(
+          `server returned ${resp.outcomes.length} Put outcomes for ${chunk.length} vertices`,
+        );
+      }
+      const chunkResults = resp.outcomes.map((outcome, index) => ({
+        key: chunk[index]!.input.key,
+        outcome: putOutcomeFromWire(outcome),
+      }));
+      results.push(...chunkResults);
+    });
+    const observedAt = new Date(Date.now());
+    return results.map((result, index) => ({
+      ...result,
+      outcome: clientBoundedPutOutcome(
+        result.outcome,
+        prepared[index]!.initiallyLive,
+        prepared[index]!.expiration,
+        observedAt,
+      ),
+    }));
   }
 
   /**
@@ -478,31 +559,58 @@ export class Lantern {
    * no live vertex already exists at its key (SET NX, #896). Large batches are
    * automatically chunked according to the client's batch-chunk size.
    *
-   * Resolves to `written` — the number of vertices actually stored — and
-   * `skippedKeys` — the keys left untouched because a live vertex already
-   * existed there (summed/collected across chunks). "Live" follows the
-   * server's #750 visibility rule. Each key's existence check and store happen
-   * atomically server-side. On partial failure it throws a `BatchError` whose
-   * `written` field records the number of inputs in the fully committed
-   * chunks, so callers can resume with `inputs.slice(err.written)`.
+   * Resolves to request-index-aligned results carrying the server-authoritative
+   * outcome for every input. "Live" follows the server's #750 visibility rule.
+   * Each key's existence check and store happen atomically server-side. On
+   * partial failure it throws a `BatchError` whose `written` field records
+   * fully observed prior chunks. The failed chunk may already have committed;
+   * replay performs a new condition evaluation and cannot recover its
+   * original outcomes, so callers should reconcile state before retrying.
    */
   async putVerticesIfAbsent(
     inputs: readonly VertexInput[],
     signal?: AbortSignal,
-  ): Promise<{ written: number; skippedKeys: string[] }> {
-    if (inputs.length === 0) return { written: 0, skippedKeys: [] };
-    let written = 0;
-    const skippedKeys: string[] = [];
-    await this.runBatchWrite(inputs, async (chunk) => {
-      const vertices = chunk.map((vi) => fromJson(VertexSchema, toVertexJson(vi) as JsonValue));
+  ): Promise<VertexPutResult[]> {
+    if (inputs.length === 0) return [];
+    const sampledAtMs = Date.now();
+    const prepared = inputs.map((input) => {
+      const json = vertexInputToJsonAt(input, sampledAtMs) as Record<string, unknown>;
+      const expiration = expirationFromJson(json);
+      return {
+        input,
+        json,
+        expiration,
+        initiallyLive: expiration === null || expiration.getTime() > sampledAtMs,
+      };
+    });
+    const results: VertexPutResult[] = [];
+    await this.runBatchWrite(prepared, async (chunk) => {
+      const vertices = chunk.map((value) => fromJson(VertexSchema, value.json as JsonValue));
       const resp = await this.client.putVertices(
         { vertices, ifAbsent: true },
         this.callOpts(signal),
       );
-      written += resp.written;
-      for (const k of resp.skippedKeys) skippedKeys.push(k);
+      if (resp.outcomes.length !== chunk.length) {
+        throw new LanternError(
+          `server returned ${resp.outcomes.length} Put outcomes for ${chunk.length} vertices`,
+        );
+      }
+      const chunkResults = resp.outcomes.map((outcome, index) => ({
+        key: chunk[index]!.input.key,
+        outcome: putOutcomeFromWire(outcome),
+      }));
+      results.push(...chunkResults);
     });
-    return { written, skippedKeys };
+    const observedAt = new Date(Date.now());
+    return results.map((result, index) => ({
+      ...result,
+      outcome: clientBoundedPutOutcome(
+        result.outcome,
+        prepared[index]!.initiallyLive,
+        prepared[index]!.expiration,
+        observedAt,
+      ),
+    }));
   }
 
   async deleteVertices(keys: readonly string[], signal?: AbortSignal): Promise<number> {
@@ -785,11 +893,8 @@ export class Lantern {
     });
   }
 
-  async putEdge(input: EdgeInput, signal?: AbortSignal): Promise<void> {
-    const edge = fromJson(EdgeSchema, toEdgeJson(input) as JsonValue);
-    return this.invoke(async () => {
-      await this.client.putEdge({ edge }, this.callOpts(signal));
-    });
+  async putEdge(input: EdgeInput, signal?: AbortSignal): Promise<PutOutcome> {
+    return (await this.putEdges([input], signal))[0]!.outcome;
   }
 
   async deleteEdge(tail: string, head: string, signal?: AbortSignal): Promise<boolean> {
@@ -875,12 +980,45 @@ export class Lantern {
     return effective[effective.length - 1] ?? 0;
   }
 
-  async putEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<void> {
-    if (inputs.length === 0) return;
-    await this.runBatchWrite(inputs, async (chunk) => {
-      const edges = chunk.map((e) => fromJson(EdgeSchema, toEdgeJson(e) as JsonValue));
-      await this.client.putEdges({ edges }, this.callOpts(signal));
+  async putEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<EdgePutResult[]> {
+    if (inputs.length === 0) return [];
+    const sampledAtMs = Date.now();
+    const prepared = inputs.map((input) => {
+      const json = edgeInputToJsonAt(input, sampledAtMs) as Record<string, unknown>;
+      const expiration = expirationFromJson(json);
+      return {
+        input,
+        json,
+        expiration,
+        initiallyLive: expiration === null || expiration.getTime() > sampledAtMs,
+      };
     });
+    const results: EdgePutResult[] = [];
+    await this.runBatchWrite(prepared, async (chunk) => {
+      const edges = chunk.map((value) => fromJson(EdgeSchema, value.json as JsonValue));
+      const resp = await this.client.putEdges({ edges }, this.callOpts(signal));
+      if (resp.outcomes.length !== chunk.length) {
+        throw new LanternError(
+          `server returned ${resp.outcomes.length} Put outcomes for ${chunk.length} edges`,
+        );
+      }
+      const chunkResults = resp.outcomes.map((outcome, index) => ({
+        tail: chunk[index]!.input.tail,
+        head: chunk[index]!.input.head,
+        outcome: putOutcomeFromWire(outcome),
+      }));
+      results.push(...chunkResults);
+    });
+    const observedAt = new Date(Date.now());
+    return results.map((result, index) => ({
+      ...result,
+      outcome: clientBoundedPutOutcome(
+        result.outcome,
+        prepared[index]!.initiallyLive,
+        prepared[index]!.expiration,
+        observedAt,
+      ),
+    }));
   }
 
   async deleteEdges(
@@ -1155,15 +1293,31 @@ export class Lantern {
       if (vbatch.length === 0) return;
       const vertices = vbatch;
       vbatch = [];
-      await this.invoke(() => this.client.putVertices({ vertices }, this.callOpts(signal)));
-      stats.vertices += vertices.length;
+      const resp = await this.invoke(() =>
+        this.client.putVertices({ vertices }, this.callOpts(signal)),
+      );
+      if (resp.outcomes.length !== vertices.length) {
+        throw new LanternError(
+          `server returned ${resp.outcomes.length} Put outcomes for ${vertices.length} vertices`,
+        );
+      }
+      stats.vertices += resp.outcomes.filter(
+        (outcome) => putOutcomeFromWire(outcome) === "appliedAndLive",
+      ).length;
     };
     const flushEdges = async (): Promise<void> => {
       if (ebatch.length === 0) return;
       const edges = ebatch;
       ebatch = [];
-      await this.invoke(() => this.client.putEdges({ edges }, this.callOpts(signal)));
-      stats.edges += edges.length;
+      const resp = await this.invoke(() => this.client.putEdges({ edges }, this.callOpts(signal)));
+      if (resp.outcomes.length !== edges.length) {
+        throw new LanternError(
+          `server returned ${resp.outcomes.length} Put outcomes for ${edges.length} edges`,
+        );
+      }
+      stats.edges += resp.outcomes.filter(
+        (outcome) => putOutcomeFromWire(outcome) === "appliedAndLive",
+      ).length;
     };
 
     for await (const rec of source) {

@@ -63,8 +63,12 @@ func registerPostNote(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			return nil, postNoteOutput{}, fmt.Errorf("post_note: %w", err)
 		}
 		d, _ := r.ResolveCapped(bucket)
-		if err := lc.PutVertex(ctx, key, payload, d); err != nil {
+		outcome, err := lc.PutVertex(ctx, key, payload, d)
+		if err != nil {
 			return nil, postNoteOutput{}, mapSDKError("post_note", err)
+		}
+		if err := requireAppliedPut("post_note", outcome); err != nil {
+			return nil, postNoteOutput{}, err
 		}
 
 		// Link note→resource so the note rides into whats_happening's

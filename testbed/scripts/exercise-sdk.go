@@ -72,31 +72,31 @@ func run() error {
 
 	// ---- Put/Get/Delete single vertex ------------------------------
 	step("PutVertex string", func() error {
-		return lc.PutVertex(ctx, "sdk:alice", "Alice", 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:alice", "Alice", 5*time.Minute))
 	})
 	step("PutVertex int", func() error {
-		return lc.PutVertex(ctx, "sdk:count", int64(42), 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:count", int64(42), 5*time.Minute))
 	})
 	step("PutVertex bool", func() error {
-		return lc.PutVertex(ctx, "sdk:flag", true, 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:flag", true, 5*time.Minute))
 	})
 	step("PutVertex float", func() error {
-		return lc.PutVertex(ctx, "sdk:pi", 3.14, 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:pi", 3.14, 5*time.Minute))
 	})
 	step("PutVertex bytes", func() error {
-		return lc.PutVertex(ctx, "sdk:blob", []byte("\x00\x01\x02"), 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:blob", []byte("\x00\x01\x02"), 5*time.Minute))
 	})
 	step("PutVertex time", func() error {
-		return lc.PutVertex(ctx, "sdk:ts", time.Unix(1700000000, 0).UTC(), 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:ts", time.Unix(1700000000, 0).UTC(), 5*time.Minute))
 	})
 	step("PutVertex duration", func() error {
-		return lc.PutVertex(ctx, "sdk:dur", 30*time.Second, 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:dur", 30*time.Second, 5*time.Minute))
 	})
 	step("PutVertexAt", func() error {
-		return lc.PutVertexAt(ctx, "sdk:abs", "absolute-exp", time.Now().Add(2*time.Minute))
+		return putError(lc.PutVertexAt(ctx, "sdk:abs", "absolute-exp", time.Now().Add(2*time.Minute)))
 	})
 	step("PutVertex nil", func() error {
-		return lc.PutVertex(ctx, "sdk:nil", nil, 5*time.Minute)
+		return putError(lc.PutVertex(ctx, "sdk:nil", nil, 5*time.Minute))
 	})
 
 	step("GetVertex string", func() error {
@@ -177,7 +177,7 @@ func run() error {
 
 	// ---- expected ErrInvalidArgument (empty key) -------------------
 	step("PutVertex empty key → ErrInvalidArgument", func() error {
-		err := lc.PutVertex(ctx, "", "x", time.Minute)
+		_, err := lc.PutVertex(ctx, "", "x", time.Minute)
 		if !errors.Is(err, client.ErrInvalidArgument) {
 			return fmt.Errorf("want ErrInvalidArgument, got %v", err)
 		}
@@ -216,7 +216,7 @@ func run() error {
 				Expiration: time.Now().Add(5 * time.Minute),
 			})
 		}
-		return lc.PutVertices(ctx, in)
+		return putError(lc.PutVertices(ctx, in))
 	})
 	step("GetVertices mixed", func() error {
 		keys := []string{"sdk:batch-0", "sdk:batch-3", "sdk:batch-6", "sdk:nope"}
@@ -266,7 +266,7 @@ func run() error {
 		return nil
 	})
 	step("PutEdge (idempotent replace)", func() error {
-		if err := lc.PutEdge(ctx, "sdk:a", "sdk:b", 0.25, 5*time.Minute); err != nil {
+		if err := putError(lc.PutEdge(ctx, "sdk:a", "sdk:b", 0.25, 5*time.Minute)); err != nil {
 			return err
 		}
 		e, err := lc.GetEdge(ctx, "sdk:a", "sdk:b")
@@ -279,7 +279,7 @@ func run() error {
 		return nil
 	})
 	step("PutEdgeAt", func() error {
-		return lc.PutEdgeAt(ctx, "sdk:a", "sdk:c", 0.7, time.Now().Add(2*time.Minute))
+		return putError(lc.PutEdgeAt(ctx, "sdk:a", "sdk:c", 0.7, time.Now().Add(2*time.Minute)))
 	})
 	step("AddEdgeAt", func() error {
 		_, err := lc.AddEdgeAt(ctx, "sdk:a", "sdk:d", 0.3, time.Now().Add(2*time.Minute))
@@ -317,7 +317,7 @@ func run() error {
 				Expiration: time.Now().Add(5 * time.Minute),
 			})
 		}
-		return lc.PutEdges(ctx, in)
+		return putError(lc.PutEdges(ctx, in))
 	})
 
 	// ---- GetEdges / DeleteEdges ------------------------------------
@@ -360,20 +360,20 @@ func run() error {
 	// Re-build a small graph: alice -> bob (0.9), alice -> carol (0.1), bob -> dave (0.8), carol -> dave (0.2)
 	step("seed illuminate graph", func() error {
 		now := time.Now().Add(5 * time.Minute)
-		if err := lc.PutVertices(ctx, []client.VertexInput{
+		if err := putError(lc.PutVertices(ctx, []client.VertexInput{
 			{Key: "ill:alice", Value: "A", Expiration: now},
 			{Key: "ill:bob", Value: "B", Expiration: now},
 			{Key: "ill:carol", Value: "C", Expiration: now},
 			{Key: "ill:dave", Value: "D", Expiration: now},
-		}); err != nil {
+		})); err != nil {
 			return err
 		}
-		return lc.PutEdges(ctx, []client.EdgeInput{
+		return putError(lc.PutEdges(ctx, []client.EdgeInput{
 			{Tail: "ill:alice", Head: "ill:bob", Weight: 0.9, Expiration: now},
 			{Tail: "ill:alice", Head: "ill:carol", Weight: 0.1, Expiration: now},
 			{Tail: "ill:bob", Head: "ill:dave", Weight: 0.8, Expiration: now},
 			{Tail: "ill:carol", Head: "ill:dave", Weight: 0.2, Expiration: now},
-		})
+		}))
 	})
 	for _, c := range []struct {
 		name string
@@ -445,7 +445,7 @@ func run() error {
 
 	// ---- short TTL → confirm expiry ---------------------------------
 	step("ephemeral vertex expiry", func() error {
-		if err := lc.PutVertex(ctx, "sdk:ephem", "bye", 2*time.Second); err != nil {
+		if err := putError(lc.PutVertex(ctx, "sdk:ephem", "bye", 2*time.Second)); err != nil {
 			return err
 		}
 		time.Sleep(3 * time.Second)
@@ -503,4 +503,31 @@ func must(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func putError[T any](result T, err error) error {
+	if err != nil {
+		return err
+	}
+	switch typed := any(result).(type) {
+	case client.PutOutcome:
+		if typed != client.PutOutcomeAppliedAndLive {
+			return fmt.Errorf("Put returned %s", typed)
+		}
+	case []client.VertexPutResult:
+		for i, item := range typed {
+			if item.Outcome != client.PutOutcomeAppliedAndLive {
+				return fmt.Errorf("vertex Put item %d (%q) returned %s", i, item.Key, item.Outcome)
+			}
+		}
+	case []client.EdgePutResult:
+		for i, item := range typed {
+			if item.Outcome != client.PutOutcomeAppliedAndLive {
+				return fmt.Errorf("edge Put item %d (%q -> %q) returned %s", i, item.Tail, item.Head, item.Outcome)
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported Put result type %T", result)
+	}
+	return nil
 }

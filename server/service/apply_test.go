@@ -5,16 +5,110 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestApplyMutation_ReplicatedPutEntriesPreserveOrderAndAuthoritativeOutcome(t *testing.T) {
+	origin := bytes16("ordered-origin")
+	ts := newHLC(20, origin)
+	liveExpiration := timestamppb.New(time.Now().Add(time.Hour))
+	liveVertex := func(value string) *pb.Vertex {
+		return &pb.Vertex{Key: "k", Value: &pb.Vertex_String_{String_: value}, Expiration: liveExpiration}
+	}
+	vertexBarrier := func() *pb.ReplicatedPutVertex {
+		return &pb.ReplicatedPutVertex{Outcome: &pb.ReplicatedPutVertex_CausalBarrier{CausalBarrier: &pb.VertexCausalBarrier{Key: "k"}}}
+	}
+	vertexLive := func(value string) *pb.ReplicatedPutVertex {
+		return &pb.ReplicatedPutVertex{Outcome: &pb.ReplicatedPutVertex_Live{Live: liveVertex(value)}}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		entries    []*pb.ReplicatedPutVertex
+		wantLive   bool
+		searchTerm string
+	}{
+		{name: "barrier then live", entries: []*pb.ReplicatedPutVertex{vertexBarrier(), vertexLive("final searchable")}, wantLive: true, searchTerm: "searchable"},
+		{name: "live then barrier", entries: []*pb.ReplicatedPutVertex{vertexLive("must disappear"), vertexBarrier()}, searchTerm: "disappear"},
+	} {
+		t.Run("vertex/"+tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			cache.EnableSearchIndex(func(_ string, v *pb.Vertex) search.Document { return search.Text(v.GetString_()) }, strings.Compare)
+			svc := NewLanternService(cache)
+			m := &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{
+				ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: tc.entries},
+			}}}
+			if err := svc.ApplyMutation(context.Background(), m); err != nil {
+				t.Fatal(err)
+			}
+			_, live := cache.GetVertex("k")
+			if live != tc.wantLive {
+				t.Fatalf("vertex live = %v, want %v", live, tc.wantLive)
+			}
+			hits := cache.SearchVertices(tc.searchTerm, 10, "")
+			if tc.wantLive && (len(hits) != 1 || hits[0].ID != "k") {
+				t.Fatalf("SearchVertices = %v, want k", hits)
+			}
+			if !tc.wantLive && len(hits) != 0 {
+				t.Fatalf("SearchVertices = %v, want empty", hits)
+			}
+		})
+	}
+
+	edgeBarrier := func() *pb.ReplicatedPutEdge {
+		return &pb.ReplicatedPutEdge{Outcome: &pb.ReplicatedPutEdge_CausalBarrier{CausalBarrier: &pb.EdgeCausalBarrier{Tail: "tail", Head: "head"}}}
+	}
+	edgeLive := func(weight float32) *pb.ReplicatedPutEdge {
+		return &pb.ReplicatedPutEdge{Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "tail", Head: "head", Weight: weight, Expiration: liveExpiration}}}
+	}
+	for _, tc := range []struct {
+		name     string
+		entries  []*pb.ReplicatedPutEdge
+		wantLive bool
+	}{
+		{name: "barrier then live", entries: []*pb.ReplicatedPutEdge{edgeBarrier(), edgeLive(4)}, wantLive: true},
+		{name: "live then barrier", entries: []*pb.ReplicatedPutEdge{edgeLive(4), edgeBarrier()}},
+	} {
+		t.Run("edge/"+tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			svc := NewLanternService(cache)
+			m := &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{
+				ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: tc.entries},
+			}}}
+			if err := svc.ApplyMutation(context.Background(), m); err != nil {
+				t.Fatal(err)
+			}
+			_, live := cache.GetWeight("tail", "head")
+			if live != tc.wantLive {
+				t.Fatalf("edge live = %v, want %v", live, tc.wantLive)
+			}
+		})
+	}
+
+	t.Run("malformed entry rejects whole batch", func(t *testing.T) {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		svc := NewLanternService(cache)
+		m := &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{
+			ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: []*pb.ReplicatedPutVertex{vertexLive("must not apply"), {}}},
+		}}}
+		if err := svc.ApplyMutation(context.Background(), m); err == nil {
+			t.Fatal("malformed ordered entry was accepted")
+		}
+		if _, ok := cache.GetVertex("k"); ok {
+			t.Fatal("valid prefix of malformed batch was partially applied")
+		}
+	})
+}
 
 // TestApplyMutation_BasicOps walks each MutationOp variant once and
 // asserts that ApplyMutation hits the matching cache method. The fake

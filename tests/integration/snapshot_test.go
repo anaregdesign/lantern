@@ -83,7 +83,7 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	// distinct (tail, head) pairs (some pairs receive 2 contributions).
 	const Nv = 5
 	for i := 0; i < Nv; i++ {
-		if err := primary.sdk.PutVertex(ctx, "v-"+itoa(i), "val", time.Minute); err != nil {
+		if _, err := primary.sdk.PutVertex(ctx, "v-"+itoa(i), "val", time.Minute); err != nil {
 			t.Fatalf("primary PutVertex[%d]: %v", i, err)
 		}
 	}
@@ -248,6 +248,107 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 	}
 	if got := healthy.Msg.GetSearch().GetIndexStats().GetHealth(); got != pb.SearchIndexHealth_SEARCH_INDEX_HEALTH_HEALTHY {
 		t.Fatalf("follower search health after snapshot = %v", got)
+	}
+}
+
+// TestSnapshot_E2E_AcceptedExpiredCausalBarriers proves that replication
+// bootstrap carries delete-like HLC Put outcomes even though they have no live
+// Vertex/Edge payload. The source emits explicit causal-barrier frames and the
+// follower replays them through the dedicated no-materialization seams; a
+// delayed cross-origin HLC10 live Put remains absent behind the retained HLC20
+// floor.
+func TestSnapshot_E2E_AcceptedExpiredCausalBarriers(t *testing.T) {
+	primary := newSnapshotPeer(t, hlc.NodeID{0x31})
+	follower := newSnapshotPeer(t, hlc.NodeID{0x32})
+	newer := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0x20}}
+	older := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0x10}}
+	expired := time.Now().Add(-time.Hour)
+	live := time.Now().Add(time.Hour)
+
+	if !primary.cache.PutVertexWithExpirationHLC(
+		"barrier-vertex", &pb.Vertex{Key: "barrier-vertex"}, expired, newer,
+	) {
+		t.Fatal("primary accepted-expired vertex Put was rejected")
+	}
+	if !primary.cache.PutEdgeWithExpirationHLC("barrier-tail", "barrier-head", 2, expired, newer) {
+		t.Fatal("primary accepted-expired edge Put was rejected")
+	}
+	if primary.cache.VertexCount() != 0 || primary.cache.EdgeCount() != 0 {
+		t.Fatalf("primary materialized barrier state: vertices=%d edges=%d", primary.cache.VertexCount(), primary.cache.EdgeCount())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := primary.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	var vertexMarkers, edgeMarkers uint64
+	var footer *pb.SnapshotFooter
+	for stream.Receive() {
+		entry := stream.Msg()
+		switch e := entry.GetEntry().(type) {
+		case *pb.SnapshotResponse_Header:
+			// No mutation-log writes were needed to seed this storage-level
+			// bootstrap fixture; the header is still mandatory framing.
+		case *pb.SnapshotResponse_VertexCausalBarrier:
+			barrier := e.VertexCausalBarrier
+			if barrier == nil || barrier.GetKey() != "barrier-vertex" {
+				t.Fatalf("vertex barrier frame = %+v", barrier)
+			}
+			follower.cache.ApplyVertexCausalBarrierHLC(barrier.GetKey(), snapshotHLC(barrier.GetHlc()))
+			vertexMarkers++
+		case *pb.SnapshotResponse_EdgeCausalBarrier:
+			barrier := e.EdgeCausalBarrier
+			if barrier == nil || barrier.GetTail() != "barrier-tail" || barrier.GetHead() != "barrier-head" {
+				t.Fatalf("edge barrier frame = %+v", barrier)
+			}
+			follower.cache.ApplyEdgeCausalBarrierHLC(
+				barrier.GetTail(), barrier.GetHead(), snapshotHLC(barrier.GetHlc()),
+			)
+			edgeMarkers++
+		case *pb.SnapshotResponse_Vertex, *pb.SnapshotResponse_Edge:
+			t.Fatalf("accepted-expired-only snapshot emitted live payload: %T", e)
+		case *pb.SnapshotResponse_Footer:
+			footer = e.Footer
+		}
+	}
+	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("snapshot stream: %v", err)
+	}
+	if vertexMarkers != 1 || edgeMarkers != 1 {
+		t.Fatalf("barrier markers vertex=%d edge=%d, want 1/1", vertexMarkers, edgeMarkers)
+	}
+	if footer == nil || footer.GetVertexCount() != 0 || footer.GetEdgeCount() != 0 ||
+		footer.GetVertexCausalBarrierCount() != 1 || footer.GetEdgeCausalBarrierCount() != 1 {
+		t.Fatalf("footer = %+v, want live 0/0 and barrier 1/1", footer)
+	}
+
+	if follower.cache.PutVertexWithExpirationHLC(
+		"barrier-vertex", &pb.Vertex{Key: "barrier-vertex"}, live, older,
+	) {
+		t.Fatal("follower accepted cross-origin HLC10 vertex after HLC20 barrier bootstrap")
+	}
+	if follower.cache.PutEdgeWithExpirationHLC("barrier-tail", "barrier-head", 9, live, older) {
+		t.Fatal("follower accepted cross-origin HLC10 edge after HLC20 barrier bootstrap")
+	}
+	if _, ok := follower.cache.GetVertex("barrier-vertex"); ok {
+		t.Fatal("barrier vertex resurrected after bootstrap")
+	}
+	if _, _, ok := follower.cache.GetEdgeDetail("barrier-tail", "barrier-head"); ok {
+		t.Fatal("barrier edge resurrected after bootstrap")
+	}
+	if _, ok := follower.cache.GetVertex("barrier-tail"); ok {
+		t.Fatal("barrier bootstrap materialized edge endpoints")
+	}
+	searchResp, err := follower.raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "barrier"}))
+	if err != nil {
+		t.Fatalf("SearchVertices after barrier bootstrap: %v", err)
+	}
+	if len(searchResp.Msg.GetHits()) != 0 {
+		t.Fatalf("barrier marker became searchable: %+v", searchResp.Msg.GetHits())
 	}
 }
 

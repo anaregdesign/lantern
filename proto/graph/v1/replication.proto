@@ -42,7 +42,44 @@ message MutationOp {
     DeleteEdgeRequest delete_edge = 10;
     DeleteEdgesRequest delete_edges = 11;
     DeleteEdgesByPrefixRequest delete_edges_by_prefix = 12;
+    // Put batches accepted by the server use an ordered, outcome-bearing wire
+    // form. Live payloads and causal barriers remain interleaved in original
+    // request order, so duplicate identities replay exactly as committed even
+    // when the receiver's wall clock differs from the origin's.
+    ReplicatedPutVertices replicated_put_vertices = 13;
+    ReplicatedPutEdges replicated_put_edges = 14;
   }
+}
+
+message VertexCausalBarrier {
+  string key = 1;
+}
+
+message ReplicatedPutVertex {
+  oneof outcome {
+    Vertex live = 1;
+    VertexCausalBarrier causal_barrier = 2;
+  }
+}
+
+message ReplicatedPutVertices {
+  repeated ReplicatedPutVertex entries = 1;
+}
+
+message EdgeCausalBarrier {
+  string tail = 1;
+  string head = 2;
+}
+
+message ReplicatedPutEdge {
+  oneof outcome {
+    Edge live = 1;
+    EdgeCausalBarrier causal_barrier = 2;
+  }
+}
+
+message ReplicatedPutEdges {
+  repeated ReplicatedPutEdge entries = 1;
 }
 
 // Mutation is the unit of replication: a sequenced, HLC-stamped,
@@ -150,6 +187,8 @@ message SnapshotHeader {
 message SnapshotFooter {
   uint64 vertex_count = 1;
   uint64 edge_count = 2;
+  uint64 vertex_causal_barrier_count = 3;
+  uint64 edge_causal_barrier_count = 4;
 }
 
 // SnapshotVertex is the snapshot-time representation of a single live
@@ -160,6 +199,15 @@ message SnapshotFooter {
 // correctly rejected.
 message SnapshotVertex {
   Vertex vertex = 1;
+  HLCTimestamp hlc = 2;
+}
+
+// SnapshotVertexCausalBarrier carries the retained LWW floor of a PutVertex
+// that was accepted but already expired at its final application instant. It
+// has no Vertex payload because the overwrite must remain absent; receivers
+// record only (key, hlc) and reject later strictly-older live writes.
+message SnapshotVertexCausalBarrier {
+  string key = 1;
   HLCTimestamp hlc = 2;
 }
 
@@ -191,17 +239,29 @@ message SnapshotEdge {
   repeated SnapshotEdgeContribution contributions = 4;
 }
 
+// SnapshotEdgeCausalBarrier is the edge sibling of
+// SnapshotVertexCausalBarrier. It carries no contribution and must not create
+// endpoint vertices or an edge bucket when replayed.
+message SnapshotEdgeCausalBarrier {
+  string tail = 1;
+  string head = 2;
+  HLCTimestamp hlc = 3;
+}
+
 // SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 // order is always: exactly one SnapshotHeader, then zero or more
-// SnapshotVertex frames, then zero or more SnapshotEdge frames, then
-// exactly one SnapshotFooter. Receivers SHOULD treat any other order as a
-// protocol violation.
+// SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
+// frames, zero or more SnapshotVertex frames, zero or more SnapshotEdge
+// frames, then exactly one SnapshotFooter. Receivers MUST treat any other
+// order as a protocol violation.
 message SnapshotResponse {
   oneof entry {
     SnapshotHeader header = 1;
     SnapshotVertex vertex = 2;
     SnapshotEdge edge = 3;
     SnapshotFooter footer = 4;
+    SnapshotVertexCausalBarrier vertex_causal_barrier = 5;
+    SnapshotEdgeCausalBarrier edge_causal_barrier = 6;
   }
 }
 

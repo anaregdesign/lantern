@@ -896,10 +896,10 @@ func TestPutVerticesWithExpirationIfAbsent(t *testing.T) {
 }
 
 // TestPutVerticesWithExpirationIfAbsentHLC pins the replication-aware SET NX
-// path (#896): it returns the request-order indices of the accepted subset so
-// the server can replicate only those as unconditional LWW puts, skips keys
-// that are already live, and refuses to resurrect a key fenced by a strictly
-// newer tombstone (reporting it as skipped rather than written).
+// path (#896): its legacy indices count only the live-written subset, while
+// the exact-outcome sibling also exposes accepted EXPIRED delete-like writes
+// for replication. It skips keys that are already live and refuses to
+// resurrect a key fenced by a strictly newer tombstone.
 func TestPutVerticesWithExpirationIfAbsentHLC(t *testing.T) {
 	exp := time.Now().Add(time.Hour)
 	older := hlc.Timestamp{WallNs: 1000}

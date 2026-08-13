@@ -89,6 +89,18 @@ func TestAnnounce(t *testing.T) {
 		h.callExpectError(t, "announce", map[string]any{"task": ""})
 	})
 
+	t.Run("expired Put never reports announced", func(t *testing.T) {
+		h := newContextHarness(t)
+		h.fake.getVertexFn = func(_ context.Context, _ string) (*client.Vertex, error) {
+			return nil, client.ErrNotFound
+		}
+		h.fake.putVertexOutcome = client.PutOutcomeExpired
+		res := h.callExpectError(t, "announce", map[string]any{"task": "clock-skewed"})
+		if !strings.Contains(contentText(res), "expired") {
+			t.Fatalf("error = %q, want expired outcome", contentText(res))
+		}
+	})
+
 	t.Run("output surfaces the agent id", func(t *testing.T) {
 		h := newContextHarness(t)
 		h.fake.getVertexFn = func(_ context.Context, _ string) (*client.Vertex, error) {

@@ -58,6 +58,7 @@ import (
 type Failover struct {
 	nodes []failoverNode
 	cur   atomic.Uint64
+	clock func() time.Time
 
 	// retry, when non-nil (WithRetry passed to NewLanternFailover), drives
 	// the ring walk through a bounded full-jitter backoff loop: each retry
@@ -84,12 +85,12 @@ type Failover struct {
 // server. It mirrors the full unary surface of *Lantern that Failover
 // re-exports.
 type failoverNode interface {
-	PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error
-	PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) error
-	PutVertices(ctx context.Context, inputs []VertexInput) error
-	PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (bool, error)
-	PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (bool, error)
-	PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) (int, []string, error)
+	PutVertex(ctx context.Context, key string, value any, ttl time.Duration) (PutOutcome, error)
+	PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
+	PutVertices(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
+	PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (PutOutcome, error)
+	PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
+	PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
 	GetVertex(ctx context.Context, key string) (*Vertex, error)
 	GetVertices(ctx context.Context, keys []string) (found []*Vertex, missing []string, err error)
 	DeleteVertex(ctx context.Context, key string) (bool, error)
@@ -109,9 +110,9 @@ type failoverNode interface {
 	// internal contract between *Failover and *Lantern, not client API.
 	addEdgeAtWithIDs(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
 	addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
-	PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error
-	PutEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) error
-	PutEdges(ctx context.Context, inputs []EdgeInput) error
+	PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (PutOutcome, error)
+	PutEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (PutOutcome, error)
+	PutEdges(ctx context.Context, inputs []EdgeInput) ([]EdgePutResult, error)
 	GetEdge(ctx context.Context, tail, head string) (*Edge, error)
 	GetEdges(ctx context.Context, refs []EdgeRef) (found []*Edge, missing []EdgeRef, err error)
 	ScanEdges(ctx context.Context, opts ...EdgeScanOption) (edges []*Edge, nextCursor []byte, err error)
@@ -179,7 +180,14 @@ func NewLanternFailover(addrs []string, opts ...Option) (*Failover, error) {
 		}
 		nodes = append(nodes, l)
 	}
-	return &Failover{nodes: nodes, retry: probe.retry, idempotentAdds: probe.idempotentAdds, contribIDs: contribIDs}, nil
+	return &Failover{nodes: nodes, retry: probe.retry, idempotentAdds: probe.idempotentAdds, contribIDs: contribIDs, clock: time.Now}, nil
+}
+
+func (f *Failover) now() time.Time {
+	if f != nil && f.clock != nil {
+		return f.clock()
+	}
+	return time.Now()
 }
 
 // clearNodeRetry is an internal Option that NewLanternFailover appends to
@@ -242,61 +250,82 @@ func (f *Failover) callCurrent(ctx context.Context, method string, fn func(failo
 	return f.retry.run(ctx, run)
 }
 
-// PutVertex forwards to the current endpoint's PutVertex, failing over on
-// ErrUnavailable.
-func (f *Failover) PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error {
-	return f.call(ctx, "PutVertex", func(l failoverNode) error { return l.PutVertex(ctx, key, value, ttl) })
+// PutVertex resolves ttl once, then forwards the same absolute expiration to
+// each endpoint's PutVertexAt while failing over on ErrUnavailable.
+func (f *Failover) PutVertex(ctx context.Context, key string, value any, ttl time.Duration) (PutOutcome, error) {
+	observedAt := f.now()
+	expiration := expirationFromTTLAt(ttl, observedAt)
+	return f.putVertexAt(ctx, "PutVertex", key, value, expiration, initiallyLiveAt(expiration, observedAt))
+}
+
+func (f *Failover) putVertexAt(ctx context.Context, method, key string, value any, expiration time.Time, initiallyLive bool) (PutOutcome, error) {
+	var outcome PutOutcome
+	err := f.call(ctx, method, func(l failoverNode) error {
+		var err error
+		outcome, err = l.PutVertexAt(ctx, key, value, expiration)
+		return err
+	})
+	return clientBoundedPutOutcome(outcome, initiallyLive, expiration, f.now()), err
 }
 
 // PutVertexAt forwards to the current endpoint's PutVertexAt, failing over
 // on ErrUnavailable.
-func (f *Failover) PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) error {
-	return f.call(ctx, "PutVertexAt", func(l failoverNode) error { return l.PutVertexAt(ctx, key, value, expiration) })
+func (f *Failover) PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error) {
+	return f.putVertexAt(ctx, "PutVertexAt", key, value, expiration, initiallyLiveAt(expiration, f.now()))
 }
 
 // PutVertices forwards to the current endpoint's PutVertices, failing over
 // on ErrUnavailable.
-func (f *Failover) PutVertices(ctx context.Context, inputs []VertexInput) error {
-	return f.call(ctx, "PutVertices", func(l failoverNode) error { return l.PutVertices(ctx, inputs) })
-}
-
-// PutVertexIfAbsent forwards to the current endpoint's PutVertexIfAbsent,
-// failing over on ErrUnavailable. A retry after a partial success reports
-// written=false because the vertex is already present — the value is stored
-// either way, matching SET NX semantics over an unreliable transport.
-func (f *Failover) PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
-	var written bool
-	err := f.call(ctx, "PutVertexIfAbsent", func(l failoverNode) error {
-		w, e := l.PutVertexIfAbsent(ctx, key, value, ttl)
-		written = w
-		return e
+func (f *Failover) PutVertices(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error) {
+	initiallyLive := vertexInitialLiveness(inputs, f.now())
+	var results []VertexPutResult
+	err := f.call(ctx, "PutVertices", func(l failoverNode) error {
+		var err error
+		results, err = l.PutVertices(ctx, inputs)
+		return err
 	})
-	return written, err
+	return clientBoundedVertexPutResults(results, inputs[:len(results)], initiallyLive[:len(results)], f.now()), err
 }
 
-// PutVertexIfAbsentAt forwards to the current endpoint's PutVertexIfAbsentAt,
-// failing over on ErrUnavailable.
-func (f *Failover) PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (bool, error) {
-	var written bool
-	err := f.call(ctx, "PutVertexIfAbsentAt", func(l failoverNode) error {
+// PutVertexIfAbsent resolves ttl once, then forwards the absolute expiration to
+// the current endpoint's PutVertexIfAbsentAt without automatic failover. A
+// response can be lost after the condition was evaluated and the write
+// committed; replaying on another replica could return a different
+// authoritative outcome, so ambiguous transport failure is exposed to the
+// caller instead.
+func (f *Failover) PutVertexIfAbsent(ctx context.Context, key string, value any, ttl time.Duration) (PutOutcome, error) {
+	observedAt := f.now()
+	expiration := expirationFromTTLAt(ttl, observedAt)
+	return f.putVertexIfAbsentAt(ctx, "PutVertexIfAbsent", key, value, expiration, initiallyLiveAt(expiration, observedAt))
+}
+
+func (f *Failover) putVertexIfAbsentAt(ctx context.Context, method, key string, value any, expiration time.Time, initiallyLive bool) (PutOutcome, error) {
+	var outcome PutOutcome
+	err := f.callCurrent(ctx, method, func(l failoverNode) error {
 		w, e := l.PutVertexIfAbsentAt(ctx, key, value, expiration)
-		written = w
+		outcome = w
 		return e
 	})
-	return written, err
+	return clientBoundedPutOutcome(outcome, initiallyLive, expiration, f.now()), err
 }
 
-// PutVerticesIfAbsent forwards to the current endpoint's PutVerticesIfAbsent,
-// failing over on ErrUnavailable.
-func (f *Failover) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) (int, []string, error) {
-	var written int
-	var skipped []string
-	err := f.call(ctx, "PutVerticesIfAbsent", func(l failoverNode) error {
-		w, s, e := l.PutVerticesIfAbsent(ctx, inputs)
-		written, skipped = w, s
+// PutVertexIfAbsentAt forwards to the current endpoint only; see
+// PutVertexIfAbsent for the response-loss rationale.
+func (f *Failover) PutVertexIfAbsentAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error) {
+	return f.putVertexIfAbsentAt(ctx, "PutVertexIfAbsentAt", key, value, expiration, initiallyLiveAt(expiration, f.now()))
+}
+
+// PutVerticesIfAbsent forwards to the current endpoint only; see
+// PutVertexIfAbsent for the response-loss rationale.
+func (f *Failover) PutVerticesIfAbsent(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error) {
+	initiallyLive := vertexInitialLiveness(inputs, f.now())
+	var results []VertexPutResult
+	err := f.callCurrent(ctx, "PutVerticesIfAbsent", func(l failoverNode) error {
+		var e error
+		results, e = l.PutVerticesIfAbsent(ctx, inputs)
 		return e
 	})
-	return written, skipped, err
+	return clientBoundedVertexPutResults(results, inputs[:len(results)], initiallyLive[:len(results)], f.now()), err
 }
 
 // GetVertex forwards to the current endpoint's GetVertex, failing over on
@@ -548,22 +577,41 @@ func (f *Failover) nextContribIDs(n int) [][]byte {
 	return f.contribIDs.next(n)
 }
 
-// PutEdge forwards to the current endpoint's PutEdge, failing over on
-// ErrUnavailable.
-func (f *Failover) PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) error {
-	return f.call(ctx, "PutEdge", func(l failoverNode) error { return l.PutEdge(ctx, tail, head, weight, ttl) })
+// PutEdge resolves ttl once, then forwards the same absolute expiration to
+// each endpoint's PutEdgeAt while failing over on ErrUnavailable.
+func (f *Failover) PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (PutOutcome, error) {
+	observedAt := f.now()
+	expiration := expirationFromTTLAt(ttl, observedAt)
+	return f.putEdgeAt(ctx, "PutEdge", tail, head, weight, expiration, initiallyLiveAt(expiration, observedAt))
+}
+
+func (f *Failover) putEdgeAt(ctx context.Context, method, tail, head string, weight float32, expiration time.Time, initiallyLive bool) (PutOutcome, error) {
+	var outcome PutOutcome
+	err := f.call(ctx, method, func(l failoverNode) error {
+		var err error
+		outcome, err = l.PutEdgeAt(ctx, tail, head, weight, expiration)
+		return err
+	})
+	return clientBoundedPutOutcome(outcome, initiallyLive, expiration, f.now()), err
 }
 
 // PutEdgeAt forwards to the current endpoint's PutEdgeAt, failing over on
 // ErrUnavailable.
-func (f *Failover) PutEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) error {
-	return f.call(ctx, "PutEdgeAt", func(l failoverNode) error { return l.PutEdgeAt(ctx, tail, head, weight, expiration) })
+func (f *Failover) PutEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (PutOutcome, error) {
+	return f.putEdgeAt(ctx, "PutEdgeAt", tail, head, weight, expiration, initiallyLiveAt(expiration, f.now()))
 }
 
 // PutEdges forwards to the current endpoint's PutEdges, failing over on
 // ErrUnavailable.
-func (f *Failover) PutEdges(ctx context.Context, inputs []EdgeInput) error {
-	return f.call(ctx, "PutEdges", func(l failoverNode) error { return l.PutEdges(ctx, inputs) })
+func (f *Failover) PutEdges(ctx context.Context, inputs []EdgeInput) ([]EdgePutResult, error) {
+	initiallyLive := edgeInitialLiveness(inputs, f.now())
+	var results []EdgePutResult
+	err := f.call(ctx, "PutEdges", func(l failoverNode) error {
+		var err error
+		results, err = l.PutEdges(ctx, inputs)
+		return err
+	})
+	return clientBoundedEdgePutResults(results, inputs[:len(results)], initiallyLive[:len(results)], f.now()), err
 }
 
 // GetEdge forwards to the current endpoint's GetEdge, failing over on

@@ -277,8 +277,16 @@ const TWO_POW_63 = 1n << 63n;
  * Connect+JSON codec emits and accepts.
  */
 export function toVertexJson(input: VertexInput): Record<string, unknown> {
+  return vertexInputToJsonAt(input, Date.now());
+}
+
+/** Internal request-snapshot form used to freeze relative TTLs before chunking. */
+export function vertexInputToJsonAt(
+  input: VertexInput,
+  sampledAtMs: number,
+): Record<string, unknown> {
   const out: Record<string, unknown> = { key: input.key };
-  const exp = resolveExpiration(input.ttlSeconds, input.expiration);
+  const exp = resolveExpiration(input.ttlSeconds, input.expiration, sampledAtMs);
   if (exp) out.expiration = exp.toISOString();
   encodeValue(out, input.value);
   return out;
@@ -288,12 +296,17 @@ export function toVertexJson(input: VertexInput): Record<string, unknown> {
  * Build the protobuf JSON shape for an EdgeInput.
  */
 export function toEdgeJson(input: EdgeInput): Record<string, unknown> {
+  return edgeInputToJsonAt(input, Date.now());
+}
+
+/** Internal request-snapshot form used to freeze relative TTLs before chunking. */
+export function edgeInputToJsonAt(input: EdgeInput, sampledAtMs: number): Record<string, unknown> {
   const out: Record<string, unknown> = {
     tail: input.tail,
     head: input.head,
     weight: input.weight,
   };
-  const exp = resolveExpiration(input.ttlSeconds, input.expiration);
+  const exp = resolveExpiration(input.ttlSeconds, input.expiration, sampledAtMs);
   if (exp) out.expiration = exp.toISOString();
   return out;
 }
@@ -516,12 +529,16 @@ function parseExpiration(raw: unknown): Date | null {
   return new Date(ms);
 }
 
-function resolveExpiration(ttlSeconds?: number, expiration?: Date): Date | undefined {
+function resolveExpiration(
+  ttlSeconds?: number,
+  expiration?: Date,
+  sampledAtMs = Date.now(),
+): Date | undefined {
   if (expiration !== undefined && ttlSeconds !== undefined) {
     throw new TypeError("specify either ttlSeconds or expiration, not both");
   }
   if (expiration !== undefined) return expiration;
-  if (ttlSeconds !== undefined) return new Date(Date.now() + ttlSeconds * 1000);
+  if (ttlSeconds !== undefined) return new Date(sampledAtMs + ttlSeconds * 1000);
   return undefined;
 }
 

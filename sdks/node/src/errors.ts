@@ -14,9 +14,11 @@
  *
  * BatchError is thrown by batch helpers (putVertices, addEdges, putEdges,
  * deleteVertices, deleteEdges) on partial-write failure; its `written`
- * field reports how many items from the input were already committed
+ * field reports the input-prefix length whose responses were fully observed
  * before the failing chunk, so callers can resume with
- * `inputs.slice(err.written)`.
+ * `inputs.slice(err.written)`. For `putVerticesIfAbsent`, the failed chunk
+ * may have committed without a usable response; replay is a new condition
+ * evaluation and cannot recover the original per-item outcomes.
  */
 
 import { ConnectError } from "@connectrpc/connect";
@@ -103,9 +105,11 @@ export class OverflowError extends LanternError {
 }
 
 /**
- * Thrown by batch helpers when a chunk fails after one or more chunks have
- * already been committed. `written` is the number of inputs from the
- * original sequence committed by chunks 0..N-1 before chunk N failed.
+ * Thrown by batch helpers when a chunk fails after one or more chunk responses
+ * were fully observed. `written` is the number of inputs from the original
+ * sequence completed by chunks 0..N-1 before chunk N failed. It is not an
+ * `appliedAndLive` count: a completed Put chunk can carry any bounded
+ * per-item outcome.
  * Resume safely with `inputs.slice(err.written)`.
  *
  * Full retry from index 0 is safe for idempotent operations
@@ -116,11 +120,16 @@ export class OverflowError extends LanternError {
  * makes both a resumed retry (`inputs.slice(err.written)`) and a full retry
  * from index 0 safe, because the server dedups each contribution while it is
  * live (#895).
+ *
+ * Conditional `putVerticesIfAbsent` is the exception to "resume safely": the
+ * failed chunk may already have committed, and retry can return
+ * `conditionNotMet` for an item whose original outcome was `appliedAndLive`.
+ * Reconcile current server state before explicitly retrying that suffix.
  */
 export class BatchError extends LanternError {
   readonly written: number;
   constructor(written: number, cause: unknown) {
-    super(`batch write failed after ${written} items committed: ${stringify(cause)}`, { cause });
+    super(`batch write failed after ${written} completed items: ${stringify(cause)}`, { cause });
     this.name = "BatchError";
     this.written = written;
   }

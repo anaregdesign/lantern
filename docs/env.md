@@ -49,12 +49,12 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_LOG_LEVEL` | level | `info` | Structured-log level: debug, info, warn, or error. |
 | `LANTERN_MAX_BATCH_SIZE` | int | `10000` | Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms). |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | uint32 | `1024` | HTTP/2 max concurrent streams per connection (0 = unlimited). |
-| `LANTERN_MAX_EDGES` | int | `0` | Soft cap on live edges (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap. |
+| `LANTERN_MAX_EDGES` | int | `0` | Soft local-admission cap on live edge identities plus retained edge Put causal-barrier entries (0 = unlimited). Tombstones are excluded; replication apply and backup restore bypass the cap, so this is not a total causal-metadata/heap bound (#1204). A live additive edge that coexists with a retained barrier is conservatively counted twice. |
 | `LANTERN_MAX_KEY_LEN` | int | `1024` | Maximum accepted vertex-key length in bytes. |
 | `LANTERN_MAX_RECV_MSG_BYTES` | int | `16777216` | Maximum accepted request message size in bytes. |
 | `LANTERN_MAX_REPLICATION_LAG` | int | `10000` | Readiness gate: maximum tolerated replication lag (entries) before /readyz reports not ready. |
 | `LANTERN_MAX_SEND_MSG_BYTES` | int | `16777216` | Maximum produced response message size in bytes. |
-| `LANTERN_MAX_VERTICES` | int | `0` | Soft cap on live vertices (0 = unlimited). Local write RPCs that would exceed it fail with RESOURCE_EXHAUSTED; replication apply and backup restore bypass the cap. Conservative pre-check: edge writes count both endpoints as potentially new. |
+| `LANTERN_MAX_VERTICES` | int | `0` | Soft local-admission cap on live vertex identities plus retained vertex Put causal-barrier entries (0 = unlimited). Tombstones are excluded; replication apply and backup restore bypass the cap, so this is not a total causal-metadata/heap bound (#1204). A live identity that coexists with a retained barrier is conservatively counted twice; edge-write pre-checks also count both endpoints as potentially new. |
 | `LANTERN_METRICS_ADDR` | string | `:9090` | host:port for the /metrics + /healthz + /readyz HTTP listener (empty disables it). |
 | `LANTERN_MUTATION_LOG_CAPACITY` | int | `100000` | Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds. |
 | `LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER` | int | `512` | Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped. |
@@ -106,7 +106,7 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_TLS_CERT_FILE` | string | (empty) | PEM certificate path; setting cert + key enables TLS on the primary listener. |
 | `LANTERN_TLS_CLIENT_CA_FILE` | string | (empty) | PEM client-CA bundle path; setting it additionally enables mTLS client verification. |
 | `LANTERN_TLS_KEY_FILE` | string | (empty) | PEM private-key path; pairs with LANTERN_TLS_CERT_FILE. |
-| `LANTERN_TOMBSTONE_TTL` | duration | `8760h0m0s` | Delete-tombstone retention window and the upper bound on caller-supplied expirations. |
+| `LANTERN_TOMBSTONE_TTL` | duration | `8760h0m0s` | Delete-tombstone retention window (D4) and upper bound on caller-supplied expirations. An equal/newer exact Delete transitions a retained Put causal barrier into this bounded tombstone; prefix Delete cannot find barrier-only identities. Tombstones are excluded from LANTERN_MAX_VERTICES/LANTERN_MAX_EDGES but still consume heap (#1204). |
 | `LANTERN_TRAVERSAL_MAX_PUSHES` | int | `1000000` | Maximum PPR/PageRank-Nibble forward pushes per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED, never a partial result. |
 | `LANTERN_TRAVERSAL_MAX_RESULTS` | int | `1024` | Maximum PPR star members or local-community members returned by Illuminate; wire top_n=0/max_size=0 resolve to this cap. |
 | `LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES` | int | `10000000` | Maximum adjacency entries scanned by PPR/PageRank-Nibble per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED. |

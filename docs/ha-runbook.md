@@ -282,7 +282,8 @@ exact Prometheus series.
 
 | Metric | What it tells you |
 |---|---|
-| `lantern_vertices`, `lantern_edges` | Current working-set size. Must agree (within `lantern_replication_lag_seq`) across peers. |
+| `lantern_vertices`, `lantern_edges` | Current **live** working-set size. Must agree (within `lantern_replication_lag_seq`) across peers. These gauges do not include causal barriers. |
+| `lantern_vertex_causal_barrier_entries`, `lantern_edge_causal_barrier_entries` | Accepted-expired or otherwise non-visible live Put floors retained to fence delayed older writes. They do not fall merely because TTL GC runs. |
 | `lantern_ttl_expirations_total{kind}` | TTL-driven evictions. |
 | `lantern_gc_duration_seconds` | GC sweep latency histogram. |
 | `lantern_build_info{version,commit,go_version}` | Version pinning for cross-checks during upgrade. |
@@ -388,7 +389,8 @@ Two truisms:
 **Sizing checklist:**
 
 - Estimate working set: avg vertex size × vertex count + avg edge
-  payload × edge count. Add ~20% for radix trie / index overhead.
+  payload × edge count. Add causal-barrier and D4 tombstone metadata, then
+  ~20% for radix trie / index overhead.
 - Multiply by 1 (memory per pod). Add ~30% headroom for transient
   GC and snapshot serialisation buffers.
 - Set the chart's `resources.limits.memory` to that number. Hitting
@@ -409,20 +411,37 @@ instead of degrading the one misbehaving writer. Cap the entry counts so a
 write burst faster than TTL decay fails fast instead:
 
 - Set both caps from the sizing estimate above: divide the memory budget
-  you allocated to graph data by your measured per-entry heap cost and
-  leave slack for the soft-cap overshoot (concurrent in-flight batches).
+  allocated to graph data by measured per-entry heap cost and leave slack for
+  concurrent in-flight batches. Each cap counts the matching live identities
+  **plus retained Put causal-barrier entries**. A live/additive identity that
+  also has a retained barrier can be counted twice; this conservative policy
+  favours bounded admission over a precise union scan.
 - The caps are enforced at the **local write-RPC boundary only**. At
   capacity, `PutVertices` / `AddEdges` / `PutEdges` return
   `RESOURCE_EXHAUSTED` naming the knob; reads, deletes, replication apply
   and backup restore always proceed (rejecting writes peers already
-  committed would break convergence). In HA every node applies its own
-  cap at its own boundary, which bounds the cluster.
+  committed would break convergence). Replication/restore may therefore take
+  a replica above its configured admission cap; treat it as a soft local
+  guard, not a cluster-wide hard heap limit.
 - There is **no eviction policy**: a rejected writer must wait for TTL
   decay, GC, or deletes to free capacity, then retry. This is decay-first
   by design.
-- Alert on fill ratio: `lantern_vertices / lantern_capacity_limit{kind="vertex"} > 0.8`
-  (same for edges). `lantern_validation_rejected_total{reason="capacity"}`
-  counts rejected writes.
+- For a non-zero vertex cap, alert on
+  `(lantern_vertices + lantern_vertex_causal_barrier_entries) /
+  scalar(lantern_capacity_limit{kind="vertex"}) > 0.8`; use the corresponding
+  live plus barrier gauges for edges. Only enable this alert when the selected
+  cap is non-zero. `lantern_validation_rejected_total{reason="capacity"}` counts
+  rejected writes.
+- An exact singular/plural Delete whose HLC is at least the barrier floor
+  replaces that barrier with a D4-bounded tombstone and immediately frees its
+  live/barrier cap slot, even when the Delete reports no live value existed.
+  Prefix Delete walks only live indexes and cannot find a barrier-only key or
+  edge pair; issue the exact Delete to reclaim that slot.
+- Delete tombstones are excluded from both admission caps but still consume
+  heap until D4 expiry. There is currently no independent hard count/byte cap
+  for all causal metadata, so the entry caps are not a total-memory guarantee;
+  [#1204](https://github.com/anaregdesign/lantern/issues/1204) tracks that
+  hard metadata budget.
 - Keep `GOMEMLIMIT` below `resources.limits.memory` as the second line of
   defense — the caps bound entry counts, not bytes. The Helm chart defaults
   `runtime.goMemoryLimit` to `384MiB` under its `512Mi` container limit so a
@@ -482,31 +501,52 @@ One-page failover is also a new local/eventual read, not continuation of the
 lost replica's snapshot. Its membership and numeric scores may legitimately
 differ until graph state and `config_fingerprint` converge.
 
+Accepted Put batches replicate as one authoritative mutation containing
+ordered `ReplicatedPutVertices` or `ReplicatedPutEdges` entries. Live outcomes
+and causal barriers keep their original accepted order, including duplicate
+identities; receivers must not regroup them or re-decide an accepted-expired
+outcome from their local wall clock.
+
 | Mutation type | Partition-time behaviour | Post-heal |
 |---|---|---|
-| `AddEdge*` | Both sides accumulate contributions. | G-Set union: every contribution survives. Weight = sum. |
-| `PutVertex*` / `PutEdge*` | Both sides accept. | Higher-HLC wins (LWW); same HLC → higher origin ID wins. Losing side's value silently dropped. |
-| `DeleteVertex*` / `DeleteEdge*` | Both sides accept. | Higher-HLC tombstone wins. **Resurrection hazard if partition > `tombstone_ttl`** (D4, default 1 year / 8760h). |
+| Add-only `AddEdge*` history | Both sides accumulate contributions. | G-Set union: every contribution survives. Weight = sum. |
+| Put-only `PutVertex*` / `PutEdge*` history | Both sides accept an authoritative live or causal-barrier outcome. | Higher HLC wins (LWW); same HLC → higher origin ID wins. Losing outcome is silently superseded. |
+| Put/Delete LWW history | Both sides accept. | Higher-HLC value, barrier, or tombstone wins while D4 is retained. **Resurrection hazard if partition > `tombstone_ttl`**. |
+| Mixed `PutEdge`/`AddEdge` or `DeleteEdge`/`AddEdge` | Both sides accept. | **Unsupported:** arbitrary delivery order can leave different weights; tracked by #1203. |
 
-**The one real failure case** is a partition that exceeds tombstone
-TTL: a `Delete` on side A may be GC'd from the mutation log before
-side B learns about it, then side B's stale `Put` looks "newer" than
-nothing and resurrects the entry. Mitigations, in order of preference:
+Snapshot bootstrap preserves the current mixed edge state it observes: if a
+live additive bucket coexists with a retained Put barrier, the edge frame uses
+the maximum of the bucket's Put HLC and the barrier floor, and barrier frames
+arrive first. That max-floor rule fences delayed older Puts, but it does not
+make subsequent arbitrary-order Put/Add or Delete/Add delivery convergent.
+
+**Known convergence boundaries** are therefore (a) a partition that exceeds
+the D4 tombstone horizon, and (b) the mixed edge operation families above. For
+the D4 case, a `Delete` on side A may be reaped before side B learns about it,
+after which side B's stale Put can resurrect the identity. Mitigations, in
+order of preference:
 
 1. Detect partitions early (alert on `lantern_replication_lag_seq`
    spiking and `lantern_anti_entropy_gaps_found_total` going non-zero
    on **both** sides of the alleged partition).
 2. Keep partitions short. If you can't, extend D4
-   (`LANTERN_TOMBSTONE_TTL_SECONDS` — see RFC §4 for the constraint
+   (`LANTERN_TOMBSTONE_TTL` — see RFC §4 for the constraint
    that no live TTL may exceed tombstone TTL).
 3. After a long partition heals, [force re-snapshot](#9-recovery-procedures)
    from the side you trust.
 
+For mixed edge operation families, route all operations for one edge identity
+to a single replica or use one operation family until #1203 lands. If weights
+already diverged, quiesce writes and force a snapshot from the authoritative
+replica.
+
 There is no "split-brain detector"; the RFC is explicit that
 partitions are healed by anti-entropy ([RFC §§6, 10](replication.md)).
 If you suspect divergence after a long event, compare
-`lantern_vertices` / `lantern_edges` across pods — equal values
-(within current `lantern_replication_lag_seq`) means convergent.
+`lantern_vertices` / `lantern_edges` and the two causal-barrier gauges across
+pods after lag reaches zero. Equal cardinalities are necessary but not proof of
+equal contents; use anti-entropy signals and application-level spot checks
+before declaring recovery complete.
 
 ---
 
@@ -751,6 +791,8 @@ operator actions.
 | NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
+| Causal barriers approach an admission cap | Live + matching `lantern_*_causal_barrier_entries` fill ratio rises; capacity rejections begin | Use exact Deletes to transition intended barrier-only identities into D4 tombstones. Prefix Delete cannot find them. Size heap for tombstones; #1204 tracks a hard metadata cap. |
+| Mixed Put/Add or Delete/Add edge history diverges | Lag is zero but the same edge weight differs | Unsupported pending #1203. Quiesce that identity and force a snapshot from the authoritative replica. |
 | Search config mismatch | `search_config_match{peer}=0`, readiness 503 | Make search-affecting env identical; graph replication is intentionally still active. |
 
 ---

@@ -150,7 +150,7 @@ func TestAntiEntropy_GappedLogRebuildsExactSearchIndex(t *testing.T) {
 		}
 	}
 	for _, input := range inputs {
-		if err := source.sdk.PutVertexAt(ctx, input.Key, input.Value, input.Expiration); err != nil {
+		if _, err := source.sdk.PutVertexAt(ctx, input.Key, input.Value, input.Expiration); err != nil {
 			t.Fatalf("source PutVertexAt(%q): %v", input.Key, err)
 		}
 	}
@@ -192,7 +192,7 @@ func TestAntiEntropy_GappedLogRebuildsExactSearchIndex(t *testing.T) {
 
 	// The remembered same-responder local cutoff lets the next repair use the
 	// retained tail instead of falling back to another snapshot immediately.
-	if err := source.sdk.PutVertex(ctx, "ae-gap-tail", "anti snapshot tail", time.Hour); err != nil {
+	if _, err := source.sdk.PutVertex(ctx, "ae-gap-tail", "anti snapshot tail", time.Hour); err != nil {
 		t.Fatalf("source tail PutVertex: %v", err)
 	}
 	if got := waitForSearchConvergence(t, ctx, "anti snapshot tail", &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL}, source.raw, follower.raw); len(got) != 1 {
@@ -245,7 +245,7 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	// Write to B; C has no pump, so until the first anti-entropy tick
 	// fires, C MUST NOT see it. After the first tick (and at most one
 	// catch-up Subscribe round-trip), C MUST see it.
-	if err := b.sdk.PutVertex(ctx, "ae-key", "common ae-old", time.Minute); err != nil {
+	if _, err := b.sdk.PutVertex(ctx, "ae-key", "common ae-old", time.Minute); err != nil {
 		t.Fatalf("b.PutVertex: %v", err)
 	}
 	if _, err := b.sdk.AddEdge(ctx, "ae-key", "ae-head", 2.5, time.Minute); err != nil {
@@ -260,7 +260,7 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	}
 	waitForSearchConvergence(t, ctx, "common", nil, b.raw, c.raw)
 
-	if err := b.sdk.PutVertices(ctx, []client.VertexInput{
+	if _, err := b.sdk.PutVertices(ctx, []client.VertexInput{
 		{Key: "ae-key", Value: "common ae-current", Expiration: time.Now().Add(time.Hour)},
 		{Key: "ae-delete", Value: "ae-deleted", Expiration: time.Now().Add(time.Hour)},
 		{Key: "ae-expire", Value: "ae-expired", Expiration: time.Now().Add(150 * time.Millisecond)},
@@ -316,7 +316,7 @@ func TestAntiEntropy_DynamicPeerSource(t *testing.T) {
 		<-done
 	})
 
-	if err := b.sdk.PutVertex(ctx, "dynamic-b", "from-b", time.Minute); err != nil {
+	if _, err := b.sdk.PutVertex(ctx, "dynamic-b", "from-b", time.Minute); err != nil {
 		t.Fatalf("b.PutVertex: %v", err)
 	}
 	if !waitForVertex(t, follower.cache, "dynamic-b", 3*time.Second) {
@@ -335,7 +335,7 @@ func TestAntiEntropy_DynamicPeerSource(t *testing.T) {
 	}
 
 	source.set([]string{c.url}, nil)
-	if err := c.sdk.PutVertex(ctx, "dynamic-c", "from-c", time.Minute); err != nil {
+	if _, err := c.sdk.PutVertex(ctx, "dynamic-c", "from-c", time.Minute); err != nil {
 		t.Fatalf("c.PutVertex: %v", err)
 	}
 	if !waitForVertex(t, follower.cache, "dynamic-c", 3*time.Second) {

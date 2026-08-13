@@ -24,13 +24,16 @@ final client = LanternClient.connect(
   Uri.parse('https://lantern.example.com'),
   tokenProvider: () async => session.accessToken,
 );
-await client.putVertex(
+final outcome = await client.putVertex(
   VertexInput(
     key: 'user:42',
     value: VertexValue.string('alice'),
     expiresIn: const Duration(minutes: 30),
   ),
 );
+if (outcome != PutOutcome.appliedAndLive) {
+  throw StateError('user:42 was not live after Put: $outcome');
+}
 final vertex = await client.getVertex('user:42');
 ```
 
@@ -40,13 +43,34 @@ are never guessed into a Protobuf numeric kind. `VertexValue.nil()` and
 expiration when both expiration fields are absent, which means permanent
 storage. `expiresIn` must be positive, is mutually exclusive with `expiresAt`,
 and is converted to one absolute UTC instant from the client's clock before
-chunking. Device-clock skew therefore affects relative TTLs.
+chunking. After every chunk succeeds, the same clock is sampled once before
+the plural call returns;
+`appliedAndLive` is downgraded to `expired` when that absolute expiration is
+already past locally. Bounded server outcomes remain authoritative otherwise,
+so `conditionNotMet` and `superseded` are never reclassified. Device-clock skew
+therefore affects relative TTLs and can only make the client more conservative.
 
 Plural CRUD calls use 1,000-item chunks by default and reject logical batches
 above 65,536 items. A later chunk failure throws `BatchException` with the
-confirmed committed count. `addEdge(s)` accumulates weight and is
+input-prefix length whose responses were fully observed and validated; despite
+the existing `committed` field name, this is not an `appliedAndLive` count.
+`addEdge(s)` accumulates weight and is
 non-idempotent unless the caller supplies an exact 24-byte `contribId`;
 `putEdge(s)` overwrites weight and expiration idempotently.
+
+For `putVerticesIfAbsent`, that count covers only prior chunks whose responses
+were observed. The failed chunk may already have committed; its original
+per-item outcomes are unknown, and replay performs a new condition evaluation
+that may return `conditionNotMet`. Reconcile server state before retrying it.
+
+Every singular Put resolves to a typed `PutOutcome`; plural Vertex and Edge
+Puts both resolve to immutable, request-index-aligned result Lists. The server
+clock decides `appliedAndLive`, `expired`, `conditionNotMet`, or `superseded`
+at application time. An unconditional born-expired Put removes a prior live
+item and reports `expired`; `putVertexIfAbsent` checks an existing live value
+first and reports `conditionNotMet` without overwriting it. Unknown,
+unspecified, or length-misaligned wire outcomes fail closed as
+`LanternInternalException`.
 
 ## Mobile retries and additive safety
 

@@ -25,8 +25,12 @@ if err != nil {
 }
 defer c.Close()
 
-if err := c.PutVertex(ctx, "user:42", "alice", 10*time.Minute); err != nil {
+outcome, err := c.PutVertex(ctx, "user:42", "alice", 10*time.Minute)
+if err != nil {
     log.Fatal(err)
+}
+if outcome != client.PutOutcomeAppliedAndLive {
+    log.Fatalf("user:42 was not live after Put: %s", outcome)
 }
 
 v, err := c.GetVertex(ctx, "user:42")
@@ -102,7 +106,7 @@ defer c.Close()
 
 // Same surface as *Lantern — every call routes to the current node and
 // rotates to another only when a node is unreachable.
-if err := c.PutVertex(ctx, "user:42", "alice", 10*time.Minute); err != nil {
+if _, err := c.PutVertex(ctx, "user:42", "alice", 10*time.Minute); err != nil {
     log.Fatal(err)
 }
 ```
@@ -240,6 +244,20 @@ carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
 single TTL). See the in-line discussion in `example/main.go` for the
 semantic difference.
 
+Every `PutVertex*` / `PutEdge*` singular call returns a typed `PutOutcome`.
+Plural Put calls return request-index-aligned `[]VertexPutResult` /
+`[]EdgePutResult`, including duplicate identities. The bounded outcomes are
+`PutOutcomeAppliedAndLive`, `PutOutcomeExpired`,
+`PutOutcomeConditionNotMet`, and `PutOutcomeSuperseded`; an unspecified,
+unknown, or misaligned wire response is an error. Liveness is decided by the
+server clock at application time. In particular, an unconditional
+born-expired Put returns `PutOutcomeExpired` and removes a prior live value.
+On return, the exact absolute expiration sent by the SDK is also a local upper
+bound: `PutOutcomeAppliedAndLive` is conservatively downgraded to
+`PutOutcomeExpired` if that instant has already passed locally. Other bounded
+outcomes are never reclassified, so condition and causality diagnostics remain
+visible even with a fast client clock or delayed response.
+
 Search capability failures stay machine-readable: a disabled index matches
 `ErrSearchDisabled`, while a phrase request without positional postings
 matches `ErrSearchPositionsDisabled`; both also match
@@ -294,9 +312,13 @@ axes (`WithWeighting`, `WithVertexPrefix`) remain composable.
 `PutVertexIfAbsent` / `PutVerticesIfAbsent` are conditional writes (SET NX,
 #896): each applies only when no **live** vertex already exists at the key,
 closing the check-then-act race of a `GetVertex` → `PutVertex` sequence. The
-singular returns a `bool` (`true` when the write landed); the plural returns
-`(written int, skipped []string)`. An expired-but-uncollected vertex does not
-block the write.
+singular returns `PutOutcomeAppliedAndLive` or the reason it did not apply;
+the plural returns one `VertexPutResult` per request index. An existing live
+vertex wins condition precedence and returns `PutOutcomeConditionNotMet` even
+when the candidate is born expired. An expired-but-uncollected vertex does not
+block the write. Automatic transport retry/failover is disabled for these
+conditional calls: if the first response is lost, replay would observe the
+newly-created value and change `AppliedAndLive` into `ConditionNotMet`.
 
 `ScanVertices` / `ScanVertexKeys` iterate a prefix ascending by default;
 `WithScanOrder(ScanOrderDesc)` walks it descending (#898). The order is bound

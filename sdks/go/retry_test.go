@@ -275,6 +275,15 @@ func TestRequestRetryable(t *testing.T) {
 		}
 	})
 
+	t.Run("if absent is not retried after an ambiguous response", func(t *testing.T) {
+		if requestRetryable(&pb.PutVertexRequest{IfAbsent: true}) {
+			t.Error("conditional PutVertex must not be retryable")
+		}
+		if requestRetryable(&pb.PutVerticesRequest{IfAbsent: true}) {
+			t.Error("conditional PutVertices must not be retryable")
+		}
+	})
+
 	t.Run("AddEdge retryable only with a contrib id", func(t *testing.T) {
 		if requestRetryable(&pb.AddEdgeRequest{}) {
 			t.Error("AddEdge without contrib_id must not be retryable")
@@ -313,6 +322,8 @@ func TestRetryableMethod(t *testing.T) {
 	}{
 		{"GetVertex", false, true},
 		{"PutVertices", false, true},
+		{"PutVertexIfAbsent", false, false},
+		{"PutVerticesIfAbsent", false, false},
 		{"DeleteEdges", false, true},
 		{"AddEdges", false, false},  // additive write, no idempotency
 		{"AddEdges", true, true},    // idempotency armed
@@ -372,6 +383,10 @@ type scriptedClient struct {
 	addEdgesErrs []error
 	addEdgesN    int
 	addEdgesReqs []*pb.AddEdgesRequest
+
+	putVerticesErrs []error
+	putVerticesN    int
+	putVerticesReqs []*pb.PutVerticesRequest
 }
 
 func (c *scriptedClient) GetVertex(_ context.Context, req *connect.Request[pb.GetVertexRequest]) (*connect.Response[pb.GetVertexResponse], error) {
@@ -391,6 +406,20 @@ func (c *scriptedClient) AddEdges(_ context.Context, req *connect.Request[pb.Add
 		return nil, c.addEdgesErrs[i]
 	}
 	return connect.NewResponse(&pb.AddEdgesResponse{}), nil
+}
+
+func (c *scriptedClient) PutVertices(_ context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
+	c.putVerticesReqs = append(c.putVerticesReqs, req.Msg)
+	i := c.putVerticesN
+	c.putVerticesN++
+	if i < len(c.putVerticesErrs) && c.putVerticesErrs[i] != nil {
+		return nil, c.putVerticesErrs[i]
+	}
+	outcomes := make([]pb.PutOutcome, len(req.Msg.GetVertices()))
+	for i := range outcomes {
+		outcomes[i] = pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE
+	}
+	return connect.NewResponse(&pb.PutVerticesResponse{Outcomes: outcomes}), nil
 }
 
 func TestUnaryRetry_SingleEndpoint(t *testing.T) {
@@ -470,6 +499,31 @@ func TestUnaryRetry_SingleEndpoint(t *testing.T) {
 		}
 		if !reflect.DeepEqual(first, second) {
 			t.Fatalf("retried request must carry identical ContribIDs; got %x vs %x", first, second)
+		}
+	})
+
+	t.Run("relative Put TTL is resolved once before retry", func(t *testing.T) {
+		p := RetryPolicy{
+			MaxAttempts: 2,
+			sleepFn: func(ctx context.Context, _ time.Duration) error {
+				time.Sleep(time.Millisecond)
+				return ctx.Err()
+			},
+		}
+		l := mustLantern(t, WithRetry(p))
+		capt := &scriptedClient{putVerticesErrs: []error{unavailable, nil}}
+		l.client = capt
+		outcome, err := l.PutVertex(context.Background(), "ttl", "v", time.Minute)
+		if err != nil || outcome != PutOutcomeAppliedAndLive {
+			t.Fatalf("PutVertex = (%s, %v), want APPLIED_AND_LIVE, nil", outcome, err)
+		}
+		if capt.putVerticesN != 2 || len(capt.putVerticesReqs) != 2 {
+			t.Fatalf("attempts/requests = %d/%d, want 2/2", capt.putVerticesN, len(capt.putVerticesReqs))
+		}
+		first := capt.putVerticesReqs[0].GetVertices()[0].GetExpiration().AsTime()
+		second := capt.putVerticesReqs[1].GetVertices()[0].GetExpiration().AsTime()
+		if !first.Equal(second) {
+			t.Fatalf("retried Put carried changing expirations: %v vs %v", first, second)
 		}
 	})
 

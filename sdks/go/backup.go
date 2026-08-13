@@ -149,10 +149,15 @@ func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOptio
 		if len(vbatch) == 0 {
 			return nil
 		}
-		if _, err := l.client.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vbatch})); err != nil {
+		resp, err := l.client.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vbatch}))
+		if err != nil {
 			return wrapConnectErr(err)
 		}
-		stats.Vertices += len(vbatch)
+		applied, err := appliedPutOutcomeCount(resp.Msg.GetOutcomes(), len(vbatch))
+		if err != nil {
+			return err
+		}
+		stats.Vertices += applied
 		vbatch = vbatch[:0]
 		return nil
 	}
@@ -160,10 +165,15 @@ func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOptio
 		if len(ebatch) == 0 {
 			return nil
 		}
-		if _, err := l.client.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: ebatch})); err != nil {
+		resp, err := l.client.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: ebatch}))
+		if err != nil {
 			return wrapConnectErr(err)
 		}
-		stats.Edges += len(ebatch)
+		applied, err := appliedPutOutcomeCount(resp.Msg.GetOutcomes(), len(ebatch))
+		if err != nil {
+			return err
+		}
+		stats.Edges += applied
 		ebatch = ebatch[:0]
 		return nil
 	}
@@ -202,6 +212,23 @@ func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOptio
 		return stats, err
 	}
 	return stats, nil
+}
+
+func appliedPutOutcomeCount(outcomes []pb.PutOutcome, want int) (int, error) {
+	if len(outcomes) != want {
+		return 0, fmt.Errorf("lantern: server returned %d Put outcomes for %d restore records", len(outcomes), want)
+	}
+	applied := 0
+	for _, wire := range outcomes {
+		outcome, err := putOutcomeFromProto(wire)
+		if err != nil {
+			return 0, err
+		}
+		if outcome == PutOutcomeAppliedAndLive {
+			applied++
+		}
+	}
+	return applied, nil
 }
 
 // encodeBackupRecord writes one frame in the selected format.

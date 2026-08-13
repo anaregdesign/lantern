@@ -17,10 +17,10 @@ func TestLantern_GetServerStatus_EndToEnd(t *testing.T) {
 	defer cancel()
 
 	// Write a few entries so we can prove the live counters tick.
-	if err := l.PutVertex(ctx, "a", "alpha", time.Minute); err != nil {
+	if _, err := l.PutVertex(ctx, "a", "alpha", time.Minute); err != nil {
 		t.Fatalf("PutVertex a: %v", err)
 	}
-	if err := l.PutVertex(ctx, "b", "bravo", time.Minute); err != nil {
+	if _, err := l.PutVertex(ctx, "b", "bravo", time.Minute); err != nil {
 		t.Fatalf("PutVertex b: %v", err)
 	}
 	if _, err := l.AddEdge(ctx, "a", "b", 1.0, time.Minute); err != nil {

@@ -504,7 +504,9 @@ final class LanternClient {
   /// [transport], [transportFactory], and [httpClientFactory] are mutually
   /// exclusive. Interceptors cannot be added to an already-created [transport].
   /// A client created by [httpClientFactory] is owned and closed by this object.
-  /// [clock] is sampled once per logical CRUD call that resolves relative TTLs.
+  /// [clock] is sampled once to resolve relative TTLs and again after each
+  /// successful Put chunk so an item that expired while the response was in
+  /// flight cannot be reported locally as live.
   /// Supplying [retryPolicy] opts into bounded retry for explicitly classified
   /// operations. [idempotentAdds] stamps missing contribution IDs once per
   /// in-memory logical Add call, making only that call safe to replay. Automatic

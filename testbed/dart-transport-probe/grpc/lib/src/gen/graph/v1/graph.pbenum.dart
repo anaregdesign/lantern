@@ -114,6 +114,49 @@ class Weighting extends $pb.ProtobufEnum {
   const Weighting._(super.value, super.name);
 }
 
+/// PutOutcome is the server-authoritative application result for one Put item.
+/// Clients must not infer application from their local clock: local expiration
+/// checks may only turn APPLIED_AND_LIVE into a fail-closed expired result.
+class PutOutcome extends $pb.ProtobufEnum {
+  static const PutOutcome PUT_OUTCOME_UNSPECIFIED =
+      PutOutcome._(0, _omitEnumNames ? '' : 'PUT_OUTCOME_UNSPECIFIED');
+
+  /// The server accepted the write and the item was live at application time.
+  static const PutOutcome PUT_OUTCOME_APPLIED_AND_LIVE =
+      PutOutcome._(1, _omitEnumNames ? '' : 'PUT_OUTCOME_APPLIED_AND_LIVE');
+
+  /// The supplied absolute expiration was not live at application time. It was
+  /// accepted as a delete-like overwrite, so no live item remains at that identity.
+  static const PutOutcome PUT_OUTCOME_EXPIRED =
+      PutOutcome._(2, _omitEnumNames ? '' : 'PUT_OUTCOME_EXPIRED');
+
+  /// The write did not apply because if_absent observed an existing live item
+  /// (including an earlier live write for the same key in the batch). Existing
+  /// state stays.
+  static const PutOutcome PUT_OUTCOME_CONDITION_NOT_MET =
+      PutOutcome._(3, _omitEnumNames ? '' : 'PUT_OUTCOME_CONDITION_NOT_MET');
+
+  /// A newer causal write or tombstone superseded this local write. Existing
+  /// state stays. This is distinct from a caller-requested condition failure.
+  static const PutOutcome PUT_OUTCOME_SUPERSEDED =
+      PutOutcome._(4, _omitEnumNames ? '' : 'PUT_OUTCOME_SUPERSEDED');
+
+  static const $core.List<PutOutcome> values = <PutOutcome>[
+    PUT_OUTCOME_UNSPECIFIED,
+    PUT_OUTCOME_APPLIED_AND_LIVE,
+    PUT_OUTCOME_EXPIRED,
+    PUT_OUTCOME_CONDITION_NOT_MET,
+    PUT_OUTCOME_SUPERSEDED,
+  ];
+
+  static final $core.List<PutOutcome?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static PutOutcome? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const PutOutcome._(super.value, super.name);
+}
+
 /// ScanOrder selects the key order a ScanVertices / ScanVertexKeys page walks
 /// (#898). SCAN_ORDER_UNSPECIFIED preserves the historical behavior (ascending)
 /// so an unset field is a no-op. DESC walks the same prefix range from the high

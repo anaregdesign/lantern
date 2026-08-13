@@ -241,12 +241,28 @@ message PutVertexRequest {
   bool if_absent = 2;
 }
 
+// PutOutcome is the server-authoritative application result for one Put item.
+// Clients must not infer application from their local clock: local expiration
+// checks may only turn APPLIED_AND_LIVE into a fail-closed expired result.
+enum PutOutcome {
+  PUT_OUTCOME_UNSPECIFIED = 0;
+  // The server accepted the write and the item was live at application time.
+  PUT_OUTCOME_APPLIED_AND_LIVE = 1;
+  // The supplied absolute expiration was not live at application time. It was
+  // accepted as a delete-like overwrite, so no live item remains at that identity.
+  PUT_OUTCOME_EXPIRED = 2;
+  // The write did not apply because if_absent observed an existing live item
+  // (including an earlier live write for the same key in the batch). Existing
+  // state stays.
+  PUT_OUTCOME_CONDITION_NOT_MET = 3;
+  // A newer causal write or tombstone superseded this local write. Existing
+  // state stays. This is distinct from a caller-requested condition failure.
+  PUT_OUTCOME_SUPERSEDED = 4;
+}
+
 message PutVertexResponse {
-  // True when the write was applied; false when it was skipped — either
-  // because if_absent found a live vertex already at the key, or because the
-  // vertex was born expired (expiration already past) and discarded. Always
-  // true for an unconditional put with a live expiration.
-  bool written = 1;
+  // Server-authoritative result for vertex in the request.
+  PutOutcome outcome = 1;
 }
 
 // PutVerticesRequest writes vertices with upsert semantics: each Vertex.key
@@ -255,20 +271,16 @@ message PutVertexResponse {
 message PutVerticesRequest {
   repeated Vertex vertices = 1;
   // When true, each write applies only if no live vertex exists at its key;
-  // keys with a live vertex are left untouched and reported in
-  // PutVerticesResponse.skipped_keys.
+  // keys with a live vertex are left untouched and reported as
+  // PUT_OUTCOME_CONDITION_NOT_MET at the matching response index.
   bool if_absent = 2;
 }
 
 message PutVerticesResponse {
-  // Number of vertices actually written. For an unconditional put this equals
-  // the request size on success; under if_absent it excludes skipped keys. A
-  // vertex whose expiration is already past is discarded and counts as neither
-  // written nor skipped (it appears in neither this count nor skipped_keys).
-  int32 written = 1;
-  // Keys skipped because a live vertex already existed (if_absent only). A
-  // born-expired vertex is NOT reported here — it is silently discarded.
-  repeated string skipped_keys = 2;
+  // Index-aligned with request.vertices and always the same length. This makes
+  // mixed live/expired/conditional batches unambiguous even with duplicate
+  // keys. An empty request returns an empty list.
+  repeated PutOutcome outcomes = 1;
 }
 
 // DeleteVertexRequest removes the vertex at `key`. Edges incident to the
@@ -762,7 +774,10 @@ message PutEdgeRequest {
   Edge edge = 1;
 }
 
-message PutEdgeResponse {}
+message PutEdgeResponse {
+  // Server-authoritative result for edge in the request.
+  PutOutcome outcome = 1;
+}
 
 // PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
 // weight and expiration. This operation is idempotent.
@@ -771,8 +786,9 @@ message PutEdgesRequest {
 }
 
 message PutEdgesResponse {
-  // Number of edges accepted (overwritten or created).
-  int32 written = 1;
+  // Index-aligned with request.edges and always the same length. An empty
+  // request returns an empty list.
+  repeated PutOutcome outcomes = 1;
 }
 
 // GetServerStatusRequest carries no parameters — the response is a

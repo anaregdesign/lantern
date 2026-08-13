@@ -119,7 +119,11 @@ Lines are accumulated into batches of --chunk-size and sent via PutVertices.
 			if len(batch) == 0 {
 				return nil
 			}
-			if err := cli.PutVertices(cmd.Context(), batch); err != nil {
+			results, err := cli.PutVertices(cmd.Context(), batch)
+			if err != nil {
+				return err
+			}
+			if err := requireLiveVertexResults(results); err != nil {
 				return err
 			}
 			total += len(batch)
@@ -217,7 +221,11 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 				if verb == "add" {
 					_, err = cli.AddEdges(cmd.Context(), batch)
 				} else {
-					err = cli.PutEdges(cmd.Context(), batch)
+					var results []client.EdgePutResult
+					results, err = cli.PutEdges(cmd.Context(), batch)
+					if err == nil {
+						err = requireLiveEdgeResults(results)
+					}
 				}
 				if err != nil {
 					return err
@@ -262,6 +270,24 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 			return nil
 		},
 	}
+}
+
+func requireLiveVertexResults(results []client.VertexPutResult) error {
+	for i, result := range results {
+		if result.Outcome != client.PutOutcomeAppliedAndLive {
+			return fmt.Errorf("vertex batch item %d (%q) was not live after Put: %s", i, result.Key, result.Outcome)
+		}
+	}
+	return nil
+}
+
+func requireLiveEdgeResults(results []client.EdgePutResult) error {
+	for i, result := range results {
+		if result.Outcome != client.PutOutcomeAppliedAndLive {
+			return fmt.Errorf("edge batch item %d (%q -> %q) was not live after Put: %s", i, result.Tail, result.Head, result.Outcome)
+		}
+	}
+	return nil
 }
 
 var bulkEdgesCmd = &cobra.Command{

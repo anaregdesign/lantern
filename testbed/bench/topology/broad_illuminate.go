@@ -100,11 +100,23 @@ func NewBroadIlluminateFixture(expiration time.Time) BroadIlluminateFixture {
 // additive contributions accumulate between local benchmark attempts.
 func SeedBroadIlluminate(ctx context.Context, lantern *client.Lantern, expiration time.Time) (BroadIlluminateVerification, error) {
 	fixture := NewBroadIlluminateFixture(expiration)
-	if err := lantern.PutVertices(ctx, fixture.Vertices); err != nil {
+	vertexResults, err := lantern.PutVertices(ctx, fixture.Vertices)
+	if err != nil {
 		return BroadIlluminateVerification{}, fmt.Errorf("seed vertices: %w", err)
 	}
-	if err := lantern.PutEdges(ctx, fixture.Edges); err != nil {
+	for i, result := range vertexResults {
+		if result.Outcome != client.PutOutcomeAppliedAndLive {
+			return BroadIlluminateVerification{}, fmt.Errorf("seed vertex %d (%q): %s", i, result.Key, result.Outcome)
+		}
+	}
+	edgeResults, err := lantern.PutEdges(ctx, fixture.Edges)
+	if err != nil {
 		return BroadIlluminateVerification{}, fmt.Errorf("seed edges: %w", err)
+	}
+	for i, result := range edgeResults {
+		if result.Outcome != client.PutOutcomeAppliedAndLive {
+			return BroadIlluminateVerification{}, fmt.Errorf("seed edge %d (%q -> %q): %s", i, result.Tail, result.Head, result.Outcome)
+		}
 	}
 	return VerifyBroadIlluminate(ctx, lantern)
 }

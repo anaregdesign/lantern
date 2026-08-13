@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -25,37 +26,37 @@ func main() {
 		    Value can be string, int, float, bool, time.Time, []byte or nil
 	*/
 	// string value
-	if err := cli.PutVertex(ctx, "string", "A", 1*time.Minute); err != nil {
+	if err := appliedPut(cli.PutVertex(ctx, "string", "A", 1*time.Minute)); err != nil {
 		log.Fatal(err)
 	}
 
 	// int value
-	if err := cli.PutVertex(ctx, "int", 1, 1*time.Minute); err != nil {
+	if err := appliedPut(cli.PutVertex(ctx, "int", 1, 1*time.Minute)); err != nil {
 		log.Fatal(err)
 	}
 
 	// float value
-	if err := cli.PutVertex(ctx, "float", 1.1, 1*time.Minute); err != nil {
+	if err := appliedPut(cli.PutVertex(ctx, "float", 1.1, 1*time.Minute)); err != nil {
 		log.Fatal(err)
 	}
 
 	// bool value
-	if err := cli.PutVertex(ctx, "bool", true, 1*time.Minute); err != nil {
+	if err := appliedPut(cli.PutVertex(ctx, "bool", true, 1*time.Minute)); err != nil {
 		log.Fatal(err)
 	}
 
 	// time.Time value
-	if err := cli.PutVertex(ctx, "time", time.Now(), 1*time.Minute); err != nil {
+	if err := appliedPut(cli.PutVertex(ctx, "time", time.Now(), 1*time.Minute)); err != nil {
 		log.Fatal(err)
 	}
 
 	// []byte value
-	if err := cli.PutVertex(ctx, "[]byte", []byte("A"), 1*time.Minute); err != nil {
+	if err := appliedPut(cli.PutVertex(ctx, "[]byte", []byte("A"), 1*time.Minute)); err != nil {
 		log.Fatal(err)
 	}
 
 	// nil value
-	if err := cli.PutVertex(ctx, "nil", nil, 1*time.Minute); err != nil {
+	if err := appliedPut(cli.PutVertex(ctx, "nil", nil, 1*time.Minute)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -214,10 +215,10 @@ func main() {
 			PutEdge is idempotent version of AddEdge.
 	*/
 	// put edge a->b with a weight 1 and TTL 1 second twice
-	if err := cli.PutEdge(ctx, "a", "b", 1, 1*time.Second); err != nil {
+	if err := appliedPut(cli.PutEdge(ctx, "a", "b", 1, 1*time.Second)); err != nil {
 		log.Fatal(err)
 	}
-	if err := cli.PutEdge(ctx, "a", "b", 1, 1*time.Second); err != nil {
+	if err := appliedPut(cli.PutEdge(ctx, "a", "b", 1, 1*time.Second)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -328,7 +329,7 @@ func main() {
 		{Key: "orders/1", Value: 1, Expiration: exp},
 		{Key: "orders/2", Value: 2, Expiration: exp},
 	}
-	if err := cli.PutVertices(ctx, prefixSeed); err != nil {
+	if err := appliedVertexPuts(cli.PutVertices(ctx, prefixSeed)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -432,6 +433,28 @@ func main() {
 	})); err == nil {
 		log.Printf("local community graph has %d vertices", len(graph.Vertices))
 	}
+}
+
+func appliedPut(outcome client.PutOutcome, err error) error {
+	if err != nil {
+		return err
+	}
+	if outcome != client.PutOutcomeAppliedAndLive {
+		return fmt.Errorf("Put returned %s", outcome)
+	}
+	return nil
+}
+
+func appliedVertexPuts(results []client.VertexPutResult, err error) error {
+	if err != nil {
+		return err
+	}
+	for i, result := range results {
+		if result.Outcome != client.PutOutcomeAppliedAndLive {
+			return fmt.Errorf("vertex Put item %d (%q) returned %s", i, result.Key, result.Outcome)
+		}
+	}
+	return nil
 }
 
 // retryAndFailoverExample shows the opt-in retry policy (#849) composed with

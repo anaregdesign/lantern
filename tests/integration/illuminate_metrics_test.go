@@ -57,7 +57,7 @@ func TestLantern_Illuminate_MetricReductionLabel(t *testing.T) {
 	// and MST/SPT have edges to reduce.
 	const ttl = time.Hour
 	for _, k := range []string{"a", "b", "c", "d"} {
-		if err := l.PutVertex(ctx, k, k, ttl); err != nil {
+		if _, err := l.PutVertex(ctx, k, k, ttl); err != nil {
 			t.Fatalf("PutVertex %q: %v", k, err)
 		}
 	}
@@ -173,11 +173,11 @@ func TestLantern_Illuminate_FailureObservability(t *testing.T) {
 		t.Cleanup(scrape.Close)
 
 		for _, key := range []string{"seed", "negative"} {
-			if err := l.PutVertex(context.Background(), key, key, time.Minute); err != nil {
+			if _, err := l.PutVertex(context.Background(), key, key, time.Minute); err != nil {
 				t.Fatalf("PutVertex %s: %v", key, err)
 			}
 		}
-		if err := l.PutEdge(context.Background(), "seed", "negative", -1, time.Minute); err != nil {
+		if _, err := l.PutEdge(context.Background(), "seed", "negative", -1, time.Minute); err != nil {
 			t.Fatalf("PutEdge negative: %v", err)
 		}
 		_, err := l.Illuminate(context.Background(), "seed", client.WithBFS(client.BFSOpts{

@@ -110,7 +110,8 @@ signal that answers it primarily; corroborating signals are noted in §5.
 **P4 — Capacity / cost owner**
 
 - As a cost owner, I want **graph-size and throughput trends** to plan memory. →
-  `lantern_vertices` / `lantern_edges`, `process_resident_memory_bytes`,
+  `lantern_vertices` / `lantern_edges`, the matching
+  `lantern_*_causal_barrier_entries`, `process_resident_memory_bytes`, and
   `grpc_server_started_total` rate.
 - As a cost owner, I want to know **what the telemetry itself costs** (series
   count) so I can prune. → cardinality of the scrape (see §10).
@@ -120,6 +121,10 @@ signal that answers it primarily; corroborating signals are noted in §5.
 - As a maintainer, I want to catch **memory / map leaks** across releases. →
   `lantern_vertex_hlc_entries` / `_high_water`, `go_memstats_heap_inuse_bytes`,
   `go_goroutines`.
+- As a maintainer, I want to distinguish an accidental leak from the deliberate
+  indefinite retention of hidden Put floors. →
+  `lantern_vertex_causal_barrier_entries`,
+  `lantern_edge_causal_barrier_entries`.
 - As a maintainer, I want to know **GC and hot-path cost** under load. →
   `lantern_gc_duration_seconds`, `lantern_illuminate_duration_seconds`,
   `lantern_scan_duration_seconds`.
@@ -193,11 +198,16 @@ gap (§8).
 ### 5.3 Graph state & TTL decay — "what's in memory, and what's leaving?"
 
 *Persona P3, P4 · role: capacity + RCA.* `lantern_vertices`, `lantern_edges`
-(live counts — the headline gauges; **divergence between pods is the cluster's
-drift signal**), `lantern_ttl_expirations_total{kind=vertex|edge|dangling_edge}`
+(live counts — the headline gauges, but not the admission-cap footprint),
+`lantern_vertex_causal_barrier_entries` /
+`lantern_edge_causal_barrier_entries` (retained Put floors),
+`lantern_ttl_expirations_total{kind=vertex|edge|dangling_edge}`
 (the decay rate — a sudden spike means a TTL cliff), and
 `lantern_gc_duration_seconds` (the cost of reaping). Together they answer "is
-the working set growing, decaying, or churning, and is GC keeping up?".
+the working set growing, decaying, or churning, and is GC keeping up?". For
+capacity alerting, sum each live gauge and its matching barrier gauge; equal
+cardinalities across pods are a drift clue, not proof that identities/values
+match.
 
 ### 5.4 Replication & HA — the heart of a leaderless cluster
 
@@ -210,10 +220,14 @@ a leader. Grouped by concern:
   reconnect. The single clearest "a peer died / healed" edge.
   `lantern_subscribe_active_streams` is the inbound counterpart.
 - **Apply throughput (RCA).** `lantern_replication_apply_total{op}` (per
-  `MutationOp` — both remote and local applies) and
+  received `MutationOp`) and
   `lantern_replication_applied_total{origin}` (per originating node). After a
   pod restart, watching every `op` row refill is how you *prove* the backlog
-  re-applied.
+  re-applied. Accepted Put batches appear as `op="ReplicatedPutVertices"` or
+  `op="ReplicatedPutEdges"`: each observation is one ordered authoritative
+  batch, not one item. Live and causal-barrier entries remain interleaved in
+  origin-accepted order, so metrics must not infer item outcomes or batch size
+  from this counter alone.
 - **Lag & convergence (liveness).** `lantern_replication_lag_seq{peer,origin}`
   (in mutation-**seq** units, not seconds — set from `PeerStatus` probes) and
   `lantern_anti_entropy_cycles_total` / `lantern_anti_entropy_gaps_found_total{peer,origin}`.
@@ -226,7 +240,17 @@ a leader. Grouped by concern:
   `lantern_mutationlog_subscriber_dropped_total{cause}`.
 - **Bootstrap / reseed (RCA).** `lantern_snapshot_replayed_total{peer}` and the
   `lantern_snapshot_{vertices,edges,duration_seconds}{peer}` histograms — how a
-  fresh or gapped pod re-seeded, and how expensive it was.
+  fresh or gapped pod re-seeded, and how expensive it was. Replication Snapshot
+  migrates hidden expired/dangling Put floors and captures barrier plus live
+  graph state atomically. A live additive edge coexisting with a barrier is
+  emitted at the maximum bucket/barrier HLC so bootstrap cannot reopen an
+  older-Put resurrection window.
+- **Convergence boundary (RCA).** Zero lag and matching cardinality gauges do
+  not prove equal edge weights for histories that arbitrarily mix Put/Add or
+  Delete/Add delivery. Those histories remain unsupported pending
+  [#1203](https://github.com/anaregdesign/lantern/issues/1203); compare the
+  application-visible edge when diagnosing one, then quiesce it and reseed
+  from the authoritative replica.
 - **Dropped frames (RCA).** `lantern_replication_dropped_total{peer,reason}`
   (reasons: `self_echo`, `subscribe_failed`, `snapshot_failed`, `dial_failed`,
   `peerstatus_failed`, `catchup_failed`, `discovery_failed`, `ctx_cancel`, `clean`),
@@ -242,15 +266,27 @@ CDC consumer is shedding events and under which `FullPolicy`.
 
 ### 5.6 Admission control & back-pressure — "what did we refuse, and why?"
 
-*Persona P2, P3 · role: RCA.* `lantern_validation_rejected_total{reason}` (the
+*Persona P2, P3, P4 · role: RCA + saturation.*
+`lantern_validation_rejected_total{reason}` (the
 bounded reason set: `empty_key`, `key_too_long`, `empty_batch`,
 `batch_too_large`, `nil_item`, `bad_weight`, `step_too_large`, `k_too_large`,
-`bad_ttl`, `bad_cursor`, plus `unknown`), `lantern_rate_limit_rejected_total`
+`bad_ttl`, `bad_cursor`, `capacity`, `empty_edge_prefix`, `order_mismatch`, plus
+`unknown`), `lantern_rate_limit_rejected_total`
 (token-bucket `ResourceExhausted`; registered even when the limiter is off so
 deployments compare uniformly), `lantern_tombstone_clamp_rejected_total` (LWW
-lost against a live tombstone or newer value — a sustained rate flags clock skew
-or causally-late frames). The first separates *client bug* from *server
-saturation*; the last is a subtle correctness signal unique to the HLC model.
+lost against a live tombstone, retained barrier, or newer live floor — a
+sustained rate flags clock skew or causally-late frames). The first separates
+*client bug* from *server saturation*; the last is a subtle correctness signal
+unique to the HLC model.
+
+For `reason="capacity"`, compare `lantern_capacity_limit{kind}` with live plus
+matching causal-barrier gauges. The cap excludes Delete tombstones and is
+enforced only at local write admission; replication and restore can exceed it.
+An equal/newer exact Delete moves a barrier floor into a D4-bounded tombstone
+and frees the admission slot, while prefix Delete cannot see a barrier-only
+identity. Tombstones still consume heap, and no separate hard causal-metadata
+count/byte budget exists yet; that follow-up is
+[#1204](https://github.com/anaregdesign/lantern/issues/1204).
 
 ### 5.7 Query subsystems — illuminate / scan / search
 
@@ -333,6 +369,16 @@ gauges `lantern_vertex_hlc_entries` and `lantern_vertex_hlc_entries_high_water`
 fingerprint), alongside the standard `go_*` (goroutines, heap, GC) and
 `process_*` (RSS, CPU, FDs) collectors. These rarely page, but they are the
 first place a maintainer looks when "it gets slower / fatter over days".
+The causal-barrier gauges separately track retained Put floors, including live
+Put metadata migrated when its payload becomes expired, zero-weight, or
+dangling. They are not expected to fall merely because a GC tick ran: each
+floor remains until an equal/newer live Put supersedes it or an equal/newer
+explicit Delete transitions it into a D4-bounded tombstone. Prefix Delete
+cannot make that transition for a barrier-only identity. Sustained growth is a
+workload-retention signal rather than a TTL-GC failure (see replication RFC
+§4/§8). Tombstones are excluded from these gauges and the admission-cap
+footprint, but still consume heap; trend RSS/heap until #1204 supplies an
+independent hard metadata budget and matching visibility.
 
 ---
 
@@ -474,8 +520,11 @@ The catalogue is large by design; consumption should be tiered. Three views:
   and `lantern_rate_limit_rejected_total` (saturation).
 - **RCA / dashboards (reach for these during triage).** Everything in §5.4–§5.8
   plus the per-channel logs (§6) and, when enabled, traces (§7).
-- **Capacity / cost (trend these).** `lantern_vertices` / `lantern_edges`,
-  RPC rate, `process_resident_memory_bytes`, and the leak gauges (§5.9).
+- **Capacity / cost (trend these).** `lantern_vertices` / `lantern_edges`, the
+  matching causal-barrier gauges, RPC rate,
+  `process_resident_memory_bytes`, and the leak gauges (§5.9). Because
+  tombstones have no dedicated hard budget/gauge yet, RSS/heap remains the
+  backstop for total causal metadata.
 
 **The cost lens.** Counter-intuitively, the generic `go_*` / `process_*` /
 `promhttp_*` collectors are *not* the bulk of the scrape. Measured on an idle

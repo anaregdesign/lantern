@@ -86,6 +86,32 @@ func (c *GraphCache[S, T]) setEdgeTombstoneLocked(tail, head S, ts hlc.Timestamp
 	c.edgeTombstones[k] = tombstoneEntry{ts: ts, expiration: expiration}
 }
 
+func (c *GraphCache[S, T]) vertexDeleteWriteAllowedLocked(key S, ts hlc.Timestamp) bool {
+	if tombstone, ok := c.vertexTombstoneLocked(key); ok && ts.Less(tombstone) {
+		return false
+	}
+	if barrier, ok := c.vertexCausalBarriers[key]; ok && ts.Less(barrier) {
+		return false
+	}
+	if live, ok := c.vertexHLC[key]; ok && ts.Less(live) {
+		return false
+	}
+	return true
+}
+
+func (c *GraphCache[S, T]) edgeDeleteWriteAllowedLocked(tail, head S, ts hlc.Timestamp) bool {
+	if tombstone, ok := c.edgeTombstoneLocked(tail, head); ok && ts.Less(tombstone) {
+		return false
+	}
+	if barrier, ok := c.edgeCausalBarriers[EdgeKey[S]{Tail: tail, Head: head}]; ok && ts.Less(barrier) {
+		return false
+	}
+	if live, ok := c.edges.lastPutHLC(tail, head); ok && ts.Less(live) {
+		return false
+	}
+	return true
+}
+
 // DeleteVertexHLC removes the vertex and stamps a tombstone so a late
 // Put*/Add* with an HLC strictly older than ts is rejected for the
 // duration of expiration. Returns whether the vertex was present at
@@ -101,8 +127,17 @@ func (c *GraphCache[S, T]) DeleteVertexHLC(key S, ts hlc.Timestamp, expiration t
 		c.searchCommitMu.Lock()
 		defer c.searchCommitMu.Unlock()
 	}
+	if !c.vertexDeleteWriteAllowedLocked(key, ts) {
+		return false
+	}
 	existed := c.vertices.Delete(key)
 	c.setVertexTombstoneLocked(key, ts, expiration)
+	if barrier, ok := c.vertexCausalBarriers[key]; ok && !ts.Less(barrier) {
+		c.clearVertexCausalBarrierLocked(key)
+	}
+	if live, ok := c.vertexHLC[key]; ok && !ts.Less(live) {
+		delete(c.vertexHLC, key)
+	}
 	c.rebuildIncompleteSearchLocked()
 	return existed
 }
@@ -125,9 +160,21 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 	// it returns only the keys that were present, which is exactly the count
 	// we report. Tombstones still go on EVERY key (including absent ones) so
 	// a Delete-before-Add race is resolved by LWW once the Add arrives.
-	n := len(c.vertices.DeleteMany(keys))
+	accepted := make([]S, 0, len(keys))
 	for _, k := range keys {
+		if c.vertexDeleteWriteAllowedLocked(k, ts) {
+			accepted = append(accepted, k)
+		}
+	}
+	n := len(c.vertices.DeleteMany(accepted))
+	for _, k := range accepted {
 		c.setVertexTombstoneLocked(k, ts, expiration)
+		if barrier, ok := c.vertexCausalBarriers[k]; ok && !ts.Less(barrier) {
+			c.clearVertexCausalBarrierLocked(k)
+		}
+		if live, ok := c.vertexHLC[k]; ok && !ts.Less(live) {
+			delete(c.vertexHLC, k)
+		}
 	}
 	c.rebuildIncompleteSearchLocked()
 	return n
@@ -138,8 +185,15 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 func (c *GraphCache[S, T]) DeleteEdgeHLC(tail, head S, ts hlc.Timestamp, expiration time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.edgeDeleteWriteAllowedLocked(tail, head, ts) {
+		return false
+	}
 	deleted := c.deleteEdgeLocked(tail, head)
 	c.setEdgeTombstoneLocked(tail, head, ts, expiration)
+	key := EdgeKey[S]{Tail: tail, Head: head}
+	if barrier, ok := c.edgeCausalBarriers[key]; ok && !ts.Less(barrier) {
+		c.clearEdgeCausalBarrierLocked(tail, head)
+	}
 	return deleted
 }
 
@@ -152,10 +206,16 @@ func (c *GraphCache[S, T]) DeleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, e
 	defer c.mu.Unlock()
 	n := 0
 	for _, k := range keys {
+		if !c.edgeDeleteWriteAllowedLocked(k.Tail, k.Head, ts) {
+			continue
+		}
 		if c.deleteEdgeLocked(k.Tail, k.Head) {
 			n++
 		}
 		c.setEdgeTombstoneLocked(k.Tail, k.Head, ts, expiration)
+		if barrier, ok := c.edgeCausalBarriers[k]; ok && !ts.Less(barrier) {
+			c.clearEdgeCausalBarrierLocked(k.Tail, k.Head)
+		}
 	}
 	return n
 }
@@ -195,9 +255,21 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLC(ctx context.Context, prefix string,
 	// victims are all live (resolveProjected confirms via the vertex cache),
 	// so DeleteMany removes them all; batch it into one index-maintenance pass
 	// (#738) and tombstone each victim.
-	n := len(c.vertices.DeleteMany(victims))
+	accepted := victims[:0]
 	for _, k := range victims {
+		if c.vertexDeleteWriteAllowedLocked(k, ts) {
+			accepted = append(accepted, k)
+		}
+	}
+	n := len(c.vertices.DeleteMany(accepted))
+	for _, k := range accepted {
 		c.setVertexTombstoneLocked(k, ts, expiration)
+		if barrier, ok := c.vertexCausalBarriers[k]; ok && !ts.Less(barrier) {
+			c.clearVertexCausalBarrierLocked(k)
+		}
+		if live, ok := c.vertexHLC[k]; ok && !ts.Less(live) {
+			delete(c.vertexHLC, k)
+		}
 	}
 	c.rebuildIncompleteSearchLocked()
 	return n, nil

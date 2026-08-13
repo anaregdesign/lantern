@@ -27,6 +27,18 @@ String formatVertexValue(VertexValue value) => switch (value) {
   UnsetValue() => 'unset',
 };
 
+void requireAppliedPut(String identity, PutOutcome outcome) {
+  if (outcome != PutOutcome.appliedAndLive) {
+    throw StateError('$identity was not live after Put: $outcome');
+  }
+}
+
+void requireAppliedVertexPuts(List<VertexPutResult> results) {
+  for (final result in results) {
+    requireAppliedPut('vertex ${result.key}', result.outcome);
+  }
+}
+
 void main() {
   runApp(LanternExampleApp(configuration: DemoConfiguration.fromEnvironment()));
 }
@@ -304,7 +316,7 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
   Future<void> _seedCrud() async {
     _setPhase(_UiPhase.loading, 'Writing TTL-aware sample data');
     try {
-      await widget.client.putVertices([
+      final vertexResults = await widget.client.putVertices([
         VertexInput(
           key: '${_prefix}alice',
           value: VertexValue.string('quiet cafe graph'),
@@ -315,8 +327,9 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
           value: VertexValue.uint64((BigInt.one << 63) + BigInt.one),
         ),
       ], options: _callOptions);
+      requireAppliedVertexPuts(vertexResults);
       await widget.client.getVertex('${_prefix}alice', options: _callOptions);
-      await widget.client.putEdge(
+      final edgeOutcome = await widget.client.putEdge(
         EdgeInput(
           tail: '${_prefix}alice',
           head: '${_prefix}bob',
@@ -325,6 +338,7 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
         ),
         options: _callOptions,
       );
+      requireAppliedPut('edge ${_prefix}alice -> ${_prefix}bob', edgeOutcome);
       await widget.client.addEdge(
         EdgeInput(
           tail: '${_prefix}alice',
@@ -339,10 +353,11 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
         options: _callOptions,
       );
       await _runSearchContractExamples();
-      await widget.client.putVertex(
+      final temporaryOutcome = await widget.client.putVertex(
         VertexInput(key: '${_prefix}temporary', value: VertexValue.nil()),
         options: _callOptions,
       );
+      requireAppliedPut('vertex ${_prefix}temporary', temporaryOutcome);
       await widget.client.deleteVertex(
         '${_prefix}temporary',
         options: _callOptions,

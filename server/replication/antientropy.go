@@ -421,26 +421,61 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 		recovery = candidate
 		recovery.BeginSearchIndexRecovery()
 	}
-	var header *pb.SnapshotHeader
+	var replay snapshotReplayState
 	for stream.Receive() {
 		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
-			header = e.Header
-		case *pb.SnapshotResponse_Vertex:
-			sv := e.Vertex
-			v := sv.GetVertex()
-			if v == nil {
-				continue
+			if err := replay.acceptHeader(e.Header); err != nil {
+				return err
 			}
+		case *pb.SnapshotResponse_VertexCausalBarrier:
+			if err := replay.acceptBody("vertex causal barrier", snapshotPhaseVertexBarrier); err != nil {
+				return err
+			}
+			barrier := e.VertexCausalBarrier
+			if barrier == nil {
+				return snapshotProtocolError("nil vertex causal barrier")
+			}
+			a.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), snapshotHLC(barrier.GetHlc()))
+			replay.counts.vertexBarrier++
+		case *pb.SnapshotResponse_EdgeCausalBarrier:
+			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
+				return err
+			}
+			barrier := e.EdgeCausalBarrier
+			if barrier == nil {
+				return snapshotProtocolError("nil edge causal barrier")
+			}
+			a.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), snapshotHLC(barrier.GetHlc()))
+			replay.counts.edgeBarrier++
+		case *pb.SnapshotResponse_Vertex:
+			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
+				return err
+			}
+			sv := e.Vertex
+			if sv == nil || sv.GetVertex() == nil {
+				return snapshotProtocolError("nil vertex payload")
+			}
+			v := sv.GetVertex()
 			a.snap.PutVertexWithExpirationHLC(
 				v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
 				snapshotHLC(sv.GetHlc()),
 			)
+			replay.counts.vertices++
 		case *pb.SnapshotResponse_Edge:
+			if err := replay.acceptBody("edge", snapshotPhaseEdge); err != nil {
+				return err
+			}
 			se := e.Edge
+			if se == nil || len(se.GetContributions()) == 0 {
+				return snapshotProtocolError("nil or empty live edge payload")
+			}
 			edgeHLC := snapshotHLC(se.GetHlc())
 			for _, c := range se.GetContributions() {
+				if c == nil {
+					return snapshotProtocolError("nil live edge contribution")
+				}
 				var cid graphcache.ContribID
 				copy(cid[:], c.GetContribId())
 				applySnapshotEdge(
@@ -448,12 +483,19 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 					prototime.Expiration(c.GetExpiration()), cid, edgeHLC,
 				)
 			}
+			replay.counts.edges++
 		case *pb.SnapshotResponse_Footer:
-			// no-op; footer counts are validated by the pump
-			// path. Anti-entropy is best-effort.
+			if err := replay.acceptFooter(e.Footer); err != nil {
+				return err
+			}
+		default:
+			return snapshotProtocolError("unknown or empty response frame %T", e)
 		}
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if err := replay.validateComplete(); err != nil {
 		return err
 	}
 	if recovery != nil {
@@ -462,17 +504,15 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 				slog.Any("err", err))
 		}
 	}
-	if marks, ok := a.apply.(snapshotWatermarkApplier); ok && header != nil {
-		if err := marks.ApplySnapshotWatermarks(header.GetCutoffSeqPerOrigin(), snapshotHLC(header.GetCutoffHlc())); err != nil {
+	if marks, ok := a.apply.(snapshotWatermarkApplier); ok {
+		if err := marks.ApplySnapshotWatermarks(replay.header.GetCutoffSeqPerOrigin(), snapshotHLC(replay.header.GetCutoffHlc())); err != nil {
 			return err
 		}
 	}
-	if header != nil {
-		resume := resumeAfterSnapshot(header)
-		a.resumeMu.Lock()
-		a.resumeLocal[addr] = resume.local
-		a.resumeMu.Unlock()
-	}
+	resume := resumeAfterSnapshot(replay.header)
+	a.resumeMu.Lock()
+	a.resumeLocal[addr] = resume.local
+	a.resumeMu.Unlock()
 	return nil
 }
 

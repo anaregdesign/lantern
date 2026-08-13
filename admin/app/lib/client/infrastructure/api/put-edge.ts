@@ -1,5 +1,6 @@
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
+import { requireAppliedPutOutcome } from "./put-outcome";
 import { flatEdgeToSdkInput } from "./to-flat";
 import type { Edge, PutEdgeBody, PutEdgeResponse } from "./types";
 
@@ -19,8 +20,16 @@ export async function putEdge(
 ): Promise<PutEdgeResponse> {
   const flat: Edge = { ...(body.edge ?? {}), tail, head };
   try {
-    await client.putEdge(flatEdgeToSdkInput(flat), init?.signal);
-    return {};
+    const outcome = await client.putEdge(
+      flatEdgeToSdkInput(flat),
+      init?.signal,
+    );
+    requireAppliedPutOutcome(
+      "PutEdge",
+      `edge ${JSON.stringify(tail)} -> ${JSON.stringify(head)}`,
+      outcome,
+    );
+    return { outcome };
   } catch (err) {
     throw LanternApiError.fromUnknown("PutEdge", err);
   }

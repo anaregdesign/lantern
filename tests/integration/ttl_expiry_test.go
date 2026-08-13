@@ -52,7 +52,7 @@ func TestTTL_ExternallyObservableDecay(t *testing.T) {
 		l, cleanup := newInProcessClient(t)
 		defer cleanup()
 
-		if err := l.PutVertex(ctx, "mortal", "v", expiryTTL); err != nil {
+		if _, err := l.PutVertex(ctx, "mortal", "v", expiryTTL); err != nil {
 			t.Fatalf("PutVertex: %v", err)
 		}
 		if _, err := l.GetVertex(ctx, "mortal"); err != nil {
@@ -68,10 +68,10 @@ func TestTTL_ExternallyObservableDecay(t *testing.T) {
 		l, cleanup := newInProcessClient(t)
 		defer cleanup()
 
-		if err := l.PutVertex(ctx, "tail", 1, time.Hour); err != nil {
+		if _, err := l.PutVertex(ctx, "tail", 1, time.Hour); err != nil {
 			t.Fatalf("PutVertex tail: %v", err)
 		}
-		if err := l.PutVertex(ctx, "head", 2, time.Hour); err != nil {
+		if _, err := l.PutVertex(ctx, "head", 2, time.Hour); err != nil {
 			t.Fatalf("PutVertex head: %v", err)
 		}
 		if _, err := l.AddEdge(ctx, "tail", "head", 1, expiryTTL); err != nil {
@@ -96,10 +96,10 @@ func TestTTL_ExternallyObservableDecay(t *testing.T) {
 		l, cleanup := newInProcessClient(t)
 		defer cleanup()
 
-		if err := l.PutVertex(ctx, "ephemeral", 1, expiryTTL); err != nil {
+		if _, err := l.PutVertex(ctx, "ephemeral", 1, expiryTTL); err != nil {
 			t.Fatalf("PutVertex ephemeral: %v", err)
 		}
-		if err := l.PutVertex(ctx, "durable", 2, time.Hour); err != nil {
+		if _, err := l.PutVertex(ctx, "durable", 2, time.Hour); err != nil {
 			t.Fatalf("PutVertex durable: %v", err)
 		}
 		if _, err := l.AddEdge(ctx, "ephemeral", "durable", 1, time.Hour); err != nil {

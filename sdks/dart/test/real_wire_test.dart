@@ -76,7 +76,7 @@ void main() {
       ];
 
       final put = await client.putVertices(inputs, batchSize: 4);
-      expect(put.written, inputs.length);
+      expect(put, hasLength(inputs.length));
       final read = await client.getVertices(
         inputs.map((input) => input.key),
         batchSize: 3,
@@ -119,7 +119,7 @@ void main() {
             expiresIn: const Duration(minutes: 5),
           ),
         ),
-        isTrue,
+        PutOutcome.appliedAndLive,
       );
       expect(
         await client.putVertex(
@@ -129,7 +129,7 @@ void main() {
             expiresAt: absolute,
           ),
         ),
-        isTrue,
+        PutOutcome.appliedAndLive,
       );
       expect(
         await client.putVertex(
@@ -141,7 +141,7 @@ void main() {
             ),
           ),
         ),
-        isFalse,
+        PutOutcome.expired,
       );
       await expectLater(
         client.getVertex('$prefix-born-expired'),
@@ -154,14 +154,16 @@ void main() {
             value: VertexValue.string('new'),
           ),
         ),
-        isFalse,
+        PutOutcome.conditionNotMet,
       );
       final conditional = await client.putVerticesIfAbsent([
         VertexInput(key: '$prefix-relative', value: VertexValue.nil()),
         VertexInput(key: '$prefix-new', value: VertexValue.nil()),
       ]);
-      expect(conditional.written, 1);
-      expect(conditional.skippedKeys, ['$prefix-relative']);
+      expect(conditional.map((result) => result.outcome), [
+        PutOutcome.conditionNotMet,
+        PutOutcome.appliedAndLive,
+      ]);
       expect(await client.deleteVertex('$prefix-new'), isTrue);
       expect(await client.deleteVertex('$prefix-new'), isFalse);
     },

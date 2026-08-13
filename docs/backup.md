@@ -37,10 +37,11 @@ leaderless-replication invariant.
   restores the live graph, then rebuilds the exact index before it can become
   `HEALTHY`. A bounded rebuild failure leaves graph restore intact but search
   fails closed as `INCOMPLETE`; `DISABLED` remains distinct.
-- **Restore accounting** reports actual `PutVerticesResponse.written` /
-  `PutEdgesResponse.written`, not input frame counts. Consequently
-  `lantern_restore_vertices`, `lantern_restore_edges`, and restore logs exclude
-  born-expired or otherwise skipped rows.
+- **Restore accounting** counts only index-aligned
+  `PUT_OUTCOME_APPLIED_AND_LIVE` results from `PutVertices` / `PutEdges`, not
+  input frame counts. Consequently `lantern_restore_vertices`,
+  `lantern_restore_edges`, and restore logs exclude expired or causally
+  superseded rows.
 - **Per-instance files.** Each writer owns files named
   `lantern-backup-<instance>-<nanos>.lbk` (`instance` defaults to the
   hostname). Writes are atomic (temp file + `rename`); a half-written file is

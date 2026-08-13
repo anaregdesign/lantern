@@ -17,14 +17,14 @@ import (
 // fakeService satisfies the backup Service: BackupSnapshot emits a fixed
 // frame list; PutVertices / PutEdges record what restore replayed.
 type fakeService struct {
-	frames             []*pb.BackupSnapshotResponse
-	putV               []*pb.Vertex
-	putE               []*pb.Edge
-	restoreVertexCount func(*pb.PutVerticesRequest) int32
-	restoreEdgeCount   func(*pb.PutEdgesRequest) int32
-	beginRecovery      int
-	completeRecovery   int
-	completeErr        error
+	frames                []*pb.BackupSnapshotResponse
+	putV                  []*pb.Vertex
+	putE                  []*pb.Edge
+	restoreVertexOutcomes func(*pb.PutVerticesRequest) []pb.PutOutcome
+	restoreEdgeOutcomes   func(*pb.PutEdgesRequest) []pb.PutOutcome
+	beginRecovery         int
+	completeRecovery      int
+	completeErr           error
 }
 
 func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequest, stream service.Sender[pb.BackupSnapshotResponse]) error {
@@ -38,20 +38,26 @@ func (f *fakeService) BackupSnapshot(_ context.Context, _ *pb.BackupSnapshotRequ
 
 func (f *fakeService) RestoreVertices(_ context.Context, req *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	f.putV = append(f.putV, req.GetVertices()...)
-	written := int32(len(req.GetVertices()))
-	if f.restoreVertexCount != nil {
-		written = f.restoreVertexCount(req)
+	outcomes := make([]pb.PutOutcome, len(req.GetVertices()))
+	for i := range outcomes {
+		outcomes[i] = pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE
 	}
-	return &pb.PutVerticesResponse{Written: written}, nil
+	if f.restoreVertexOutcomes != nil {
+		outcomes = f.restoreVertexOutcomes(req)
+	}
+	return &pb.PutVerticesResponse{Outcomes: outcomes}, nil
 }
 
 func (f *fakeService) PutEdges(_ context.Context, req *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
 	f.putE = append(f.putE, req.GetEdges()...)
-	written := int32(len(req.GetEdges()))
-	if f.restoreEdgeCount != nil {
-		written = f.restoreEdgeCount(req)
+	outcomes := make([]pb.PutOutcome, len(req.GetEdges()))
+	for i := range outcomes {
+		outcomes[i] = pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE
 	}
-	return &pb.PutEdgesResponse{Written: written}, nil
+	if f.restoreEdgeOutcomes != nil {
+		outcomes = f.restoreEdgeOutcomes(req)
+	}
+	return &pb.PutEdgesResponse{Outcomes: outcomes}, nil
 }
 
 func (f *fakeService) BeginSearchIndexRecovery() { f.beginRecovery++ }
@@ -105,8 +111,15 @@ func TestBackupper_RestoreCountsActualWrites(t *testing.T) {
 		t.Fatalf("backupOnce: %v", err)
 	}
 	dst := &fakeService{
-		restoreVertexCount: func(*pb.PutVerticesRequest) int32 { return 1 },
-		restoreEdgeCount:   func(*pb.PutEdgesRequest) int32 { return 0 },
+		restoreVertexOutcomes: func(*pb.PutVerticesRequest) []pb.PutOutcome {
+			return []pb.PutOutcome{
+				pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+				pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+			}
+		},
+		restoreEdgeOutcomes: func(*pb.PutEdgesRequest) []pb.PutOutcome {
+			return []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED}
+		},
 	}
 	reg := prometheus.NewRegistry()
 	b := New(dst, testConfig(dir), reg, nil)
@@ -122,6 +135,32 @@ func TestBackupper_RestoreCountsActualWrites(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(b.metrics.restoreEdges); got != 0 {
 		t.Fatalf("lantern_restore_edges = %v, want 0 actual writes", got)
+	}
+}
+
+func TestBackupper_RestoreRejectsInvalidOutcomeVectors(t *testing.T) {
+	tests := []struct {
+		name     string
+		outcomes []pb.PutOutcome
+	}{
+		{name: "length mismatch", outcomes: nil},
+		{name: "unspecified", outcomes: []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_UNSPECIFIED}},
+		{name: "unknown", outcomes: []pb.PutOutcome{pb.PutOutcome(99)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := &fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("v")}}
+			if _, err := New(src, testConfig(dir), nil, nil).backupOnce(context.Background()); err != nil {
+				t.Fatalf("backupOnce: %v", err)
+			}
+			dst := &fakeService{restoreVertexOutcomes: func(*pb.PutVerticesRequest) []pb.PutOutcome {
+				return tt.outcomes
+			}}
+			if _, err := New(dst, testConfig(dir), nil, nil).RestoreOnStartup(context.Background()); err == nil {
+				t.Fatalf("RestoreOnStartup accepted outcomes %v", tt.outcomes)
+			}
+		})
 	}
 }
 

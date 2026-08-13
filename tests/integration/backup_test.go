@@ -35,13 +35,13 @@ func TestBackupSnapshot_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := sdk.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
+	if _, err := sdk.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
 		t.Fatalf("PutVertex alice: %v", err)
 	}
-	if err := sdk.PutVertex(ctx, "bob", int64(42), time.Minute); err != nil {
+	if _, err := sdk.PutVertex(ctx, "bob", int64(42), time.Minute); err != nil {
 		t.Fatalf("PutVertex bob: %v", err)
 	}
-	if err := sdk.PutVertex(ctx, "carol", "Carol", time.Minute); err != nil {
+	if _, err := sdk.PutVertex(ctx, "carol", "Carol", time.Minute); err != nil {
 		t.Fatalf("PutVertex carol: %v", err)
 	}
 	if _, err := sdk.AddEdge(ctx, "alice", "bob", 1.5, time.Minute); err != nil {
@@ -77,10 +77,10 @@ func TestBackupSnapshot_E2E(t *testing.T) {
 
 	// vertex_prefix scopes the dump to the induced subgraph.
 	t.Run("Prefix", func(t *testing.T) {
-		if err := sdk.PutVertex(ctx, "x:1", "one", time.Minute); err != nil {
+		if _, err := sdk.PutVertex(ctx, "x:1", "one", time.Minute); err != nil {
 			t.Fatalf("PutVertex x:1: %v", err)
 		}
-		if err := sdk.PutVertex(ctx, "x:2", "two", time.Minute); err != nil {
+		if _, err := sdk.PutVertex(ctx, "x:2", "two", time.Minute); err != nil {
 			t.Fatalf("PutVertex x:2: %v", err)
 		}
 		if _, err := sdk.AddEdge(ctx, "x:1", "x:2", 1.0, time.Minute); err != nil {
@@ -149,17 +149,17 @@ func TestBackupper_ServerInternal_RoundTrip_E2E(t *testing.T) {
 	srcRaw := graphv1connect.NewLanternServiceClient(h2cClient(), srcSrv.url)
 
 	const bigInt = int64(9007199254740993) // 2^53 + 1
-	if err := srcSDK.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
+	if _, err := srcSDK.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := srcSDK.PutVertex(ctx, "num", bigInt, time.Minute); err != nil {
+	if _, err := srcSDK.PutVertex(ctx, "num", bigInt, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srcSDK.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	expiresBeforeRestore := time.Now().Add(500 * time.Millisecond)
-	if err := srcSDK.PutVertexAt(ctx, "expired-during-restart", "restore-expired-term", expiresBeforeRestore); err != nil {
+	if _, err := srcSDK.PutVertexAt(ctx, "expired-during-restart", "restore-expired-term", expiresBeforeRestore); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,13 +228,13 @@ func TestBackupRestore_E2E_SDK(t *testing.T) {
 			defer cancel()
 
 			const bigInt = int64(9007199254740993) // 2^53 + 1
-			if err := src.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
+			if _, err := src.PutVertex(ctx, "alice", "Alice", time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if err := src.PutVertex(ctx, "num", bigInt, time.Minute); err != nil {
+			if _, err := src.PutVertex(ctx, "num", bigInt, time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if err := src.PutVertex(ctx, "carol", "Carol", time.Minute); err != nil {
+			if _, err := src.PutVertex(ctx, "carol", "Carol", time.Minute); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := src.AddEdge(ctx, "alice", "num", 1.5, time.Minute); err != nil {
@@ -302,7 +302,7 @@ func TestBackupSnapshot_ReferentialClosure_E2E(t *testing.T) {
 	defer cancel()
 
 	for _, k := range []string{"alice", "bob", "carol"} {
-		if err := sdk.PutVertex(ctx, k, k, time.Minute); err != nil {
+		if _, err := sdk.PutVertex(ctx, k, k, time.Minute); err != nil {
 			t.Fatalf("PutVertex %s: %v", k, err)
 		}
 	}

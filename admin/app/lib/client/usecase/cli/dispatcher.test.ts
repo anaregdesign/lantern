@@ -231,7 +231,7 @@ describe("ttlSecondsToExpiration (#429, #523)", () => {
 describe("dispatch put vertex (#428 + #429)", () => {
   test("integer round-trips as BigInt with carried expiration (#428 + #429)", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putVertex", () => undefined);
+    fake.stub("putVertex", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "vertex",
@@ -260,7 +260,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
 
   test("string falls through and carries expiration", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putVertex", () => undefined);
+    fake.stub("putVertex", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "vertex",
@@ -282,7 +282,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
 
   test("bool token round-trips as boolean", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putVertex", () => undefined);
+    fake.stub("putVertex", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "vertex",
@@ -299,7 +299,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
 
   test("float token round-trips as JS number", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putVertex", () => undefined);
+    fake.stub("putVertex", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "vertex",
@@ -316,7 +316,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
 
   test("RFC3339 token round-trips as Date", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putVertex", () => undefined);
+    fake.stub("putVertex", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "vertex",
@@ -338,7 +338,7 @@ describe("dispatch put vertex (#428 + #429)", () => {
 describe("dispatch put / add edge carry expiration (#429)", () => {
   test("put edge carries expiration", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putEdge", () => undefined);
+    fake.stub("putEdge", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "edge",
@@ -387,7 +387,7 @@ describe("dispatch put / add edge carry expiration (#429)", () => {
 describe("dispatch write echo surfaces the applied TTL/expiry (#653)", () => {
   test("put vertex with a TTL echoes ttlSeconds + absolute expiresAt", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putVertex", () => undefined);
+    fake.stub("putVertex", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "vertex",
@@ -413,7 +413,7 @@ describe("dispatch write echo surfaces the applied TTL/expiry (#653)", () => {
 
   test("put vertex without a TTL echoes nulls (permanent, no decay)", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putVertex", () => undefined);
+    fake.stub("putVertex", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "vertex",
@@ -428,7 +428,7 @@ describe("dispatch write echo surfaces the applied TTL/expiry (#653)", () => {
 
   test("put edge echoes its identity + ttlSeconds + expiresAt", async () => {
     const fake = new FakeLanternClient();
-    fake.stub("putEdge", () => undefined);
+    fake.stub("putEdge", () => "appliedAndLive");
     const cmd: Command = {
       verb: "put",
       objective: "edge",

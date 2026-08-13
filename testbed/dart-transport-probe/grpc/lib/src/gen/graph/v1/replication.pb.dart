@@ -122,6 +122,8 @@ enum MutationOp_Op {
   deleteEdge,
   deleteEdges,
   deleteEdgesByPrefix,
+  replicatedPutVertices,
+  replicatedPutEdges,
   notSet
 }
 
@@ -147,6 +149,8 @@ class MutationOp extends $pb.GeneratedMessage {
     $1.DeleteEdgeRequest? deleteEdge,
     $1.DeleteEdgesRequest? deleteEdges,
     $1.DeleteEdgesByPrefixRequest? deleteEdgesByPrefix,
+    ReplicatedPutVertices? replicatedPutVertices,
+    ReplicatedPutEdges? replicatedPutEdges,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -163,6 +167,10 @@ class MutationOp extends $pb.GeneratedMessage {
     if (deleteEdges != null) result.deleteEdges = deleteEdges;
     if (deleteEdgesByPrefix != null)
       result.deleteEdgesByPrefix = deleteEdgesByPrefix;
+    if (replicatedPutVertices != null)
+      result.replicatedPutVertices = replicatedPutVertices;
+    if (replicatedPutEdges != null)
+      result.replicatedPutEdges = replicatedPutEdges;
     return result;
   }
 
@@ -188,13 +196,15 @@ class MutationOp extends $pb.GeneratedMessage {
     10: MutationOp_Op.deleteEdge,
     11: MutationOp_Op.deleteEdges,
     12: MutationOp_Op.deleteEdgesByPrefix,
+    13: MutationOp_Op.replicatedPutVertices,
+    14: MutationOp_Op.replicatedPutEdges,
     0: MutationOp_Op.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'MutationOp',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
     ..aOM<$1.PutVertexRequest>(1, _omitFieldNames ? '' : 'putVertex',
         subBuilder: $1.PutVertexRequest.create)
     ..aOM<$1.PutVerticesRequest>(2, _omitFieldNames ? '' : 'putVertices',
@@ -221,6 +231,11 @@ class MutationOp extends $pb.GeneratedMessage {
     ..aOM<$1.DeleteEdgesByPrefixRequest>(
         12, _omitFieldNames ? '' : 'deleteEdgesByPrefix',
         subBuilder: $1.DeleteEdgesByPrefixRequest.create)
+    ..aOM<ReplicatedPutVertices>(
+        13, _omitFieldNames ? '' : 'replicatedPutVertices',
+        subBuilder: ReplicatedPutVertices.create)
+    ..aOM<ReplicatedPutEdges>(14, _omitFieldNames ? '' : 'replicatedPutEdges',
+        subBuilder: ReplicatedPutEdges.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -253,6 +268,8 @@ class MutationOp extends $pb.GeneratedMessage {
   @$pb.TagNumber(10)
   @$pb.TagNumber(11)
   @$pb.TagNumber(12)
+  @$pb.TagNumber(13)
+  @$pb.TagNumber(14)
   MutationOp_Op whichOp() => _MutationOp_OpByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
@@ -266,6 +283,8 @@ class MutationOp extends $pb.GeneratedMessage {
   @$pb.TagNumber(10)
   @$pb.TagNumber(11)
   @$pb.TagNumber(12)
+  @$pb.TagNumber(13)
+  @$pb.TagNumber(14)
   void clearOp() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -402,6 +421,429 @@ class MutationOp extends $pb.GeneratedMessage {
   void clearDeleteEdgesByPrefix() => $_clearField(12);
   @$pb.TagNumber(12)
   $1.DeleteEdgesByPrefixRequest ensureDeleteEdgesByPrefix() => $_ensure(11);
+
+  /// Put batches accepted by the server use an ordered, outcome-bearing wire
+  /// form. Live payloads and causal barriers remain interleaved in original
+  /// request order, so duplicate identities replay exactly as committed even
+  /// when the receiver's wall clock differs from the origin's.
+  @$pb.TagNumber(13)
+  ReplicatedPutVertices get replicatedPutVertices => $_getN(12);
+  @$pb.TagNumber(13)
+  set replicatedPutVertices(ReplicatedPutVertices value) =>
+      $_setField(13, value);
+  @$pb.TagNumber(13)
+  $core.bool hasReplicatedPutVertices() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearReplicatedPutVertices() => $_clearField(13);
+  @$pb.TagNumber(13)
+  ReplicatedPutVertices ensureReplicatedPutVertices() => $_ensure(12);
+
+  @$pb.TagNumber(14)
+  ReplicatedPutEdges get replicatedPutEdges => $_getN(13);
+  @$pb.TagNumber(14)
+  set replicatedPutEdges(ReplicatedPutEdges value) => $_setField(14, value);
+  @$pb.TagNumber(14)
+  $core.bool hasReplicatedPutEdges() => $_has(13);
+  @$pb.TagNumber(14)
+  void clearReplicatedPutEdges() => $_clearField(14);
+  @$pb.TagNumber(14)
+  ReplicatedPutEdges ensureReplicatedPutEdges() => $_ensure(13);
+}
+
+class VertexCausalBarrier extends $pb.GeneratedMessage {
+  factory VertexCausalBarrier({
+    $core.String? key,
+  }) {
+    final result = create();
+    if (key != null) result.key = key;
+    return result;
+  }
+
+  VertexCausalBarrier._();
+
+  factory VertexCausalBarrier.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory VertexCausalBarrier.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'VertexCausalBarrier',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'key')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  VertexCausalBarrier clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  VertexCausalBarrier copyWith(void Function(VertexCausalBarrier) updates) =>
+      super.copyWith((message) => updates(message as VertexCausalBarrier))
+          as VertexCausalBarrier;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static VertexCausalBarrier create() => VertexCausalBarrier._();
+  @$core.override
+  VertexCausalBarrier createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static VertexCausalBarrier getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<VertexCausalBarrier>(create);
+  static VertexCausalBarrier? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get key => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set key($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasKey() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearKey() => $_clearField(1);
+}
+
+enum ReplicatedPutVertex_Outcome { live, causalBarrier, notSet }
+
+class ReplicatedPutVertex extends $pb.GeneratedMessage {
+  factory ReplicatedPutVertex({
+    $1.Vertex? live,
+    VertexCausalBarrier? causalBarrier,
+  }) {
+    final result = create();
+    if (live != null) result.live = live;
+    if (causalBarrier != null) result.causalBarrier = causalBarrier;
+    return result;
+  }
+
+  ReplicatedPutVertex._();
+
+  factory ReplicatedPutVertex.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedPutVertex.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static const $core.Map<$core.int, ReplicatedPutVertex_Outcome>
+      _ReplicatedPutVertex_OutcomeByTag = {
+    1: ReplicatedPutVertex_Outcome.live,
+    2: ReplicatedPutVertex_Outcome.causalBarrier,
+    0: ReplicatedPutVertex_Outcome.notSet
+  };
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedPutVertex',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..oo(0, [1, 2])
+    ..aOM<$1.Vertex>(1, _omitFieldNames ? '' : 'live',
+        subBuilder: $1.Vertex.create)
+    ..aOM<VertexCausalBarrier>(2, _omitFieldNames ? '' : 'causalBarrier',
+        subBuilder: VertexCausalBarrier.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutVertex clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutVertex copyWith(void Function(ReplicatedPutVertex) updates) =>
+      super.copyWith((message) => updates(message as ReplicatedPutVertex))
+          as ReplicatedPutVertex;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutVertex create() => ReplicatedPutVertex._();
+  @$core.override
+  ReplicatedPutVertex createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutVertex getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedPutVertex>(create);
+  static ReplicatedPutVertex? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  @$pb.TagNumber(2)
+  ReplicatedPutVertex_Outcome whichOutcome() =>
+      _ReplicatedPutVertex_OutcomeByTag[$_whichOneof(0)]!;
+  @$pb.TagNumber(1)
+  @$pb.TagNumber(2)
+  void clearOutcome() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
+  $1.Vertex get live => $_getN(0);
+  @$pb.TagNumber(1)
+  set live($1.Vertex value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasLive() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearLive() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $1.Vertex ensureLive() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  VertexCausalBarrier get causalBarrier => $_getN(1);
+  @$pb.TagNumber(2)
+  set causalBarrier(VertexCausalBarrier value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCausalBarrier() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCausalBarrier() => $_clearField(2);
+  @$pb.TagNumber(2)
+  VertexCausalBarrier ensureCausalBarrier() => $_ensure(1);
+}
+
+class ReplicatedPutVertices extends $pb.GeneratedMessage {
+  factory ReplicatedPutVertices({
+    $core.Iterable<ReplicatedPutVertex>? entries,
+  }) {
+    final result = create();
+    if (entries != null) result.entries.addAll(entries);
+    return result;
+  }
+
+  ReplicatedPutVertices._();
+
+  factory ReplicatedPutVertices.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedPutVertices.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedPutVertices',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pPM<ReplicatedPutVertex>(1, _omitFieldNames ? '' : 'entries',
+        subBuilder: ReplicatedPutVertex.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutVertices clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutVertices copyWith(
+          void Function(ReplicatedPutVertices) updates) =>
+      super.copyWith((message) => updates(message as ReplicatedPutVertices))
+          as ReplicatedPutVertices;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutVertices create() => ReplicatedPutVertices._();
+  @$core.override
+  ReplicatedPutVertices createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutVertices getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedPutVertices>(create);
+  static ReplicatedPutVertices? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<ReplicatedPutVertex> get entries => $_getList(0);
+}
+
+class EdgeCausalBarrier extends $pb.GeneratedMessage {
+  factory EdgeCausalBarrier({
+    $core.String? tail,
+    $core.String? head,
+  }) {
+    final result = create();
+    if (tail != null) result.tail = tail;
+    if (head != null) result.head = head;
+    return result;
+  }
+
+  EdgeCausalBarrier._();
+
+  factory EdgeCausalBarrier.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory EdgeCausalBarrier.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'EdgeCausalBarrier',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'tail')
+    ..aOS(2, _omitFieldNames ? '' : 'head')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCausalBarrier clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCausalBarrier copyWith(void Function(EdgeCausalBarrier) updates) =>
+      super.copyWith((message) => updates(message as EdgeCausalBarrier))
+          as EdgeCausalBarrier;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static EdgeCausalBarrier create() => EdgeCausalBarrier._();
+  @$core.override
+  EdgeCausalBarrier createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static EdgeCausalBarrier getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<EdgeCausalBarrier>(create);
+  static EdgeCausalBarrier? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get tail => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set tail($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTail() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTail() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get head => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set head($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHead() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHead() => $_clearField(2);
+}
+
+enum ReplicatedPutEdge_Outcome { live, causalBarrier, notSet }
+
+class ReplicatedPutEdge extends $pb.GeneratedMessage {
+  factory ReplicatedPutEdge({
+    $1.Edge? live,
+    EdgeCausalBarrier? causalBarrier,
+  }) {
+    final result = create();
+    if (live != null) result.live = live;
+    if (causalBarrier != null) result.causalBarrier = causalBarrier;
+    return result;
+  }
+
+  ReplicatedPutEdge._();
+
+  factory ReplicatedPutEdge.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedPutEdge.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static const $core.Map<$core.int, ReplicatedPutEdge_Outcome>
+      _ReplicatedPutEdge_OutcomeByTag = {
+    1: ReplicatedPutEdge_Outcome.live,
+    2: ReplicatedPutEdge_Outcome.causalBarrier,
+    0: ReplicatedPutEdge_Outcome.notSet
+  };
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedPutEdge',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..oo(0, [1, 2])
+    ..aOM<$1.Edge>(1, _omitFieldNames ? '' : 'live', subBuilder: $1.Edge.create)
+    ..aOM<EdgeCausalBarrier>(2, _omitFieldNames ? '' : 'causalBarrier',
+        subBuilder: EdgeCausalBarrier.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutEdge clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutEdge copyWith(void Function(ReplicatedPutEdge) updates) =>
+      super.copyWith((message) => updates(message as ReplicatedPutEdge))
+          as ReplicatedPutEdge;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutEdge create() => ReplicatedPutEdge._();
+  @$core.override
+  ReplicatedPutEdge createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutEdge getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedPutEdge>(create);
+  static ReplicatedPutEdge? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  @$pb.TagNumber(2)
+  ReplicatedPutEdge_Outcome whichOutcome() =>
+      _ReplicatedPutEdge_OutcomeByTag[$_whichOneof(0)]!;
+  @$pb.TagNumber(1)
+  @$pb.TagNumber(2)
+  void clearOutcome() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
+  $1.Edge get live => $_getN(0);
+  @$pb.TagNumber(1)
+  set live($1.Edge value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasLive() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearLive() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $1.Edge ensureLive() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  EdgeCausalBarrier get causalBarrier => $_getN(1);
+  @$pb.TagNumber(2)
+  set causalBarrier(EdgeCausalBarrier value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCausalBarrier() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCausalBarrier() => $_clearField(2);
+  @$pb.TagNumber(2)
+  EdgeCausalBarrier ensureCausalBarrier() => $_ensure(1);
+}
+
+class ReplicatedPutEdges extends $pb.GeneratedMessage {
+  factory ReplicatedPutEdges({
+    $core.Iterable<ReplicatedPutEdge>? entries,
+  }) {
+    final result = create();
+    if (entries != null) result.entries.addAll(entries);
+    return result;
+  }
+
+  ReplicatedPutEdges._();
+
+  factory ReplicatedPutEdges.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedPutEdges.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedPutEdges',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pPM<ReplicatedPutEdge>(1, _omitFieldNames ? '' : 'entries',
+        subBuilder: ReplicatedPutEdge.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutEdges clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedPutEdges copyWith(void Function(ReplicatedPutEdges) updates) =>
+      super.copyWith((message) => updates(message as ReplicatedPutEdges))
+          as ReplicatedPutEdges;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutEdges create() => ReplicatedPutEdges._();
+  @$core.override
+  ReplicatedPutEdges createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedPutEdges getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedPutEdges>(create);
+  static ReplicatedPutEdges? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<ReplicatedPutEdge> get entries => $_getList(0);
 }
 
 /// Mutation is the unit of replication: a sequenced, HLC-stamped,
@@ -831,10 +1273,16 @@ class SnapshotFooter extends $pb.GeneratedMessage {
   factory SnapshotFooter({
     $fixnum.Int64? vertexCount,
     $fixnum.Int64? edgeCount,
+    $fixnum.Int64? vertexCausalBarrierCount,
+    $fixnum.Int64? edgeCausalBarrierCount,
   }) {
     final result = create();
     if (vertexCount != null) result.vertexCount = vertexCount;
     if (edgeCount != null) result.edgeCount = edgeCount;
+    if (vertexCausalBarrierCount != null)
+      result.vertexCausalBarrierCount = vertexCausalBarrierCount;
+    if (edgeCausalBarrierCount != null)
+      result.edgeCausalBarrierCount = edgeCausalBarrierCount;
     return result;
   }
 
@@ -856,6 +1304,12 @@ class SnapshotFooter extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..a<$fixnum.Int64>(
         2, _omitFieldNames ? '' : 'edgeCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(3, _omitFieldNames ? '' : 'vertexCausalBarrierCount',
+        $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'edgeCausalBarrierCount', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
@@ -895,6 +1349,24 @@ class SnapshotFooter extends $pb.GeneratedMessage {
   $core.bool hasEdgeCount() => $_has(1);
   @$pb.TagNumber(2)
   void clearEdgeCount() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get vertexCausalBarrierCount => $_getI64(2);
+  @$pb.TagNumber(3)
+  set vertexCausalBarrierCount($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasVertexCausalBarrierCount() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearVertexCausalBarrierCount() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get edgeCausalBarrierCount => $_getI64(3);
+  @$pb.TagNumber(4)
+  set edgeCausalBarrierCount($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasEdgeCausalBarrierCount() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearEdgeCausalBarrierCount() => $_clearField(4);
 }
 
 /// SnapshotVertex is the snapshot-time representation of a single live
@@ -962,6 +1434,82 @@ class SnapshotVertex extends $pb.GeneratedMessage {
   void clearVertex() => $_clearField(1);
   @$pb.TagNumber(1)
   $1.Vertex ensureVertex() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  HLCTimestamp get hlc => $_getN(1);
+  @$pb.TagNumber(2)
+  set hlc(HLCTimestamp value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHlc() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHlc() => $_clearField(2);
+  @$pb.TagNumber(2)
+  HLCTimestamp ensureHlc() => $_ensure(1);
+}
+
+/// SnapshotVertexCausalBarrier carries the retained LWW floor of a PutVertex
+/// that was accepted but already expired at its final application instant. It
+/// has no Vertex payload because the overwrite must remain absent; receivers
+/// record only (key, hlc) and reject later strictly-older live writes.
+class SnapshotVertexCausalBarrier extends $pb.GeneratedMessage {
+  factory SnapshotVertexCausalBarrier({
+    $core.String? key,
+    HLCTimestamp? hlc,
+  }) {
+    final result = create();
+    if (key != null) result.key = key;
+    if (hlc != null) result.hlc = hlc;
+    return result;
+  }
+
+  SnapshotVertexCausalBarrier._();
+
+  factory SnapshotVertexCausalBarrier.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotVertexCausalBarrier.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotVertexCausalBarrier',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'key')
+    ..aOM<HLCTimestamp>(2, _omitFieldNames ? '' : 'hlc',
+        subBuilder: HLCTimestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotVertexCausalBarrier clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotVertexCausalBarrier copyWith(
+          void Function(SnapshotVertexCausalBarrier) updates) =>
+      super.copyWith(
+              (message) => updates(message as SnapshotVertexCausalBarrier))
+          as SnapshotVertexCausalBarrier;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotVertexCausalBarrier create() =>
+      SnapshotVertexCausalBarrier._();
+  @$core.override
+  SnapshotVertexCausalBarrier createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotVertexCausalBarrier getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotVertexCausalBarrier>(create);
+  static SnapshotVertexCausalBarrier? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get key => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set key($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasKey() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearKey() => $_clearField(1);
 
   @$pb.TagNumber(2)
   HLCTimestamp get hlc => $_getN(1);
@@ -1161,25 +1709,124 @@ class SnapshotEdge extends $pb.GeneratedMessage {
   $pb.PbList<SnapshotEdgeContribution> get contributions => $_getList(3);
 }
 
-enum SnapshotResponse_Entry { header, vertex, edge, footer, notSet }
+/// SnapshotEdgeCausalBarrier is the edge sibling of
+/// SnapshotVertexCausalBarrier. It carries no contribution and must not create
+/// endpoint vertices or an edge bucket when replayed.
+class SnapshotEdgeCausalBarrier extends $pb.GeneratedMessage {
+  factory SnapshotEdgeCausalBarrier({
+    $core.String? tail,
+    $core.String? head,
+    HLCTimestamp? hlc,
+  }) {
+    final result = create();
+    if (tail != null) result.tail = tail;
+    if (head != null) result.head = head;
+    if (hlc != null) result.hlc = hlc;
+    return result;
+  }
+
+  SnapshotEdgeCausalBarrier._();
+
+  factory SnapshotEdgeCausalBarrier.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotEdgeCausalBarrier.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotEdgeCausalBarrier',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'tail')
+    ..aOS(2, _omitFieldNames ? '' : 'head')
+    ..aOM<HLCTimestamp>(3, _omitFieldNames ? '' : 'hlc',
+        subBuilder: HLCTimestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeCausalBarrier clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeCausalBarrier copyWith(
+          void Function(SnapshotEdgeCausalBarrier) updates) =>
+      super.copyWith((message) => updates(message as SnapshotEdgeCausalBarrier))
+          as SnapshotEdgeCausalBarrier;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeCausalBarrier create() => SnapshotEdgeCausalBarrier._();
+  @$core.override
+  SnapshotEdgeCausalBarrier createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeCausalBarrier getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotEdgeCausalBarrier>(create);
+  static SnapshotEdgeCausalBarrier? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get tail => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set tail($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTail() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTail() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get head => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set head($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHead() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHead() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  HLCTimestamp get hlc => $_getN(2);
+  @$pb.TagNumber(3)
+  set hlc(HLCTimestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasHlc() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearHlc() => $_clearField(3);
+  @$pb.TagNumber(3)
+  HLCTimestamp ensureHlc() => $_ensure(2);
+}
+
+enum SnapshotResponse_Entry {
+  header,
+  vertex,
+  edge,
+  footer,
+  vertexCausalBarrier,
+  edgeCausalBarrier,
+  notSet
+}
 
 /// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 /// order is always: exactly one SnapshotHeader, then zero or more
-/// SnapshotVertex frames, then zero or more SnapshotEdge frames, then
-/// exactly one SnapshotFooter. Receivers SHOULD treat any other order as a
-/// protocol violation.
+/// SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
+/// frames, zero or more SnapshotVertex frames, zero or more SnapshotEdge
+/// frames, then exactly one SnapshotFooter. Receivers MUST treat any other
+/// order as a protocol violation.
 class SnapshotResponse extends $pb.GeneratedMessage {
   factory SnapshotResponse({
     SnapshotHeader? header,
     SnapshotVertex? vertex,
     SnapshotEdge? edge,
     SnapshotFooter? footer,
+    SnapshotVertexCausalBarrier? vertexCausalBarrier,
+    SnapshotEdgeCausalBarrier? edgeCausalBarrier,
   }) {
     final result = create();
     if (header != null) result.header = header;
     if (vertex != null) result.vertex = vertex;
     if (edge != null) result.edge = edge;
     if (footer != null) result.footer = footer;
+    if (vertexCausalBarrier != null)
+      result.vertexCausalBarrier = vertexCausalBarrier;
+    if (edgeCausalBarrier != null) result.edgeCausalBarrier = edgeCausalBarrier;
     return result;
   }
 
@@ -1198,13 +1845,15 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     2: SnapshotResponse_Entry.vertex,
     3: SnapshotResponse_Entry.edge,
     4: SnapshotResponse_Entry.footer,
+    5: SnapshotResponse_Entry.vertexCausalBarrier,
+    6: SnapshotResponse_Entry.edgeCausalBarrier,
     0: SnapshotResponse_Entry.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SnapshotResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4])
+    ..oo(0, [1, 2, 3, 4, 5, 6])
     ..aOM<SnapshotHeader>(1, _omitFieldNames ? '' : 'header',
         subBuilder: SnapshotHeader.create)
     ..aOM<SnapshotVertex>(2, _omitFieldNames ? '' : 'vertex',
@@ -1213,6 +1862,12 @@ class SnapshotResponse extends $pb.GeneratedMessage {
         subBuilder: SnapshotEdge.create)
     ..aOM<SnapshotFooter>(4, _omitFieldNames ? '' : 'footer',
         subBuilder: SnapshotFooter.create)
+    ..aOM<SnapshotVertexCausalBarrier>(
+        5, _omitFieldNames ? '' : 'vertexCausalBarrier',
+        subBuilder: SnapshotVertexCausalBarrier.create)
+    ..aOM<SnapshotEdgeCausalBarrier>(
+        6, _omitFieldNames ? '' : 'edgeCausalBarrier',
+        subBuilder: SnapshotEdgeCausalBarrier.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1238,12 +1893,16 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   @$pb.TagNumber(2)
   @$pb.TagNumber(3)
   @$pb.TagNumber(4)
+  @$pb.TagNumber(5)
+  @$pb.TagNumber(6)
   SnapshotResponse_Entry whichEntry() =>
       _SnapshotResponse_EntryByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
   @$pb.TagNumber(3)
   @$pb.TagNumber(4)
+  @$pb.TagNumber(5)
+  @$pb.TagNumber(6)
   void clearEntry() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -1289,6 +1948,30 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   void clearFooter() => $_clearField(4);
   @$pb.TagNumber(4)
   SnapshotFooter ensureFooter() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  SnapshotVertexCausalBarrier get vertexCausalBarrier => $_getN(4);
+  @$pb.TagNumber(5)
+  set vertexCausalBarrier(SnapshotVertexCausalBarrier value) =>
+      $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasVertexCausalBarrier() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearVertexCausalBarrier() => $_clearField(5);
+  @$pb.TagNumber(5)
+  SnapshotVertexCausalBarrier ensureVertexCausalBarrier() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  SnapshotEdgeCausalBarrier get edgeCausalBarrier => $_getN(5);
+  @$pb.TagNumber(6)
+  set edgeCausalBarrier(SnapshotEdgeCausalBarrier value) =>
+      $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasEdgeCausalBarrier() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearEdgeCausalBarrier() => $_clearField(6);
+  @$pb.TagNumber(6)
+  SnapshotEdgeCausalBarrier ensureEdgeCausalBarrier() => $_ensure(5);
 }
 
 /// PeerStatusRequest is intentionally empty — the responder always

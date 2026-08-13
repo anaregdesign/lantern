@@ -193,7 +193,7 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// Write to A; expect convergence on B and C.
-	if err := a.sdk.PutVertex(ctx, "from-a", "va", time.Minute); err != nil {
+	if _, err := a.sdk.PutVertex(ctx, "from-a", "va", time.Minute); err != nil {
 		t.Fatalf("a.PutVertex: %v", err)
 	}
 	if _, err := a.sdk.AddEdge(ctx, "from-a", "target", 1.5, time.Minute); err != nil {
@@ -201,12 +201,12 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 	}
 
 	// Write to B; expect convergence on A and C.
-	if err := b.sdk.PutVertex(ctx, "from-b", "vb", time.Minute); err != nil {
+	if _, err := b.sdk.PutVertex(ctx, "from-b", "vb", time.Minute); err != nil {
 		t.Fatalf("b.PutVertex: %v", err)
 	}
 
 	// Write to C; expect convergence on A and B.
-	if err := c.sdk.PutVertex(ctx, "from-c", "vc", time.Minute); err != nil {
+	if _, err := c.sdk.PutVertex(ctx, "from-c", "vc", time.Minute); err != nil {
 		t.Fatalf("c.PutVertex: %v", err)
 	}
 
@@ -268,7 +268,7 @@ func TestPeerPump_SearchPartitionHealConvergence(t *testing.T) {
 
 	primary := newPumpNode(t, hlc.NodeID{0xD1})
 	follower := newPumpNode(t, hlc.NodeID{0xD2})
-	if err := primary.sdk.PutVertices(ctx, []client.VertexInput{
+	if _, err := primary.sdk.PutVertices(ctx, []client.VertexInput{
 		{Key: "search/keep", Value: "common lantern alpha", Expiration: time.Now().Add(time.Hour)},
 		{Key: "search/overwrite", Value: "common retiredterm", Expiration: time.Now().Add(time.Hour)},
 		{Key: "search/delete-one", Value: "common deletedterm", Expiration: time.Now().Add(time.Hour)},
@@ -285,10 +285,15 @@ func TestPeerPump_SearchPartitionHealConvergence(t *testing.T) {
 	if _, err := primary.sdk.AddEdge(ctx, "search/implicit-tail", "search/implicit-head", 1, time.Hour); err != nil {
 		t.Fatalf("seed implicit endpoints: %v", err)
 	}
-	// Born-expired input is accepted as an idempotent no-op and must never
-	// enter either graph or derived index.
-	if err := primary.sdk.PutVertexAt(ctx, "search/born-expired", "bornexpiredterm", time.Now().Add(-time.Second)); err != nil {
+	// A born-expired input is an accepted delete-like overwrite. This absent
+	// key remains absent on both replicas and must never enter the derived
+	// index, while the SDK still exposes the authoritative EXPIRED outcome.
+	outcome, err := primary.sdk.PutVertexAt(ctx, "search/born-expired", "bornexpiredterm", time.Now().Add(-time.Second))
+	if err != nil {
 		t.Fatalf("born-expired PutVertexAt: %v", err)
+	}
+	if outcome != client.PutOutcomeExpired {
+		t.Fatalf("born-expired PutVertexAt outcome = %s, want EXPIRED", outcome)
 	}
 
 	// The follower was partitioned for every seed mutation. Starting its pump
@@ -296,7 +301,7 @@ func TestPeerPump_SearchPartitionHealConvergence(t *testing.T) {
 	follower.startPump(ctx, t, []string{primary.url})
 	waitForSearchConvergence(t, ctx, "common", nil, primary.raw, follower.raw)
 
-	if err := primary.sdk.PutVertex(ctx, "search/overwrite", "common currentterm", time.Hour); err != nil {
+	if _, err := primary.sdk.PutVertex(ctx, "search/overwrite", "common currentterm", time.Hour); err != nil {
 		t.Fatalf("overwrite: %v", err)
 	}
 	if _, err := primary.sdk.DeleteVertex(ctx, "search/delete-one"); err != nil {
@@ -332,7 +337,7 @@ func TestPeerPump_SearchConfigMismatchBlocksReadiness(t *testing.T) {
 
 	primary := newPumpNodeWithSearch(t, hlc.NodeID{0xE1}, 1024, true)
 	follower := newPumpNodeWithSearch(t, hlc.NodeID{0xE2}, 1024, false)
-	if err := primary.sdk.PutVertex(ctx, "mismatch-proof", "graph still converges", time.Hour); err != nil {
+	if _, err := primary.sdk.PutVertex(ctx, "mismatch-proof", "graph still converges", time.Hour); err != nil {
 		t.Fatalf("primary PutVertex: %v", err)
 	}
 
@@ -407,9 +412,25 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	// → service returns FailedPrecondition reason=gapped → Pump runs
 	// a snapshot to catch up, then resubscribes.
 	for i := 0; i < 16; i++ {
-		if err := primary.sdk.PutVertex(ctx, fmt.Sprintf("pre-%d", i), "v", time.Minute); err != nil {
+		if _, err := primary.sdk.PutVertex(ctx, fmt.Sprintf("pre-%d", i), "v", time.Minute); err != nil {
 			t.Fatalf("primary.PutVertex[%d]: %v", i, err)
 		}
+	}
+	// These accepted-expired HLC20 overwrites have no live payload and no
+	// retained log record in this storage-level fixture. Gap recovery therefore
+	// has to bootstrap their explicit causal-barrier frames from Snapshot.
+	barrierTS := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0xB0}}
+	if !primary.cache.PutVertexWithExpirationHLC(
+		"snapshot-barrier-vertex", &pb.Vertex{Key: "snapshot-barrier-vertex"},
+		time.Now().Add(-time.Hour), barrierTS,
+	) {
+		t.Fatal("primary accepted-expired vertex barrier was rejected")
+	}
+	if !primary.cache.PutEdgeWithExpirationHLC(
+		"snapshot-barrier-tail", "snapshot-barrier-head", 1,
+		time.Now().Add(-time.Hour), barrierTS,
+	) {
+		t.Fatal("primary accepted-expired edge barrier was rejected")
 	}
 
 	follower := newPumpNode(t, hlc.NodeID{0xA2})
@@ -432,7 +453,7 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	// per-origin and lives in the server's watermark tracker; the
 	// pump just sends an empty cursor again and the local
 	// ApplyMutation CAS dedups whatever the snapshot already covered).
-	if err := primary.sdk.PutVertex(ctx, "post-snapshot", "v", time.Minute); err != nil {
+	if _, err := primary.sdk.PutVertex(ctx, "post-snapshot", "v", time.Minute); err != nil {
 		t.Fatalf("primary.PutVertex post: %v", err)
 	}
 	if !waitForVertex(t, follower.cache, "post-snapshot", 3*time.Second) {
@@ -442,6 +463,35 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	if got := metrics.snapshots.Load(); got != 1 {
 		t.Fatalf("snapshot replay count = %d, want exactly 1 before live tail", got)
 	}
+	olderTS := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0xA0}}
+	if follower.cache.PutVertexWithExpirationHLC(
+		"snapshot-barrier-vertex", &pb.Vertex{Key: "snapshot-barrier-vertex"},
+		time.Now().Add(time.Hour), olderTS,
+	) {
+		t.Fatal("pump bootstrap lost vertex barrier: HLC10 live Put was accepted")
+	}
+	if follower.cache.PutEdgeWithExpirationHLC(
+		"snapshot-barrier-tail", "snapshot-barrier-head", 9,
+		time.Now().Add(time.Hour), olderTS,
+	) {
+		t.Fatal("pump bootstrap lost edge barrier: HLC10 live Put was accepted")
+	}
+	if _, ok := follower.cache.GetVertex("snapshot-barrier-vertex"); ok {
+		t.Fatal("vertex barrier became visible after pump bootstrap")
+	}
+	if _, _, ok := follower.cache.GetEdgeDetail("snapshot-barrier-tail", "snapshot-barrier-head"); ok {
+		t.Fatal("edge barrier became visible after pump bootstrap")
+	}
+	if _, ok := follower.cache.GetVertex("snapshot-barrier-tail"); ok {
+		t.Fatal("edge barrier materialized its tail endpoint during pump bootstrap")
+	}
+	if _, ok := follower.cache.GetVertex("snapshot-barrier-head"); ok {
+		t.Fatal("edge barrier materialized its head endpoint during pump bootstrap")
+	}
 	waitForSearchConvergence(t, ctx, "pre", nil, primary.raw, follower.raw)
 	waitForSearchConvergence(t, ctx, "post snapshot", nil, primary.raw, follower.raw)
+	exactAll := &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL}
+	if got := waitForSearchConvergence(t, ctx, "snapshot barrier", exactAll, primary.raw, follower.raw); len(got) != 0 {
+		t.Fatalf("causal barrier identities became searchable: %+v", got)
+	}
 }

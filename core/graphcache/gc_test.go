@@ -18,13 +18,15 @@ func TestGraphCache_GCFlushMaintainsIndexesWatermarksAndDanglingEdges(t *testing
 	now := time.Now()
 	liveExp := now.Add(time.Minute)
 	expired := now.Add(-time.Millisecond)
+	shortExp := now.Add(50 * time.Millisecond)
 
-	if !c.PutVertexWithExpirationHLC("expired:vertex", "expired searchable payload", expired, hlc.Timestamp{WallNs: 1}) {
+	if !c.PutVertexWithExpirationHLC("expired:vertex", "expired searchable payload", shortExp, hlc.Timestamp{WallNs: 1}) {
 		t.Fatal("PutVertexWithExpirationHLC(expired:vertex) reported false")
 	}
 	if got := c.VertexHLCCount(); got != 1 {
 		t.Fatalf("VertexHLCCount before flush = %d, want 1", got)
 	}
+	time.Sleep(100 * time.Millisecond)
 	if got := c.CountByPrefix("expired:"); got != 0 {
 		t.Fatalf("CountByPrefix(expired:) before vertex flush = %d, want 0 because the liveness filter hides expired-but-not-flushed entries", got)
 	}
@@ -78,6 +80,38 @@ func TestGraphCache_GCFlushMaintainsIndexesWatermarksAndDanglingEdges(t *testing
 		return false
 	}); !completed {
 		t.Fatal("ScanByPrefix after flush returned completed=false")
+	}
+}
+
+func TestGraphCache_VertexFlushAndReplicationSnapshotRetainOneCausalRepresentation(t *testing.T) {
+	newer := hlc.Timestamp{WallNs: 20}
+	older := hlc.Timestamp{WallNs: 10}
+	c := NewGraphCache[string, string](time.Hour)
+	expiration := time.Now().Add(40 * time.Millisecond)
+	if !c.PutVertexWithExpirationHLC("v", "value", expiration, newer) {
+		t.Fatal("PutVertex rejected")
+	}
+	time.Sleep(80 * time.Millisecond)
+
+	// Start both production operations together. flushVertices and
+	// SnapshotReplication share c.mu, so regardless of which wins, Snapshot
+	// must observe either the live record or the HLC left behind by Flush and
+	// convert the latter to a barrier.
+	start := make(chan struct{})
+	flushed := make(chan int, 1)
+	go func() {
+		<-start
+		flushed <- c.flushVertices()
+	}()
+	close(start)
+	snapshot := c.SnapshotReplication()
+	<-flushed
+
+	if len(snapshot.Graph.Vertices)+len(snapshot.Barriers.Vertices) != 1 {
+		t.Fatalf("snapshot causal representations = live:%d barrier:%d, want exactly one", len(snapshot.Graph.Vertices), len(snapshot.Barriers.Vertices))
+	}
+	if c.PutVertexWithExpirationHLC("v", "older", time.Now().Add(time.Hour), older) {
+		t.Fatal("older Put resurrected after concurrent vertex Flush/Snapshot")
 	}
 }
 
@@ -206,14 +240,16 @@ func TestGraphCache_GCIncrementalEdgeSweep(t *testing.T) {
 		c := setupDecayed() // many tails => edge sweep is bounded at budget 1
 		c.SetGCEdgeBudget(1)
 		past := time.Now().Add(-time.Millisecond)
+		shortExp := time.Now().Add(50 * time.Millisecond)
 
-		if !c.PutVertexWithExpirationHLC("hlc:expired", "x", past, hlc.Timestamp{WallNs: 1}) {
+		if !c.PutVertexWithExpirationHLC("hlc:expired", "x", shortExp, hlc.Timestamp{WallNs: 1}) {
 			t.Fatal("PutVertexWithExpirationHLC reported false")
 		}
 		c.DeleteVertexHLC("tomb:old", hlc.Timestamp{WallNs: 2}, past)
 		if c.VertexHLCCount() != 1 || len(c.vertexTombstones) != 1 {
 			t.Fatalf("precondition: hlc=%d tombstones=%d, want 1/1", c.VertexHLCCount(), len(c.vertexTombstones))
 		}
+		time.Sleep(100 * time.Millisecond)
 		// Drop the expired HLC vertex so the stale-HLC sweep has a dead key to
 		// reconcile against the vertex cache.
 		c.vertices.Flush()

@@ -60,8 +60,12 @@ func registerAnnounce(srv *mcp.Server, lc lanternClient, r *ttl.Resolver) {
 			return nil, announceOutput{}, fmt.Errorf("announce: %w", err)
 		}
 		d, _ := r.ResolveCapped(ttl.Transient)
-		if err := lc.PutVertex(ctx, key, payload, d); err != nil {
+		outcome, err := lc.PutVertex(ctx, key, payload, d)
+		if err != nil {
 			return nil, announceOutput{}, mapSDKError("announce", err)
+		}
+		if err := requireAppliedPut("announce", outcome); err != nil {
+			return nil, announceOutput{}, err
 		}
 
 		out := announceOutput{

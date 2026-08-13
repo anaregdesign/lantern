@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,11 +84,8 @@ func TestLanternService_PutAndGetVertex(t *testing.T) {
 	}
 }
 
-// TestLanternService_PutVertexIfAbsent pins the SET NX surface (#896): the
-// singular PutVertex reports written via a bool, the plural PutVertices reports
-// the written count plus the skipped keys, and an unconditional put still
-// overwrites. Uses the default (non-replicated) service so the clock==nil
-// branch is exercised.
+// TestLanternService_PutVertexIfAbsent pins the SET NX surface (#896): singular
+// and plural writes expose server-authoritative, index-aligned outcomes.
 func TestLanternService_PutVertexIfAbsent(t *testing.T) {
 	ctx := context.Background()
 
@@ -113,22 +111,22 @@ func TestLanternService_PutVertexIfAbsent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutVertex: %v", err)
 		}
-		if !first.GetWritten() {
-			t.Fatal("first if_absent PutVertex Written = false, want true")
+		if first.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+			t.Fatalf("first outcome = %v, want APPLIED_AND_LIVE", first.GetOutcome())
 		}
 		second, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: mkVertex("k", "two"), IfAbsent: true})
 		if err != nil {
 			t.Fatalf("PutVertex(repeat): %v", err)
 		}
-		if second.GetWritten() {
-			t.Fatal("second if_absent PutVertex Written = true, want false (key already live)")
+		if second.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET {
+			t.Fatalf("second outcome = %v, want CONDITION_NOT_MET", second.GetOutcome())
 		}
 		if got := valueOf(t, s, "k"); got != "one" {
 			t.Errorf("value = %q, want \"one\" (skipped write must not overwrite)", got)
 		}
 	})
 
-	t.Run("PluralReportsWrittenAndSkipped", func(t *testing.T) {
+	t.Run("PluralReportsIndexAlignedOutcomes", func(t *testing.T) {
 		s := newTestService(t)
 		if _, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{mkVertex("live", "old")}}); err != nil {
 			t.Fatalf("seed PutVertices: %v", err)
@@ -140,11 +138,9 @@ func TestLanternService_PutVertexIfAbsent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutVertices(if_absent): %v", err)
 		}
-		if resp.GetWritten() != 1 {
-			t.Errorf("Written = %d, want 1", resp.GetWritten())
-		}
-		if got := resp.GetSkippedKeys(); len(got) != 1 || got[0] != "live" {
-			t.Errorf("SkippedKeys = %v, want [live]", got)
+		want := []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE, pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET}
+		if got := resp.GetOutcomes(); !slices.Equal(got, want) {
+			t.Errorf("Outcomes = %v, want %v", got, want)
 		}
 		if got := valueOf(t, s, "live"); got != "old" {
 			t.Errorf("live value = %q, want \"old\"", got)
@@ -176,13 +172,55 @@ func TestLanternService_PutVertexIfAbsent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutVertex: %v", err)
 		}
-		if resp.GetWritten() {
-			t.Fatal("born-expired if_absent PutVertex Written = true, want false")
+		if resp.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
+			t.Fatalf("born-expired outcome = %v, want EXPIRED", resp.GetOutcome())
 		}
 		if _, err := s.GetVertex(ctx, &pb.GetVertexRequest{Key: "k"}); connect.CodeOf(err) != connect.CodeNotFound {
 			t.Fatalf("GetVertex after born-expired put: code = %v, want NotFound", connect.CodeOf(err))
 		}
 	})
+
+	t.Run("ConditionPrecedesBornExpired", func(t *testing.T) {
+		s := newTestService(t)
+		if _, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: mkVertex("k", "old")}); err != nil {
+			t.Fatalf("seed PutVertex: %v", err)
+		}
+		dead := mkVertex("k", "must not overwrite")
+		dead.Expiration = timestamppb.New(time.Now().Add(-time.Hour))
+		resp, err := s.PutVertex(ctx, &pb.PutVertexRequest{Vertex: dead, IfAbsent: true})
+		if err != nil {
+			t.Fatalf("PutVertex(if_absent): %v", err)
+		}
+		if resp.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET {
+			t.Fatalf("outcome = %v, want CONDITION_NOT_MET", resp.GetOutcome())
+		}
+		if got := valueOf(t, s, "k"); got != "old" {
+			t.Fatalf("value = %q, want old", got)
+		}
+	})
+}
+
+func TestPutOutcomesFailClosed(t *testing.T) {
+	tests := []struct {
+		name     string
+		outcomes []graphcache.PutOutcome
+		want     int
+	}{
+		{name: "length mismatch", outcomes: []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive}, want: 2},
+		{name: "unspecified", outcomes: []graphcache.PutOutcome{0}, want: 1},
+		{name: "unknown", outcomes: []graphcache.PutOutcome{255}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wire, err := putOutcomes(tt.outcomes, tt.want)
+			if err == nil {
+				t.Fatalf("putOutcomes = %v, nil; want Internal", wire)
+			}
+			if got := connect.CodeOf(err); got != connect.CodeInternal {
+				t.Fatalf("code = %v, want Internal", got)
+			}
+		})
+	}
 }
 
 func TestLanternService_GetVertex_NotFound(t *testing.T) {
@@ -622,7 +660,7 @@ func TestLanternService_GetEdge_ReturnsExpiration(t *testing.T) {
 	}
 }
 
-func TestLanternService_WriteResponses_ReportCounts(t *testing.T) {
+func TestLanternService_WriteResponses_ReportOutcomes(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 	exp := futureTs(time.Minute)
@@ -634,8 +672,8 @@ func TestLanternService_WriteResponses_ReportCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutVertex: %v", err)
 	}
-	if vresp.Written != 2 {
-		t.Errorf("PutVertex Written = %d, want 2", vresp.Written)
+	if got := vresp.GetOutcomes(); !slices.Equal(got, []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE, pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}) {
+		t.Errorf("PutVertex outcomes = %v, want both applied", got)
 	}
 
 	aresp, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{
@@ -654,8 +692,8 @@ func TestLanternService_WriteResponses_ReportCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutEdge: %v", err)
 	}
-	if presp.Written != 1 {
-		t.Errorf("PutEdge Written = %d, want 1", presp.Written)
+	if got := presp.GetOutcomes(); !slices.Equal(got, []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}) {
+		t.Errorf("PutEdge outcomes = %v, want applied", got)
 	}
 }
 
@@ -1284,8 +1322,8 @@ func TestLanternService_MutationLog_BurstAppendsMonotone(t *testing.T) {
 			if !ok {
 				t.Fatalf("entry[%d] op type = %T, want *pb.Mutation", i, e.Op)
 			}
-			if mu.GetOp().GetPutVertices() == nil {
-				t.Fatalf("entry[%d] missing PutVertices oneof", i)
+			if got := mu.GetOp().GetReplicatedPutVertices(); got == nil || len(got.GetEntries()) != 1 || got.GetEntries()[0].GetLive() == nil {
+				t.Fatalf("entry[%d] missing replicated live PutVertex entry", i)
 			}
 			if len(mu.GetOrigin()) != len(hlc.NodeID{}) {
 				t.Fatalf("entry[%d] origin len = %d, want %d",
@@ -1309,13 +1347,11 @@ func TestLanternService_MutationLog_NotWired_NoOp(t *testing.T) {
 	}
 }
 
-// TestLanternService_PutVertices_BornExpiredNotReplicated pins #698: a
-// born-expired vertex (expiration already in the past) is dead on arrival —
-// the cache does not store it, and it must not be appended to the mutation
-// log either, so peers never apply (store + index + watermark) data that is
-// already gone. A mixed batch logs only its live subset; an all-live batch is
-// forwarded unchanged.
-func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
+// TestLanternService_PutVertices_BornExpiredReplicatesDeleteLikeOutcome pins
+// the unconditional born-expired contract: the value is dead on arrival, but
+// its accepted overwrite removes an older live value and therefore must be
+// replicated for convergence. A mixed batch logs every non-superseded item.
+func TestLanternService_PutVertices_BornExpiredReplicatesDeleteLikeOutcome(t *testing.T) {
 	newSvc := func(t *testing.T) (*LanternService, *mutationlog.Log, *int) {
 		t.Helper()
 		log := mutationlog.New(mutationlog.Options{Capacity: 64, SubscriberBuffer: 64})
@@ -1329,7 +1365,7 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 	past := timestamppb.New(time.Now().Add(-time.Hour))
 	future := timestamppb.New(time.Now().Add(time.Hour))
 
-	t.Run("AllBornExpired_NotLogged", func(t *testing.T) {
+	t.Run("AllBornExpired_ReplicatesDeleteLikeOutcome", func(t *testing.T) {
 		s, log, appendCount := newSvc(t)
 		resp, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
 			Vertices: []*pb.Vertex{{Key: "a", Expiration: past}, {Key: "b", Expiration: past}},
@@ -1337,18 +1373,18 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutVertices: %v", err)
 		}
-		if resp.GetWritten() != 0 {
-			t.Fatalf("Written = %d, want 0 (born-expired must not count)", resp.GetWritten())
+		if got := resp.GetOutcomes(); !slices.Equal(got, []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED, pb.PutOutcome_PUT_OUTCOME_EXPIRED}) {
+			t.Fatalf("Outcomes = %v, want both expired", got)
 		}
-		if *appendCount != 0 {
-			t.Fatalf("appendCount = %d, want 0 (born-expired must not replicate)", *appendCount)
+		if *appendCount != 1 {
+			t.Fatalf("appendCount = %d, want 1 (expired overwrite must converge)", *appendCount)
 		}
-		if _, ok := log.LastSeq(); ok {
-			t.Fatal("mutation log has entries, want empty")
+		if _, ok := log.LastSeq(); !ok {
+			t.Fatal("mutation log empty, want expired delete-like mutation")
 		}
 	})
 
-	t.Run("Mixed_LogsOnlyLive", func(t *testing.T) {
+	t.Run("Mixed_LogsEveryAcceptedOutcome", func(t *testing.T) {
 		s, log, appendCount := newSvc(t)
 		ch, cancel, err := log.Subscribe(0)
 		if err != nil {
@@ -1365,18 +1401,19 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutVertices: %v", err)
 		}
-		if resp.GetWritten() != 1 {
-			t.Fatalf("Written = %d, want 1 (live values only)", resp.GetWritten())
+		wantOutcomes := []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED, pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE, pb.PutOutcome_PUT_OUTCOME_EXPIRED}
+		if got := resp.GetOutcomes(); !slices.Equal(got, wantOutcomes) {
+			t.Fatalf("Outcomes = %v, want %v", got, wantOutcomes)
 		}
 		if *appendCount != 1 {
-			t.Fatalf("appendCount = %d, want 1 (one mutation for the live subset)", *appendCount)
+			t.Fatalf("appendCount = %d, want 1 (one mutation for every accepted outcome)", *appendCount)
 		}
 		select {
 		case e := <-ch:
 			mu := e.Op.(*pb.Mutation)
-			got := mu.GetOp().GetPutVertices().GetVertices()
-			if len(got) != 1 || got[0].GetKey() != "live" {
-				t.Fatalf("logged vertices = %v, want exactly [live]", got)
+			got := mu.GetOp().GetReplicatedPutVertices().GetEntries()
+			if len(got) != 3 || got[0].GetCausalBarrier().GetKey() != "dead1" || got[1].GetLive().GetKey() != "live" || got[2].GetCausalBarrier().GetKey() != "dead2" {
+				t.Fatalf("ordered replicated entries = %v, want barrier/live/barrier", got)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for the live mutation")
@@ -1402,19 +1439,24 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 		select {
 		case e := <-ch:
 			mu := e.Op.(*pb.Mutation)
-			if got := mu.GetOp().GetPutVertices().GetVertices(); len(got) != 2 {
-				t.Fatalf("logged %d vertices, want 2 (request forwarded unchanged)", len(got))
+			if got := mu.GetOp().GetReplicatedPutVertices().GetEntries(); len(got) != 2 || got[0].GetLive().GetKey() != "x" || got[1].GetLive().GetKey() != "y" {
+				t.Fatalf("ordered replicated entries = %v, want two live entries", got)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out")
 		}
 	})
 
-	t.Run("IfAbsent_WrittenExcludesBornExpired", func(t *testing.T) {
-		s, _, appendCount := newSvc(t)
+	t.Run("IfAbsent_ReplicatesBornExpired", func(t *testing.T) {
+		s, log, appendCount := newSvc(t)
+		ch, cancel, err := log.Subscribe(0)
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+		t.Cleanup(func() { _ = cancel() })
 		resp, err := s.PutVertices(context.Background(), &pb.PutVerticesRequest{
 			Vertices: []*pb.Vertex{
-				{Key: "dead", Expiration: past},    // discarded: born expired
+				{Key: "dead", Expiration: past},    // accepted delete-like overwrite
 				{Key: "fresh", Expiration: future}, // written
 			},
 			IfAbsent: true,
@@ -1422,16 +1464,112 @@ func TestLanternService_PutVertices_BornExpiredNotReplicated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutVertices(if_absent): %v", err)
 		}
-		if resp.GetWritten() != 1 {
-			t.Fatalf("Written = %d, want 1 (born-expired must not count)", resp.GetWritten())
-		}
-		if got := resp.GetSkippedKeys(); len(got) != 0 {
-			t.Fatalf("SkippedKeys = %v, want [] (born-expired is discarded, not skipped)", got)
+		want := []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED, pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}
+		if got := resp.GetOutcomes(); !slices.Equal(got, want) {
+			t.Fatalf("Outcomes = %v, want %v", got, want)
 		}
 		if *appendCount != 1 {
-			t.Fatalf("appendCount = %d, want 1 (only the live if-absent write replicates)", *appendCount)
+			t.Fatalf("appendCount = %d, want 1", *appendCount)
+		}
+		select {
+		case e := <-ch:
+			mu := e.Op.(*pb.Mutation)
+			if got := mu.GetOp().GetReplicatedPutVertices().GetEntries(); len(got) != 2 || got[0].GetCausalBarrier().GetKey() != "dead" || got[1].GetLive().GetKey() != "fresh" {
+				t.Fatalf("ordered replicated entries = %v, want barrier then live", got)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for if-absent mutation")
 		}
 	})
+}
+
+func TestLanternService_OrderedPutMutationConvergesDuplicateIdentities(t *testing.T) {
+	past := timestamppb.New(time.Now().Add(-time.Hour))
+	future := timestamppb.New(time.Now().Add(time.Hour))
+
+	for _, tc := range []struct {
+		name     string
+		vertices []*pb.Vertex
+		ifAbsent bool
+		wantLive bool
+	}{
+		{name: "expired then live", vertices: []*pb.Vertex{{Key: "k", Expiration: past}, {Key: "k", Value: &pb.Vertex_String_{String_: "live"}, Expiration: future}}, wantLive: true},
+		{name: "live then expired", vertices: []*pb.Vertex{{Key: "k", Value: &pb.Vertex_String_{String_: "live"}, Expiration: future}, {Key: "k", Expiration: past}}},
+		{name: "if absent expired then live", vertices: []*pb.Vertex{{Key: "k", Expiration: past}, {Key: "k", Value: &pb.Vertex_String_{String_: "live"}, Expiration: future}}, ifAbsent: true, wantLive: true},
+		{name: "if absent live then expired", vertices: []*pb.Vertex{{Key: "k", Value: &pb.Vertex_String_{String_: "live"}, Expiration: future}, {Key: "k", Expiration: past}}, ifAbsent: true, wantLive: true},
+	} {
+		t.Run("vertex/"+tc.name, func(t *testing.T) {
+			originCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+			defer log.Close()
+			clock := hlc.New(hlc.NodeID{0x41}, hlc.Options{})
+			originSvc := NewLanternService(originCache).WithReplication(log, clock, nil)
+			if _, err := originSvc.PutVertices(context.Background(), &pb.PutVerticesRequest{Vertices: tc.vertices, IfAbsent: tc.ifAbsent}); err != nil {
+				t.Fatal(err)
+			}
+			ch, cancel, err := log.Subscribe(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+			entry := <-ch
+			mutation := entry.Op.(*pb.Mutation)
+			if len(mutation.GetOp().GetReplicatedPutVertices().GetEntries()) == 0 {
+				t.Fatal("origin did not log ordered replicated Put entries")
+			}
+
+			followerCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			if err := NewLanternService(followerCache).ApplyMutation(context.Background(), mutation); err != nil {
+				t.Fatal(err)
+			}
+			originValue, originLive := originCache.GetVertex("k")
+			followerValue, followerLive := followerCache.GetVertex("k")
+			if originLive != tc.wantLive || followerLive != originLive {
+				t.Fatalf("origin/follower live = %v/%v, want %v/%v", originLive, followerLive, tc.wantLive, tc.wantLive)
+			}
+			if originLive && !proto.Equal(originValue, followerValue) {
+				t.Fatalf("origin/follower values differ: %v / %v", originValue, followerValue)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		edges    []*pb.Edge
+		wantLive bool
+	}{
+		{name: "expired then live", edges: []*pb.Edge{{Tail: "tail", Head: "head", Weight: 1, Expiration: past}, {Tail: "tail", Head: "head", Weight: 4, Expiration: future}}, wantLive: true},
+		{name: "live then expired", edges: []*pb.Edge{{Tail: "tail", Head: "head", Weight: 4, Expiration: future}, {Tail: "tail", Head: "head", Weight: 1, Expiration: past}}},
+	} {
+		t.Run("edge/"+tc.name, func(t *testing.T) {
+			originCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+			defer log.Close()
+			clock := hlc.New(hlc.NodeID{0x42}, hlc.Options{})
+			originSvc := NewLanternService(originCache).WithReplication(log, clock, nil)
+			if _, err := originSvc.PutEdges(context.Background(), &pb.PutEdgesRequest{Edges: tc.edges}); err != nil {
+				t.Fatal(err)
+			}
+			ch, cancel, err := log.Subscribe(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+			mutation := (<-ch).Op.(*pb.Mutation)
+			if len(mutation.GetOp().GetReplicatedPutEdges().GetEntries()) != 2 {
+				t.Fatalf("ordered edge entries = %v, want 2", mutation.GetOp().GetReplicatedPutEdges().GetEntries())
+			}
+			followerCache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			if err := NewLanternService(followerCache).ApplyMutation(context.Background(), mutation); err != nil {
+				t.Fatal(err)
+			}
+			originWeight, originLive := originCache.GetWeight("tail", "head")
+			followerWeight, followerLive := followerCache.GetWeight("tail", "head")
+			if originLive != tc.wantLive || followerLive != originLive || originWeight != followerWeight {
+				t.Fatalf("origin/follower edge = (%v,%v)/(%v,%v), want live=%v", originWeight, originLive, followerWeight, followerLive, tc.wantLive)
+			}
+		})
+	}
 }
 
 func keyFor(i int) string {
@@ -1949,6 +2087,82 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 		// PutEdges shares the same guards.
 		_, err = svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "p", Head: "q", Weight: 1, Expiration: exp}}})
 		isExhausted(t, err, "LANTERN_MAX_EDGES")
+	})
+
+	t.Run("RetainedCausalBarriersConsumeCapacity", func(t *testing.T) {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		clock := hlc.New(hlc.NodeID{0xCA}, hlc.Options{})
+		log := mutationlog.New(mutationlog.Options{Capacity: 16})
+		defer log.Close()
+		svc := NewLanternService(cache).
+			WithCapacityLimits(CapacityLimits{MaxVertices: 1, MaxEdges: 1}).
+			WithTombstoneTTL(24*time.Hour).
+			WithReplication(log, clock, nil)
+		expired := timestamppb.New(time.Now().Add(-time.Hour))
+		firstVertex := vertex("barrier-v")
+		firstVertex.Expiration = expired
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: firstVertex}); err != nil {
+			t.Fatalf("first expired vertex Put: %v", err)
+		}
+		_, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("second-v")})
+		isExhausted(t, err, "LANTERN_MAX_VERTICES")
+		// Exact Delete reclaims a barrier-only identity even though it reports
+		// Existed=false. With tombstone retention disabled this explicitly opts
+		// out of the causal fence; with D4 enabled it transitions to bounded
+		// tombstone metadata, which is excluded from the admission footprint.
+		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "barrier-v"}); err != nil {
+			t.Fatalf("exact Delete barrier vertex: %v", err)
+		}
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("second-v")}); err != nil {
+			t.Fatalf("Put after exact Delete reclaimed vertex barrier: %v", err)
+		}
+		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "second-v"}); err != nil {
+			t.Fatalf("clear second vertex: %v", err)
+		}
+
+		firstEdge := &pb.Edge{Tail: "barrier-tail", Head: "barrier-head", Weight: 1, Expiration: expired}
+		// Vertex capacity for edge endpoints is deliberately disabled here so
+		// this assertion isolates retained edge identity accounting.
+		svc.capacity.MaxVertices = 0
+		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: firstEdge}); err != nil {
+			t.Fatalf("first expired edge Put: %v", err)
+		}
+		_, err = svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: "second-tail", Head: "second-head", Weight: 1, Expiration: exp,
+		}})
+		isExhausted(t, err, "LANTERN_MAX_EDGES")
+		if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "barrier-tail", Head: "barrier-head"}); err != nil {
+			t.Fatalf("exact Delete barrier edge: %v", err)
+		}
+		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: "second-tail", Head: "second-head", Weight: 1, Expiration: exp,
+		}}); err != nil {
+			t.Fatalf("Put after exact Delete reclaimed edge barrier: %v", err)
+		}
+	})
+
+	t.Run("ZeroTombstoneTTLExactDeleteReclaimsBarrier", func(t *testing.T) {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		clock := hlc.New(hlc.NodeID{0xCB}, hlc.Options{})
+		log := mutationlog.New(mutationlog.Options{Capacity: 16})
+		defer log.Close()
+		svc := NewLanternService(cache).
+			WithCapacityLimits(CapacityLimits{MaxVertices: 1}).
+			WithReplication(log, clock, nil)
+		dead := vertex("dead")
+		dead.Expiration = timestamppb.New(time.Now().Add(-time.Hour))
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: dead}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("blocked")}); err == nil {
+			t.Fatal("barrier did not consume zero-TTL capacity slot")
+		}
+		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "dead"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("reused")}); err != nil {
+			t.Fatalf("capacity slot not reusable after zero-TTL exact Delete: %v", err)
+		}
 	})
 
 	t.Run("ApplyMutationBypasses", func(t *testing.T) {

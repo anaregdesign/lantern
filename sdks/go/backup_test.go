@@ -93,6 +93,23 @@ func TestBackupCodec_NDJSONUnknownKind(t *testing.T) {
 	}
 }
 
+func TestAppliedPutOutcomeCount(t *testing.T) {
+	got, err := appliedPutOutcomeCount([]pb.PutOutcome{
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+		pb.PutOutcome_PUT_OUTCOME_SUPERSEDED,
+	}, 3)
+	if err != nil || got != 1 {
+		t.Fatalf("appliedPutOutcomeCount = (%d, %v), want (1, nil)", got, err)
+	}
+	if _, err := appliedPutOutcomeCount(nil, 1); err == nil {
+		t.Fatal("appliedPutOutcomeCount accepted a length mismatch")
+	}
+	if _, err := appliedPutOutcomeCount([]pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_UNSPECIFIED}, 1); err == nil {
+		t.Fatal("appliedPutOutcomeCount accepted UNSPECIFIED")
+	}
+}
+
 // TestBackupCodec_NDJSONShape locks the on-disk NDJSON line shape: a "kind"
 // discriminator spliced ahead of the MarshalVertexJSON / MarshalEdgeJSON
 // fields.

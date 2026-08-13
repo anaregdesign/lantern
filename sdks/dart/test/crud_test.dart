@@ -87,7 +87,7 @@ void main() {
                 ),
               );
               return graph.PutVerticesResponse(
-                written: request.vertices.length,
+                outcomes: _applied(request.vertices.length),
               );
             },
           )
@@ -115,13 +115,182 @@ void main() {
         VertexInput(key: 'permanent', value: VertexValue.nil()),
       ], batchSize: 1);
 
-      expect(result.written, 3);
-      expect(clockCalls, 1);
+      expect(
+        result.map((result) => result.outcome),
+        everyElement(PutOutcome.appliedAndLive),
+      );
+      expect(clockCalls, 2);
       expect(expirations, [
         DateTime.parse('2026-07-12T00:05:00Z'),
         DateTime.parse('2026-07-12T00:05:00Z'),
         null,
       ]);
+    },
+  );
+
+  test(
+    'delayed response and clock-ahead observations bound Put liveness',
+    () async {
+      final base = DateTime.parse('2026-07-12T00:00:00Z');
+      var clockCalls = 0;
+      DateTime clock() {
+        clockCalls++;
+        return clockCalls.isOdd ? base : base.add(const Duration(seconds: 2));
+      }
+
+      final transport = FakeTransportBuilder()
+          .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+            LanternService.putVertices,
+            (request, context) => graph.PutVerticesResponse(
+              outcomes: [
+                request.ifAbsent
+                    ? graph.PutOutcome.PUT_OUTCOME_CONDITION_NOT_MET
+                    : graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+              ],
+            ),
+          )
+          .unary<graph.PutEdgesRequest, graph.PutEdgesResponse>(
+            LanternService.putEdges,
+            (request, context) => graph.PutEdgesResponse(
+              outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+            ),
+          )
+          .build();
+      final client = LanternClient.connect(
+        Uri.parse('https://example.test'),
+        transport: transport,
+        clock: clock,
+      );
+      final expiration = base.add(const Duration(seconds: 1));
+
+      expect(
+        await client.putVertex(
+          VertexInput(
+            key: 'vertex',
+            value: VertexValue.nil(),
+            expiresAt: expiration,
+          ),
+        ),
+        PutOutcome.expired,
+      );
+      expect(
+        await client.putEdge(
+          EdgeInput(tail: 'a', head: 'b', weight: 1, expiresAt: expiration),
+        ),
+        PutOutcome.expired,
+      );
+      expect(
+        await client.putVertexIfAbsent(
+          VertexInput(
+            key: 'conditional',
+            value: VertexValue.nil(),
+            expiresAt: expiration,
+          ),
+        ),
+        PutOutcome.conditionNotMet,
+      );
+      expect(
+        (await client.putVertices([
+          VertexInput(
+            key: 'batch-vertex-a',
+            value: VertexValue.nil(),
+            expiresAt: expiration,
+          ),
+          VertexInput(
+            key: 'batch-vertex-b',
+            value: VertexValue.nil(),
+            expiresAt: expiration,
+          ),
+        ], batchSize: 1)).map((result) => result.outcome),
+        everyElement(PutOutcome.expired),
+      );
+      expect(
+        (await client.putEdges([
+          EdgeInput(
+            tail: 'batch-edge-a',
+            head: 'head',
+            weight: 1,
+            expiresAt: expiration,
+          ),
+          EdgeInput(
+            tail: 'batch-edge-b',
+            head: 'head',
+            weight: 1,
+            expiresAt: expiration,
+          ),
+        ], batchSize: 1)).map((result) => result.outcome),
+        everyElement(PutOutcome.expired),
+      );
+      expect(clockCalls, 10);
+    },
+  );
+
+  test(
+    'clock rollback cannot resurrect an expiration dead at call start',
+    () async {
+      final base = DateTime.parse('2026-07-12T00:00:00Z');
+      final expiration = base.add(const Duration(seconds: 1));
+      var clockCalls = 0;
+      DateTime clock() {
+        clockCalls++;
+        return clockCalls.isOdd ? base.add(const Duration(seconds: 2)) : base;
+      }
+
+      final transport = FakeTransportBuilder()
+          .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+            LanternService.putVertices,
+            (request, context) => graph.PutVerticesResponse(
+              outcomes: _applied(request.vertices.length),
+            ),
+          )
+          .unary<graph.PutEdgesRequest, graph.PutEdgesResponse>(
+            LanternService.putEdges,
+            (request, context) => graph.PutEdgesResponse(
+              outcomes: _applied(request.edges.length),
+            ),
+          )
+          .build();
+      final client = LanternClient.connect(
+        Uri.parse('https://example.test'),
+        transport: transport,
+        clock: clock,
+      );
+      VertexInput vertex(String key) => VertexInput(
+        key: key,
+        value: VertexValue.nil(),
+        expiresAt: expiration,
+      );
+      EdgeInput edge(String tail) =>
+          EdgeInput(tail: tail, head: 'head', weight: 1, expiresAt: expiration);
+
+      expect(await client.putVertex(vertex('vertex')), PutOutcome.expired);
+      expect(
+        (await client.putVertices([
+          vertex('vertices-a'),
+          vertex('vertices-b'),
+        ], batchSize: 1)).map((result) => result.outcome),
+        everyElement(PutOutcome.expired),
+      );
+      expect(
+        await client.putVertexIfAbsent(vertex('conditional')),
+        PutOutcome.expired,
+      );
+      expect(
+        (await client.putVerticesIfAbsent([
+          vertex('conditional-a'),
+          vertex('conditional-b'),
+        ], batchSize: 1)).map((result) => result.outcome),
+        everyElement(PutOutcome.expired),
+      );
+      expect(await client.putEdge(edge('edge')), PutOutcome.expired);
+      expect(
+        (await client.putEdges([
+          edge('edges-a'),
+          edge('edges-b'),
+        ], batchSize: 1)).map((result) => result.outcome),
+        everyElement(PutOutcome.expired),
+      );
+      expect(clockCalls, 12);
     },
   );
 
@@ -182,7 +351,7 @@ void main() {
   });
 
   test(
-    'partial write reports confirmed committed count and typed cause',
+    'partial write reports fully observed prefix count and typed cause',
     () async {
       var calls = 0;
       final transport = FakeTransportBuilder()
@@ -197,7 +366,7 @@ void main() {
                 );
               }
               return graph.PutVerticesResponse(
-                written: request.vertices.length,
+                outcomes: _applied(request.vertices.length),
               );
             },
           )
@@ -251,7 +420,9 @@ void main() {
           LanternService.putEdges,
           (request, context) {
             cancellation.cancel('stop after first chunk');
-            return graph.PutEdgesResponse(written: request.edges.length);
+            return graph.PutEdgesResponse(
+              outcomes: _applied(request.edges.length),
+            );
           },
         )
         .build();
@@ -299,7 +470,9 @@ void main() {
             LanternService.putEdges,
             (request, context) {
               putRequests.add(request.deepCopy());
-              return graph.PutEdgesResponse(written: request.edges.length);
+              return graph.PutEdgesResponse(
+                outcomes: _applied(request.edges.length),
+              );
             },
           )
           .build();
@@ -313,7 +486,10 @@ void main() {
       expect(addResult.written, 2);
       expect(addResult.effectiveWeights, [3, 5]);
       expect(addRequests.single.contribIds, [<int>[], id]);
-      expect(await client.putEdges(inputs), 2);
+      expect(
+        (await client.putEdges(inputs)).map((result) => result.outcome),
+        everyElement(PutOutcome.appliedAndLive),
+      );
       expect(putRequests.single.edges.map((edge) => edge.weight), [1, 2]);
     },
   );
@@ -330,10 +506,12 @@ void main() {
           .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
             LanternService.putVertices,
             (request, context) => graph.PutVerticesResponse(
-              written: request.ifAbsent ? 0 : request.vertices.length,
-              skippedKeys: request.ifAbsent
-                  ? [request.vertices.single.key]
-                  : [],
+              outcomes: List<graph.PutOutcome>.filled(
+                request.vertices.length,
+                request.ifAbsent
+                    ? graph.PutOutcome.PUT_OUTCOME_CONDITION_NOT_MET
+                    : graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+              ),
             ),
           )
           .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
@@ -360,7 +538,7 @@ void main() {
         await client.putVertexIfAbsent(
           VertexInput(key: 'existing', value: VertexValue.nil()),
         ),
-        isFalse,
+        PutOutcome.conditionNotMet,
       );
       expect(await client.deleteVertex('missing'), isFalse);
       await expectLater(
@@ -371,14 +549,146 @@ void main() {
     },
   );
 
+  test('Put outcomes are bounded and request-index aligned', () async {
+    final vertexWireOutcomes = <graph.PutOutcome>[
+      graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+      graph.PutOutcome.PUT_OUTCOME_EXPIRED,
+      graph.PutOutcome.PUT_OUTCOME_CONDITION_NOT_MET,
+      graph.PutOutcome.PUT_OUTCOME_SUPERSEDED,
+    ];
+    final edgeWireOutcomes = <graph.PutOutcome>[
+      graph.PutOutcome.PUT_OUTCOME_EXPIRED,
+      graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+    ];
+    final transport = FakeTransportBuilder()
+        .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+          LanternService.putVertices,
+          (request, context) => graph.PutVerticesResponse(
+            outcomes: vertexWireOutcomes.take(request.vertices.length),
+          ),
+        )
+        .unary<graph.PutEdgesRequest, graph.PutEdgesResponse>(
+          LanternService.putEdges,
+          (request, context) => graph.PutEdgesResponse(
+            outcomes: edgeWireOutcomes.take(request.edges.length),
+          ),
+        )
+        .build();
+    final client = _client(transport);
+
+    final vertices = await client.putVertices([
+      VertexInput(key: 'a', value: VertexValue.nil()),
+      VertexInput(key: 'b', value: VertexValue.nil()),
+      VertexInput(key: 'c', value: VertexValue.nil()),
+      VertexInput(key: 'd', value: VertexValue.nil()),
+    ]);
+    expect(vertices.map((result) => result.key), ['a', 'b', 'c', 'd']);
+    expect(vertices.map((result) => result.outcome), [
+      PutOutcome.appliedAndLive,
+      PutOutcome.expired,
+      PutOutcome.conditionNotMet,
+      PutOutcome.superseded,
+    ]);
+
+    final edges = await client.putEdges([
+      EdgeInput(tail: 't1', head: 'h1', weight: 1),
+      EdgeInput(tail: 't2', head: 'h2', weight: 2),
+    ]);
+    expect(
+      edges
+          .map((result) => (result.tail, result.head, result.outcome))
+          .toList(),
+      [
+        ('t1', 'h1', PutOutcome.expired),
+        ('t2', 'h2', PutOutcome.appliedAndLive),
+      ],
+    );
+  });
+
+  test(
+    'Put facades fail closed on unspecified or misaligned outcomes',
+    () async {
+      var vertexCalls = 0;
+      var edgeCalls = 0;
+      final transport = FakeTransportBuilder()
+          .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+            LanternService.putVertices,
+            (request, context) {
+              vertexCalls++;
+              if (vertexCalls == 1) {
+                return graph.PutVerticesResponse(
+                  outcomes: [graph.PutOutcome.PUT_OUTCOME_UNSPECIFIED],
+                );
+              }
+              if (vertexCalls == 3) {
+                return graph.PutVerticesResponse(
+                  outcomes: [
+                    graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+                    graph.PutOutcome.PUT_OUTCOME_UNSPECIFIED,
+                  ],
+                );
+              }
+              return graph.PutVerticesResponse(
+                outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+              );
+            },
+          )
+          .unary<graph.PutEdgesRequest, graph.PutEdgesResponse>(
+            LanternService.putEdges,
+            (request, context) {
+              edgeCalls++;
+              if (edgeCalls == 1) return graph.PutEdgesResponse();
+              return graph.PutEdgesResponse(
+                outcomes: [
+                  graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+                  graph.PutOutcome.PUT_OUTCOME_UNSPECIFIED,
+                ],
+              );
+            },
+          )
+          .build();
+      final client = _client(transport);
+
+      await expectLater(
+        client.putVertex(VertexInput(key: 'unknown', value: VertexValue.nil())),
+        throwsA(isA<LanternInternalException>()),
+      );
+      await expectLater(
+        client.putVertices([
+          VertexInput(key: 'short-a', value: VertexValue.nil()),
+          VertexInput(key: 'short-b', value: VertexValue.nil()),
+        ]),
+        throwsA(isA<LanternInternalException>()),
+      );
+      await expectLater(
+        client.putEdge(EdgeInput(tail: 'short', head: 'edge', weight: 1)),
+        throwsA(isA<LanternInternalException>()),
+      );
+      await expectLater(
+        client.putVertices([
+          VertexInput(key: 'known-prefix', value: VertexValue.nil()),
+          VertexInput(key: 'unknown-suffix', value: VertexValue.nil()),
+        ]),
+        throwsA(isA<LanternInternalException>()),
+      );
+      await expectLater(
+        client.putEdges([
+          EdgeInput(tail: 'known', head: 'prefix', weight: 1),
+          EdgeInput(tail: 'unknown', head: 'suffix', weight: 1),
+        ]),
+        throwsA(isA<LanternInternalException>()),
+      );
+    },
+  );
+
   test('empty batches do no I/O and batch ceilings fail locally', () async {
     final client = _client(FakeTransportBuilder().build());
     expect((await client.getVertices([])).vertices, isEmpty);
-    expect((await client.putVertices([])).written, 0);
+    expect(await client.putVertices([]), isEmpty);
     expect(await client.deleteVertices([]), 0);
     expect((await client.getEdges([])).edges, isEmpty);
     expect((await client.addEdges([])).effectiveWeights, isEmpty);
-    expect(await client.putEdges([]), 0);
+    expect(await client.putEdges([]), isEmpty);
     expect(await client.deleteEdges([]), 0);
 
     await expectLater(
@@ -395,4 +705,9 @@ void main() {
 LanternClient _client(connect.Transport transport) => LanternClient.connect(
   Uri.parse('https://example.test'),
   transport: transport,
+);
+
+List<graph.PutOutcome> _applied(int length) => List<graph.PutOutcome>.filled(
+  length,
+  graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
 );

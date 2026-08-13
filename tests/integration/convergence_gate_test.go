@@ -67,6 +67,19 @@ func waitForVertexAbsent(t *testing.T, cache *graphcache.GraphCache[string, *pb.
 	return !ok
 }
 
+func waitForEdgeAbsent(t *testing.T, cache *graphcache.GraphCache[string, *pb.Vertex], tail, head string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, ok := cache.GetWeight(tail, head); !ok {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, ok := cache.GetWeight(tail, head)
+	return !ok
+}
+
 // waitForVertexValue polls cache.GetVertex until the key holds the
 // expected string value or the deadline elapses. Returns the last value
 // observed (for diagnostics) and whether it matched. Used to assert that
@@ -149,16 +162,16 @@ func TestConvergence_PartitionHealReconverges(t *testing.T) {
 	// ----------------------------------------------------------------
 
 	// Round 1: the "loser" / uncontested writes (lower HLC).
-	if err := a.sdk.PutVertex(ctx, "ow", "ow-from-A", writeTTL); err != nil {
+	if _, err := a.sdk.PutVertex(ctx, "ow", "ow-from-A", writeTTL); err != nil {
 		t.Fatalf("a.PutVertex(ow): %v", err)
 	}
-	if err := a.sdk.PutVertex(ctx, "del", "doomed", writeTTL); err != nil {
+	if _, err := a.sdk.PutVertex(ctx, "del", "doomed", writeTTL); err != nil {
 		t.Fatalf("a.PutVertex(del): %v", err)
 	}
-	if err := a.sdk.PutVertex(ctx, "only-a", "only-on-A", writeTTL); err != nil {
+	if _, err := a.sdk.PutVertex(ctx, "only-a", "only-on-A", writeTTL); err != nil {
 		t.Fatalf("a.PutVertex(only-a): %v", err)
 	}
-	if err := a.sdk.PutEdge(ctx, "pe-t", "pe-h", 5.0, writeTTL); err != nil {
+	if _, err := a.sdk.PutEdge(ctx, "pe-t", "pe-h", 5.0, writeTTL); err != nil {
 		t.Fatalf("a.PutEdge: %v", err)
 	}
 	// Additive merge: A and B each contribute 1.0 to the same edge from
@@ -169,7 +182,7 @@ func TestConvergence_PartitionHealReconverges(t *testing.T) {
 	if _, err := b.sdk.AddEdge(ctx, "m-t", "m-h", 1.0, writeTTL); err != nil {
 		t.Fatalf("b.AddEdge: %v", err)
 	}
-	if err := c.sdk.PutVertex(ctx, "only-c", "only-on-C", writeTTL); err != nil {
+	if _, err := c.sdk.PutVertex(ctx, "only-c", "only-on-C", writeTTL); err != nil {
 		t.Fatalf("c.PutVertex(only-c): %v", err)
 	}
 
@@ -178,13 +191,13 @@ func TestConvergence_PartitionHealReconverges(t *testing.T) {
 	time.Sleep(25 * time.Millisecond)
 
 	// Round 2: the "winner" writes on B (higher HLC).
-	if err := b.sdk.PutVertex(ctx, "ow", "ow-from-B", writeTTL); err != nil {
+	if _, err := b.sdk.PutVertex(ctx, "ow", "ow-from-B", writeTTL); err != nil {
 		t.Fatalf("b.PutVertex(ow): %v", err)
 	}
 	if _, err := b.sdk.DeleteVertex(ctx, "del"); err != nil {
 		t.Fatalf("b.DeleteVertex(del): %v", err)
 	}
-	if err := b.sdk.PutEdge(ctx, "pe-t", "pe-h", 9.0, writeTTL); err != nil {
+	if _, err := b.sdk.PutEdge(ctx, "pe-t", "pe-h", 9.0, writeTTL); err != nil {
 		t.Fatalf("b.PutEdge: %v", err)
 	}
 
@@ -243,6 +256,74 @@ func TestConvergence_PartitionHealReconverges(t *testing.T) {
 	assertReplicasIdentical(t, nodes,
 		[]string{"ow", "del", "only-a", "only-c", "pe-t", "pe-h", "m-t", "m-h"},
 		[][2]string{{"m-t", "m-h"}, {"pe-t", "pe-h"}})
+}
+
+// TestConvergence_BornExpiredPutRemovesPriorLiveState verifies the HA side of
+// the Put outcome contract. EXPIRED is an accepted, delete-like overwrite, so
+// its mutation must reach a peer that still holds an older live value/edge.
+func TestConvergence_BornExpiredPutRemovesPriorLiveState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping born-expired HA convergence gate in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	const (
+		tombstoneTTL = 24 * time.Hour
+		converge     = 5 * time.Second
+	)
+	a := newConvergenceNode(t, hlc.NodeID{0xD1}, tombstoneTTL)
+	b := newConvergenceNode(t, hlc.NodeID{0xD2}, tombstoneTTL)
+
+	// B first holds the older live state while the nodes are partitioned.
+	if outcome, err := b.sdk.PutVertex(ctx, "expired-overwrite", "old", time.Hour); err != nil || outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("seed PutVertex outcome=%v err=%v", outcome, err)
+	}
+	if outcome, err := b.sdk.PutVertex(ctx, "if-absent-expired", "old", time.Hour); err != nil || outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("seed if-absent target outcome=%v err=%v", outcome, err)
+	}
+	if outcome, err := b.sdk.PutEdge(ctx, "expired-tail", "expired-head", 9, time.Hour); err != nil || outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("seed PutEdge outcome=%v err=%v", outcome, err)
+	}
+	time.Sleep(25 * time.Millisecond)
+
+	// A accepts newer absolute expirations in the past. The outcome is
+	// authoritative and both mutations must be retained for peer convergence.
+	past := time.Now().Add(-time.Second)
+	if outcome, err := a.sdk.PutVertexAt(ctx, "expired-overwrite", "dead", past); err != nil || outcome != client.PutOutcomeExpired {
+		t.Fatalf("expired PutVertex outcome=%v err=%v", outcome, err)
+	}
+	if outcome, err := a.sdk.PutVertexIfAbsentAt(ctx, "if-absent-expired", "dead", past); err != nil || outcome != client.PutOutcomeExpired {
+		t.Fatalf("expired PutVertexIfAbsent outcome=%v err=%v", outcome, err)
+	}
+	if outcome, err := a.sdk.PutEdgeAt(ctx, "expired-tail", "expired-head", 1, past); err != nil || outcome != client.PutOutcomeExpired {
+		t.Fatalf("expired PutEdge outcome=%v err=%v", outcome, err)
+	}
+
+	a.startPump(ctx, t, []string{b.url})
+	b.startPump(ctx, t, []string{a.url})
+	for name, node := range map[string]*pumpNode{"A": a, "B": b} {
+		if !waitForVertexAbsent(t, node.cache, "expired-overwrite", converge) {
+			t.Errorf("node %s retained the older vertex after EXPIRED Put", name)
+		}
+		if !waitForVertexAbsent(t, node.cache, "if-absent-expired", converge) {
+			t.Errorf("node %s retained the older vertex after EXPIRED if-absent Put", name)
+		}
+		if !waitForEdgeAbsent(t, node.cache, "expired-tail", "expired-head", converge) {
+			t.Errorf("node %s retained the older edge after EXPIRED Put", name)
+		}
+	}
+	assertReplicasIdentical(
+		t,
+		[]*pumpNode{a, b},
+		// PutEdge targets only the edge identity. B's endpoints pre-date the
+		// overwrite and remain valid vertex state, while A's accepted-expired
+		// Put must not create endpoint vertices merely to report EXPIRED. Their
+		// asymmetric pre-partition vertex histories are therefore intentionally
+		// outside this edge-convergence assertion.
+		[]string{"expired-overwrite", "if-absent-expired"},
+		[][2]string{{"expired-tail", "expired-head"}},
+	)
 }
 
 // assertReplicasIdentical fails the test if any vertex key or edge pair

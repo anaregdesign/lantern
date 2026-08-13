@@ -20,7 +20,7 @@ import (
 // the SDK rather than by reading inputs directly — see the per-tool tests
 // for the pattern.
 type lanternClient interface {
-	PutVertex(ctx context.Context, key string, value any, ttl time.Duration) error
+	PutVertex(ctx context.Context, key string, value any, ttl time.Duration) (client.PutOutcome, error)
 	GetVertex(ctx context.Context, key string) (*client.Vertex, error)
 	GetVertices(ctx context.Context, keys []string) (found []*client.Vertex, missing []string, err error)
 	DeleteVertex(ctx context.Context, key string) (bool, error)
@@ -51,6 +51,26 @@ func mapSDKError(tool string, err error) error {
 		return fmt.Errorf("%s: rate limited; back off and retry: %w", tool, err)
 	default:
 		return fmt.Errorf("%s: %w", tool, err)
+	}
+}
+
+// requireAppliedPut prevents a storage-level non-application from becoming a
+// success-shaped MCP tool response. MCP records use relative TTLs, so EXPIRED
+// normally indicates clock skew or a delayed request; SUPERSEDED means a newer
+// causal value won. In either case the advertised presence/claim/note does not
+// exist as written and the caller must see an error.
+func requireAppliedPut(tool string, outcome client.PutOutcome) error {
+	switch outcome {
+	case client.PutOutcomeAppliedAndLive:
+		return nil
+	case client.PutOutcomeExpired:
+		return fmt.Errorf("%s: Put expired at server application time", tool)
+	case client.PutOutcomeConditionNotMet:
+		return fmt.Errorf("%s: Put condition was not met", tool)
+	case client.PutOutcomeSuperseded:
+		return fmt.Errorf("%s: Put was superseded by newer server state", tool)
+	default:
+		return fmt.Errorf("%s: unknown Put outcome %d", tool, outcome)
 	}
 }
 

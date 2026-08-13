@@ -789,7 +789,7 @@ func TestSearchVertices_ProductionStructuredFieldsOverRealH2C(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	expiration := time.Now().Add(time.Hour)
-	if err := sdk.PutVertices(ctx, []client.VertexInput{
+	if _, err := sdk.PutVertices(ctx, []client.VertexInput{
 		{Key: "alpha", Value: "beta", Expiration: expiration},
 		{Key: "json-boundaries", Value: `{"a":"alpha","b":"beta"}`, Expiration: expiration},
 		{Key: "within-value", Value: "alpha beta", Expiration: expiration},
@@ -1413,7 +1413,7 @@ func TestSearchVertices_SDKForwarder(t *testing.T) {
 			{Key: "user.preferences.format", Value: "calm bullet points", Expiration: time.Now().Add(time.Hour)},
 			{Key: "project.lantern.stack", Value: "go and react", Expiration: time.Now().Add(time.Hour)},
 		}
-		if err := l.PutVertices(ctx, seed); err != nil {
+		if _, err := l.PutVertices(ctx, seed); err != nil {
 			t.Fatalf("PutVertices: %v", err)
 		}
 
@@ -1507,7 +1507,7 @@ func TestSearchVertices_IncrementalLatestInputWins(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := l.PutVertices(ctx, []client.VertexInput{
+	if _, err := l.PutVertices(ctx, []client.VertexInput{
 		{Key: "doc.alpha", Value: "alpha", Expiration: time.Now().Add(time.Hour)},
 		{Key: "doc.beta", Value: "beta", Expiration: time.Now().Add(time.Hour)},
 	}); err != nil {
@@ -1845,7 +1845,7 @@ func TestSearchVertices_SDKOptions(t *testing.T) {
 		{Key: "doc.alpha", Value: "alpha delta", Expiration: time.Now().Add(time.Hour)},
 		{Key: "doc.beta", Value: "beta epsilon", Expiration: time.Now().Add(time.Hour)},
 	}
-	if err := l.PutVertices(ctx, seed); err != nil {
+	if _, err := l.PutVertices(ctx, seed); err != nil {
 		t.Fatalf("PutVertices: %v", err)
 	}
 

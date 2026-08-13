@@ -23,7 +23,7 @@ import { type AddressInfo } from "node:net";
 
 import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
 import { connectNodeAdapter, createConnectTransport } from "@connectrpc/connect-node";
-import { create } from "@bufbuild/protobuf";
+import { create, toJson } from "@bufbuild/protobuf";
 
 import {
   Lantern,
@@ -54,6 +54,7 @@ import {
   SearchErrorDetailSchema,
   SearchHitProjectionStatus,
   SearchProjection,
+  PutOutcome as PbPutOutcome,
 } from "../src/gen/graph/v1/graph_pb.js";
 
 interface StubState {
@@ -128,6 +129,18 @@ interface StubState {
    * ordering + chunking assertions (#685). Reset per restore test.
    */
   writeLog: { kind: "vertices" | "edges"; count: number }[];
+  /** One-shot wire outcomes used to exercise SDK validation and mapping. */
+  nextPutVerticesOutcomes?: PbPutOutcome[];
+  nextPutEdgesOutcomes?: PbPutOutcome[];
+  /** Per-request delays used to cross a local expiration between chunks. */
+  putVerticesDelays?: number[];
+  putEdgesDelays?: number[];
+  /** Absolute expirations observed on each Put chunk. */
+  putVerticesExpirations?: Array<Array<string | null>>;
+  putEdgesExpirations?: Array<Array<string | null>>;
+  /** Optional hook run after a request arrives and before its response. */
+  beforePutVerticesResponse?: () => void;
+  beforePutEdgesResponse?: () => void;
   /**
    * Controls the stub gRPC-Health-v1 endpoint for ping() tests (#685-adjacent
    * parity work). `status` is the JSON `status` string returned on a 200;
@@ -146,34 +159,40 @@ function newStubRoutes(state: StubState) {
         }
         return { vertex: v };
       },
-      async putVertex(req) {
-        if (req.vertex) {
-          if (req.ifAbsent && state.vertices.has(req.vertex.key)) {
-            return { written: false };
-          }
-          state.vertices.set(req.vertex.key, req.vertex);
-        }
-        return { written: true };
-      },
       async putVertices(req) {
+        const delay = state.putVerticesDelays?.shift() ?? 0;
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        state.putVerticesExpirations?.push(
+          req.vertices.map((vertex) => {
+            const raw = (toJson(VertexSchema, vertex) as Record<string, unknown>).expiration;
+            return typeof raw === "string" ? raw : null;
+          }),
+        );
+        state.beforePutVerticesResponse?.();
+        if (state.nextPutVerticesOutcomes !== undefined) {
+          const outcomes = state.nextPutVerticesOutcomes;
+          state.nextPutVerticesOutcomes = undefined;
+          return { outcomes };
+        }
         if (req.ifAbsent) {
-          let written = 0;
-          const skippedKeys: string[] = [];
+          const outcomes: PbPutOutcome[] = [];
           for (const v of req.vertices) {
             if (state.vertices.has(v.key)) {
-              skippedKeys.push(v.key);
+              outcomes.push(PbPutOutcome.CONDITION_NOT_MET);
               continue;
             }
             state.vertices.set(v.key, v);
-            written++;
+            outcomes.push(PbPutOutcome.APPLIED_AND_LIVE);
           }
-          return { written, skippedKeys };
+          return { outcomes };
         }
         state.writeLog.push({ kind: "vertices", count: req.vertices.length });
         for (const v of req.vertices) {
           state.vertices.set(v.key, v);
         }
-        return { written: req.vertices.length, skippedKeys: [] };
+        return { outcomes: req.vertices.map(() => PbPutOutcome.APPLIED_AND_LIVE) };
       },
       // Capture Add requests so #895 tests can assert how the SDK wires
       // contrib_ids (singular forwards into contrib_id; plural is
@@ -381,12 +400,28 @@ function newStubRoutes(state: StubState) {
       // ordering/chunking assertions and stores weights into state.edges so
       // a subsequent backup reflects them.
       async putEdges(req) {
+        const delay = state.putEdgesDelays?.shift() ?? 0;
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        state.putEdgesExpirations?.push(
+          req.edges.map((edge) => {
+            const raw = (toJson(EdgeSchema, edge) as Record<string, unknown>).expiration;
+            return typeof raw === "string" ? raw : null;
+          }),
+        );
+        state.beforePutEdgesResponse?.();
         state.writeLog.push({ kind: "edges", count: req.edges.length });
+        if (state.nextPutEdgesOutcomes !== undefined) {
+          const outcomes = state.nextPutEdgesOutcomes;
+          state.nextPutEdgesOutcomes = undefined;
+          return { outcomes };
+        }
         for (const e of req.edges) {
           if (!state.edges.has(e.tail)) state.edges.set(e.tail, new Map());
           state.edges.get(e.tail)!.set(e.head, e.weight);
         }
-        return { written: req.edges.length };
+        return { outcomes: req.edges.map(() => PbPutOutcome.APPLIED_AND_LIVE) };
       },
       // Whole-graph point-in-time stream (#685 backup path): emits every
       // vertex (as the `vertex` oneof arm) followed by every edge (as the
@@ -559,12 +594,16 @@ describe("Lantern client", () => {
     }
   });
 
-  test("putVertexIfAbsent writes when absent and skips a live key (#896)", async () => {
+  test("putVertexIfAbsent reports applied and condition-not-met outcomes (#896)", async () => {
     const c = newClient();
     try {
-      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "one" })).resolves.toBe(true);
+      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "one" })).resolves.toBe(
+        "appliedAndLive",
+      );
       // Second attempt over a now-live key is a no-op.
-      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "two" })).resolves.toBe(false);
+      await expect(c.putVertexIfAbsent({ key: "nx/k", value: "two" })).resolves.toBe(
+        "conditionNotMet",
+      );
       const v = await c.getVertex("nx/k");
       expect(v.value).toBe("one"); // untouched by the skipped write
     } finally {
@@ -572,19 +611,263 @@ describe("Lantern client", () => {
     }
   });
 
-  test("putVerticesIfAbsent reports written count and skipped keys (#896)", async () => {
+  test("putVerticesIfAbsent returns request-index-aligned outcomes (#896)", async () => {
     const c = newClient();
     try {
       await c.putVertex({ key: "nx/live", value: "old" });
-      const { written, skippedKeys } = await c.putVerticesIfAbsent([
+      const results = await c.putVerticesIfAbsent([
         { key: "nx/fresh", value: "a" },
         { key: "nx/live", value: "b" }, // skipped: already live
       ]);
-      expect(written).toBe(1);
-      expect(skippedKeys).toEqual(["nx/live"]);
+      expect(results).toEqual([
+        { key: "nx/fresh", outcome: "appliedAndLive" },
+        { key: "nx/live", outcome: "conditionNotMet" },
+      ]);
       const live = await c.getVertex("nx/live");
       expect(live.value).toBe("old"); // untouched
     } finally {
+      c.close();
+    }
+  });
+
+  test("Put facades expose bounded outcomes and reject malformed wire responses", async () => {
+    const c = newClient();
+    try {
+      state.nextPutVerticesOutcomes = [PbPutOutcome.EXPIRED];
+      await expect(c.putVertex({ key: "outcome/expired", value: 1 })).resolves.toBe("expired");
+
+      state.nextPutVerticesOutcomes = [
+        PbPutOutcome.APPLIED_AND_LIVE,
+        PbPutOutcome.EXPIRED,
+        PbPutOutcome.SUPERSEDED,
+      ];
+      await expect(
+        c.putVertices([
+          { key: "outcome/a", value: 1 },
+          { key: "outcome/b", value: 2 },
+          { key: "outcome/c", value: 3 },
+        ]),
+      ).resolves.toEqual([
+        { key: "outcome/a", outcome: "appliedAndLive" },
+        { key: "outcome/b", outcome: "expired" },
+        { key: "outcome/c", outcome: "superseded" },
+      ]);
+
+      state.nextPutEdgesOutcomes = [PbPutOutcome.EXPIRED];
+      await expect(c.putEdge({ tail: "outcome/t", head: "outcome/h", weight: 1 })).resolves.toBe(
+        "expired",
+      );
+      state.nextPutEdgesOutcomes = [PbPutOutcome.CONDITION_NOT_MET, PbPutOutcome.APPLIED_AND_LIVE];
+      await expect(
+        c.putEdges([
+          { tail: "outcome/t1", head: "outcome/h1", weight: 1 },
+          { tail: "outcome/t2", head: "outcome/h2", weight: 2 },
+        ]),
+      ).resolves.toEqual([
+        { tail: "outcome/t1", head: "outcome/h1", outcome: "conditionNotMet" },
+        { tail: "outcome/t2", head: "outcome/h2", outcome: "appliedAndLive" },
+      ]);
+
+      const past = new Date(Date.now() - 1_000);
+      state.nextPutVerticesOutcomes = [PbPutOutcome.APPLIED_AND_LIVE];
+      await expect(
+        c.putVertex({ key: "outcome/local-expired", value: 1, expiration: past }),
+      ).resolves.toBe("expired");
+      state.nextPutVerticesOutcomes = [PbPutOutcome.APPLIED_AND_LIVE];
+      await expect(
+        c.putVertexIfAbsent({
+          key: "outcome/local-expired-nx",
+          value: 1,
+          expiration: past,
+        }),
+      ).resolves.toBe("expired");
+      state.nextPutVerticesOutcomes = [PbPutOutcome.CONDITION_NOT_MET];
+      await expect(
+        c.putVertexIfAbsent({
+          key: "outcome/local-condition",
+          value: 1,
+          expiration: past,
+        }),
+      ).resolves.toBe("conditionNotMet");
+      state.nextPutEdgesOutcomes = [PbPutOutcome.APPLIED_AND_LIVE];
+      await expect(
+        c.putEdge({
+          tail: "outcome/local-t",
+          head: "outcome/local-h",
+          weight: 1,
+          expiration: past,
+        }),
+      ).resolves.toBe("expired");
+
+      const batchClient = connect(baseUrl, {
+        options: { batchChunkSize: 1 },
+        transportOptions: { httpVersion: "1.1" },
+      });
+      try {
+        const vertexExpiration = new Date(Date.now() + 200);
+        state.putVerticesDelays = [0, 300];
+        await expect(
+          batchClient.putVertices([
+            { key: "outcome/delayed-vertex-a", value: 1, expiration: vertexExpiration },
+            { key: "outcome/delayed-vertex-b", value: 2, expiration: vertexExpiration },
+          ]),
+        ).resolves.toEqual([
+          { key: "outcome/delayed-vertex-a", outcome: "expired" },
+          { key: "outcome/delayed-vertex-b", outcome: "expired" },
+        ]);
+
+        const edgeExpiration = new Date(Date.now() + 200);
+        state.putEdgesDelays = [0, 300];
+        await expect(
+          batchClient.putEdges([
+            {
+              tail: "outcome/delayed-edge-a",
+              head: "head",
+              weight: 1,
+              expiration: edgeExpiration,
+            },
+            {
+              tail: "outcome/delayed-edge-b",
+              head: "head",
+              weight: 2,
+              expiration: edgeExpiration,
+            },
+          ]),
+        ).resolves.toEqual([
+          {
+            tail: "outcome/delayed-edge-a",
+            head: "head",
+            outcome: "expired",
+          },
+          {
+            tail: "outcome/delayed-edge-b",
+            head: "head",
+            outcome: "expired",
+          },
+        ]);
+      } finally {
+        batchClient.close();
+        state.putVerticesDelays = undefined;
+        state.putEdgesDelays = undefined;
+      }
+
+      state.nextPutVerticesOutcomes = [PbPutOutcome.UNSPECIFIED];
+      await expect(c.putVertex({ key: "outcome/unknown", value: 1 })).rejects.toThrow(
+        "unknown Put outcome",
+      );
+      state.nextPutVerticesOutcomes = [PbPutOutcome.APPLIED_AND_LIVE];
+      await expect(
+        c.putVertices([
+          { key: "outcome/short-a", value: 1 },
+          { key: "outcome/short-b", value: 2 },
+        ]),
+      ).rejects.toThrow("returned 1 Put outcomes for 2 vertices");
+    } finally {
+      c.close();
+      state.nextPutVerticesOutcomes = undefined;
+      state.nextPutEdgesOutcomes = undefined;
+    }
+  });
+
+  test("relative Put TTL is fixed once before delayed chunks", async () => {
+    const c = connect(baseUrl, {
+      options: { batchChunkSize: 1 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    try {
+      state.putVerticesExpirations = [];
+      state.putVerticesDelays = [10, 10];
+      await c.putVertices([
+        { key: "ttl/vertex-a", value: 1, ttlSeconds: 60 },
+        { key: "ttl/vertex-b", value: 2, ttlSeconds: 60 },
+      ]);
+      expect(state.putVerticesExpirations.flat()).toHaveLength(2);
+      expect(new Set(state.putVerticesExpirations.flat()).size).toBe(1);
+
+      state.putVerticesExpirations = [];
+      state.putVerticesDelays = [10, 10];
+      await c.putVerticesIfAbsent([
+        { key: "ttl/conditional-a", value: 1, ttlSeconds: 60 },
+        { key: "ttl/conditional-b", value: 2, ttlSeconds: 60 },
+      ]);
+      expect(state.putVerticesExpirations.flat()).toHaveLength(2);
+      expect(new Set(state.putVerticesExpirations.flat()).size).toBe(1);
+
+      state.putEdgesExpirations = [];
+      state.putEdgesDelays = [10, 10];
+      await c.putEdges([
+        { tail: "ttl/edge-a", head: "head", weight: 1, ttlSeconds: 60 },
+        { tail: "ttl/edge-b", head: "head", weight: 2, ttlSeconds: 60 },
+      ]);
+      expect(state.putEdgesExpirations.flat()).toHaveLength(2);
+      expect(new Set(state.putEdgesExpirations.flat()).size).toBe(1);
+    } finally {
+      c.close();
+      state.putVerticesDelays = undefined;
+      state.putEdgesDelays = undefined;
+      state.putVerticesExpirations = undefined;
+      state.putEdgesExpirations = undefined;
+    }
+  });
+
+  test("clock rollback cannot resurrect an expiration dead at call start", async () => {
+    const c = connect(baseUrl, {
+      options: { batchChunkSize: 1 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    const realDateNow = Date.now;
+    const baseMs = Date.parse("2026-07-12T00:00:00Z");
+    const expiration = new Date(baseMs + 1_000);
+    let nowMs = baseMs + 2_000;
+    Date.now = () => nowMs;
+    state.beforePutVerticesResponse = () => {
+      nowMs = baseMs;
+    };
+    state.beforePutEdgesResponse = () => {
+      nowMs = baseMs;
+    };
+    const vertex = (key: string) => ({ key, value: 1, expiration });
+    const edge = (tail: string) => ({ tail, head: "head", weight: 1, expiration });
+    try {
+      nowMs = baseMs + 2_000;
+      await expect(c.putVertex(vertex("rollback/vertex"))).resolves.toBe("expired");
+
+      nowMs = baseMs + 2_000;
+      await expect(
+        c.putVertices([vertex("rollback/vertices-a"), vertex("rollback/vertices-b")]),
+      ).resolves.toEqual([
+        { key: "rollback/vertices-a", outcome: "expired" },
+        { key: "rollback/vertices-b", outcome: "expired" },
+      ]);
+
+      nowMs = baseMs + 2_000;
+      await expect(c.putVertexIfAbsent(vertex("rollback/conditional"))).resolves.toBe("expired");
+
+      nowMs = baseMs + 2_000;
+      await expect(
+        c.putVerticesIfAbsent([
+          vertex("rollback/conditionals-a"),
+          vertex("rollback/conditionals-b"),
+        ]),
+      ).resolves.toEqual([
+        { key: "rollback/conditionals-a", outcome: "expired" },
+        { key: "rollback/conditionals-b", outcome: "expired" },
+      ]);
+
+      nowMs = baseMs + 2_000;
+      await expect(c.putEdge(edge("rollback/edge"))).resolves.toBe("expired");
+
+      nowMs = baseMs + 2_000;
+      await expect(
+        c.putEdges([edge("rollback/edges-a"), edge("rollback/edges-b")]),
+      ).resolves.toEqual([
+        { tail: "rollback/edges-a", head: "head", outcome: "expired" },
+        { tail: "rollback/edges-b", head: "head", outcome: "expired" },
+      ]);
+    } finally {
+      Date.now = realDateNow;
+      state.beforePutVerticesResponse = undefined;
+      state.beforePutEdgesResponse = undefined;
       c.close();
     }
   });

@@ -13,7 +13,6 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/anaregdesign/lantern/core/cache"
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -282,15 +281,16 @@ func (s *LanternService) checkVertexCapacity(newVertices int) error {
 	if s.capacity.MaxVertices <= 0 {
 		return nil
 	}
-	if s.cache.VertexCount()+newVertices <= s.capacity.MaxVertices {
+	vertices, _ := s.cache.CapacityFootprint()
+	if vertices+newVertices <= s.capacity.MaxVertices {
 		return nil
 	}
 	if s.onValidationReject != nil {
 		s.onValidationReject("capacity")
 	}
 	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
-		"vertex capacity: %d live + up to %d new would exceed LANTERN_MAX_VERTICES=%d (soft cap, counted conservatively); retry after TTL decay or deletes free capacity",
-		s.cache.VertexCount(), newVertices, s.capacity.MaxVertices))
+		"vertex capacity: %d live-or-retained + up to %d new would exceed LANTERN_MAX_VERTICES=%d (soft cap, counted conservatively); use an exact delete to reclaim an intended retained identity",
+		vertices, newVertices, s.capacity.MaxVertices))
 }
 
 // checkEdgeCapacity is the edge-side sibling of checkVertexCapacity;
@@ -299,15 +299,16 @@ func (s *LanternService) checkEdgeCapacity(newEdges int) error {
 	if s.capacity.MaxEdges <= 0 {
 		return nil
 	}
-	if s.cache.EdgeCount()+newEdges <= s.capacity.MaxEdges {
+	_, edges := s.cache.CapacityFootprint()
+	if edges+newEdges <= s.capacity.MaxEdges {
 		return nil
 	}
 	if s.onValidationReject != nil {
 		s.onValidationReject("capacity")
 	}
 	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
-		"edge capacity: %d live + up to %d new would exceed LANTERN_MAX_EDGES=%d (soft cap, counted conservatively); retry after TTL decay or deletes free capacity",
-		s.cache.EdgeCount(), newEdges, s.capacity.MaxEdges))
+		"edge capacity: %d live-or-retained + up to %d new would exceed LANTERN_MAX_EDGES=%d (soft cap, counted conservatively); use an exact delete to reclaim an intended retained identity",
+		edges, newEdges, s.capacity.MaxEdges))
 }
 
 // WithReplication attaches the mutation log, hybrid logical clock, and an
@@ -914,8 +915,10 @@ func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexReq
 	if err != nil {
 		return nil, err
 	}
-	// Unconditional puts always write; if_absent writes 0 or 1.
-	return &pb.PutVertexResponse{Written: resp.GetWritten() >= 1}, nil
+	if len(resp.GetOutcomes()) != 1 {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("PutVertices returned %d outcomes for singular request", len(resp.GetOutcomes())))
+	}
+	return &pb.PutVertexResponse{Outcome: resp.GetOutcomes()[0]}, nil
 }
 
 // RestoreVertices applies backup state for graph convergence while treating
@@ -926,21 +929,20 @@ func (s *LanternService) RestoreVertices(ctx context.Context, request *pb.PutVer
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	now := time.Now()
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(request.GetVertices()))
-	written := 0
 	for _, vertex := range request.GetVertices() {
 		if vertex == nil {
 			continue
 		}
 		expiration := prototime.Expiration(vertex.GetExpiration())
 		items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: vertex.GetKey(), Value: vertex, Expiration: expiration})
-		if cache.IsLiveAt(expiration, now) {
-			written++
-		}
 	}
-	s.cache.PutVerticesWithExpirationHLC(items, hlc.Timestamp{})
-	return &pb.PutVerticesResponse{Written: int32(written)}, nil
+	outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes(items, hlc.Timestamp{})
+	wireOutcomes, err := putOutcomes(outcomes, len(items))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 }
 
 func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
@@ -949,9 +951,7 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	}
 	in := request.GetVertices()
 	s.metrics.OnBatch("PutVertices", len(in))
-	now := time.Now()
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(in))
-	liveCount := 0
 	for _, v := range in {
 		expiration := prototime.Expiration(v.GetExpiration())
 		if err := s.validateExpiration(expiration); err != nil {
@@ -962,9 +962,6 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			Value:      v,
 			Expiration: expiration,
 		})
-		if cache.IsLiveAt(expiration, now) {
-			liveCount++
-		}
 	}
 	// Aggregate capacity soft cap (#848): fail fast BEFORE any cache or log
 	// mutation so a rejected batch is all-or-nothing.
@@ -973,36 +970,39 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	}
 	// Conditional put (#896): write only keys with no live vertex. "Live"
 	// follows the #750 visibility rule, so an expired-but-uncollected vertex
-	// does not block the write. Under replication we stamp the accepted writes
-	// with the mutation's HLC and replicate only that subset as an
+	// does not block the write. Under replication we stamp accepted live and
+	// expired delete-like outcomes with the mutation's HLC and replicate that subset as an
 	// unconditional LWW put — two concurrent if_absent writers both win
 	// locally, then converge via higher-HLC-wins (documented best-effort,
 	// like Redis SETNX with async replicas).
 	if request.GetIfAbsent() {
 		if s.clock != nil {
 			ts := s.clock.Now()
-			// Core returns only indices that were actually stored — a
-			// born-expired item is discarded and excluded (#918), so
-			// writtenIdx is all-live by construction and needs no second
-			// liveness filter before replication.
-			writtenIdx, skipped, err := s.cache.PutVerticesWithExpirationIfAbsentHLCChecked(items, ts)
+			_, outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items, ts)
 			if err != nil {
 				return nil, searchIndexWriteError(err)
 			}
-			if len(writtenIdx) > 0 {
-				live := make([]*pb.Vertex, 0, len(writtenIdx))
-				for _, i := range writtenIdx {
-					live = append(live, in[i])
-				}
-				s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}}, ts)
+			wireOutcomes, err := putOutcomes(outcomes, len(in))
+			if err != nil {
+				return nil, err
 			}
-			return &pb.PutVerticesResponse{Written: int32(len(writtenIdx)), SkippedKeys: skipped}, nil
+			// Keep accepted live and EXPIRED outcomes in one request-ordered
+			// mutation. Splitting by outcome reorders duplicate keys and can make
+			// a peer commit a different final state than the origin.
+			if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
+				s.logMutationAt(mutation, ts)
+			}
+			return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 		}
-		written, skipped, err := s.cache.PutVerticesWithExpirationIfAbsentChecked(items)
+		outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentOutcomesChecked(items)
 		if err != nil {
 			return nil, searchIndexWriteError(err)
 		}
-		return &pb.PutVerticesResponse{Written: int32(written), SkippedKeys: skipped}, nil
+		wireOutcomes, err := putOutcomes(outcomes, len(in))
+		if err != nil {
+			return nil, err
+		}
+		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 	}
 	// When replication is enabled (clock wired) every local write is stamped
 	// with the SAME HLC it is logged under, via the *HLC cache method, so the
@@ -1014,39 +1014,90 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// permanent divergence (docs/replication.md "Higher HLC wins"). The
 	// non-replicated path (clock nil) keeps the cheaper watermark-free method.
 	//
-	// A born-expired write (expiration already in the past) is dead on arrival:
-	// the cache does not store it and it is invisible to GetVertex, so it must
-	// not be logged or replicated either — otherwise peers would apply, store
-	// and index (and watermark in vertexHLC) data that is already gone,
-	// inflating their high-water for zero benefit (#698). Replicate only the
-	// live subset; the all-live fast path forwards the original request
-	// unchanged so the steady-state cost is a single liveness check per vertex.
+	// A born-expired unconditional Put is an accepted delete-like overwrite: it
+	// removes any prior live value and returns EXPIRED. It therefore MUST be
+	// logged so peers remove their prior value too. Only causally superseded
+	// inputs are excluded from replication; otherwise HA replicas could retain
+	// an old live value after the origin reports the replacement as expired.
 	if s.clock != nil {
 		ts := s.clock.Now()
-		if _, err := s.cache.PutVerticesWithExpirationHLCChecked(items, ts); err != nil {
+		outcomes, err := s.cache.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
+		if err != nil {
 			return nil, searchIndexWriteError(err)
 		}
-		switch {
-		case liveCount == len(in):
-			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: request}}, ts)
-		case liveCount > 0:
-			live := make([]*pb.Vertex, 0, liveCount)
-			for _, v := range in {
-				if cache.IsLiveAt(prototime.Expiration(v.GetExpiration()), now) {
-					live = append(live, v)
-				}
-			}
-			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: live}}}, ts)
+		wireOutcomes, err := putOutcomes(outcomes, len(in))
+		if err != nil {
+			return nil, err
 		}
+		if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
+			s.logMutationAt(mutation, ts)
+		}
+		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 	} else {
-		if err := s.cache.PutVerticesWithExpirationChecked(items); err != nil {
+		outcomes, err := s.cache.PutVerticesWithExpirationOutcomesChecked(items)
+		if err != nil {
 			return nil, searchIndexWriteError(err)
+		}
+		wireOutcomes, err := putOutcomes(outcomes, len(in))
+		if err != nil {
+			return nil, err
+		}
+		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
+	}
+}
+
+func putOutcomes(outcomes []graphcache.PutOutcome, want int) ([]pb.PutOutcome, error) {
+	if len(outcomes) != want {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backend returned %d Put outcomes for %d inputs", len(outcomes), want))
+	}
+	wire := make([]pb.PutOutcome, len(outcomes))
+	for i, outcome := range outcomes {
+		switch outcome {
+		case graphcache.PutOutcomeAppliedAndLive:
+			wire[i] = pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE
+		case graphcache.PutOutcomeExpired:
+			wire[i] = pb.PutOutcome_PUT_OUTCOME_EXPIRED
+		case graphcache.PutOutcomeConditionNotMet:
+			wire[i] = pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET
+		case graphcache.PutOutcomeSuperseded:
+			wire[i] = pb.PutOutcome_PUT_OUTCOME_SUPERSEDED
+		default:
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backend returned unknown Put outcome %d at index %d", outcome, i))
 		}
 	}
-	// The response counts values that became live, not merely values accepted
-	// for processing. This keeps the plural result aligned with PutVertex's
-	// written=false contract for a born-expired value.
-	return &pb.PutVerticesResponse{Written: int32(liveCount)}, nil
+	return wire, nil
+}
+
+func replicatedPutVerticesMutation(in []*pb.Vertex, outcomes []graphcache.PutOutcome) *pb.MutationOp {
+	entries := make([]*pb.ReplicatedPutVertex, 0, len(outcomes))
+	for i, outcome := range outcomes {
+		switch outcome {
+		case graphcache.PutOutcomeAppliedAndLive:
+			entries = append(entries, &pb.ReplicatedPutVertex{Outcome: &pb.ReplicatedPutVertex_Live{Live: in[i]}})
+		case graphcache.PutOutcomeExpired:
+			entries = append(entries, &pb.ReplicatedPutVertex{Outcome: &pb.ReplicatedPutVertex_CausalBarrier{CausalBarrier: &pb.VertexCausalBarrier{Key: in[i].GetKey()}}})
+		}
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: entries}}}
+}
+
+func replicatedPutEdgesMutation(in []*pb.Edge, outcomes []graphcache.PutOutcome) *pb.MutationOp {
+	entries := make([]*pb.ReplicatedPutEdge, 0, len(outcomes))
+	for i, outcome := range outcomes {
+		switch outcome {
+		case graphcache.PutOutcomeAppliedAndLive:
+			entries = append(entries, &pb.ReplicatedPutEdge{Outcome: &pb.ReplicatedPutEdge_Live{Live: in[i]}})
+		case graphcache.PutOutcomeExpired:
+			entries = append(entries, &pb.ReplicatedPutEdge{Outcome: &pb.ReplicatedPutEdge_CausalBarrier{CausalBarrier: &pb.EdgeCausalBarrier{Tail: in[i].GetTail(), Head: in[i].GetHead()}}})
+		}
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: entries}}}
 }
 
 func searchIndexWriteError(err error) error {
@@ -1233,10 +1284,14 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 }
 
 func (s *LanternService) PutEdge(ctx context.Context, request *pb.PutEdgeRequest) (*pb.PutEdgeResponse, error) {
-	if _, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{request.GetEdge()}}); err != nil {
+	resp, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{request.GetEdge()}})
+	if err != nil {
 		return nil, err
 	}
-	return &pb.PutEdgeResponse{}, nil
+	if len(resp.GetOutcomes()) != 1 {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("PutEdges returned %d outcomes for singular request", len(resp.GetOutcomes())))
+	}
+	return &pb.PutEdgeResponse{Outcome: resp.GetOutcomes()[0]}, nil
 }
 
 func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
@@ -1277,12 +1332,23 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	// nil) keeps the cheaper watermark-free method.
 	if s.clock != nil {
 		ts := s.clock.Now()
-		s.cache.PutEdgesWithExpirationHLC(items, ts)
-		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: request}}, ts)
+		outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, ts)
+		wireOutcomes, err := putOutcomes(outcomes, len(in))
+		if err != nil {
+			return nil, err
+		}
+		if mutation := replicatedPutEdgesMutation(in, outcomes); mutation != nil {
+			s.logMutationAt(mutation, ts)
+		}
+		return &pb.PutEdgesResponse{Outcomes: wireOutcomes}, nil
 	} else {
-		s.cache.PutEdgesWithExpiration(items)
+		outcomes := s.cache.PutEdgesWithExpirationOutcomes(items)
+		wireOutcomes, err := putOutcomes(outcomes, len(in))
+		if err != nil {
+			return nil, err
+		}
+		return &pb.PutEdgesResponse{Outcomes: wireOutcomes}, nil
 	}
-	return &pb.PutEdgesResponse{Written: int32(len(items))}, nil
 }
 
 func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeRequest) (*pb.DeleteEdgeResponse, error) {

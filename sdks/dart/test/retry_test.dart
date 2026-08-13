@@ -240,7 +240,9 @@ void main() {
             if (calls == 1) {
               throw connect.ConnectException(connect.Code.unavailable, 'lost');
             }
-            return graph.PutVerticesResponse(written: 1);
+            return graph.PutVerticesResponse(
+              outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+            );
           },
         )
         .build();
@@ -262,10 +264,10 @@ void main() {
           expiresIn: const Duration(minutes: 5),
         ),
       ),
-      isTrue,
+      PutOutcome.appliedAndLive,
     );
     expect(calls, 2);
-    expect(clockCalls, 1);
+    expect(clockCalls, 2);
     expect(expirations.toSet(), {DateTime.parse('2026-07-12T00:05:00Z')});
   });
 
