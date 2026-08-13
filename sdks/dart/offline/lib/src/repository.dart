@@ -3854,6 +3854,7 @@ DateTime? _resolveExpiration(
 
 String _diagnosticCode(OfflineRemoteErrorKind kind) => switch (kind) {
   OfflineRemoteErrorKind.unavailable => 'unavailable',
+  OfflineRemoteErrorKind.deadlineExceeded => 'deadline_exceeded',
   OfflineRemoteErrorKind.unauthenticated => 'unauthenticated',
   OfflineRemoteErrorKind.invalidArgument => 'invalid_argument',
   OfflineRemoteErrorKind.canceled => 'canceled',

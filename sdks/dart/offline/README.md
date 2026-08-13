@@ -152,7 +152,12 @@ obligations in the same transaction.
 Adapter packages must invoke `runStoreConformanceSuite` from their own tests and
 provide its required `reopen` callback. That callback crosses the adapter's real
 close/reopen persistence boundary under identical limits; every accepted
-commit must survive it. `exportSnapshot` and
+commit must survive it. The suite includes concurrent claimers, lease renew and
+release CAS failures, generation barriers, monotone no-gap change delivery,
+notification-controller cleanup, LRU-only cache pressure, and atomic
+outbox/operation capacity rejection. Configure the adapter's test limits below
+the default probe bounds or raise `maxCapacityProbeRecords` and
+`maxNotificationControllerProbe` explicitly. `exportSnapshot` and
 `InMemoryOfflineStore.fromSnapshot` exist
 only for deterministic fresh-process conformance tests; snapshot schema v5
 persists operation aggregates, exact dead-letter transition time, and durable
@@ -161,11 +166,19 @@ auth pause from v1-v4 durable metadata, quarantines legacy Add records only
 from v1-v3, reopens only that exact terminal quarantine in v5, migrates v1-v3
 outbox retention metadata conservatively, and fails
 closed when cache, outbox, operation, ordinal, generation, lease, or state
-relationships contradict each other. Transaction objects are sealed after both
-commit and rollback. The reference snapshot is not a persistence adapter. The
+relationships contradict each other. A child Dart VM restores canonical bytes,
+recovers an expired lease, and proves stable IDs/order/TTL before re-export; this
+is a process-neutral codec/state-machine test, not an fsync or OS-kill claim.
+Transaction objects are sealed after both commit and rollback. The reference
+snapshot is not a persistence adapter. The
 checked-in
-`tool/performance_probe.dart` records content-free p50/p95/p99, RSS, replay,
-enqueue, and snapshot-size evidence against conservative bounds. See the ADR at
+`tool/performance_probe.dart` records content-free p50/p95/p99, RSS,
+enqueue/read/watch/replay/recovery/dispose latency, exact send and
+terminal-state counts,
+bounded concurrent/outstanding sends, decoded status objects, remaining
+claims/leases, controller/watch lifecycle cycles, and snapshot-size evidence
+against conservative checked-in bounds. Lease-renewal Timer cleanup is a
+blocking Repository test. See the ADR at
 `docs/decisions/0002-dart-offline-repository-contract.md`.
 
 ## Security
@@ -173,7 +186,9 @@ enqueue, and snapshot-size evidence against conservative bounds. See the ADR at
 Every operation requires an application-defined non-empty partition ID.
 That `partitionId` is only a local persistence namespace: it is never sent on
 the Lantern wire and is not a server tenant, identity, or authorization
-boundary. `wipePartition` first blocks new partition work, cancels and awaits
+boundary. Tenant isolation belongs to the application, gateway, credential
+scope, and storage/security domain; distinct partition IDs alone do not create
+that isolation. `wipePartition` first blocks new partition work, cancels and awaits
 owned reads, sends, probes, leases, and watchers, then transactionally removes
 cache, outbox, operations, dead letters, and leases while incrementing the
 generation. Rotate to another user's credential only after wipe completes;

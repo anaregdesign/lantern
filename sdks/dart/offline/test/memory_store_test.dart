@@ -1549,6 +1549,59 @@ void main() {
       ], workingDirectory: Directory.current.path);
       expect(process.exitCode, 0, reason: '${process.stderr}');
       expect(process.stdout, snapshot);
+
+      final childRecoveryAt = now.add(const Duration(seconds: 1));
+      final recoveredProcess =
+          await Process.run(Platform.resolvedExecutable, <String>[
+            'run',
+            'test/support/snapshot_verifier.dart',
+            '--recover-lease',
+            path,
+            '${childRecoveryAt.microsecondsSinceEpoch}',
+            'fresh-process',
+          ], workingDirectory: Directory.current.path);
+      expect(
+        recoveredProcess.exitCode,
+        0,
+        reason: '${recoveredProcess.stderr}',
+      );
+      final childStore = InMemoryOfflineStore.fromSnapshot(
+        '${recoveredProcess.stdout}',
+      );
+      final childState = await childStore.transaction((transaction) {
+        final record = transaction.outbox('p').single;
+        final intent = record.intent as OfflinePutEdgeIntent;
+        return (
+          recordId: record.recordId,
+          operationId: record.operationId,
+          ordinal: record.ordinal,
+          owner: record.leaseOwner,
+          leaseUntil: record.leaseUntil,
+          expiration: intent.edge.expiration,
+          weight: intent.edge.weight,
+          status: transaction
+              .getOperation('p', record.operationId)!
+              .items
+              .single
+              .state,
+        );
+      });
+      expect(childState.recordId, 'put-edge');
+      expect(childState.operationId, 'operation');
+      expect(childState.ordinal, 1);
+      expect(childState.owner, 'fresh-process');
+      expect(
+        childState.leaseUntil,
+        childRecoveryAt.add(const Duration(seconds: 2)),
+      );
+      expect(childState.expiration, now.add(const Duration(minutes: 1)));
+      expect(childState.weight, Float32Value(0.1).value);
+      expect(childState.status, OfflineWriteState.sending);
+      expect(
+        await childStore.exportSnapshot(),
+        '${recoveredProcess.stdout}',
+        reason: 'fresh-process output must already be canonical',
+      );
     },
   );
 
@@ -2335,6 +2388,65 @@ void main() {
   });
 
   test(
+    'conformance rejects broken lease, claim, delivery, and capacity',
+    () async {
+      const limits = OfflineStoreLimits(
+        maxCacheRecords: 64,
+        maxCacheRecordsPerPartition: 64,
+        maxOutboxRecords: 64,
+        maxOutboxRecordsPerPartition: 64,
+        maxOperationRecords: 64,
+        maxOperationRecordsPerPartition: 64,
+        maxChangeControllers: 16,
+      );
+      for (final contract in <({_BrokenContract contract, String label})>[
+        (contract: _BrokenContract.leaseCas, label: 'lease_renew_negative_cas'),
+        (
+          contract: _BrokenContract.claimRace,
+          label: 'concurrent_claimers_single_winner',
+        ),
+        (
+          contract: _BrokenContract.changeDelivery,
+          label: 'notification_no_gap_order_and_wipe',
+        ),
+        (
+          contract: _BrokenContract.swallowCapacity,
+          label: 'bounded_outbox_operation_capacity',
+        ),
+      ]) {
+        await expectLater(
+          runStoreConformanceSuite(
+            () => _BrokenContractStore(
+              contract.contract,
+              InMemoryOfflineStore(limits: limits),
+            ),
+            reopen: (store) async {
+              final broken = store as _BrokenContractStore;
+              return _BrokenContractStore(
+                contract.contract,
+                InMemoryOfflineStore.fromSnapshot(
+                  await broken.exportSnapshot(),
+                  limits: limits,
+                ),
+              );
+            },
+            maxCapacityProbeRecords: 128,
+            maxNotificationControllerProbe: 32,
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              contains(contract.label),
+            ),
+          ),
+          reason: contract.label,
+        );
+      }
+    },
+  );
+
+  test(
     'operation capacity evicts terminal metadata but never active status',
     () async {
       OfflineOperationRecord operation(
@@ -2547,4 +2659,244 @@ final class _BrokenGraphStore implements OfflineStore {
       rethrow;
     }
   }
+}
+
+enum _BrokenContract { leaseCas, claimRace, changeDelivery, swallowCapacity }
+
+final class _BrokenContractStore implements OfflineStore {
+  _BrokenContractStore(this.contract, this._delegate);
+
+  final _BrokenContract contract;
+  final InMemoryOfflineStore _delegate;
+  OfflineOutboxRecord? duplicatedClaim;
+
+  Future<String> exportSnapshot() => _delegate.exportSnapshot();
+
+  @override
+  Stream<OfflineStoreChange> changes(String partitionId) {
+    final changes = _delegate.changes(partitionId);
+    if (contract != _BrokenContract.changeDelivery) return changes;
+    return changes.expand((change) => <OfflineStoreChange>[change, change]);
+  }
+
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction transaction) action,
+  ) async {
+    late T result;
+    var actionCompleted = false;
+    try {
+      return await _delegate.transaction((transaction) async {
+        result = await action(_BrokenContractTransaction(this, transaction));
+        actionCompleted = true;
+        return result;
+      });
+    } on OfflineCapacityException {
+      if (contract == _BrokenContract.swallowCapacity) {
+        if (actionCompleted) return result;
+        return null as T;
+      }
+      rethrow;
+    }
+  }
+}
+
+final class _BrokenContractTransaction implements OfflineStoreTransaction {
+  const _BrokenContractTransaction(this.store, this.inner);
+
+  final _BrokenContractStore store;
+  final OfflineStoreTransaction inner;
+
+  @override
+  List<OfflineOutboxRecord> claim(
+    String partitionId, {
+    required String owner,
+    required DateTime now,
+    required Duration maxAge,
+    required Duration leaseDuration,
+    required int limit,
+  }) {
+    final claimed = inner.claim(
+      partitionId,
+      owner: owner,
+      now: now,
+      maxAge: maxAge,
+      leaseDuration: leaseDuration,
+      limit: limit,
+    );
+    if (store.contract != _BrokenContract.claimRace ||
+        partitionId != 'conformance-lease') {
+      return claimed;
+    }
+    if (claimed.isNotEmpty) {
+      store.duplicatedClaim = claimed.single;
+      return claimed;
+    }
+    final duplicate = store.duplicatedClaim;
+    return duplicate == null
+        ? claimed
+        : <OfflineOutboxRecord>[duplicate.copyWith(leaseOwner: owner)];
+  }
+
+  @override
+  void deleteCache(String partitionId, OfflineEntityKey key) =>
+      inner.deleteCache(partitionId, key);
+
+  @override
+  void deleteOperation(String partitionId, String operationId) =>
+      inner.deleteOperation(partitionId, operationId);
+
+  @override
+  void deleteOutbox(String partitionId, String recordId) =>
+      inner.deleteOutbox(partitionId, recordId);
+
+  @override
+  List<OfflineOperationRecord> dueOperations(
+    String partitionId, {
+    required DateTime now,
+    required Duration retention,
+    required int limit,
+  }) => inner.dueOperations(
+    partitionId,
+    now: now,
+    retention: retention,
+    limit: limit,
+  );
+
+  @override
+  List<OfflineOutboxRecord> dueOutbox(
+    String partitionId, {
+    String? operationId,
+    OfflineEntityKey? key,
+    required DateTime now,
+    required Duration maxAge,
+    required Duration deadLetterRetention,
+    required int limit,
+  }) => inner.dueOutbox(
+    partitionId,
+    operationId: operationId,
+    key: key,
+    now: now,
+    maxAge: maxAge,
+    deadLetterRetention: deadLetterRetention,
+    limit: limit,
+  );
+
+  @override
+  OfflineOutboxRecord enqueue(OfflineOutboxRecord record) =>
+      inner.enqueue(record);
+
+  @override
+  List<OfflineOutboxRecord> enqueueAll(List<OfflineOutboxRecord> records) =>
+      inner.enqueueAll(records);
+
+  @override
+  int generation(String partitionId) => inner.generation(partitionId);
+
+  @override
+  OfflineCacheRecord? getCache(String partitionId, OfflineEntityKey key) =>
+      inner.getCache(partitionId, key);
+
+  @override
+  OfflineOperationRecord? getOperation(
+    String partitionId,
+    String operationId,
+  ) => inner.getOperation(partitionId, operationId);
+
+  @override
+  OfflineOutboxRecord? getOutbox(String partitionId, String recordId) =>
+      inner.getOutbox(partitionId, recordId);
+
+  @override
+  bool hasOutboxForOperation(String partitionId, String operationId) =>
+      inner.hasOutboxForOperation(partitionId, operationId);
+
+  @override
+  List<OfflineOperationRecord> operations(String partitionId) =>
+      inner.operations(partitionId);
+
+  @override
+  List<OfflineOutboxRecord> outbox(String partitionId) =>
+      inner.outbox(partitionId);
+
+  @override
+  List<OfflineOutboxRecord> outboxForKey(
+    String partitionId,
+    OfflineEntityKey key,
+  ) => inner.outboxForKey(partitionId, key);
+
+  @override
+  void putCache(String partitionId, OfflineCacheRecord record) =>
+      inner.putCache(partitionId, record);
+
+  @override
+  void putOperation(OfflineOperationRecord record) =>
+      inner.putOperation(record);
+
+  @override
+  bool renewLease(
+    String partitionId,
+    String recordId, {
+    required String owner,
+    required int generation,
+    required DateTime now,
+    required Duration leaseDuration,
+  }) {
+    if (store.contract == _BrokenContract.leaseCas) return true;
+    return inner.renewLease(
+      partitionId,
+      recordId,
+      owner: owner,
+      generation: generation,
+      now: now,
+      leaseDuration: leaseDuration,
+    );
+  }
+
+  @override
+  bool replayPausedForAuth(String partitionId) =>
+      inner.replayPausedForAuth(partitionId);
+
+  @override
+  OfflineOperationScanPage scanOperations(
+    String partitionId, {
+    String? afterOperationId,
+    required int limit,
+  }) => inner.scanOperations(
+    partitionId,
+    afterOperationId: afterOperationId,
+    limit: limit,
+  );
+
+  @override
+  OfflineOutboxScanPage scanOutbox(
+    String partitionId, {
+    OfflineOutboxCursor? after,
+    String? operationId,
+    OfflineEntityKey? key,
+    required int limit,
+  }) => inner.scanOutbox(
+    partitionId,
+    after: after,
+    operationId: operationId,
+    key: key,
+    limit: limit,
+  );
+
+  @override
+  void setReplayPausedForAuth(String partitionId, bool paused) =>
+      inner.setReplayPausedForAuth(partitionId, paused);
+
+  @override
+  void touchCache(
+    String partitionId,
+    OfflineEntityKey key,
+    DateTime accessedAt,
+  ) => inner.touchCache(partitionId, key, accessedAt);
+
+  @override
+  void updateOutbox(OfflineOutboxRecord record) => inner.updateOutbox(record);
+
+  @override
+  void wipePartition(String partitionId) => inner.wipePartition(partitionId);
 }

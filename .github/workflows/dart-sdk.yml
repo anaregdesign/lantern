@@ -11,12 +11,18 @@ on:
       - "buf.yaml"
       - "buf.gen.yaml"
       - "generate.go"
+      - "go.mod"
+      - "go.sum"
+      - "go.work"
+      - "go.work.sum"
       - "core/search/**"
       - "core/graphcache/**"
       - "server/**"
       - "testdata/search/**"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
+      - "AGENTS.md"
+      - "README.md"
       - "CONTRIBUTING.md"
       - ".github/workflows/dart-sdk.yml"
   pull_request:
@@ -26,12 +32,18 @@ on:
       - "buf.yaml"
       - "buf.gen.yaml"
       - "generate.go"
+      - "go.mod"
+      - "go.sum"
+      - "go.work"
+      - "go.work.sum"
       - "core/search/**"
       - "core/graphcache/**"
       - "server/**"
       - "testdata/search/**"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
+      - "AGENTS.md"
+      - "README.md"
       - "CONTRIBUTING.md"
       - ".github/workflows/dart-sdk.yml"
 
@@ -89,8 +101,10 @@ jobs:
               while IFS= read -r path; do
                 case "$path" in
                   sdks/dart/* | proto/* | buf.yaml | buf.gen.yaml | generate.go | \
+                    go.mod | go.sum | go.work | go.work.sum | \
                     docs/decisions/0001-dart-mobile-transport.md | \
                     docs/decisions/0002-dart-offline-repository-contract.md | \
+                    AGENTS.md | README.md | \
                     CONTRIBUTING.md | \
                     .github/workflows/dart-sdk.yml)
                     full=true
@@ -484,6 +498,90 @@ jobs:
             --dart-define=LANTERN_ENDPOINT=http://10.0.2.2:6380
             --dart-define=LANTERN_ALLOW_INSECURE=true
 
+      - name: Record exact Android revision evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/lantern-mobile-evidence"
+          mkdir -p "$evidence"
+          grep -Fq 'applicationId = "com.anaregdesign.lantern_example"' \
+            sdks/dart/example/android/app/build.gradle.kts
+          flutter_json=$(cd sdks/dart/example && flutter --version --machine)
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit "$GITHUB_SHA" \
+            --arg ref "$GITHUB_REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg host_image_os "${ImageOS:-unknown}" \
+            --arg host_image_version "${ImageVersion:-unknown}" \
+            --arg flutter_version "$(jq -r .frameworkVersion <<<"$flutter_json")" \
+            --arg flutter_revision "$(jq -r .frameworkRevision <<<"$flutter_json")" \
+            --arg dart_version "$(jq -r .dartSdkVersion <<<"$flutter_json")" \
+            '{
+              schema: 1,
+              kind: "ci_mobile_revision_evidence",
+              contentFree: true,
+              physicalDevice: false,
+              repository: $repository,
+              commit: $commit,
+              ref: $ref,
+              recordedAt: $recorded_at,
+              workflow: {runId: $run_id, attempt: $run_attempt},
+              toolchain: {
+                flutter: $flutter_version,
+                flutterRevision: $flutter_revision,
+                dart: $dart_version
+              },
+              application: {
+                packageId: "com.anaregdesign.lantern_example",
+                target: "integration_test/mobile_smoke_test.dart"
+              },
+              platform: {
+                kind: "android-emulator",
+                apiLevel: 35,
+                architecture: "x86_64",
+                profile: "pixel_6",
+                hostImageOS: $host_image_os,
+                hostImageVersion: $host_image_version
+              },
+              network: {
+                transport: "Connect/h2c",
+                topology: "android-emulator-host-alias",
+                authenticated: false
+              },
+              scenarios: [
+                "online_exact_values",
+                "offline_put_replay",
+                "authoritative_server_expiry",
+                "watch_cleanup",
+                "wipe_before_send"
+              ],
+              result: "passed"
+            }' > "$evidence/android.json"
+          jq -e --arg commit "$GITHUB_SHA" '
+            .schema == 1 and
+            .kind == "ci_mobile_revision_evidence" and
+            .contentFree == true and
+            .physicalDevice == false and
+            .commit == $commit and
+            (.commit | test("^[0-9a-f]{40}$")) and
+            (.recordedAt | fromdateiso8601) and
+            .application.packageId == "com.anaregdesign.lantern_example" and
+            .platform.kind == "android-emulator" and
+            .network.transport == "Connect/h2c" and
+            (.scenarios | length == 5) and
+            .result == "passed"
+          ' "$evidence/android.json" >/dev/null
+
+      - name: Upload sanitized Android revision evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-android-revision-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-mobile-evidence/android.json
+          if-no-files-found: error
+
       - name: Show logs and stop server
         if: always()
         run: |
@@ -589,6 +687,7 @@ jobs:
           xcrun simctl bootstatus "$DEVICE_ID" -b
 
       - name: Retry iOS native smoke
+        id: ios_smoke_retry
         if: steps.ios_smoke.outcome == 'failure'
         timeout-minutes: 8
         working-directory: sdks/dart/example
@@ -597,6 +696,98 @@ jobs:
             --reporter=expanded --timeout=3m \
             --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
             --dart-define=LANTERN_ALLOW_INSECURE=true
+
+      - name: Record exact iOS revision evidence
+        if: steps.ios_smoke.outcome == 'success' || steps.ios_smoke_retry.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/lantern-mobile-evidence"
+          mkdir -p "$evidence"
+          grep -Fq 'PRODUCT_BUNDLE_IDENTIFIER = com.anaregdesign.lanternExample;' \
+            sdks/dart/example/ios/Runner.xcodeproj/project.pbxproj
+          flutter_json=$(cd sdks/dart/example && flutter --version --machine)
+          simulator=$(xcrun simctl list devices available -j | jq -er \
+            --arg id "$DEVICE_ID" \
+            '.devices | first(to_entries[] | .key as $runtime | .value[] | select(.udid == $id) | [$runtime, .name] | @tsv)')
+          simulator_runtime=${simulator%%$'\t'*}
+          simulator_name=${simulator#*$'\t'}
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit "$GITHUB_SHA" \
+            --arg ref "$GITHUB_REF" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg host_image_os "${ImageOS:-unknown}" \
+            --arg host_image_version "${ImageVersion:-unknown}" \
+            --arg flutter_version "$(jq -r .frameworkVersion <<<"$flutter_json")" \
+            --arg flutter_revision "$(jq -r .frameworkRevision <<<"$flutter_json")" \
+            --arg dart_version "$(jq -r .dartSdkVersion <<<"$flutter_json")" \
+            --arg simulator_runtime "$simulator_runtime" \
+            --arg simulator_name "$simulator_name" \
+            '{
+              schema: 1,
+              kind: "ci_mobile_revision_evidence",
+              contentFree: true,
+              physicalDevice: false,
+              repository: $repository,
+              commit: $commit,
+              ref: $ref,
+              recordedAt: $recorded_at,
+              workflow: {runId: $run_id, attempt: $run_attempt},
+              toolchain: {
+                flutter: $flutter_version,
+                flutterRevision: $flutter_revision,
+                dart: $dart_version
+              },
+              application: {
+                packageId: "com.anaregdesign.lanternExample",
+                target: "integration_test/mobile_smoke_test.dart"
+              },
+              platform: {
+                kind: "ios-simulator",
+                runtime: $simulator_runtime,
+                model: $simulator_name,
+                hostImageOS: $host_image_os,
+                hostImageVersion: $host_image_version
+              },
+              network: {
+                transport: "Connect/h2c",
+                topology: "ios-simulator-host-loopback",
+                authenticated: false
+              },
+              scenarios: [
+                "online_exact_values",
+                "offline_put_replay",
+                "authoritative_server_expiry",
+                "watch_cleanup",
+                "wipe_before_send"
+              ],
+              result: "passed"
+            }' > "$evidence/ios.json"
+          jq -e --arg commit "$GITHUB_SHA" '
+            .schema == 1 and
+            .kind == "ci_mobile_revision_evidence" and
+            .contentFree == true and
+            .physicalDevice == false and
+            .commit == $commit and
+            (.commit | test("^[0-9a-f]{40}$")) and
+            (.recordedAt | fromdateiso8601) and
+            .application.packageId == "com.anaregdesign.lanternExample" and
+            .platform.kind == "ios-simulator" and
+            .network.transport == "Connect/h2c" and
+            (.scenarios | length == 5) and
+            .result == "passed"
+          ' "$evidence/ios.json" >/dev/null
+
+      - name: Upload sanitized iOS revision evidence
+        if: steps.ios_smoke.outcome == 'success' || steps.ios_smoke_retry.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-ios-revision-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-mobile-evidence/ios.json
+          if-no-files-found: error
 
       - name: Show logs and clean up
         if: always()

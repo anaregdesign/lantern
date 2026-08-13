@@ -486,6 +486,14 @@ Add records migrate to inspectable terminal `unsupported_add` dead letters and
 are never replayed. Direct-online Add in the online SDK, Go SDK, and CLI is
 unchanged. Durable offline Add is deferred until #1115 provides
 server-authoritative operation receipts.
+Its reusable Store conformance gate covers atomic graph commits, collision and
+lease CAS behavior, generation/wipe isolation, bounded notifications and
+capacity, same-limit reopen, and canonical state transition in a fresh Dart VM.
+Committed-response-loss tests proxy the real Connect server and close the
+downstream socket only after the upstream commit, before the adapter observes a
+response.
+The in-memory reference snapshot is test infrastructure, not a production
+durability claim; the separately versioned SQLite adapter remains #1163.
 
 ### Anything else
 

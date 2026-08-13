@@ -26,7 +26,12 @@ typedef OfflineStoreReopener =
 Future<void> runStoreConformanceSuite(
   OfflineStoreFactory factory, {
   required OfflineStoreReopener reopen,
+  int maxCapacityProbeRecords = 4096,
+  int maxNotificationControllerProbe = 1024,
 }) async {
+  if (maxCapacityProbeRecords < 2 || maxNotificationControllerProbe < 2) {
+    throw const OfflineArgumentException();
+  }
   var store = await factory();
   final now = DateTime.utc(2026, 1, 1);
   const partitionId = 'conformance';
@@ -362,6 +367,15 @@ Future<void> runStoreConformanceSuite(
       ),
     );
   });
+  final operationNotYetDue = await store.transaction(
+    (transaction) => transaction.dueOperations(
+      partitionId,
+      now: now.add(const Duration(hours: 1) - Duration(microseconds: 1)),
+      retention: const Duration(hours: 1),
+      limit: 1,
+    ),
+  );
+  _require(operationNotYetDue.isEmpty, 'operation_retention_before_boundary');
   final dueOperation = await store.transaction(
     (transaction) => transaction.dueOperations(
       partitionId,
@@ -812,6 +826,35 @@ Future<void> runStoreConformanceSuite(
     }
   });
 
+  final deadLetterBeforeRetention = await store.transaction(
+    (transaction) => transaction.dueOutbox(
+      partitionId,
+      operationId: 'dead-letter-operation',
+      now: now.add(const Duration(hours: 1)),
+      maxAge: const Duration(days: 10),
+      deadLetterRetention: const Duration(hours: 1),
+      limit: 1,
+    ),
+  );
+  _require(
+    deadLetterBeforeRetention.isEmpty,
+    'dead_letter_retention_before_boundary',
+  );
+  final deadLetterDue = await store.transaction(
+    (transaction) => transaction.dueOutbox(
+      partitionId,
+      operationId: 'dead-letter-operation',
+      now: now.add(const Duration(hours: 1, microseconds: 1)),
+      maxAge: const Duration(days: 10),
+      deadLetterRetention: const Duration(hours: 1),
+      limit: 1,
+    ),
+  );
+  _require(
+    deadLetterDue.single.recordId == 'dead-letter-record',
+    'dead_letter_retention_at_boundary',
+  );
+
   final claimed = await store.transaction((transaction) {
     final records = transaction.claim(
       partitionId,
@@ -940,6 +983,437 @@ Future<void> runStoreConformanceSuite(
             null;
   });
   _require(wiped, 'partition_wipe_generation');
+
+  await _runLeaseCasConformance(store, now);
+  await _runNotificationConformance(
+    store,
+    now,
+    maxControllerProbe: maxNotificationControllerProbe,
+  );
+  store = await _runCapacityAndRetentionConformance(
+    store,
+    reopen,
+    now,
+    maxProbeRecords: maxCapacityProbeRecords,
+  );
+
+  final finalState = await store.transaction((transaction) {
+    return transaction.generation('conformance-lease') == 1 &&
+        transaction.generation('conformance-notifications') == 1 &&
+        transaction.generation('conformance-capacity') == 1 &&
+        transaction.generation('conformance-cache-capacity') == 1;
+  });
+  _require(finalState, 'resource_contracts_reopen_cleanly');
+}
+
+Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
+  const partitionId = 'conformance-lease';
+  final enqueued = await store.transaction((transaction) {
+    return _enqueueOperation(
+      transaction,
+      _record(
+        recordId: 'lease-record',
+        operationId: 'lease-operation',
+        itemIndex: 0,
+        key: 'lease-key',
+        now: now,
+        partitionId: partitionId,
+      ),
+      now,
+    );
+  });
+
+  Future<List<OfflineOutboxRecord>> claim(String owner) =>
+      store.transaction((transaction) {
+        final claimed = transaction.claim(
+          partitionId,
+          owner: owner,
+          now: now,
+          maxAge: const Duration(days: 1),
+          leaseDuration: const Duration(seconds: 2),
+          limit: 1,
+        );
+        for (final record in claimed) {
+          _putMatchingStatus(
+            transaction,
+            record,
+            OfflineWriteState.sending,
+            attemptCount: record.attemptCount,
+            now: now,
+          );
+        }
+        return claimed;
+      });
+
+  final competing = await Future.wait(<Future<List<OfflineOutboxRecord>>>[
+    claim('claimer-a'),
+    claim('claimer-b'),
+  ]);
+  _require(
+    competing.fold<int>(0, (total, records) => total + records.length) == 1,
+    'concurrent_claimers_single_winner',
+  );
+  final winner = competing.singleWhere((records) => records.isNotEmpty).single;
+  final owner = winner.leaseOwner!;
+
+  for (final negative in <({String owner, int generation, DateTime now})>[
+    (owner: 'wrong-owner', generation: winner.generation, now: now),
+    (owner: owner, generation: winner.generation + 1, now: now),
+    (
+      owner: owner,
+      generation: winner.generation,
+      now: now.add(const Duration(seconds: 2)),
+    ),
+  ]) {
+    final renewed = await store.transaction(
+      (transaction) => transaction.renewLease(
+        partitionId,
+        winner.recordId,
+        owner: negative.owner,
+        generation: negative.generation,
+        now: negative.now,
+        leaseDuration: const Duration(seconds: 2),
+      ),
+    );
+    _require(!renewed, 'lease_renew_negative_cas');
+  }
+
+  final renewed = await store.transaction(
+    (transaction) => transaction.renewLease(
+      partitionId,
+      winner.recordId,
+      owner: owner,
+      generation: winner.generation,
+      now: now.add(const Duration(milliseconds: 250)),
+      leaseDuration: const Duration(seconds: 3),
+    ),
+  );
+  _require(renewed, 'lease_renew_positive_cas');
+  final renewedRecord = await store.transaction(
+    (transaction) => transaction.getOutbox(partitionId, winner.recordId),
+  );
+  _require(
+    renewedRecord?.leaseUntil == now.add(const Duration(milliseconds: 3250)),
+    'lease_renew_exact_deadline',
+  );
+
+  final wrongRelease = await store.transaction(
+    (transaction) => _releaseConformanceClaim(
+      transaction,
+      partitionId,
+      winner,
+      owner: 'wrong-owner',
+      now: now.add(const Duration(milliseconds: 500)),
+    ),
+  );
+  _require(!wrongRelease, 'lease_release_negative_cas');
+  final released = await store.transaction(
+    (transaction) => _releaseConformanceClaim(
+      transaction,
+      partitionId,
+      winner,
+      owner: owner,
+      now: now.add(const Duration(milliseconds: 500)),
+    ),
+  );
+  _require(released, 'lease_release_positive_cas');
+
+  final reclaimed = await store.transaction((transaction) {
+    final claimed = transaction.claim(
+      partitionId,
+      owner: 'claimer-c',
+      now: now.add(const Duration(milliseconds: 750)),
+      maxAge: const Duration(days: 1),
+      leaseDuration: const Duration(seconds: 2),
+      limit: 1,
+    );
+    for (final record in claimed) {
+      _putMatchingStatus(
+        transaction,
+        record,
+        OfflineWriteState.sending,
+        attemptCount: record.attemptCount,
+        now: now.add(const Duration(milliseconds: 750)),
+      );
+    }
+    return claimed;
+  });
+  _require(
+    reclaimed.single.recordId == enqueued.recordId &&
+        reclaimed.single.leaseOwner == 'claimer-c',
+    'released_claim_reclaimable',
+  );
+
+  await store.transaction<void>(
+    (transaction) => transaction.wipePartition(partitionId),
+  );
+  final lateRelease = await store.transaction(
+    (transaction) => _releaseConformanceClaim(
+      transaction,
+      partitionId,
+      reclaimed.single,
+      owner: 'claimer-c',
+      now: now.add(const Duration(seconds: 1)),
+    ),
+  );
+  _require(!lateRelease, 'late_generation_release_rejected');
+}
+
+bool _releaseConformanceClaim(
+  OfflineStoreTransaction transaction,
+  String partitionId,
+  OfflineOutboxRecord claimed, {
+  required String owner,
+  required DateTime now,
+}) {
+  final current = transaction.getOutbox(partitionId, claimed.recordId);
+  if (current == null ||
+      current.generation != claimed.generation ||
+      current.state != OfflineOutboxState.sending ||
+      current.leaseOwner != owner ||
+      current.leaseUntil == null ||
+      !now.isBefore(current.leaseUntil!) ||
+      transaction.generation(partitionId) != claimed.generation) {
+    return false;
+  }
+  transaction.updateOutbox(
+    current.copyWith(
+      state: OfflineOutboxState.enqueued,
+      clearLeaseOwner: true,
+      clearLeaseUntil: true,
+      diagnosticCode: 'canceled',
+    ),
+  );
+  _putMatchingStatus(
+    transaction,
+    current,
+    OfflineWriteState.locallyCommitted,
+    attemptCount: current.attemptCount,
+    diagnosticCode: 'canceled',
+    now: now,
+  );
+  return true;
+}
+
+Future<void> _runNotificationConformance(
+  OfflineStore store,
+  DateTime now, {
+  required int maxControllerProbe,
+}) async {
+  const partitionId = 'conformance-notifications';
+  final observedFuture = store.changes(partitionId).take(4).toList();
+  await Future.wait<void>(
+    List<Future<void>>.generate(3, (index) {
+      return store.transaction<void>((transaction) {
+        final key = 'notification-$index';
+        transaction.putCache(
+          partitionId,
+          OfflineCacheRecord.value(
+            partitionId: partitionId,
+            generation: 0,
+            key: OfflineEntityKey.vertex(key),
+            entity: Vertex(
+              key: key,
+              value: VertexValue.int32(index),
+              expiration: null,
+            ),
+            validatedAt: now,
+            lastAccessAt: now,
+          ),
+        );
+      });
+    }),
+  );
+  await store.transaction<void>(
+    (transaction) => transaction.wipePartition(partitionId),
+  );
+  final observed = await _waitForConformance(
+    observedFuture,
+    'notification_no_gap_order_and_wipe',
+  );
+  _require(
+    observed.map((change) => change.version).join(',') == '1,2,3,4' &&
+        observed.take(3).every((change) => change.generation == 0) &&
+        observed.last.generation == 1,
+    'notification_no_gap_order_and_wipe',
+  );
+
+  final active = <StreamSubscription<OfflineStoreChange>>[];
+  final rejection = Completer<Object>();
+  try {
+    for (var index = 0; index < maxControllerProbe; index++) {
+      try {
+        active.add(
+          store
+              .changes('conformance-controller-$index')
+              .listen(
+                (_) {},
+                onError: (Object error) {
+                  if (!rejection.isCompleted) rejection.complete(error);
+                },
+              ),
+        );
+      } catch (error) {
+        if (!rejection.isCompleted) rejection.complete(error);
+        break;
+      }
+    }
+    final rejected = await _waitForConformance(
+      rejection.future,
+      'bounded_notification_controllers',
+    );
+    _require(
+      rejected is OfflineCapacityException && active.isNotEmpty,
+      'bounded_notification_controllers',
+    );
+    for (final subscription in active) {
+      await subscription.cancel();
+    }
+    active.clear();
+
+    final replacementEvent = Completer<OfflineStoreChange>();
+    final replacement = store
+        .changes('conformance-controller-replacement')
+        .listen(replacementEvent.complete);
+    try {
+      await store.transaction<void>((transaction) {
+        transaction.putCache(
+          'conformance-controller-replacement',
+          OfflineCacheRecord.missing(
+            partitionId: 'conformance-controller-replacement',
+            generation: 0,
+            key: const OfflineEntityKey.vertex('missing'),
+            validatedAt: now,
+            lastAccessAt: now,
+            missingUntil: now.add(const Duration(seconds: 1)),
+          ),
+        );
+      });
+      final change = await _waitForConformance(
+        replacementEvent.future,
+        'notification_controller_cleanup',
+      );
+      _require(change.version == 1, 'notification_controller_cleanup');
+    } finally {
+      await replacement.cancel();
+    }
+  } finally {
+    for (final subscription in active) {
+      await subscription.cancel();
+    }
+  }
+}
+
+Future<OfflineStore> _runCapacityAndRetentionConformance(
+  OfflineStore store,
+  OfflineStoreReopener reopen,
+  DateTime now, {
+  required int maxProbeRecords,
+}) async {
+  const partitionId = 'conformance-capacity';
+  var admitted = 0;
+  String? rejectedRecordId;
+  for (var index = 0; index < maxProbeRecords; index++) {
+    try {
+      await store.transaction<void>((transaction) {
+        _enqueueOperation(
+          transaction,
+          _record(
+            recordId: 'capacity-record-$index',
+            operationId: 'capacity-operation-$index',
+            itemIndex: 0,
+            key: 'capacity-key-$index',
+            now: now,
+            partitionId: partitionId,
+          ),
+          now,
+        );
+      });
+      admitted += 1;
+    } on OfflineCapacityException {
+      rejectedRecordId = 'capacity-record-$index';
+      break;
+    }
+  }
+  _require(
+    admitted > 0 && rejectedRecordId != null,
+    'bounded_outbox_operation_capacity',
+  );
+  final beforeReopen = await store.transaction((transaction) {
+    return (
+      outbox: transaction.outbox(partitionId).length,
+      operations: transaction.operations(partitionId).length,
+      rejected: transaction.getOutbox(partitionId, rejectedRecordId!),
+    );
+  });
+  _require(
+    beforeReopen.outbox == admitted &&
+        beforeReopen.operations == admitted &&
+        beforeReopen.rejected == null,
+    'capacity_rejection_atomic',
+  );
+  store = await reopen(store);
+  final afterReopen = await store.transaction((transaction) {
+    return (
+      outbox: transaction.outbox(partitionId).length,
+      operations: transaction.operations(partitionId).length,
+    );
+  });
+  _require(
+    afterReopen.outbox == admitted && afterReopen.operations == admitted,
+    'capacity_accounting_reopens',
+  );
+  await store.transaction<void>(
+    (transaction) => transaction.wipePartition(partitionId),
+  );
+
+  const cachePartition = 'conformance-cache-capacity';
+  var evicted = false;
+  var lastKey = '';
+  for (var index = 0; index < maxProbeRecords; index++) {
+    lastKey = 'cache-$index';
+    await store.transaction<void>((transaction) {
+      transaction.putCache(
+        cachePartition,
+        OfflineCacheRecord.value(
+          partitionId: cachePartition,
+          generation: 0,
+          key: OfflineEntityKey.vertex(lastKey),
+          entity: Vertex(
+            key: lastKey,
+            value: VertexValue.int32(index),
+            expiration: null,
+          ),
+          validatedAt: now,
+          lastAccessAt: now.add(Duration(microseconds: index)),
+        ),
+      );
+    });
+    if (index > 0) {
+      evicted = await store.transaction(
+        (transaction) =>
+            transaction.getCache(
+              cachePartition,
+              const OfflineEntityKey.vertex('cache-0'),
+            ) ==
+            null,
+      );
+      if (evicted) break;
+    }
+  }
+  final newestRetained = await store.transaction(
+    (transaction) =>
+        transaction.getCache(
+          cachePartition,
+          OfflineEntityKey.vertex(lastKey),
+        ) !=
+        null,
+  );
+  _require(evicted && newestRetained, 'cache_capacity_lru_only');
+  await store.transaction<void>(
+    (transaction) => transaction.wipePartition(cachePartition),
+  );
+  return reopen(store);
 }
 
 OfflineOutboxRecord _record({
@@ -948,11 +1422,12 @@ OfflineOutboxRecord _record({
   required int itemIndex,
   required String key,
   required DateTime now,
+  String partitionId = 'conformance',
 }) => OfflineOutboxRecord(
   recordId: recordId,
   operationId: operationId,
   itemIndex: itemIndex,
-  partitionId: 'conformance',
+  partitionId: partitionId,
   intent: OfflinePutVertexIntent(
     Vertex(key: key, value: VertexValue.string(key), expiration: null),
   ),
@@ -1055,6 +1530,14 @@ void _putMatchingStatus(
 
 void _require(bool condition, String label) {
   if (!condition) throw StateError('offline_store_conformance:$label');
+}
+
+Future<T> _waitForConformance<T>(Future<T> future, String label) async {
+  try {
+    return await future.timeout(const Duration(seconds: 5));
+  } on TimeoutException {
+    throw StateError('offline_store_conformance:$label');
+  }
 }
 
 void _requireClosed(void Function() action, String label) {

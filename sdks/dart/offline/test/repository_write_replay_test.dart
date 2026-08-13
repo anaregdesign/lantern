@@ -2462,7 +2462,7 @@ void main() {
     final clock = MutableClock(initial);
     final completion = Completer<void>();
     final remote = _DelayedRemote(completion);
-    final store = InMemoryOfflineStore();
+    final store = _InspectingStore(InMemoryOfflineStore());
     final repository = OfflineLanternRepository(
       store: store,
       remote: remote,
@@ -2474,6 +2474,7 @@ void main() {
         leaseRenewalInterval: const Duration(milliseconds: 10),
       ),
     );
+    addTearDown(repository.dispose);
     await repository.putVertex(
       partitionId: 'p',
       input: VertexInput(key: 'lease', value: VertexValue.string('lease')),
@@ -2491,6 +2492,14 @@ void main() {
 
     expect(await draining, 1);
     expect(remote.vertexPutCalls, 1);
+    final renewalsAtCompletion = store.leaseRenewals;
+    clock.advance(const Duration(milliseconds: 40));
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+    expect(
+      store.leaseRenewals,
+      renewalsAtCompletion,
+      reason: 'a terminal send must cancel its lease-renewal Timer',
+    );
   });
 
   test('disposed repositories reject new work', () async {
@@ -2921,6 +2930,7 @@ final class _InspectingStore implements OfflineStore {
   int outboxRecordsInspected = 0;
   int maxOutboxBatchInspected = 0;
   int operationRecordsInspected = 0;
+  int leaseRenewals = 0;
 
   void resetInspection() {
     outboxRecordsInspected = 0;
@@ -3085,14 +3095,17 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
     required int generation,
     required DateTime now,
     required Duration leaseDuration,
-  }) => inner.renewLease(
-    partitionId,
-    recordId,
-    owner: owner,
-    generation: generation,
-    now: now,
-    leaseDuration: leaseDuration,
-  );
+  }) {
+    store.leaseRenewals += 1;
+    return inner.renewLease(
+      partitionId,
+      recordId,
+      owner: owner,
+      generation: generation,
+      now: now,
+      leaseDuration: leaseDuration,
+    );
+  }
 
   @override
   OfflineOperationScanPage scanOperations(

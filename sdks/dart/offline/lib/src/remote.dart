@@ -7,6 +7,9 @@ enum OfflineRemoteErrorKind {
   /// A temporary transport or endpoint failure.
   unavailable,
 
+  /// The attempt crossed its caller or client deadline.
+  deadlineExceeded,
+
   /// Credentials must be refreshed before another attempt.
   unauthenticated,
 
@@ -115,7 +118,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
         options: LanternCallOptions(cancellation: cancellation, retry: false),
       );
     } catch (error) {
-      throw _mapFailure(error);
+      throw mapLanternClientFailure(error);
     }
   }
 
@@ -134,7 +137,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
     } on LanternNotFoundException {
       return const OfflineRemoteMissing<Edge>();
     } catch (error) {
-      throw _mapFailure(error);
+      throw mapLanternClientFailure(error);
     }
   }
 
@@ -153,7 +156,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
     } on LanternNotFoundException {
       return const OfflineRemoteMissing<Vertex>();
     } catch (error) {
-      throw _mapFailure(error);
+      throw mapLanternClientFailure(error);
     }
   }
 
@@ -173,7 +176,7 @@ final class LanternClientOfflineRemote implements OfflineRemote {
         options: LanternCallOptions(cancellation: cancellation, retry: false),
       );
     } catch (error) {
-      throw _mapFailure(error);
+      throw mapLanternClientFailure(error);
     }
   }
 
@@ -192,12 +195,18 @@ final class LanternClientOfflineRemote implements OfflineRemote {
         options: LanternCallOptions(cancellation: cancellation, retry: false),
       );
     } catch (error) {
-      throw _mapFailure(error);
+      throw mapLanternClientFailure(error);
     }
   }
 }
 
-Exception _mapFailure(Object error) {
+/// Maps one official online-client failure into the offline replay taxonomy.
+///
+/// Custom [OfflineRemote] adapters can use this function to preserve the same
+/// retry and terminal-failure policy as [LanternClientOfflineRemote]. A bounded
+/// online retry wrapper is classified by its final typed cause while the full
+/// wrapper remains available as [OfflineRemoteFailure.cause].
+Exception mapLanternClientFailure(Object error) {
   if (error is OfflineRemoteFailure) return error;
   if (error is OfflineCanceledException) return error;
   final classified = error is LanternRetryExhaustedException
@@ -208,6 +217,8 @@ Exception _mapFailure(Object error) {
   }
   return OfflineRemoteFailure(switch (classified) {
     LanternUnavailableException() => OfflineRemoteErrorKind.unavailable,
+    LanternDeadlineExceededException() =>
+      OfflineRemoteErrorKind.deadlineExceeded,
     LanternUnauthenticatedException() => OfflineRemoteErrorKind.unauthenticated,
     LanternInvalidArgumentException() => OfflineRemoteErrorKind.invalidArgument,
     LanternResourceExhaustedException() =>

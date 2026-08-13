@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Expand reusable Store conformance across lease CAS/concurrent claimers,
+  generation isolation, notification ordering/cleanup, capacity/LRU, and
+  same-limit reopen; run canonical lease recovery in a fresh Dart VM and add
+  checked resource/mobile exact-revision evidence gates. Committed-response
+  loss now runs through a loopback response-dropping proxy after the real
+  Connect server commits, before the SDK adapter observes a response.
+- Preserve deadline-exceeded as a typed offline remote failure, expose the
+  shared online-client failure mapper with retry-exhausted unwrapping, and add
+  exact Connect mapping, token-rotation, cancellation, and retry-ownership
+  evidence.
 - Consume server-authoritative Put outcomes during replay: confirm only a
   still-live `appliedAndLive`, terminalize `expired`, quarantine
   `conditionNotMet`/`superseded`, invalidate contradicted cache entries, and
