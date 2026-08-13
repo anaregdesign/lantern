@@ -760,7 +760,8 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 |---|---|---|
 | `LANTERN_PORT` | `6380` | RPC listen port (Connect / gRPC / gRPC-Web multiplexed) |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | Cache GC tick |
-| `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` | Capacity soft caps; writes fail fast with `RESOURCE_EXHAUSTED` at the cap (`0` = unlimited). Pair with `GOMEMLIMIT`. |
+| `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` | Conservative graph-admission soft caps over live entries plus retained Put barriers (`0` = unlimited). A live additive edge coexisting with a Put barrier can count twice; keeping born-expired Put barriers charged prevents a cap bypass. |
+| `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` / `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | `0` | Separate atomic local-origin budgets over the exact retained HA causal-identity union—live HLC floors, Put barriers, and Delete tombstones (`0` = unlimited). Replication apply stays convergent and may exceed the local budget. Pair both cap families with `GOMEMLIMIT`. |
 | `LANTERN_AUTH_TOKENS` | _(unset)_ | Comma-separated bearer tokens arming data-plane auth; multiple entries allow zero-downtime rotation |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | TLS; the client CA enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | CORS allow-list for browser clients (the Admin needs its origin here) |

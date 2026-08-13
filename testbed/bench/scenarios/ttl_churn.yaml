@@ -1,17 +1,17 @@
-# ttl_churn — a flood of born-expired (dead-on-arrival) writes must not
-# accumulate memory.
+# ttl_churn — born-expired Put and Delete churn must retain resurrection
+# floors inside the explicit causal-metadata budget without growing heap.
 #
 # ghz templates lack arithmetic, so `expiration` is set to `now` (the
 # built-in {{.Timestamp}} variable); every PutVertex therefore arrives
 # already expired. Since #698 the server treats a write whose expiration is
-# already in the past as a no-op store (it is invisible to GetVertex the
-# instant it lands anyway), so a sustained born-expired write flood must
-# leave the vertex, dictionary, prefix-index and search-index high-water
-# flat. Before #698 those maps grew to the inter-sweep high-water
-# (~rps × GC interval ≈ 240k entries here) and never released that backing
-# capacity after the sweep drained them, tripping the leak gate with
-# tens of MiB retained against zero live vertices.
+# already in the past as an accepted delete-like overwrite: no live payload is
+# stored, but HA retains its causal floor. #1204 bounds those floor identities
+# separately from live graph state. The 4096-key ring reaches steady state in
+# warmup; steady Put/Delete traffic then replaces barrier↔tombstone in one slot
+# per key. This catches both lost resurrection floors and unbounded retention.
 name: ttl_churn
+cluster:
+  max_vertex_causal_entries: 4096
 phases:
   # steady is 2m so the post-warmup→post-cooldown leak window brackets the
   # 60s GC/TTL sweep twice (compacted from 5m for the release sweep, #573).
@@ -20,18 +20,37 @@ phases:
   cooldown: 60s
 target:
   endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
-  call: graph.v1.LanternService/PutVertex
-  data_template: |
-    {"vertex":{"key":"ttl-{{.RequestNumber}}","int64":"{{.RequestNumber}}","expiration":"{{.Timestamp}}"}}
+  calls:
+    - name: born_expired_put
+      rps: 3000
+      call: graph.v1.LanternService/PutVertex
+      data_template: |
+        {"vertex":{"key":"ttl-{{mod .RequestNumber 4096}}","int64":"{{.RequestNumber}}","expiration":"{{.Timestamp}}"}}
+    - name: delete
+      rps: 1000
+      call: graph.v1.LanternService/DeleteVertex
+      data_template: |
+        {"key":"ttl-{{mod .RequestNumber 4096}}"}
 leak_gate:
   # cooldown is long enough that expirations have drained; tighter bounds.
   goroutine_max_delta: 15
   heap_alloc_max_delta_mb: 16
-# Floors from the 2026-06-29 → 2026-07-03 nightly baselines: the single
-# producer sustains the offered 4000 rps essentially exactly (3999.6–4000.0)
-# with p99 12–27 ms and non-OK 2–12 of ~480k — the most stable scenario in
-# the sweep, so all three metrics are gated.
+metric_gate:
+  metrics:
+    lantern_vertex_causal_metadata_entries: { min_post: 4096, max_post: 4096 }
+    lantern_vertex_causal_metadata_entries_high_water: { min_post: 4096, max_post: 4096 }
+    # 1 MiB covers the exact 4096-entry ledger plus the bounded lazy deadline
+    # heap (at most 2*tombstones+1024 total deadline entries), while failing an
+    # unbounded index-retention regression.
+    lantern_vertex_causal_metadata_estimated_bytes: { min_post: 1, max_post: 1048576 }
+    lantern_vertex_causal_metadata_over_limit: { min_post: 0, max_post: 0 }
+# The aggregate floors retain substantial headroom below the historical
+# 4000-rps born-expired baseline. Per-producer floors make the new Delete arm
+# independently visible instead of allowing the faster Put arm to conceal it.
 perf_gate:
   min_steady_rps_total: 2000
   max_p99_ms: 150
   max_non_ok_ratio: 0.02
+  producers:
+    born_expired_put: { min_steady_rps: 1000, max_p99_ms: 150, max_non_ok_ratio: 0.02 }
+    delete: { min_steady_rps: 300, max_p99_ms: 150, max_non_ok_ratio: 0.02 }

@@ -179,10 +179,18 @@ func (c *GraphCache[S, T]) CountByPrefix(prefix string) int {
 // removed eagerly here — they will be reclaimed by the next dangling-edge
 // flush, matching the existing DeleteVertex contract.
 func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, limit int) int {
+	return len(c.DeleteByPrefixKeys(ctx, prefix, limit))
+}
+
+// DeleteByPrefixKeys is the identity-returning sibling of DeleteByPrefix.
+// It returns the exact bounded set committed under the cache lock so a
+// replication origin can log identities rather than replaying a predicate
+// that may match a wider set on a peer.
+func (c *GraphCache[S, T]) DeleteByPrefixKeys(ctx context.Context, prefix string, limit int) []S {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.prefixIndex == nil {
-		return 0
+		return nil
 	}
 	// Collect first, then delete. We cannot mutate the radix from inside
 	// its own walk (the walk holds radix.mu.RLock; delete needs the
@@ -207,18 +215,16 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 		c.searchCommitMu.Lock()
 		defer c.searchCommitMu.Unlock()
 	}
-	deleted := len(c.vertices.DeleteMany(victims))
+	c.vertices.DeleteMany(victims)
 	// Prefix enumeration only discovers live identities; clear causal state
 	// for those exact victims in no-tombstone mode. Barrier-only identities
 	// are intentionally undiscoverable here and require exact Delete.
 	for _, key := range victims {
 		c.clearVertexCausalBarrierLocked(key)
-		if c.vertexHLC != nil {
-			delete(c.vertexHLC, key)
-		}
+		c.clearVertexHLCLocked(key)
 	}
 	c.rebuildIncompleteSearchLocked()
-	return deleted
+	return victims
 }
 
 // resolveProjected inverts the prefix extractor. For the common

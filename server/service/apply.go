@@ -200,6 +200,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		opName = "DeleteVertices"
 
 	case *pb.MutationOp_DeleteVerticesByPrefix:
+		// Legacy logs may contain predicate-shaped deletes. Current origins log
+		// their exact committed victim set as DeleteVertices so a peer cannot
+		// widen a limited or causal-budgeted prefix mutation.
 		if useTomb {
 			if _, err := s.cache.DeleteByPrefixHLC(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0, ts, tombExp); err != nil {
 				return ctxToConnect(err)
@@ -362,11 +365,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		opName = "DeleteEdges"
 
 	case *pb.MutationOp_DeleteEdgesByPrefix:
-		// Apply the prefix delete to completion on the replica (limit 0):
-		// the origin loops its bounded calls until the matching set drains,
-		// so applying unbounded here converges both sides regardless of the
-		// origin's per-call limit — the same choice DeleteVerticesByPrefix
-		// makes above.
+		// Legacy logs may contain predicate-shaped deletes. Current origins log
+		// exact DeleteEdges identities; retain this arm only for replaying old
+		// entries.
 		p := op.DeleteEdgesByPrefix
 		if useTomb {
 			if _, err := s.cache.DeleteEdgesByPrefixHLC(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0, ts, tombExp); err != nil {

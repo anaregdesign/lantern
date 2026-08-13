@@ -396,6 +396,19 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 			applicationTime = c.applicationTime()
 		}
 		finalAccepted, finalApplied, finalSkipped := c.planVerticesIfAbsentLocked(items, ts, useHLC, applicationTime, outcomes)
+		if useHLC && ts != (hlc.Timestamp{}) && c.causalLimits.MaxVertexEntries > 0 {
+			keys := make([]S, 0, len(finalApplied))
+			for _, index := range finalApplied {
+				keys = append(keys, items[index].Key)
+			}
+			if err := c.checkVertexCausalCapacityLocked(keys); err != nil {
+				if c.searchIndex != nil {
+					c.searchCommitMu.Unlock()
+				}
+				unlock()
+				return nil, nil, err
+			}
+		}
 		missing = missingPreparedIndexesAt(preparation, items, finalAccepted, applicationTime)
 		if len(missing) > 0 {
 			if c.searchIndex != nil {
@@ -621,9 +634,7 @@ func (c *GraphCache[S, T]) DeleteVertices(keys []S) int {
 	n := len(c.vertices.DeleteMany(keys))
 	for _, key := range keys {
 		c.clearVertexCausalBarrierLocked(key)
-		if c.vertexHLC != nil {
-			delete(c.vertexHLC, key)
-		}
+		c.clearVertexHLCLocked(key)
 	}
 	c.rebuildIncompleteSearchLocked()
 	return n
@@ -712,6 +723,16 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 	for {
 		c.mu.Lock()
 		accepted, rejected := c.planVerticesHLCLocked(items, ts)
+		if strict && ts != (hlc.Timestamp{}) && c.causalLimits.MaxVertexEntries > 0 {
+			keys := make([]S, 0, len(accepted))
+			for _, index := range accepted {
+				keys = append(keys, items[index].Key)
+			}
+			if err := c.checkVertexCausalCapacityLocked(keys); err != nil {
+				c.mu.Unlock()
+				return rejected, err
+			}
+		}
 		planningTime := time.Now()
 		if outcomes != nil {
 			for i := range outcomes {
@@ -778,9 +799,7 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 				// eviction hook and erase a later live document.
 				c.deleteVertexStoragePreindexedLocked(item.Key)
 				c.recordVertexCausalBarrierLocked(item.Key, ts)
-				if c.vertexHLC != nil {
-					delete(c.vertexHLC, item.Key)
-				}
+				c.clearVertexHLCLocked(item.Key)
 			}
 			if outcomes != nil {
 				if stored {
@@ -855,24 +874,49 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLC(items []VertexIt
 // rejected item with unchanged meaning. ContribID dedup never contributes
 // here (that is AddEdgesWithExpirationContribHLC's separate count).
 func (c *GraphCache[S, T]) PutEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc.Timestamp) (rejected int) {
-	return c.putEdgesWithExpirationHLC(items, ts, nil)
+	rejected, _ = c.putEdgesWithExpirationHLC(items, ts, false, nil)
+	return rejected
 }
 
 // PutEdgesWithExpirationHLCOutcomes is the local/replicated LWW path with one
 // exact result per item. All accepted items share one final-lock liveness sample.
 func (c *GraphCache[S, T]) PutEdgesWithExpirationHLCOutcomes(items []EdgeItem[S], ts hlc.Timestamp) []PutOutcome {
 	outcomes := make([]PutOutcome, len(items))
-	c.putEdgesWithExpirationHLC(items, ts, outcomes)
+	_, _ = c.putEdgesWithExpirationHLC(items, ts, false, outcomes)
 	return outcomes
 }
 
-func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc.Timestamp, outcomes []PutOutcome) (rejected int) {
+// PutEdgesWithExpirationHLCOutcomesChecked is the locally-originated sibling
+// of PutEdgesWithExpirationHLCOutcomes. It rejects a causal-metadata budget
+// overflow before changing either graph or retained causal state.
+func (c *GraphCache[S, T]) PutEdgesWithExpirationHLCOutcomesChecked(items []EdgeItem[S], ts hlc.Timestamp) ([]PutOutcome, error) {
+	outcomes := make([]PutOutcome, len(items))
+	_, err := c.putEdgesWithExpirationHLC(items, ts, true, outcomes)
+	return outcomes, err
+}
+
+func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc.Timestamp, strict bool, outcomes []PutOutcome) (rejected int, err error) {
 	if len(items) == 0 {
-		return 0
+		return 0, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.applicationTime()
+	if strict && ts != (hlc.Timestamp{}) && c.causalLimits.MaxEdgeEntries > 0 {
+		keys := make([]EdgeKey[S], 0, len(items))
+		for _, it := range items {
+			if edgeItemLiveAt(it, now) {
+				if c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
+					keys = append(keys, EdgeKey[S]{Tail: it.Tail, Head: it.Head})
+				}
+			} else if c.edgePutWriteAllowedLocked(it.Tail, it.Head, ts) {
+				keys = append(keys, EdgeKey[S]{Tail: it.Tail, Head: it.Head})
+			}
+		}
+		if err := c.checkEdgeCausalCapacityLocked(keys); err != nil {
+			return 0, err
+		}
+	}
 	for i, it := range items {
 		live := edgeItemLiveAt(it, now)
 		allowed := false
@@ -909,7 +953,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 			}
 		}
 	}
-	return rejected
+	return rejected, nil
 }
 
 // AddEdgesWithExpirationContribHLC is the tombstone-aware, single-lock batch

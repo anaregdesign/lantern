@@ -135,6 +135,8 @@ endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
 # up). See issue #711.
 cluster_ttl="$(yq -r '.cluster.default_ttl_seconds // ""' "$SCENARIO_FILE")"
 cluster_gc="$(yq -r '.cluster.gc_interval_seconds // ""' "$SCENARIO_FILE")"
+cluster_vertex_causal="$(yq -r '.cluster.max_vertex_causal_entries // ""' "$SCENARIO_FILE")"
+cluster_edge_causal="$(yq -r '.cluster.max_edge_causal_entries // ""' "$SCENARIO_FILE")"
 if [[ -n "$cluster_ttl" && "$cluster_ttl" != "null" ]]; then
   export LANTERN_BENCH_DEFAULT_TTL_SECONDS="$cluster_ttl"
   log "cluster override: LANTERN_DEFAULT_TTL_SECONDS=${cluster_ttl}"
@@ -142,6 +144,14 @@ fi
 if [[ -n "$cluster_gc" && "$cluster_gc" != "null" ]]; then
   export LANTERN_BENCH_GC_INTERVAL_SECONDS="$cluster_gc"
   log "cluster override: LANTERN_GC_INTERVAL_SECONDS=${cluster_gc}"
+fi
+if [[ -n "$cluster_vertex_causal" && "$cluster_vertex_causal" != "null" ]]; then
+  export LANTERN_BENCH_MAX_VERTEX_CAUSAL_ENTRIES="$cluster_vertex_causal"
+  log "cluster override: LANTERN_MAX_VERTEX_CAUSAL_ENTRIES=${cluster_vertex_causal}"
+fi
+if [[ -n "$cluster_edge_causal" && "$cluster_edge_causal" != "null" ]]; then
+  export LANTERN_BENCH_MAX_EDGE_CAUSAL_ENTRIES="$cluster_edge_causal"
+  log "cluster override: LANTERN_MAX_EDGE_CAUSAL_ENTRIES=${cluster_edge_causal}"
 fi
 # NOTE: do not use `// ""` here — yq/jq treat a boolean `false` as empty, so
 # `.cluster.search_enabled // ""` would swallow an explicit `false`. Read the

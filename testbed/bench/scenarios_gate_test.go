@@ -498,6 +498,65 @@ func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
 	}
 }
 
+func TestTTLChurnScenarioCausalBudgetContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "ttl_churn.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Cluster struct {
+			MaxVertexCausalEntries int `yaml:"max_vertex_causal_entries"`
+		} `yaml:"cluster"`
+		Target struct {
+			Calls []scenarioCall `yaml:"calls"`
+		} `yaml:"target"`
+		MetricGate struct {
+			Metrics map[string]map[string]float64 `yaml:"metrics"`
+		} `yaml:"metric_gate"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Cluster.MaxVertexCausalEntries != 4096 {
+		t.Fatalf("causal limit = %d, want 4096", doc.Cluster.MaxVertexCausalEntries)
+	}
+	calls := map[string]string{}
+	for _, call := range doc.Target.Calls {
+		calls[call.Name] = call.DataTemplate
+	}
+	for _, name := range []string{"born_expired_put", "delete"} {
+		if !strings.Contains(calls[name], "mod .RequestNumber 4096") {
+			t.Errorf("%s does not reuse the bounded causal identity ring", name)
+		}
+	}
+	for metric, maxPost := range map[string]float64{
+		"lantern_vertex_causal_metadata_entries":            4096,
+		"lantern_vertex_causal_metadata_entries_high_water": 4096,
+		"lantern_vertex_causal_metadata_over_limit":         0,
+	} {
+		gate, ok := doc.MetricGate.Metrics[metric]
+		if !ok || gate["max_post"] != maxPost {
+			t.Errorf("%s max_post = %v, want %v", metric, gate["max_post"], maxPost)
+		}
+	}
+	entries := doc.MetricGate.Metrics["lantern_vertex_causal_metadata_entries"]
+	if entries["min_post"] != 4096 {
+		t.Errorf("causal entries min_post = %v, want 4096", entries["min_post"])
+	}
+	estimated := doc.MetricGate.Metrics["lantern_vertex_causal_metadata_estimated_bytes"]
+	if estimated["max_post"] != 1<<20 {
+		t.Errorf("causal estimated bytes max_post = %v, want 1 MiB", estimated["max_post"])
+	}
+
+	run, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(run), "LANTERN_BENCH_MAX_VERTEX_CAUSAL_ENTRIES") {
+		t.Fatal("run.sh does not forward the scenario causal budget")
+	}
+}
+
 // calls flattens every (call, data_template) pair in the document, tagged
 // with where it came from so failures point at the offending YAML path.
 func (d scenarioDoc) calls() map[string]scenarioCall {

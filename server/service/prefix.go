@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -175,16 +176,30 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		return &pb.DeleteVerticesByPrefixResponse{Deleted: n}, nil
 	}
 	deleted := 0
-	if s.clock != nil && s.tombstoneTTL > 0 {
-		var err error
-		deleted, err = s.cache.DeleteByPrefixHLC(ctx, in.GetPrefix(), limit, s.clock.Now(), s.tombstoneExpiration())
-		if err != nil {
-			return nil, ctxToConnect(err)
+	if s.clock != nil {
+		ts := s.clock.Now()
+		var keys []string
+		if s.tombstoneTTL > 0 {
+			var err error
+			keys, err = s.cache.DeleteByPrefixHLCCheckedKeys(ctx, in.GetPrefix(), limit, ts, s.tombstoneExpiration())
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, ctxToConnect(err)
+				}
+				return nil, writeError(err)
+			}
+		} else {
+			keys = s.cache.DeleteByPrefixKeys(ctx, in.GetPrefix(), int(limit))
+		}
+		deleted = len(keys)
+		if len(keys) > 0 {
+			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+				DeleteVertices: &pb.DeleteVerticesRequest{Keys: keys},
+			}}, ts)
 		}
 	} else {
 		deleted = s.cache.DeleteByPrefix(ctx, in.GetPrefix(), int(limit))
 	}
-	s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: in}})
 	s.metrics.OnScan("DeleteVerticesByPrefix", deleted, time.Since(start))
 	return &pb.DeleteVerticesByPrefixResponse{Deleted: uint64(deleted)}, nil
 }
@@ -229,20 +244,36 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 	}
 
 	var deleted int
-	if s.clock != nil && s.tombstoneTTL > 0 {
+	if s.clock != nil {
 		// Share one commit HLC between the edge tombstones and the logged
 		// mutation so a peer replaying this delete stamps the same watermark
 		// the origin did (see DeleteEdges for the divergence this closes).
 		ts := s.clock.Now()
-		var err error
-		deleted, err = s.cache.DeleteEdgesByPrefixHLC(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), ts, s.tombstoneExpiration())
-		if err != nil {
-			return nil, ctxToConnect(err)
+		var keys []graphcache.EdgeKey[string]
+		if s.tombstoneTTL > 0 {
+			var err error
+			keys, err = s.cache.DeleteEdgesByPrefixHLCCheckedKeys(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), ts, s.tombstoneExpiration())
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, ctxToConnect(err)
+				}
+				return nil, writeError(err)
+			}
+		} else {
+			keys = s.cache.DeleteEdgesByPrefixKeys(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit))
 		}
-		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: in}}, ts)
+		deleted = len(keys)
+		if len(keys) > 0 {
+			edges := make([]*pb.EdgeKey, len(keys))
+			for i, key := range keys {
+				edges[i] = &pb.EdgeKey{Tail: key.Tail, Head: key.Head}
+			}
+			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+				DeleteEdges: &pb.DeleteEdgesRequest{Edges: edges},
+			}}, ts)
+		}
 	} else {
 		deleted = s.cache.DeleteEdgesByPrefix(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit))
-		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: in}})
 	}
 	s.metrics.OnScan("DeleteEdgesByPrefix", deleted, time.Since(start))
 	return &pb.DeleteEdgesByPrefixResponse{Deleted: uint64(deleted)}, nil

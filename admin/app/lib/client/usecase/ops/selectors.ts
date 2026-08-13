@@ -129,7 +129,30 @@ export function serverCardSummary(s: ServerStatus): Array<[string, string]> {
     ["Replication", s.replicationEnabled ? "enabled" : "disabled"],
     ["Vertices (approx.)", formatCount(s.vertexCount)],
     ["Edges (approx.)", formatCount(s.edgeCount)],
+    [
+      "Vertex causal metadata",
+      s.causalMetadata
+        ? causalBudgetLabel(
+            s.causalMetadata.vertices.entries,
+            s.causalMetadata.vertices.limit,
+          )
+        : "unavailable — upgrade required",
+    ],
+    [
+      "Edge causal metadata",
+      s.causalMetadata
+        ? causalBudgetLabel(
+            s.causalMetadata.edges.entries,
+            s.causalMetadata.edges.limit,
+          )
+        : "unavailable — upgrade required",
+    ],
   ];
+}
+
+function causalBudgetLabel(entries: number, limit: number): string {
+  if (limit <= 0) return `${formatCount(entries)} / unlimited`;
+  return `${formatCount(entries)} / ${formatCount(limit)}`;
 }
 
 export function searchHealthIntent(

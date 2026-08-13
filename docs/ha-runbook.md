@@ -283,6 +283,7 @@ exact Prometheus series.
 | Metric | What it tells you |
 |---|---|
 | `lantern_vertices`, `lantern_edges` | Current **live** working-set size. Must agree (within `lantern_replication_lag_seq`) across peers. These gauges do not include causal barriers. |
+| `lantern_causal_metadata_{entries,estimated_bytes,entries_high_water,estimated_bytes_high_water,rejected_total,oldest_retention_deadline_seconds,limit,over_limit}{kind="vertex"|"edge"}` | Complete retained causal-identity budget: live HLC floors, Put barriers, and Delete tombstones counted once per identity. Use this family for admission/capacity alerts. |
 | `lantern_vertex_causal_barrier_entries`, `lantern_edge_causal_barrier_entries` | Accepted-expired or otherwise non-visible live Put floors retained to fence delayed older writes. They do not fall merely because TTL GC runs. |
 | `lantern_ttl_expirations_total{kind}` | TTL-driven evictions. |
 | `lantern_gc_duration_seconds` | GC sweep latency histogram. |
@@ -412,10 +413,10 @@ write burst faster than TTL decay fails fast instead:
 
 - Set both caps from the sizing estimate above: divide the memory budget
   allocated to graph data by measured per-entry heap cost and leave slack for
-  concurrent in-flight batches. Each cap counts the matching live identities
-  **plus retained Put causal-barrier entries**. A live/additive identity that
-  also has a retained barrier can be counted twice; this conservative policy
-  favours bounded admission over a precise union scan.
+  concurrent in-flight batches. Each cap conservatively counts live identities
+  plus matching Put barriers; an additive edge that coexists with a barrier can
+  be counted twice. The complete retained-floor union uses the separate causal
+  budgets below.
 - The caps are enforced at the **local write-RPC boundary only**. At
   capacity, `PutVertices` / `AddEdges` / `PutEdges` return
   `RESOURCE_EXHAUSTED` naming the knob; reads, deletes, replication apply
@@ -426,28 +427,43 @@ write burst faster than TTL decay fails fast instead:
 - There is **no eviction policy**: a rejected writer must wait for TTL
   decay, GC, or deletes to free capacity, then retry. This is decay-first
   by design.
-- For a non-zero vertex cap, alert on
+- For non-zero legacy caps, alert on
   `(lantern_vertices + lantern_vertex_causal_barrier_entries) /
-  scalar(lantern_capacity_limit{kind="vertex"}) > 0.8`; use the corresponding
-  live plus barrier gauges for edges. Only enable this alert when the selected
-  cap is non-zero. `lantern_validation_rejected_total{reason="capacity"}` counts
-  rejected writes.
-- An exact singular/plural Delete whose HLC is at least the barrier floor
-  replaces that barrier with a D4-bounded tombstone and immediately frees its
-  live/barrier cap slot, even when the Delete reports no live value existed.
-  Prefix Delete walks only live indexes and cannot find a barrier-only key or
-  edge pair; issue the exact Delete to reclaim that slot.
-- Delete tombstones are excluded from both admission caps but still consume
-  heap until D4 expiry. There is currently no independent hard count/byte cap
-  for all causal metadata, so the entry caps are not a total-memory guarantee;
-  [#1204](https://github.com/anaregdesign/lantern/issues/1204) tracks that
-  hard metadata budget.
+  scalar(lantern_capacity_limit{kind="vertex"}) > 0.8` and use the matching
+  edge gauges. `lantern_validation_rejected_total{reason="capacity"}` counts
+  these conservative admission rejects.
 - Keep `GOMEMLIMIT` below `resources.limits.memory` as the second line of
   defense — the caps bound entry counts, not bytes. The Helm chart defaults
   `runtime.goMemoryLimit` to `384MiB` under its `512Mi` container limit so a
   restore plus replication catch-up triggers Go GC before a kernel OOM kill,
   without increasing the billed GKE Autopilot request. Override both values
   together and retain headroom for stacks and non-Go memory.
+
+**Causal metadata guard (`LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` /
+`LANTERN_MAX_EDGE_CAUSAL_ENTRIES`, #1204):**
+
+- Size these separately for the union of live Put HLC floors, accepted-expired
+  Put barriers, and D4 Delete tombstones. One identity consumes one slot even
+  while its representation changes; a Delete preserves the resurrection floor
+  without double-charging the transition.
+- A local Put/Delete needing a new slot fails atomically with
+  `RESOURCE_EXHAUSTED`. Replacing an existing identity is allowed. Replication
+  apply and backup restore bypass local causal admission. Non-zero-HLC
+  replicated state remains visible in current/high-water and `over_limit`;
+  zero-HLC backup restore creates no causal floor and affects live/legacy
+  capacity instead.
+- Alert before a **non-zero** configured limit using
+  `(lantern_causal_metadata_entries / lantern_causal_metadata_limit)
+  and on(kind) (lantern_causal_metadata_limit > 0)` (filter to `vertex` or
+  `edge` as needed). A zero limit means unlimited and must never form a ratio
+  alert. Pair the logical
+  estimated-byte gauge with Go heap metrics; it is stable accounting, not an
+  allocator measurement. Watch `rejected_total`, `over_limit`, and the oldest
+  tombstone deadline when deciding whether to raise the budget or shorten D4.
+- An exact equal/newer Delete transitions a barrier-only identity into a
+  bounded tombstone but does not free its causal slot until D4 expiry or a
+  newer write supersedes it. It does free the legacy live/barrier-cap slot.
+  Prefix Delete cannot find barrier-only identities.
 
 **Securing the cluster (#850) — decision table:**
 
@@ -799,7 +815,7 @@ operator actions.
 | NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
-| Causal barriers approach an admission cap | Live + matching `lantern_*_causal_barrier_entries` fill ratio rises; capacity rejections begin | Use exact Deletes to transition intended barrier-only identities into D4 tombstones. Prefix Delete cannot find them. Size heap for tombstones; #1204 tracks a hard metadata cap. |
+| Causal metadata approaches its budget | For a non-zero limit, guarded `lantern_causal_metadata_entries / limit` rises; rejects or `over_limit` become non-zero | Stop new identity churn, inspect oldest retention deadline and high-water, then raise the per-kind causal budget or shorten D4 only after validating the resurrection window. Exact Delete changes barrier→tombstone but retains the slot until that floor expires/supersedes. |
 | Mixed Put/Add or Delete/Add edge history diverges | Lag is zero but the same edge weight differs | Unsupported pending #1203. Quiesce that identity and force a snapshot from the authoritative replica. |
 | Search config mismatch | `search_config_match{peer}=0`, readiness 503 | Make search-affecting env identical; graph replication is intentionally still active. |
 

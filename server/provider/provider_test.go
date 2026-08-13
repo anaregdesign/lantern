@@ -19,6 +19,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+func TestNewGraphCache_CausalMetadataLimits(t *testing.T) {
+	cache := NewGraphCache(CacheConfig{
+		TTL: time.Minute, MaxVertexCausalEntries: 7, MaxEdgeCausalEntries: 9,
+	}, SearchConfig{})
+	stats := cache.CausalMetadataStats()
+	if stats.MaxVertexEntries != 7 || stats.MaxEdgeEntries != 9 {
+		t.Fatalf("NewGraphCache causal limits = (%d, %d), want (7, 9)", stats.MaxVertexEntries, stats.MaxEdgeEntries)
+	}
+}
+
 // TestWireCacheGCHooks_EmitsTickSummary asserts that a single
 // "graph cache: gc tick" info log record is emitted per cache tick
 // after WireCacheGCHooks installs the multiplexed hooks (#223).
@@ -139,6 +149,44 @@ func TestNewConfigValidation(t *testing.T) {
 			t.Fatalf("Port = %d, want default 6380", cfg.Net.Port)
 		}
 	})
+
+	t.Run("causal metadata budgets default unlimited and accept explicit limits", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "123")
+		t.Setenv("LANTERN_MAX_EDGE_CAUSAL_ENTRIES", "456")
+		cfg, err := NewConfig()
+		if err != nil {
+			t.Fatalf("NewConfig: %v", err)
+		}
+		if cfg.Cache.MaxVertexCausalEntries != 123 || cfg.Cache.MaxEdgeCausalEntries != 456 {
+			t.Fatalf("causal budgets = %d/%d, want 123/456", cfg.Cache.MaxVertexCausalEntries, cfg.Cache.MaxEdgeCausalEntries)
+		}
+
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", "")
+		t.Setenv("LANTERN_MAX_EDGE_CAUSAL_ENTRIES", "")
+		defaults, err := NewConfig()
+		if err != nil {
+			t.Fatalf("NewConfig defaults: %v", err)
+		}
+		if defaults.Cache.MaxVertexCausalEntries != 0 || defaults.Cache.MaxEdgeCausalEntries != 0 {
+			t.Fatalf("default causal budgets = %d/%d, want unlimited 0/0", defaults.Cache.MaxVertexCausalEntries, defaults.Cache.MaxEdgeCausalEntries)
+		}
+	})
+
+	for _, key := range []string{
+		"LANTERN_MAX_VERTEX_CAUSAL_ENTRIES",
+		"LANTERN_MAX_EDGE_CAUSAL_ENTRIES",
+	} {
+		t.Run("causal metadata budget rejects negative "+key, func(t *testing.T) {
+			envconfig.ResetForTesting()
+			t.Setenv(key, "-1")
+			_, err := NewConfig()
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("NewConfig error = %v, want unconditional rejection naming %s", err, key)
+			}
+		})
+	}
 
 	t.Run("strict mode rejects a malformed value", func(t *testing.T) {
 		envconfig.ResetForTesting()

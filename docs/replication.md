@@ -320,6 +320,13 @@ message Mutation {
 }
 ```
 
+Current HA origins encode a successful `Delete*ByPrefix` call as an exact
+`DeleteVertices` / `DeleteEdges` mutation containing only the identities that
+the origin committed under its per-call limit and causal-metadata budget. The
+prefix oneof arms remain decodable for older mutation logs, but must not be
+used for new origin writes: applying a broad predicate on a peer could widen a
+bounded origin commit and permanently diverge the replicas.
+
 Deviations from the §7 conceptual sketch (recorded as part of #178):
 
 - HLC is **nanoseconds**, not milliseconds (matches `core/hlc.Timestamp`).
@@ -560,18 +567,33 @@ Retention and memory:
   live graph and bounded delete tombstones. Prefix Delete cannot perform the
   transition for barrier-only identities because those identities are absent
   from the live prefix indexes.
-- `LANTERN_MAX_VERTICES` and `LANTERN_MAX_EDGES` admission counts include live
-  identities plus retained causal-barrier entries. Delete tombstones are
-  excluded. Consequently, an accepted explicit Delete can free a live/barrier
-  admission slot by moving the floor into the D4 store, but the tombstone still
-  consumes heap until expiry. The soft caps are not a total causal-metadata or
-  byte budget; a separate hard metadata cap is follow-up
-  [#1204](https://github.com/anaregdesign/lantern/issues/1204).
-- Operators should compare the vertex/edge causal-barrier entry gauges with
-  write/outcome traffic and heap trends. Sustained growth means the workload is
-  leaving many identities at non-visible Put floors. Use explicit Delete with
-  the configured tombstone horizon when bounded retention is the intended
-  policy.
+- `LANTERN_MAX_VERTICES` and `LANTERN_MAX_EDGES` remain conservative soft
+  admission caps over live identities plus matching Put barriers (a live
+  additive edge coexisting with a barrier can be counted twice). This preserves
+  the #1178 defense against unique born-expired Put churn. Retained causal state
+  additionally has its own exact identity-union budgets:
+  `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` and
+  `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` (`0` = unlimited). One key/pair consumes
+  exactly one causal slot while represented by a live Put HLC floor, an
+  accepted-expired Put barrier, or a Delete tombstone. Barrier→tombstone and
+  tombstone→newer Put transitions reuse that slot atomically. The intentional
+  overlap means a Put barrier is charged to both the conservative legacy cap
+  and the complete causal budget; moving it to a tombstone frees only the
+  legacy live/barrier slot.
+- A local Put or Delete that needs a new causal identity beyond its per-kind
+  budget fails with `RESOURCE_EXHAUSTED` before graph, causal state, or the
+  mutation log changes. A write replacing an already-accounted identity still
+  proceeds even when remote convergence previously took the replica over its
+  local limit. Replication apply and backup restore both bypass admission.
+  Non-zero-HLC replicated causal state is accounted and can expose
+  `over_limit`; zero-HLC backup restore creates live state without a causal
+  floor and therefore affects live/legacy capacity rather than this budget.
+- The causal gauges/status report current entries, a stable logical byte
+  estimate covering causal records, the budget ledger, and deadline index,
+  all-time high-water, local rejects, configured limit, over-limit state, and
+  the oldest bounded tombstone deadline. They deliberately separate logical
+  accounting from Go heap bytes; pair them with `go_memstats_*` and
+  `GOMEMLIMIT`.
 
 ## 9. Bootstrap flow
 

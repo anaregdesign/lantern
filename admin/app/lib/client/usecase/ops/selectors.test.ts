@@ -33,6 +33,28 @@ function makeStatus(overrides: Partial<ServerStatus> = {}): ServerStatus {
     replicationEnabled: false,
     vertexCount: 42,
     edgeCount: 17,
+    causalMetadata: {
+      vertices: {
+        limit: 100,
+        entries: 12,
+        estimatedBytes: 1200,
+        entriesHighWater: 18,
+        estimatedBytesHighWater: 1800,
+        rejectedTotal: 3,
+        overLimit: false,
+        oldestRetentionDeadlineMs: 0,
+      },
+      edges: {
+        limit: 0,
+        entries: 23,
+        estimatedBytes: 4600,
+        entriesHighWater: 29,
+        estimatedBytesHighWater: 5800,
+        rejectedTotal: 4,
+        overLimit: false,
+        oldestRetentionDeadlineMs: 0,
+      },
+    },
     search: {
       enabled: true,
       positionsEnabled: true,
@@ -182,6 +204,12 @@ describe("serverCardSummary", () => {
       "disabled",
     );
     expect(rows.find(([label]) => label === "TLS")?.[1]).toBe("enabled");
+    expect(
+      rows.find(([label]) => label === "Vertex causal metadata")?.[1],
+    ).toBe("12 / 100");
+    expect(rows.find(([label]) => label === "Edge causal metadata")?.[1]).toBe(
+      "23 / unlimited",
+    );
     expect(rows.some(([label]) => label === "Search config")).toBe(false);
   });
 
@@ -203,6 +231,36 @@ describe("serverCardSummary", () => {
       }),
     );
     expect(rows[0][1]).toBe("(dev)");
+  });
+
+  it("requires an upgrade when causal metadata status is unavailable", () => {
+    const rows = serverCardSummary(makeStatus({ causalMetadata: null }));
+
+    expect(
+      rows.find(([label]) => label === "Vertex causal metadata")?.[1],
+    ).toBe("unavailable — upgrade required");
+    expect(rows.find(([label]) => label === "Edge causal metadata")?.[1]).toBe(
+      "unavailable — upgrade required",
+    );
+  });
+
+  it("renders a supported present-zero budget as unlimited", () => {
+    const causalMetadata = makeStatus().causalMetadata!;
+    const rows = serverCardSummary(
+      makeStatus({
+        causalMetadata: {
+          vertices: { ...causalMetadata.vertices, limit: 0, entries: 0 },
+          edges: { ...causalMetadata.edges, limit: 0, entries: 0 },
+        },
+      }),
+    );
+
+    expect(
+      rows.find(([label]) => label === "Vertex causal metadata")?.[1],
+    ).toBe("0 / unlimited");
+    expect(rows.find(([label]) => label === "Edge causal metadata")?.[1]).toBe(
+      "0 / unlimited",
+    );
   });
 
   it("renders — for Uptime when started_at is absent on the wire (#943)", () => {

@@ -289,7 +289,7 @@ func (s *LanternService) checkVertexCapacity(newVertices int) error {
 		s.onValidationReject("capacity")
 	}
 	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
-		"vertex capacity: %d live-or-retained + up to %d new would exceed LANTERN_MAX_VERTICES=%d (soft cap, counted conservatively); use an exact delete to reclaim an intended retained identity",
+		"vertex capacity: %d live-plus-Put-barrier footprint + up to %d new would exceed LANTERN_MAX_VERTICES=%d (soft cap, counted conservatively)",
 		vertices, newVertices, s.capacity.MaxVertices))
 }
 
@@ -307,7 +307,7 @@ func (s *LanternService) checkEdgeCapacity(newEdges int) error {
 		s.onValidationReject("capacity")
 	}
 	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
-		"edge capacity: %d live-or-retained + up to %d new would exceed LANTERN_MAX_EDGES=%d (soft cap, counted conservatively); use an exact delete to reclaim an intended retained identity",
+		"edge capacity: %d live-plus-Put-barrier footprint + up to %d new would exceed LANTERN_MAX_EDGES=%d (soft cap, counted conservatively)",
 		edges, newEdges, s.capacity.MaxEdges))
 }
 
@@ -945,6 +945,34 @@ func (s *LanternService) RestoreVertices(ctx context.Context, request *pb.PutVer
 	return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 }
 
+// RestoreEdges is the edge sibling of RestoreVertices. Backup replay uses the
+// zero-HLC convergence path directly so it neither consumes local causal
+// budget nor appends a new mutation-log entry. A destination floor newer than
+// the backup still wins.
+func (s *LanternService) RestoreEdges(ctx context.Context, request *pb.PutEdgesRequest) (*pb.PutEdgesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ctxToConnect(err)
+	}
+	items := make([]graphcache.EdgeItem[string], 0, len(request.GetEdges()))
+	for _, edge := range request.GetEdges() {
+		if edge == nil {
+			continue
+		}
+		items = append(items, graphcache.EdgeItem[string]{
+			Tail:       edge.GetTail(),
+			Head:       edge.GetHead(),
+			Weight:     edge.GetWeight(),
+			Expiration: prototime.Expiration(edge.GetExpiration()),
+		})
+	}
+	outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, hlc.Timestamp{})
+	wireOutcomes, err := putOutcomes(outcomes, len(items))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.PutEdgesResponse{Outcomes: wireOutcomes}, nil
+}
+
 func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
@@ -1100,7 +1128,11 @@ func replicatedPutEdgesMutation(in []*pb.Edge, outcomes []graphcache.PutOutcome)
 	return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: entries}}}
 }
 
-func searchIndexWriteError(err error) error {
+func writeError(err error) error {
+	var capacity *graphcache.CausalMetadataCapacityError
+	if errors.As(err, &capacity) {
+		return connect.NewError(connect.CodeResourceExhausted, err)
+	}
 	if errors.Is(err, search.ErrIndexIncomplete) {
 		return newSearchPreconditionError(pb.SearchErrorReason_SEARCH_INDEX_INCOMPLETE, err)
 	}
@@ -1110,6 +1142,8 @@ func searchIndexWriteError(err error) error {
 	}
 	return connect.NewError(connect.CodeInternal, err)
 }
+
+func searchIndexWriteError(err error) error { return writeError(err) }
 
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
 	// Per the proto contract, deleting a vertex leaves its edges orphaned;
@@ -1135,7 +1169,11 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		// would lose to the delete on peers but beat the tombstone on the
 		// origin — divergence. Local expiration is best-effort wall clock.
 		ts := s.clock.Now()
-		n = s.cache.DeleteVerticesHLC(in.GetKeys(), ts, s.tombstoneExpiration())
+		var err error
+		n, err = s.cache.DeleteVerticesHLCChecked(in.GetKeys(), ts, s.tombstoneExpiration())
+		if err != nil {
+			return nil, writeError(err)
+		}
 		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts)
 	} else {
 		n = s.cache.DeleteVertices(in.GetKeys())
@@ -1332,7 +1370,10 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	// nil) keeps the cheaper watermark-free method.
 	if s.clock != nil {
 		ts := s.clock.Now()
-		outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, ts)
+		outcomes, err := s.cache.PutEdgesWithExpirationHLCOutcomesChecked(items, ts)
+		if err != nil {
+			return nil, writeError(err)
+		}
 		wireOutcomes, err := putOutcomes(outcomes, len(in))
 		if err != nil {
 			return nil, err
@@ -1376,7 +1417,11 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		// Share one commit HLC between the tombstone and the logged
 		// mutation (see DeleteVertices for the divergence this closes).
 		ts := s.clock.Now()
-		n = s.cache.DeleteEdgesHLC(keys, ts, s.tombstoneExpiration())
+		var err error
+		n, err = s.cache.DeleteEdgesHLCChecked(keys, ts, s.tombstoneExpiration())
+		if err != nil {
+			return nil, writeError(err)
+		}
 		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts)
 	} else {
 		n = s.cache.DeleteEdges(keys)

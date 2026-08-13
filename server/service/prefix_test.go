@@ -4,11 +4,42 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func latestPrefixMutation(t *testing.T, log *mutationlog.Log) *pb.Mutation {
+	t.Helper()
+	seq, ok := log.LastSeq()
+	if !ok {
+		t.Fatal("mutation log is empty")
+	}
+	ch, cancel, err := log.Subscribe(seq)
+	if err != nil {
+		t.Fatalf("Subscribe(%d): %v", seq, err)
+	}
+	defer cancel()
+	select {
+	case entry := <-ch:
+		if entry.Seq != seq {
+			t.Fatalf("latest log entry seq = %d, want %d", entry.Seq, seq)
+		}
+		mutation, ok := entry.Op.(*pb.Mutation)
+		if !ok {
+			t.Fatalf("latest log entry type = %T, want *pb.Mutation", entry.Op)
+		}
+		return mutation
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out reading mutation %d", seq)
+		return nil
+	}
+}
 
 func TestScanVertices_BasicAndCursor(t *testing.T) {
 	fb := newFakeBackend()
@@ -309,6 +340,135 @@ func TestDeleteVerticesByPrefix_DryRunAndReal(t *testing.T) {
 	}
 }
 
+// TestDeleteVerticesByPrefix_CausalLimitReplicatesExactVictim verifies that a
+// bounded local prefix delete is represented on the HA log by the exact key
+// that committed. Replaying the broad prefix on a peer would delete both
+// matches and violate both the request limit and the causal admission result.
+// A second call needs a new causal identity, so it must reject atomically and
+// leave both graph state and the mutation log unchanged.
+func TestDeleteVerticesByPrefix_CausalLimitReplicatesExactVictim(t *testing.T) {
+	ctx := context.Background()
+	newCache := func() *graphcache.GraphCache[string, *pb.Vertex] {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		cache.EnablePrefixIndex(func(key string) string { return key })
+		cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxVertexEntries: 1})
+		for _, key := range []string{"users/a", "users/b"} {
+			if err := cache.PutVertex(key, &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: key}}); err != nil {
+				t.Fatalf("seed %q: %v", key, err)
+			}
+		}
+		return cache
+	}
+	originCache := newCache()
+	peerCache := newCache()
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := NewLanternService(originCache).
+		WithTombstoneTTL(time.Hour).
+		WithReplication(log, hlc.New(hlc.NodeID{0xC1}, hlc.Options{}), nil)
+	peer := NewLanternService(peerCache).WithTombstoneTTL(time.Hour)
+
+	resp, err := origin.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "users/", Limit: 1})
+	if err != nil {
+		t.Fatalf("first bounded delete: %v", err)
+	}
+	if resp.GetDeleted() != 1 {
+		t.Fatalf("first bounded delete count = %d, want 1", resp.GetDeleted())
+	}
+	mutation := latestPrefixMutation(t, log)
+	exact := mutation.GetOp().GetDeleteVertices()
+	if exact == nil || len(exact.GetKeys()) != 1 {
+		t.Fatalf("logged op = %v, want exact single-key DeleteVertices", mutation.GetOp())
+	}
+	committed := exact.GetKeys()[0]
+	remaining := "users/a"
+	if committed == remaining {
+		remaining = "users/b"
+	}
+	if _, ok := originCache.GetVertex(committed); ok {
+		t.Fatalf("origin retained committed victim %q", committed)
+	}
+	if _, ok := originCache.GetVertex(remaining); !ok {
+		t.Fatalf("origin widened bounded delete to %q", remaining)
+	}
+
+	if err := peer.ApplyMutation(ctx, mutation); err != nil {
+		t.Fatalf("peer apply exact delete: %v", err)
+	}
+	if _, ok := peerCache.GetVertex(committed); ok {
+		t.Fatalf("peer retained committed victim %q", committed)
+	}
+	if _, ok := peerCache.GetVertex(remaining); !ok {
+		t.Fatalf("peer replay widened exact delete to %q", remaining)
+	}
+
+	beforeSeq, _ := log.LastSeq()
+	beforeEntries := originCache.CausalMetadataStats().VertexEntries
+	_, err = origin.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "users/", Limit: 1})
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("second identity error = %v (%v), want ResourceExhausted", err, connect.CodeOf(err))
+	}
+	if afterSeq, _ := log.LastSeq(); afterSeq != beforeSeq {
+		t.Fatalf("rejected prefix delete appended log seq %d -> %d", beforeSeq, afterSeq)
+	}
+	if _, ok := originCache.GetVertex(remaining); !ok {
+		t.Fatalf("rejected prefix delete removed %q", remaining)
+	}
+	if got := originCache.CausalMetadataStats().VertexEntries; got != beforeEntries {
+		t.Fatalf("rejected prefix delete changed causal entries %d -> %d", beforeEntries, got)
+	}
+}
+
+func TestDeleteVerticesByPrefix_ZeroTombstoneTTLReplicatesExactVictim(t *testing.T) {
+	ctx := context.Background()
+	newCache := func() *graphcache.GraphCache[string, *pb.Vertex] {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		cache.EnablePrefixIndex(func(key string) string { return key })
+		for _, key := range []string{"users/a", "users/b"} {
+			if err := cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+				t.Fatalf("seed %q: %v", key, err)
+			}
+		}
+		return cache
+	}
+	originCache, peerCache := newCache(), newCache()
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := NewLanternService(originCache).
+		WithReplication(log, hlc.New(hlc.NodeID{0xD1}, hlc.Options{}), nil)
+	peer := NewLanternService(peerCache)
+
+	resp, err := origin.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{
+		Prefix: "users/", Limit: 1,
+	})
+	if err != nil || resp.GetDeleted() != 1 {
+		t.Fatalf("bounded zero-TTL delete = (%v, %v), want deleted=1", resp, err)
+	}
+	mutation := latestPrefixMutation(t, log)
+	exact := mutation.GetOp().GetDeleteVertices()
+	if exact == nil || len(exact.GetKeys()) != 1 || mutation.GetOp().GetDeleteVerticesByPrefix() != nil {
+		t.Fatalf("logged op = %v, want exact single-key DeleteVertices", mutation.GetOp())
+	}
+	committed := exact.GetKeys()[0]
+	remaining := "users/a"
+	if committed == remaining {
+		remaining = "users/b"
+	}
+	if err := peer.ApplyMutation(ctx, mutation); err != nil {
+		t.Fatalf("peer apply exact zero-TTL delete: %v", err)
+	}
+	for name, cache := range map[string]*graphcache.GraphCache[string, *pb.Vertex]{
+		"origin": originCache, "peer": peerCache,
+	} {
+		if _, ok := cache.GetVertex(committed); ok {
+			t.Fatalf("%s retained committed victim %q", name, committed)
+		}
+		if _, ok := cache.GetVertex(remaining); !ok {
+			t.Fatalf("%s widened bounded delete to %q", name, remaining)
+		}
+	}
+}
+
 // TestDeleteEdgesByPrefix_ValidationDryRunAndReal covers the #899 handler:
 // the whole-graph-wipe guard (both prefixes empty -> InvalidArgument + reject
 // hook), the non-mutating dry run (count only, capped by limit), and the real
@@ -396,6 +556,135 @@ func TestDeleteEdgesByPrefix_ValidationDryRunAndReal(t *testing.T) {
 		}
 		if total != 3 {
 			t.Errorf("after delete: %d edges remain, want 3", total)
+		}
+	}
+}
+
+// TestDeleteEdgesByPrefix_CausalLimitReplicatesExactVictim is the edge sibling
+// of TestDeleteVerticesByPrefix_CausalLimitReplicatesExactVictim.
+func TestDeleteEdgesByPrefix_CausalLimitReplicatesExactVictim(t *testing.T) {
+	ctx := context.Background()
+	type edgeID struct{ tail, head string }
+	edges := []edgeID{{tail: "users/a", head: "posts/a"}, {tail: "users/b", head: "posts/b"}}
+	newCache := func() *graphcache.GraphCache[string, *pb.Vertex] {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		cache.EnablePrefixIndex(func(key string) string { return key })
+		cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
+		for _, edge := range edges {
+			cache.PutEdgeWithExpiration(edge.tail, edge.head, 1, time.Now().Add(time.Hour))
+		}
+		return cache
+	}
+	originCache := newCache()
+	peerCache := newCache()
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := NewLanternService(originCache).
+		WithTombstoneTTL(time.Hour).
+		WithReplication(log, hlc.New(hlc.NodeID{0xC2}, hlc.Options{}), nil)
+	peer := NewLanternService(peerCache).WithTombstoneTTL(time.Hour)
+
+	resp, err := origin.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{
+		TailPrefix: "users/", HeadPrefix: "posts/", Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("first bounded edge delete: %v", err)
+	}
+	if resp.GetDeleted() != 1 {
+		t.Fatalf("first bounded edge delete count = %d, want 1", resp.GetDeleted())
+	}
+	mutation := latestPrefixMutation(t, log)
+	exact := mutation.GetOp().GetDeleteEdges()
+	if exact == nil || len(exact.GetEdges()) != 1 {
+		t.Fatalf("logged op = %v, want exact single-key DeleteEdges", mutation.GetOp())
+	}
+	committed := edgeID{tail: exact.GetEdges()[0].GetTail(), head: exact.GetEdges()[0].GetHead()}
+	remaining := edges[0]
+	if committed == remaining {
+		remaining = edges[1]
+	}
+	if _, ok := originCache.GetWeight(committed.tail, committed.head); ok {
+		t.Fatalf("origin retained committed edge %q -> %q", committed.tail, committed.head)
+	}
+	if _, ok := originCache.GetWeight(remaining.tail, remaining.head); !ok {
+		t.Fatalf("origin widened bounded edge delete to %q -> %q", remaining.tail, remaining.head)
+	}
+
+	if err := peer.ApplyMutation(ctx, mutation); err != nil {
+		t.Fatalf("peer apply exact edge delete: %v", err)
+	}
+	if _, ok := peerCache.GetWeight(committed.tail, committed.head); ok {
+		t.Fatalf("peer retained committed edge %q -> %q", committed.tail, committed.head)
+	}
+	if _, ok := peerCache.GetWeight(remaining.tail, remaining.head); !ok {
+		t.Fatalf("peer replay widened exact edge delete to %q -> %q", remaining.tail, remaining.head)
+	}
+
+	beforeSeq, _ := log.LastSeq()
+	beforeEntries := originCache.CausalMetadataStats().EdgeEntries
+	_, err = origin.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{
+		TailPrefix: "users/", HeadPrefix: "posts/", Limit: 1,
+	})
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("second edge identity error = %v (%v), want ResourceExhausted", err, connect.CodeOf(err))
+	}
+	if afterSeq, _ := log.LastSeq(); afterSeq != beforeSeq {
+		t.Fatalf("rejected edge prefix delete appended log seq %d -> %d", beforeSeq, afterSeq)
+	}
+	if _, ok := originCache.GetWeight(remaining.tail, remaining.head); !ok {
+		t.Fatalf("rejected edge prefix delete removed %q -> %q", remaining.tail, remaining.head)
+	}
+	if got := originCache.CausalMetadataStats().EdgeEntries; got != beforeEntries {
+		t.Fatalf("rejected edge prefix delete changed causal entries %d -> %d", beforeEntries, got)
+	}
+}
+
+func TestDeleteEdgesByPrefix_ZeroTombstoneTTLReplicatesExactVictim(t *testing.T) {
+	ctx := context.Background()
+	type edgeID struct{ tail, head string }
+	edges := []edgeID{{tail: "users/a", head: "posts/a"}, {tail: "users/b", head: "posts/b"}}
+	newCache := func() *graphcache.GraphCache[string, *pb.Vertex] {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		cache.EnablePrefixIndex(func(key string) string { return key })
+		for _, edge := range edges {
+			cache.PutEdgeWithExpiration(edge.tail, edge.head, 1, time.Now().Add(time.Hour))
+		}
+		return cache
+	}
+	originCache, peerCache := newCache(), newCache()
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := NewLanternService(originCache).
+		WithReplication(log, hlc.New(hlc.NodeID{0xD2}, hlc.Options{}), nil)
+	peer := NewLanternService(peerCache)
+
+	resp, err := origin.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{
+		TailPrefix: "users/", HeadPrefix: "posts/", Limit: 1,
+	})
+	if err != nil || resp.GetDeleted() != 1 {
+		t.Fatalf("bounded zero-TTL edge delete = (%v, %v), want deleted=1", resp, err)
+	}
+	mutation := latestPrefixMutation(t, log)
+	exact := mutation.GetOp().GetDeleteEdges()
+	if exact == nil || len(exact.GetEdges()) != 1 || mutation.GetOp().GetDeleteEdgesByPrefix() != nil {
+		t.Fatalf("logged op = %v, want exact single-edge DeleteEdges", mutation.GetOp())
+	}
+	committed := edgeID{tail: exact.GetEdges()[0].GetTail(), head: exact.GetEdges()[0].GetHead()}
+	remaining := edges[0]
+	if committed == remaining {
+		remaining = edges[1]
+	}
+	if err := peer.ApplyMutation(ctx, mutation); err != nil {
+		t.Fatalf("peer apply exact zero-TTL edge delete: %v", err)
+	}
+	for name, cache := range map[string]*graphcache.GraphCache[string, *pb.Vertex]{
+		"origin": originCache, "peer": peerCache,
+	} {
+		if _, ok := cache.GetWeight(committed.tail, committed.head); ok {
+			t.Fatalf("%s retained committed edge %q -> %q", name, committed.tail, committed.head)
+		}
+		if _, ok := cache.GetWeight(remaining.tail, remaining.head); !ok {
+			t.Fatalf("%s widened bounded edge delete to %q -> %q", name, remaining.tail, remaining.head)
 		}
 	}
 }

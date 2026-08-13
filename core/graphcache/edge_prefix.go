@@ -317,23 +317,30 @@ func (c *GraphCache[S, T]) scanTailHeadsFallback(
 // deletes every edge up to limit, which direct core callers may legitimately
 // want. The service layer rejects the whole-graph wipe before calling in.
 func (c *GraphCache[S, T]) DeleteEdgesByPrefix(ctx context.Context, tailPrefix, headPrefix string, limit int) int {
+	return len(c.DeleteEdgesByPrefixKeys(ctx, tailPrefix, headPrefix, limit))
+}
+
+// DeleteEdgesByPrefixKeys is the identity-returning sibling of
+// DeleteEdgesByPrefix. The returned set is collected and committed under one
+// cache lock so replication can preserve the origin's exact bounded scope.
+func (c *GraphCache[S, T]) DeleteEdgesByPrefixKeys(ctx context.Context, tailPrefix, headPrefix string, limit int) []EdgeKey[S] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
 	if !enabled || !collected {
-		return 0
+		return nil
 	}
 	if limit > 0 && len(victims) > limit {
 		victims = victims[:limit]
 	}
-	n := 0
+	keys := make([]EdgeKey[S], 0, len(victims))
 	for i := range victims {
-		if c.deleteEdgeLocked(victims[i].tail, victims[i].head) {
-			n++
-		}
+		key := EdgeKey[S]{Tail: victims[i].tail, Head: victims[i].head}
+		c.deleteEdgeLocked(key.Tail, key.Head)
 		c.clearEdgeCausalBarrierLocked(victims[i].tail, victims[i].head)
+		keys = append(keys, key)
 	}
-	return n
+	return keys
 }
 
 // DeleteEdgesByPrefixHLC is the tombstone-aware sibling of DeleteEdgesByPrefix
@@ -344,31 +351,56 @@ func (c *GraphCache[S, T]) DeleteEdgesByPrefix(ctx context.Context, tailPrefix, 
 // the number of edges actually deleted, matching DeleteEdgesByPrefix, and any
 // ctx error observed mid-collection.
 func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error) {
+	keys, err := c.deleteEdgesByPrefixHLC(ctx, tailPrefix, headPrefix, limit, ts, expiration, false)
+	return len(keys), err
+}
+
+// DeleteEdgesByPrefixHLCChecked is the locally-originated sibling of
+// DeleteEdgesByPrefixHLC. It rejects a causal budget overflow before removing
+// any matched edge.
+func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLCChecked(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error) {
+	keys, err := c.DeleteEdgesByPrefixHLCCheckedKeys(ctx, tailPrefix, headPrefix, limit, ts, expiration)
+	return len(keys), err
+}
+
+// DeleteEdgesByPrefixHLCCheckedKeys returns the exact edge identities committed
+// by the local prefix mutation. Replication origins log this bounded set as an
+// exact DeleteEdges operation so peers cannot widen the delete beyond the
+// origin's limit or causal-metadata admission decision.
+func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLCCheckedKeys(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) ([]EdgeKey[S], error) {
+	return c.deleteEdgesByPrefixHLC(ctx, tailPrefix, headPrefix, limit, ts, expiration, true)
+}
+
+func (c *GraphCache[S, T]) deleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time, strict bool) ([]EdgeKey[S], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
 	if !enabled {
-		return 0, nil
+		return nil, nil
 	}
 	if !collected {
-		return 0, ctx.Err()
+		return nil, ctx.Err()
 	}
 	if limit > 0 && len(victims) > limit {
 		victims = victims[:limit]
 	}
-	n := 0
+	keys := make([]EdgeKey[S], 0, len(victims))
 	for i := range victims {
-		if !c.edgeDeleteWriteAllowedLocked(victims[i].tail, victims[i].head, ts) {
-			continue
-		}
-		if c.deleteEdgeLocked(victims[i].tail, victims[i].head) {
-			n++
-		}
-		c.setEdgeTombstoneLocked(victims[i].tail, victims[i].head, ts, expiration)
-		key := EdgeKey[S]{Tail: victims[i].tail, Head: victims[i].head}
-		if barrier, ok := c.edgeCausalBarriers[key]; ok && !ts.Less(barrier) {
-			c.clearEdgeCausalBarrierLocked(victims[i].tail, victims[i].head)
+		if c.edgeDeleteWriteAllowedLocked(victims[i].tail, victims[i].head, ts) {
+			keys = append(keys, EdgeKey[S]{Tail: victims[i].tail, Head: victims[i].head})
 		}
 	}
-	return n, nil
+	if strict && ts != (hlc.Timestamp{}) {
+		if err := c.checkEdgeCausalCapacityLocked(keys); err != nil {
+			return nil, err
+		}
+	}
+	for _, key := range keys {
+		c.setEdgeTombstoneLocked(key.Tail, key.Head, ts, expiration)
+		c.deleteEdgeLocked(key.Tail, key.Head)
+		if barrier, ok := c.edgeCausalBarriers[key]; ok && !ts.Less(barrier) {
+			c.clearEdgeCausalBarrierLocked(key.Tail, key.Head)
+		}
+	}
+	return keys, nil
 }

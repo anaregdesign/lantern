@@ -200,7 +200,7 @@ func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked(now time.Time) {
 	for key, ts := range c.vertexHLC {
 		if !c.vertices.HasAt(key, now) {
 			c.recordVertexCausalBarrierLocked(key, ts)
-			delete(c.vertexHLC, key)
+			c.clearVertexHLCLocked(key)
 		}
 	}
 	// Reclaim the oversized bucket array after a large drain. Go never shrinks a

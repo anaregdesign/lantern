@@ -98,6 +98,7 @@ func (c *GraphCache[S, T]) putEdgeLockedAt(tail, head S, w float32, expiration, 
 	c.ensureVertexLocked(head, expiration)
 	created, tailID, headID := c.edges.putWithExpiration(tail, head, w, expiration)
 	c.onEdgeAddedLocked(created, tailID, headID, head)
+	c.reconcileEdgeCausalUsageLocked(EdgeKey[S]{Tail: tail, Head: head})
 	return true
 }
 
@@ -112,6 +113,9 @@ func (c *GraphCache[S, T]) putEdgeHLCLocked(tail, head S, w float32, expiration 
 	if created {
 		c.onEdgeAddedLocked(created, tailID, headID, head)
 	}
+	if applied {
+		c.reconcileEdgeCausalUsageLocked(EdgeKey[S]{Tail: tail, Head: head})
+	}
 	return applied
 }
 
@@ -123,5 +127,6 @@ func (c *GraphCache[S, T]) deleteEdgeLocked(tail, head S) bool {
 	if deleted {
 		c.onEdgeDeletedLocked(tailID, headID, head)
 	}
+	c.reconcileEdgeCausalUsageLocked(EdgeKey[S]{Tail: tail, Head: head})
 	return deleted
 }

@@ -39,6 +39,12 @@ x-lantern-bench-env: &lantern-bench-env
   # baseline during cooldown. See issue #711.
   LANTERN_DEFAULT_TTL_SECONDS: "${LANTERN_BENCH_DEFAULT_TTL_SECONDS:-3600}"
   LANTERN_GC_INTERVAL_SECONDS: "${LANTERN_BENCH_GC_INTERVAL_SECONDS:-60}"
+  # Separate retained HA metadata budgets. They default to unlimited for
+  # scenarios that do not exercise the #1204 contract; ttl_churn supplies an
+  # exact bounded identity set and gates its high-water independently of live
+  # graph capacity.
+  LANTERN_MAX_VERTEX_CAUSAL_ENTRIES: "${LANTERN_BENCH_MAX_VERTEX_CAUSAL_ENTRIES:-0}"
+  LANTERN_MAX_EDGE_CAUSAL_ENTRIES: "${LANTERN_BENCH_MAX_EDGE_CAUSAL_ENTRIES:-0}"
   # Optional per-scenario search toggle. Defaults to the server default (on).
   # A leak scenario that exercises an unrelated structure under high-cardinality
   # unique content (e.g. replication_apply_churn isolating vertexHLC) can turn

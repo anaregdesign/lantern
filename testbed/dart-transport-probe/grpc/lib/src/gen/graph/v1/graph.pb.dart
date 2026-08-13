@@ -5260,6 +5260,248 @@ class SearchIndexStats extends $pb.GeneratedMessage {
   void clearGeneration() => $_clearField(17);
 }
 
+/// CausalMetadataKindStatus is the per-identity-kind share of the HA causal
+/// metadata budget. A live HLC floor, an accepted-expired Put barrier, and a
+/// Delete tombstone are alternate representations of one retained identity and
+/// therefore consume one entry in this accounting surface.
+class CausalMetadataKindStatus extends $pb.GeneratedMessage {
+  factory CausalMetadataKindStatus({
+    $fixnum.Int64? limit,
+    $fixnum.Int64? entries,
+    $fixnum.Int64? estimatedBytes,
+    $fixnum.Int64? entriesHighWater,
+    $fixnum.Int64? estimatedBytesHighWater,
+    $fixnum.Int64? rejectedTotal,
+    $core.bool? overLimit,
+    $1.Timestamp? oldestRetentionDeadline,
+  }) {
+    final result = create();
+    if (limit != null) result.limit = limit;
+    if (entries != null) result.entries = entries;
+    if (estimatedBytes != null) result.estimatedBytes = estimatedBytes;
+    if (entriesHighWater != null) result.entriesHighWater = entriesHighWater;
+    if (estimatedBytesHighWater != null)
+      result.estimatedBytesHighWater = estimatedBytesHighWater;
+    if (rejectedTotal != null) result.rejectedTotal = rejectedTotal;
+    if (overLimit != null) result.overLimit = overLimit;
+    if (oldestRetentionDeadline != null)
+      result.oldestRetentionDeadline = oldestRetentionDeadline;
+    return result;
+  }
+
+  CausalMetadataKindStatus._();
+
+  factory CausalMetadataKindStatus.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CausalMetadataKindStatus.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CausalMetadataKindStatus',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$fixnum.Int64>(1, _omitFieldNames ? '' : 'limit', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(2, _omitFieldNames ? '' : 'entries', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        3, _omitFieldNames ? '' : 'estimatedBytes', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'entriesHighWater', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(5, _omitFieldNames ? '' : 'estimatedBytesHighWater',
+        $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        6, _omitFieldNames ? '' : 'rejectedTotal', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOB(7, _omitFieldNames ? '' : 'overLimit')
+    ..aOM<$1.Timestamp>(8, _omitFieldNames ? '' : 'oldestRetentionDeadline',
+        subBuilder: $1.Timestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CausalMetadataKindStatus clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CausalMetadataKindStatus copyWith(
+          void Function(CausalMetadataKindStatus) updates) =>
+      super.copyWith((message) => updates(message as CausalMetadataKindStatus))
+          as CausalMetadataKindStatus;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CausalMetadataKindStatus create() => CausalMetadataKindStatus._();
+  @$core.override
+  CausalMetadataKindStatus createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static CausalMetadataKindStatus getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CausalMetadataKindStatus>(create);
+  static CausalMetadataKindStatus? _defaultInstance;
+
+  /// Locally-originated admission ceiling. 0 means unlimited. Replication
+  /// apply may exceed a non-zero limit because rejecting already-committed
+  /// remote state would break convergence.
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get limit => $_getI64(0);
+  @$pb.TagNumber(1)
+  set limit($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasLimit() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearLimit() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get entries => $_getI64(1);
+  @$pb.TagNumber(2)
+  set entries($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasEntries() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearEntries() => $_clearField(2);
+
+  /// Stable logical estimate, including identity payload bytes and retained
+  /// deadline-index entries. This is an allocator-independent capacity unit,
+  /// not a process-heap measurement.
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get estimatedBytes => $_getI64(2);
+  @$pb.TagNumber(3)
+  set estimatedBytes($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasEstimatedBytes() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearEstimatedBytes() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get entriesHighWater => $_getI64(3);
+  @$pb.TagNumber(4)
+  set entriesHighWater($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasEntriesHighWater() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearEntriesHighWater() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get estimatedBytesHighWater => $_getI64(4);
+  @$pb.TagNumber(5)
+  set estimatedBytesHighWater($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasEstimatedBytesHighWater() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearEstimatedBytesHighWater() => $_clearField(5);
+
+  /// Cumulative locally-originated batches rejected by this kind's budget.
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get rejectedTotal => $_getI64(5);
+  @$pb.TagNumber(6)
+  set rejectedTotal($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasRejectedTotal() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearRejectedTotal() => $_clearField(6);
+
+  /// True when replication apply has taken current entries above limit.
+  @$pb.TagNumber(7)
+  $core.bool get overLimit => $_getBF(6);
+  @$pb.TagNumber(7)
+  set overLimit($core.bool value) => $_setBool(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasOverLimit() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearOverLimit() => $_clearField(7);
+
+  /// Oldest retained Delete-tombstone expiration. Unset when no tombstone for
+  /// this kind is retained; live HLC floors and Put barriers have no deadline.
+  @$pb.TagNumber(8)
+  $1.Timestamp get oldestRetentionDeadline => $_getN(7);
+  @$pb.TagNumber(8)
+  set oldestRetentionDeadline($1.Timestamp value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasOldestRetentionDeadline() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearOldestRetentionDeadline() => $_clearField(8);
+  @$pb.TagNumber(8)
+  $1.Timestamp ensureOldestRetentionDeadline() => $_ensure(7);
+}
+
+/// CausalMetadataStatus is one lock-consistent snapshot of the vertex and edge
+/// causal-identity budgets.
+class CausalMetadataStatus extends $pb.GeneratedMessage {
+  factory CausalMetadataStatus({
+    CausalMetadataKindStatus? vertices,
+    CausalMetadataKindStatus? edges,
+  }) {
+    final result = create();
+    if (vertices != null) result.vertices = vertices;
+    if (edges != null) result.edges = edges;
+    return result;
+  }
+
+  CausalMetadataStatus._();
+
+  factory CausalMetadataStatus.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CausalMetadataStatus.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CausalMetadataStatus',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CausalMetadataKindStatus>(1, _omitFieldNames ? '' : 'vertices',
+        subBuilder: CausalMetadataKindStatus.create)
+    ..aOM<CausalMetadataKindStatus>(2, _omitFieldNames ? '' : 'edges',
+        subBuilder: CausalMetadataKindStatus.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CausalMetadataStatus clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CausalMetadataStatus copyWith(void Function(CausalMetadataStatus) updates) =>
+      super.copyWith((message) => updates(message as CausalMetadataStatus))
+          as CausalMetadataStatus;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CausalMetadataStatus create() => CausalMetadataStatus._();
+  @$core.override
+  CausalMetadataStatus createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static CausalMetadataStatus getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CausalMetadataStatus>(create);
+  static CausalMetadataStatus? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CausalMetadataKindStatus get vertices => $_getN(0);
+  @$pb.TagNumber(1)
+  set vertices(CausalMetadataKindStatus value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVertices() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVertices() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CausalMetadataKindStatus ensureVertices() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  CausalMetadataKindStatus get edges => $_getN(1);
+  @$pb.TagNumber(2)
+  set edges(CausalMetadataKindStatus value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasEdges() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearEdges() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CausalMetadataKindStatus ensureEdges() => $_ensure(1);
+}
+
 class GetServerStatusResponse extends $pb.GeneratedMessage {
   factory GetServerStatusResponse({
     $core.String? version,
@@ -5276,6 +5518,7 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
     $fixnum.Int64? vertexCount,
     $fixnum.Int64? edgeCount,
     SearchCapabilities? search,
+    CausalMetadataStatus? causalMetadata,
   }) {
     final result = create();
     if (version != null) result.version = version;
@@ -5293,6 +5536,7 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
     if (vertexCount != null) result.vertexCount = vertexCount;
     if (edgeCount != null) result.edgeCount = edgeCount;
     if (search != null) result.search = search;
+    if (causalMetadata != null) result.causalMetadata = causalMetadata;
     return result;
   }
 
@@ -5335,6 +5579,8 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..aOM<SearchCapabilities>(14, _omitFieldNames ? '' : 'search',
         subBuilder: SearchCapabilities.create)
+    ..aOM<CausalMetadataStatus>(15, _omitFieldNames ? '' : 'causalMetadata',
+        subBuilder: CausalMetadataStatus.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5516,6 +5762,20 @@ class GetServerStatusResponse extends $pb.GeneratedMessage {
   void clearSearch() => $_clearField(14);
   @$pb.TagNumber(14)
   SearchCapabilities ensureSearch() => $_ensure(13);
+
+  /// HA causal-metadata capacity and retention snapshot. Present on every
+  /// current server. Unlimited deployments report limit=0 while current usage
+  /// and high-water values still reflect retained HLC metadata.
+  @$pb.TagNumber(15)
+  CausalMetadataStatus get causalMetadata => $_getN(14);
+  @$pb.TagNumber(15)
+  set causalMetadata(CausalMetadataStatus value) => $_setField(15, value);
+  @$pb.TagNumber(15)
+  $core.bool hasCausalMetadata() => $_has(14);
+  @$pb.TagNumber(15)
+  void clearCausalMetadata() => $_clearField(15);
+  @$pb.TagNumber(15)
+  CausalMetadataStatus ensureCausalMetadata() => $_ensure(14);
 }
 
 /// ReplicationPeer is one row of the GetReplicationStatus snapshot.

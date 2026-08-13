@@ -2089,13 +2089,69 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 		isExhausted(t, err, "LANTERN_MAX_EDGES")
 	})
 
-	t.Run("RetainedCausalBarriersConsumeCapacity", func(t *testing.T) {
+	t.Run("RetainedCausalBarriersStillConsumeLiveCapacity", func(t *testing.T) {
 		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-		clock := hlc.New(hlc.NodeID{0xCA}, hlc.Options{})
+		clock := hlc.New(hlc.NodeID{0xC9}, hlc.Options{})
 		log := mutationlog.New(mutationlog.Options{Capacity: 16})
 		defer log.Close()
 		svc := NewLanternService(cache).
 			WithCapacityLimits(CapacityLimits{MaxVertices: 1, MaxEdges: 1}).
+			WithTombstoneTTL(24*time.Hour).
+			WithReplication(log, clock, nil)
+		expired := timestamppb.New(time.Now().Add(-time.Hour))
+		deadVertex := vertex("barrier-v")
+		deadVertex.Expiration = expired
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: deadVertex}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("second-v")})
+		isExhausted(t, err, "LANTERN_MAX_VERTICES")
+		if !strings.Contains(err.Error(), "live-plus-Put-barrier footprint") {
+			t.Fatalf("barrier-only capacity error = %v, want explicit live-plus-Put-barrier footprint", err)
+		}
+		// Moving the barrier to the separate D4 tombstone store frees the old
+		// live/barrier soft-cap slot. The causal budget (unlimited here) remains
+		// responsible for the retained floor.
+		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "barrier-v"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("second-v")}); err != nil {
+			t.Fatalf("Put after barrier-to-tombstone transition: %v", err)
+		}
+		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "second-v"}); err != nil {
+			t.Fatal(err)
+		}
+
+		svc.capacity.MaxVertices = 0 // isolate the edge soft cap from endpoints.
+		deadEdge := &pb.Edge{Tail: "barrier-tail", Head: "barrier-head", Weight: 1, Expiration: expired}
+		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: deadEdge}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: "second-tail", Head: "second-head", Weight: 1, Expiration: exp,
+		}})
+		isExhausted(t, err, "LANTERN_MAX_EDGES")
+		if !strings.Contains(err.Error(), "live-plus-Put-barrier footprint") {
+			t.Fatalf("barrier-only edge capacity error = %v, want explicit live-plus-Put-barrier footprint", err)
+		}
+		if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "barrier-tail", Head: "barrier-head"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: "second-tail", Head: "second-head", Weight: 1, Expiration: exp,
+		}}); err != nil {
+			t.Fatalf("edge Put after barrier-to-tombstone transition: %v", err)
+		}
+	})
+
+	t.Run("CausalMetadataBudgetIsIndependentOfLiveCapacity", func(t *testing.T) {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxVertexEntries: 1, MaxEdgeEntries: 1})
+		clock := hlc.New(hlc.NodeID{0xCA}, hlc.Options{})
+		log := mutationlog.New(mutationlog.Options{Capacity: 16})
+		defer log.Close()
+		svc := NewLanternService(cache).
+			WithCapacityLimits(CapacityLimits{MaxVertices: 10, MaxEdges: 10}).
 			WithTombstoneTTL(24*time.Hour).
 			WithReplication(log, clock, nil)
 		expired := timestamppb.New(time.Now().Add(-time.Hour))
@@ -2105,49 +2161,50 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 			t.Fatalf("first expired vertex Put: %v", err)
 		}
 		_, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("second-v")})
-		isExhausted(t, err, "LANTERN_MAX_VERTICES")
-		// Exact Delete reclaims a barrier-only identity even though it reports
-		// Existed=false. With tombstone retention disabled this explicitly opts
-		// out of the causal fence; with D4 enabled it transitions to bounded
-		// tombstone metadata, which is excluded from the admission footprint.
+		isExhausted(t, err, "LANTERN_MAX_VERTEX_CAUSAL_ENTRIES")
+		// Exact Delete preserves the floor as a D4 tombstone and reuses the same
+		// causal slot. It does not create room for a different identity.
 		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "barrier-v"}); err != nil {
 			t.Fatalf("exact Delete barrier vertex: %v", err)
 		}
-		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("second-v")}); err != nil {
-			t.Fatalf("Put after exact Delete reclaimed vertex barrier: %v", err)
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("second-v")}); err == nil {
+			t.Fatal("D4 tombstone unexpectedly freed causal identity slot")
 		}
-		if _, err := svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "second-v"}); err != nil {
-			t.Fatalf("clear second vertex: %v", err)
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: vertex("barrier-v")}); err != nil {
+			t.Fatalf("same identity replacement at causal limit: %v", err)
 		}
 
 		firstEdge := &pb.Edge{Tail: "barrier-tail", Head: "barrier-head", Weight: 1, Expiration: expired}
-		// Vertex capacity for edge endpoints is deliberately disabled here so
-		// this assertion isolates retained edge identity accounting.
-		svc.capacity.MaxVertices = 0
 		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: firstEdge}); err != nil {
 			t.Fatalf("first expired edge Put: %v", err)
 		}
 		_, err = svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
 			Tail: "second-tail", Head: "second-head", Weight: 1, Expiration: exp,
 		}})
-		isExhausted(t, err, "LANTERN_MAX_EDGES")
+		isExhausted(t, err, "LANTERN_MAX_EDGE_CAUSAL_ENTRIES")
 		if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "barrier-tail", Head: "barrier-head"}); err != nil {
 			t.Fatalf("exact Delete barrier edge: %v", err)
 		}
 		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
 			Tail: "second-tail", Head: "second-head", Weight: 1, Expiration: exp,
+		}}); err == nil {
+			t.Fatal("D4 edge tombstone unexpectedly freed causal identity slot")
+		}
+		if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: "barrier-tail", Head: "barrier-head", Weight: 1, Expiration: exp,
 		}}); err != nil {
-			t.Fatalf("Put after exact Delete reclaimed edge barrier: %v", err)
+			t.Fatalf("same edge identity replacement at causal limit: %v", err)
 		}
 	})
 
 	t.Run("ZeroTombstoneTTLExactDeleteReclaimsBarrier", func(t *testing.T) {
 		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+		cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxVertexEntries: 1})
 		clock := hlc.New(hlc.NodeID{0xCB}, hlc.Options{})
 		log := mutationlog.New(mutationlog.Options{Capacity: 16})
 		defer log.Close()
 		svc := NewLanternService(cache).
-			WithCapacityLimits(CapacityLimits{MaxVertices: 1}).
+			WithCapacityLimits(CapacityLimits{MaxVertices: 10}).
 			WithReplication(log, clock, nil)
 		dead := vertex("dead")
 		dead.Expiration = timestamppb.New(time.Now().Add(-time.Hour))
@@ -2187,6 +2244,41 @@ func TestLanternService_CapacityCaps(t *testing.T) {
 			t.Fatalf("replicated edge apply must bypass the cap: %v", err)
 		}
 	})
+}
+
+func TestLanternService_RestoreEdgesBypassesLocalCausalBudget(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	cache.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
+	// Fill the local causal budget first. Restore must still converge backup
+	// state and must not append a fresh mutation to the HA log.
+	if _, err := cache.PutEdgesWithExpirationHLCOutcomesChecked([]graphcache.EdgeItem[string]{
+		{Tail: "floor-tail", Head: "floor-head", Weight: 1, Expiration: time.Now().Add(time.Hour)},
+	}, hlc.Timestamp{WallNs: 1}); err != nil {
+		t.Fatal(err)
+	}
+	clock := hlc.New(hlc.NodeID{0xBC}, hlc.Options{})
+	log := mutationlog.New(mutationlog.Options{Capacity: 16})
+	defer log.Close()
+	svc := NewLanternService(cache).WithReplication(log, clock, nil)
+
+	resp, err := svc.RestoreEdges(context.Background(), &pb.PutEdgesRequest{Edges: []*pb.Edge{{
+		Tail: "backup-tail", Head: "backup-head", Weight: 2,
+	}}})
+	if err != nil {
+		t.Fatalf("RestoreEdges: %v", err)
+	}
+	if got := resp.GetOutcomes(); len(got) != 1 || got[0] != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatalf("outcomes = %v", got)
+	}
+	if log.Len() != 0 {
+		t.Fatalf("restore appended %d mutations", log.Len())
+	}
+	if _, _, ok := cache.GetEdgeDetail("backup-tail", "backup-head"); !ok {
+		t.Fatal("restored edge is absent")
+	}
+	if stats := cache.CausalMetadataStats(); stats.EdgeEntries != 1 {
+		t.Fatalf("restore consumed causal identity: %+v", stats)
+	}
 }
 
 // TestIlluminate_FlatFieldGhost is the #846 reserved-range regression: a

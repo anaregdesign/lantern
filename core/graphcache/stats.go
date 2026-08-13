@@ -58,10 +58,11 @@ func (c *GraphCache[S, T]) CausalBarrierCounts() (vertices, edges int) {
 }
 
 // CapacityFootprint returns the identities retained by the live graph or by
-// accepted-expired/expired-live causal barriers under one lock sample. The
-// counts are deliberately conservative: an identity represented in both live
-// additive edge state and a retained Put barrier is counted twice, matching
-// the soft-cap admission policy's preference for bounded heap over precision.
+// accepted-expired/expired-live Put causal barriers under one lock sample.
+// The counts remain deliberately conservative for the legacy live soft-cap
+// contract: an additive edge that also carries a barrier is counted twice.
+// CausalMetadataStats separately accounts the exact identity union across live
+// HLC floors, Put barriers, and Delete tombstones.
 func (c *GraphCache[S, T]) CapacityFootprint() (vertices, edges int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
