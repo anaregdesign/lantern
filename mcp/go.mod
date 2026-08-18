@@ -7,12 +7,11 @@ require (
 	github.com/anaregdesign/lantern/pb v0.12.0
 	github.com/anaregdesign/lantern/sdks/go v0.24.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
 	connectrpc.com/connect v1.20.0 // indirect
-	github.com/anaregdesign/lantern/core v0.18.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
