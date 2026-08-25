@@ -5,7 +5,7 @@
 # the repo root (not mcp/) because mcp/go.mod has replace directives that
 # point at sibling modules (../pb, ../sdks/go) and go.work pins all six
 # workspace members.
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /src
 
