@@ -1,6 +1,6 @@
 module github.com/anaregdesign/lantern/pb
 
-go 1.26
+go 1.26.0
 
 require (
 	connectrpc.com/connect v1.20.0
