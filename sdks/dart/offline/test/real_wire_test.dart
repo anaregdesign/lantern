@@ -371,6 +371,11 @@ void main() {
     final repository = OfflineLanternRepository(
       store: InMemoryOfflineStore(),
       remote: LanternClientOfflineRemote(client),
+      // Freeze replay scheduling while the transport deadline uses real time.
+      config: OfflineConfig(
+        clock: () => DateTime.utc(2026, 8, 13),
+        jitter: (ceiling) => ceiling,
+      ),
     );
     addTearDown(repository.dispose);
     await repository.putVertex(
