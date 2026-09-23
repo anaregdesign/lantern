@@ -593,7 +593,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true'
     runs-on: macos-15
-    timeout-minutes: 30
+    # Two bounded 10-minute attempts plus fresh-device creation must leave
+    # enough margin for setup/build, diagnostics upload, and mandatory cleanup.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -666,39 +668,92 @@ jobs:
           echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
           cat "$RUNNER_TEMP/ios-simulator-boot.log"
 
-      - name: Run iOS native smoke
-        id: ios_smoke
+      - name: Run classified iOS native smoke
+        id: ios_smoke_initial
+        if: success()
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 10
         working-directory: sdks/dart/example
-        run: |
-          flutter test --no-pub integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
-            --reporter=expanded --timeout=3m \
-            --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
-            --dart-define=LANTERN_ALLOW_INSECURE=true
+        env:
+          IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 90
+          IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
+        run: >-
+          bash tool/ios_smoke_ci.sh run-attempt "$DEVICE_ID" initial
+          "$RUNNER_TEMP/ios-smoke-diagnostics"
 
-      # Flutter's test timeout does not cover a stalled iOS app launch.
-      - name: Reboot iOS simulator after a failed smoke attempt
-        if: steps.ios_smoke.outcome == 'failure'
+      # Only a silent post-build/pre-body launch stall is infrastructure.
+      # Assertion, RPC, build, and post-body failures never enter this path.
+      - name: Create independently clean retry simulator
+        id: ios_fresh_device
+        if: steps.ios_smoke_initial.outputs.classification == 'launch_stall'
+        timeout-minutes: 3
+        working-directory: sdks/dart/example
         run: |
           xcrun simctl shutdown "$DEVICE_ID" || true
-          xcrun simctl erase "$DEVICE_ID"
-          xcrun simctl boot "$DEVICE_ID"
-          xcrun simctl bootstatus "$DEVICE_ID" -b
+          bash tool/ios_smoke_ci.sh create-retry-device \
+            "$DEVICE_ID" "$RUNNER_TEMP/ios-retry-device-id" \
+            "$RUNNER_TEMP/ios-smoke-diagnostics"
+          retry_device=$(cat "$RUNNER_TEMP/ios-retry-device-id")
+          test -n "$retry_device"
+          test "$retry_device" != "$DEVICE_ID"
+          echo "RETRY_DEVICE_ID=$retry_device" >> "$GITHUB_ENV"
 
-      - name: Retry iOS native smoke
+      - name: Retry classified iOS native smoke on fresh simulator
         id: ios_smoke_retry
-        if: steps.ios_smoke.outcome == 'failure'
-        timeout-minutes: 8
+        if: >-
+          steps.ios_smoke_initial.outputs.classification == 'launch_stall' &&
+          steps.ios_fresh_device.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 10
         working-directory: sdks/dart/example
+        env:
+          IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 90
+          IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
+        run: >-
+          bash tool/ios_smoke_ci.sh run-attempt "$RETRY_DEVICE_ID" retry
+          "$RUNNER_TEMP/ios-smoke-diagnostics"
+
+      - name: Finalize bounded iOS launch diagnostics
+        id: ios_diagnostics_finalize
+        if: always()
+        timeout-minutes: 2
+        working-directory: sdks/dart/example
+        run: >-
+          bash tool/ios_smoke_ci.sh finalize-diagnostics
+          "$RUNNER_TEMP/ios-smoke-diagnostics"
+
+      - name: Upload bounded iOS launch diagnostics
+        if: always() && steps.ios_diagnostics_finalize.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-ios-smoke-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-smoke-diagnostics
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require classified iOS smoke success
+        if: always()
+        env:
+          INITIAL_CLASSIFICATION: ${{ steps.ios_smoke_initial.outputs.classification }}
+          FRESH_DEVICE_OUTCOME: ${{ steps.ios_fresh_device.outcome }}
+          RETRY_CLASSIFICATION: ${{ steps.ios_smoke_retry.outputs.classification }}
         run: |
-          flutter test --no-pub integration_test/mobile_smoke_test.dart -d "$DEVICE_ID" \
-            --reporter=expanded --timeout=3m \
-            --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
-            --dart-define=LANTERN_ALLOW_INSECURE=true
+          set -euo pipefail
+          if [[ "$INITIAL_CLASSIFICATION" == success ]]; then
+            echo "SMOKE_DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [[ "$INITIAL_CLASSIFICATION" == launch_stall && \
+                "$FRESH_DEVICE_OUTCOME" == success && \
+                "$RETRY_CLASSIFICATION" == success ]]; then
+            echo "SMOKE_DEVICE_ID=$RETRY_DEVICE_ID" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "::error::iOS smoke failed: initial=$INITIAL_CLASSIFICATION fresh=$FRESH_DEVICE_OUTCOME retry=$RETRY_CLASSIFICATION"
+          exit 1
 
       - name: Record exact iOS revision evidence
-        if: steps.ios_smoke.outcome == 'success' || steps.ios_smoke_retry.outcome == 'success'
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
@@ -708,7 +763,7 @@ jobs:
             sdks/dart/example/ios/Runner.xcodeproj/project.pbxproj
           flutter_json=$(cd sdks/dart/example && flutter --version --machine)
           simulator=$(xcrun simctl list devices available -j | jq -er \
-            --arg id "$DEVICE_ID" \
+            --arg id "$SMOKE_DEVICE_ID" \
             '.devices | first(to_entries[] | .key as $runtime | .value[] | select(.udid == $id) | [$runtime, .name] | @tsv)')
           simulator_runtime=${simulator%%$'\t'*}
           simulator_name=${simulator#*$'\t'}
@@ -782,7 +837,7 @@ jobs:
           ' "$evidence/ios.json" >/dev/null
 
       - name: Upload sanitized iOS revision evidence
-        if: steps.ios_smoke.outcome == 'success' || steps.ios_smoke_retry.outcome == 'success'
+        if: success()
         uses: actions/upload-artifact@v7
         with:
           name: lantern-ios-revision-${{ github.sha }}
@@ -803,6 +858,16 @@ jobs:
           fi
           if [[ -n "$device" ]]; then
             xcrun simctl shutdown "$device" || true
+          fi
+
+      - name: Delete fresh retry simulator
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if [[ -f "$RUNNER_TEMP/ios-retry-device-id" ]]; then
+            retry_device=$(cat "$RUNNER_TEMP/ios-retry-device-id")
+            xcrun simctl shutdown "$retry_device" || true
+            xcrun simctl delete "$retry_device" || true
           fi
 
   gate:

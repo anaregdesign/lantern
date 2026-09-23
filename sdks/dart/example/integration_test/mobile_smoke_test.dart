@@ -10,6 +10,10 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('native mobile real-wire smoke', (tester) async {
+    // This explicit phase marker lets CI distinguish an app-launch stall from
+    // an assertion or RPC failure after the integration test body has begun.
+    // ignore: avoid_print
+    print('MOBILE_SMOKE_BODY_STARTED');
     const endpointValue = String.fromEnvironment('LANTERN_ENDPOINT');
     expect(endpointValue, isNotEmpty, reason: 'pass LANTERN_ENDPOINT');
     final endpoint = Uri.parse(endpointValue);

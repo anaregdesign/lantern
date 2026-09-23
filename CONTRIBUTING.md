@@ -138,6 +138,18 @@ archive. CI uses Dart Pub's own archive builder, unpacks the resulting tarball
 outside the checkout, resolves every included `pubspec.yaml` with an isolated
 cache, then runs analysis, tests, and `pana` against the unpacked artifact.
 
+The iOS job classifies the native smoke instead of treating every outer timeout
+as retryable infrastructure. Its helper bounds the full attempt and separately
+bounds the phase after `Xcode build done.` but before the explicit integration
+test-body marker. Only that silent `launch_stall` may retry, once, on a newly
+created simulator with the same runtime/device type and a different UDID.
+Build failures, assertions, RPC failures, and post-body stalls fail the blocking
+`Gate` directly. Bounded, redacted process/simulator/app diagnostics are always
+uploaded; the temporary retry simulator is always deleted. Flutter's integration
+test command rebuilds on the fresh simulator because it has no stable install-
+without-build test path; reusing the potentially wedged device or build state is
+less reliable than the one bounded rebuild.
+
 ## Coverage floor (ratchet)
 
 The `Build & Test` job measures per-module coverage (`-covermode=atomic`), merges the
