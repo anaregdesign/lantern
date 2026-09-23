@@ -71,6 +71,8 @@ sdks/dart/scripts/codegen.sh     # regenerate only sdks/dart/lib/src/gen
 
 CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go test` on PR/push. [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml) publishes to ghcr.io on `v*.*.*` tag pushes with cosign keyless signing. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full release and CI flow.
 
+Release workflows publish artifacts only. Project-managed GKE deployment is retired; the generic Kubernetes Helm chart remains available for operator-managed installations.
+
 ## Conventions and gotchas
 
 - **File layout & naming (Go)** — within every Go package in this repo:

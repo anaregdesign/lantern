@@ -1,5 +1,5 @@
 # Default values for lantern.
-# Minimal, cost-optimised profile for GKE Autopilot: a 2-replica
+# Minimal Kubernetes profile for operator-managed installations: a 2-replica
 # StatefulSet + headless Service (peer DNS) + ClusterIP Service (in-cluster
 # clients) + PDB. Lantern is a full-replica store, so 2 replicas give
 # rolling-update / single-node-drain survival at the lowest footprint.
@@ -151,11 +151,10 @@ cache:
 # dumps instead of coming up empty. It is also the single-instance
 # (replicaCount=1) rolling-update insurance, where restore-on-start re-seeds
 # the graph on boot. Each pod writes its own dumps (LANTERN_BACKUP_INSTANCE_ID
-# = pod name). persistence below renders a per-pod ReadWriteOnce PVC, which on
-# GKE Autopilot binds the default `standard-rwo` StorageClass — cost-minimal
-# and the recommended default. For a shared dump volume instead, point
-# persistence.existingClaim at a pre-provisioned RWX claim; set enabled: false
-# to opt out.
+# = pod name). persistence below renders a per-pod ReadWriteOnce PVC using
+# the cluster's default StorageClass unless storageClass is set explicitly.
+# For a shared dump volume instead, point persistence.existingClaim at a
+# pre-provisioned RWX claim; set enabled: false to opt out.
 backup:
   enabled: true
   dir: /var/lib/lantern/backups
@@ -194,12 +193,9 @@ probes:
     failureThreshold: 3
     successThreshold: 1
 
-# Resource requests/limits. On GKE Autopilot you pay for requests and an
-# unset limit is clamped to the request, so requests == limits here for
-# Guaranteed QoS and predictable cost. 250m CPU is the Autopilot per-pod
-# minimum; 512Mi memory is the server's working-set floor (the 250m:512Mi
-# CPU:memory ratio sits inside Autopilot's allowed 1:1–1:6.5 band). Raise
-# both together for larger graphs.
+# Resource requests/limits. Equal requests and limits provide Guaranteed
+# QoS. These defaults are a small baseline; size CPU and memory for the
+# graph and workload, keeping each request and limit in sync.
 resources:
   requests:
     cpu: 250m

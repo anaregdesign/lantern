@@ -435,8 +435,8 @@ write burst faster than TTL decay fails fast instead:
 - Keep `GOMEMLIMIT` below `resources.limits.memory` as the second line of
   defense — the caps bound entry counts, not bytes. The Helm chart defaults
   `runtime.goMemoryLimit` to `384MiB` under its `512Mi` container limit so a
-  restore plus replication catch-up triggers Go GC before a kernel OOM kill,
-  without increasing the billed GKE Autopilot request. Override both values
+  restore plus replication catch-up triggers Go GC before a kernel OOM kill.
+  The Kubernetes memory request remains unchanged. Override both values
   together and retain headroom for stacks and non-Go memory.
 
 **Causal metadata guard (`LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` /
