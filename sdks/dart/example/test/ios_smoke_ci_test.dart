@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -34,7 +35,7 @@ fi
     if (await sandbox.exists()) await sandbox.delete(recursive: true);
   });
 
-  test('reports success only after body and terminal pass markers', () async {
+  test('reports success after terminal pass markers', () async {
     await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
 echo 'Running Xcode build...'
 echo 'Xcode build done. 1.0s'
@@ -208,6 +209,279 @@ echo 'bounded process snapshot'
     );
   });
 
+  test(
+    'bounds noisy hung output while the producer is still running',
+    () async {
+      await _writeExecutable(fakeFlutter, r'''#!/usr/bin/env python3
+import os
+import time
+
+os.write(1, b'Running Xcode build...\nXcode build done. 1.0s\n')
+chunk = (b'noisy simulator output ' + b'x' * 1000 + b'\n') * 128
+while True:
+    os.write(1, chunk)
+    time.sleep(0.025)
+''');
+
+      final observed = await _observeAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+      expect(observed.result.exitCode, isNonZero);
+      expect(await _classification(sandbox), 'launch_stall');
+      expect(observed.sampleCount, greaterThan(5));
+      expect(observed.peakLogBytes, greaterThan(0));
+      expect(observed.peakLogBytes, lessThanOrEqualTo(262144));
+      expect(
+        utf8.encode(observed.result.stdout.toString()).length,
+        lessThanOrEqualTo(262144 + 4096),
+        reason: 'The console must stop growing after its bounded output budget',
+      );
+      expect(observed.elapsed, lessThan(const Duration(seconds: 20)));
+      await _expectPhases(sandbox, ['build_started', 'build_done']);
+    },
+  );
+
+  test(
+    'drains huge newline-free output and recognizes its phase markers',
+    () async {
+      await _writeExecutable(fakeFlutter, r'''#!/usr/bin/env python3
+import os
+import time
+
+for _ in range(32):
+    os.write(1, b'x' * 262144)
+for marker in (
+    b'Running Xcode build...',
+    b'Xcode build done. 1.0s',
+    b'MOBILE_SMOKE_BODY_STARTED',
+    b'MOBILE_SMOKE_PASS vertices=13',
+    b'All tests passed!',
+):
+    split = len(marker) // 2
+    os.write(1, marker[:split])
+    time.sleep(0.03)
+    os.write(1, marker[split:] + b' ')
+os.write(1, b'\n')
+''');
+
+      final observed = await _observeAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+      expect(observed.result.exitCode, 0, reason: '${observed.result.stderr}');
+      expect(await _classification(sandbox), 'success');
+      expect(observed.peakLogBytes, lessThanOrEqualTo(262144));
+      expect(
+        utf8.encode(observed.result.stdout.toString()).length,
+        lessThanOrEqualTo(262144 + 4096),
+      );
+      expect(observed.elapsed, lessThan(const Duration(seconds: 20)));
+      await _expectPhases(sandbox, _allPhases);
+    },
+  );
+
+  for (final classification in ['success', 'test_body_stall', 'launch_stall']) {
+    test(
+      'retains early phase markers after noisy $classification output',
+      () async {
+        final bodyStarted = classification != 'launch_stall';
+        final success = classification == 'success';
+        await _writeExecutable(fakeFlutter, '''#!/usr/bin/env python3
+import os
+import time
+
+os.write(1, b'Running Xcode build...\\nXcode build done. 1.0s\\n')
+${bodyStarted ? "os.write(1, b'MOBILE_SMOKE_BODY_STARTED\\n')" : ''}
+${success ? "os.write(1, b'MOBILE_SMOKE_PASS vertices=13\\nAll tests passed!\\n')" : ''}
+for _ in range(768):
+    os.write(1, b'x' * 1023 + b'\\n')
+os.write(1, b'diagnostic-tail-after-noise\\n')
+${success ? '' : 'time.sleep(30)'}
+''');
+
+        final result = await _runAttempt(
+          sandbox,
+          fakeFlutter,
+          fakeXcrun,
+          extraEnvironment: {'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '3'},
+        );
+
+        expect(
+          result.exitCode,
+          success ? 0 : isNonZero,
+          reason: '${result.stderr}',
+        );
+        expect(await _classification(sandbox), classification);
+        await _expectPhases(sandbox, [
+          'build_started',
+          'build_done',
+          if (bodyStarted) 'body_started',
+          if (success) ...['smoke_pass', 'tests_passed'],
+        ]);
+        final log = File('${sandbox.path}/diagnostics/initial/flutter.log');
+        expect(await log.length(), lessThanOrEqualTo(262144));
+        expect(
+          await log.readAsString(),
+          contains('diagnostic-tail-after-noise'),
+        );
+      },
+    );
+  }
+
+  test('redacts split secrets and bounds URL replacement expansion', () async {
+    await _writeExecutable(fakeFlutter, r'''#!/usr/bin/env python3
+import os
+import time
+
+os.write(1, b'Running Xcode build...\nXcode build done. 1.0s\n')
+os.write(1, b'MOBILE_SMOKE_BODY_STARTED\n')
+parts = (
+    b'Authorization: Bea',
+    b'rer split-bearer-secret http',
+    b's://split.private.test/path mobile-',
+    b'smoke:split-mobile-secret TOKEN=split-',
+    b'token-secret\n',
+)
+for part in parts:
+    os.write(1, part)
+    time.sleep(0.03)
+for _ in range(30000):
+    os.write(1, b'http://x\n')
+for part in parts:
+    os.write(1, part)
+    time.sleep(0.03)
+os.write(1, b'MOBILE_SMOKE_PASS vertices=13\nAll tests passed!\n')
+''');
+
+    final result = await _runAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+    expect(result.exitCode, 0, reason: '${result.stderr}');
+    expect(await _classification(sandbox), 'success');
+    final log = File('${sandbox.path}/diagnostics/initial/flutter.log');
+    expect(await log.length(), lessThanOrEqualTo(262144));
+    expect(
+      utf8.encode(result.stdout.toString()).length,
+      lessThanOrEqualTo(262144 + 4096),
+    );
+    for (final text in [result.stdout.toString(), await log.readAsString()]) {
+      for (final secret in [
+        'split-bearer-secret',
+        'split.private.test',
+        'split-mobile-secret',
+        'split-token-secret',
+        'http://x',
+      ]) {
+        expect(text, isNot(contains(secret)), reason: 'Leaked $secret');
+      }
+      expect(text, contains('<redacted>'));
+      expect(text, contains('<redacted-url>'));
+    }
+    await _expectPhases(sandbox, _allPhases);
+  });
+
+  test('clears stale phase flags before reusing an attempt label', () async {
+    final phases = Directory('${sandbox.path}/diagnostics/initial/phases');
+    await phases.create(recursive: true);
+    for (final phase in _allPhases) {
+      await File('${phases.path}/$phase').writeAsString('seen\n');
+    }
+    await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
+echo 'failed before launch'
+exit 1
+''');
+
+    final result = await _runAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+    expect(result.exitCode, isNonZero);
+    expect(await _classification(sandbox), 'pre_body_failure');
+    for (final phase in _allPhases) {
+      expect(
+        File('${phases.path}/$phase').existsSync(),
+        isFalse,
+        reason: phase,
+      );
+    }
+  });
+
+  test(
+    'finalizes both noisy attempts within the aggregate artifact bounds',
+    () async {
+      final diagnostics = Directory('${sandbox.path}/diagnostics');
+      final classifications = {'initial': 'launch_stall', 'retry': 'success'};
+      for (final entry in classifications.entries) {
+        final attempt = Directory('${diagnostics.path}/${entry.key}');
+        await Directory('${attempt.path}/phases').create(recursive: true);
+        await File(
+          '${attempt.path}/classification.txt',
+        ).writeAsString('${entry.value}\n');
+        for (final phase in _allPhases) {
+          await File('${attempt.path}/phases/$phase').writeAsString('true\n');
+        }
+        await Directory('${attempt.path}/diagnostics').create();
+        for (var index = 0; index < 10; index++) {
+          final name = index == 0
+              ? 'flutter.log'
+              : 'diagnostics/capture-$index.log';
+          await File('${attempt.path}/$name').writeAsString(
+            '${'http://x\n' * 32768}'
+            'tail-${entry.key}-$index Authorization: Bearer aggregate-secret\n',
+          );
+        }
+      }
+      await File('${diagnostics.path}/partial.raw').writeAsString('raw-secret');
+
+      final result = await Process.run('bash', [
+        _scriptPath,
+        'finalize-diagnostics',
+        diagnostics.path,
+      ], workingDirectory: Directory.current.path);
+
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      final files = await diagnostics
+          .list(recursive: true)
+          .where((entry) => entry is File)
+          .cast<File>()
+          .toList();
+      expect(files.length, lessThanOrEqualTo(32));
+      var totalBytes = 0;
+      for (final file in files) {
+        final size = await file.length();
+        totalBytes += size;
+        expect(size, lessThanOrEqualTo(262144), reason: file.path);
+        final text = await file.readAsString();
+        expect(text, isNot(contains('aggregate-secret')), reason: file.path);
+        expect(text, isNot(contains('http://x')), reason: file.path);
+        if (file.path.endsWith('.log')) {
+          expect(
+            text,
+            contains('tail-'),
+            reason: 'Retained logs keep useful tails',
+          );
+        }
+      }
+      expect(totalBytes, lessThanOrEqualTo(2097152));
+      for (final entry in classifications.entries) {
+        final attempt = '${diagnostics.path}/${entry.key}';
+        expect(
+          await File('$attempt/classification.txt').readAsString(),
+          '${entry.value}\n',
+        );
+        expect(
+          await File('$attempt/flutter.log').readAsString(),
+          contains('tail-${entry.key}-0'),
+        );
+        for (final phase in _allPhases) {
+          expect(
+            File('$attempt/phases/$phase').existsSync(),
+            isTrue,
+            reason: phase,
+          );
+        }
+      }
+      expect(File('${diagnostics.path}/partial.raw').existsSync(), isFalse);
+      expect(
+        await File('${diagnostics.path}/finalized.txt').readAsString(),
+        'bounded=true redacted=true\n',
+      );
+    },
+  );
   for (final outcome in ['success', 'assertion failure', 'RPC failure']) {
     test(
       'allows a delayed body to report $outcome within the launch budget',
@@ -399,6 +673,93 @@ exec /bin/sleep "\$@"
       );
     },
   );
+}
+
+const _allPhases = [
+  'build_started',
+  'build_done',
+  'body_started',
+  'smoke_pass',
+  'tests_passed',
+];
+
+Future<void> _expectPhases(Directory sandbox, List<String> phases) async {
+  for (final phase in phases) {
+    expect(
+      await File('${sandbox.path}/diagnostics/initial/phases/$phase').exists(),
+      isTrue,
+      reason: 'Phase $phase must survive diagnostic truncation',
+    );
+  }
+}
+
+Future<
+  ({ProcessResult result, int peakLogBytes, int sampleCount, Duration elapsed})
+>
+_observeAttempt(Directory sandbox, File flutter, File xcrun) async {
+  final stopwatch = Stopwatch()..start();
+  final process = await Process.start(
+    'bash',
+    [
+      _scriptPath,
+      'run-attempt',
+      'SOURCE-DEVICE',
+      'initial',
+      '${sandbox.path}/diagnostics',
+    ],
+    workingDirectory: Directory.current.path,
+    environment: {
+      ...Platform.environment,
+      'IOS_SMOKE_FLUTTER_BIN': flutter.path,
+      'IOS_SMOKE_XCRUN_BIN': xcrun.path,
+      'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '1',
+      'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '4',
+      'IOS_SMOKE_POLL_INTERVAL_SECONDS': '1',
+      'IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS': '1',
+    },
+  );
+  final stdout = process.stdout.transform(utf8.decoder).join();
+  final stderr = process.stderr.transform(utf8.decoder).join();
+  final log = File('${sandbox.path}/diagnostics/initial/flutter.log');
+  var peakLogBytes = 0;
+  var sampleCount = 0;
+  void sampleLog() {
+    try {
+      if (!log.existsSync()) return;
+      final size = log.lengthSync();
+      if (size > peakLogBytes) peakLogBytes = size;
+      sampleCount++;
+    } on FileSystemException {
+      // An atomic finalization can replace the file between existence and stat.
+    }
+  }
+
+  final timer = Timer.periodic(
+    const Duration(milliseconds: 10),
+    (_) => sampleLog(),
+  );
+  try {
+    final exitCode = await process.exitCode.timeout(
+      const Duration(seconds: 25),
+    );
+    sampleLog();
+    final result = ProcessResult(
+      process.pid,
+      exitCode,
+      await stdout,
+      await stderr,
+    );
+    stopwatch.stop();
+    return (
+      result: result,
+      peakLogBytes: peakLogBytes,
+      sampleCount: sampleCount,
+      elapsed: stopwatch.elapsed,
+    );
+  } finally {
+    timer.cancel();
+    process.kill(ProcessSignal.sigkill);
+  }
 }
 
 String get _scriptPath => '${Directory.current.path}/tool/ios_smoke_ci.sh';

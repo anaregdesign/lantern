@@ -11,7 +11,8 @@ readonly launch_timeout="${IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS:-180}"
 readonly total_timeout="${IOS_SMOKE_TOTAL_TIMEOUT_SECONDS:-480}"
 readonly poll_interval="${IOS_SMOKE_POLL_INTERVAL_SECONDS:-1}"
 readonly diagnostic_timeout="${IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS:-10}"
-readonly max_diagnostic_bytes=262144
+readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly log_helper="$script_dir/ios_smoke_log.py"
 
 require_positive_integer() {
   local name=$1 value=$2
@@ -21,40 +22,25 @@ require_positive_integer() {
   fi
 }
 
-redact_text() {
-  local source=$1 destination=$2
-  sed -E \
-    -e 's#https?://[^[:space:]<>]+#<redacted-url>#g' \
-    -e 's#(Authorization:?[[:space:]]*(Bearer[[:space:]]*)?)[^[:space:]]+#\1<redacted>#Ig' \
-    -e 's#((LANTERN_)?TOKEN|token)[=:][^[:space:]]+#\1=<redacted>#g' \
-    -e 's#mobile-smoke:[^[:space:]]+#mobile-smoke:<redacted>#g' \
-    -e 's#[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}#<redacted-jwt>#g' \
-    "$source" > "$destination"
-}
-
 capture_bounded() {
   local destination=$1
   shift
-  local raw
-  raw=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/lantern-ios-diagnostic.XXXXXX")
   local pid polls=0 status=0
   local max_polls=$((diagnostic_timeout * 10))
-  "$@" > "$raw" 2>&1 &
+  (
+    set -o pipefail
+    "$@" 2>&1 | python3 "$log_helper" stream "$destination"
+  ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if (( polls >= max_polls )); then
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 1
-      kill -KILL "$pid" 2>/dev/null || true
+      terminate_process_tree "$pid"
       break
     fi
     sleep 0.1
     polls=$((polls + 1))
   done
   wait "$pid" || status=$?
-  LC_ALL=C head -c "$max_diagnostic_bytes" "$raw" > "${raw}.bounded"
-  redact_text "${raw}.bounded" "$destination"
-  rm -f "$raw" "${raw}.bounded"
   return "$status"
 }
 
@@ -106,55 +92,18 @@ record_classification() {
 }
 
 sanitize_bounded_file() {
-  local source=$1 bounded sanitized
-  bounded=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/lantern-ios-bounded.XXXXXX")
-  sanitized=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/lantern-ios-sanitized.XXXXXX")
-  LC_ALL=C tail -c "$max_diagnostic_bytes" "$source" > "$bounded"
-  redact_text "$bounded" "$sanitized"
-  mv "$sanitized" "$source"
-  rm -f "$bounded" "$sanitized"
+  python3 "$log_helper" sanitize "$1"
 }
 
 finalize_diagnostics() {
-  local root=$1 file size finalized
-  local count=0 total=0
-  mkdir -p "$root"
-  if find "$root" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
-    echo "diagnostics contain a non-regular entry" >&2
-    return 1
-  fi
-  while IFS= read -r -d '' file; do
-    case "$file" in
-      *.raw | *.bounded | *.sanitized)
-        rm -f "$file"
-        continue
-        ;;
-    esac
-    sanitize_bounded_file "$file"
-    size=$(wc -c < "$file")
-    count=$((count + 1))
-    total=$((total + size))
-    if (( count > 32 || total > 2097152 )); then
-      echo "diagnostics exceed the aggregate artifact bound" >&2
-      return 1
-    fi
-  done < <(find "$root" -type f -print0)
-  finalized="$root/finalized.txt"
-  printf 'bounded=true redacted=true\n' > "$finalized"
-  size=$(wc -c < "$finalized")
-  count=$((count + 1))
-  total=$((total + size))
-  if (( count > 32 || total > 2097152 )); then
-    rm -f "$finalized"
-    echo "diagnostics exceed the aggregate artifact bound" >&2
-    return 1
-  fi
+  python3 "$log_helper" finalize "$1"
 }
 
 run_attempt() {
   local device=$1 attempt=$2 diagnostics_root=$3
   local destination="$diagnostics_root/$attempt"
   local log="$destination/flutter.log"
+  local phases="$destination/phases"
   local started_at=$SECONDS build_done_at=-1 body_started=false
   local classification=pre_body_failure status=0
 
@@ -166,7 +115,8 @@ run_attempt() {
     echo "invalid attempt label: $attempt" >&2
     return 64
   }
-  mkdir -p "$destination"
+  mkdir -p "$destination" "$phases"
+  rm -f "$phases/"{build_started,build_done,body_started,smoke_pass,tests_passed}
   : > "$log"
 
   (
@@ -174,28 +124,28 @@ run_attempt() {
     "$flutter_bin" test --no-pub integration_test/mobile_smoke_test.dart \
       -d "$device" --reporter=expanded --timeout=3m \
       --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
-      --dart-define=LANTERN_ALLOW_INSECURE=true 2>&1 | tee -a "$log"
+      --dart-define=LANTERN_ALLOW_INSECURE=true 2>&1 | python3 "$log_helper" stream "$log" "$phases"
   ) &
   local runner_pid=$!
 
   while kill -0 "$runner_pid" 2>/dev/null; do
     if [[ "$body_started" == false ]] && \
-      grep -Fq 'MOBILE_SMOKE_BODY_STARTED' "$log"; then
+      [[ -f "$phases/body_started" ]]; then
       body_started=true
     fi
-    if (( build_done_at < 0 )) && grep -Fq 'Xcode build done.' "$log"; then
+    if (( build_done_at < 0 )) && [[ -f "$phases/build_done" ]]; then
       build_done_at=$SECONDS
     fi
     if (( build_done_at >= 0 )) && [[ "$body_started" == false ]] && \
       (( SECONDS - build_done_at >= launch_timeout )); then
-      if grep -Fq 'MOBILE_SMOKE_BODY_STARTED' "$log"; then
+      if [[ -f "$phases/body_started" ]]; then
         body_started=true
         continue
       fi
       mkdir -p "$destination/diagnostics"
       capture_bounded "$destination/diagnostics/process-tree-before-stop.txt" \
         "$ps_bin" -axo pid,ppid,state,etime,command || true
-      if grep -Fq 'MOBILE_SMOKE_BODY_STARTED' "$log"; then
+      if [[ -f "$phases/body_started" ]]; then
         body_started=true
         continue
       fi
@@ -210,14 +160,14 @@ run_attempt() {
       return 70
     fi
     if (( SECONDS - started_at >= total_timeout )); then
-      if grep -Fq 'MOBILE_SMOKE_BODY_STARTED' "$log"; then
+      if [[ -f "$phases/body_started" ]]; then
         body_started=true
       fi
       if [[ "$body_started" == true ]]; then
         classification=test_body_stall
       elif (( build_done_at >= 0 )); then
         classification=launch_stall
-      elif grep -Fq 'Running Xcode build...' "$log"; then
+      elif [[ -f "$phases/build_started" ]]; then
         classification=build_stall
       else
         classification=pre_body_stall
@@ -225,7 +175,7 @@ run_attempt() {
       mkdir -p "$destination/diagnostics"
       capture_bounded "$destination/diagnostics/process-tree-before-stop.txt" \
         "$ps_bin" -axo pid,ppid,state,etime,command || true
-      if grep -Fq 'MOBILE_SMOKE_BODY_STARTED' "$log"; then
+      if [[ -f "$phases/body_started" ]]; then
         body_started=true
         classification=test_body_stall
       fi
@@ -243,20 +193,20 @@ run_attempt() {
   done
 
   wait "$runner_pid" || status=$?
-  if grep -Fq 'MOBILE_SMOKE_BODY_STARTED' "$log"; then
+  if [[ -f "$phases/body_started" ]]; then
     body_started=true
   fi
-  if (( status == 0 )) && grep -Fq 'MOBILE_SMOKE_PASS ' "$log" && \
-    grep -Fq 'All tests passed!' "$log"; then
+  if (( status == 0 )) && [[ -f "$phases/smoke_pass" ]] && \
+    [[ -f "$phases/tests_passed" ]]; then
     sanitize_bounded_file "$log"
     record_classification success "$destination"
     return 0
   fi
   if [[ "$body_started" == true ]]; then
     classification=test_failure
-  elif grep -Fq 'Xcode build done.' "$log"; then
+  elif [[ -f "$phases/build_done" ]]; then
     classification=launch_failure
-  elif grep -Fq 'Running Xcode build...' "$log"; then
+  elif [[ -f "$phases/build_started" ]]; then
     classification=build_failure
   fi
   capture_diagnostics "$device" "$destination/diagnostics"

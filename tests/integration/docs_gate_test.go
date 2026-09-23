@@ -492,26 +492,45 @@ func TestDartWorkflowGate(t *testing.T) {
 		t.Fatalf("read iOS smoke helper: %v", err)
 	}
 	helperText := string(helper)
+	logHelper, err := os.ReadFile(filepath.Join(repoRoot, "sdks", "dart", "example", "tool", "ios_smoke_log.py"))
+	if err != nil {
+		t.Fatalf("read iOS smoke log helper: %v", err)
+	}
+	logHelperText := string(logHelper)
 	for _, contract := range []string{
 		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS:-180",
 		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS:-480",
-		"MOBILE_SMOKE_BODY_STARTED",
-		"Xcode build done.",
 		"record_classification launch_stall",
 		"classification=test_failure",
 		"capture_diagnostics",
 		"finalize_diagnostics",
-		"count > 32 || total > 2097152",
 		"simctl listapps",
 		"simctl get_app_container",
 		"log show --last 5m",
-		"<redacted-url>",
+		`python3 "$log_helper" stream "$log" "$phases"`,
+		`[[ -f "$phases/body_started" ]]`,
+		`[[ -f "$phases/build_done" ]]`,
 		"simctl create",
 		`[[ "$retry_device" != "$source_device" ]]`,
 	} {
 		if !strings.Contains(helperText, contract) {
 			t.Errorf("iOS smoke helper is missing contract %q", contract)
 		}
+	}
+	for _, contract := range []string{
+		"MOBILE_SMOKE_BODY_STARTED",
+		"Xcode build done.",
+		"MAX_FILE_BYTES = 262144",
+		"MAX_ARTIFACT_BYTES = 2097152",
+		"MAX_FILES = 32",
+		"<redacted-url>",
+	} {
+		if !strings.Contains(logHelperText, contract) {
+			t.Errorf("iOS smoke log helper is missing contract %q", contract)
+		}
+	}
+	if strings.Contains(helperText, `tee -a "$log"`) {
+		t.Error("iOS smoke helper still writes an unbounded live log")
 	}
 	if got := strings.Count(helperText, `if ! kill -0 "$runner_pid" 2>/dev/null; then`); got != 2 {
 		t.Errorf("iOS smoke helper must recheck runner liveness before both timeout kills; got %d checks", got)
