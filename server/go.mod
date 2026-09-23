@@ -3,7 +3,7 @@ module github.com/anaregdesign/lantern/server
 go 1.26.8
 
 require (
-	connectrpc.com/connect v1.20.0
+	connectrpc.com/connect v1.21.0
 	connectrpc.com/grpchealth v1.5.0
 	connectrpc.com/grpcreflect v1.3.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0
