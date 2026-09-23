@@ -153,6 +153,15 @@ test command rebuilds on the fresh simulator because it has no stable install-
 without-build test path; reusing the potentially wedged device or build state is
 less reliable than the one bounded rebuild.
 
+The iOS helper uses Python 3's standard library to retain at most 256 KiB of
+redacted Flutter output on disk throughout the attempt. Phase flags are stored
+separately so log rotation cannot change classification. Live Actions output is
+redacted and capped too; known phase notifications continue after that cap.
+Lines over 8 KiB are omitted without buffering their remaining contents. The
+artifact finalizer reserves space for classification and phase metadata, then
+shares its 2 MiB / 32-file budget across useful diagnostic tails from both
+attempts instead of dropping the artifact when logs are noisy.
+
 ## Coverage floor (ratchet)
 
 The `Build & Test` job measures per-module coverage (`-covermode=atomic`), merges the
