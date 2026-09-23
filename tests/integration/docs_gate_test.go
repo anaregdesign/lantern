@@ -3,6 +3,7 @@ package integration_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/anaregdesign/lantern/cli/parser"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"gopkg.in/yaml.v3"
 )
 
 // TestTraversalDocumentationGate keeps the maintained consumer examples and
@@ -114,24 +116,176 @@ func TestDartPublishingContractGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Dart SDK workflow: %v", err)
 	}
-	publishStart := strings.Index(string(workflow), "\n  publish:\n")
-	if publishStart == -1 {
-		t.Fatal("Dart SDK workflow is missing the publish job")
+	var definition struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        map[string]struct {
+			Needs           []string          `yaml:"needs"`
+			If              string            `yaml:"if"`
+			Permissions     map[string]string `yaml:"permissions"`
+			ContinueOnError bool              `yaml:"continue-on-error"`
+			Outputs         map[string]string `yaml:"outputs"`
+			Steps           []struct {
+				ID              string            `yaml:"id"`
+				Uses            string            `yaml:"uses"`
+				Run             string            `yaml:"run"`
+				ContinueOnError bool              `yaml:"continue-on-error"`
+				With            map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
 	}
-	publishWorkflow := string(workflow)[publishStart:]
-
-	for _, contract := range []string{
-		"startsWith(github.ref, 'refs/tags/sdks/dart/v')",
-		"timeout-minutes: 15",
-		"id-token: write",
-		"uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0",
-		"dart pub get --enforce-lockfile --no-example",
-		"dart pub publish --force",
-		`gh release create "$TAG" --title "$TAG"`,
-	} {
-		if !strings.Contains(publishWorkflow, contract) {
-			t.Errorf("Dart SDK workflow is missing publishing contract %q", contract)
+	// Other jobs use scalar `needs`; decode only the release chain below.
+	var document yaml.Node
+	if err := yaml.Unmarshal(workflow, &document); err != nil {
+		t.Fatalf("parse Dart SDK workflow: %v", err)
+	}
+	root := document.Content[0]
+	for i := 0; i < len(root.Content); i += 2 {
+		if root.Content[i].Value != "jobs" {
+			continue
 		}
+		jobs := root.Content[i+1]
+		for j := 1; j < len(jobs.Content); j += 2 {
+			job := jobs.Content[j]
+			for k := 0; k < len(job.Content); k += 2 {
+				if job.Content[k].Value == "needs" && job.Content[k+1].Kind == yaml.ScalarNode {
+					value := job.Content[k+1]
+					job.Content[k+1] = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{value}}
+				}
+			}
+		}
+	}
+	if err := document.Decode(&definition); err != nil {
+		t.Fatalf("decode Dart SDK workflow: %v", err)
+	}
+	if !reflect.DeepEqual(definition.Permissions, map[string]string{"contents": "read"}) {
+		t.Errorf("workflow default permissions must be contents-read only: %v", definition.Permissions)
+	}
+
+	expected := map[string]struct {
+		needs       []string
+		permissions map[string]string
+		condition   string
+		contracts   []string
+	}{
+		"release-preflight": {
+			needs:       []string{"gate"},
+			permissions: map[string]string{"contents": "read"},
+			condition:   "startsWith(github.ref, 'refs/tags/sdks/dart/v')",
+			contracts: []string{
+				`[[ "$TAG" =~ ^sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
+				`test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`,
+				`test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"`,
+				`test "$(awk '$1 == "version:" { print $2; exit }' sdks/dart/pubspec.yaml)" = "$version"`,
+				`grep -Fx "## $version" sdks/dart/CHANGELOG.md`,
+				`git archive "$GITHUB_SHA:sdks/dart"`,
+				"dart pub get --enforce-lockfile --no-example",
+				`dart pub publish -C "$source_dir" --to-archive="$archive"`,
+				`tar -xzf "$archive" -C "$package_dir"`,
+				`test ! -e "$package_dir/offline"`,
+				`test ! -e "$package_dir/example/pubspec.yaml"`,
+				`PUB_CACHE="$isolated_pub_cache" dart pub get --no-example`,
+				`PUB_CACHE="$isolated_pub_cache" dart analyze`,
+				`PUB_CACHE="$isolated_pub_cache" dart test`,
+				"python3 sdks/dart/scripts/release.py preflight",
+			},
+		},
+		"publish": {
+			needs:       []string{"release-preflight"},
+			permissions: map[string]string{"contents": "read", "id-token": "write"},
+			condition:   "needs.release-preflight.outputs.publish_required == 'true'",
+			contracts: []string{
+				`echo "$ARCHIVE_SHA256  $archive" | sha256sum --check --strict`,
+				`dart pub publish --force --from-archive="$archive"`,
+			},
+		},
+		"verify-published": {
+			needs:       []string{"release-preflight", "publish"},
+			permissions: map[string]string{"contents": "read"},
+			condition:   "${{ !cancelled() && needs.release-preflight.result == 'success' && (needs.publish.result == 'success' || (needs.publish.result == 'skipped' && needs.release-preflight.outputs.publish_required == 'false')) }}",
+			contracts:   []string{"python3 sdks/dart/scripts/release.py verify", `--sha256 "$ARCHIVE_SHA256"`},
+		},
+		"release": {
+			needs:       []string{"release-preflight", "verify-published"},
+			permissions: map[string]string{"contents": "write"},
+			condition:   "${{ !cancelled() && needs.release-preflight.result == 'success' && needs.verify-published.result == 'success' }}",
+			contracts: []string{
+				`test "$TAG" = "sdks/dart/v$VERSION"`,
+				`gh release create "$TAG" --title "$TAG"`,
+				`gh release edit "$TAG" --title "$TAG"`,
+			},
+		},
+	}
+	for name, want := range expected {
+		t.Run(name, func(t *testing.T) {
+			job, ok := definition.Jobs[name]
+			if !ok {
+				t.Fatalf("missing release-chain job %s", name)
+			}
+			if !reflect.DeepEqual(job.Needs, want.needs) {
+				t.Errorf("needs = %v; want %v", job.Needs, want.needs)
+			}
+			if !reflect.DeepEqual(job.Permissions, want.permissions) {
+				t.Errorf("permissions = %v; want %v", job.Permissions, want.permissions)
+			}
+			if got := strings.Join(strings.Fields(job.If), " "); got != want.condition {
+				t.Errorf("release gating condition = %q; want %q", got, want.condition)
+			}
+			if job.ContinueOnError {
+				t.Error("release-chain job may not continue on error")
+			}
+			var commands strings.Builder
+			for _, step := range job.Steps {
+				commands.WriteString(step.Run)
+				if step.ContinueOnError {
+					t.Error("release-chain step may not continue on error")
+				}
+				if strings.HasPrefix(step.Uses, "actions/checkout@") {
+					if name == "publish" || name == "release" {
+						t.Error("privileged jobs may not check out repository code")
+					}
+					if step.With["ref"] != "${{ github.sha }}" || step.With["persist-credentials"] != "false" {
+						t.Error("release checks must use the exact workflow SHA without persisted credentials")
+					}
+				}
+				if strings.HasPrefix(step.Uses, "actions/download-artifact@") && step.With["artifact-ids"] != "${{ needs.release-preflight.outputs.archive_artifact_id }}" {
+					t.Error("release-chain jobs must consume the immutable preflight artifact ID")
+				}
+				if name == "release" && strings.Contains(step.Uses, "setup-dart") {
+					t.Error("Release writer may not set up pub.dev credentials")
+				}
+			}
+			for _, contract := range want.contracts {
+				if !strings.Contains(commands.String(), contract) {
+					t.Errorf("missing release contract %q", contract)
+				}
+			}
+		})
+	}
+	for name, job := range definition.Jobs {
+		if job.Permissions["id-token"] == "write" && name != "publish" {
+			t.Errorf("unexpected OIDC authority in job %s", name)
+		}
+		if job.Permissions["contents"] == "write" && name != "release" {
+			t.Errorf("unexpected Release authority in job %s", name)
+		}
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "gh release ") && name != "release" {
+				t.Errorf("job %s mutates/releases outside the verified Release writer", name)
+			}
+		}
+	}
+	for key, value := range map[string]string{
+		"version":             "${{ steps.candidate.outputs.version }}",
+		"archive_sha256":      "${{ steps.candidate.outputs.archive_sha256 }}",
+		"archive_artifact_id": "${{ steps.archive.outputs.artifact-id }}",
+		"publish_required":    "${{ steps.state.outputs.publish_required }}",
+	} {
+		if definition.Jobs["release-preflight"].Outputs[key] != value {
+			t.Errorf("preflight output %s no longer carries verified candidate/state", key)
+		}
+	}
+	if !strings.Contains(string(workflow), "python3 -B -m unittest discover -s scripts -p release_test.py") {
+		t.Error("Dart CI must run the pub.dev failure-path and archive regression tests")
 	}
 	for _, retired := range []string{
 		"Enforce first-release epic blockers",

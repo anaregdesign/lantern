@@ -343,8 +343,14 @@ number rather than force-moving the tag.
   archive resolution, `pana`, and Android/iOS example conformance before publishing
   `lantern_client` with pub.dev OIDC (`id-token: write`, no token secret). Configure
   pub.dev automated publishing for repository `anaregdesign/lantern` and tag pattern
-  `sdks/dart/v{{version}}`. The workflow creates/updates the GitHub Release only after
-  pub.dev confirms the version exists; its title is exactly the tag.
+  `sdks/dart/v{{version}}`. A read-only preflight verifies the exact tag and
+  dependency-closed candidate archive. The publish job has `contents: read` and
+  `id-token: write` only and uploads that verified archive. An independent read-only
+  job waits for pub.dev visibility and compares every archive file with the candidate,
+  including on reruns of an existing version. Only then may a separate job with
+  `contents: write` and no OIDC create/update the GitHub Release; its title is exactly
+  the tag. A missing package, failed publication, or differing/missing published
+  archive blocks the Release.
 - `sdks/dart/offline/vX.Y.Z` is reserved for the storage-neutral
   `lantern_client_offline` core owned by #1162. It does not include SQLite,
   encryption, secure storage, or another production adapter; #1163 owns the

@@ -174,6 +174,9 @@ jobs:
           cat "$RUNNER_TEMP"/lantern-dart-*.log
           exit 1
 
+      - name: Test parent publication safeguards
+        run: python3 -B -m unittest discover -s scripts -p release_test.py
+
       - name: Resolve dependencies
         # The Flutter example resolves in the blocking Android job. Keeping it
         # out of this pure-Dart job avoids requiring a second Flutter install.
@@ -914,97 +917,188 @@ jobs:
 
           echo "Full Dart/mobile matrix: $FULL" >> "$GITHUB_STEP_SUMMARY"
 
-  publish:
-    name: Publish lantern_client
+  release-preflight:
+    name: Verify parent release candidate
     needs: [gate]
     if: startsWith(github.ref, 'refs/tags/sdks/dart/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      archive_sha256: ${{ steps.candidate.outputs.archive_sha256 }}
+      archive_artifact_id: ${{ steps.archive.outputs.artifact-id }}
+      publish_required: ${{ steps.state.outputs.publish_required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up current supported Dart without OIDC
+        uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0
+        with:
+          sdk: 3.12.2
+
+      - name: Verify exact tag and build dependency-closed candidate
+        id: candidate
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"
+          version=${TAG#sdks/dart/v}
+          test "$(awk '$1 == "name:" { print $2; exit }' sdks/dart/pubspec.yaml)" = lantern_client
+          test "$(awk '$1 == "version:" { print $2; exit }' sdks/dart/pubspec.yaml)" = "$version"
+          grep -Fx "## $version" sdks/dart/CHANGELOG.md
+
+          artifact_root="$RUNNER_TEMP/lantern-client-release"
+          source_dir="$artifact_root/source"
+          archive="$artifact_root/lantern_client.tar.gz"
+          package_dir="$artifact_root/unpacked/package"
+          isolated_pub_cache="$artifact_root/pub-cache"
+          mkdir -p "$source_dir" "$package_dir" "$isolated_pub_cache"
+          git archive "$GITHUB_SHA:sdks/dart" | tar -x -C "$source_dir"
+          (cd "$source_dir" && dart pub get --enforce-lockfile --no-example)
+          dart pub publish -C "$source_dir" --to-archive="$archive"
+          tar -xzf "$archive" -C "$package_dir"
+          mapfile -d '' pubspecs < <(find "$package_dir" -name pubspec.yaml -print0)
+          test "${#pubspecs[@]}" -gt 0
+          test ! -e "$package_dir/offline"
+          test ! -e "$package_dir/example/pubspec.yaml"
+          test -f "$package_dir/example/lantern_client_example.dart"
+          if grep -HnE '^[[:space:]]*lantern_client_offline:' "${pubspecs[@]}"; then
+            echo "::error::parent publish archive references lantern_client_offline"
+            exit 1
+          fi
+          for pubspec in "${pubspecs[@]}"; do
+            (
+              cd "$(dirname "$pubspec")"
+              PUB_CACHE="$isolated_pub_cache" dart pub get --no-example
+              PUB_CACHE="$isolated_pub_cache" dart analyze
+            )
+          done
+          (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart test)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pub.dev state and any existing archive
+        id: state
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+          ARCHIVE_SHA256: ${{ steps.candidate.outputs.archive_sha256 }}
+        run: |
+          python3 sdks/dart/scripts/release.py preflight \
+            --version "$VERSION" \
+            --candidate "$RUNNER_TEMP/lantern-client-release/lantern_client.tar.gz" \
+            --sha256 "$ARCHIVE_SHA256" --output "$GITHUB_OUTPUT"
+
+      - name: Preserve the verified candidate archive
+        id: archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-client-release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lantern-client-release/lantern_client.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish lantern_client
+    needs: [release-preflight]
+    if: needs.release-preflight.outputs.publish_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
       name: pub.dev
       url: https://pub.dev/packages/lantern_client
     permissions:
-      contents: write
+      contents: read
       id-token: write
-    defaults:
-      run:
-        working-directory: sdks/dart
     steps:
-      - uses: actions/checkout@v7
+      - name: Download the verified candidate archive
+        uses: actions/download-artifact@v8
         with:
-          fetch-depth: 0
+          artifact-ids: ${{ needs.release-preflight.outputs.archive_artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/lantern-client-release
 
-      # setup-dart also mints and configures the GitHub OIDC credential that
-      # pub.dev's automated publisher consumes. A Flutter-only setup silently
-      # falls back to interactive Google OAuth in a headless runner.
+      # This job executes no repository scripts and has no Release authority.
+      # --from-archive publishes the bytes already validated in preflight.
       - name: Set up current supported Dart and pub.dev OIDC
         uses: dart-lang/setup-dart@7654d458321ee25acccccfdb86cd48bd95768ff1 # v1.8.0
         with:
           sdk: 3.12.2
 
-      - name: Verify tag, package version, and changelog
+      - name: Publish verified archive with pub.dev OIDC
         env:
+          ARCHIVE_SHA256: ${{ needs.release-preflight.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lantern-client-release/lantern_client.tar.gz"
+          echo "$ARCHIVE_SHA256  $archive" | sha256sum --check --strict
+          dart pub publish --force --from-archive="$archive"
+
+  verify-published:
+    name: Verify published parent archive
+    needs: [release-preflight, publish]
+    if: >-
+      ${{ !cancelled() && needs.release-preflight.result == 'success' &&
+          (needs.publish.result == 'success' ||
+           (needs.publish.result == 'skipped' && needs.release-preflight.outputs.publish_required == 'false')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the verified candidate archive
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.release-preflight.outputs.archive_artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/lantern-client-release
+
+      - name: Verify pub.dev visibility and exact package archive contents
+        env:
+          VERSION: ${{ needs.release-preflight.outputs.version }}
+          ARCHIVE_SHA256: ${{ needs.release-preflight.outputs.archive_sha256 }}
+        run: |
+          python3 sdks/dart/scripts/release.py verify \
+            --version "$VERSION" \
+            --candidate "$RUNNER_TEMP/lantern-client-release/lantern_client.tar.gz" \
+            --sha256 "$ARCHIVE_SHA256"
+
+  release:
+    name: Create parent SDK GitHub Release
+    needs: [release-preflight, verify-published]
+    if: >-
+      ${{ !cancelled() && needs.release-preflight.result == 'success' &&
+          needs.verify-published.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # No checkout or Dart setup: this job has only Release authority.
+      - name: Create exact-title GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.release-preflight.outputs.version }}
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          tag_version=${TAG#sdks/dart/v}
-          pubspec_version=$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)
-          test "$tag_version" = "$pubspec_version"
-          grep -Fx "## $tag_version" CHANGELOG.md
-          echo "VERSION=$tag_version" >> "$GITHUB_ENV"
-
-      - name: Resolve exact lockfile
-        # The publish runner intentionally installs Dart only. Resolve the
-        # package lock without descending into the maintained Flutter example.
-        run: dart pub get --enforce-lockfile --no-example
-
-      - name: Check pub.dev package/version state
-        run: |
-          set -euo pipefail
-          package_status=$(curl --silent --show-error --output "$RUNNER_TEMP/package.json" \
-            --write-out '%{http_code}' \
-            https://pub.dev/api/packages/lantern_client)
-          version_status=$(curl --silent --show-error --output "$RUNNER_TEMP/version.json" \
-            --write-out '%{http_code}' \
-            "https://pub.dev/api/packages/lantern_client/versions/$VERSION")
-          if [[ "$version_status" == 200 ]]; then
-            echo "PUBLISH_REQUIRED=false" >> "$GITHUB_ENV"
-          elif [[ "$package_status" == 404 ]]; then
-            echo "::error::pub.dev requires lantern_client's first version to be published manually from this exact tag. Publish it, configure automated publishing for anaregdesign/lantern and sdks/dart/v{{version}}, then rerun this job."
-            exit 1
-          elif [[ "$package_status" == 200 && "$version_status" == 404 ]]; then
-            echo "PUBLISH_REQUIRED=true" >> "$GITHUB_ENV"
-          else
-            echo "::error::Unexpected pub.dev API status: package=$package_status version=$version_status"
-            exit 1
-          fi
-
-      - name: Publish with pub.dev OIDC
-        if: env.PUBLISH_REQUIRED == 'true'
-        run: dart pub publish --force
-
-      - name: Verify pub.dev version exists
-        run: |
-          set -euo pipefail
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error \
-              "https://pub.dev/api/packages/lantern_client/versions/$VERSION" \
-              >/dev/null; then
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "::error::Published version did not become visible on pub.dev"
-          exit 1
-
-      - name: Create exact-title GitHub Release
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
+          test "$TAG" = "sdks/dart/v$VERSION"
           notes_file=$(mktemp)
           {
             echo "## Lantern Dart client SDK"
