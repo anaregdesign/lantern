@@ -207,6 +207,198 @@ echo 'bounded process snapshot'
       'bounded=true redacted=true\n',
     );
   });
+
+  for (final outcome in ['success', 'assertion failure', 'RPC failure']) {
+    test(
+      'allows a delayed body to report $outcome within the launch budget',
+      () async {
+        final succeeds = outcome == 'success';
+        final bodyOutput = switch (outcome) {
+          'success' => 'MOBILE_SMOKE_PASS vertices=13\nAll tests passed!',
+          'assertion failure' => 'Expected: true Actual: false',
+          _ => 'RPC failed: unavailable',
+        };
+        await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
+echo 'Running Xcode build...'
+echo 'Xcode build done. 1.0s'
+# The fixture normally allows one second after the build; this needs longer.
+sleep 3
+echo 'MOBILE_SMOKE_BODY_STARTED'
+echo '$bodyOutput'
+exit ${succeeds ? 0 : 1}
+''');
+
+        final result = await _runAttempt(
+          sandbox,
+          fakeFlutter,
+          fakeXcrun,
+          extraEnvironment: {
+            'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '4',
+            'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '8',
+          },
+        );
+
+        expect(
+          result.exitCode,
+          succeeds ? 0 : isNonZero,
+          reason: '${result.stderr}',
+        );
+        expect(
+          await _classification(sandbox),
+          succeeds ? 'success' : 'test_failure',
+        );
+        expect(result.stdout.toString(), contains('MOBILE_SMOKE_BODY_STARTED'));
+        expect(
+          File(
+            '${sandbox.path}/diagnostics/initial/diagnostics/process-tree-before-stop.txt',
+          ).existsSync(),
+          isFalse,
+          reason:
+              'A body starting within its launch allowance must not trigger stop diagnostics',
+        );
+      },
+    );
+  }
+
+  test(
+    'the total deadline stops a launch before its longer allowance expires',
+    () async {
+      await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
+echo 'Running Xcode build...'
+echo 'Xcode build done. 1.0s'
+sleep 30
+''');
+      final stopwatch = Stopwatch()..start();
+
+      final result = await _runAttempt(
+        sandbox,
+        fakeFlutter,
+        fakeXcrun,
+        extraEnvironment: {
+          'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '20',
+          'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '2',
+        },
+      );
+
+      stopwatch.stop();
+      expect(result.exitCode, 71, reason: '${result.stderr}');
+      expect(await _classification(sandbox), 'launch_stall');
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 12)));
+      expect(
+        result.stdout.toString(),
+        isNot(contains('MOBILE_SMOKE_BODY_STARTED')),
+      );
+    },
+  );
+
+  test(
+    'a longer launch allowance does not reclassify a stalled test body',
+    () async {
+      await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
+echo 'Running Xcode build...'
+echo 'Xcode build done. 1.0s'
+echo 'MOBILE_SMOKE_BODY_STARTED'
+sleep 30
+''');
+
+      final result = await _runAttempt(
+        sandbox,
+        fakeFlutter,
+        fakeXcrun,
+        extraEnvironment: {
+          'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '20',
+          'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '2',
+        },
+      );
+
+      expect(result.exitCode, 71, reason: '${result.stderr}');
+      expect(await _classification(sandbox), 'test_body_stall');
+    },
+  );
+
+  test(
+    'rechecks a body marker arriving during pre-stop diagnostic capture',
+    () async {
+      final fakePs = File('${sandbox.path}/ps');
+      final fakeSleep = File('${sandbox.path}/sleep');
+      final captureStarted = File('${sandbox.path}/capture-started');
+      final markerObserved = File('${sandbox.path}/marker-observed');
+      final pollingResumed = File('${sandbox.path}/polling-resumed');
+      final flutterLog = File(
+        '${sandbox.path}/diagnostics/initial/flutter.log',
+      );
+      await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
+set -euo pipefail
+echo 'Running Xcode build...'
+echo 'Xcode build done. 1.0s'
+for ((poll = 0; poll < 200; poll++)); do
+  [[ -f '${captureStarted.path}' ]] && break
+  sleep 0.05
+done
+[[ -f '${captureStarted.path}' ]] || exit 2
+echo 'MOBILE_SMOKE_BODY_STARTED'
+for ((poll = 0; poll < 100; poll++)); do
+  [[ -f '${markerObserved.path}' ]] && break
+  sleep 0.05
+done
+[[ -f '${markerObserved.path}' ]] || exit 3
+for ((poll = 0; poll < 100; poll++)); do
+  [[ -f '${pollingResumed.path}' ]] && break
+  sleep 0.05
+done
+[[ -f '${pollingResumed.path}' ]] || exit 4
+echo 'MOBILE_SMOKE_PASS vertices=13'
+echo 'All tests passed!'
+''');
+      await _writeExecutable(fakePs, '''#!/usr/bin/env bash
+set -euo pipefail
+touch '${captureStarted.path}'
+for ((poll = 0; poll < 50; poll++)); do
+  if grep -Fq 'MOBILE_SMOKE_BODY_STARTED' '${flutterLog.path}'; then
+    touch '${markerObserved.path}'
+    echo 'test body started during process capture'
+    exit 0
+  fi
+  sleep 0.05
+done
+exit 4
+''');
+      // The runner must resume polling before Flutter may exit. Otherwise a
+      // missing post-capture recheck could pass by observing an already-exited
+      // runner instead of preserving the newly started test body.
+      await _writeExecutable(fakeSleep, '''#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == 1 && -f '${markerObserved.path}' ]]; then
+  touch '${pollingResumed.path}'
+fi
+exec /bin/sleep "\$@"
+''');
+
+      final result = await _runAttempt(
+        sandbox,
+        fakeFlutter,
+        fakeXcrun,
+        extraEnvironment: {
+          'IOS_SMOKE_PS_BIN': fakePs.path,
+          'IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS': '3',
+          'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '8',
+          'PATH': '${sandbox.path}:${Platform.environment['PATH']}',
+        },
+      );
+
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(await _classification(sandbox), 'success');
+      expect(captureStarted.existsSync(), isTrue);
+      expect(markerObserved.existsSync(), isTrue);
+      expect(pollingResumed.existsSync(), isTrue);
+      expect(
+        await File(
+          '${sandbox.path}/diagnostics/initial/diagnostics/process-tree-before-stop.txt',
+        ).readAsString(),
+        contains('test body started during process capture'),
+      );
+    },
+  );
 }
 
 String get _scriptPath => '${Directory.current.path}/tool/ios_smoke_ci.sh';

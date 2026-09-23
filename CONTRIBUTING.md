@@ -139,9 +139,12 @@ outside the checkout, resolves every included `pubspec.yaml` with an isolated
 cache, then runs analysis, tests, and `pana` against the unpacked artifact.
 
 The iOS job classifies the native smoke instead of treating every outer timeout
-as retryable infrastructure. Its helper bounds the full attempt and separately
-bounds the phase after `Xcode build done.` but before the explicit integration
-test-body marker. Only that silent `launch_stall` may retry, once, on a newly
+as retryable infrastructure. Its helper bounds the full attempt to 480 seconds
+and allows 180 seconds after `Xcode build done.` for the explicit integration
+test-body marker. The launch allowance covers observed hosted CoreSimulator
+startup beyond the former 90 seconds; it does not guarantee recovery from a
+stuck simulator. The outer step remains 10 minutes, leaving time for bounded
+diagnostics. Only that silent `launch_stall` may retry, once, on a newly
 created simulator with the same runtime/device type and a different UDID.
 Build failures, assertions, RPC failures, and post-body stalls fail the blocking
 `Gate` directly. Bounded, redacted process/simulator/app diagnostics are always
