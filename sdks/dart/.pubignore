@@ -6,3 +6,6 @@ build/
 example/*
 !example/lantern_client_example.dart
 offline/
+# Release automation and its regression tests are repository-only.
+scripts/release*.py
+scripts/__pycache__/
