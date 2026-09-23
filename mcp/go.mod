@@ -7,7 +7,7 @@ require (
 	github.com/anaregdesign/lantern/pb v0.12.0
 	github.com/anaregdesign/lantern/sdks/go v0.24.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
