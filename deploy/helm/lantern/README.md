@@ -1,8 +1,8 @@
 # lantern (Helm chart)
 
-Minimal, cost-optimised deployment of
-[lantern](https://github.com/anaregdesign/lantern) on Kubernetes — tuned for
-**GKE Autopilot**: a `StatefulSet` of 2 pods behind a headless `Service` for
+Minimal deployment of
+[lantern](https://github.com/anaregdesign/lantern) on Kubernetes: a
+`StatefulSet` of 2 pods behind a headless `Service` for
 DNS-based peer discovery (see [docs/replication.md §9.1](../../../docs/replication.md))
 plus a `ClusterIP` `Service` for in-cluster clients, guarded by a
 `PodDisruptionBudget`. Lantern is a full-replica store, so 2 replicas give
@@ -11,6 +11,10 @@ Service is ClusterIP-only — Lantern is never exposed outside the cluster;
 reach it from other pods via its Service FQDN, or from a laptop with
 `kubectl port-forward` for verification. Admin, MCP and Prometheus are
 expected to run locally and are **not** deployed by this profile.
+
+The chart is available for operator-managed installations. Repository release
+workflows publish artifacts only; the project-managed GKE deployment target has
+been retired. Installing or upgrading this chart is a separate operator action.
 
 ## Quick install
 
@@ -76,7 +80,7 @@ be disabled via `podDisruptionBudget.enabled=false`.
 | `backup.interval`                           | `5m`                   | Dump cadence; keep `cache.defaultTtlSeconds` above it.             |
 | `backup.persistence.size`                   | `1Gi`                  | Per-pod PVC size for dumps.                        |
 | `backup.persistence.existingClaim`          | `""`                   | Set to a pre-provisioned RWX claim for a shared dump volume. |
-| `resources.requests` / `.limits`            | `250m` CPU / `512Mi`   | requests == limits (Autopilot Guaranteed QoS). 250m is the Autopilot min; 512Mi the server floor. |
+| `resources.requests` / `.limits`            | `250m` CPU / `512Mi`   | Equal requests and limits provide Guaranteed QoS. Size both for the graph and workload. |
 | `runtime.goMemoryLimit`                     | `384MiB`                | Sets `GOMEMLIMIT` below the 512Mi container limit; override it together with `resources.limits.memory`. |
 | `probes.startup`                            | 60s initial delay, 5s period, 36 failures | Gives restore-on-start about four minutes before restart; liveness/readiness stay disabled until it succeeds. |
 | `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
@@ -96,12 +100,14 @@ resources, security context, anti-affinity, and `extraEnv`.
 request. Keeping it below `resources.limits.memory` makes GC react to transient
 backup-restore and replication-catch-up allocations before the kernel OOM
 killer acts, while preserving headroom for thread stacks and non-Go memory.
-The default keeps the Autopilot request at 512Mi, so it adds no recurring
-compute cost. When sizing a larger graph, change both values deliberately;
-set `runtime.goMemoryLimit: ""` only when another runtime memory controller is
-in place.
+The default leaves the Kubernetes memory request at 512Mi. When sizing a
+larger graph, change both values deliberately; set `runtime.goMemoryLimit: ""`
+only when another runtime memory controller is in place.
 
-## GMP cost guard
+## Optional GMP cost guard
+
+`PodMonitoring` remains an opt-in integration for operators using Google Cloud
+Managed Service for Prometheus. It is disabled in the default chart profile.
 
 [Managed Service for Prometheus bills primarily by ingested
 samples](https://cloud.google.com/stackdriver/docs/managed-prometheus/cost-controls).
@@ -112,7 +118,7 @@ drops the high-cardinality Illuminate and detailed search/scan/batch families
 from GMP only; Lantern's local `/metrics` endpoint remains complete for
 short-lived diagnosis or a self-managed Prometheus.
 
-The July 2026 two-pod production sample exposed 14,604 total series. At a
+The historical July 2026 two-pod sample exposed 14,604 total series. At a
 60-second interval that is an upper bound of 630,892,800 samples per 30-day
 month. That sample's default allowlist retained 425 series on the busier pod;
 the current profile adds the 16 pre-warmed, bounded causal-metadata budget
@@ -130,7 +136,7 @@ helm upgrade --install lantern deploy/helm/lantern \
 ```
 
 Increasing `metrics.podMonitoring.interval` reduces sample cost linearly but
-also delays short HA signals. The maintained production profile keeps `60s`
+also delays short HA signals. The optional GMP profile defaults to `60s`
 and controls cost by cardinality instead.
 
 ## Admin UI (`admin.enabled=true`)

@@ -489,18 +489,3 @@ jobs:
               --verify-tag \
               "${assets[@]}"
           fi
-
-  # Continuous deployment reuses the same workflow as manual recovery. Gating
-  # on `build` still guarantees that release-triggered deploys only consume an
-  # image that this run pushed and signed; operators can separately dispatch
-  # _deploy-gke.yml for an already-published immutable tag.
-  deploy-gke:
-    name: Deploy to GKE Autopilot
-    needs: build
-    uses: ./.github/workflows/_deploy-gke.yml
-    with:
-      image_tag: ${{ github.ref_name }}
-    secrets: inherit
-    permissions:
-      contents: read
-      id-token: write

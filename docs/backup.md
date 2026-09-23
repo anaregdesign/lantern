@@ -98,9 +98,9 @@ LANTERN_DEFAULT_TTL_SECONDS=86400
 
 - **Kubernetes** — the [Helm chart](../deploy/helm/lantern/) renders a per-pod
   `ReadWriteOnce` PVC mounted at `LANTERN_BACKUP_DIR` (`backup.persistence`, on
-  by default). On GKE Autopilot this binds the default `standard-rwo`
-  StorageClass. Each pod keeps its own dumps; for a single shared dump volume
-  point `backup.persistence.existingClaim` at a pre-provisioned RWX claim.
+  by default). Set `backup.persistence.storageClass` or provide a cluster
+  default StorageClass. Each pod keeps its own dumps; for a single shared dump
+  volume point `backup.persistence.existingClaim` at a pre-provisioned RWX claim.
 - **Docker Compose / single host** — bind-mount a host directory (see the
   runnable example below).
 - **Shared / networked volumes** (NFS, SMB, object-storage FUSE) also work:

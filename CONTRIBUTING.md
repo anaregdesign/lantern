@@ -321,6 +321,11 @@ GoReleaser and pushes Homebrew casks to
 `contents:write` on the tap repo. It is gated on that secret, so a release without it
 still succeeds but skips the cask push.
 
+Release workflows publish artifacts only; they do not deploy a running cluster.
+The project-managed GKE deployment target and its manual recovery workflow are
+retired. The [Helm chart](deploy/helm/lantern/) remains available for Kubernetes
+installations, with deployment performed separately by the operator.
+
 The `server/` module is never tagged independently — it ships under the root tag. arm64
 buildx under QEMU is slow; if a root tag already pushed the amd64 image, bump the patch
 number rather than force-moving the tag.

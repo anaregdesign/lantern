@@ -635,10 +635,9 @@ func TestSearchDocumentationGate(t *testing.T) {
 	}
 }
 
-// TestGKEDeployRecoveryWorkflow keeps normal releases and manual recovery on
-// one deployment implementation, including the diagnostics needed to explain
-// a StatefulSet rollout timeout without interactive cluster access.
-func TestGKEDeployRecoveryWorkflow(t *testing.T) {
+// TestReleaseDoesNotDeployGKE keeps artifact publication independent of the
+// retired project-managed GKE deployment target.
+func TestReleaseDoesNotDeployGKE(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("resolve repository root: %v", err)
@@ -648,55 +647,27 @@ func TestGKEDeployRecoveryWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read release workflow: %v", err)
 	}
-	for _, contract := range []string{
-		"uses: ./.github/workflows/_deploy-gke.yml",
-		"image_tag: ${{ github.ref_name }}",
-		"secrets: inherit",
-		"id-token: write",
-	} {
-		if !strings.Contains(string(releaseWorkflow), contract) {
-			t.Errorf("release workflow is missing GKE deployment contract %q", contract)
-		}
-	}
-
-	deployWorkflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "_deploy-gke.yml"))
-	if err != nil {
-		t.Fatalf("read reusable GKE deployment workflow: %v", err)
-	}
-	for _, contract := range []string{
-		"workflow_call:",
-		"workflow_dispatch:",
-		"image_tag:",
-		"timeout-minutes: 20",
-		"docker buildx imagetools inspect",
-		"google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3",
-		"google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3",
-		"google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3",
-		"azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5",
-		"helm upgrade --install",
-		"--set metrics.podMonitoring.enabled=true",
-		"--for=condition=ConfigurationCreateSuccess --timeout=2m",
-		"--wait --timeout 10m --debug",
-		"if: failure()",
-		"kubectl describe statefulset",
-		"kubectl get podmonitoring",
-		"kubectl get events",
-		"--all-containers --previous --tail=200",
-	} {
-		if !strings.Contains(string(deployWorkflow), contract) {
-			t.Errorf("reusable GKE deployment workflow is missing recovery contract %q", contract)
-		}
-	}
-	for _, action := range []string{
-		"google-github-actions/auth",
-		"google-github-actions/setup-gcloud",
+	for _, retired := range []string{
+		"deploy-gke",
+		"GKE_CLUSTER",
+		"GCP_DEPLOY_SA",
 		"google-github-actions/get-gke-credentials",
-		"azure/setup-helm",
 	} {
-		pinnedUse := regexp.MustCompile(`(?m)^\s*uses:\s+` + regexp.QuoteMeta(action) + `@[0-9a-f]{40}(?:\s+#.*)?$`)
-		if !pinnedUse.Match(deployWorkflow) {
-			t.Errorf("reusable GKE deployment workflow does not pin %s to a 40-character commit SHA", action)
+		if strings.Contains(string(releaseWorkflow), retired) {
+			t.Errorf("release workflow retains retired GKE deployment reference %q", retired)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, ".github", "workflows", "_deploy-gke.yml")); !os.IsNotExist(err) {
+		t.Errorf("retired GKE workflow must be absent; stat error: %v", err)
+	}
+}
+
+// TestHelmDeploymentDefaults preserves the chart's startup, discovery, and
+// optional monitoring contracts independently of any deployment provider.
+func TestHelmDeploymentDefaults(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
 	}
 
 	chartDir := filepath.Join(repoRoot, "deploy", "helm", "lantern")
