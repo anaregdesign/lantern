@@ -457,7 +457,7 @@ func TestDartWorkflowGate(t *testing.T) {
 	}
 	for _, contract := range []string{
 		"timeout-minutes: 45",
-		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 90",
+		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
 		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480",
 		"steps.ios_smoke_initial.outputs.classification == 'launch_stall'",
 		`test "$retry_device" != "$DEVICE_ID"`,
@@ -477,6 +477,15 @@ func TestDartWorkflowGate(t *testing.T) {
 	if strings.Contains(ios, `simctl erase "$DEVICE_ID"`) {
 		t.Error("iOS launch retry still erases and reuses the wedged simulator")
 	}
+	for _, contract := range []string{
+		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
+		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480",
+		"timeout-minutes: 10",
+	} {
+		if got := strings.Count(ios, contract); got != 2 {
+			t.Errorf("both iOS attempts must retain %q; got %d occurrences", contract, got)
+		}
+	}
 
 	helper, err := os.ReadFile(filepath.Join(repoRoot, "sdks", "dart", "example", "tool", "ios_smoke_ci.sh"))
 	if err != nil {
@@ -484,6 +493,8 @@ func TestDartWorkflowGate(t *testing.T) {
 	}
 	helperText := string(helper)
 	for _, contract := range []string{
+		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS:-180",
+		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS:-480",
 		"MOBILE_SMOKE_BODY_STARTED",
 		"Xcode build done.",
 		"record_classification launch_stall",
@@ -511,6 +522,9 @@ func TestDartWorkflowGate(t *testing.T) {
 		"stable `Gate` job",
 		"required result set for either scope",
 		"Only that silent `launch_stall` may retry",
+		"full attempt to 480 seconds",
+		"allows 180 seconds after `Xcode build done.`",
+		"outer step remains 10 minutes",
 		"newly\ncreated simulator",
 		"diagnostics are always\nuploaded",
 	} {

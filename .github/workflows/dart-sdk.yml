@@ -678,7 +678,7 @@ jobs:
         timeout-minutes: 10
         working-directory: sdks/dart/example
         env:
-          IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 90
+          IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
         run: >-
           bash tool/ios_smoke_ci.sh run-attempt "$DEVICE_ID" initial
@@ -710,7 +710,7 @@ jobs:
         timeout-minutes: 10
         working-directory: sdks/dart/example
         env:
-          IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 90
+          IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
         run: >-
           bash tool/ios_smoke_ci.sh run-attempt "$RETRY_DEVICE_ID" retry
