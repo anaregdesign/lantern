@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache"
@@ -1295,33 +1296,36 @@ func TestPutEdgeWithExpirationHLC_LWW(t *testing.T) {
 // TestVertexHLCCount_BoundedByLiveSet pins issue #700: the vertexHLC map must
 // be swept back to (approximately) zero after replicated vertices expire and
 // the GC flush runs. Before the fix, the map grew monotonically because
-// sweepStaleVertexHLCLocked was never called.
+// sweepStaleVertexHLCLocked was never called. The HLC TTL fixtures below use
+// fake time so seeding cannot consume their expiration window (#1258).
 func TestVertexHLCCount_BoundedByLiveSet(t *testing.T) {
-	const n = 50
-	c := NewGraphCache[string, string](time.Minute)
-	ts := hlc.Timestamp{WallNs: 1}
+	synctest.Test(t, func(t *testing.T) {
+		const n = 50
+		c := NewGraphCache[string, string](time.Minute)
+		ts := hlc.Timestamp{WallNs: 1}
 
-	// Apply n distinct replicated vertices with short TTL so they expire
-	// immediately after the test moves on.
-	exp := time.Now().Add(50 * time.Millisecond)
-	for i := range n {
-		key := fmt.Sprintf("hlc-%d", i)
-		if !c.PutVertexWithExpirationHLC(key, "v", exp, ts) {
-			t.Fatalf("put %s: want applied=true", key)
+		// Apply n distinct replicated vertices with short TTL so they expire
+		// immediately after the test moves on.
+		exp := time.Now().Add(50 * time.Millisecond)
+		for i := range n {
+			key := fmt.Sprintf("hlc-%d", i)
+			if !c.PutVertexWithExpirationHLC(key, "v", exp, ts) {
+				t.Fatalf("put %s: want applied=true", key)
+			}
 		}
-	}
-	if got := c.VertexHLCCount(); got != n {
-		t.Errorf("VertexHLCCount after puts = %d, want %d", got, n)
-	}
+		if got := c.VertexHLCCount(); got != n {
+			t.Errorf("VertexHLCCount after puts = %d, want %d", got, n)
+		}
 
-	// Let the TTLs expire, then run a flush tick to sweep stale entries.
-	time.Sleep(100 * time.Millisecond)
-	c.vertices.Flush() // evict expired vertices from the inner cache
-	c.flush()          // sweepStaleVertexHLCLocked runs here under c.mu
+		// Let the TTLs expire, then run a flush tick to sweep stale entries.
+		time.Sleep(100 * time.Millisecond)
+		c.vertices.Flush() // evict expired vertices from the inner cache
+		c.flush()          // sweepStaleVertexHLCLocked runs here under c.mu
 
-	if got := c.VertexHLCCount(); got != 0 {
-		t.Errorf("VertexHLCCount after flush = %d, want 0 (map must track live set, not all-time set)", got)
-	}
+		if got := c.VertexHLCCount(); got != 0 {
+			t.Errorf("VertexHLCCount after flush = %d, want 0 (map must track live set, not all-time set)", got)
+		}
+	})
 }
 
 // TestVertexHLCHighWater_SurvivesDrain pins the confirm-the-phenomenon metric
@@ -1332,52 +1336,54 @@ func TestVertexHLCCount_BoundedByLiveSet(t *testing.T) {
 // — so a low count paired with a large high-water is the fingerprint that
 // explains the retained heap in the born-expired ttl_churn firehose.
 func TestVertexHLCHighWater_SurvivesDrain(t *testing.T) {
-	const n = 50
-	c := NewGraphCache[string, string](time.Minute)
-	ts := hlc.Timestamp{WallNs: 1}
+	synctest.Test(t, func(t *testing.T) {
+		const n = 50
+		c := NewGraphCache[string, string](time.Minute)
+		ts := hlc.Timestamp{WallNs: 1}
 
-	// No sweep has run yet: the high-water starts at zero.
-	if got := c.VertexHLCHighWater(); got != 0 {
-		t.Errorf("VertexHLCHighWater before any sweep = %d, want 0", got)
-	}
-
-	// Apply n distinct replicated vertices with a short TTL so they all expire
-	// before the sweep, mirroring the born-expired ttl_churn firehose.
-	exp := time.Now().Add(50 * time.Millisecond)
-	for i := range n {
-		key := fmt.Sprintf("hlc-%d", i)
-		if !c.PutVertexWithExpirationHLC(key, "v", exp, ts) {
-			t.Fatalf("put %s: want applied=true", key)
+		// No sweep has run yet: the high-water starts at zero.
+		if got := c.VertexHLCHighWater(); got != 0 {
+			t.Errorf("VertexHLCHighWater before any sweep = %d, want 0", got)
 		}
-	}
-	if got := c.VertexHLCCount(); got != n {
-		t.Errorf("VertexHLCCount after puts = %d, want %d", got, n)
-	}
 
-	// Let the TTLs expire, then flush so the sweep records the peak and drains.
-	time.Sleep(100 * time.Millisecond)
-	c.vertices.Flush() // evict expired vertices from the inner cache
-	c.flush()          // sweepStaleVertexHLCLocked: records high-water, then drains
+		// Apply n distinct replicated vertices with a short TTL so they all expire
+		// before the sweep, mirroring the born-expired ttl_churn firehose.
+		exp := time.Now().Add(50 * time.Millisecond)
+		for i := range n {
+			key := fmt.Sprintf("hlc-%d", i)
+			if !c.PutVertexWithExpirationHLC(key, "v", exp, ts) {
+				t.Fatalf("put %s: want applied=true", key)
+			}
+		}
+		if got := c.VertexHLCCount(); got != n {
+			t.Errorf("VertexHLCCount after puts = %d, want %d", got, n)
+		}
 
-	// The instantaneous count is back to zero, but the high-water retains the
-	// peak — this is exactly the pairing the bench snapshot must surface.
-	if got := c.VertexHLCCount(); got != 0 {
-		t.Errorf("VertexHLCCount after flush = %d, want 0", got)
-	}
-	if got := c.VertexHLCHighWater(); got != n {
-		t.Errorf("VertexHLCHighWater after drain = %d, want %d (peak must survive the sweep)", got, n)
-	}
+		// Let the TTLs expire, then flush so the sweep records the peak and drains.
+		time.Sleep(100 * time.Millisecond)
+		c.vertices.Flush() // evict expired vertices from the inner cache
+		c.flush()          // sweepStaleVertexHLCLocked: records high-water, then drains
 
-	// A later, smaller cycle must not lower the high-water (monotonic).
-	if !c.PutVertexWithExpirationHLC("hlc-late", "v", time.Now().Add(50*time.Millisecond), hlc.Timestamp{WallNs: 2}) {
-		t.Fatalf("late put: want applied=true")
-	}
-	time.Sleep(100 * time.Millisecond)
-	c.vertices.Flush()
-	c.flush()
-	if got := c.VertexHLCHighWater(); got != n {
-		t.Errorf("VertexHLCHighWater after smaller cycle = %d, want %d (must be monotonic non-decreasing)", got, n)
-	}
+		// The instantaneous count is back to zero, but the high-water retains the
+		// peak — this is exactly the pairing the bench snapshot must surface.
+		if got := c.VertexHLCCount(); got != 0 {
+			t.Errorf("VertexHLCCount after flush = %d, want 0", got)
+		}
+		if got := c.VertexHLCHighWater(); got != n {
+			t.Errorf("VertexHLCHighWater after drain = %d, want %d (peak must survive the sweep)", got, n)
+		}
+
+		// A later, smaller cycle must not lower the high-water (monotonic).
+		if !c.PutVertexWithExpirationHLC("hlc-late", "v", time.Now().Add(50*time.Millisecond), hlc.Timestamp{WallNs: 2}) {
+			t.Fatalf("late put: want applied=true")
+		}
+		time.Sleep(100 * time.Millisecond)
+		c.vertices.Flush()
+		c.flush()
+		if got := c.VertexHLCHighWater(); got != n {
+			t.Errorf("VertexHLCHighWater after smaller cycle = %d, want %d (must be monotonic non-decreasing)", got, n)
+		}
+	})
 }
 
 // TestVertexHLCShrink_ReleasesBucketArray pins the #727 remediation: after a
@@ -1390,61 +1396,65 @@ func TestVertexHLCHighWater_SurvivesDrain(t *testing.T) {
 // path). The high-water peak is preserved either way for observability.
 func TestVertexHLCShrink_ReleasesBucketArray(t *testing.T) {
 	t.Run("LargeDrainReallocates", func(t *testing.T) {
-		const n = 2 * vertexHLCShrinkFloor // comfortably above the shrink floor
-		c := NewGraphCache[string, string](time.Minute)
-		ts := hlc.Timestamp{WallNs: 1}
+		synctest.Test(t, func(t *testing.T) {
+			const n = 2 * vertexHLCShrinkFloor // comfortably above the shrink floor
+			c := NewGraphCache[string, string](time.Minute)
+			ts := hlc.Timestamp{WallNs: 1}
 
-		exp := time.Now().Add(50 * time.Millisecond)
-		for i := range n {
-			if !c.PutVertexWithExpirationHLC(fmt.Sprintf("hlc-%d", i), "v", exp, ts) {
-				t.Fatalf("put %d: want applied=true", i)
+			exp := time.Now().Add(50 * time.Millisecond)
+			for i := range n {
+				if !c.PutVertexWithExpirationHLC(fmt.Sprintf("hlc-%d", i), "v", exp, ts) {
+					t.Fatalf("put %d: want applied=true", i)
+				}
 			}
-		}
-		if got := c.VertexHLCCount(); got != n {
-			t.Fatalf("VertexHLCCount after puts = %d, want %d", got, n)
-		}
-		before := reflect.ValueOf(c.vertexHLC).Pointer()
+			if got := c.VertexHLCCount(); got != n {
+				t.Fatalf("VertexHLCCount after puts = %d, want %d", got, n)
+			}
+			before := reflect.ValueOf(c.vertexHLC).Pointer()
 
-		// Expire every vertex, then sweep: the live set collapses to zero, which
-		// must trigger the reallocation that releases the oversized bucket array.
-		time.Sleep(100 * time.Millisecond)
-		c.vertices.Flush()
-		c.flush()
+			// Expire every vertex, then sweep: the live set collapses to zero, which
+			// must trigger the reallocation that releases the oversized bucket array.
+			time.Sleep(100 * time.Millisecond)
+			c.vertices.Flush()
+			c.flush()
 
-		if got := c.VertexHLCCount(); got != 0 {
-			t.Errorf("VertexHLCCount after drain = %d, want 0", got)
-		}
-		if got := c.VertexHLCHighWater(); got != n {
-			t.Errorf("VertexHLCHighWater after drain = %d, want %d (peak must survive)", got, n)
-		}
-		if after := reflect.ValueOf(c.vertexHLC).Pointer(); after == before {
-			t.Errorf("vertexHLC backing store was not reallocated after a %d→0 drain; the oversized bucket array is still pinned (#727)", n)
-		}
+			if got := c.VertexHLCCount(); got != 0 {
+				t.Errorf("VertexHLCCount after drain = %d, want 0", got)
+			}
+			if got := c.VertexHLCHighWater(); got != n {
+				t.Errorf("VertexHLCHighWater after drain = %d, want %d (peak must survive)", got, n)
+			}
+			if after := reflect.ValueOf(c.vertexHLC).Pointer(); after == before {
+				t.Errorf("vertexHLC backing store was not reallocated after a %d→0 drain; the oversized bucket array is still pinned (#727)", n)
+			}
+		})
 	})
 
 	t.Run("SmallDrainKeepsBackingStore", func(t *testing.T) {
-		const n = 8 // far below vertexHLCShrinkFloor
-		c := NewGraphCache[string, string](time.Minute)
-		ts := hlc.Timestamp{WallNs: 1}
+		synctest.Test(t, func(t *testing.T) {
+			const n = 8 // far below vertexHLCShrinkFloor
+			c := NewGraphCache[string, string](time.Minute)
+			ts := hlc.Timestamp{WallNs: 1}
 
-		exp := time.Now().Add(50 * time.Millisecond)
-		for i := range n {
-			if !c.PutVertexWithExpirationHLC(fmt.Sprintf("hlc-%d", i), "v", exp, ts) {
-				t.Fatalf("put %d: want applied=true", i)
+			exp := time.Now().Add(50 * time.Millisecond)
+			for i := range n {
+				if !c.PutVertexWithExpirationHLC(fmt.Sprintf("hlc-%d", i), "v", exp, ts) {
+					t.Fatalf("put %d: want applied=true", i)
+				}
 			}
-		}
-		before := reflect.ValueOf(c.vertexHLC).Pointer()
+			before := reflect.ValueOf(c.vertexHLC).Pointer()
 
-		time.Sleep(100 * time.Millisecond)
-		c.vertices.Flush()
-		c.flush()
+			time.Sleep(100 * time.Millisecond)
+			c.vertices.Flush()
+			c.flush()
 
-		if got := c.VertexHLCCount(); got != 0 {
-			t.Errorf("VertexHLCCount after drain = %d, want 0", got)
-		}
-		if after := reflect.ValueOf(c.vertexHLC).Pointer(); after != before {
-			t.Errorf("small map (n=%d, below the shrink floor) was reallocated; the floor must keep tiny maps off the copy path", n)
-		}
+			if got := c.VertexHLCCount(); got != 0 {
+				t.Errorf("VertexHLCCount after drain = %d, want 0", got)
+			}
+			if after := reflect.ValueOf(c.vertexHLC).Pointer(); after != before {
+				t.Errorf("small map (n=%d, below the shrink floor) was reallocated; the floor must keep tiny maps off the copy path", n)
+			}
+		})
 	})
 }
 
