@@ -543,12 +543,13 @@ func TestDartWorkflowGate(t *testing.T) {
 		"routes backend/search-only changes through the current-Dart unit and real-wire gates",
 		"stable `Gate` job",
 		"required result set for either scope",
-		"Only that silent `launch_stall` may retry",
+		"Only `launch_stall` or `attach_stall` may retry",
 		"full attempt to 480 seconds",
-		"allows 180 seconds after `Xcode build done.`",
+		"test-app build and native launch to 180 seconds each",
+		"flutter drive --use-existing-app",
 		"outer step remains 10 minutes",
 		"newly\ncreated simulator",
-		"diagnostics are always\nuploaded",
+		"diagnostics are always uploaded",
 	} {
 		if !strings.Contains(string(contributing), contract) {
 			t.Errorf("CONTRIBUTING.md is missing Dart workflow contract %q", contract)

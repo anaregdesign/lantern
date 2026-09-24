@@ -152,28 +152,29 @@ development-only; its native library is not an application runtime dependency.
 This package stays `publish_to: none` until its independent release is qualified.
 
 The iOS job classifies the native smoke instead of treating every outer timeout
-as retryable infrastructure. Its helper bounds the full attempt to 480 seconds
-and allows 180 seconds after `Xcode build done.` for the explicit integration
-test-body marker. The launch allowance covers observed hosted CoreSimulator
-startup beyond the former 90 seconds; it does not guarantee recovery from a
-stuck simulator. The outer step remains 10 minutes, leaving time for bounded
-diagnostics. Only that silent `launch_stall` may retry, once, on a newly
-created simulator with the same runtime/device type and a different UDID.
-Build failures, assertions, RPC failures, and post-body stalls fail the blocking
-`Gate` directly. Bounded, redacted process/simulator/app diagnostics are always
-uploaded; the temporary retry simulator is always deleted. Flutter's integration
-test command rebuilds on the fresh simulator because it has no stable install-
-without-build test path; reusing the potentially wedged device or build state is
-less reliable than the one bounded rebuild.
+as retryable infrastructure. Its helper bounds the full attempt to 480 seconds,
+the test-app build and native launch to 180 seconds each, and the install to 90
+seconds. After `simctl` returns the Runner PID, it reads that process's
+retrospective Simulator log for the VM Service URL, test-body marker, and
+terminal result, then runs `flutter drive --use-existing-app` to verify the
+actual assertions. The outer step remains 10 minutes, leaving time for bounded
+diagnostics. Only `launch_stall` or `attach_stall` may retry, once, on a newly
+created simulator with the same runtime/device type and a different UDID. An
+exited Runner, build failure, assertion or RPC failure, and post-body stall fail
+the blocking `Gate` directly. Bounded, redacted process/simulator/app
+diagnostics are always uploaded; the temporary retry simulator is always
+deleted. Each attempt builds the integration-test app and installs it on its
+own simulator before native launch.
 
-The iOS helper uses Python 3's standard library to retain at most 256 KiB of
-redacted Flutter output on disk throughout the attempt. Phase flags are stored
-separately so log rotation cannot change classification. Live Actions output is
-redacted and capped too; known phase notifications continue after that cap.
-Lines over 8 KiB are omitted without buffering their remaining contents. The
-artifact finalizer reserves space for classification and phase metadata, then
-shares its 2 MiB / 32-file budget across useful diagnostic tails from both
-attempts instead of dropping the artifact when logs are noisy.
+The iOS helper uses Python 3's standard library to retain at most 256 KiB per
+redacted log on disk throughout the attempt. The authenticated VM Service URL
+stays in memory and is redacted from live output and artifacts. Phase flags are
+stored separately so log rotation cannot change classification. Live Actions
+output is redacted and capped too; lines over 8 KiB are omitted without
+buffering their remaining contents. The artifact finalizer reserves space for
+classification and phase metadata, then shares its 2 MiB / 32-file budget
+across useful diagnostic tails from both attempts instead of dropping the
+artifact when logs are noisy.
 
 ## Coverage floor (ratchet)
 
