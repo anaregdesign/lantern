@@ -46,6 +46,40 @@ func TestAddEdgesWithExpirationContribHLC_DedupDoesNotReviveEndpoint(t *testing.
 	}
 }
 
+func TestAddEdgesWithExpirationContribHLCResults_MixedFinalDecisions(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	expiration := time.Now().Add(time.Hour)
+	stamp := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: hlc.NodeID{0x92}}
+	newer := hlc.Timestamp{WallNs: stamp.WallNs + 10, NodeID: stamp.NodeID}
+	if c.DeleteEdgeHLC("fenced", "head", newer, expiration) {
+		t.Fatal("Delete of absent edge unexpectedly existed")
+	}
+	if !c.PutEdgeWithExpirationHLC("put", "head", 7, expiration, newer) {
+		t.Fatal("newer Put was rejected")
+	}
+	items := []EdgeItem[string]{
+		{Tail: "live", Head: "head", Weight: 1, Expiration: expiration, ContribID: ContribID{0: 1}},
+		{Tail: "live", Head: "head", Weight: 1, Expiration: expiration, ContribID: ContribID{0: 1}},
+		{Tail: "fenced", Head: "head", Weight: 2, Expiration: expiration, ContribID: ContribID{0: 2}},
+		{Tail: "put", Head: "head", Weight: 2, Expiration: expiration, ContribID: ContribID{0: 3}},
+		{Tail: "live", Head: "head", Weight: 3, Expiration: expiration, ContribID: ContribID{0: 4}},
+	}
+	weights, accepted, deduped := c.AddEdgesWithExpirationContribHLCResults(items, stamp)
+	if !slices.Equal(accepted, []bool{true, false, false, false, true}) || deduped != 3 ||
+		!slices.Equal(weights, []float32{1, 1, 0, 7, 4}) {
+		t.Fatalf("mixed Add = weights %v, accepted %v, deduped %d", weights, accepted, deduped)
+	}
+	if _, exists := c.GetVertex("fenced"); exists {
+		t.Fatal("fenced Add created an endpoint")
+	}
+	if got, ok := c.GetWeight("live", "head"); !ok || got != 4 {
+		t.Fatalf("live Edge = %v/%t, want 4/true", got, ok)
+	}
+	if weights, accepted, deduped := c.AddEdgesWithExpirationContribHLCResults(nil, stamp); weights != nil || accepted != nil || deduped != 0 {
+		t.Fatalf("empty Add = %v/%v/%d", weights, accepted, deduped)
+	}
+}
+
 func TestVertexBatchSearchPreparationRevalidatesReplacedIndex(t *testing.T) {
 	live := time.Now().Add(time.Hour)
 	item := []VertexItem[string, string]{{Key: "k", Value: "oversized", Expiration: live}}

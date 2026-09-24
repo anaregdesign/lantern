@@ -260,7 +260,8 @@ does not certify receipt recovery, replication, or status continuity.
 The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.go)
 adds a versioned kind discriminator for graph-only `Mutation`, private
 [graph Delete effect](../../server/service/graph_delete_effect_wal.go) and
-[graph Put effect](../../server/service/graph_put_effect_wal.go) envelopes,
+[graph Put effect](../../server/service/graph_put_effect_wal.go) and
+[graph Add effect](../../server/service/graph_add_effect_wal.go) envelopes,
 or the receipt Edge Delete envelope. Its ordinary graph kind
 encodes protobuf plus an ordered sidecar for nil repeated-message slots,
 which protobuf otherwise turns into empty messages on decode. The decoder
@@ -312,6 +313,14 @@ read-only audit rejects one after a receipt instead of treating its original
 mutation as evidence of a receiver-local effect. The new kind remains unwired
 to the serving writer, and the detached recovery candidate refuses it: no
 graph replay, Store admission, or absent-ID answer is enabled by this sidecar.
+The graph Add kind records an ordered subset of receiver-local accepted wire
+indexes, including nil-slot position preservation for synthesized ContribIDs.
+Rejected, deduplicated, and causally fenced Adds are omitted. GraphCache's
+private result path captures each accepted decision under its application lock
+without allocating an outcome slice in the ordinary serving path. Older raw
+Add rows after receipt evidence fail the read-only audit. This kind also stays
+unwired to serving writes and unreplayable by the detached candidate; it does
+not authorize durable offline Add or any receipt status claim.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
 replay. The receipt kind retains the existing LRED validation and its 8 MiB

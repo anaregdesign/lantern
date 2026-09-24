@@ -1033,7 +1033,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 // per-edge write watermark; it is consulted ONLY against the edge tombstone so
 // a contribution whose ts is strictly older than a delete is dropped on the
 // origin exactly as it is on every peer. Items whose ts loses to the tombstone
-// are skipped and counted as deduped=false (they applied nothing); items with
+// are skipped and counted as not applied; items with
 // a matching live ContribID are deduped as in the non-HLC variant. Returns,
 // index-aligned with items, the post-apply LIVE weight sum for each edge
 // (#897) plus the number of items that added no weight (tombstone-dropped or
@@ -1042,11 +1042,28 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 // ContribID-deduped path — so a genuinely nonzero live weight (e.g. from a
 // newer contribution that re-created the edge) is never misreported as 0 (#918).
 func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp) (effective []float32, deduped int) {
+	effective, _, deduped = c.addEdgesWithExpirationContribHLC(items, ts, false)
+	return effective, deduped
+}
+
+// AddEdgesWithExpirationContribHLCResults returns the receiver-local accepted
+// decision for every item, in request order. Both the decision and effective
+// weight are captured under the same GraphCache lock. A false result means the
+// item was fenced or deduplicated and did not create an endpoint or weight.
+// The legacy Add method avoids this result slice on the serving hot path.
+func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLCResults(items []EdgeItem[S], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int) {
+	return c.addEdgesWithExpirationContribHLC(items, ts, true)
+}
+
+func (c *GraphCache[S, T]) addEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp, capture bool) (effective []float32, accepted []bool, deduped int) {
 	if len(items) == 0 {
-		return nil, 0
+		return nil, nil, 0
 	}
 	now := time.Now()
 	effective = make([]float32, len(items))
+	if capture {
+		accepted = make([]bool, len(items))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, it := range items {
@@ -1061,11 +1078,14 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S],
 		applied, eff := c.addEdgeContribHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, ts, now)
 		effective[i] = eff
 		if applied {
+			if capture {
+				accepted[i] = true
+			}
 			// Keep an earlier Delete floor while its D4 deadline remains
 			// active; a newer Add does not supersede its reset semantics.
 			continue
 		}
 		deduped++
 	}
-	return effective, deduped
+	return effective, accepted, deduped
 }

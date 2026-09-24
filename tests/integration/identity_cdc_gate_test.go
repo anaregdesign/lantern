@@ -298,6 +298,49 @@ func TestIdentityCDC_DedupedAddDoesNotReviveEndpoint(t *testing.T) {
 			t.Fatalf("%x new Add Edge = %v/%t, want 2/true", node.nodeID, weight, ok)
 		}
 	}
+	if !feed.Receive() || feed.Msg().GetIdentityChunk() == nil || feed.Msg().GetIdentityChunk().GetSeq() != 4 {
+		t.Fatalf("identity CDC missed new Add before mixed batch: %v", feed.Err())
+	}
+	// A single public batch mixes a receiver-local duplicate with accepted
+	// contributions. The future private Add sidecar records those decisions;
+	// current identity CDC still conservatively names every original key.
+	thirdID := make([]byte, 24)
+	thirdID[0] = 3
+	mixed, err := origin.raw.AddEdges(ctx, connect.NewRequest(&pb.AddEdgesRequest{
+		Edges: []*pb.Edge{
+			{Tail: "dedup/tail", Head: "dedup/head", Weight: 1, Expiration: expiration},
+			{Tail: "dedup/tail", Head: "dedup/head", Weight: 3, Expiration: expiration},
+			{Tail: "fresh/tail", Head: "fresh/head", Weight: 1, Expiration: expiration},
+		},
+		ContribIds: [][]byte{firstID, thirdID, nil},
+	}))
+	if err != nil {
+		t.Fatalf("mixed AddEdges over h2c: %v", err)
+	}
+	if mixed.Msg.GetWritten() != 3 || len(mixed.Msg.GetEffectiveWeights()) != 3 ||
+		mixed.Msg.GetEffectiveWeights()[0] != 2 || mixed.Msg.GetEffectiveWeights()[1] != 5 || mixed.Msg.GetEffectiveWeights()[2] != 1 {
+		t.Fatalf("mixed AddEdges over h2c = %v, %v", mixed, err)
+	}
+	if !feed.Receive() {
+		t.Fatalf("identity CDC missed mixed Add: %v", feed.Err())
+	}
+	chunk = feed.Msg().GetIdentityChunk()
+	if chunk == nil || chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE ||
+		chunk.GetSeq() != 5 || len(chunk.GetEdgeKeys()) != 3 ||
+		chunk.GetEdgeKeys()[0].GetTail() != "dedup/tail" ||
+		chunk.GetEdgeKeys()[1].GetTail() != "dedup/tail" ||
+		chunk.GetEdgeKeys()[2].GetTail() != "fresh/tail" {
+		t.Fatalf("mixed Add changed conservative identity projection: %+v", feed.Msg())
+	}
+	waitForOrigin(5)
+	for _, node := range []*pumpNode{origin, follower} {
+		if weight, ok := node.cache.GetWeight("dedup/tail", "dedup/head"); !ok || weight != 5 {
+			t.Fatalf("%x mixed Add duplicate changed weight = %v/%t, want 5/true", node.nodeID, weight, ok)
+		}
+		if weight, ok := node.cache.GetWeight("fresh/tail", "fresh/head"); !ok || weight != 1 {
+			t.Fatalf("%x mixed Add fresh Edge = %v/%t, want 1/true", node.nodeID, weight, ok)
+		}
+	}
 }
 
 // Synthetic log entries exercise the production-disabled wire projection on
