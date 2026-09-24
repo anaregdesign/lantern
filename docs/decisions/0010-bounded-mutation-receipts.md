@@ -322,13 +322,15 @@ is a separate format from `.lbk`. It requires a `RECEIPT_V1` graph Snapshot
 header, receipt Store snapshot and policy, clock high-water, and origin HLC
 cutoffs; bounded records and a counted SHA-256 footer reject incomplete or
 damaged containers. The digest detects corruption, not malicious tampering or
-an inconsistent source cut. The codec checks graph frame order, counts,
-payload semantics, and causal relationships, but not whether graph,
-receipts, and origin cutoffs were captured under one publication cut. Its current
-deterministic `proto.Marshal` byte-equality check is not stable across
-protobuf runtime versions; before production use, replace it with a stable
-wire-field validator. No production producer, backup scheduler, or restore
-installer uses this codec yet. The future producer must capture all sections
+an inconsistent source cut. The codec checks graph frame wire fields, order,
+counts, payload semantics, and causal relationships, but not whether graph,
+receipts, and origin cutoffs were captured under one publication cut. Its
+wire-field validation rejects unknown fields, ambiguous duplicates, and
+malformed encodings without comparing bytes from a particular protobuf
+runtime; field and map-entry order remain semantically irrelevant. The v1 codec
+pins the reachable graph schema and rejects unreviewed proto changes. No production
+producer, backup scheduler, or restore installer uses this codec yet. The future
+producer must capture all sections
 under one publication cut, and the installer must validate and install them
 together before serving. Total-cluster restore still rotates the active epoch
 unless a complete durable WAL proves the exact current frontier.
