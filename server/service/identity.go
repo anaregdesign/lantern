@@ -51,7 +51,7 @@ func validateIdentityResume(cursor, frontier map[string]uint64, retained []mutat
 		}
 	}
 	for _, entry := range retained {
-		m, ok := entry.Op.(*pb.Mutation)
+		m, ok := graphMutationFromLog(entry.Op)
 		if !ok || len(m.GetOrigin()) != 16 || m.GetSeq() == 0 {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity subscription found malformed log entry %d", entry.Seq))
 		}
@@ -173,7 +173,7 @@ func (s *LanternReplicationService) subscribeIdentity(ctx context.Context, req *
 				s.metrics.OnSubscribeDropped("gapped")
 				return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped: identity subscriber fell behind"))
 			}
-			m, ok := entry.Op.(*pb.Mutation)
+			m, ok := graphMutationFromLog(entry.Op)
 			if !ok {
 				return connect.NewError(connect.CodeInternal, fmt.Errorf("identity subscription found non-Mutation log entry %d", entry.Seq))
 			}

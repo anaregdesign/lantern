@@ -57,6 +57,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
+	if s.receiptCommitFaulted {
+		return publicationGapError()
+	}
 	return s.publishRemoteMutation(ctx, m)
 }
 

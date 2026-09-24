@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 Phase 0 design; an internal bounded receipt Store exists, but it is not production-wired. Read-only capability/status RPCs remain disabled and no receipt-enabled write is implemented.
+- Status: Accepted as the #1115 design; internal Store and Edge Delete commit prerequisites exist, but capability/status RPCs remain disabled and no receipt-enabled write RPC is enabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116
 
@@ -241,6 +241,41 @@ on the conflict, but cannot undo both commits. This ADR therefore promises
 single-node original-result recovery and eventually replicated status, not
 arbitrary-failover exactly-once execution. Receipt expiry, backup loss,
 partitioned status, and total-cluster loss remain explicit unknown outcomes.
+
+### Internal implementation boundary
+
+The unwired [Edge Delete coordinator](../../server/service/receipt_edge_delete.go)
+now stages graph, per-item receipts, and one origin row before a WAL call. Its
+private log envelope distinguishes the original request, request-indexed
+results, causally accepted graph transitions, epoch/policy, and origin HLC/seq.
+Existing Subscribe projects only its graph mutation; an all-rejected call
+currently appears as an empty DeleteEdges mutation and zero-key final identity
+chunk. The wire has no explicit receipt-only operation or receipt metadata,
+and downstream replay cannot restore receipts from that projection. This is
+an internal ordering test, not a supported receipt CDC contract.
+The diagnostic `GetReplicationStatus` dashboard remains available during a
+publication fault; it reports pump health, not a receipt or graph cut.
+
+This coordinator blocks service-gated reads, its own receipt Lookup, PeerStatus,
+Snapshot, BackupSnapshot capture, and Subscribe until log publication. Its
+callback releases the Store, GraphCache, and origin tracker locks before the
+log ring is updated. Direct `Store.Lookup`, GraphCache reads, and
+`LanternService.LocalSeq` bypass the service gate and may briefly observe
+receipt, graph, or origin state ahead of that ring. The held-WAL test proves
+those readers cannot see *tentative* state while WAL.Write is pending; it does
+not prove a single cut for direct readers during callback publication.
+Production wiring must gate direct consumers such as anti-entropy LocalSeq or
+strengthen the publication primitive before claiming the every-observer
+atomicity required above.
+
+No production provider uses the staged cache or coordinator. A durable WAL
+encoder/replayer, peer receipt-envelope transport, and receipt-bearing
+Snapshot/BackupSnapshot with epoch and clock-high-water validation are still
+required. Current Snapshot and BackupSnapshot remain graph-only and cannot
+certify receipt continuity after restart or restore. `Store.Begin` advances
+clock high-water and expires already-dead receipts even if the new mutation
+later aborts; only newly staged receipts roll back. Recovery must persist that
+monotonic metadata with the committed cut or rotate the active epoch.
 
 ## Dependencies and rollout
 

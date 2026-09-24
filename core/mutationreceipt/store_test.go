@@ -611,6 +611,45 @@ func TestStoreLiveGroupIDCannotBeReused(t *testing.T) {
 	}
 }
 
+func TestStoreStagedReceiptsAreOwnedAndOnlyAvailableBeforePublication(t *testing.T) {
+	s := testStore(t, 1, 1000)
+	item := testIntent(t, 3, testStart, GroupID{3}, 0, 1)
+	tx, err := s.Begin(testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if _, err := tx.StagedReceipts(); !errors.Is(err, ErrTransactionState) {
+		t.Fatalf("pre-stage receipts error = %v", err)
+	}
+	if class, _, err := tx.Classify([]Intent{item}); err != nil || class != Fresh {
+		t.Fatalf("Classify = %v, %v", class, err)
+	}
+	if err := tx.Reserve([][]byte{{1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := tx.StagedReceipts()
+	if err != nil || len(prepared) != 1 || prepared[0].Intent != item || len(prepared[0].Result) != 1 || prepared[0].Result[0] != 1 {
+		t.Fatalf("staged receipts = %+v, %v", prepared, err)
+	}
+	prepared[0].Result[0] = 0
+	preparedAgain, err := tx.StagedReceipts()
+	if err != nil || preparedAgain[0].Result[0] != 1 {
+		t.Fatalf("staged result alias = %+v, %v", preparedAgain, err)
+	}
+	tx.Commit()
+	if _, err := tx.StagedReceipts(); !errors.Is(err, ErrTransactionState) {
+		t.Fatalf("post-commit receipts error = %v", err)
+	}
+	status, stored, err := s.Lookup(item.ID, testStart)
+	if err != nil || status != Confirmed || stored.Result[0] != 1 {
+		t.Fatalf("stored receipt = %v, %+v, %v", status, stored, err)
+	}
+}
+
 func BenchmarkStoreDuplicateLookup(b *testing.B) {
 	s := testStore(b, 1, 1000)
 	item := testIntent(b, 1, testStart, GroupID{1}, 0, 1)
