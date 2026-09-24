@@ -277,11 +277,12 @@ func clientBoundedEdgePutResults(results []EdgePutResult, inputs []EdgeInput, in
 // Lantern is a Connect-Go-backed client for the Lantern graph service.
 // Construct one via NewLantern; share it across goroutines.
 type Lantern struct {
-	client     graphv1connect.LanternServiceClient
-	opts       options
-	httpClient *http.Client
-	baseURL    string
-	clock      func() time.Time
+	client            graphv1connect.LanternServiceClient
+	replicationClient graphv1connect.LanternReplicationServiceClient
+	opts              options
+	httpClient        *http.Client
+	baseURL           string
+	clock             func() time.Time
 
 	// contribIDs mints the per-call ContribID idempotency keys when
 	// WithIdempotentAdds is set (#588). It is always non-nil after
@@ -317,11 +318,12 @@ func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 	}
 
 	l := &Lantern{
-		client:     graphv1connect.NewLanternServiceClient(o.httpClient, baseURL, o.clientOptions...),
-		opts:       o,
-		httpClient: o.httpClient,
-		baseURL:    baseURL,
-		clock:      time.Now,
+		client:            graphv1connect.NewLanternServiceClient(o.httpClient, baseURL, o.clientOptions...),
+		replicationClient: graphv1connect.NewLanternReplicationServiceClient(o.httpClient, baseURL, o.clientOptions...),
+		opts:              o,
+		httpClient:        o.httpClient,
+		baseURL:           baseURL,
+		clock:             time.Now,
 	}
 	// A per-client random nonce namespaces this client's ContribIDs so two
 	// processes (or two NewLantern calls) never collide their idempotency

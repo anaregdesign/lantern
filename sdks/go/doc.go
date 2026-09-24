@@ -139,6 +139,11 @@
 //     origin. Proto map keys cannot be bytes, and importing core/hlc here
 //     would violate the SDK's pb-only module boundary.
 //
+//   - IdentityCheckpoint / IdentityChunk
+//     The identity-only CDC projection deliberately has payload-free SDK
+//     shapes: comparable origins and Edge refs, a checked next cursor, and
+//     no possible Vertex value, Edge weight, or contribution ID field.
+//
 // See https://github.com/anaregdesign/lantern/issues/106 for the
 // design discussion.
 package client

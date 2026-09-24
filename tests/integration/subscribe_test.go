@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,5 +273,132 @@ func TestSubscribeSDK_TypedCursorAndGap(t *testing.T) {
 	}
 	if !errors.Is(gapErr, client.ErrFailedPrecondition) {
 		t.Fatalf("Subscribe(cursor=1) error = %v, want ErrFailedPrecondition", gapErr)
+	}
+}
+
+// TestSubscribeIdentitySDK exercises the public payload-free facade over the
+// production Connect/h2c service: checkpoint, bounded chunks, cursor resume,
+// and a retained-log gap are all observed at the SDK boundary.
+func TestSubscribeIdentitySDK(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	origin := hlc.NodeID{0xA1, 0x02}
+	node := newPumpNode(t, origin)
+	sdkOrigin, err := client.ChangeOriginFromBytes(origin[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.sdk.PutVertex(ctx, "resident/a", "PRIVATE-VALUE", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var cursor client.ChangeCursor
+	var checkpointSeen bool
+	var chunkCount int
+bootstrapLoop:
+	for event, streamErr := range node.sdk.BootstrapIdentity(ctx) {
+		if streamErr != nil {
+			t.Fatalf("bootstrap identity: %v", streamErr)
+		}
+		switch change := event.(type) {
+		case *client.IdentityCheckpoint:
+			if checkpointSeen || change.LastSeqPerOrigin[sdkOrigin] != 1 {
+				t.Fatalf("checkpoint = %+v", change)
+			}
+			checkpointSeen = true
+			cursor, err = change.NextCursor()
+			if err != nil || cursor[sdkOrigin] != 2 {
+				t.Fatalf("checkpoint next cursor = (%v,%v)", cursor, err)
+			}
+			vertices := make([]*pb.Vertex, 1025)
+			for i := range vertices {
+				vertices[i] = &pb.Vertex{Key: "bulk/" + itoa(i), Value: &pb.Vertex_String_{String_: "PRIVATE-VALUE"}}
+			}
+			if _, err := node.raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+				t.Fatalf("plural write: %v", err)
+			}
+		case *client.IdentityChunk:
+			if !checkpointSeen || change.Origin != sdkOrigin || change.Seq != 2 || change.Operation != client.IdentityPutVertex || change.ChunkIndex != uint32(chunkCount) || strings.Contains(fmt.Sprintf("%+v", change), "PRIVATE-VALUE") {
+				t.Fatalf("identity chunk = %+v", change)
+			}
+			if chunkCount == 0 {
+				if change.IsLast || len(change.VertexKeys) != 1024 || change.FirstItemIndex != 0 {
+					t.Fatalf("first chunk = %+v", change)
+				}
+				if _, err := change.NextCursor(cursor); !errors.Is(err, client.ErrIncompleteIdentityMutation) {
+					t.Fatalf("partial chunk advanced cursor: %v", err)
+				}
+			} else if !change.IsLast || len(change.VertexKeys) != 1 || change.FirstItemIndex != 1024 {
+				t.Fatalf("final chunk = %+v", change)
+			}
+			chunkCount++
+			if change.IsLast {
+				cursor, err = change.NextCursor(cursor)
+				if err != nil || cursor[sdkOrigin] != 3 {
+					t.Fatalf("final cursor = (%v,%v)", cursor, err)
+				}
+				break bootstrapLoop
+			}
+		default:
+			t.Fatalf("unexpected identity event %T", event)
+		}
+	}
+	if !checkpointSeen || chunkCount != 2 {
+		t.Fatalf("bootstrap stream saw checkpoint=%t chunks=%d", checkpointSeen, chunkCount)
+	}
+	if _, err := node.sdk.DeleteVertex(ctx, "resident/a"); err != nil {
+		t.Fatal(err)
+	}
+	var resumed *client.IdentityChunk
+	for event, streamErr := range node.sdk.SubscribeIdentity(ctx, cursor) {
+		if streamErr != nil {
+			t.Fatalf("resume identity: %v", streamErr)
+		}
+		var ok bool
+		resumed, ok = event.(*client.IdentityChunk)
+		if !ok {
+			t.Fatalf("resume event %T, want chunk", event)
+		}
+		break
+	}
+	if resumed == nil || resumed.Seq != 3 || resumed.Operation != client.IdentityDeleteVertex || len(resumed.VertexKeys) != 1 || resumed.VertexKeys[0] != "resident/a" {
+		t.Fatalf("resumed identity = %+v", resumed)
+	}
+	if _, err := resumed.NextCursor(cursor); err != nil {
+		t.Fatalf("resumed cursor: %v", err)
+	}
+	streamCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	var cancelErr error
+	for event, streamErr := range node.sdk.BootstrapIdentity(streamCtx) {
+		if streamErr != nil {
+			cancelErr = streamErr
+			break
+		}
+		if _, ok := event.(*client.IdentityCheckpoint); !ok {
+			t.Fatalf("cancellation stream first event = %T", event)
+		}
+		stop()
+	}
+	if !errors.Is(cancelErr, context.Canceled) {
+		t.Fatalf("canceled identity stream = %v", cancelErr)
+	}
+
+	gapNode := newPumpNodeWithSearch(t, hlc.NodeID{0xA1, 0x03}, 2, true)
+	gapOrigin, err := client.ChangeOriginFromBytes(gapNode.nodeID[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := gapNode.sdk.PutVertex(ctx, "gap/"+itoa(i), "v", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var gapErr error
+	for _, streamErr := range gapNode.sdk.SubscribeIdentity(ctx, client.ChangeCursor{gapOrigin: 1}) {
+		gapErr = streamErr
+		break
+	}
+	if !errors.Is(gapErr, client.ErrIdentityGap) || !errors.Is(gapErr, client.ErrFailedPrecondition) || connect.CodeOf(gapErr) != connect.CodeFailedPrecondition {
+		t.Fatalf("gap error = %v", gapErr)
 	}
 }

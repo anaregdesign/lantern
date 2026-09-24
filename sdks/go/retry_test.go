@@ -325,13 +325,15 @@ func TestRetryableMethod(t *testing.T) {
 		{"PutVertexIfAbsent", false, false},
 		{"PutVerticesIfAbsent", false, false},
 		{"DeleteEdges", false, true},
-		{"AddEdges", false, false},  // additive write, no idempotency
-		{"AddEdges", true, true},    // idempotency armed
-		{"AddEdge", true, true},     // idempotency armed
-		{"AddEdgeAt", false, false}, // additive write, no idempotency
-		{"Subscribe", true, false},  // streaming never retries
-		{"Backup", true, false},     // io stream never retries
-		{"NotAMethod", true, false}, // unknown fails closed
+		{"AddEdges", false, false},         // additive write, no idempotency
+		{"AddEdges", true, true},           // idempotency armed
+		{"AddEdge", true, true},            // idempotency armed
+		{"AddEdgeAt", false, false},        // additive write, no idempotency
+		{"Subscribe", true, false},         // streaming never retries
+		{"BootstrapIdentity", true, false}, // streaming recovery never retries
+		{"SubscribeIdentity", true, false}, // cursor ownership stays with caller
+		{"Backup", true, false},            // io stream never retries
+		{"NotAMethod", true, false},        // unknown fails closed
 	}
 	for _, c := range cases {
 		if got := retryableMethod(c.method, c.idempotentAdds); got != c.want {
