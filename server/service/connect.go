@@ -62,12 +62,9 @@ func unary[Req, Resp any](ctx context.Context, req *connect.Request[Req], fn fun
 // unaryGraphRead keeps an externally visible graph read on the same
 // publication cut as local and relayed writes. A graph-first mutation whose
 // WAL append fails must not leak through an ordinary read while Subscribe and
-// Snapshot correctly report a gap. Service instances without a mutation log
-// retain the original no-lock read path.
+// Snapshot correctly report a gap. Snapshot install can fault even when this
+// service has no mutation log, so every read must inspect the cut.
 func unaryGraphRead[Req, Resp any](ctx context.Context, req *connect.Request[Req], svc *LanternService, fn func(context.Context, *Req) (*Resp, error)) (*connect.Response[Resp], error) {
-	if svc.log == nil {
-		return unary(ctx, req, fn)
-	}
 	svc.replicationCutMu.RLock()
 	defer svc.replicationCutMu.RUnlock()
 	if svc.publicationFaultCount != 0 {
@@ -82,9 +79,6 @@ func unaryGraphRead[Req, Resp any](ctx context.Context, req *connect.Request[Req
 // fault. An overlapping writer invalidates the result before it reaches the
 // wire, even if the writer finishes while the read is computing.
 func unaryGraphReadOptimistic[Req, Resp any](ctx context.Context, req *connect.Request[Req], svc *LanternService, fn func(context.Context, *Req) (*Resp, error)) (*connect.Response[Resp], error) {
-	if svc.log == nil {
-		return unary(ctx, req, fn)
-	}
 	before, err := svc.graphReadGeneration()
 	if err != nil {
 		return nil, err

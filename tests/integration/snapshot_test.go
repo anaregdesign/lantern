@@ -71,6 +71,63 @@ func newSnapshotPeerWithMode(t *testing.T, nodeID hlc.NodeID, logCapacity int, r
 	}
 }
 
+// A Snapshot install can fault a standalone service that has no mutation log.
+// The Connect graph-read adapter must honor that fault for both point reads
+// and the optimistic paths that build a larger response.
+func TestSnapshotInstallFaultGatesLoglessGraphReadsOnRealWire(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	if err := cache.PutVertex("cut", &pb.Vertex{Key: "cut"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := service.NewLanternService(cache)
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	reads := []struct {
+		name string
+		call func() (bool, error)
+	}{
+		{"GetVertex", func() (bool, error) {
+			resp, err := raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "cut"}))
+			return err == nil && resp.Msg.GetVertex().GetKey() == "cut", err
+		}},
+		{"GetVertices", func() (bool, error) {
+			resp, err := raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"cut", "missing"}}))
+			return err == nil && len(resp.Msg.GetVertices()) == 1 && resp.Msg.GetVertices()[0].GetKey() == "cut", err
+		}},
+	}
+	checkReads := func(phase string, wantFault bool) {
+		t.Helper()
+		for _, read := range reads {
+			t.Run(phase+"/"+read.name, func(t *testing.T) {
+				found, err := read.call()
+				if wantFault {
+					if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+						t.Fatalf("read during Snapshot fault = %v, want gapped FailedPrecondition", err)
+					}
+				} else if err != nil || !found {
+					t.Fatalf("healthy read = (found=%v, err=%v), want seeded vertex", found, err)
+				}
+			})
+		}
+	}
+	checkReads("before", false)
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkReads("installing", true)
+	finish(false)
+	checkReads("incomplete", true)
+	finish, err = svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	checkReads("recovered", false)
+}
+
 // TestSnapshotFormatNegotiation_RealConnectWire pins both sides of the
 // receipt-continuity boundary. A graph-only responder advertises and serves
 // only its graph format; a future receipt-enabled responder cannot let an old
