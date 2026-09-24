@@ -18,3 +18,16 @@ func (s *LanternService) withCommittedView(capture func() error) error {
 	}
 	return capture()
 }
+
+// withExclusiveCommittedView also excludes server-owned receipt lookups,
+// which advance Store high-water while holding a shared publication cut.
+// Whole-state capture is infrequent and must copy Store and graph under one
+// exclusive cut. Direct Core Store access is outside this service boundary.
+func (s *LanternService) withExclusiveCommittedView(capture func() error) error {
+	s.replicationCutMu.Lock()
+	defer s.replicationCutMu.Unlock()
+	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
+		return publicationGapError()
+	}
+	return capture()
+}
