@@ -128,7 +128,7 @@ packages:
       path: ".."
       relative: true
     source: path
-    version: "0.3.0"
+    version: "0.3.1"
   lantern_client_offline:
     dependency: "direct main"
     description:

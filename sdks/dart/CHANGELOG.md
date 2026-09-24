@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Regenerate the internal replication wire schema so D4 Delete mutations carry
+  the origin's absolute tombstone deadline. The public client API is unchanged.
+
 ## 0.3.0
 
 - Add a typed, value-free identity-only CDC stream with atomic bootstrap

@@ -19,7 +19,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  lantern_client: ^0.3.0
+  lantern_client: ^0.3.1
   lints: 6.1.0
   sqflite_common_ffi: ^2.4.0
 
