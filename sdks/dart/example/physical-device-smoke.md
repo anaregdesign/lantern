@@ -62,7 +62,12 @@ sanitized artifact uses this minimum JSON shape (one file per platform):
     "offline_put_replay",
     "authoritative_server_expiry",
     "watch_cleanup",
-    "wipe_before_send"
+    "wipe_before_send",
+    "sqlite_pending_close_reopen",
+    "sqlite_original_ttl_preserved",
+    "sqlite_expired_before_replay",
+    "sqlite_logout_wipe_reopen",
+    "sqlite_partition_isolation"
   ],
   "result": "passed"
 }
@@ -248,7 +253,9 @@ and drains. It also proves server-authoritative expiration under a deliberately
 behind device clock, releases a watch, and wipes an unsent Put with zero remote
 mutation. That revised scenario must be rerun from the exact #1162 candidate SHA
 on a physical device before it is recorded as current release evidence. The
-example uses
-`InMemoryOfflineStore`; process-restart durability remains covered by the
-storage-neutral fresh-process, Put response-loss, legacy-Add quarantine, and
-adapter conformance tests rather than being claimed from this device run.
+historical run used `InMemoryOfflineStore`. The current example and native
+smoke use `SqliteOfflineStore`, including pending Put close/reopen, original
+TTL, durable logout wipe, and partition isolation. None of those native SQLite
+scenarios are validated by the historical run above. A new exact-revision
+physical run is required; host-side process-crash tests and simulator runs
+remain separate evidence.

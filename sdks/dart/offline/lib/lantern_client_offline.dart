@@ -6,6 +6,8 @@
 /// migration and authorized inspection.
 library;
 
+export 'src/change_conformance.dart';
+export 'src/change_store.dart';
 export 'src/codec.dart';
 export 'src/conformance.dart';
 export 'src/errors.dart';

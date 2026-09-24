@@ -11,50 +11,88 @@ import 'helpers.dart';
 void main() {
   final initial = DateTime.utc(2026, 7, 22, 12);
 
-  test(
-    'local Put overlays are immediately visible and replay exactly',
-    () async {
-      final clock = MutableClock(initial);
-      final store = InMemoryOfflineStore();
-      final remote = FakeOfflineRemote();
-      final repository = OfflineLanternRepository(
-        store: store,
-        remote: remote,
-        config: testConfig(clock),
-      );
-      final put = await repository.putVertex(
-        partitionId: 'p',
-        input: VertexInput(key: 'v', value: VertexValue.string('local')),
-      );
-      final snapshot = await repository.readVertex(
-        'p',
-        'v',
-        policy: OfflineReadPolicy.cacheOnly,
-      );
-      expect(snapshot.value!.value, isA<StringValue>());
-      expect(snapshot.hasPendingWrites, isTrue);
-      expect(await put.statuses.first, isA<OfflineWriteStatus>());
+  for (final asynchronous in [false, true]) {
+    test(
+      'local Put overlays are immediately visible and replay exactly (async: $asynchronous)',
+      () async {
+        final clock = MutableClock(initial);
+        final reference = InMemoryOfflineStore();
+        final OfflineStore store = asynchronous
+            ? DelayedOfflineStore(reference)
+            : reference;
+        final remote = FakeOfflineRemote();
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: testConfig(clock),
+        );
+        final put = await repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(key: 'v', value: VertexValue.string('local')),
+        );
+        final snapshot = await repository.readVertex(
+          'p',
+          'v',
+          policy: OfflineReadPolicy.cacheOnly,
+        );
+        expect(snapshot.value!.value, isA<StringValue>());
+        expect(snapshot.hasPendingWrites, isTrue);
+        expect(await put.statuses.first, isA<OfflineWriteStatus>());
 
-      await repository.putEdge(
-        partitionId: 'p',
-        input: EdgeInput(tail: 'a', head: 'b', weight: 0.1),
-      );
-      final edge = await repository.readEdge(
-        'p',
-        const EdgeRef('a', 'b'),
-        policy: OfflineReadPolicy.cacheOnly,
-      );
-      expect(edge.hasPendingWrites, isTrue);
-      expect(edge.value!.weight, Float32Value(0.1).value);
-      final records = await store.transaction(
-        (transaction) => transaction.outbox('p'),
-      );
-      expect(records, hasLength(2));
-      expect(await repository.drain('p'), 2);
-      expect(remote.edgePutCalls, 1);
-      expect((await put.statuses.first).state, OfflineWriteState.confirmed);
-    },
-  );
+        await repository.putEdge(
+          partitionId: 'p',
+          input: EdgeInput(tail: 'a', head: 'b', weight: 0.1),
+        );
+        final edge = await repository.readEdge(
+          'p',
+          const EdgeRef('a', 'b'),
+          policy: OfflineReadPolicy.cacheOnly,
+        );
+        expect(edge.hasPendingWrites, isTrue);
+        expect(edge.value!.weight, Float32Value(0.1).value);
+        final records = await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        );
+        expect(records, hasLength(2));
+        expect(await repository.listPending('p'), hasLength(2));
+        expect(await repository.drain('p'), 2);
+        expect(remote.edgePutCalls, 1);
+        expect((await put.statuses.first).state, OfflineWriteState.confirmed);
+        expect(
+          (await repository.readVertex(
+            'p',
+            'v',
+            policy: OfflineReadPolicy.cacheOnly,
+          )).hasPendingWrites,
+          isFalse,
+        );
+        expect(
+          (await repository.readEdge(
+            'p',
+            const EdgeRef('a', 'b'),
+            policy: OfflineReadPolicy.cacheOnly,
+          )).state,
+          OfflineReadState.fresh,
+        );
+        await repository.wipePartition('p');
+        expect(
+          await store.transaction(
+            (transaction) async => await transaction.generation('p'),
+          ),
+          1,
+        );
+        expect(
+          (await repository.readVertex(
+            'p',
+            'v',
+            policy: OfflineReadPolicy.cacheOnly,
+          )).state,
+          OfflineReadState.unknown,
+        );
+        await repository.dispose();
+      },
+    );
+  }
 
   test(
     'legacy Add is never overlaid or sent and becomes inspectable terminal work',
@@ -164,76 +202,83 @@ void main() {
     },
   );
 
-  test(
-    'replay retries, pauses authentication, and dead-letters invalid intents',
-    () async {
-      final clock = MutableClock(initial);
-      final remote = FakeOfflineRemote();
-      final store = InMemoryOfflineStore();
-      final repository = OfflineLanternRepository(
-        store: store,
-        remote: remote,
-        config: OfflineConfig(
-          clock: clock.call,
-          idGenerator: testConfig(clock).idGenerator,
-          jitter: (ceiling) => ceiling,
-          baseRetryDelay: const Duration(seconds: 1),
-        ),
-      );
-      await repository.putVertex(
-        partitionId: 'p',
-        input: VertexInput(key: 'retry', value: VertexValue.string('retry')),
-      );
-      remote.vertexPutFailures.add(failure(OfflineRemoteErrorKind.unavailable));
-      expect(await repository.drain('p'), 0);
-      expect(remote.vertexPutCalls, 1);
-      clock.advance(const Duration(seconds: 1));
-      expect(await repository.drain('p'), 1);
-      expect(remote.vertices['retry']!.value, isA<StringValue>());
+  for (final asynchronous in [false, true]) {
+    test(
+      'replay retries, pauses authentication, and dead-letters invalid intents (async: $asynchronous)',
+      () async {
+        final clock = MutableClock(initial);
+        final remote = FakeOfflineRemote();
+        final reference = InMemoryOfflineStore();
+        final OfflineStore store = asynchronous
+            ? DelayedOfflineStore(reference)
+            : reference;
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: OfflineConfig(
+            clock: clock.call,
+            idGenerator: testConfig(clock).idGenerator,
+            jitter: (ceiling) => ceiling,
+            baseRetryDelay: const Duration(seconds: 1),
+          ),
+        );
+        await repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(key: 'retry', value: VertexValue.string('retry')),
+        );
+        remote.vertexPutFailures.add(
+          failure(OfflineRemoteErrorKind.unavailable),
+        );
+        expect(await repository.drain('p'), 0);
+        expect(remote.vertexPutCalls, 1);
+        clock.advance(const Duration(seconds: 1));
+        expect(await repository.drain('p'), 1);
+        expect(remote.vertices['retry']!.value, isA<StringValue>());
 
-      await repository.putVertex(
-        partitionId: 'p',
-        input: VertexInput(key: 'auth', value: VertexValue.string('auth')),
-      );
-      remote.vertexPutFailures.add(
-        failure(OfflineRemoteErrorKind.unauthenticated),
-      );
-      expect(await repository.drain('p'), 0);
-      final auth = await store.transaction(
-        (transaction) => transaction
-            .outbox('p')
-            .singleWhere((record) => record.intent.key.vertexKey == 'auth'),
-      );
-      expect(auth.attemptCount, 0);
-      expect(await repository.resume('p'), 1);
+        await repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(key: 'auth', value: VertexValue.string('auth')),
+        );
+        remote.vertexPutFailures.add(
+          failure(OfflineRemoteErrorKind.unauthenticated),
+        );
+        expect(await repository.drain('p'), 0);
+        final auth = await store.transaction(
+          (transaction) async => (await transaction.outbox(
+            'p',
+          )).singleWhere((record) => record.intent.key.vertexKey == 'auth'),
+        );
+        expect(auth.attemptCount, 0);
+        expect(await repository.resume('p'), 1);
 
-      await repository.putVertex(
-        partitionId: 'p',
-        input: VertexInput(key: 'bad', value: VertexValue.string('bad')),
-      );
-      remote.vertexPutFailures.add(
-        failure(OfflineRemoteErrorKind.invalidArgument),
-      );
-      expect(await repository.drain('p'), 0);
-      final dead = await repository.listDeadLetters('p');
-      expect(dead, hasLength(1));
-      expect(dead.single.category, OfflineOperationCategory.putVertex);
-      await expectLater(
-        repository.inspectDeadLetter(
+        await repository.putVertex(
+          partitionId: 'p',
+          input: VertexInput(key: 'bad', value: VertexValue.string('bad')),
+        );
+        remote.vertexPutFailures.add(
+          failure(OfflineRemoteErrorKind.invalidArgument),
+        );
+        expect(await repository.drain('p'), 0);
+        final dead = await repository.listDeadLetters('p');
+        expect(dead, hasLength(1));
+        expect(dead.single.category, OfflineOperationCategory.putVertex);
+        await expectLater(
+          repository.inspectDeadLetter(
+            'p',
+            dead.single.recordId,
+            authorize: (_) async => false,
+          ),
+          throwsA(isA<OfflineAuthorizationException>()),
+        );
+        final intent = await repository.inspectDeadLetter(
           'p',
           dead.single.recordId,
-          authorize: (_) async => false,
-        ),
-        throwsA(isA<OfflineAuthorizationException>()),
-      );
-      final intent = await repository.inspectDeadLetter(
-        'p',
-        dead.single.recordId,
-        authorize: (_) => true,
-      );
-      expect(intent, isA<OfflinePutVertexIntent>());
-    },
-  );
+          authorize: (_) => true,
+        );
+        expect(intent, isA<OfflinePutVertexIntent>());
+      },
+    );
+  }
 
   test(
     'auth pause is partition durable and only explicit resume clears it',
@@ -280,7 +325,7 @@ void main() {
       expect(remote.probeCalls, 0);
       expect(
         (await store.transaction(
-          (transaction) => transaction.outbox('p'),
+          (transaction) async => await transaction.outbox('p'),
         )).map((record) => record.attemptCount),
         everyElement(0),
       );
@@ -321,7 +366,7 @@ void main() {
     );
     expect(remote.vertexPutCalls, 0);
     final migrated = await store.transaction(
-      (transaction) => transaction.outbox('legacy-user').single,
+      (transaction) async => (await transaction.outbox('legacy-user')).single,
     );
     expect(migrated.diagnosticCode, 'unauthenticated');
     expect(await repository.resume('legacy-user'), 1);
@@ -644,7 +689,7 @@ void main() {
 
       expect(await draining, 0);
       final retained = await store.transaction(
-        (transaction) => transaction.outbox('p').single,
+        (transaction) async => (await transaction.outbox('p')).single,
       );
       expect(retained.state, OfflineOutboxState.deadLetter);
       expect(retained.deadLetteredAt, clock.now);
@@ -674,7 +719,7 @@ void main() {
     expect(await draining, 0);
     expect(remote.vertexPutCalls, 1);
     final retry = await store.transaction(
-      (transaction) => transaction.outbox('p').single,
+      (transaction) async => (await transaction.outbox('p')).single,
     );
     expect(retry.state, OfflineOutboxState.enqueued);
     expect(retry.nextAttemptAt, isNotNull);
@@ -710,7 +755,7 @@ void main() {
     expect(await repository.drain('p'), 0);
     expect(remote.vertexPutCalls, 1);
     final retry = await store.transaction(
-      (transaction) => transaction.outbox('p').single,
+      (transaction) async => (await transaction.outbox('p')).single,
     );
     expect(retry.state, OfflineOutboxState.enqueued);
     expect(retry.nextAttemptAt, maximum);
@@ -758,8 +803,8 @@ void main() {
       final store = InMemoryOfflineStore(
         limits: const OfflineStoreLimits(maxDiagnosticCodeBytes: 19),
       );
-      await store.transaction<void>((transaction) {
-        transaction.putCache(
+      await store.transaction<void>((transaction) async {
+        await transaction.putCache(
           'p',
           OfflineCacheRecord.value(
             partitionId: 'p',
@@ -774,7 +819,7 @@ void main() {
             lastAccessAt: initial,
           ),
         );
-        transaction.putCache(
+        await transaction.putCache(
           'p',
           OfflineCacheRecord.value(
             partitionId: 'p',
@@ -852,8 +897,7 @@ void main() {
       expect(edgeStatus.items.single.diagnosticCode, 'put_expired');
 
       final deadLetters = await store.transaction(
-        (transaction) => transaction
-            .outbox('p')
+        (transaction) async => (await transaction.outbox('p'))
             .where((record) => record.state == OfflineOutboxState.deadLetter)
             .toList(growable: false),
       );
@@ -989,7 +1033,9 @@ void main() {
         ],
       );
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         isEmpty,
       );
 
@@ -1031,7 +1077,9 @@ void main() {
       expect(statuses, hasLength(1));
       expect(statuses.single.state, OfflineWriteState.expired);
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         isEmpty,
       );
     },
@@ -1079,7 +1127,9 @@ void main() {
         OfflineWriteState.expired,
       );
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         isEmpty,
       );
       await repository.putVertex(
@@ -1136,7 +1186,9 @@ void main() {
       OfflineWriteState.expired,
     );
     expect(
-      await store.transaction((transaction) => transaction.outbox('p')),
+      await store.transaction(
+        (transaction) async => await transaction.outbox('p'),
+      ),
       isEmpty,
     );
     expect(await repository.drain('p'), 0);
@@ -1177,11 +1229,15 @@ void main() {
         );
       }
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         isEmpty,
       );
       expect(
-        await store.transaction((transaction) => transaction.operations('p')),
+        await store.transaction(
+          (transaction) async => await transaction.operations('p'),
+        ),
         isEmpty,
       );
     },
@@ -1374,7 +1430,7 @@ void main() {
       expect(store.outboxRecordsInspected, 2);
       expect(store.operationRecordsInspected, lessThanOrEqualTo(2));
       final retained = await store.inner.transaction(
-        (transaction) => transaction.outbox('p'),
+        (transaction) async => await transaction.outbox('p'),
       );
       expect(
         retained.where(
@@ -1403,8 +1459,8 @@ void main() {
     () async {
       final clock = MutableClock(initial);
       final store = _InspectingStore(InMemoryOfflineStore());
-      await store.inner.transaction((transaction) {
-        final assigned = transaction.enqueueAll(
+      await store.inner.transaction((transaction) async {
+        final assigned = await transaction.enqueueAll(
           List<OfflineOutboxRecord>.generate(260, (index) {
             final isTail = index >= 256;
             return OfflineOutboxRecord(
@@ -1433,7 +1489,7 @@ void main() {
             );
           }),
         );
-        transaction.putOperation(
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -1514,7 +1570,9 @@ void main() {
         throwsA(isA<OfflineIdGenerationException>()),
       );
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         hasLength(1),
       );
     },
@@ -1553,7 +1611,7 @@ void main() {
         );
       }
       final retained = await store.transaction(
-        (transaction) => transaction.outbox('p').single,
+        (transaction) async => (await transaction.outbox('p')).single,
       );
       expect(retained.recordId, original.recordId);
       expect(retained.intent.key.vertexKey, 'original');
@@ -1676,10 +1734,11 @@ void main() {
       await store.exportSnapshot(),
     );
     final record = await restored.transaction(
-      (transaction) => transaction.outbox('p').single,
+      (transaction) async => (await transaction.outbox('p')).single,
     );
     final operation = await restored.transaction(
-      (transaction) => transaction.getOperation('p', write.operationId)!,
+      (transaction) async =>
+          (await transaction.getOperation('p', write.operationId))!,
     );
     expect(record.diagnosticCode, 'canceled');
     expect(operation.items.single.diagnosticCode, 'canceled');
@@ -1704,10 +1763,13 @@ void main() {
     cancellation.cancel();
 
     await expectLater(draining, throwsA(isA<OfflineCanceledException>()));
-    final durable = await store.transaction((transaction) {
+    final durable = await store.transaction((transaction) async {
       return (
-        outbox: transaction.outbox('p').single,
-        operation: transaction.getOperation('p', operation.operationId)!,
+        outbox: (await transaction.outbox('p')).single,
+        operation: (await transaction.getOperation(
+          'p',
+          operation.operationId,
+        ))!,
       );
     });
     expect(durable.outbox.state, OfflineOutboxState.enqueued);
@@ -1748,7 +1810,7 @@ void main() {
       final draining = repository.drain('p');
       await remote.started.future;
       final leased = await store.transaction(
-        (transaction) => transaction.outbox('p').single,
+        (transaction) async => (await transaction.outbox('p')).single,
       );
       expect(leased.leaseUntil, initial.add(const Duration(seconds: 1)));
       clock.advance(const Duration(seconds: 1));
@@ -1802,7 +1864,7 @@ void main() {
       expect(operation.operationId, 'operation');
       expect(operation.itemCount, 2);
       final records = await store.transaction(
-        (transaction) => transaction.outbox('p'),
+        (transaction) async => await transaction.outbox('p'),
       );
       expect(records.map((record) => record.ordinal), everyElement(1));
       expect(records.map((record) => record.itemIndex), <int>[0, 1]);
@@ -1833,7 +1895,7 @@ void main() {
       );
       expect(
         await bounded.store.transaction(
-          (transaction) => transaction.outbox('p'),
+          (transaction) async => await transaction.outbox('p'),
         ),
         isEmpty,
       );
@@ -1899,7 +1961,7 @@ void main() {
       );
       await repository.drain('p');
       final old = await store.transaction(
-        (transaction) => transaction.outbox('p').single,
+        (transaction) async => (await transaction.outbox('p')).single,
       );
       final authorization = Completer<bool>();
       final authorizerStarted = Completer<void>();
@@ -1975,8 +2037,8 @@ void main() {
         'p',
         'same-record',
         authorize: (_) async {
-          await store.transaction((transaction) {
-            transaction.wipePartition('p');
+          await store.transaction((transaction) async {
+            await transaction.wipePartition('p');
           });
           await _seedDeadLetter(
             store,
@@ -2039,7 +2101,8 @@ void main() {
           await repository.drain('p');
         }
         final recordId = await store.transaction(
-          (transaction) => transaction.outbox('p').single.recordId,
+          (transaction) async =>
+              (await transaction.outbox('p')).single.recordId,
         );
         store.holdNext();
         final active = action(repository, handle, recordId);
@@ -2185,8 +2248,8 @@ void main() {
       const maximum = 0x7fffffffffffffff;
       final clock = MutableClock(initial);
       final store = InMemoryOfflineStore();
-      await store.transaction<void>((transaction) {
-        final assigned = transaction.enqueue(
+      await store.transaction<void>((transaction) async {
+        final assigned = await transaction.enqueue(
           OfflineOutboxRecord(
             recordId: 'max-attempt-record',
             operationId: 'max-attempt-operation',
@@ -2206,7 +2269,7 @@ void main() {
             generation: 0,
           ),
         );
-        transaction.putOperation(
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -2245,7 +2308,7 @@ void main() {
       expect(await repository.drain('p'), 0);
       expect(remote.vertexPutCalls, 0);
       final terminal = await store.transaction(
-        (transaction) => transaction.outbox('p').single,
+        (transaction) async => (await transaction.outbox('p')).single,
       );
       expect(terminal.state, OfflineOutboxState.deadLetter);
       expect(terminal.attemptCount, maximum);
@@ -2264,8 +2327,8 @@ void main() {
     const completedAttempts = 8;
     final clock = MutableClock(initial);
     final store = InMemoryOfflineStore();
-    await store.transaction<void>((transaction) {
-      final assigned = transaction.enqueue(
+    await store.transaction<void>((transaction) async {
+      final assigned = await transaction.enqueue(
         OfflineOutboxRecord(
           recordId: 'downgraded-attempt-record',
           operationId: 'downgraded-attempt-operation',
@@ -2285,7 +2348,7 @@ void main() {
           generation: 0,
         ),
       );
-      transaction.putOperation(
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
           generation: 0,
@@ -2484,7 +2547,7 @@ void main() {
     clock.advance(const Duration(milliseconds: 40));
     await Future<void>.delayed(const Duration(milliseconds: 25));
     final renewed = await store.transaction(
-      (transaction) => transaction.outbox('p').single.leaseUntil,
+      (transaction) async => (await transaction.outbox('p')).single.leaseUntil,
     );
     expect(renewed, initial.add(const Duration(milliseconds: 100)));
     clock.advance(const Duration(milliseconds: 40));
@@ -2544,11 +2607,15 @@ void main() {
       await disposing;
       await expectLater(pending, throwsA(isA<OfflineDisposedException>()));
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         isEmpty,
       );
       expect(
-        await store.transaction((transaction) => transaction.operations('p')),
+        await store.transaction(
+          (transaction) async => await transaction.operations('p'),
+        ),
         isEmpty,
       );
     },
@@ -2580,7 +2647,7 @@ void main() {
     await (await disposalStarted.future);
 
     final records = await store.transaction(
-      (transaction) => transaction.outbox('p'),
+      (transaction) async => await transaction.outbox('p'),
     );
     expect(records.single.recordId, handle.recordId);
     expect(
@@ -2604,9 +2671,9 @@ Future<void> _seedDeadLetter(
   required String operationId,
   required String key,
   required DateTime now,
-}) => store.transaction((transaction) {
-  final generation = transaction.generation(partitionId);
-  final record = transaction.enqueue(
+}) => store.transaction((transaction) async {
+  final generation = await transaction.generation(partitionId);
+  final record = await transaction.enqueue(
     OfflineOutboxRecord(
       recordId: recordId,
       operationId: operationId,
@@ -2624,7 +2691,7 @@ Future<void> _seedDeadLetter(
       diagnosticCode: 'invalid_argument',
     ),
   );
-  transaction.putOperation(
+  await transaction.putOperation(
     OfflineOperationRecord(
       partitionId: partitionId,
       generation: generation,
@@ -2957,7 +3024,7 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   final OfflineStoreTransaction inner;
 
   @override
-  List<OfflineOutboxRecord> dueOutbox(
+  Future<List<OfflineOutboxRecord>> dueOutbox(
     String partitionId, {
     String? operationId,
     OfflineEntityKey? key,
@@ -2965,8 +3032,8 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
     required Duration maxAge,
     required Duration deadLetterRetention,
     required int limit,
-  }) {
-    final records = inner.dueOutbox(
+  }) async {
+    final records = await inner.dueOutbox(
       partitionId,
       operationId: operationId,
       key: key,
@@ -2983,13 +3050,13 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   }
 
   @override
-  List<OfflineOperationRecord> dueOperations(
+  Future<List<OfflineOperationRecord>> dueOperations(
     String partitionId, {
     required DateTime now,
     required Duration retention,
     required int limit,
-  }) {
-    final operations = inner.dueOperations(
+  }) async {
+    final operations = await inner.dueOperations(
       partitionId,
       now: now,
       retention: retention,
@@ -3000,14 +3067,14 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   }
 
   @override
-  List<OfflineOutboxRecord> claim(
+  Future<List<OfflineOutboxRecord>> claim(
     String partitionId, {
     required String owner,
     required DateTime now,
     required Duration maxAge,
     required Duration leaseDuration,
     required int limit,
-  }) => inner.claim(
+  }) async => await inner.claim(
     partitionId,
     owner: owner,
     now: now,
@@ -3017,87 +3084,95 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   );
 
   @override
-  void deleteCache(String partitionId, OfflineEntityKey key) =>
-      inner.deleteCache(partitionId, key);
+  Future<void> deleteCache(String partitionId, OfflineEntityKey key) async =>
+      await inner.deleteCache(partitionId, key);
 
   @override
-  void deleteOperation(String partitionId, String operationId) =>
-      inner.deleteOperation(partitionId, operationId);
+  Future<void> deleteOperation(String partitionId, String operationId) async =>
+      await inner.deleteOperation(partitionId, operationId);
 
   @override
-  void deleteOutbox(String partitionId, String recordId) =>
-      inner.deleteOutbox(partitionId, recordId);
+  Future<void> deleteOutbox(String partitionId, String recordId) async =>
+      await inner.deleteOutbox(partitionId, recordId);
 
   @override
-  OfflineCacheRecord? getCache(String partitionId, OfflineEntityKey key) =>
-      inner.getCache(partitionId, key);
-
-  @override
-  OfflineOperationRecord? getOperation(
-    String partitionId,
-    String operationId,
-  ) => inner.getOperation(partitionId, operationId);
-
-  @override
-  OfflineOutboxRecord? getOutbox(String partitionId, String recordId) =>
-      inner.getOutbox(partitionId, recordId);
-
-  @override
-  int generation(String partitionId) => inner.generation(partitionId);
-
-  @override
-  bool replayPausedForAuth(String partitionId) =>
-      inner.replayPausedForAuth(partitionId);
-
-  @override
-  void setReplayPausedForAuth(String partitionId, bool paused) =>
-      inner.setReplayPausedForAuth(partitionId, paused);
-
-  @override
-  bool hasOutboxForOperation(String partitionId, String operationId) =>
-      inner.hasOutboxForOperation(partitionId, operationId);
-
-  @override
-  OfflineOutboxRecord enqueue(OfflineOutboxRecord record) =>
-      inner.enqueue(record);
-
-  @override
-  List<OfflineOutboxRecord> enqueueAll(List<OfflineOutboxRecord> records) =>
-      inner.enqueueAll(records);
-
-  @override
-  List<OfflineOperationRecord> operations(String partitionId) =>
-      inner.operations(partitionId);
-
-  @override
-  List<OfflineOutboxRecord> outbox(String partitionId) =>
-      inner.outbox(partitionId);
-
-  @override
-  List<OfflineOutboxRecord> outboxForKey(
+  Future<OfflineCacheRecord?> getCache(
     String partitionId,
     OfflineEntityKey key,
-  ) => inner.outboxForKey(partitionId, key);
+  ) async => await inner.getCache(partitionId, key);
 
   @override
-  void putCache(String partitionId, OfflineCacheRecord record) =>
-      inner.putCache(partitionId, record);
+  Future<OfflineOperationRecord?> getOperation(
+    String partitionId,
+    String operationId,
+  ) async => await inner.getOperation(partitionId, operationId);
 
   @override
-  void putOperation(OfflineOperationRecord record) =>
-      inner.putOperation(record);
+  Future<OfflineOutboxRecord?> getOutbox(
+    String partitionId,
+    String recordId,
+  ) async => await inner.getOutbox(partitionId, recordId);
 
   @override
-  bool renewLease(
+  Future<int> generation(String partitionId) async =>
+      await inner.generation(partitionId);
+
+  @override
+  Future<bool> replayPausedForAuth(String partitionId) async =>
+      await inner.replayPausedForAuth(partitionId);
+
+  @override
+  Future<void> setReplayPausedForAuth(String partitionId, bool paused) async =>
+      await inner.setReplayPausedForAuth(partitionId, paused);
+
+  @override
+  Future<bool> hasOutboxForOperation(
+    String partitionId,
+    String operationId,
+  ) async => await inner.hasOutboxForOperation(partitionId, operationId);
+
+  @override
+  Future<OfflineOutboxRecord> enqueue(OfflineOutboxRecord record) async =>
+      await inner.enqueue(record);
+
+  @override
+  Future<List<OfflineOutboxRecord>> enqueueAll(
+    List<OfflineOutboxRecord> records,
+  ) async => await inner.enqueueAll(records);
+
+  @override
+  Future<List<OfflineOperationRecord>> operations(String partitionId) async =>
+      await inner.operations(partitionId);
+
+  @override
+  Future<List<OfflineOutboxRecord>> outbox(String partitionId) async =>
+      await inner.outbox(partitionId);
+
+  @override
+  Future<List<OfflineOutboxRecord>> outboxForKey(
+    String partitionId,
+    OfflineEntityKey key,
+  ) async => await inner.outboxForKey(partitionId, key);
+
+  @override
+  Future<void> putCache(String partitionId, OfflineCacheRecord record) async =>
+      await inner.putCache(partitionId, record);
+
+  @override
+  Future<void> putOperation(OfflineOperationRecord record) async =>
+      await inner.putOperation(record);
+
+  @override
+  Future<bool> renewLease(
     String partitionId,
     String recordId, {
     required String owner,
     required int generation,
     required DateTime now,
     required Duration leaseDuration,
-  }) {
+  }) async {
     store.leaseRenewals += 1;
-    return inner.renewLease(
+    return await inner.renewLease(
       partitionId,
       recordId,
       owner: owner,
@@ -3108,24 +3183,24 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   }
 
   @override
-  OfflineOperationScanPage scanOperations(
+  Future<OfflineOperationScanPage> scanOperations(
     String partitionId, {
     String? afterOperationId,
     required int limit,
-  }) => inner.scanOperations(
+  }) async => await inner.scanOperations(
     partitionId,
     afterOperationId: afterOperationId,
     limit: limit,
   );
 
   @override
-  OfflineOutboxScanPage scanOutbox(
+  Future<OfflineOutboxScanPage> scanOutbox(
     String partitionId, {
     OfflineOutboxCursor? after,
     String? operationId,
     OfflineEntityKey? key,
     required int limit,
-  }) => inner.scanOutbox(
+  }) async => await inner.scanOutbox(
     partitionId,
     after: after,
     operationId: operationId,
@@ -3134,15 +3209,33 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   );
 
   @override
-  void touchCache(
+  Future<void> touchCache(
     String partitionId,
     OfflineEntityKey key,
     DateTime accessedAt,
-  ) => inner.touchCache(partitionId, key, accessedAt);
+  ) async => await inner.touchCache(partitionId, key, accessedAt);
 
   @override
-  void updateOutbox(OfflineOutboxRecord record) => inner.updateOutbox(record);
+  Future<void> updateOutbox(OfflineOutboxRecord record) async =>
+      await inner.updateOutbox(record);
 
   @override
-  void wipePartition(String partitionId) => inner.wipePartition(partitionId);
+  Future<OfflineChangeCursor> changeCursor(String partitionId) async =>
+      await inner.changeCursor(partitionId);
+
+  @override
+  Future<void> applyChangeChunk(
+    String partitionId,
+    OfflineChangeChunk chunk,
+  ) async => await inner.applyChangeChunk(partitionId, chunk);
+
+  @override
+  Future<void> resetChangeCursor(
+    String partitionId,
+    OfflineChangeCursor checkpoint,
+  ) async => await inner.resetChangeCursor(partitionId, checkpoint);
+
+  @override
+  Future<void> wipePartition(String partitionId) async =>
+      await inner.wipePartition(partitionId);
 }

@@ -1,0 +1,698 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:lantern_client/lantern_client.dart';
+import 'package:lantern_client_offline/lantern_client_offline.dart';
+import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  sqfliteFfiInit();
+  final factory = databaseFactoryFfi;
+  late Directory directory;
+  final stores = <SqliteOfflineStore>[];
+  var counter = 0;
+  const limits = OfflineStoreLimits(
+    maxCacheRecords: 32,
+    maxCacheRecordsPerPartition: 32,
+    maxOutboxRecords: 32,
+    maxOutboxRecordsPerPartition: 32,
+    maxOperationRecords: 32,
+    maxOperationRecordsPerPartition: 32,
+    maxChangeControllers: 8,
+  );
+
+  setUp(() async {
+    directory = await Directory.systemTemp.createTemp('lantern-sqlite-test-');
+  });
+  tearDown(() async {
+    for (final store in stores.reversed) {
+      await store.close();
+    }
+    stores.clear();
+    await directory.delete(recursive: true);
+  });
+  Future<SqliteOfflineStore> open({
+    String? path,
+    DatabaseFactory? databaseFactory,
+  }) async {
+    final store = await SqliteOfflineStore.open(
+      path: path ?? '${directory.path}/${counter++}.db',
+      databaseFactory: databaseFactory ?? factory,
+      limits: limits,
+    );
+    stores.add(store);
+    return store;
+  }
+
+  Future<OfflineStore> reopen(OfflineStore input) async {
+    final store = input as SqliteOfflineStore;
+    final path = store.path;
+    await store.close();
+    return open(path: path);
+  }
+
+  test(
+    'complete storage-neutral conformance across real SQLite reopen',
+    () async {
+      await runStoreConformanceSuite(
+        open,
+        reopen: reopen,
+        maxCapacityProbeRecords: 64,
+        maxNotificationControllerProbe: 16,
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  test(
+    'CDC conformance persists partial chunks and unsigned cursors',
+    () async {
+      await runChangeStoreConformanceSuite(open, reopen: reopen);
+    },
+  );
+
+  test(
+    'pending Put survives reopen with its absolute TTL and operation status',
+    () async {
+      var store = await open();
+      final now = DateTime.utc(2026, 9, 24);
+      var repository = OfflineLanternRepository(
+        store: store,
+        remote: _NoRemote(),
+        config: OfflineConfig(clock: () => now),
+      );
+      final handle = await repository.putVertex(
+        partitionId: 'account',
+        operationId: 'save',
+        input: VertexInput(
+          key: 'note',
+          value: VertexValue.string('pending'),
+          expiresIn: const Duration(minutes: 30),
+        ),
+      );
+      await repository.dispose();
+      store = await reopen(store) as SqliteOfflineStore;
+      repository = OfflineLanternRepository(
+        store: store,
+        remote: _NoRemote(),
+        config: OfflineConfig(clock: () => now.add(const Duration(minutes: 5))),
+      );
+      final snapshot = await repository.readVertex(
+        'account',
+        'note',
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect(snapshot.hasPendingWrites, isTrue);
+      expect(snapshot.value?.expiration, now.add(const Duration(minutes: 30)));
+      expect(
+        (await repository.getWriteStatus(
+          'account',
+          handle.operationId,
+        ))?.items.single.state,
+        OfflineWriteState.locallyCommitted,
+      );
+      await repository.wipePartition('account');
+      await repository.dispose();
+      store = await reopen(store) as SqliteOfflineStore;
+      expect(await store.transaction((t) => t.outbox('account')), isEmpty);
+      expect(await store.transaction((t) => t.generation('account')), 1);
+    },
+  );
+
+  test(
+    'independent connections serialize writes and publish committed changes',
+    () async {
+      final first = await open();
+      final second = await open(path: first.path);
+      final events = <OfflineStoreChange>[];
+      final subscription = second.changes('p').listen(events.add);
+      await Future.wait([
+        first.transaction((t) => t.setReplayPausedForAuth('p', true)),
+        second.transaction((t) => t.wipePartition('p')),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      expect(events.length, 2);
+      expect(events.last.version, greaterThan(events.first.version));
+      await subscription.cancel();
+    },
+  );
+
+  test(
+    'bounded due scans skip retained dead letters before their retention',
+    () async {
+      final store = await open();
+      final now = DateTime.utc(2026, 9, 24);
+      await store.transaction((transaction) async {
+        for (final dead in [true, false]) {
+          final record = _outboxRecord(
+            dead ? 'dead' : 'active',
+            now: now,
+            dead: dead,
+            expired: true,
+          );
+          final assigned = await transaction.enqueue(record);
+          await transaction.putOperation(_operation(assigned, now: now));
+        }
+      });
+      Future<List<OfflineOutboxRecord>> due({
+        String? operationId,
+        OfflineEntityKey? key,
+      }) => store.transaction(
+        (transaction) => transaction.dueOutbox(
+          'p',
+          operationId: operationId,
+          key: key,
+          now: now,
+          maxAge: const Duration(days: 1),
+          deadLetterRetention: const Duration(hours: 1),
+          limit: 1,
+        ),
+      );
+      expect((await due()).map((record) => record.recordId), ['active']);
+      expect(
+        (await due(
+          key: const OfflineEntityKey.vertex('shared'),
+        )).map((record) => record.recordId),
+        ['active'],
+      );
+      expect(await due(operationId: 'dead'), isEmpty);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: _NoRemote(),
+        config: OfflineConfig(
+          clock: () => now,
+          maxSweepRecordsPerObservation: 1,
+          maxAge: const Duration(days: 1),
+          deadLetterRetention: const Duration(hours: 1),
+        ),
+      );
+      addTearDown(repository.dispose);
+      expect(await repository.listPending('p'), isEmpty);
+      expect(
+        (await repository.getWriteStatus('p', 'active'))!.items.single.state,
+        OfflineWriteState.expired,
+      );
+      expect((await repository.listDeadLetters('p')).single.recordId, 'dead');
+    },
+  );
+
+  test('awaited parallel operations serialize their savepoints', () async {
+    var store = await open();
+    final events = <OfflineStoreChange>[];
+    final subscription = store.changes('p').listen(events.add);
+    late OfflineStoreTransaction escaped;
+    await store.transaction((transaction) async {
+      escaped = transaction;
+      await Future.wait([
+        for (final key in ['first', 'second'])
+          Future<void>.value(transaction.putCache('p', _cacheRecord(key))),
+      ]);
+    });
+    await Future<void>.delayed(Duration.zero);
+    expect(events, hasLength(1));
+    await subscription.cancel();
+    await expectLater(
+      Future<void>.sync(() => escaped.putCache('p', _cacheRecord('escaped'))),
+      throwsA(isA<OfflineTransactionClosedException>()),
+    );
+    store = await reopen(store) as SqliteOfflineStore;
+    for (final key in ['first', 'second']) {
+      expect(
+        await store.transaction(
+          (transaction) =>
+              transaction.getCache('p', OfflineEntityKey.vertex(key)),
+        ),
+        isNotNull,
+      );
+    }
+    expect(
+      await store.transaction(
+        (transaction) =>
+            transaction.getCache('p', const OfflineEntityKey.vertex('escaped')),
+      ),
+      isNull,
+    );
+  });
+
+  test(
+    'callback completion with an unawaited auth mutation rolls back',
+    () async {
+      var store = await open();
+      final now = DateTime.utc(2026, 9, 24);
+      await store.transaction((transaction) async {
+        final record = await transaction.enqueue(
+          _outboxRecord('paused', now: now, paused: true),
+        );
+        await transaction.putOperation(
+          _operation(record, now: now, paused: true),
+        );
+        await transaction.setReplayPausedForAuth('p', true);
+      });
+      final events = <OfflineStoreChange>[];
+      final subscription = store.changes('p').listen(events.add);
+      late Future<void> pending;
+      await expectLater(
+        store.transaction<void>((transaction) {
+          pending = Future<void>.value(
+            transaction.setReplayPausedForAuth('p', false),
+          );
+        }),
+        throwsA(isA<OfflineTransactionClosedException>()),
+      );
+      await pending;
+      await Future<void>.delayed(Duration.zero);
+      expect(events, isEmpty);
+      await subscription.cancel();
+      store = await reopen(store) as SqliteOfflineStore;
+      expect(
+        await store.transaction(
+          (transaction) => transaction.replayPausedForAuth('p'),
+        ),
+        isTrue,
+      );
+      expect(
+        (await store.transaction(
+          (transaction) => transaction.getOperation('p', 'paused'),
+        ))!.items.single.state,
+        OfflineWriteState.pausedForAuth,
+      );
+    },
+  );
+
+  test(
+    'unawaited enqueue and aggregate cannot escape a finished callback',
+    () async {
+      var store = await open();
+      final record = _outboxRecord('late', now: DateTime.utc(2026, 9, 24));
+      late Future<OfflineOutboxRecord> pendingEnqueue;
+      late Future<void> pendingOperation;
+      final events = <OfflineStoreChange>[];
+      final subscription = store.changes('p').listen(events.add);
+      await expectLater(
+        store.transaction<void>((transaction) {
+          pendingEnqueue = Future<OfflineOutboxRecord>.value(
+            transaction.enqueue(record),
+          );
+          pendingOperation = Future<void>.value(
+            transaction.putOperation(
+              _operation(record, now: record.enqueuedAt),
+            ),
+          );
+        }),
+        throwsA(isA<OfflineTransactionClosedException>()),
+      );
+      await pendingEnqueue;
+      await pendingOperation;
+      await Future<void>.delayed(Duration.zero);
+      expect(events, isEmpty);
+      await subscription.cancel();
+      store = await reopen(store) as SqliteOfflineStore;
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        isEmpty,
+      );
+      expect(
+        await store.transaction((transaction) => transaction.operations('p')),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'pending operation failures do not replace the callback exception',
+    () async {
+      var store = await open();
+      final callbackError = StateError('callback sentinel');
+      late Future<void> pendingObserved;
+      await expectLater(
+        store.transaction<void>((transaction) async {
+          await transaction.putCache('p', _cacheRecord('accepted'));
+          pendingObserved =
+              Future<void>.value(
+                transaction.putCache(
+                  'p',
+                  _cacheRecord('bad-generation', generation: 1),
+                ),
+              ).then<void>(
+                (_) => fail('the pending operation must fail'),
+                onError: (Object error) {
+                  expect(error, isA<OfflineArgumentException>());
+                },
+              );
+          throw callbackError;
+        }),
+        throwsA(same(callbackError)),
+      );
+      await pendingObserved;
+      store = await reopen(store) as SqliteOfflineStore;
+      for (final key in ['accepted', 'bad-generation']) {
+        expect(
+          await store.transaction(
+            (transaction) =>
+                transaction.getCache('p', OfflineEntityKey.vertex(key)),
+          ),
+          isNull,
+        );
+      }
+    },
+  );
+
+  test(
+    'unawaited enqueue failure is drained without losing the callback error',
+    () async {
+      var store = await open();
+      final callbackError = StateError('callback sentinel');
+      final done = Completer<void>();
+      final unhandled = <Object>[];
+      Object? observed;
+      runZonedGuarded(() async {
+        try {
+          await store.transaction<void>((transaction) {
+            transaction.enqueue(
+              _outboxRecord(
+                'invalid-generation',
+                now: DateTime.utc(2026, 9, 24),
+                generation: 1,
+              ),
+            );
+            throw callbackError;
+          });
+        } catch (error) {
+          observed = error;
+        } finally {
+          done.complete();
+        }
+      }, (error, stack) => unhandled.add(error));
+      await done.future;
+      await Future<void>.delayed(Duration.zero);
+      expect(observed, same(callbackError));
+      expect(unhandled, isEmpty);
+      store = await reopen(store) as SqliteOfflineStore;
+      expect(
+        await store.transaction((transaction) => transaction.outbox('p')),
+        isEmpty,
+      );
+    },
+  );
+
+  for (final scenario
+      in <
+        ({String name, String prefix, List<String> keys, List<String> retained})
+      >[
+        (
+          name: 'surrogate boundary',
+          prefix: '😀'.substring(0, 1),
+          keys: ['😀/x', '😁/y', 'other'],
+          retained: ['other'],
+        ),
+        (
+          name: 'maximum code unit',
+          prefix: '\uffff',
+          keys: ['\uffff', '\uffff/x', 'other'],
+          retained: ['other'],
+        ),
+        (
+          name: 'empty prefix',
+          prefix: '',
+          keys: ['first', 'second', 'other'],
+          retained: [],
+        ),
+      ]) {
+    test(
+      'CDC prefix preserves Dart startsWith semantics at ${scenario.name}',
+      () async {
+        var store = await open();
+        for (final key in scenario.keys) {
+          await _cache(store, key, 'value');
+        }
+        const edgeKey = OfflineEntityKey.edge('tail', 'head');
+        await store.transaction(
+          (transaction) => transaction.putCache(
+            'p',
+            OfflineCacheRecord.value(
+              partitionId: 'p',
+              generation: 0,
+              key: edgeKey,
+              entity: Edge(
+                tail: 'tail',
+                head: 'head',
+                weight: 1,
+                expiration: null,
+              ),
+              validatedAt: DateTime.utc(2026),
+              lastAccessAt: DateTime.utc(2026),
+            ),
+          ),
+        );
+        await store.transaction(
+          (transaction) => transaction.applyChangeChunk(
+            'p',
+            OfflineChangeChunk(
+              origin: '00000000000000000000000000000001',
+              sequence: BigInt.one,
+              chunkIndex: 0,
+              isLast: true,
+              vertexPrefixes: [scenario.prefix],
+            ),
+          ),
+        );
+        store = await reopen(store) as SqliteOfflineStore;
+        for (final key in scenario.keys) {
+          final cached = await store.transaction(
+            (transaction) =>
+                transaction.getCache('p', OfflineEntityKey.vertex(key)),
+          );
+          expect(cached != null, scenario.retained.contains(key));
+        }
+        expect(
+          await store.transaction(
+            (transaction) => transaction.getCache('p', edgeKey),
+          ),
+          isNotNull,
+        );
+      },
+    );
+  }
+
+  for (final literal in ['ENQUEUED', 'en queued']) {
+    test(
+      'schema validation rejects altered partial-index literal $literal',
+      () async {
+        final store = await open();
+        final path = store.path;
+        await store.close();
+        final database = await factory.openDatabase(path);
+        final definition =
+            (await database.rawQuery(
+                  "SELECT sql FROM sqlite_master WHERE name='outbox_expiration'",
+                )).single['sql']!
+                as String;
+        await database.execute('DROP INDEX outbox_expiration');
+        await database.execute(
+          definition.replaceAll("'enqueued'", "'$literal'"),
+        );
+        await database.close();
+        await expectLater(
+          open(path: path),
+          throwsA(isA<OfflineSchemaException>()),
+        );
+      },
+    );
+  }
+
+  test('closed store rejects new work and closes idempotently', () async {
+    final store = await open();
+    await store.close();
+    await store.close();
+    await expectLater(
+      store.transaction((t) => t.generation('p')),
+      throwsA(isA<OfflineDisposedException>()),
+    );
+  });
+
+  test('unknown schema fails closed without modifying accepted data', () async {
+    final store = await open();
+    final path = store.path;
+    await store.transaction((t) => t.setReplayPausedForAuth('p', true));
+    await store.close();
+    final database = await factory.openDatabase(path);
+    await database.setVersion(999);
+    await database.close();
+    await expectLater(open(path: path), throwsA(isA<OfflineSchemaException>()));
+    final check = await factory.openDatabase(path);
+    expect(await check.getVersion(), 999);
+    expect((await check.query('partitions')).single['auth_paused'], 1);
+    await check.close();
+  });
+
+  test('corrupt record is rejected before it can reach replay', () async {
+    final store = await open();
+    await _cache(store, 'retained', 'value');
+    final path = store.path;
+    await store.close();
+    final database = await factory.openDatabase(path);
+    await database.rawUpdate("UPDATE cache SET payload=x'0000'");
+    await database.close();
+    await expectLater(open(path: path), throwsA(isA<OfflineException>()));
+  });
+
+  test(
+    'real SQLITE_FULL rolls back and leaves the old state reopenable',
+    () async {
+      var store = await open();
+      await _cache(store, 'retained', 'accepted');
+      final path = store.path;
+      await store.close();
+      store = await open(path: path, databaseFactory: _FullFactory(factory));
+      await expectLater(
+        _cache(store, 'oversized', 'x' * (512 * 1024)),
+        throwsA(
+          isA<SqliteOfflineStoreException>().having(
+            (error) => error.code,
+            'code',
+            'sqlite_full',
+          ),
+        ),
+      );
+      await store.close();
+      store = await open(path: path);
+      final retained = await store.transaction(
+        (t) => t.getCache('p', const OfflineEntityKey.vertex('retained')),
+      );
+      expect((retained?.vertex?.value as StringValue).value, 'accepted');
+      expect(
+        await store.transaction(
+          (t) => t.getCache('p', const OfflineEntityKey.vertex('oversized')),
+        ),
+        isNull,
+      );
+    },
+  );
+}
+
+Future<void> _cache(OfflineStore store, String key, String value) {
+  final now = DateTime.utc(2026);
+  return store.transaction((t) async {
+    await t.putCache(
+      'p',
+      OfflineCacheRecord.value(
+        partitionId: 'p',
+        generation: await t.generation('p'),
+        key: OfflineEntityKey.vertex(key),
+        entity: Vertex(
+          key: key,
+          value: VertexValue.string(value),
+          expiration: null,
+        ),
+        validatedAt: now,
+        lastAccessAt: now,
+      ),
+    );
+  });
+}
+
+final class _FullFactory implements DatabaseFactory {
+  _FullFactory(this.delegate);
+  final DatabaseFactory delegate;
+  @override
+  Future<Database> openDatabase(
+    String path, {
+    OpenDatabaseOptions? options,
+  }) async {
+    final database = await delegate.openDatabase(path, options: options);
+    final pages =
+        (await database.rawQuery('PRAGMA page_count')).single.values.single
+            as int;
+    await database.rawQuery('PRAGMA max_page_count = ${pages + 1}');
+    return database;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _NoRemote implements OfflineRemote {
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw StateError('unexpected remote call');
+}
+
+OfflineCacheRecord _cacheRecord(String key, {int generation = 0}) =>
+    OfflineCacheRecord.value(
+      partitionId: 'p',
+      generation: generation,
+      key: OfflineEntityKey.vertex(key),
+      entity: Vertex(
+        key: key,
+        value: VertexValue.string('value'),
+        expiration: null,
+      ),
+      validatedAt: DateTime.utc(2026),
+      lastAccessAt: DateTime.utc(2026),
+    );
+
+OfflineOutboxRecord _outboxRecord(
+  String id, {
+  required DateTime now,
+  bool dead = false,
+  bool expired = false,
+  bool paused = false,
+  int generation = 0,
+}) => OfflineOutboxRecord(
+  recordId: id,
+  operationId: id,
+  itemIndex: 0,
+  partitionId: 'p',
+  intent: OfflinePutVertexIntent(
+    Vertex(
+      key: 'shared',
+      value: VertexValue.nil(),
+      expiration: expired
+          ? now.subtract(Duration(seconds: dead ? 10 : 1))
+          : null,
+    ),
+  ),
+  enqueuedAt: now.subtract(const Duration(seconds: 20)),
+  ordinal: 0,
+  state: dead ? OfflineOutboxState.deadLetter : OfflineOutboxState.enqueued,
+  attemptCount: 0,
+  generation: generation,
+  deadLetteredAt: dead ? now.subtract(const Duration(seconds: 2)) : null,
+  diagnosticCode: dead
+      ? 'invalid_argument'
+      : paused
+      ? 'unauthenticated'
+      : null,
+);
+
+OfflineOperationRecord _operation(
+  OfflineOutboxRecord record, {
+  required DateTime now,
+  bool paused = false,
+}) {
+  final dead = record.state == OfflineOutboxState.deadLetter;
+  return OfflineOperationRecord(
+    partitionId: record.partitionId,
+    generation: record.generation,
+    operationId: record.operationId,
+    items: [
+      OfflineWriteStatus(
+        recordId: record.recordId,
+        operationId: record.operationId,
+        itemIndex: 0,
+        state: dead
+            ? OfflineWriteState.deadLetter
+            : paused
+            ? OfflineWriteState.pausedForAuth
+            : OfflineWriteState.locallyCommitted,
+        attemptCount: record.attemptCount,
+        diagnosticCode: record.diagnosticCode,
+      ),
+    ],
+    updatedAt: now,
+    terminalAt: dead ? now : null,
+  );
+}

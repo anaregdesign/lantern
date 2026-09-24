@@ -130,8 +130,8 @@ disk-full, or interrupted-migration durability; those belong to #1163.
 does not bundle a database. The storage-neutral contract graduates only after
 its deterministic host gates are paired with the maintained example on at least
 one physical Android or iOS device. A separately versioned production adapter
-may be proposed later after passing the reusable conformance suite; no default
-adapter or package publication is implied by core graduation. Persistence built
+is implemented in `offline_sqlite` and must pass its own conformance and device
+qualification; no default adapter or package publication is implied by core graduation. Persistence built
 directly into `lantern_client` remains rejected: it would force policy and
 platform dependencies on every client and make user isolation an SDK-global
 concern.
@@ -480,6 +480,51 @@ Repository disposal follows the same quiescence rule for every partition.
     never replace intent, generated-ID exhaustion is atomic, and a transaction
     escaped from either a committed or rolled-back callback rejects every read
     and mutation.
+
+## SQLite and asynchronous store implementation
+
+The optional `sdks/dart/offline_sqlite` package implements the public store with
+`sqflite`, using platform SQLite on Android/iOS. All transaction operations
+return `FutureOr<T>` and consumers await them; the in-memory reference remains
+synchronous internally. A callback must await its operations before returning.
+Both implementations seal the transaction after that callback completes and
+publish notifications only after a successful commit. The offline core remains
+pure Dart and contains no adapter-specific branches.
+
+The public storage prerequisite of #1116 is `changeCursor`, `applyChangeChunk`,
+and `resetChangeCursor`:
+
+- Origin IDs are the existing 16-byte IDs encoded as lower-case hex. The cursor
+  stores a **last fully applied sequence per origin**, losslessly as uint64
+  decimal text; a future Subscribe consumer resumes at sequence plus one and
+  must reject uint64 exhaustion. HLC is not a replacement for this vector.
+- Each bounded chunk carries only exact entity keys and literal vertex-key
+  prefixes. Cache invalidation and the next expected chunk index commit
+  atomically. Only the final chunk advances the completed sequence. Duplicate
+  durable chunks are no-ops; missing/interleaved chunks fail closed.
+- Checkpoint reset drops confirmed resident cache and partial chunk progress,
+  installs the checkpoint vector, and leaves outbox/operation intent intact.
+  This makes resident data Unknown until revalidated. Wipe clears all cursor
+  state together with the partition generation barrier.
+- A partition admits at most 128 origins and a store at most 4096 origin records;
+  a chunk admits at most 1024 identities
+  and prefixes and 1 MiB of encoded identity text. Overflow requires the future
+  consumer to stop and recover; it must not silently discard cursor origins.
+- The reference snapshot is now schema v6 with `changeProgress`; v1–v5 still
+  migrate with empty CDC state and preserve their existing safety rules.
+
+This is the storage contract, not the complete #1116 implementation. The full
+identity-only Subscribe projection, bounded checkpoint/bootstrap, buffering,
+gap recovery, and coordination with in-flight reads remain in that Issue.
+Storage invalidation does not by itself establish freshness or implement
+server-enforced tenant filtering. TTL remains absolute and local.
+
+The adapter owns SQL transactions, indexes, canonical records, admission bounds,
+leases, and commit validation. The application owns account-to-path binding,
+OS file protection, backup policy, and any additional encrypted database
+factory. The default platform SQLite factory makes no application-level
+encryption claim. Never persist credentials or encryption keys with an outbox.
+Physical-device qualification and package publication remain explicit gates.
 
 ## Follow-up scopes
 

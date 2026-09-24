@@ -147,9 +147,8 @@ final class Graph {
       List<Edge>.unmodifiable(edges[tail]?.values ?? const <Edge>[]);
 
   /// Incoming edges in deterministic `(tail, head)` order.
-  List<Edge> incoming(String head) => List<Edge>.unmodifiable(
-    edges.values.expand((byHead) => [if (byHead[head] case final edge?) edge]),
-  );
+  List<Edge> incoming(String head) =>
+      List<Edge>.unmodifiable(edges.values.expand((byHead) => [?byHead[head]]));
 
   /// Unique adjacent vertex keys in deterministic order.
   List<String> adjacentKeys(String key) {

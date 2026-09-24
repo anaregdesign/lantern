@@ -27,11 +27,11 @@ void main() {
     generation: 0,
   );
 
-  void putInitialOperation(
+  Future<void> putInitialOperation(
     OfflineStoreTransaction transaction,
     List<OfflineOutboxRecord> records, {
     List<OfflineWriteState>? states,
-  }) {
+  }) async {
     final writeStates =
         states ??
         List<OfflineWriteState>.filled(
@@ -52,7 +52,7 @@ void main() {
       operationId: records.first.operationId,
       items: items,
     );
-    transaction.putOperation(
+    await transaction.putOperation(
       OfflineOperationRecord(
         partitionId: records.first.partitionId,
         generation: records.first.generation,
@@ -64,25 +64,25 @@ void main() {
     );
   }
 
-  OfflineOutboxRecord enqueueOperation(
+  Future<OfflineOutboxRecord> enqueueOperation(
     OfflineStoreTransaction transaction,
     OfflineOutboxRecord input,
-  ) {
-    final assigned = transaction.enqueue(input);
-    putInitialOperation(transaction, <OfflineOutboxRecord>[assigned]);
+  ) async {
+    final assigned = await transaction.enqueue(input);
+    await putInitialOperation(transaction, <OfflineOutboxRecord>[assigned]);
     return assigned;
   }
 
-  void putStatus(
+  Future<void> putStatus(
     OfflineStoreTransaction transaction,
     OfflineOutboxRecord record,
     OfflineWriteState state, {
     required DateTime updatedAt,
-  }) {
-    final operation = transaction.getOperation(
+  }) async {
+    final operation = (await transaction.getOperation(
       record.partitionId,
       record.operationId,
-    )!;
+    ))!;
     final items = operation.items.toList(growable: false);
     items[record.itemIndex] = OfflineWriteStatus(
       recordId: record.recordId,
@@ -96,7 +96,7 @@ void main() {
       operationId: operation.operationId,
       items: items,
     );
-    transaction.putOperation(
+    await transaction.putOperation(
       OfflineOperationRecord(
         partitionId: operation.partitionId,
         generation: operation.generation,
@@ -111,18 +111,21 @@ void main() {
   test('transactions are atomic and assign monotone ordinals', () async {
     final store = InMemoryOfflineStore();
     await expectLater(
-      store.transaction<void>((transaction) {
-        transaction.enqueue(record('discarded', 'a'));
+      store.transaction<void>((transaction) async {
+        await transaction.enqueue(record('discarded', 'a'));
         throw StateError('abort');
       }),
       throwsStateError,
     );
     expect(
-      await store.transaction((transaction) => transaction.outbox('p')),
+      await store.transaction(
+        (transaction) async => await transaction.outbox('p'),
+      ),
       isEmpty,
     );
     final assigned = await store.transaction(
-      (transaction) => enqueueOperation(transaction, record('kept', 'a')),
+      (transaction) async =>
+          await enqueueOperation(transaction, record('kept', 'a')),
     );
     expect(assigned.ordinal, 1);
   });
@@ -130,9 +133,9 @@ void main() {
   test('post-commit transaction references are sealed', () async {
     final store = InMemoryOfflineStore();
     late OfflineStoreTransaction escaped;
-    await store.transaction<void>((transaction) {
+    await store.transaction<void>((transaction) async {
       escaped = transaction;
-      enqueueOperation(transaction, record('committed', 'a'));
+      await enqueueOperation(transaction, record('committed', 'a'));
     });
 
     expect(
@@ -144,7 +147,9 @@ void main() {
       throwsA(isA<OfflineTransactionClosedException>()),
     );
     expect(
-      await store.transaction((transaction) => transaction.outbox('p')),
+      await store.transaction(
+        (transaction) async => await transaction.outbox('p'),
+      ),
       hasLength(1),
     );
   });
@@ -187,13 +192,13 @@ void main() {
     'claims independent keys while preserving per-key FIFO and lease',
     () async {
       final store = InMemoryOfflineStore();
-      await store.transaction((transaction) {
-        enqueueOperation(transaction, record('one', 'a'));
-        enqueueOperation(transaction, record('two', 'a'));
-        enqueueOperation(transaction, record('three', 'b'));
+      await store.transaction((transaction) async {
+        await enqueueOperation(transaction, record('one', 'a'));
+        await enqueueOperation(transaction, record('two', 'a'));
+        await enqueueOperation(transaction, record('three', 'b'));
       });
-      final first = await store.transaction((transaction) {
-        final claimed = transaction.claim(
+      final first = await store.transaction((transaction) async {
+        final claimed = await transaction.claim(
           'p',
           owner: 'owner',
           now: now,
@@ -202,7 +207,7 @@ void main() {
           limit: 2,
         );
         for (final record in claimed) {
-          putStatus(
+          await putStatus(
             transaction,
             record,
             OfflineWriteState.sending,
@@ -213,7 +218,7 @@ void main() {
       });
       expect(first.map((item) => item.recordId), <String>['one', 'three']);
       final blocked = await store.transaction(
-        (transaction) => transaction.claim(
+        (transaction) async => await transaction.claim(
           'p',
           owner: 'other',
           now: now,
@@ -223,22 +228,19 @@ void main() {
         ),
       );
       expect(blocked, isEmpty);
-      final recovered = await store.transaction((transaction) {
+      final recovered = await store.transaction((transaction) async {
         final recoveredAt = now.add(const Duration(seconds: 1));
-        for (final record
-            in transaction
-                .outbox('p')
-                .where(
-                  (record) => record.state == OfflineOutboxState.sending,
-                )) {
-          putStatus(
+        for (final record in (await transaction.outbox(
+          'p',
+        )).where((record) => record.state == OfflineOutboxState.sending)) {
+          await putStatus(
             transaction,
             record,
             OfflineWriteState.locallyCommitted,
             updatedAt: recoveredAt,
           );
         }
-        final claimed = transaction.claim(
+        final claimed = await transaction.claim(
           'p',
           owner: 'recovered',
           now: recoveredAt,
@@ -247,7 +249,7 @@ void main() {
           limit: 2,
         );
         for (final record in claimed) {
-          putStatus(
+          await putStatus(
             transaction,
             record,
             OfflineWriteState.sending,
@@ -257,27 +259,27 @@ void main() {
         return claimed;
       });
       expect(recovered.map((item) => item.recordId), <String>['one', 'three']);
-      await store.transaction((transaction) {
-        final first = transaction.getOutbox('p', 'one')!;
-        final third = transaction.getOutbox('p', 'three')!;
-        putStatus(
+      await store.transaction((transaction) async {
+        final first = (await transaction.getOutbox('p', 'one'))!;
+        final third = (await transaction.getOutbox('p', 'three'))!;
+        await putStatus(
           transaction,
           first,
           OfflineWriteState.confirmed,
           updatedAt: now.add(const Duration(seconds: 1)),
         );
-        putStatus(
+        await putStatus(
           transaction,
           third,
           OfflineWriteState.confirmed,
           updatedAt: now.add(const Duration(seconds: 1)),
         );
-        transaction.deleteOutbox('p', 'one');
-        transaction.deleteOutbox('p', 'three');
+        await transaction.deleteOutbox('p', 'one');
+        await transaction.deleteOutbox('p', 'three');
       });
-      final next = await store.transaction((transaction) {
+      final next = await store.transaction((transaction) async {
         final claimedAt = now.add(const Duration(seconds: 2));
-        final claimed = transaction.claim(
+        final claimed = await transaction.claim(
           'p',
           owner: 'next',
           now: claimedAt,
@@ -286,7 +288,7 @@ void main() {
           limit: 2,
         );
         for (final record in claimed) {
-          putStatus(
+          await putStatus(
             transaction,
             record,
             OfflineWriteState.sending,
@@ -304,9 +306,9 @@ void main() {
     () async {
       final store = InMemoryOfflineStore();
       late OfflineOutboxRecord assigned;
-      await store.transaction<void>((transaction) {
-        assigned = transaction.enqueue(record('lease', 'lease'));
-        transaction.putOperation(
+      await store.transaction<void>((transaction) async {
+        assigned = (await transaction.enqueue(record('lease', 'lease')));
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -324,8 +326,8 @@ void main() {
           ),
         );
       });
-      final claimed = await store.transaction((transaction) {
-        final result = transaction.claim(
+      final claimed = await store.transaction((transaction) async {
+        final result = await transaction.claim(
           'p',
           owner: 'owner',
           now: now,
@@ -333,7 +335,7 @@ void main() {
           leaseDuration: const Duration(minutes: 1),
           limit: 1,
         );
-        transaction.putOperation(
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -355,7 +357,7 @@ void main() {
       final before = await store.exportSnapshot();
 
       final renewed = await store.transaction(
-        (transaction) => transaction.renewLease(
+        (transaction) async => await transaction.renewLease(
           'p',
           assigned.recordId,
           owner: 'owner',
@@ -368,7 +370,8 @@ void main() {
       expect(renewed, isTrue);
       expect(
         (await store.transaction(
-          (transaction) => transaction.getOutbox('p', assigned.recordId)!,
+          (transaction) async =>
+              (await transaction.getOutbox('p', assigned.recordId))!,
         )).leaseUntil,
         claimed.leaseUntil,
       );
@@ -381,8 +384,8 @@ void main() {
     final maximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 999);
     final store = InMemoryOfflineStore();
     late OfflineOutboxRecord assigned;
-    await store.transaction<void>((transaction) {
-      assigned = transaction.enqueue(
+    await store.transaction<void>((transaction) async {
+      assigned = (await transaction.enqueue(
         OfflineOutboxRecord(
           recordId: 'maximum-lease',
           operationId: 'maximum-lease-operation',
@@ -401,8 +404,8 @@ void main() {
           attemptCount: 0,
           generation: 0,
         ),
-      );
-      transaction.putOperation(
+      ));
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
           generation: 0,
@@ -420,8 +423,8 @@ void main() {
         ),
       );
     });
-    final claimed = await store.transaction((transaction) {
-      final result = transaction.claim(
+    final claimed = await store.transaction((transaction) async {
+      final result = await transaction.claim(
         'p',
         owner: 'owner',
         now: nearMaximum,
@@ -429,7 +432,7 @@ void main() {
         leaseDuration: const Duration(days: 1),
         limit: 1,
       );
-      transaction.putOperation(
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
           generation: 0,
@@ -451,7 +454,7 @@ void main() {
     expect(claimed.leaseUntil, maximum);
     expect(
       await store.transaction(
-        (transaction) => transaction.renewLease(
+        (transaction) async => await transaction.renewLease(
           'p',
           assigned.recordId,
           owner: 'owner',
@@ -463,15 +466,15 @@ void main() {
       isTrue,
     );
     expect(
-      await store.transaction((transaction) {
-        final current = transaction.getOutbox('p', assigned.recordId)!;
-        putStatus(
+      await store.transaction((transaction) async {
+        final current = (await transaction.getOutbox('p', assigned.recordId))!;
+        await putStatus(
           transaction,
           current,
           OfflineWriteState.locallyCommitted,
           updatedAt: maximum,
         );
-        return transaction.claim(
+        return await transaction.claim(
           'p',
           owner: 'other',
           now: maximum,
@@ -486,7 +489,8 @@ void main() {
     final reopened = InMemoryOfflineStore.fromSnapshot(snapshot);
     expect(
       await reopened.transaction(
-        (transaction) => transaction.getOutbox('p', assigned.recordId)!.state,
+        (transaction) async =>
+            (await transaction.getOutbox('p', assigned.recordId))!.state,
       ),
       OfflineOutboxState.enqueued,
     );
@@ -503,8 +507,8 @@ void main() {
           maxOutboxBytes: 10000,
         ),
       );
-      await store.transaction((transaction) {
-        transaction.putCache(
+      await store.transaction((transaction) async {
+        await transaction.putCache(
           'p',
           OfflineCacheRecord.value(
             partitionId: 'p',
@@ -519,7 +523,7 @@ void main() {
             lastAccessAt: now,
           ),
         );
-        transaction.putCache(
+        await transaction.putCache(
           'p',
           OfflineCacheRecord.value(
             partitionId: 'p',
@@ -534,23 +538,28 @@ void main() {
             lastAccessAt: now.add(const Duration(seconds: 1)),
           ),
         );
-        enqueueOperation(transaction, record('one', 'one'));
+        await enqueueOperation(transaction, record('one', 'one'));
       });
       expect(
         await store.transaction(
-          (transaction) =>
-              transaction.getCache('p', const OfflineEntityKey.vertex('a')),
+          (transaction) async => await transaction.getCache(
+            'p',
+            const OfflineEntityKey.vertex('a'),
+          ),
         ),
         isNull,
       );
       await expectLater(
         store.transaction(
-          (transaction) => transaction.enqueue(record('two', 'two')),
+          (transaction) async =>
+              await transaction.enqueue(record('two', 'two')),
         ),
         throwsA(isA<OfflineCapacityException>()),
       );
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         hasLength(1),
       );
     },
@@ -560,16 +569,20 @@ void main() {
     'wipe increments generation and removes cache, outbox, and leases',
     () async {
       final store = InMemoryOfflineStore();
-      await store.transaction((transaction) {
-        transaction.enqueue(record('one', 'a'));
-        transaction.wipePartition('p');
+      await store.transaction((transaction) async {
+        await transaction.enqueue(record('one', 'a'));
+        await transaction.wipePartition('p');
       });
       expect(
-        await store.transaction((transaction) => transaction.generation('p')),
+        await store.transaction(
+          (transaction) async => await transaction.generation('p'),
+        ),
         1,
       );
       expect(
-        await store.transaction((transaction) => transaction.outbox('p')),
+        await store.transaction(
+          (transaction) async => await transaction.outbox('p'),
+        ),
         isEmpty,
       );
     },
@@ -597,30 +610,34 @@ void main() {
             validatedAt: now,
             lastAccessAt: access,
           );
-      await store.transaction((transaction) {
-        transaction.putCache('p', cache('a', now));
-        transaction.putCache('p', cache('b', now));
-        transaction.touchCache(
+      await store.transaction((transaction) async {
+        await transaction.putCache('p', cache('a', now));
+        await transaction.putCache('p', cache('b', now));
+        await transaction.touchCache(
           'p',
           const OfflineEntityKey.vertex('a'),
           now.add(const Duration(seconds: 1)),
         );
-        transaction.putCache(
+        await transaction.putCache(
           'p',
           cache('c', now.add(const Duration(seconds: 2))),
         );
       });
       expect(
         await store.transaction(
-          (transaction) =>
-              transaction.getCache('p', const OfflineEntityKey.vertex('a')),
+          (transaction) async => await transaction.getCache(
+            'p',
+            const OfflineEntityKey.vertex('a'),
+          ),
         ),
         isNotNull,
       );
       expect(
         await store.transaction(
-          (transaction) =>
-              transaction.getCache('p', const OfflineEntityKey.vertex('b')),
+          (transaction) async => await transaction.getCache(
+            'p',
+            const OfflineEntityKey.vertex('b'),
+          ),
         ),
         isNull,
       );
@@ -650,10 +667,11 @@ void main() {
     );
     final store = InMemoryOfflineStore(limits: limits(admittedBytes));
     await store.transaction<void>(
-      (transaction) => transaction.putCache('p', cache),
+      (transaction) async => await transaction.putCache('p', cache),
     );
     await store.transaction<void>(
-      (transaction) => transaction.touchCache('p', cache.key, latest),
+      (transaction) async =>
+          await transaction.touchCache('p', cache.key, latest),
     );
     final snapshot = await store.exportSnapshot();
     expect(
@@ -666,7 +684,7 @@ void main() {
     final below = InMemoryOfflineStore(limits: limits(admittedBytes - 1));
     await expectLater(
       below.transaction<void>(
-        (transaction) => transaction.putCache('p', cache),
+        (transaction) async => await transaction.putCache('p', cache),
       ),
       throwsA(isA<OfflineCapacityException>()),
     );
@@ -703,9 +721,9 @@ void main() {
         maxDiagnosticCodeBytes: maxDiagnosticBytes,
       );
       final store = InMemoryOfflineStore(limits: limits);
-      await store.transaction<void>((transaction) {
-        final assigned = transaction.enqueue(record('one', 'a'));
-        transaction.putOperation(
+      await store.transaction<void>((transaction) async {
+        final assigned = await transaction.enqueue(record('one', 'a'));
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -726,7 +744,7 @@ void main() {
 
       await expectLater(
         store.transaction(
-          (transaction) => transaction.claim(
+          (transaction) async => await transaction.claim(
             'p',
             owner: 'owner',
             now: now,
@@ -739,13 +757,13 @@ void main() {
       );
       expect(
         (await store.transaction(
-          (transaction) => transaction.outbox('p').single,
+          (transaction) async => (await transaction.outbox('p')).single,
         )).state,
         OfflineOutboxState.enqueued,
       );
 
-      final claimed = await store.transaction((transaction) {
-        final claimed = transaction.claim(
+      final claimed = await store.transaction((transaction) async {
+        final claimed = await transaction.claim(
           'p',
           owner: 'ownr',
           now: now,
@@ -753,7 +771,7 @@ void main() {
           leaseDuration: const Duration(seconds: 30),
           limit: 1,
         );
-        transaction.putOperation(
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -773,8 +791,8 @@ void main() {
         return claimed;
       });
       await expectLater(
-        store.transaction<void>((transaction) {
-          transaction.updateOutbox(
+        store.transaction<void>((transaction) async {
+          await transaction.updateOutbox(
             claimed.single.copyWith(
               state: OfflineOutboxState.enqueued,
               attemptCount: 1,
@@ -789,14 +807,14 @@ void main() {
       );
       expect(
         (await store.transaction(
-          (transaction) => transaction.outbox('p').single,
+          (transaction) async => (await transaction.outbox('p')).single,
         )).state,
         OfflineOutboxState.sending,
       );
 
       final retryAt = now.add(const Duration(seconds: 1));
       late OfflineOutboxRecord retriable;
-      await store.transaction<void>((transaction) {
+      await store.transaction<void>((transaction) async {
         retriable = claimed.single.copyWith(
           state: OfflineOutboxState.enqueued,
           attemptCount: 0x7fffffffffffffff,
@@ -805,8 +823,8 @@ void main() {
           clearLeaseUntil: true,
           diagnosticCode: 'retry',
         );
-        transaction.updateOutbox(retriable);
-        transaction.putOperation(
+        await transaction.updateOutbox(retriable);
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -827,15 +845,15 @@ void main() {
       });
 
       final deadLetteredAt = now.add(const Duration(seconds: 2));
-      await store.transaction<void>((transaction) {
+      await store.transaction<void>((transaction) async {
         final deadLetter = retriable.copyWith(
           state: OfflineOutboxState.deadLetter,
           clearNextAttemptAt: true,
           deadLetteredAt: deadLetteredAt,
           diagnosticCode: 'fatal',
         );
-        transaction.updateOutbox(deadLetter);
-        transaction.putOperation(
+        await transaction.updateOutbox(deadLetter);
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -873,7 +891,7 @@ void main() {
       );
       await expectLater(
         belowLimit.transaction(
-          (transaction) => transaction.enqueue(record('one', 'a')),
+          (transaction) async => await transaction.enqueue(record('one', 'a')),
         ),
         throwsA(isA<OfflineCapacityException>()),
       );
@@ -926,7 +944,7 @@ void main() {
     );
     final store = InMemoryOfflineStore(limits: limits(exactBytes));
     await store.transaction<void>(
-      (transaction) => transaction.putOperation(operation),
+      (transaction) async => await transaction.putOperation(operation),
     );
     final snapshot = await store.exportSnapshot();
     expect(
@@ -939,7 +957,7 @@ void main() {
     final below = InMemoryOfflineStore(limits: limits(exactBytes - 1));
     await expectLater(
       below.transaction<void>(
-        (transaction) => transaction.putOperation(operation),
+        (transaction) async => await transaction.putOperation(operation),
       ),
       throwsA(isA<OfflineCapacityException>()),
     );
@@ -980,19 +998,21 @@ void main() {
           validatedAt: now,
           lastAccessAt: now,
         );
-    await store.transaction((transaction) {
-      transaction.putCache('a', cache('a', 'one'));
-      transaction.putCache('b', cache('b', 'two'));
+    await store.transaction((transaction) async {
+      await transaction.putCache('a', cache('a', 'one'));
+      await transaction.putCache('b', cache('b', 'two'));
     });
     expect(
       await store.transaction(
-        (transaction) =>
-            transaction.getCache('a', const OfflineEntityKey.vertex('one')),
+        (transaction) async => await transaction.getCache(
+          'a',
+          const OfflineEntityKey.vertex('one'),
+        ),
       ),
       isNull,
     );
-    await store.transaction((transaction) {
-      final assigned = transaction.enqueue(
+    await store.transaction((transaction) async {
+      final assigned = await transaction.enqueue(
         OfflineOutboxRecord(
           recordId: 'a',
           operationId: 'op-a',
@@ -1008,11 +1028,11 @@ void main() {
           generation: 0,
         ),
       );
-      putInitialOperation(transaction, <OfflineOutboxRecord>[assigned]);
+      await putInitialOperation(transaction, <OfflineOutboxRecord>[assigned]);
     });
     await expectLater(
-      store.transaction((transaction) {
-        transaction.enqueue(
+      store.transaction((transaction) async {
+        await transaction.enqueue(
           OfflineOutboxRecord(
             recordId: 'b',
             operationId: 'op-b',
@@ -1036,7 +1056,9 @@ void main() {
       throwsA(isA<OfflineCapacityException>()),
     );
     expect(
-      await store.transaction((transaction) => transaction.outbox('a')),
+      await store.transaction(
+        (transaction) async => await transaction.outbox('a'),
+      ),
       hasLength(1),
     );
   });
@@ -1057,20 +1079,20 @@ void main() {
       attemptCount: 0,
       generation: 0,
     );
-    final assigned = await store.transaction((transaction) {
-      final records = transaction.enqueueAll(<OfflineOutboxRecord>[
+    final assigned = await store.transaction((transaction) async {
+      final records = await transaction.enqueueAll(<OfflineOutboxRecord>[
         item(0, 'a'),
         item(1, 'b'),
       ]);
-      putInitialOperation(transaction, records);
+      await putInitialOperation(transaction, records);
       return records;
     });
     expect(assigned.map((record) => record.ordinal), everyElement(1));
     expect(assigned.map((record) => record.itemIndex), <int>[0, 1]);
 
     await expectLater(
-      store.transaction((transaction) {
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+      store.transaction((transaction) async {
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           item(0, 'c'),
           item(2, 'd'),
         ]);
@@ -1078,7 +1100,9 @@ void main() {
       throwsA(isA<OfflineIdentityConflictException>()),
     );
     expect(
-      await store.transaction((transaction) => transaction.outbox('p')),
+      await store.transaction(
+        (transaction) async => await transaction.outbox('p'),
+      ),
       hasLength(2),
     );
   });
@@ -1111,12 +1135,12 @@ void main() {
     final store = InMemoryOfflineStore();
     final before = await store.exportSnapshot();
     await expectLater(
-      store.transaction<void>((transaction) {
-        final records = transaction.enqueueAll(<OfflineOutboxRecord>[
+      store.transaction<void>((transaction) async {
+        final records = await transaction.enqueueAll(<OfflineOutboxRecord>[
           item('mixed-live', 'mixed', 0, OfflineOutboxState.enqueued),
           item('mixed-expired', 'mixed', 1, OfflineOutboxState.expired),
         ]);
-        putInitialOperation(
+        await putInitialOperation(
           transaction,
           records.take(1).toList(growable: false),
         );
@@ -1126,8 +1150,8 @@ void main() {
     expect(await store.exportSnapshot(), before);
 
     await expectLater(
-      store.transaction<void>((transaction) {
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+      store.transaction<void>((transaction) async {
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           item('all-expired-0', 'all-expired', 0, OfflineOutboxState.expired),
           item('all-expired-1', 'all-expired', 1, OfflineOutboxState.expired),
         ]);
@@ -1136,12 +1160,12 @@ void main() {
     );
     expect(await store.exportSnapshot(), before);
 
-    final assigned = await store.transaction((transaction) {
-      final records = transaction.enqueueAll(<OfflineOutboxRecord>[
+    final assigned = await store.transaction((transaction) async {
+      final records = await transaction.enqueueAll(<OfflineOutboxRecord>[
         item('valid-live', 'valid', 0, OfflineOutboxState.enqueued),
         item('valid-expired', 'valid', 1, OfflineOutboxState.expired),
       ]);
-      putInitialOperation(
+      await putInitialOperation(
         transaction,
         records,
         states: const <OfflineWriteState>[
@@ -1153,7 +1177,9 @@ void main() {
     });
     expect(assigned, hasLength(2));
     expect(
-      await store.transaction((transaction) => transaction.outbox('p')),
+      await store.transaction(
+        (transaction) async => await transaction.outbox('p'),
+      ),
       hasLength(1),
     );
     final snapshot = await store.exportSnapshot();
@@ -1183,11 +1209,11 @@ void main() {
     final operationStore = InMemoryOfflineStore();
     final operationBefore = await operationStore.exportSnapshot();
     await expectLater(
-      operationStore.transaction<void>((transaction) {
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+      operationStore.transaction<void>((transaction) async {
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           expired('first-record', 'duplicate-operation', 0),
         ]);
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           expired('replacement-record', 'duplicate-operation', 0),
         ]);
       }),
@@ -1204,11 +1230,11 @@ void main() {
     final recordStore = InMemoryOfflineStore();
     final recordBefore = await recordStore.exportSnapshot();
     await expectLater(
-      recordStore.transaction<void>((transaction) {
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+      recordStore.transaction<void>((transaction) async {
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           expired('duplicate-record', 'first-operation', 0),
         ]);
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           expired('duplicate-record', 'second-operation', 0),
         ]);
       }),
@@ -1225,17 +1251,19 @@ void main() {
 
   test('wipe is an explicit barrier for earlier enqueue obligations', () async {
     final store = InMemoryOfflineStore();
-    final assigned = await store.transaction((transaction) {
-      final result = transaction.enqueue(record('before-wipe', 'before-wipe'));
-      transaction.wipePartition('p');
+    final assigned = await store.transaction((transaction) async {
+      final result = await transaction.enqueue(
+        record('before-wipe', 'before-wipe'),
+      );
+      await transaction.wipePartition('p');
       return result;
     });
     expect(assigned.recordId, 'before-wipe');
     final wiped = await store.transaction(
-      (transaction) => (
-        generation: transaction.generation('p'),
-        outbox: transaction.outbox('p'),
-        operations: transaction.operations('p'),
+      (transaction) async => (
+        generation: await transaction.generation('p'),
+        outbox: await transaction.outbox('p'),
+        operations: await transaction.operations('p'),
       ),
     );
     expect(wiped.generation, 1);
@@ -1281,7 +1309,9 @@ void main() {
       final store = InMemoryOfflineStore();
       final before = await store.exportSnapshot();
       await expectLater(
-        store.transaction<void>((transaction) => transaction.enqueue(legacy)),
+        store.transaction<void>(
+          (transaction) async => await transaction.enqueue(legacy),
+        ),
         throwsA(isA<OfflineUnsupportedOperationException>()),
       );
       expect(await store.exportSnapshot(), before);
@@ -1320,9 +1350,9 @@ void main() {
   test('operation and record identity collisions fail atomically', () async {
     final store = InMemoryOfflineStore();
     late OfflineOutboxRecord original;
-    await store.transaction<void>((transaction) {
-      original = transaction.enqueue(record('record-id', 'original'));
-      transaction.putOperation(
+    await store.transaction<void>((transaction) async {
+      original = (await transaction.enqueue(record('record-id', 'original')));
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
           generation: 0,
@@ -1343,8 +1373,8 @@ void main() {
 
     for (final differentIntent in <bool>[false, true]) {
       await expectLater(
-        store.transaction<void>((transaction) {
-          transaction.enqueue(
+        store.transaction<void>((transaction) async {
+          await transaction.enqueue(
             OfflineOutboxRecord(
               recordId: original.recordId,
               operationId: 'other-$differentIntent',
@@ -1377,8 +1407,8 @@ void main() {
       );
     }
     await expectLater(
-      store.transaction<void>((transaction) {
-        transaction.enqueue(
+      store.transaction<void>((transaction) async {
+        await transaction.enqueue(
           OfflineOutboxRecord(
             recordId: 'other-record',
             operationId: original.operationId,
@@ -1409,7 +1439,7 @@ void main() {
     );
 
     final after = await store.transaction(
-      (transaction) => transaction.outbox('p').single,
+      (transaction) async => (await transaction.outbox('p')).single,
     );
     expect(
       OfflineCodec.encodeOutboxRecord(after),
@@ -1420,8 +1450,8 @@ void main() {
   test('cache rejects a mismatched partition generation', () async {
     final store = InMemoryOfflineStore();
     await expectLater(
-      store.transaction((transaction) {
-        transaction.putCache(
+      store.transaction((transaction) async {
+        await transaction.putCache(
           'p',
           OfflineCacheRecord.value(
             partitionId: 'other',
@@ -1445,8 +1475,8 @@ void main() {
     'canonical snapshot survives a fresh Dart process and lease recovery',
     () async {
       final store = InMemoryOfflineStore();
-      await store.transaction((transaction) {
-        transaction.putCache(
+      await store.transaction((transaction) async {
+        await transaction.putCache(
           'p',
           OfflineCacheRecord.value(
             partitionId: 'p',
@@ -1461,7 +1491,7 @@ void main() {
             lastAccessAt: now,
           ),
         );
-        final assigned = transaction.enqueue(
+        final assigned = await transaction.enqueue(
           OfflineOutboxRecord(
             recordId: 'put-edge',
             operationId: 'operation',
@@ -1482,7 +1512,7 @@ void main() {
             generation: 0,
           ),
         );
-        final claimed = transaction.claim(
+        final claimed = await transaction.claim(
           'p',
           owner: 'crashed-process',
           now: now,
@@ -1490,7 +1520,7 @@ void main() {
           leaseDuration: const Duration(seconds: 1),
           limit: 1,
         );
-        transaction.putOperation(
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: 'p',
             generation: 0,
@@ -1513,7 +1543,7 @@ void main() {
       expect(await restored.exportSnapshot(), snapshot);
       expect(
         await restored.transaction(
-          (transaction) => transaction.claim(
+          (transaction) async => await transaction.claim(
             'p',
             owner: 'too-early',
             now: now,
@@ -1525,7 +1555,7 @@ void main() {
         isEmpty,
       );
       final recovered = await restored.transaction(
-        (transaction) => transaction.claim(
+        (transaction) async => await transaction.claim(
           'p',
           owner: 'restarted-process',
           now: now.add(const Duration(seconds: 1)),
@@ -1568,8 +1598,8 @@ void main() {
       final childStore = InMemoryOfflineStore.fromSnapshot(
         '${recoveredProcess.stdout}',
       );
-      final childState = await childStore.transaction((transaction) {
-        final record = transaction.outbox('p').single;
+      final childState = await childStore.transaction((transaction) async {
+        final record = (await transaction.outbox('p')).single;
         final intent = record.intent as OfflinePutEdgeIntent;
         return (
           recordId: record.recordId,
@@ -1579,11 +1609,10 @@ void main() {
           leaseUntil: record.leaseUntil,
           expiration: intent.edge.expiration,
           weight: intent.edge.weight,
-          status: transaction
-              .getOperation('p', record.operationId)!
-              .items
-              .single
-              .state,
+          status: (await transaction.getOperation(
+            'p',
+            record.operationId,
+          ))!.items.single.state,
         );
       });
       expect(childState.recordId, 'put-edge');
@@ -1607,7 +1636,12 @@ void main() {
 
   test('snapshot restore fails closed on schema and corruption', () {
     expect(
-      () => InMemoryOfflineStore.fromSnapshot('{"schema":6,"partitions":[]}'),
+      () => InMemoryOfflineStore.fromSnapshot(
+        jsonEncode({
+          'schema': InMemoryOfflineStore.snapshotSchemaVersion + 1,
+          'partitions': <Object?>[],
+        }),
+      ),
       throwsA(isA<OfflineSchemaException>()),
     );
     expect(
@@ -1620,8 +1654,8 @@ void main() {
 
   test('schema v1 migration rejects sparse allocation amplification', () async {
     final seed = InMemoryOfflineStore();
-    await seed.transaction<void>((transaction) {
-      enqueueOperation(transaction, record('sparse', 'sparse'));
+    await seed.transaction<void>((transaction) async {
+      await enqueueOperation(transaction, record('sparse', 'sparse'));
     });
     final canonical =
         jsonDecode(await seed.exportSnapshot()) as Map<String, Object?>;
@@ -1635,7 +1669,8 @@ void main() {
               as Map<String, Object?>;
       partition
         ..remove('operations')
-        ..remove('replayPausedForAuth');
+        ..remove('replayPausedForAuth')
+        ..remove('changeProgress');
       final outbox = partition['outbox']! as List<Object?>;
       final encoded =
           jsonDecode(outbox.single! as String) as Map<String, Object?>;
@@ -1655,7 +1690,9 @@ void main() {
   test('durable counters reject overflow without committing state', () async {
     const maximum = 0x7fffffffffffffff;
     final seed = InMemoryOfflineStore();
-    await seed.transaction((transaction) => transaction.generation('p'));
+    await seed.transaction(
+      (transaction) async => await transaction.generation('p'),
+    );
     final canonical =
         jsonDecode(await seed.exportSnapshot()) as Map<String, Object?>;
 
@@ -1684,7 +1721,8 @@ void main() {
     await expectAtomicOverflow(
       ordinal,
       () => ordinal.transaction<void>(
-        (transaction) => transaction.enqueue(record('overflow', 'ordinal')),
+        (transaction) async =>
+            await transaction.enqueue(record('overflow', 'ordinal')),
       ),
     );
 
@@ -1692,15 +1730,15 @@ void main() {
     await expectAtomicOverflow(
       generation,
       () => generation.transaction<void>(
-        (transaction) => transaction.wipePartition('p'),
+        (transaction) async => await transaction.wipePartition('p'),
       ),
     );
 
     final version = restoreAt('version');
     await expectAtomicOverflow(
       version,
-      () => version.transaction<void>((transaction) {
-        transaction.putCache(
+      () => version.transaction<void>((transaction) async {
+        await transaction.putCache(
           'p',
           OfflineCacheRecord.value(
             partitionId: 'p',
@@ -1721,9 +1759,9 @@ void main() {
 
   test('snapshot restore rejects contradictory durable state graphs', () async {
     final store = InMemoryOfflineStore();
-    await store.transaction<void>((transaction) {
-      final assigned = transaction.enqueue(record('graph-record', 'key'));
-      transaction.putOperation(
+    await store.transaction<void>((transaction) async {
+      final assigned = await transaction.enqueue(record('graph-record', 'key'));
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
           generation: 0,
@@ -1797,8 +1835,8 @@ void main() {
     }
 
     final terminalStore = InMemoryOfflineStore();
-    await terminalStore.transaction<void>((transaction) {
-      final assigned = transaction.enqueue(
+    await terminalStore.transaction<void>((transaction) async {
+      final assigned = await transaction.enqueue(
         OfflineOutboxRecord(
           recordId: 'terminal-graph-record',
           operationId: 'terminal-graph-operation',
@@ -1820,7 +1858,7 @@ void main() {
           diagnosticCode: 'terminal',
         ),
       );
-      transaction.putOperation(
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
           generation: 0,
@@ -1874,8 +1912,8 @@ void main() {
     );
 
     final duplicateStore = InMemoryOfflineStore();
-    await duplicateStore.transaction<void>((transaction) {
-      final assigned = transaction.enqueueAll(<OfflineOutboxRecord>[
+    await duplicateStore.transaction<void>((transaction) async {
+      final assigned = await transaction.enqueueAll(<OfflineOutboxRecord>[
         for (var index = 0; index < 2; index++)
           OfflineOutboxRecord(
             recordId: 'duplicate-$index',
@@ -1896,7 +1934,7 @@ void main() {
             generation: 0,
           ),
       ]);
-      transaction.putOperation(
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
           generation: 0,
@@ -1934,8 +1972,8 @@ void main() {
 
   test('schema v1 migration reconstructs active operation metadata', () async {
     final store = InMemoryOfflineStore();
-    await store.transaction((transaction) {
-      final records = transaction.enqueueAll(<OfflineOutboxRecord>[
+    await store.transaction((transaction) async {
+      final records = await transaction.enqueueAll(<OfflineOutboxRecord>[
         OfflineOutboxRecord(
           recordId: 'confirmed-before-snapshot',
           operationId: 'legacy-operation',
@@ -1965,7 +2003,7 @@ void main() {
           generation: 0,
         ),
       ]);
-      putInitialOperation(
+      await putInitialOperation(
         transaction,
         records,
         states: const <OfflineWriteState>[
@@ -1973,7 +2011,7 @@ void main() {
           OfflineWriteState.locallyCommitted,
         ],
       );
-      transaction.deleteOutbox('p', records.first.recordId);
+      await transaction.deleteOutbox('p', records.first.recordId);
     });
     final v2 = jsonDecode(await store.exportSnapshot()) as Map<String, Object?>;
     v2['schema'] = 1;
@@ -1981,12 +2019,13 @@ void main() {
     for (final value in partitions) {
       (value! as Map<String, Object?>)
         ..remove('operations')
-        ..remove('replayPausedForAuth');
+        ..remove('replayPausedForAuth')
+        ..remove('changeProgress');
     }
     final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(v2));
     final operation = await restored.transaction(
-      (transaction) =>
-          transaction.getOperation('p', 'legacy-operation')!.status,
+      (transaction) async =>
+          (await transaction.getOperation('p', 'legacy-operation'))!.status,
     );
 
     expect(operation.items, hasLength(2));
@@ -2010,8 +2049,8 @@ void main() {
         String operationId,
         String pendingRecordId,
       ) async {
-        await store.transaction<void>((transaction) {
-          final records = transaction.enqueueAll(<OfflineOutboxRecord>[
+        await store.transaction<void>((transaction) async {
+          final records = await transaction.enqueueAll(<OfflineOutboxRecord>[
             for (var index = 0; index < 2; index++)
               OfflineOutboxRecord(
                 recordId: index == 0
@@ -2034,7 +2073,7 @@ void main() {
                 generation: 0,
               ),
           ]);
-          putInitialOperation(
+          await putInitialOperation(
             transaction,
             records,
             states: const <OfflineWriteState>[
@@ -2042,7 +2081,7 @@ void main() {
               OfflineWriteState.locallyCommitted,
             ],
           );
-          transaction.deleteOutbox('p', records.first.recordId);
+          await transaction.deleteOutbox('p', records.first.recordId);
         });
       }
 
@@ -2054,16 +2093,17 @@ void main() {
       for (final value in legacy['partitions']! as List<Object?>) {
         (value! as Map<String, Object?>)
           ..remove('operations')
-          ..remove('replayPausedForAuth');
+          ..remove('replayPausedForAuth')
+          ..remove('changeProgress');
       }
       final encoded = jsonEncode(legacy);
 
       final first = InMemoryOfflineStore.fromSnapshot(encoded);
       final second = InMemoryOfflineStore.fromSnapshot(encoded);
-      final statuses = await first.transaction((transaction) {
+      final statuses = await first.transaction((transaction) async {
         return <OfflineOperationStatus>[
-          transaction.getOperation('p', 'operation-a')!.status,
-          transaction.getOperation('p', 'operation-b')!.status,
+          (await transaction.getOperation('p', 'operation-a'))!.status,
+          (await transaction.getOperation('p', 'operation-b'))!.status,
         ];
       });
       final recordIds = statuses
@@ -2081,90 +2121,95 @@ void main() {
     },
   );
 
-  test('legacy restore recovers auth pause and v5 rejects drift', () async {
-    final store = InMemoryOfflineStore();
-    await store.transaction<void>((transaction) {
-      final assigned = transaction.enqueue(
-        OfflineOutboxRecord(
-          recordId: 'auth-record',
-          operationId: 'auth-operation',
-          itemIndex: 0,
-          partitionId: 'p',
-          intent: OfflinePutVertexIntent(
-            Vertex(
-              key: 'auth-key',
-              value: VertexValue.string('value'),
-              expiration: null,
+  test(
+    'legacy restore recovers auth pause and current schema rejects drift',
+    () async {
+      final store = InMemoryOfflineStore();
+      await store.transaction<void>((transaction) async {
+        final assigned = await transaction.enqueue(
+          OfflineOutboxRecord(
+            recordId: 'auth-record',
+            operationId: 'auth-operation',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflinePutVertexIntent(
+              Vertex(
+                key: 'auth-key',
+                value: VertexValue.string('value'),
+                expiration: null,
+              ),
             ),
+            enqueuedAt: now,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 0,
+            generation: 0,
+            diagnosticCode: 'unauthenticated',
           ),
-          enqueuedAt: now,
-          ordinal: 0,
-          state: OfflineOutboxState.enqueued,
-          attemptCount: 0,
-          generation: 0,
-          diagnosticCode: 'unauthenticated',
-        ),
-      );
-      transaction.putOperation(
-        OfflineOperationRecord(
-          partitionId: 'p',
-          generation: 0,
-          operationId: assigned.operationId,
-          items: <OfflineWriteStatus>[
-            OfflineWriteStatus(
-              recordId: assigned.recordId,
-              operationId: assigned.operationId,
-              itemIndex: 0,
-              state: OfflineWriteState.pausedForAuth,
-              attemptCount: 0,
-              diagnosticCode: 'unauthenticated',
-            ),
-          ],
-          updatedAt: now,
-        ),
-      );
-      transaction.setReplayPausedForAuth('p', true);
-    });
-    final canonical =
-        jsonDecode(await store.exportSnapshot()) as Map<String, Object?>;
-
-    for (var schema = 1; schema <= 4; schema++) {
-      final legacy = jsonDecode(jsonEncode(canonical)) as Map<String, Object?>;
-      legacy['schema'] = schema;
-      final partition =
-          (legacy['partitions']! as List<Object?>).single!
-              as Map<String, Object?>;
-      partition.remove('replayPausedForAuth');
-      if (schema == 1) partition.remove('operations');
-
-      final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(legacy));
-      final state = await restored.transaction((transaction) {
-        return (
-          paused: transaction.replayPausedForAuth('p'),
-          outbox: transaction.outbox('p').single,
-          operation: transaction.getOperation('p', 'auth-operation')!,
         );
+        await transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: assigned.operationId,
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: assigned.recordId,
+                operationId: assigned.operationId,
+                itemIndex: 0,
+                state: OfflineWriteState.pausedForAuth,
+                attemptCount: 0,
+                diagnosticCode: 'unauthenticated',
+              ),
+            ],
+            updatedAt: now,
+          ),
+        );
+        await transaction.setReplayPausedForAuth('p', true);
       });
-      expect(state.paused, isTrue, reason: 'schema v$schema');
-      expect(state.outbox.diagnosticCode, 'unauthenticated');
-      expect(
-        state.operation.items.single.state,
-        OfflineWriteState.pausedForAuth,
-      );
-    }
+      final canonical =
+          jsonDecode(await store.exportSnapshot()) as Map<String, Object?>;
 
-    final contradictory =
-        jsonDecode(jsonEncode(canonical)) as Map<String, Object?>;
-    final contradictoryPartition =
-        (contradictory['partitions']! as List<Object?>).single!
-            as Map<String, Object?>;
-    contradictoryPartition['replayPausedForAuth'] = false;
-    expect(
-      () => InMemoryOfflineStore.fromSnapshot(jsonEncode(contradictory)),
-      throwsA(isA<OfflineCodecException>()),
-      reason: 'canonical auth metadata cannot contradict the partition flag',
-    );
-  });
+      for (var schema = 1; schema <= 5; schema++) {
+        final legacy =
+            jsonDecode(jsonEncode(canonical)) as Map<String, Object?>;
+        legacy['schema'] = schema;
+        final partition =
+            (legacy['partitions']! as List<Object?>).single!
+                as Map<String, Object?>;
+        partition.remove('changeProgress');
+        if (schema < 5) partition.remove('replayPausedForAuth');
+        if (schema == 1) partition.remove('operations');
+
+        final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(legacy));
+        final state = await restored.transaction((transaction) async {
+          return (
+            paused: await transaction.replayPausedForAuth('p'),
+            outbox: (await transaction.outbox('p')).single,
+            operation: (await transaction.getOperation('p', 'auth-operation'))!,
+          );
+        });
+        expect(state.paused, isTrue, reason: 'schema v$schema');
+        expect(state.outbox.diagnosticCode, 'unauthenticated');
+        expect(
+          state.operation.items.single.state,
+          OfflineWriteState.pausedForAuth,
+        );
+      }
+
+      final contradictory =
+          jsonDecode(jsonEncode(canonical)) as Map<String, Object?>;
+      final contradictoryPartition =
+          (contradictory['partitions']! as List<Object?>).single!
+              as Map<String, Object?>;
+      contradictoryPartition['replayPausedForAuth'] = false;
+      expect(
+        () => InMemoryOfflineStore.fromSnapshot(jsonEncode(contradictory)),
+        throwsA(isA<OfflineCodecException>()),
+        reason: 'canonical auth metadata cannot contradict the partition flag',
+      );
+    },
+  );
 
   test(
     'schema v1 migration quarantines legacy Add while reconstructing status',
@@ -2196,13 +2241,14 @@ void main() {
         schema: 1,
         outbox: <OfflineOutboxRecord>[legacyRecord],
       );
-      final migrated = await restored.transaction((transaction) {
+      final migrated = await restored.transaction((transaction) async {
         return (
-          record: transaction.getOutbox('p', 'legacy-v1-add')!,
-          operation: transaction
-              .getOperation('p', 'legacy-v1-operation')!
-              .status,
-          claimed: transaction.claim(
+          record: (await transaction.getOutbox('p', 'legacy-v1-add'))!,
+          operation: (await transaction.getOperation(
+            'p',
+            'legacy-v1-operation',
+          ))!.status,
+          claimed: await transaction.claim(
             'p',
             owner: 'restarted-process',
             now: now.add(const Duration(minutes: 2)),
@@ -2288,13 +2334,14 @@ void main() {
       );
 
       final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(legacy));
-      final migrated = await restored.transaction((transaction) {
+      final migrated = await restored.transaction((transaction) async {
         return (
-          record: transaction.getOutbox('p', 'legacy-add')!,
-          operation: transaction
-              .getOperation('p', 'legacy-add-operation')!
-              .status,
-          claimed: transaction.claim(
+          record: (await transaction.getOutbox('p', 'legacy-add'))!,
+          operation: (await transaction.getOperation(
+            'p',
+            'legacy-add-operation',
+          ))!.status,
+          claimed: await transaction.claim(
             'p',
             owner: 'new-process',
             now: now.add(const Duration(minutes: 2)),
@@ -2323,10 +2370,13 @@ void main() {
         InMemoryOfflineStore.snapshotSchemaVersion,
       );
       final reopened = InMemoryOfflineStore.fromSnapshot(migratedSnapshot);
-      final reopenedState = await reopened.transaction((transaction) {
+      final reopenedState = await reopened.transaction((transaction) async {
         return (
-          record: transaction.getOutbox('p', 'legacy-add')!,
-          operation: transaction.getOperation('p', 'legacy-add-operation')!,
+          record: (await transaction.getOutbox('p', 'legacy-add'))!,
+          operation: (await transaction.getOperation(
+            'p',
+            'legacy-add-operation',
+          ))!,
         );
       });
       expect(reopenedState.record.state, OfflineOutboxState.deadLetter);
@@ -2355,6 +2405,26 @@ void main() {
       );
     },
   );
+
+  test('conformance awaits asynchronous transaction operations', () async {
+    const limits = OfflineStoreLimits(
+      maxCacheRecords: 128,
+      maxOutboxRecords: 128,
+      maxOperationRecords: 128,
+    );
+    await runStoreConformanceSuite(
+      () => DelayedOfflineStore(InMemoryOfflineStore(limits: limits)),
+      reopen: (store) async {
+        final reference = (store as DelayedOfflineStore).inner;
+        return DelayedOfflineStore(
+          InMemoryOfflineStore.fromSnapshot(
+            await reference.exportSnapshot(),
+            limits: reference.limits,
+          ),
+        );
+      },
+    );
+  });
 
   test('conformance reaches every known broken graph family', () async {
     const labels = <String>[
@@ -2490,16 +2560,16 @@ void main() {
         attemptCount: 0,
         generation: 0,
       );
-      await store.transaction<void>((transaction) {
-        transaction.enqueue(pending('active'));
-        transaction.putOperation(
+      await store.transaction<void>((transaction) async {
+        await transaction.enqueue(pending('active'));
+        await transaction.putOperation(
           operation('active', OfflineWriteState.locallyCommitted),
         );
       });
       var caughtCapacity = false;
-      await store.transaction<void>((transaction) {
+      await store.transaction<void>((transaction) async {
         try {
-          transaction.putOperation(
+          await transaction.putOperation(
             operation('terminal', OfflineWriteState.confirmed, terminalAt: now),
           );
         } on OfflineCapacityException {
@@ -2509,7 +2579,8 @@ void main() {
       expect(caughtCapacity, isTrue);
       expect(
         await store.transaction(
-          (transaction) => transaction.operations('p').single.operationId,
+          (transaction) async =>
+              (await transaction.operations('p')).single.operationId,
         ),
         'active',
       );
@@ -2522,14 +2593,15 @@ void main() {
             maxOperationRecordsPerPartition: 1,
           ),
         ).transaction(
-          (transaction) => transaction.operations('p').single.operationId,
+          (transaction) async =>
+              (await transaction.operations('p')).single.operationId,
         ),
         'active',
       );
       await expectLater(
-        store.transaction<void>((transaction) {
-          transaction.enqueue(pending('second'));
-          transaction.putOperation(
+        store.transaction<void>((transaction) async {
+          await transaction.enqueue(pending('second'));
+          await transaction.putOperation(
             operation('second', OfflineWriteState.locallyCommitted),
           );
         }),
@@ -2537,26 +2609,28 @@ void main() {
       );
       expect(
         await store.transaction(
-          (transaction) => transaction.operations('p').single.operationId,
+          (transaction) async =>
+              (await transaction.operations('p')).single.operationId,
         ),
         'active',
       );
 
-      await store.transaction<void>((transaction) {
-        transaction.putOperation(
+      await store.transaction<void>((transaction) async {
+        await transaction.putOperation(
           operation('active', OfflineWriteState.confirmed, terminalAt: now),
         );
-        transaction.deleteOutbox('p', 'record-active');
+        await transaction.deleteOutbox('p', 'record-active');
       });
-      await store.transaction<void>((transaction) {
-        transaction.enqueue(pending('second'));
-        transaction.putOperation(
+      await store.transaction<void>((transaction) async {
+        await transaction.enqueue(pending('second'));
+        await transaction.putOperation(
           operation('second', OfflineWriteState.locallyCommitted),
         );
       });
       expect(
         await store.transaction(
-          (transaction) => transaction.operations('p').single.operationId,
+          (transaction) async =>
+              (await transaction.operations('p')).single.operationId,
         ),
         'second',
       );
@@ -2617,13 +2691,13 @@ void main() {
       lastAccessAt: now,
     );
     await store.transaction<void>(
-      (transaction) => transaction.putCache('p', cache('one')),
+      (transaction) async => await transaction.putCache('p', cache('one')),
     );
     await store.transaction<void>(
-      (transaction) => transaction.putCache('p', cache('two')),
+      (transaction) async => await transaction.putCache('p', cache('two')),
     );
     await store.transaction<void>(
-      (transaction) => transaction.wipePartition('p'),
+      (transaction) async => await transaction.wipePartition('p'),
     );
 
     final observed = await changes;
@@ -2708,15 +2782,15 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   final OfflineStoreTransaction inner;
 
   @override
-  List<OfflineOutboxRecord> claim(
+  Future<List<OfflineOutboxRecord>> claim(
     String partitionId, {
     required String owner,
     required DateTime now,
     required Duration maxAge,
     required Duration leaseDuration,
     required int limit,
-  }) {
-    final claimed = inner.claim(
+  }) async {
+    final claimed = await inner.claim(
       partitionId,
       owner: owner,
       now: now,
@@ -2739,24 +2813,24 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   }
 
   @override
-  void deleteCache(String partitionId, OfflineEntityKey key) =>
-      inner.deleteCache(partitionId, key);
+  Future<void> deleteCache(String partitionId, OfflineEntityKey key) async =>
+      await inner.deleteCache(partitionId, key);
 
   @override
-  void deleteOperation(String partitionId, String operationId) =>
-      inner.deleteOperation(partitionId, operationId);
+  Future<void> deleteOperation(String partitionId, String operationId) async =>
+      await inner.deleteOperation(partitionId, operationId);
 
   @override
-  void deleteOutbox(String partitionId, String recordId) =>
-      inner.deleteOutbox(partitionId, recordId);
+  Future<void> deleteOutbox(String partitionId, String recordId) async =>
+      await inner.deleteOutbox(partitionId, recordId);
 
   @override
-  List<OfflineOperationRecord> dueOperations(
+  Future<List<OfflineOperationRecord>> dueOperations(
     String partitionId, {
     required DateTime now,
     required Duration retention,
     required int limit,
-  }) => inner.dueOperations(
+  }) async => await inner.dueOperations(
     partitionId,
     now: now,
     retention: retention,
@@ -2764,7 +2838,7 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   );
 
   @override
-  List<OfflineOutboxRecord> dueOutbox(
+  Future<List<OfflineOutboxRecord>> dueOutbox(
     String partitionId, {
     String? operationId,
     OfflineEntityKey? key,
@@ -2772,7 +2846,7 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
     required Duration maxAge,
     required Duration deadLetterRetention,
     required int limit,
-  }) => inner.dueOutbox(
+  }) async => await inner.dueOutbox(
     partitionId,
     operationId: operationId,
     key: key,
@@ -2783,67 +2857,75 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   );
 
   @override
-  OfflineOutboxRecord enqueue(OfflineOutboxRecord record) =>
-      inner.enqueue(record);
+  Future<OfflineOutboxRecord> enqueue(OfflineOutboxRecord record) async =>
+      await inner.enqueue(record);
 
   @override
-  List<OfflineOutboxRecord> enqueueAll(List<OfflineOutboxRecord> records) =>
-      inner.enqueueAll(records);
+  Future<List<OfflineOutboxRecord>> enqueueAll(
+    List<OfflineOutboxRecord> records,
+  ) async => await inner.enqueueAll(records);
 
   @override
-  int generation(String partitionId) => inner.generation(partitionId);
+  Future<int> generation(String partitionId) async =>
+      await inner.generation(partitionId);
 
   @override
-  OfflineCacheRecord? getCache(String partitionId, OfflineEntityKey key) =>
-      inner.getCache(partitionId, key);
-
-  @override
-  OfflineOperationRecord? getOperation(
-    String partitionId,
-    String operationId,
-  ) => inner.getOperation(partitionId, operationId);
-
-  @override
-  OfflineOutboxRecord? getOutbox(String partitionId, String recordId) =>
-      inner.getOutbox(partitionId, recordId);
-
-  @override
-  bool hasOutboxForOperation(String partitionId, String operationId) =>
-      inner.hasOutboxForOperation(partitionId, operationId);
-
-  @override
-  List<OfflineOperationRecord> operations(String partitionId) =>
-      inner.operations(partitionId);
-
-  @override
-  List<OfflineOutboxRecord> outbox(String partitionId) =>
-      inner.outbox(partitionId);
-
-  @override
-  List<OfflineOutboxRecord> outboxForKey(
+  Future<OfflineCacheRecord?> getCache(
     String partitionId,
     OfflineEntityKey key,
-  ) => inner.outboxForKey(partitionId, key);
+  ) async => await inner.getCache(partitionId, key);
 
   @override
-  void putCache(String partitionId, OfflineCacheRecord record) =>
-      inner.putCache(partitionId, record);
+  Future<OfflineOperationRecord?> getOperation(
+    String partitionId,
+    String operationId,
+  ) async => await inner.getOperation(partitionId, operationId);
 
   @override
-  void putOperation(OfflineOperationRecord record) =>
-      inner.putOperation(record);
+  Future<OfflineOutboxRecord?> getOutbox(
+    String partitionId,
+    String recordId,
+  ) async => await inner.getOutbox(partitionId, recordId);
 
   @override
-  bool renewLease(
+  Future<bool> hasOutboxForOperation(
+    String partitionId,
+    String operationId,
+  ) async => await inner.hasOutboxForOperation(partitionId, operationId);
+
+  @override
+  Future<List<OfflineOperationRecord>> operations(String partitionId) async =>
+      await inner.operations(partitionId);
+
+  @override
+  Future<List<OfflineOutboxRecord>> outbox(String partitionId) async =>
+      await inner.outbox(partitionId);
+
+  @override
+  Future<List<OfflineOutboxRecord>> outboxForKey(
+    String partitionId,
+    OfflineEntityKey key,
+  ) async => await inner.outboxForKey(partitionId, key);
+
+  @override
+  Future<void> putCache(String partitionId, OfflineCacheRecord record) async =>
+      await inner.putCache(partitionId, record);
+
+  @override
+  Future<void> putOperation(OfflineOperationRecord record) async =>
+      await inner.putOperation(record);
+
+  @override
+  Future<bool> renewLease(
     String partitionId,
     String recordId, {
     required String owner,
     required int generation,
     required DateTime now,
     required Duration leaseDuration,
-  }) {
+  }) async {
     if (store.contract == _BrokenContract.leaseCas) return true;
-    return inner.renewLease(
+    return await inner.renewLease(
       partitionId,
       recordId,
       owner: owner,
@@ -2854,28 +2936,28 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   }
 
   @override
-  bool replayPausedForAuth(String partitionId) =>
-      inner.replayPausedForAuth(partitionId);
+  Future<bool> replayPausedForAuth(String partitionId) async =>
+      await inner.replayPausedForAuth(partitionId);
 
   @override
-  OfflineOperationScanPage scanOperations(
+  Future<OfflineOperationScanPage> scanOperations(
     String partitionId, {
     String? afterOperationId,
     required int limit,
-  }) => inner.scanOperations(
+  }) async => await inner.scanOperations(
     partitionId,
     afterOperationId: afterOperationId,
     limit: limit,
   );
 
   @override
-  OfflineOutboxScanPage scanOutbox(
+  Future<OfflineOutboxScanPage> scanOutbox(
     String partitionId, {
     OfflineOutboxCursor? after,
     String? operationId,
     OfflineEntityKey? key,
     required int limit,
-  }) => inner.scanOutbox(
+  }) async => await inner.scanOutbox(
     partitionId,
     after: after,
     operationId: operationId,
@@ -2884,19 +2966,37 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   );
 
   @override
-  void setReplayPausedForAuth(String partitionId, bool paused) =>
-      inner.setReplayPausedForAuth(partitionId, paused);
+  Future<void> setReplayPausedForAuth(String partitionId, bool paused) async =>
+      await inner.setReplayPausedForAuth(partitionId, paused);
 
   @override
-  void touchCache(
+  Future<void> touchCache(
     String partitionId,
     OfflineEntityKey key,
     DateTime accessedAt,
-  ) => inner.touchCache(partitionId, key, accessedAt);
+  ) async => await inner.touchCache(partitionId, key, accessedAt);
 
   @override
-  void updateOutbox(OfflineOutboxRecord record) => inner.updateOutbox(record);
+  Future<void> updateOutbox(OfflineOutboxRecord record) async =>
+      await inner.updateOutbox(record);
 
   @override
-  void wipePartition(String partitionId) => inner.wipePartition(partitionId);
+  Future<OfflineChangeCursor> changeCursor(String partitionId) async =>
+      await inner.changeCursor(partitionId);
+
+  @override
+  Future<void> applyChangeChunk(
+    String partitionId,
+    OfflineChangeChunk chunk,
+  ) async => await inner.applyChangeChunk(partitionId, chunk);
+
+  @override
+  Future<void> resetChangeCursor(
+    String partitionId,
+    OfflineChangeCursor checkpoint,
+  ) async => await inner.resetChangeCursor(partitionId, checkpoint);
+
+  @override
+  Future<void> wipePartition(String partitionId) async =>
+      await inner.wipePartition(partitionId);
 }

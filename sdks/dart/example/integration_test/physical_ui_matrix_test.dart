@@ -95,6 +95,7 @@ void main() {
           endpoint: endpoint,
           tokenEndpoint: Uri.parse(tokenEndpointValue),
           allowInsecure: allowInsecure,
+          offlineScope: 'physical-ui-fixture',
         ),
       ),
     );

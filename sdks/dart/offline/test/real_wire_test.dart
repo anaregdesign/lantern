@@ -148,10 +148,10 @@ void main() {
       expect(providerCalls, 2);
       expect(requests, 1);
       expect(await repository.isReplayPausedForAuth('user'), isTrue);
-      final durable = await repository.store.transaction((transaction) {
+      final durable = await repository.store.transaction((transaction) async {
         return (
-          outbox: transaction.outbox('user'),
-          operations: transaction.operations('user'),
+          outbox: await transaction.outbox('user'),
+          operations: await transaction.operations('user'),
         );
       });
       expect(
@@ -598,7 +598,7 @@ void main() {
       expect(proxy.dropped('PutVertices'), 1);
       expect(proxy.dropped('PutEdges'), 1);
       final beforeRestart = await store.transaction(
-        (transaction) => transaction.outbox('wire'),
+        (transaction) async => await transaction.outbox('wire'),
       );
       expect(beforeRestart, hasLength(2));
       expect(

@@ -34,6 +34,12 @@ final class OfflineSchemaException extends OfflineException {
   const OfflineSchemaException() : super('schema');
 }
 
+/// CDC chunks were incomplete or interleaved and require checkpoint recovery.
+final class OfflineChangeGapException extends OfflineException {
+  /// Creates a content-free, fail-closed CDC assembly failure.
+  const OfflineChangeGapException() : super('change_gap');
+}
+
 /// A cache or outbox capacity limit would be exceeded.
 final class OfflineCapacityException extends OfflineException {
   /// Creates a bounded-capacity failure.

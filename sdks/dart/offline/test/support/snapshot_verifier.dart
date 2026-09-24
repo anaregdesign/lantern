@@ -20,7 +20,7 @@ Future<void> main(List<String> arguments) async {
     }
     final now = DateTime.fromMicrosecondsSinceEpoch(nowMicros, isUtc: true);
     final claimed = await store.transaction(
-      (transaction) => transaction.claim(
+      (transaction) async => await transaction.claim(
         'p',
         owner: owner,
         now: now,

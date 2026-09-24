@@ -54,11 +54,11 @@ Future<void> main(List<String> arguments) async {
     operation.operationId,
   );
   final snapshotBytes = utf8.encode(await store.exportSnapshot()).length;
-  final durableCounts = await store.transaction((transaction) {
-    final outbox = transaction.outbox('performance');
+  final durableCounts = await store.transaction((transaction) async {
+    final outbox = await transaction.outbox('performance');
     return (
       outbox: outbox.length,
-      operations: transaction.operations('performance').length,
+      operations: (await transaction.operations('performance')).length,
       claims: outbox
           .where((record) => record.state == OfflineOutboxState.sending)
           .length,
@@ -76,8 +76,8 @@ Future<void> main(List<String> arguments) async {
     limits: store.limits,
   );
   final reopenedSnapshot = await reopened.exportSnapshot();
-  final decodedStatusObjects = await reopened.transaction((transaction) {
-    final operations = transaction.operations('performance');
+  final decodedStatusObjects = await reopened.transaction((transaction) async {
+    final operations = await transaction.operations('performance');
     return operations.length +
         operations.fold<int>(
           0,
@@ -103,8 +103,8 @@ Future<void> main(List<String> arguments) async {
   }
 
   final readStore = InMemoryOfflineStore();
-  await readStore.transaction<void>((transaction) {
-    transaction.putCache(
+  await readStore.transaction<void>((transaction) async {
+    await transaction.putCache(
       'read',
       OfflineCacheRecord.value(
         partitionId: 'read',

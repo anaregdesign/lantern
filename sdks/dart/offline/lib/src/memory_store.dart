@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
+import 'change_store.dart';
 import 'codec.dart';
 import 'errors.dart';
 import 'store.dart';
@@ -15,7 +16,7 @@ import 'types.dart';
 /// not be used as a production persistence adapter.
 final class InMemoryOfflineStore implements OfflineStore {
   /// Current canonical reference-store snapshot schema.
-  static const int snapshotSchemaVersion = 5;
+  static const int snapshotSchemaVersion = 6;
 
   /// Creates an empty reference store with explicit capacity bounds.
   InMemoryOfflineStore({this.limits = const OfflineStoreLimits()}) {
@@ -186,6 +187,67 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     final partition = _state.partition(partitionId);
     if (partition.replayPausedForAuth == paused) return;
     partition.replayPausedForAuth = paused;
+    _changedPartitions.add(partitionId);
+  }
+
+  @override
+  OfflineChangeCursor changeCursor(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final progress = _state.partition(partitionId).changeProgress;
+    return OfflineChangeCursor({
+      for (final entry in progress.entries)
+        entry.key: entry.value.completedSequence,
+    });
+  }
+
+  @override
+  void applyChangeChunk(String partitionId, OfflineChangeChunk chunk) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final partition = _state.partition(partitionId);
+    final existing = partition.changeProgress[chunk.origin];
+    if (existing == null &&
+        (partition.changeProgress.length >= offlineMaxChangeOrigins ||
+            _changeOriginCount(_state) >= offlineMaxChangeOriginsPerStore)) {
+      throw const OfflineCapacityException();
+    }
+    final progress =
+        existing ?? OfflineChangeProgress(completedSequence: BigInt.zero);
+    final advanced = progress.accept(chunk);
+    if (advanced == null) return;
+    for (final key in chunk.keys) {
+      partition.cache.remove(key.canonical);
+    }
+    if (chunk.vertexPrefixes.isNotEmpty) {
+      partition.cache.removeWhere(
+        (_, record) =>
+            record.key.kind == OfflineEntityKind.vertex &&
+            chunk.vertexPrefixes.any(record.key.vertexKey!.startsWith),
+      );
+    }
+    partition.changeProgress[chunk.origin] = advanced;
+    _changedPartitions.add(partitionId);
+  }
+
+  @override
+  void resetChangeCursor(String partitionId, OfflineChangeCursor checkpoint) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final partition = _state.partition(partitionId);
+    if (_changeOriginCount(_state) -
+            partition.changeProgress.length +
+            checkpoint.sequences.length >
+        offlineMaxChangeOriginsPerStore) {
+      throw const OfflineCapacityException();
+    }
+    partition.cache.clear();
+    partition.changeProgress
+      ..clear()
+      ..addAll({
+        for (final entry in checkpoint.sequences.entries)
+          entry.key: OfflineChangeProgress(completedSequence: entry.value),
+      });
     _changedPartitions.add(partitionId);
   }
 
@@ -1081,6 +1143,7 @@ final class _MemoryPartition {
   int version = 0;
   int nextOrdinal = 0;
   bool replayPausedForAuth = false;
+  final Map<String, OfflineChangeProgress> changeProgress = {};
 
   void putOutbox(OfflineOutboxRecord record) {
     final previous = outbox[record.recordId];
@@ -1275,6 +1338,7 @@ final class _MemoryPartition {
 
   _MemoryPartition copy() {
     final result = _MemoryPartition(generation: generation)
+      ..changeProgress.addAll(changeProgress)
       ..version = version
       ..nextOrdinal = nextOrdinal
       ..replayPausedForAuth = replayPausedForAuth;
@@ -1671,6 +1735,11 @@ String _encodeMemoryState(_MemoryState state) {
             'version': partition.version,
             'nextOrdinal': partition.nextOrdinal,
             'replayPausedForAuth': partition.replayPausedForAuth,
+            'changeProgress': {
+              for (final origin
+                  in (partition.changeProgress.keys.toList()..sort()))
+                origin: partition.changeProgress[origin]!.toJson(),
+            },
             'cache': cacheKeys
                 .map(
                   (key) =>
@@ -1701,6 +1770,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         schema != 2 &&
         schema != 3 &&
         schema != 4 &&
+        schema != 5 &&
         schema != InMemoryOfflineStore.snapshotSchemaVersion) {
       throw const OfflineSchemaException();
     }
@@ -1722,13 +1792,14 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
                 'cache',
                 'outbox',
               }
-            : schema == InMemoryOfflineStore.snapshotSchemaVersion
-            ? const <String>{
+            : schema >= 5
+            ? <String>{
                 'partitionId',
                 'generation',
                 'version',
                 'nextOrdinal',
                 'replayPausedForAuth',
+                if (schema >= 6) 'changeProgress',
                 'cache',
                 'outbox',
                 'operations',
@@ -1751,10 +1822,24 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       final partition = _MemoryPartition(generation: generation)
         ..version = _snapshotNonNegativeInt(encoded['version'])
         ..nextOrdinal = _snapshotNonNegativeInt(encoded['nextOrdinal'])
-        ..replayPausedForAuth =
-            schema == InMemoryOfflineStore.snapshotSchemaVersion
+        ..replayPausedForAuth = schema >= 5
             ? _snapshotBool(encoded['replayPausedForAuth'])
             : false;
+      if (schema >= 6) {
+        final progress = _snapshotObject(encoded['changeProgress']);
+        // The cursor validates origin shape and capacity before any restore.
+        final cursor = OfflineChangeCursor.fromJson({
+          for (final entry in progress.entries)
+            entry.key: OfflineChangeProgress.fromJson(
+              entry.value,
+            ).completedSequence.toString(),
+        });
+        for (final origin in cursor.sequences.keys) {
+          partition.changeProgress[origin] = OfflineChangeProgress.fromJson(
+            progress[origin],
+          );
+        }
+      }
       final cache = _snapshotStrings(encoded['cache']);
       for (final item in cache) {
         final record = OfflineCodec.decodeCacheRecord(item);
@@ -1771,8 +1856,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         final decodedRecord = OfflineCodec.decodeOutboxRecord(item);
         if (decodedRecord.intent is OfflineAddEdgeIntent &&
             (schema == 4 ||
-                (schema == InMemoryOfflineStore.snapshotSchemaVersion &&
-                    !_isQuarantinedLegacyAdd(decodedRecord)))) {
+                (schema >= 5 && !_isQuarantinedLegacyAdd(decodedRecord)))) {
           throw const OfflineCodecException();
         }
         final record = schema < 4
@@ -1821,13 +1905,13 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         }
       }
       if (schema < 4) _migrateLegacyDeadLetterTransitions(partition);
-      if (schema < InMemoryOfflineStore.snapshotSchemaVersion) {
+      if (schema < 5) {
         _migrateReplayAuthPause(partition);
       }
       _validateCacheGraph(partitionId, partition);
       _validateCurrentPartitionIdentity(partitionId, partition);
       _validatePartitionGraph(partition, legacySnapshot: schema < 4);
-      if (schema == InMemoryOfflineStore.snapshotSchemaVersion &&
+      if (schema >= 5 &&
           !partition.replayPausedForAuth &&
           _hasReplayAuthPauseMarker(partition)) {
         throw const OfflineCodecException();
@@ -1836,6 +1920,9 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       state.partitions[partitionId] = partition;
     }
 
+    if (_changeOriginCount(state) > offlineMaxChangeOriginsPerStore) {
+      throw const OfflineCodecException();
+    }
     _validateSnapshotCapacity(state, limits);
     return state;
   } on OfflineException {
@@ -1844,6 +1931,11 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
     throw const OfflineCodecException();
   }
 }
+
+int _changeOriginCount(_MemoryState state) => state.partitions.values.fold(
+  0,
+  (count, partition) => count + partition.changeProgress.length,
+);
 
 void _migrateLegacyDeadLetterTransitions(_MemoryPartition partition) {
   for (final record in partition.outbox.values.toList(growable: false)) {

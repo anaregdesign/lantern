@@ -28,12 +28,17 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  crypto: 3.0.7
   flutter:
     sdk: flutter
   lantern_client:
     path: ..
   lantern_client_offline:
     path: ../offline
+  lantern_client_offline_sqlite:
+    path: ../offline_sqlite
+  path: 1.9.1
+  sqflite: 2.4.4
 
 dev_dependencies:
   connectrpc: 1.0.0

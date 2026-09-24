@@ -19,6 +19,7 @@ on:
       - "core/graphcache/**"
       - "server/**"
       - "testdata/search/**"
+      - "tests/integration/dart_offline_sqlite_test.dart"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -40,6 +41,7 @@ on:
       - "core/graphcache/**"
       - "server/**"
       - "testdata/search/**"
+      - "tests/integration/dart_offline_sqlite_test.dart"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -102,6 +104,7 @@ jobs:
                 case "$path" in
                   sdks/dart/* | proto/* | buf.yaml | buf.gen.yaml | generate.go | \
                     go.mod | go.sum | go.work | go.work.sum | \
+                    tests/integration/dart_offline_sqlite_test.dart | \
                     docs/decisions/0001-dart-mobile-transport.md | \
                     docs/decisions/0002-dart-offline-repository-contract.md | \
                     AGENTS.md | README.md | \
@@ -248,7 +251,7 @@ jobs:
             echo "::error::parent publish archive contains no pubspec.yaml"
             exit 1
           fi
-          if [[ -e "$package_dir/offline" || -e "$package_dir/example/pubspec.yaml" ]]; then
+          if [[ -e "$package_dir/offline" || -e "$package_dir/offline_sqlite" || -e "$package_dir/example/pubspec.yaml" ]]; then
             echo "::error::parent publish archive contains a repository-only package"
             exit 1
           fi
@@ -256,8 +259,8 @@ jobs:
             echo "::error::parent publish archive lost its standalone online example"
             exit 1
           fi
-          if grep -HnE '^[[:space:]]*lantern_client_offline:' "${pubspecs[@]}"; then
-            echo "::error::parent publish archive references lantern_client_offline"
+          if grep -HnE '^[[:space:]]*lantern_client_offline(_sqlite)?:' "${pubspecs[@]}"; then
+            echo "::error::parent publish archive references a repository-only offline package"
             exit 1
           fi
 
@@ -444,6 +447,86 @@ jobs:
           dart analyze lib test tool
           dart test
 
+  offline-sqlite:
+    name: SQLite adapter persistence and real-wire replay
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: sdks/dart/offline_sqlite
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+
+      - name: Start Lantern real-wire server
+        working-directory: .
+        run: |
+          go build -o "$RUNNER_TEMP/lantern-sqlite" ./server/cmd
+          env LANTERN_PORT=6397 LANTERN_METRICS_ADDR=:9097 LANTERN_LOG_LEVEL=warn \
+            "$RUNNER_TEMP/lantern-sqlite" > "$RUNNER_TEMP/lantern-sqlite.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/lantern-sqlite.pid"
+          for attempt in $(seq 1 60); do
+            curl --fail --silent --show-error --max-time 2 \
+              -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
+              --data '{}' \
+              http://127.0.0.1:6397/grpc.health.v1.Health/Check >/dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/lantern-sqlite.log"
+          exit 1
+
+      - name: Check SQLite adapter
+        run: |
+          flutter pub get --enforce-lockfile
+          dart format --output=none --set-exit-if-changed lib test tool
+          flutter analyze --no-pub
+
+      - name: Test durable SQLite contracts
+        run: flutter test --no-pub
+
+      - name: Verify process-crash recovery
+        run: dart run tool/crash_probe.dart
+
+      - name: Check SQLite host resource baseline
+        run: >-
+          dart run tool/performance_probe.dart
+          > "$RUNNER_TEMP/lantern-sqlite-baseline.json"
+
+      - name: Upload sanitized SQLite host baseline
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-sqlite-host-baseline-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-sqlite-baseline.json
+          if-no-files-found: error
+
+      - name: Test SQLite replay over the real wire
+        env:
+          LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6397
+        run: >-
+          flutter test --no-pub
+          ../../../tests/integration/dart_offline_sqlite_test.dart
+
+      - name: Stop Lantern real-wire server
+        if: always()
+        working-directory: .
+        run: |
+          cat "$RUNNER_TEMP/lantern-sqlite.log" 2>/dev/null || true
+          if [[ -f "$RUNNER_TEMP/lantern-sqlite.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/lantern-sqlite.pid")" 2>/dev/null || true
+          fi
+
   android:
     name: Android emulator real-wire example
     needs: changes
@@ -559,7 +642,12 @@ jobs:
                 "offline_put_replay",
                 "authoritative_server_expiry",
                 "watch_cleanup",
-                "wipe_before_send"
+                "wipe_before_send",
+                "sqlite_pending_close_reopen",
+                "sqlite_original_ttl_preserved",
+                "sqlite_expired_before_replay",
+                "sqlite_logout_wipe_reopen",
+                "sqlite_partition_isolation"
               ],
               result: "passed"
             }' > "$evidence/android.json"
@@ -574,7 +662,7 @@ jobs:
             .application.packageId == "com.anaregdesign.lantern_example" and
             .platform.kind == "android-emulator" and
             .network.transport == "Connect/h2c" and
-            (.scenarios | length == 5) and
+            (.scenarios | length == 10) and
             .result == "passed"
           ' "$evidence/android.json" >/dev/null
 
@@ -820,7 +908,12 @@ jobs:
                 "offline_put_replay",
                 "authoritative_server_expiry",
                 "watch_cleanup",
-                "wipe_before_send"
+                "wipe_before_send",
+                "sqlite_pending_close_reopen",
+                "sqlite_original_ttl_preserved",
+                "sqlite_expired_before_replay",
+                "sqlite_logout_wipe_reopen",
+                "sqlite_partition_isolation"
               ],
               result: "passed"
             }' > "$evidence/ios.json"
@@ -835,7 +928,7 @@ jobs:
             .application.packageId == "com.anaregdesign.lanternExample" and
             .platform.kind == "ios-simulator" and
             .network.transport == "Connect/h2c" and
-            (.scenarios | length == 5) and
+            (.scenarios | length == 10) and
             .result == "passed"
           ' "$evidence/ios.json" >/dev/null
 
@@ -876,7 +969,7 @@ jobs:
   gate:
     name: Gate
     if: always()
-    needs: [changes, test, minimum-dart, offline-test, offline-minimum-dart, android, ios]
+    needs: [changes, test, minimum-dart, offline-test, offline-minimum-dart, offline-sqlite, android, ios]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -888,6 +981,7 @@ jobs:
           MINIMUM_DART_RESULT: ${{ needs.minimum-dart.result }}
           OFFLINE_TEST_RESULT: ${{ needs.offline-test.result }}
           OFFLINE_MINIMUM_DART_RESULT: ${{ needs.offline-minimum-dart.result }}
+          OFFLINE_SQLITE_RESULT: ${{ needs.offline-sqlite.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
           IOS_RESULT: ${{ needs.ios.result }}
         run: |
@@ -903,6 +997,7 @@ jobs:
           require_result changes "$CHANGES_RESULT" success
           require_result test "$TEST_RESULT" success
           require_result offline-test "$OFFLINE_TEST_RESULT" success
+          require_result offline-sqlite "$OFFLINE_SQLITE_RESULT" success
           if [[ "$FULL" == true ]]; then
             require_result minimum-dart "$MINIMUM_DART_RESULT" success
             require_result offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" success
@@ -970,10 +1065,11 @@ jobs:
           mapfile -d '' pubspecs < <(find "$package_dir" -name pubspec.yaml -print0)
           test "${#pubspecs[@]}" -gt 0
           test ! -e "$package_dir/offline"
+          test ! -e "$package_dir/offline_sqlite"
           test ! -e "$package_dir/example/pubspec.yaml"
           test -f "$package_dir/example/lantern_client_example.dart"
-          if grep -HnE '^[[:space:]]*lantern_client_offline:' "${pubspecs[@]}"; then
-            echo "::error::parent publish archive references lantern_client_offline"
+          if grep -HnE '^[[:space:]]*lantern_client_offline(_sqlite)?:' "${pubspecs[@]}"; then
+            echo "::error::parent publish archive references a repository-only offline package"
             exit 1
           fi
           for pubspec in "${pubspecs[@]}"; do

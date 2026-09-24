@@ -6,6 +6,7 @@ readonly bundle_id="com.anaregdesign.lanternExample"
 readonly flutter_bin="${IOS_SMOKE_FLUTTER_BIN:-flutter}"
 readonly xcrun_bin="${IOS_SMOKE_XCRUN_BIN:-xcrun}"
 readonly ps_bin="${IOS_SMOKE_PS_BIN:-ps}"
+readonly endpoint="${IOS_SMOKE_ENDPOINT:-http://127.0.0.1:6380}"
 # Hosted CoreSimulator launch has taken 137 seconds after build (#1264).
 readonly launch_timeout="${IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS:-180}"
 readonly total_timeout="${IOS_SMOKE_TOTAL_TIMEOUT_SECONDS:-480}"
@@ -123,7 +124,7 @@ run_attempt() {
     set -o pipefail
     "$flutter_bin" test --no-pub integration_test/mobile_smoke_test.dart \
       -d "$device" --reporter=expanded --timeout=3m \
-      --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
+      --dart-define=LANTERN_ENDPOINT="$endpoint" \
       --dart-define=LANTERN_ALLOW_INSECURE=true 2>&1 | python3 "$log_helper" stream "$log" "$phases"
   ) &
   local runner_pid=$!

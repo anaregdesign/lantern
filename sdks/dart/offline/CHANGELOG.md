@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Allow asynchronous `OfflineStoreTransaction` methods through `FutureOr`, and
+  await the public port throughout Repository and reusable conformance code.
+- Add atomic identity invalidation and per-origin CDC cursor/chunk persistence,
+  with uint64-safe cursors and reference snapshot schema v6. Checkpoint reset
+  clears confirmed cache while preserving pending intent; network subscription
+  remains a separate capability.
 - Expand reusable Store conformance across lease CAS/concurrent claimers,
   generation isolation, notification ordering/cleanup, capacity/LRU, and
   same-limit reopen; run canonical lease recovery in a fresh Dart VM and add

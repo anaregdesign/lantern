@@ -104,7 +104,7 @@ completed durable adapter attempt that permits at most one singular RPC; a
 credential-provider or cancellation failure can finish before any wire send.
 There are no hidden nested transport attempts.
 Replay consumes the online SDK's server-authoritative `PutOutcome` without
-changing snapshot schema v5. `appliedAndLive` confirms only while the resolved
+changing the record codec. `appliedAndLive` confirms only while the resolved
 expiration is live before send, at response observation, and at the local
 commit; a clock rollback cannot revive an already expired sample. `expired`
 terminalizes and invalidates older confirmed cache state. `conditionNotMet`
@@ -159,11 +159,12 @@ outbox/operation capacity rejection. Configure the adapter's test limits below
 the default probe bounds or raise `maxCapacityProbeRecords` and
 `maxNotificationControllerProbe` explicitly. `exportSnapshot` and
 `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v5
-persists operation aggregates, exact dead-letter transition time, and durable
-auth pause. Restore transactionally reconstructs active v1 metadata, recovers
+only for deterministic fresh-process conformance tests; snapshot schema v6
+persists operation aggregates, exact dead-letter transition time, durable
+auth pause, and per-origin CDC chunk progress. Schemas v1–v5 restore with empty
+CDC state. Restore transactionally reconstructs active v1 metadata, recovers
 auth pause from v1-v4 durable metadata, quarantines legacy Add records only
-from v1-v3, reopens only that exact terminal quarantine in v5, migrates v1-v3
+from v1-v3, reopens only that exact terminal quarantine in v5/v6, migrates v1-v3
 outbox retention metadata conservatively, and fails
 closed when cache, outbox, operation, ordinal, generation, lease, or state
 relationships contradict each other. A child Dart VM restores canonical bytes,
@@ -201,6 +202,14 @@ values, contribution IDs, tokens, or partition identifiers in diagnostics.
 
 The maintained Flutter example shows cached/pending Put state, explicit
 probe/replay, lifecycle cancellation/resume, and authorized dead-letter
-controls. Its in-memory store is still non-durable; a production application
-must inject a transactional encrypted store and call `wipePartition` before a
-different user can open the same application session.
+controls. It now uses the opt-in sibling `lantern_client_offline_sqlite` adapter
+through `sqflite`. Applications own protected storage, any additional encryption,
+and backup policy, and must call `wipePartition` before a different user can open
+the same application session. The core retains no platform dependencies.
+
+Transaction operations return `FutureOr<T>` so adapters can use asynchronous
+database APIs. Await every operation inside the transaction callback. The
+`changeCursor`, `applyChangeChunk`, and `resetChangeCursor` methods atomically
+persist identity-only invalidation and per-origin progress; they are the storage
+prerequisite for #1116, not an automatic CDC subscription. Adapter tests should
+also run `runChangeStoreConformanceSuite` against their real reopen boundary.
