@@ -3,6 +3,8 @@
 This maintained Android/iOS app demonstrates the mobile-facing
 `lantern_client` API without choosing a state-management package. It compiles
 against the parent package by path, so CI catches example/API drift.
+The maintained example app targets iOS 15.0 or later; this app setting does not
+define a minimum OS for the pure-Dart SDK.
 
 ## Runtime configuration
 
