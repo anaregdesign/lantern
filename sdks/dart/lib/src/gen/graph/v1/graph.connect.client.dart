@@ -486,6 +486,64 @@ extension type LanternServiceClient (connect.Transport _transport) {
     );
   }
 
+  /// Receipt preflight follows LanternService auth. The initial implementation
+  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
+  /// capability requires configured auth and one certified policy/endpoint cut.
+  Future<graphv1graph.GetReceiptCapabilityResponse> getReceiptCapability(
+    graphv1graph.GetReceiptCapabilityRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.getReceiptCapability,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  /// Read-only original-result lookup. Until receipt storage and atomic
+  /// publication exist, these fail with FAILED_PRECONDITION rather than
+  /// inventing an absent or expired outcome. The singular form forwards to
+  /// the plural canonical implementation.
+  Future<graphv1graph.GetReceiptStatusResponse> getReceiptStatus(
+    graphv1graph.GetReceiptStatusRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.getReceiptStatus,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  Future<graphv1graph.GetReceiptStatusesResponse> getReceiptStatuses(
+    graphv1graph.GetReceiptStatusesRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.getReceiptStatuses,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   /// BackupSnapshot streams a whole-graph, point-in-time backup: every
   /// live vertex and folded edge as a BackupRecord, materialised under a
   /// single GraphCache lock (SnapshotGraph). Unlike the replication

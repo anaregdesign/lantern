@@ -263,6 +263,34 @@ class LanternServiceClient extends $grpc.Client {
     return $createUnaryCall(_$getReplicationStatus, request, options: options);
   }
 
+  /// Receipt preflight follows LanternService auth. The initial implementation
+  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
+  /// capability requires configured auth and one certified policy/endpoint cut.
+  $grpc.ResponseFuture<$0.GetReceiptCapabilityResponse> getReceiptCapability(
+    $0.GetReceiptCapabilityRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getReceiptCapability, request, options: options);
+  }
+
+  /// Read-only original-result lookup. Until receipt storage and atomic
+  /// publication exist, these fail with FAILED_PRECONDITION rather than
+  /// inventing an absent or expired outcome. The singular form forwards to
+  /// the plural canonical implementation.
+  $grpc.ResponseFuture<$0.GetReceiptStatusResponse> getReceiptStatus(
+    $0.GetReceiptStatusRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getReceiptStatus, request, options: options);
+  }
+
+  $grpc.ResponseFuture<$0.GetReceiptStatusesResponse> getReceiptStatuses(
+    $0.GetReceiptStatusesRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getReceiptStatuses, request, options: options);
+  }
+
   /// BackupSnapshot streams a whole-graph, point-in-time backup: every
   /// live vertex and folded edge as a BackupRecord, materialised under a
   /// single GraphCache lock (SnapshotGraph). Unlike the replication
@@ -406,6 +434,21 @@ class LanternServiceClient extends $grpc.Client {
       '/graph.v1.LanternService/GetReplicationStatus',
       ($0.GetReplicationStatusRequest value) => value.writeToBuffer(),
       $0.GetReplicationStatusResponse.fromBuffer);
+  static final _$getReceiptCapability = $grpc.ClientMethod<
+          $0.GetReceiptCapabilityRequest, $0.GetReceiptCapabilityResponse>(
+      '/graph.v1.LanternService/GetReceiptCapability',
+      ($0.GetReceiptCapabilityRequest value) => value.writeToBuffer(),
+      $0.GetReceiptCapabilityResponse.fromBuffer);
+  static final _$getReceiptStatus = $grpc.ClientMethod<
+          $0.GetReceiptStatusRequest, $0.GetReceiptStatusResponse>(
+      '/graph.v1.LanternService/GetReceiptStatus',
+      ($0.GetReceiptStatusRequest value) => value.writeToBuffer(),
+      $0.GetReceiptStatusResponse.fromBuffer);
+  static final _$getReceiptStatuses = $grpc.ClientMethod<
+          $0.GetReceiptStatusesRequest, $0.GetReceiptStatusesResponse>(
+      '/graph.v1.LanternService/GetReceiptStatuses',
+      ($0.GetReceiptStatusesRequest value) => value.writeToBuffer(),
+      $0.GetReceiptStatusesResponse.fromBuffer);
   static final _$backupSnapshot =
       $grpc.ClientMethod<$0.BackupSnapshotRequest, $0.BackupSnapshotResponse>(
           '/graph.v1.LanternService/BackupSnapshot',
@@ -621,6 +664,33 @@ abstract class LanternServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) =>
             $0.GetReplicationStatusRequest.fromBuffer(value),
         ($0.GetReplicationStatusResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetReceiptCapabilityRequest,
+            $0.GetReceiptCapabilityResponse>(
+        'GetReceiptCapability',
+        getReceiptCapability_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetReceiptCapabilityRequest.fromBuffer(value),
+        ($0.GetReceiptCapabilityResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetReceiptStatusRequest,
+            $0.GetReceiptStatusResponse>(
+        'GetReceiptStatus',
+        getReceiptStatus_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetReceiptStatusRequest.fromBuffer(value),
+        ($0.GetReceiptStatusResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetReceiptStatusesRequest,
+            $0.GetReceiptStatusesResponse>(
+        'GetReceiptStatuses',
+        getReceiptStatuses_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetReceiptStatusesRequest.fromBuffer(value),
+        ($0.GetReceiptStatusesResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.BackupSnapshotRequest,
             $0.BackupSnapshotResponse>(
         'BackupSnapshot',
@@ -842,6 +912,33 @@ abstract class LanternServiceBase extends $grpc.Service {
 
   $async.Future<$0.GetReplicationStatusResponse> getReplicationStatus(
       $grpc.ServiceCall call, $0.GetReplicationStatusRequest request);
+
+  $async.Future<$0.GetReceiptCapabilityResponse> getReceiptCapability_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetReceiptCapabilityRequest> $request) async {
+    return getReceiptCapability($call, await $request);
+  }
+
+  $async.Future<$0.GetReceiptCapabilityResponse> getReceiptCapability(
+      $grpc.ServiceCall call, $0.GetReceiptCapabilityRequest request);
+
+  $async.Future<$0.GetReceiptStatusResponse> getReceiptStatus_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetReceiptStatusRequest> $request) async {
+    return getReceiptStatus($call, await $request);
+  }
+
+  $async.Future<$0.GetReceiptStatusResponse> getReceiptStatus(
+      $grpc.ServiceCall call, $0.GetReceiptStatusRequest request);
+
+  $async.Future<$0.GetReceiptStatusesResponse> getReceiptStatuses_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetReceiptStatusesRequest> $request) async {
+    return getReceiptStatuses($call, await $request);
+  }
+
+  $async.Future<$0.GetReceiptStatusesResponse> getReceiptStatuses(
+      $grpc.ServiceCall call, $0.GetReceiptStatusesRequest request);
 
   $async.Stream<$0.BackupSnapshotResponse> backupSnapshot_Pre(
       $grpc.ServiceCall $call,

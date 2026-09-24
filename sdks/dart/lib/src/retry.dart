@@ -104,6 +104,9 @@ final class RetryRegistry {
     'ScanEdges': RpcRetryClass.read,
     'GetServerStatus': RpcRetryClass.read,
     'GetReplicationStatus': RpcRetryClass.read,
+    'GetReceiptCapability': RpcRetryClass.read,
+    'GetReceiptStatus': RpcRetryClass.read,
+    'GetReceiptStatuses': RpcRetryClass.read,
     'BackupSnapshot': RpcRetryClass.stream,
     // High-level facades whose result semantics differ from their shared wire
     // request or whose operation expands into AddEdges.

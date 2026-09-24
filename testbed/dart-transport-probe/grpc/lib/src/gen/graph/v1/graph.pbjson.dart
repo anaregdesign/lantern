@@ -189,6 +189,24 @@ final $typed_data.Uint8List searchIndexHealthDescriptor = $convert.base64Decode(
     'ASIAocU0VBUkNIX0lOREVYX0hFQUxUSF9ESVNBQkxFRBABEh8KG1NFQVJDSF9JTkRFWF9IRUFM'
     'VEhfSEVBTFRIWRACEiIKHlNFQVJDSF9JTkRFWF9IRUFMVEhfSU5DT01QTEVURRAD');
 
+@$core.Deprecated('Use mutationReceiptStateDescriptor instead')
+const MutationReceiptState$json = {
+  '1': 'MutationReceiptState',
+  '2': [
+    {'1': 'MUTATION_RECEIPT_STATE_UNSPECIFIED', '2': 0},
+    {'1': 'MUTATION_RECEIPT_STATE_CONFIRMED', '2': 1},
+    {'1': 'MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED', '2': 2},
+    {'1': 'MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE', '2': 3},
+  ],
+};
+
+/// Descriptor for `MutationReceiptState`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List mutationReceiptStateDescriptor = $convert.base64Decode(
+    'ChRNdXRhdGlvblJlY2VpcHRTdGF0ZRImCiJNVVRBVElPTl9SRUNFSVBUX1NUQVRFX1VOU1BFQ0'
+    'lGSUVEEAASJAogTVVUQVRJT05fUkVDRUlQVF9TVEFURV9DT05GSVJNRUQQARIrCidNVVRBVElP'
+    'Tl9SRUNFSVBUX1NUQVRFX05PVF9ZRVRfT0JTRVJWRUQQAhItCilNVVRBVElPTl9SRUNFSVBUX1'
+    'NUQVRFX05PX0xPTkdFUl9QUk9WQUJMRRAD');
+
 @$core.Deprecated('Use vertexDescriptor instead')
 const Vertex$json = {
   '1': 'Vertex',
@@ -1936,6 +1954,239 @@ final $typed_data.Uint8List getReplicationStatusResponseDescriptor = $convert.ba
     'I3Cglsb2NhbF9ub3cYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUghsb2NhbE5v'
     'dxIYCgdlbmFibGVkGAMgASgIUgdlbmFibGVkEi8KBXBlZXJzGAogAygLMhkuZ3JhcGgudjEuUm'
     'VwbGljYXRpb25QZWVyUgVwZWVycw==');
+
+@$core.Deprecated('Use receiptPolicyDescriptor instead')
+const ReceiptPolicy$json = {
+  '1': 'ReceiptPolicy',
+  '2': [
+    {'1': 'deployment_epoch', '3': 1, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {'1': 'fingerprint', '3': 2, '4': 1, '5': 12, '10': 'fingerprint'},
+    {'1': 'retention_ms', '3': 3, '4': 1, '5': 4, '10': 'retentionMs'},
+    {'1': 'max_entries', '3': 4, '4': 1, '5': 4, '10': 'maxEntries'},
+    {'1': 'max_bytes', '3': 5, '4': 1, '5': 4, '10': 'maxBytes'},
+  ],
+};
+
+/// Descriptor for `ReceiptPolicy`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List receiptPolicyDescriptor = $convert.base64Decode(
+    'Cg1SZWNlaXB0UG9saWN5EikKEGRlcGxveW1lbnRfZXBvY2gYASABKAxSD2RlcGxveW1lbnRFcG'
+    '9jaBIgCgtmaW5nZXJwcmludBgCIAEoDFILZmluZ2VycHJpbnQSIQoMcmV0ZW50aW9uX21zGAMg'
+    'ASgEUgtyZXRlbnRpb25NcxIfCgttYXhfZW50cmllcxgEIAEoBFIKbWF4RW50cmllcxIbCgltYX'
+    'hfYnl0ZXMYBSABKARSCG1heEJ5dGVz');
+
+@$core.Deprecated('Use receiptEndpointDescriptor instead')
+const ReceiptEndpoint$json = {
+  '1': 'ReceiptEndpoint',
+  '2': [
+    {'1': 'node_id', '3': 1, '4': 1, '5': 12, '10': 'nodeId'},
+    {'1': 'generation', '3': 2, '4': 1, '5': 12, '10': 'generation'},
+  ],
+};
+
+/// Descriptor for `ReceiptEndpoint`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List receiptEndpointDescriptor = $convert.base64Decode(
+    'Cg9SZWNlaXB0RW5kcG9pbnQSFwoHbm9kZV9pZBgBIAEoDFIGbm9kZUlkEh4KCmdlbmVyYXRpb2'
+    '4YAiABKAxSCmdlbmVyYXRpb24=');
+
+@$core.Deprecated('Use getReceiptCapabilityRequestDescriptor instead')
+const GetReceiptCapabilityRequest$json = {
+  '1': 'GetReceiptCapabilityRequest',
+};
+
+/// Descriptor for `GetReceiptCapabilityRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getReceiptCapabilityRequestDescriptor =
+    $convert.base64Decode('ChtHZXRSZWNlaXB0Q2FwYWJpbGl0eVJlcXVlc3Q=');
+
+@$core.Deprecated('Use getReceiptCapabilityResponseDescriptor instead')
+const GetReceiptCapabilityResponse$json = {
+  '1': 'GetReceiptCapabilityResponse',
+  '2': [
+    {'1': 'enabled', '3': 1, '4': 1, '5': 8, '10': 'enabled'},
+    {
+      '1': 'policy',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReceiptPolicy',
+      '10': 'policy'
+    },
+    {
+      '1': 'endpoint',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReceiptEndpoint',
+      '10': 'endpoint'
+    },
+    {
+      '1': 'server_now_unix_ms',
+      '3': 4,
+      '4': 1,
+      '5': 4,
+      '10': 'serverNowUnixMs'
+    },
+  ],
+};
+
+/// Descriptor for `GetReceiptCapabilityResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getReceiptCapabilityResponseDescriptor = $convert.base64Decode(
+    'ChxHZXRSZWNlaXB0Q2FwYWJpbGl0eVJlc3BvbnNlEhgKB2VuYWJsZWQYASABKAhSB2VuYWJsZW'
+    'QSLwoGcG9saWN5GAIgASgLMhcuZ3JhcGgudjEuUmVjZWlwdFBvbGljeVIGcG9saWN5EjUKCGVu'
+    'ZHBvaW50GAMgASgLMhkuZ3JhcGgudjEuUmVjZWlwdEVuZHBvaW50UghlbmRwb2ludBIrChJzZX'
+    'J2ZXJfbm93X3VuaXhfbXMYBCABKARSD3NlcnZlck5vd1VuaXhNcw==');
+
+@$core.Deprecated('Use receiptResultDescriptor instead')
+const ReceiptResult$json = {
+  '1': 'ReceiptResult',
+  '2': [
+    {
+      '1': 'delete_edge_existed',
+      '3': 1,
+      '4': 1,
+      '5': 8,
+      '9': 0,
+      '10': 'deleteEdgeExisted'
+    },
+  ],
+  '8': [
+    {'1': 'result'},
+  ],
+};
+
+/// Descriptor for `ReceiptResult`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List receiptResultDescriptor = $convert.base64Decode(
+    'Cg1SZWNlaXB0UmVzdWx0EjAKE2RlbGV0ZV9lZGdlX2V4aXN0ZWQYASABKAhIAFIRZGVsZXRlRW'
+    'RnZUV4aXN0ZWRCCAoGcmVzdWx0');
+
+@$core.Deprecated('Use mutationReceiptDescriptor instead')
+const MutationReceipt$json = {
+  '1': 'MutationReceipt',
+  '2': [
+    {'1': 'operation_id', '3': 1, '4': 1, '5': 12, '10': 'operationId'},
+    {'1': 'logical_call_id', '3': 2, '4': 1, '5': 12, '10': 'logicalCallId'},
+    {'1': 'item_index', '3': 3, '4': 1, '5': 13, '10': 'itemIndex'},
+    {'1': 'item_count', '3': 4, '4': 1, '5': 13, '10': 'itemCount'},
+    {'1': 'intent_sha256', '3': 5, '4': 1, '5': 12, '10': 'intentSha256'},
+    {'1': 'deadline_unix_ms', '3': 6, '4': 1, '5': 4, '10': 'deadlineUnixMs'},
+    {
+      '1': 'original_result',
+      '3': 7,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReceiptResult',
+      '10': 'originalResult'
+    },
+  ],
+};
+
+/// Descriptor for `MutationReceipt`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutationReceiptDescriptor = $convert.base64Decode(
+    'Cg9NdXRhdGlvblJlY2VpcHQSIQoMb3BlcmF0aW9uX2lkGAEgASgMUgtvcGVyYXRpb25JZBImCg'
+    '9sb2dpY2FsX2NhbGxfaWQYAiABKAxSDWxvZ2ljYWxDYWxsSWQSHQoKaXRlbV9pbmRleBgDIAEo'
+    'DVIJaXRlbUluZGV4Eh0KCml0ZW1fY291bnQYBCABKA1SCWl0ZW1Db3VudBIjCg1pbnRlbnRfc2'
+    'hhMjU2GAUgASgMUgxpbnRlbnRTaGEyNTYSKAoQZGVhZGxpbmVfdW5peF9tcxgGIAEoBFIOZGVh'
+    'ZGxpbmVVbml4TXMSQAoPb3JpZ2luYWxfcmVzdWx0GAcgASgLMhcuZ3JhcGgudjEuUmVjZWlwdF'
+    'Jlc3VsdFIOb3JpZ2luYWxSZXN1bHQ=');
+
+@$core.Deprecated('Use receiptStatusDescriptor instead')
+const ReceiptStatus$json = {
+  '1': 'ReceiptStatus',
+  '2': [
+    {'1': 'operation_id', '3': 1, '4': 1, '5': 12, '10': 'operationId'},
+    {
+      '1': 'state',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.MutationReceiptState',
+      '10': 'state'
+    },
+    {
+      '1': 'receipt',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+  ],
+};
+
+/// Descriptor for `ReceiptStatus`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List receiptStatusDescriptor = $convert.base64Decode(
+    'Cg1SZWNlaXB0U3RhdHVzEiEKDG9wZXJhdGlvbl9pZBgBIAEoDFILb3BlcmF0aW9uSWQSNAoFc3'
+    'RhdGUYAiABKA4yHi5ncmFwaC52MS5NdXRhdGlvblJlY2VpcHRTdGF0ZVIFc3RhdGUSMwoHcmVj'
+    'ZWlwdBgDIAEoCzIZLmdyYXBoLnYxLk11dGF0aW9uUmVjZWlwdFIHcmVjZWlwdA==');
+
+@$core.Deprecated('Use getReceiptStatusRequestDescriptor instead')
+const GetReceiptStatusRequest$json = {
+  '1': 'GetReceiptStatusRequest',
+  '2': [
+    {'1': 'operation_id', '3': 1, '4': 1, '5': 12, '10': 'operationId'},
+  ],
+};
+
+/// Descriptor for `GetReceiptStatusRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getReceiptStatusRequestDescriptor =
+    $convert.base64Decode(
+        'ChdHZXRSZWNlaXB0U3RhdHVzUmVxdWVzdBIhCgxvcGVyYXRpb25faWQYASABKAxSC29wZXJhdG'
+        'lvbklk');
+
+@$core.Deprecated('Use getReceiptStatusResponseDescriptor instead')
+const GetReceiptStatusResponse$json = {
+  '1': 'GetReceiptStatusResponse',
+  '2': [
+    {
+      '1': 'status',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReceiptStatus',
+      '10': 'status'
+    },
+  ],
+};
+
+/// Descriptor for `GetReceiptStatusResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getReceiptStatusResponseDescriptor =
+    $convert.base64Decode(
+        'ChhHZXRSZWNlaXB0U3RhdHVzUmVzcG9uc2USLwoGc3RhdHVzGAEgASgLMhcuZ3JhcGgudjEuUm'
+        'VjZWlwdFN0YXR1c1IGc3RhdHVz');
+
+@$core.Deprecated('Use getReceiptStatusesRequestDescriptor instead')
+const GetReceiptStatusesRequest$json = {
+  '1': 'GetReceiptStatusesRequest',
+  '2': [
+    {'1': 'operation_ids', '3': 1, '4': 3, '5': 12, '10': 'operationIds'},
+  ],
+};
+
+/// Descriptor for `GetReceiptStatusesRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getReceiptStatusesRequestDescriptor =
+    $convert.base64Decode(
+        'ChlHZXRSZWNlaXB0U3RhdHVzZXNSZXF1ZXN0EiMKDW9wZXJhdGlvbl9pZHMYASADKAxSDG9wZX'
+        'JhdGlvbklkcw==');
+
+@$core.Deprecated('Use getReceiptStatusesResponseDescriptor instead')
+const GetReceiptStatusesResponse$json = {
+  '1': 'GetReceiptStatusesResponse',
+  '2': [
+    {
+      '1': 'statuses',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReceiptStatus',
+      '10': 'statuses'
+    },
+  ],
+};
+
+/// Descriptor for `GetReceiptStatusesResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getReceiptStatusesResponseDescriptor =
+    $convert.base64Decode(
+        'ChpHZXRSZWNlaXB0U3RhdHVzZXNSZXNwb25zZRIzCghzdGF0dXNlcxgBIAMoCzIXLmdyYXBoLn'
+        'YxLlJlY2VpcHRTdGF0dXNSCHN0YXR1c2Vz');
 
 @$core.Deprecated('Use backupSnapshotRequestDescriptor instead')
 const BackupSnapshotRequest$json = {

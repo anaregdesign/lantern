@@ -71,6 +71,12 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $2.GetServerStatusRequest request);
   $async.Future<$2.GetReplicationStatusResponse> getReplicationStatus(
       $pb.ServerContext ctx, $2.GetReplicationStatusRequest request);
+  $async.Future<$2.GetReceiptCapabilityResponse> getReceiptCapability(
+      $pb.ServerContext ctx, $2.GetReceiptCapabilityRequest request);
+  $async.Future<$2.GetReceiptStatusResponse> getReceiptStatus(
+      $pb.ServerContext ctx, $2.GetReceiptStatusRequest request);
+  $async.Future<$2.GetReceiptStatusesResponse> getReceiptStatuses(
+      $pb.ServerContext ctx, $2.GetReceiptStatusesRequest request);
   $async.Future<$2.BackupSnapshotResponse> backupSnapshot(
       $pb.ServerContext ctx, $2.BackupSnapshotRequest request);
 
@@ -126,6 +132,12 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
         return $2.GetServerStatusRequest();
       case 'GetReplicationStatus':
         return $2.GetReplicationStatusRequest();
+      case 'GetReceiptCapability':
+        return $2.GetReceiptCapabilityRequest();
+      case 'GetReceiptStatus':
+        return $2.GetReceiptStatusRequest();
+      case 'GetReceiptStatuses':
+        return $2.GetReceiptStatusesRequest();
       case 'BackupSnapshot':
         return $2.BackupSnapshotRequest();
       default:
@@ -191,6 +203,13 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
       case 'GetReplicationStatus':
         return getReplicationStatus(
             ctx, request as $2.GetReplicationStatusRequest);
+      case 'GetReceiptCapability':
+        return getReceiptCapability(
+            ctx, request as $2.GetReceiptCapabilityRequest);
+      case 'GetReceiptStatus':
+        return getReceiptStatus(ctx, request as $2.GetReceiptStatusRequest);
+      case 'GetReceiptStatuses':
+        return getReceiptStatuses(ctx, request as $2.GetReceiptStatusesRequest);
       case 'BackupSnapshot':
         return backupSnapshot(ctx, request as $2.BackupSnapshotRequest);
       default:
