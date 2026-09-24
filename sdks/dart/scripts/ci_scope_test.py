@@ -73,6 +73,14 @@ class ScopeTest(unittest.TestCase):
                 False,
                 (True, False),
             ),
+            "identity host integration and fixture": (
+                [
+                    "tests/integration/dart_identity_offline_sqlite_test.dart",
+                    "testbed/scripts/dart_identity_fixture.sh",
+                ],
+                False,
+                (True, False),
+            ),
         }
         for name, (paths, toolchain_changed, expected) in cases.items():
             with self.subTest(name):

@@ -203,7 +203,7 @@ Future<void> runOfflineIdentityConsumer({
       );
       iterator = activeIterator;
       removeCancellation = cancellation.listen((_) {
-        unawaited(activeIterator.cancel());
+        activeIterator.cancel().ignore();
       });
       if (bootstrap) {
         final first = await _next(activeIterator, cancellation);
@@ -268,7 +268,11 @@ Future<void> runOfflineIdentityConsumer({
       Error.throwWithStackTrace(error, stack);
     } finally {
       removeCancellation?.call();
-      await iterator?.cancel();
+      try {
+        await iterator?.cancel();
+      } catch (_) {
+        if (!cancellation.isCanceled) rethrow;
+      }
       await session?.close();
     }
   }
