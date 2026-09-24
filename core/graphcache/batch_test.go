@@ -12,6 +12,40 @@ import (
 	"github.com/anaregdesign/lantern/core/search"
 )
 
+func TestAddEdgesWithExpirationContribHLC_DedupDoesNotReviveEndpoint(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	expiration := time.Now().Add(time.Hour)
+	stamp := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: hlc.NodeID{0x91}}
+	id := ContribID{0: 1}
+	if weights, deduped := c.AddEdgesWithExpirationContribHLC([]EdgeItem[string]{{
+		Tail: "tail", Head: "head", Weight: 1, Expiration: expiration, ContribID: id,
+	}}, stamp); deduped != 0 || len(weights) != 1 || weights[0] != 1 {
+		t.Fatalf("first Add = %v/%d, want [1]/0", weights, deduped)
+	}
+	if err := c.PutVertexWithExpiration("tail", "expired", time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	weights, deduped := c.AddEdgesWithExpirationContribHLC([]EdgeItem[string]{
+		{Tail: "tail", Head: "head", Weight: 1, Expiration: expiration, ContribID: id},
+		{Tail: "fresh", Head: "neighbor", Weight: 3, Expiration: expiration, ContribID: ContribID{0: 2}},
+	}, hlc.Timestamp{WallNs: stamp.WallNs + 1, NodeID: stamp.NodeID})
+	if deduped != 1 || len(weights) != 2 || weights[0] != 1 || weights[1] != 3 {
+		t.Fatalf("mixed Add = %v/%d, want [1 3]/1", weights, deduped)
+	}
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("deduped batch item revived its endpoint")
+	}
+	if _, ok := c.GetWeight("tail", "head"); ok {
+		t.Fatal("deduped batch item revealed its Edge")
+	}
+	if _, ok := c.GetVertex("fresh"); !ok {
+		t.Fatal("new batch item did not create its endpoint")
+	}
+	if weight, ok := c.GetWeight("fresh", "neighbor"); !ok || weight != 3 {
+		t.Fatalf("new batch item Edge = %v/%t, want 3/true", weight, ok)
+	}
+}
+
 func TestVertexBatchSearchPreparationRevalidatesReplacedIndex(t *testing.T) {
 	live := time.Now().Add(time.Hour)
 	item := []VertexItem[string, string]{{Key: "k", Value: "oversized", Expiration: live}}

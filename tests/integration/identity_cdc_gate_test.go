@@ -165,6 +165,101 @@ func TestIdentityCDC_SupersededEdgePutDoesNotReviveUnloggedEndpoint(t *testing.T
 	}
 }
 
+func TestIdentityCDC_DedupedAddDoesNotReviveEndpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	origin := newPumpNode(t, hlc.NodeID{0xD1, 0x31})
+	follower := newPumpNode(t, hlc.NodeID{0xD1, 0x32})
+	follower.startPump(ctx, t, []string{origin.url})
+	waitForOrigin := func(seq uint64) {
+		t.Helper()
+		for follower.svc.LocalSeq(origin.nodeID) < seq {
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("follower missed origin seq %d: %v", seq, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+	firstID := make([]byte, 24)
+	firstID[0] = 1
+	add := func(id []byte) float32 {
+		t.Helper()
+		resp, err := origin.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
+			Edge:      &pb.Edge{Tail: "dedup/tail", Head: "dedup/head", Weight: 1, Expiration: expiration},
+			ContribId: id,
+		}))
+		if err != nil {
+			t.Fatalf("AddEdge over h2c: %v", err)
+		}
+		return resp.Msg.GetEffectiveWeight()
+	}
+	if got := add(firstID); got != 1 {
+		t.Fatalf("first Add effective weight = %v, want 1", got)
+	}
+	waitForOrigin(1)
+	if _, err := origin.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "dedup/tail", Expiration: timestamppb.New(time.Now().Add(-time.Second)),
+	}})); err != nil {
+		t.Fatalf("expire endpoint over h2c: %v", err)
+	}
+	waitForOrigin(2)
+	for _, node := range []*pumpNode{origin, follower} {
+		if _, ok := node.cache.GetVertex("dedup/tail"); ok {
+			t.Fatalf("%x retained expired endpoint", node.nodeID)
+		}
+		if _, ok := node.cache.GetWeight("dedup/tail", "dedup/head"); ok {
+			t.Fatalf("%x exposed Edge without endpoint", node.nodeID)
+		}
+	}
+	feed, err := newReplicationRawClient(t, origin.url).Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+		Bootstrap:  true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = feed.Close() }()
+	if !feed.Receive() || feed.Msg().GetCheckpoint() == nil {
+		t.Fatalf("identity CDC missed checkpoint: %v", feed.Err())
+	}
+	if got := add(firstID); got != 1 {
+		t.Fatalf("dedup Add effective weight = %v, want 1", got)
+	}
+	waitForOrigin(3)
+	for _, node := range []*pumpNode{origin, follower} {
+		if _, ok := node.cache.GetVertex("dedup/tail"); ok {
+			t.Fatalf("%x revived endpoint on dedup Add", node.nodeID)
+		}
+		if _, ok := node.cache.GetWeight("dedup/tail", "dedup/head"); ok {
+			t.Fatalf("%x revealed old Edge on dedup Add", node.nodeID)
+		}
+	}
+	if !feed.Receive() {
+		t.Fatalf("identity CDC missed conservative Add event: %v", feed.Err())
+	}
+	chunk := feed.Msg().GetIdentityChunk()
+	if chunk == nil || chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE ||
+		len(chunk.GetVertexKeys()) != 0 || len(chunk.GetEdgeKeys()) != 1 ||
+		chunk.GetEdgeKeys()[0].GetTail() != "dedup/tail" || chunk.GetEdgeKeys()[0].GetHead() != "dedup/head" {
+		t.Fatalf("dedup Add identity projection = %+v", feed.Msg())
+	}
+	secondID := make([]byte, 24)
+	secondID[0] = 2
+	if got := add(secondID); got != 2 {
+		t.Fatalf("new Add effective weight = %v, want 2", got)
+	}
+	waitForOrigin(4)
+	for _, node := range []*pumpNode{origin, follower} {
+		if _, ok := node.cache.GetVertex("dedup/tail"); !ok {
+			t.Fatalf("%x did not create endpoint for new Add", node.nodeID)
+		}
+		if weight, ok := node.cache.GetWeight("dedup/tail", "dedup/head"); !ok || weight != 2 {
+			t.Fatalf("%x new Add Edge = %v/%t, want 2/true", node.nodeID, weight, ok)
+		}
+	}
+}
+
 // Synthetic log entries exercise the production-disabled wire projection on
 // real Connect/h2c. No public receipt write or remote apply path is enabled.
 func TestIdentityCDC_ReceiptEdgeDeleteTailFailsClosedAndPreservesCursor(t *testing.T) {
