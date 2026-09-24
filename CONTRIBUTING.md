@@ -121,10 +121,14 @@ separate too. When `proto/` changes, run `sdks/dart/scripts/codegen.sh` and comm
 the regenerated `sdks/dart/lib/src/gen/**` files. The supported toolchain source of
 truth is `docs/decisions/0001-dart-mobile-transport.md`; the workflow pins mirror that
 decision and also runs the package at its declared minimum Dart floor. The workflow
-routes backend/search-only changes through the current-Dart unit and real-wire gates;
-Dart SDK, proto, codegen/toolchain, workflow, and release-tag changes run the complete
-minimum/current Dart, package-quality, Android, and iOS matrix. The stable `Gate` job
-checks the required result set for either scope. The experimental
+routes backend/search-only changes through the current-Dart unit and real-wire gates.
+The separately tested `full` scope adds minimum Dart and package-quality checks for
+Dart SDK, proto, codegen/toolchain, workflow, release-tag, root Go dependency, and
+release-contract documentation changes. The `mobile` scope requires Android and iOS
+for Dart/Flutter, proto/codegen, mobile transport/release-contract, workflow,
+release-tag, and Go language/toolchain directive changes; ordinary Go dependency
+or general documentation changes skip native jobs. The stable `Gate` job checks
+both decisions independently. The experimental
 `sdks/dart/offline/` child runs from its own working directory at minimum/current
 Dart, including fresh-process canonical snapshot tests and real-server
 committed-response-loss replay. Android and iOS jobs upload content-free JSON
@@ -164,7 +168,10 @@ exited Runner, build failure, assertion or RPC failure, and post-body stall fail
 the blocking `Gate` directly. Bounded, redacted process/simulator/app
 diagnostics are always uploaded; the temporary retry simulator is always
 deleted. Each attempt builds the integration-test app and installs it on its
-own simulator before native launch.
+own simulator before native launch. The simulator build compiles the native host
+and platform SQLite plugin. Ordinary PR/main runs analyze the production Dart app
+and compile `main.dart` through widget tests; the separate production/device iOS
+build remains mandatory on SDK release tags.
 
 The iOS helper uses Python 3's standard library to retain at most 256 KiB per
 redacted log on disk throughout the attempt. The authenticated VM Service URL

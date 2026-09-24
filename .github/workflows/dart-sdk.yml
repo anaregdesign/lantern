@@ -15,6 +15,14 @@ on:
       - "go.sum"
       - "go.work"
       - "go.work.sum"
+      - "core/go.mod"
+      - "core/go.sum"
+      - "pb/go.mod"
+      - "pb/go.sum"
+      - "sdks/go/go.mod"
+      - "sdks/go/go.sum"
+      - "mcp/go.mod"
+      - "mcp/go.sum"
       - "core/search/**"
       - "core/graphcache/**"
       - "server/**"
@@ -37,6 +45,14 @@ on:
       - "go.sum"
       - "go.work"
       - "go.work.sum"
+      - "core/go.mod"
+      - "core/go.sum"
+      - "pb/go.mod"
+      - "pb/go.sum"
+      - "sdks/go/go.mod"
+      - "sdks/go/go.sum"
+      - "mcp/go.mod"
+      - "mcp/go.sum"
       - "core/search/**"
       - "core/graphcache/**"
       - "server/**"
@@ -62,64 +78,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       full: ${{ steps.scope.outputs.full }}
+      mobile: ${{ steps.scope.outputs.mobile }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       # Backend-only changes still exercise the pure-Dart client over the real
-      # wire. The complete toolchain and mobile matrix is reserved for changes
-      # that can alter the generated/package/platform surfaces, and for tags.
+      # wire. Package-quality and native-platform work are classified separately:
+      # Go dependency and general-documentation changes do not need emulators.
+      - name: Test gate scope classifier
+        run: python3 -B -m unittest discover -s sdks/dart/scripts -p ci_scope_test.py
+
       - name: Select required gate scope
         id: scope
-        shell: bash
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          full=false
-
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            full=true
-          else
-            if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-              base=$PR_BASE_SHA
-              head=$PR_HEAD_SHA
-              range="$base...$head"
-            else
-              base=$PUSH_BEFORE_SHA
-              head=$GITHUB_SHA
-              if [[ "$base" =~ ^0+$ ]]; then
-                full=true
-                range=
-              else
-                range="$base..$head"
-              fi
-            fi
-
-            if [[ "$full" == false ]]; then
-              while IFS= read -r path; do
-                case "$path" in
-                  sdks/dart/* | proto/* | buf.yaml | buf.gen.yaml | generate.go | \
-                    go.mod | go.sum | go.work | go.work.sum | \
-                    tests/integration/dart_offline_sqlite_test.dart | \
-                    docs/decisions/0001-dart-mobile-transport.md | \
-                    docs/decisions/0002-dart-offline-repository-contract.md | \
-                    AGENTS.md | README.md | \
-                    CONTRIBUTING.md | \
-                    .github/workflows/dart-sdk.yml)
-                    full=true
-                    break
-                    ;;
-                esac
-              done < <(git diff --name-only "$range")
-            fi
-          fi
-
-          echo "full=$full" >> "$GITHUB_OUTPUT"
-          echo "Full Dart/mobile matrix: $full" >> "$GITHUB_STEP_SUMMARY"
+        run: python3 -B sdks/dart/scripts/ci_scope.py
 
   test:
     name: Generate, analyze, and test
@@ -530,7 +507,7 @@ jobs:
   android:
     name: Android emulator real-wire example
     needs: changes
-    if: needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -682,7 +659,7 @@ jobs:
   ios:
     name: iOS simulator real-wire example
     needs: changes
-    if: needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: macos-15
     # Two bounded 10-minute attempts plus fresh-device creation must leave
     # enough margin for setup/build, diagnostics upload, and mandatory cleanup.
@@ -729,11 +706,18 @@ jobs:
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/ios-server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/ios-server.pid"
 
-      - name: Check and build iOS example
+      - name: Check iOS example
         working-directory: sdks/dart/example
         run: |
           flutter pub get --enforce-lockfile
           flutter analyze --no-pub
+
+      # The attached smoke builds the simulator Runner.app with the same native
+      # plugins. Keep the separate production/device target for SDK releases.
+      - name: Build production iOS example for release
+        if: startsWith(github.ref, 'refs/tags/sdks/dart/v')
+        working-directory: sdks/dart/example
+        run: |
           flutter build ios --debug --no-codesign --no-pub
 
       - name: Wait for iOS simulator
@@ -980,6 +964,7 @@ jobs:
         shell: bash
         env:
           FULL: ${{ needs.changes.outputs.full }}
+          MOBILE: ${{ needs.changes.outputs.mobile }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           TEST_RESULT: ${{ needs.test.result }}
           MINIMUM_DART_RESULT: ${{ needs.minimum-dart.result }}
@@ -1005,16 +990,19 @@ jobs:
           if [[ "$FULL" == true ]]; then
             require_result minimum-dart "$MINIMUM_DART_RESULT" success
             require_result offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" success
-            require_result android "$ANDROID_RESULT" success
-            require_result ios "$IOS_RESULT" success
           else
             require_result minimum-dart "$MINIMUM_DART_RESULT" skipped
             require_result offline-minimum-dart "$OFFLINE_MINIMUM_DART_RESULT" skipped
+          fi
+          if [[ "$MOBILE" == true ]]; then
+            require_result android "$ANDROID_RESULT" success
+            require_result ios "$IOS_RESULT" success
+          else
             require_result android "$ANDROID_RESULT" skipped
             require_result ios "$IOS_RESULT" skipped
           fi
 
-          echo "Full Dart/mobile matrix: $FULL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Full Dart package matrix: $FULL; Android/iOS native matrix: $MOBILE" >> "$GITHUB_STEP_SUMMARY"
 
   release-preflight:
     name: Verify parent release candidate

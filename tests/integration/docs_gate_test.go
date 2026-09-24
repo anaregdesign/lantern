@@ -315,9 +315,8 @@ func TestDartPublishingContractGate(t *testing.T) {
 }
 
 // TestDartWorkflowGate keeps the change-scoped fast path from weakening the
-// release and SDK-surface matrix. Backend-only changes may skip platform work,
-// but the stable aggregate gate must require every full-matrix job when Dart,
-// proto, toolchain, workflow, or release inputs change.
+// release and SDK-surface matrix. Package quality and native mobile work are
+// independently classified, and the stable aggregate gate enforces both.
 func TestDartWorkflowGate(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -331,6 +330,10 @@ func TestDartWorkflowGate(t *testing.T) {
 	text := string(workflow)
 	for _, contract := range []string{
 		"name: Classify changes",
+		"mobile: ${{ steps.scope.outputs.mobile }}",
+		"name: Test gate scope classifier",
+		"python3 -B -m unittest discover -s sdks/dart/scripts -p ci_scope_test.py",
+		"run: python3 -B sdks/dart/scripts/ci_scope.py",
 		`"sdks/dart/**"`,
 		`"tests/integration/dart_offline_sqlite_test.dart"`,
 		`"proto/**"`,
@@ -341,6 +344,10 @@ func TestDartWorkflowGate(t *testing.T) {
 		`"go.sum"`,
 		`"go.work"`,
 		`"go.work.sum"`,
+		`"core/go.mod"`,
+		`"pb/go.mod"`,
+		`"sdks/go/go.mod"`,
+		`"mcp/go.mod"`,
 		`"core/search/**"`,
 		`"core/graphcache/**"`,
 		`"server/**"`,
@@ -370,6 +377,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		"flutter test --no-pub integration_test/mobile_smoke_test.dart -d emulator-5554",
 		"name: Start iOS simulator boot",
 		"name: Wait for iOS simulator",
+		"name: Build production iOS example for release",
 		"flutter build ios --debug --no-codesign --no-pub",
 		"name: Run attached iOS native smoke",
 		`bash tool/ios_smoke_ci.sh run-attached-attempt "$DEVICE_ID" initial`,
@@ -395,6 +403,10 @@ func TestDartWorkflowGate(t *testing.T) {
 		"require_result minimum-dart \"$MINIMUM_DART_RESULT\" success",
 		"require_result android \"$ANDROID_RESULT\" success",
 		"require_result ios \"$IOS_RESULT\" success",
+		"MOBILE: ${{ needs.changes.outputs.mobile }}",
+		"if [[ \"$MOBILE\" == true ]]; then",
+		"require_result android \"$ANDROID_RESULT\" skipped",
+		"require_result ios \"$IOS_RESULT\" skipped",
 		"needs: [gate]",
 	} {
 		if !strings.Contains(text, contract) {
@@ -407,7 +419,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		t.Fatalf("read parent Dart .pubignore: %v", err)
 	}
 	pubignoreText := "\n" + string(pubignore) + "\n"
-	for _, excluded := range []string{"example/*", "offline/", "offline_sqlite/"} {
+	for _, excluded := range []string{"example/*", "offline/", "offline_sqlite/", "scripts/ci_scope*.py"} {
 		if !strings.Contains(pubignoreText, "\n"+excluded+"\n") {
 			t.Errorf("parent Dart publish archive no longer excludes %q", excluded)
 		}
@@ -426,6 +438,32 @@ func TestDartWorkflowGate(t *testing.T) {
 	if strings.Contains(text, "flutter build apk --debug") {
 		t.Error("Dart SDK workflow duplicates the APK build already performed by the Android native smoke")
 	}
+	for _, jobName := range []string{"android", "ios"} {
+		start := strings.Index(text, "\n  "+jobName+":\n")
+		if start < 0 {
+			t.Fatalf("Dart SDK workflow is missing %s job", jobName)
+		}
+		jobHeader := text[start:]
+		if steps := strings.Index(jobHeader, "\n    steps:"); steps >= 0 {
+			jobHeader = jobHeader[:steps]
+		}
+		if !strings.Contains(jobHeader, "if: needs.changes.outputs.mobile == 'true'") {
+			t.Errorf("%s job is not guarded by the native mobile scope", jobName)
+		}
+	}
+	gateStart := strings.Index(text, "\n  gate:\n")
+	releaseStart := strings.Index(text, "\n  release-preflight:\n")
+	if gateStart < 0 || releaseStart < gateStart {
+		t.Fatal("Dart SDK workflow is missing the aggregate gate before release preflight")
+	}
+	gate := text[gateStart:releaseStart]
+	fullBranch := strings.Index(gate, `if [[ "$FULL" == true ]]; then`)
+	mobileBranch := strings.Index(gate, `if [[ "$MOBILE" == true ]]; then`)
+	minimumResult := strings.Index(gate, `require_result minimum-dart "$MINIMUM_DART_RESULT" success`)
+	androidResult := strings.Index(gate, `require_result android "$ANDROID_RESULT" success`)
+	if fullBranch < 0 || minimumResult <= fullBranch || mobileBranch <= minimumResult || androidResult <= mobileBranch {
+		t.Error("aggregate gate does not enforce package and native-mobile results independently")
+	}
 
 	iosStart := strings.Index(text, "\n  ios:\n")
 	if iosStart < 0 {
@@ -440,7 +478,8 @@ func TestDartWorkflowGate(t *testing.T) {
 	for _, step := range []string{
 		"name: Start iOS simulator boot",
 		"name: Start Lantern",
-		"name: Check and build iOS example",
+		"name: Check iOS example",
+		"name: Build production iOS example for release",
 		"name: Wait for iOS simulator",
 		"name: Run attached iOS native smoke",
 		"name: Create independently clean retry simulator",
@@ -460,6 +499,8 @@ func TestDartWorkflowGate(t *testing.T) {
 	}
 	for _, contract := range []string{
 		"timeout-minutes: 45",
+		"- name: Build production iOS example for release\n        if: startsWith(github.ref, 'refs/tags/sdks/dart/v')",
+		"flutter build ios --debug --no-codesign --no-pub",
 		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
 		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480",
 		`contains(fromJSON('["launch_stall","attach_stall"]'),`,
@@ -542,7 +583,8 @@ func TestDartWorkflowGate(t *testing.T) {
 	for _, contract := range []string{
 		"routes backend/search-only changes through the current-Dart unit and real-wire gates",
 		"stable `Gate` job",
-		"required result set for either scope",
+		"both decisions independently",
+		"separate production/device iOS",
 		"Only `launch_stall` or `attach_stall` may retry",
 		"full attempt to 480 seconds",
 		"test-app build and native launch to 180 seconds each",
