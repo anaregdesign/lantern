@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestIdentityCursorCheckedAdvancement(t *testing.T) {
@@ -87,21 +88,21 @@ func TestIdentityFrameParsingAndChunkContinuity(t *testing.T) {
 		t.Fatalf("repeated chunk in same stream = %v", err)
 	}
 
-	bad := *wire
+	bad := proto.Clone(wire).(*pb.IdentityChunk)
 	bad.Origin = origin[:]
 	bad.Hlc = &pb.HLCTimestamp{NodeId: []byte{0x99}}
-	if _, err := parseIdentityChunk(&bad); !errors.Is(err, ErrInvalidIdentityEvent) {
+	if _, err := parseIdentityChunk(bad); !errors.Is(err, ErrInvalidIdentityEvent) {
 		t.Fatalf("HLC mismatch = %v", err)
 	}
 	bad.Hlc = &pb.HLCTimestamp{NodeId: origin[:]}
 	bad.Operation = pb.IdentityOperation_IDENTITY_OPERATION_UNSPECIFIED
-	if _, err := parseIdentityChunk(&bad); !errors.Is(err, ErrInvalidIdentityEvent) {
+	if _, err := parseIdentityChunk(bad); !errors.Is(err, ErrInvalidIdentityEvent) {
 		t.Fatalf("unknown operation = %v", err)
 	}
 	bad.Operation = IdentityDeleteEdge
 	bad.EdgeKeys = nil
 	bad.VertexKeys = []string{"not-an-edge"}
-	if _, err := parseIdentityChunk(&bad); !errors.Is(err, ErrInvalidIdentityEvent) {
+	if _, err := parseIdentityChunk(bad); !errors.Is(err, ErrInvalidIdentityEvent) {
 		t.Fatalf("mixed operation identity = %v", err)
 	}
 	checkpoint, err := parseIdentityCheckpoint(&pb.IdentityCheckpoint{LastSeqPerOrigin: map[string]uint64{origin.String(): 2}})
