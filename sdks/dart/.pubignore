@@ -10,4 +10,5 @@ offline/
 offline_sqlite/
 # Release automation and its regression tests are repository-only.
 scripts/release*.py
+scripts/ci_scope*.py
 scripts/__pycache__/
