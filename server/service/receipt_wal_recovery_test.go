@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func receiptWALAuditFixture(t *testing.T) (mutationreceipt.Config, mutationlog.Entry) {
@@ -48,6 +50,150 @@ func auditGraphEntry(seq uint64) mutationlog.Entry {
 	graph.Seq = seq
 	graph.Hlc.Logical += uint32(seq - 1)
 	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(graph), Op: graph}
+}
+
+func recoveryEdgeEntry(seq uint64) mutationlog.Entry {
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+		PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: "tail", Head: "present", Weight: 1,
+			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		}},
+	}})
+	graph.Seq = seq
+	graph.Hlc.Logical += uint32(seq - 1)
+	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(graph), Op: graph}
+}
+
+func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	path := writeReceiptWALAuditEntries(t, auditGraphEntry(1), recoveryEdgeEntry(2), receiptEntry)
+	recoveryTime := time.Now()
+	candidate, err := resumeReceiptWALCandidate(path, config, recoveryTime, mutationlog.Options{Capacity: 2}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := candidate.graph.GetVertex("graph-only"); !ok || got.GetKey() != "graph-only" {
+		t.Fatalf("recovered vertex = %v, %v", got, ok)
+	}
+	if weight, ok := candidate.graph.GetWeight("tail", "present"); ok || weight != 0 {
+		t.Fatalf("receipt Delete did not remove Edge: %g, %v", weight, ok)
+	}
+	envelope := receiptEntry.Op.(*edgeDeleteReceiptEnvelope)
+	var foundDeadline bool
+	for _, tombstone := range candidate.graph.SnapshotReplication().Tombstones.Edges {
+		if tombstone.Tail == "tail" && tombstone.Head == "present" {
+			if !tombstone.Expiration.Equal(envelope.TombstoneExpiration) || !tombstone.HLC.Equal(envelope.HLC) {
+				t.Fatalf("recovered tombstone = %+v, want deadline %v/HLC %+v", tombstone, envelope.TombstoneExpiration, envelope.HLC)
+			}
+			foundDeadline = true
+		}
+	}
+	if !foundDeadline {
+		t.Fatal("recovered graph omitted active original Delete tombstone")
+	}
+	oldHLC := envelope.HLC
+	oldHLC.WallNs--
+	if applied := candidate.graph.AddEdgeWithExpirationContribHLC("tail", "present", 1, time.Now().Add(time.Hour), graphcache.ContribID{1}, oldHLC); applied {
+		t.Fatal("recovered tombstone admitted an older Add")
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 3 {
+		t.Fatalf("recovered Log frontier = %d, %v", seq, ok)
+	}
+	if got := candidate.log.RetainedEntries(); len(got) != 2 || got[0].Seq != 2 || got[1].Seq != 3 {
+		t.Fatalf("recovered Log ring = %+v", got)
+	}
+	if _, err := candidate.log.Append(&pb.Mutation{}, receiptEntry.HLC); !errors.Is(err, mutationlog.ErrClosed) {
+		t.Fatalf("detached Log append = %v, want closed read-only Log", err)
+	}
+	if len(candidate.origins.States()) != 2 || !candidate.hlcFrontier.Equal(receiptEntry.HLC) {
+		t.Fatalf("recovered origin/HLC frontier = %+v, %+v", candidate.origins.States(), candidate.hlcFrontier)
+	}
+	if highWater := candidate.receipts.Stats().HighWaterMillis; highWater < recoveryTime.UnixMilli() {
+		t.Fatalf("recovered Store high-water = %d, before replay time %d", highWater, recoveryTime.UnixMilli())
+	}
+	want := receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts
+	for i, receipt := range want {
+		status, got, err := candidate.knownReceiptStatus(receipt.ID, time.Now())
+		if err != nil || status != mutationreceipt.Confirmed || !reflect.DeepEqual(got.Result, receipt.Result) {
+			t.Fatalf("receipt %d = %v, %+v, %v; want original %+v", i, status, got, err, receipt)
+		}
+	}
+	if want[0].Result[0] != 1 || want[1].Result[0] != 0 || want[2].Result[0] != 0 {
+		t.Fatalf("fixture lacks original true/false outcomes: %+v", want)
+	}
+	absent := want[0].ID
+	absent[len(absent)-1] ^= 1
+	status, got, err := candidate.knownReceiptStatus(absent, time.Now())
+	if err != nil || status != mutationreceipt.NoLongerProvable || !reflect.DeepEqual(got, mutationreceipt.Receipt{}) {
+		t.Fatalf("absent WAL ID = %v, %+v, %v; want UNKNOWN", status, got, err)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	deleteGraph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{
+		DeleteEdge: &pb.DeleteEdgeRequest{Tail: "tail", Head: "present"},
+	}})
+	deleteGraph.Seq = 2
+	deleteGraph.Hlc.Logical++
+	deleteEntry := mutationlog.Entry{HLC: receiptWALUnionGraphHLC(deleteGraph), Op: deleteGraph}
+	for _, tc := range []struct {
+		name    string
+		entries []mutationlog.Entry
+	}{
+		{"graph Delete deadline missing", []mutationlog.Entry{auditGraphEntry(1), deleteEntry, receiptEntry}},
+		{"graph write after receipt", []mutationlog.Entry{receiptEntry, auditGraphEntry(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeReceiptWALAuditEntries(t, tc.entries...)
+			candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+			if !errors.Is(err, errReceiptWALUnion) || candidate != nil {
+				t.Fatalf("candidate = %p, %v; want no partially serving state", candidate, err)
+			}
+		})
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsContradictoryAcceptedProjection(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	graphEntry := recoveryEdgeEntry(1)
+	graph := graphEntry.Op.(*pb.Mutation)
+	graph.Hlc.WallNs = receiptEntry.HLC.WallNs
+	graph.Hlc.Logical = receiptEntry.HLC.Logical + 1
+	graphEntry.HLC = receiptWALUnionGraphHLC(graph)
+	path := writeReceiptWALAuditEntries(t, graphEntry, receiptEntry)
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if !errors.Is(err, errReceiptWALUnion) || candidate != nil {
+		t.Fatalf("contradictory accepted Delete candidate = %p, %v; want fail-closed", candidate, err)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsCorruptAndIndeterminateTail(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte) []byte
+		want   error
+	}{
+		{"corrupt middle", func(b []byte) []byte { b[60] ^= 1; return b }, mutationlog.ErrFileWALCorrupt},
+		{"torn tail", func(b []byte) []byte { return b[:len(b)-1] }, mutationlog.ErrFileWALTornTail},
+		{"indeterminate partial append", func(b []byte) []byte { return append(b, 0, 0, 0) }, mutationlog.ErrFileWALTornTail},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeReceiptWALAuditEntries(t, auditGraphEntry(1), receiptEntry)
+			bytes, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, tc.mutate(bytes), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+			if !errors.Is(err, tc.want) || candidate != nil {
+				t.Fatalf("candidate = %p, %v; want no partial state and %v", candidate, err, tc.want)
+			}
+		})
+	}
 }
 
 func TestReceiptWALDecisionAuditMixedGenesisAndKnownResults(t *testing.T) {

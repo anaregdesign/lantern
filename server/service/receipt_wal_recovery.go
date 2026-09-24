@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
@@ -153,4 +155,148 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 func receiptWALDecisionCost(receipt mutationreceipt.Receipt) uint64 {
 	return uint64(len(receipt.ID) + len(receipt.Digest) + len(receipt.Group) +
 		4 + 4 + 8 + 1 + len(receipt.Result))
+}
+
+// receiptWALRecoveryCandidate is deliberately detached from LanternService.
+// Its Store contains only WAL-observed results: Begin and an absent-ID Lookup
+// are not certified because the previous process could advance Store's clock
+// without logging it. No provider may install this candidate as a serving
+// state until epoch/high-water recovery and an atomic publication cut exist.
+type receiptWALRecoveryCandidate struct {
+	graph       *graphcache.GraphCache[string, *pb.Vertex]
+	receipts    *mutationreceipt.Store
+	knownIDs    map[mutationreceipt.ID]struct{}
+	origins     *originStateTracker
+	log         *mutationlog.Log
+	hlcFrontier hlc.Timestamp // evidence for a future restored Clock, not a live Clock
+}
+
+// knownReceiptStatus can confirm an exact retained result. An absent ID is
+// always UNKNOWN after restart, including an otherwise fresh ID in the old
+// epoch; WAL rows alone cannot prove the previous Store clock high-water.
+func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, now time.Time) (mutationreceipt.Status, mutationreceipt.Receipt, error) {
+	if _, known := c.knownIDs[id]; !known {
+		return mutationreceipt.NoLongerProvable, mutationreceipt.Receipt{}, nil
+	}
+	status, receipt, err := c.receipts.Lookup(id, now)
+	if status == mutationreceipt.NotYetObserved {
+		return mutationreceipt.NoLongerProvable, mutationreceipt.Receipt{}, nil
+	}
+	return status, receipt, err
+}
+
+// resumeReceiptWALCandidate validates a complete genesis WAL before making
+// any state externally visible. The caller must own path exclusively through
+// both replay passes; this function closes the resumed writer before return.
+// A graph-only Delete has no persisted tombstone deadline (prefix Delete also
+// lacks its exact victim set), so recovery cannot reconstruct it. Graph writes
+// after the first receipt Delete are refused too: a now-expired tombstone
+// could have rejected one originally but admit it during replay. Receipt Edge
+// Deletes carry their accepted projection and absolute deadline and can form
+// a suffix when that projection remains reproducible.
+//
+// The recovered Log and FileWAL are closed before return. This read-only
+// candidate does not authorize receipt admission, an absent-ID answer, or
+// publication-fault clearing. A future full mixed-WAL format must record
+// accepted graph effects and exact Delete deadlines before lifting these
+// restrictions.
+func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
+	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
+	if err != nil {
+		return nil, err
+	}
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](defaultTTL)
+	origins := newOriginStateTracker()
+	replayService := NewLanternService(graph)
+	candidate := &receiptWALRecoveryCandidate{graph: graph, origins: origins}
+	seenReceipt := false
+	log, closer, err := mutationlog.ResumeLogFromFileWAL(path, opts, encodeReceiptWALUnion, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
+		if err := validateReceiptWALUnionEntry(entry); err != nil {
+			return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, err)
+		}
+		var origin hlc.NodeID
+		var seq uint64
+		switch value := entry.Op.(type) {
+		case *pb.Mutation:
+			if seenReceipt || !receiptWALGraphRecoverable(value) {
+				return fmt.Errorf("receipt WAL local seq %d: %w: graph arm has no exact recovery contract", entry.Seq, errReceiptWALUnion)
+			}
+			copy(origin[:], value.GetOrigin())
+			seq = value.GetSeq()
+			if _, err := replayService.applyMutationGraph(value); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: graph replay: %w", entry.Seq, err)
+			}
+		case *edgeDeleteReceiptEnvelope:
+			seenReceipt = true
+			origin, seq = value.Origin, value.OriginSeq
+			// Recheck the exact accepted projection against the detached
+			// graph. A stale receipt HLC may lose to an earlier WAL Put;
+			// DeleteEdgesHLCChecked would silently skip it while the Store
+			// still returned the forged original result as Confirmed.
+			tx, err := graph.BeginEdgeDelete(value.OriginalKeys, value.HLC, value.TombstoneExpiration)
+			if err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: receipt graph replay: %w", entry.Seq, err)
+			}
+			if !slices.Equal(tx.Result().Accepted, value.Accepted) {
+				tx.Abort()
+				return fmt.Errorf("receipt WAL local seq %d: %w: accepted Edge Delete projection drift", entry.Seq, errReceiptWALUnion)
+			}
+			tx.Commit()
+		default:
+			return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
+		}
+		if !origins.Record(origin, seq, entry.HLC) {
+			return fmt.Errorf("receipt WAL local seq %d: %w: origin frontier drift", entry.Seq, errReceiptWALUnion)
+		}
+		if candidate.hlcFrontier.Less(entry.HLC) {
+			candidate.hlcFrontier = entry.HLC
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err // All callback state was detached; Resume closed its writer.
+	}
+	lastSeq, hasEntries := log.LastSeq()
+	if lastSeq != audit.lastLocalSeq || hasEntries != (audit.lastLocalSeq != 0) || !slices.Equal(origins.States(), audit.origins) {
+		_ = closer.Close()
+		return nil, fmt.Errorf("%w: recovered graph/origin/Log cut differs from WAL audit", errReceiptWALUnion)
+	}
+	base, err := mutationreceipt.New(config)
+	if err == nil {
+		var state mutationreceipt.Snapshot
+		state, err = base.Snapshot()
+		if err == nil {
+			state.ClockHighWaterMillis = audit.highWaterMillis
+			state.Receipts = audit.knownReceipts
+			candidate.receipts, err = mutationreceipt.NewFromSnapshot(config, state)
+		}
+	}
+	if err != nil {
+		_ = closer.Close()
+		return nil, fmt.Errorf("receipt WAL Store restore: %w", err)
+	}
+	candidate.knownIDs = make(map[mutationreceipt.ID]struct{}, len(audit.knownReceipts))
+	for _, receipt := range audit.knownReceipts {
+		candidate.knownIDs[receipt.ID] = struct{}{}
+	}
+	if err := closer.Close(); err != nil {
+		return nil, fmt.Errorf("receipt WAL close after detached replay: %w", err)
+	}
+	candidate.log = log
+	return candidate, nil
+}
+
+func receiptWALGraphRecoverable(m *pb.Mutation) bool {
+	if m == nil || m.GetOp() == nil {
+		return false
+	}
+	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_PutVertex, *pb.MutationOp_PutVertices,
+		*pb.MutationOp_AddEdge, *pb.MutationOp_AddEdges,
+		*pb.MutationOp_PutEdge, *pb.MutationOp_PutEdges,
+		*pb.MutationOp_ReplicatedPutVertices, *pb.MutationOp_ReplicatedPutEdges:
+		return true
+	default:
+		return false
+	}
 }
