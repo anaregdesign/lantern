@@ -70,6 +70,86 @@ void main() {
   );
 
   test(
+    'receipt-only marker advances the cursor without invalidation',
+    () async {
+      remote.vertices['resident'] = _vertex('old');
+      await repository.readVertex('p', 'resident');
+      final session = _Session('endpoint')
+        ..vertices['resident'] = _vertex('old');
+      source.queue(session);
+      final cancellation = LanternCancellationToken();
+      final consume = repository.consumeIdentityChanges(
+        'p',
+        source: source,
+        cancellation: cancellation,
+      );
+      await _waitUntil(() => session.listening);
+      session.add(OfflineIdentityCheckpoint({_originA: BigInt.zero}));
+      await _waitUntil(
+        () async =>
+            !await store.transaction((t) => t.hasUnknownResident('p', _key)),
+      );
+      session.add(
+        OfflineIdentityChunk(
+          origin: _originA,
+          sequence: BigInt.one,
+          operation: OfflineIdentityOperation.receiptOnly,
+          chunkIndex: 0,
+          isLast: true,
+          firstItemIndex: 0,
+          keys: const [],
+        ),
+      );
+      await _waitUntil(
+        () async =>
+            (await store.transaction(
+              (t) => t.changeCursor('p'),
+            )).sequences[_originA] ==
+            BigInt.one,
+      );
+      final cached = await repository.readVertex(
+        'p',
+        'resident',
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect((cached.value!.value as StringValue).value, 'old');
+      for (final invalid in [
+        const [_key],
+        const [OfflineEntityKey.edge('tail', 'head')],
+      ]) {
+        expect(
+          () => OfflineIdentityChunk(
+            origin: _originA,
+            sequence: BigInt.from(2),
+            operation: OfflineIdentityOperation.receiptOnly,
+            chunkIndex: 0,
+            isLast: true,
+            firstItemIndex: 0,
+            keys: invalid,
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+      }
+      for (final shape in [(false, 0, 0), (true, 1, 0), (true, 0, 1)]) {
+        expect(
+          () => OfflineIdentityChunk(
+            origin: _originA,
+            sequence: BigInt.from(2),
+            operation: OfflineIdentityOperation.receiptOnly,
+            chunkIndex: shape.$2,
+            isLast: shape.$1,
+            firstItemIndex: shape.$3,
+            keys: const [],
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+      }
+      cancellation.cancel();
+      await expectLater(consume, throwsA(isA<OfflineCanceledException>()));
+    },
+  );
+
+  test(
     'partial mutation survives snapshot reopen and duplicate chunk zero',
     () async {
       final first = _Session('endpoint-a');

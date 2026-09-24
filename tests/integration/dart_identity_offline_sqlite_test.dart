@@ -465,6 +465,8 @@ final class _WireSession implements OfflineIdentitySession {
                         OfflineIdentityOperation.putEdge,
                       IdentityOperation.deleteEdge =>
                         OfflineIdentityOperation.deleteEdge,
+                      IdentityOperation.receiptOnly =>
+                        OfflineIdentityOperation.receiptOnly,
                     },
                     chunkIndex: frame.chunkIndex,
                     isLast: frame.isLast,

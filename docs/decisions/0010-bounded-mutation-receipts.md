@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store and Edge Delete commit prerequisites exist, but capability/status RPCs remain disabled and no receipt-enabled write RPC is enabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, and guarded receipt-tail wire prerequisites exist, but capability/status RPCs remain disabled and no receipt-enabled write RPC is enabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116
 
@@ -248,11 +248,6 @@ The unwired [Edge Delete coordinator](../../server/service/receipt_edge_delete.g
 now stages graph, per-item receipts, and one origin row before a WAL call. Its
 private log envelope distinguishes the original request, request-indexed
 results, causally accepted graph transitions, epoch/policy, and origin HLC/seq.
-Existing Subscribe projects only its graph mutation; an all-rejected call
-currently appears as an empty DeleteEdges mutation and zero-key final identity
-chunk. The wire has no explicit receipt-only operation or receipt metadata,
-and downstream replay cannot restore receipts from that projection. This is
-an internal ordering test, not a supported receipt CDC contract.
 The private [Edge Delete WAL codec](../../server/service/receipt_edge_delete_codec.go)
 can encode that envelope as a bounded, versioned, deterministic payload and
 decode it with strict structural and cross-field checks. It reconstructs the
@@ -262,6 +257,21 @@ HLC, while its local seq is independent of the origin-local seq. Tombstone
 expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
 clock metadata. The codec is not wired to a serving WAL or replay path and
 does not certify receipt recovery, replication, or status continuity.
+The guarded full Subscribe projection carries these as one
+`ReplicatedReceiptEdgeDelete` mutation arm. A full-stream consumer without
+`accept_receipt_envelopes` receives `INVALID_ARGUMENT` before that frame;
+an old peer that receives the unknown oneof rejects the operation before
+advancing its origin watermark. Identity-only Subscribe emits DeleteEdge
+keys only for causally accepted items, and an all-rejected call emits a final
+zero-key `RECEIPT_ONLY` marker to advance its cursor without invalidation.
+The existing Pump does not opt in, and remote apply rejects the arm. This
+remains an internal wire prerequisite, not a supported receipt CDC contract.
+If the receipt-bearing entry has already left the log ring, this per-entry
+opt-in guard is never reached: an old Pump can receive the ordinary gapped
+error and fall back to a graph-only Snapshot. Production enablement therefore
+requires authenticated PeerStatus capability/version negotiation and a
+receipt-aware Snapshot install gate that refuses a graph-only downgrade,
+including a real-wire test with an evicted receipt entry.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
@@ -278,9 +288,9 @@ strengthen the publication primitive before claiming the every-observer
 atomicity required above.
 
 No production provider uses the staged cache or coordinator. A durable WAL
-encoder/replayer, peer receipt-envelope transport, and receipt-bearing
-Snapshot/BackupSnapshot with epoch and clock-high-water validation are still
-required. Current Snapshot and BackupSnapshot remain graph-only and cannot
+encoder/replayer, atomic remote receipt apply, a PeerStatus capability gate,
+and receipt-bearing Snapshot/BackupSnapshot with epoch and clock-high-water
+validation are still required. Current Snapshot and BackupSnapshot remain graph-only and cannot
 certify receipt continuity after restart or restore. `Store.Begin` advances
 clock high-water and expires already-dead receipts even if the new mutation
 later aborts; only newly staged receipts roll back. Recovery must persist that

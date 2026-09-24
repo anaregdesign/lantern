@@ -60,6 +60,12 @@ class IdentityOperation extends $pb.ProtobufEnum {
       IdentityOperation._(
           5, _omitEnumNames ? '' : 'IDENTITY_OPERATION_DELETE_EDGE');
 
+  /// A committed receipt envelope with no causally accepted graph identity.
+  /// It closes one origin sequence with a final, zero-key IdentityChunk.
+  static const IdentityOperation IDENTITY_OPERATION_RECEIPT_ONLY =
+      IdentityOperation._(
+          6, _omitEnumNames ? '' : 'IDENTITY_OPERATION_RECEIPT_ONLY');
+
   static const $core.List<IdentityOperation> values = <IdentityOperation>[
     IDENTITY_OPERATION_UNSPECIFIED,
     IDENTITY_OPERATION_PUT_VERTEX,
@@ -67,10 +73,11 @@ class IdentityOperation extends $pb.ProtobufEnum {
     IDENTITY_OPERATION_ADD_EDGE,
     IDENTITY_OPERATION_PUT_EDGE,
     IDENTITY_OPERATION_DELETE_EDGE,
+    IDENTITY_OPERATION_RECEIPT_ONLY,
   ];
 
   static final $core.List<IdentityOperation?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 5);
+      $pb.ProtobufEnum.$_initByValueList(values, 6);
   static IdentityOperation? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

@@ -71,7 +71,13 @@ export interface IdentityEdgeKey {
 }
 
 /** Operation category of the original committed mutation. */
-export type IdentityOperation = "putVertex" | "deleteVertex" | "addEdge" | "putEdge" | "deleteEdge";
+export type IdentityOperation =
+  | "putVertex"
+  | "deleteVertex"
+  | "addEdge"
+  | "putEdge"
+  | "deleteEdge"
+  | "receiptOnly";
 
 /** Nanosecond-precision causal coordinate of the original mutation. */
 export interface IdentityHlc {
@@ -125,6 +131,8 @@ function operationFromWire(operation: PbIdentityOperation): IdentityOperation {
       return "putEdge";
     case PbIdentityOperation.DELETE_EDGE:
       return "deleteEdge";
+    case PbIdentityOperation.RECEIPT_ONLY:
+      return "receiptOnly";
     default:
       throw new LanternError("identity chunk has unknown operation");
   }
@@ -181,6 +189,12 @@ export function decodeIdentityFrame(raw: SubscribeResponse): IdentityFrame {
         throw new LanternError("identity chunk has invalid item index");
       }
       const operation = operationFromWire(chunk.operation);
+      if (
+        operation === "receiptOnly" &&
+        (count !== 0 || !chunk.isLast || chunk.chunkIndex !== 0 || chunk.firstItemIndex !== 0)
+      ) {
+        throw new LanternError("receipt-only marker must be one final zero-key chunk");
+      }
       if (
         chunk.vertexKeys.some((key) => key.length === 0) ||
         chunk.edgeKeys.some((key) => key.tail.length === 0 || key.head.length === 0)

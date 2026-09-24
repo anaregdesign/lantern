@@ -1,15 +1,65 @@
 package replication
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 )
+
+type receiptIncompatiblePeer struct {
+	graphv1connect.UnimplementedLanternReplicationServiceHandler
+	subscribes atomic.Int32
+	snapshots  atomic.Int32
+}
+
+func (p *receiptIncompatiblePeer) Subscribe(_ context.Context, req *connect.Request[pb.SubscribeRequest], _ *connect.ServerStream[pb.SubscribeResponse]) error {
+	p.subscribes.Add(1)
+	if req.Msg.GetAcceptReceiptEnvelopes() {
+		return connect.NewError(connect.CodeInternal, errors.New("legacy Pump unexpectedly opted into receipts"))
+	}
+	return connect.NewError(connect.CodeInvalidArgument, errors.New("receipt envelope requires opt-in"))
+}
+
+func (p *receiptIncompatiblePeer) Snapshot(context.Context, *connect.Request[pb.SnapshotRequest], *connect.ServerStream[pb.SnapshotResponse]) error {
+	p.snapshots.Add(1)
+	return connect.NewError(connect.CodeInternal, errors.New("receipt mismatch must not trigger graph-only Snapshot"))
+}
+
+func TestPumpReceiptIncompatibilityDoesNotSnapshot(t *testing.T) {
+	peer := &receiptIncompatiblePeer{}
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+	srv := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protocols
+	srv.Start()
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	pump := NewPump(Config{HTTPClient: defaultH2CClient()}, nil, nil)
+	if err := pump.session(ctx, srv.URL); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("incompatible receipt stream = %v, want InvalidArgument", err)
+	}
+	if got := peer.subscribes.Load(); got != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", got)
+	}
+	if got := peer.snapshots.Load(); got != 0 {
+		t.Fatalf("graph-only Snapshot calls = %d, want 0", got)
+	}
+}
 
 // recordingApplier records which SnapshotApplier seam each snapshot edge
 // re-apply routed to, so applySnapshotEdge's LWW-vs-G-Set routing can be

@@ -39,6 +39,7 @@ const (
 	IdentityAddEdge      = pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE
 	IdentityPutEdge      = pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE
 	IdentityDeleteEdge   = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
+	IdentityReceiptOnly  = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
 )
 
 // IdentityChange is either an *IdentityCheckpoint or an *IdentityChunk.
@@ -178,6 +179,11 @@ func parseIdentityChunk(wire *pb.IdentityChunk) (*IdentityChunk, error) {
 	case IdentityAddEdge, IdentityPutEdge, IdentityDeleteEdge:
 		if len(wire.GetVertexKeys()) != 0 {
 			return nil, fmt.Errorf("%w: Edge chunk contains Vertex keys", ErrInvalidIdentityEvent)
+		}
+	case IdentityReceiptOnly:
+		if len(wire.GetVertexKeys()) != 0 || len(wire.GetEdgeKeys()) != 0 ||
+			!wire.GetIsLast() || wire.GetChunkIndex() != 0 || wire.GetFirstItemIndex() != 0 {
+			return nil, fmt.Errorf("%w: receipt-only marker must be one final zero-key chunk", ErrInvalidIdentityEvent)
 		}
 	default:
 		return nil, fmt.Errorf("%w: unknown operation %d", ErrInvalidIdentityEvent, wire.GetOperation())

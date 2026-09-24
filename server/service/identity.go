@@ -297,6 +297,7 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		return connect.NewError(connect.CodeInternal, errors.New("identity projection received malformed mutation"))
 	}
 	var category pb.IdentityOperation
+	var receiptKeys []*pb.EdgeKey
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_PutVertex, *pb.MutationOp_PutVertices, *pb.MutationOp_ReplicatedPutVertices:
 		category = pb.IdentityOperation_IDENTITY_OPERATION_PUT_VERTEX
@@ -308,6 +309,16 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		category = pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE
 	case *pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
 		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
+	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
+		var err error
+		receiptKeys, err = acceptedReceiptEdgeDeleteKeys(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity projection invalid receipt envelope: %w", err))
+		}
+		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
+		if len(receiptKeys) == 0 {
+			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+		}
 	case *pb.MutationOp_DeleteVerticesByPrefix, *pb.MutationOp_DeleteEdgesByPrefix:
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped: predicate-shaped delete has no exact committed victims"))
 	default:
@@ -401,6 +412,12 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		err = p.addEdge(op.DeleteEdge.GetTail(), op.DeleteEdge.GetHead())
 	case *pb.MutationOp_DeleteEdges:
 		for _, edge := range op.DeleteEdges.GetEdges() {
+			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
+		for _, edge := range receiptKeys {
 			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
 				return err
 			}

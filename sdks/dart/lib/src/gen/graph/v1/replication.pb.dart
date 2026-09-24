@@ -129,6 +129,7 @@ enum MutationOp_Op {
   deleteEdgesByPrefix,
   replicatedPutVertices,
   replicatedPutEdges,
+  replicatedReceiptEdgeDelete,
   notSet
 }
 
@@ -156,6 +157,7 @@ class MutationOp extends $pb.GeneratedMessage {
     $0.DeleteEdgesByPrefixRequest? deleteEdgesByPrefix,
     ReplicatedPutVertices? replicatedPutVertices,
     ReplicatedPutEdges? replicatedPutEdges,
+    ReplicatedReceiptEdgeDelete? replicatedReceiptEdgeDelete,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -176,6 +178,8 @@ class MutationOp extends $pb.GeneratedMessage {
       result.replicatedPutVertices = replicatedPutVertices;
     if (replicatedPutEdges != null)
       result.replicatedPutEdges = replicatedPutEdges;
+    if (replicatedReceiptEdgeDelete != null)
+      result.replicatedReceiptEdgeDelete = replicatedReceiptEdgeDelete;
     return result;
   }
 
@@ -203,13 +207,14 @@ class MutationOp extends $pb.GeneratedMessage {
     12: MutationOp_Op.deleteEdgesByPrefix,
     13: MutationOp_Op.replicatedPutVertices,
     14: MutationOp_Op.replicatedPutEdges,
+    15: MutationOp_Op.replicatedReceiptEdgeDelete,
     0: MutationOp_Op.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'MutationOp',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
     ..aOM<$0.PutVertexRequest>(1, _omitFieldNames ? '' : 'putVertex',
         subBuilder: $0.PutVertexRequest.create)
     ..aOM<$0.PutVerticesRequest>(2, _omitFieldNames ? '' : 'putVertices',
@@ -241,6 +246,9 @@ class MutationOp extends $pb.GeneratedMessage {
         subBuilder: ReplicatedPutVertices.create)
     ..aOM<ReplicatedPutEdges>(14, _omitFieldNames ? '' : 'replicatedPutEdges',
         subBuilder: ReplicatedPutEdges.create)
+    ..aOM<ReplicatedReceiptEdgeDelete>(
+        15, _omitFieldNames ? '' : 'replicatedReceiptEdgeDelete',
+        subBuilder: ReplicatedReceiptEdgeDelete.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -426,6 +434,219 @@ class MutationOp extends $pb.GeneratedMessage {
   void clearReplicatedPutEdges() => $_clearField(14);
   @$pb.TagNumber(14)
   ReplicatedPutEdges ensureReplicatedPutEdges() => $_ensure(13);
+
+  /// Receipt-bearing exact Edge Delete. A new oneof arm is intentional:
+  /// peers unaware of this contract reject the unknown operation instead
+  /// of applying a graph-only Delete and advancing the origin watermark.
+  @$pb.TagNumber(15)
+  ReplicatedReceiptEdgeDelete get replicatedReceiptEdgeDelete => $_getN(14);
+  @$pb.TagNumber(15)
+  set replicatedReceiptEdgeDelete(ReplicatedReceiptEdgeDelete value) =>
+      $_setField(15, value);
+  @$pb.TagNumber(15)
+  $core.bool hasReplicatedReceiptEdgeDelete() => $_has(14);
+  @$pb.TagNumber(15)
+  void clearReplicatedReceiptEdgeDelete() => $_clearField(15);
+  @$pb.TagNumber(15)
+  ReplicatedReceiptEdgeDelete ensureReplicatedReceiptEdgeDelete() =>
+      $_ensure(14);
+}
+
+/// One request-index-aligned item in a receipt-bearing Edge Delete. The
+/// receipt retains the original result even when a later mutation changes the
+/// graph. An accepted item may have existed=false yet create a causal floor.
+class ReplicatedReceiptEdgeDeleteItem extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptEdgeDeleteItem({
+    $0.EdgeKey? key,
+    $0.MutationReceipt? receipt,
+    $core.bool? causallyAccepted,
+  }) {
+    final result = create();
+    if (key != null) result.key = key;
+    if (receipt != null) result.receipt = receipt;
+    if (causallyAccepted != null) result.causallyAccepted = causallyAccepted;
+    return result;
+  }
+
+  ReplicatedReceiptEdgeDeleteItem._();
+
+  factory ReplicatedReceiptEdgeDeleteItem.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptEdgeDeleteItem.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptEdgeDeleteItem',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$0.EdgeKey>(1, _omitFieldNames ? '' : 'key',
+        subBuilder: $0.EdgeKey.create)
+    ..aOM<$0.MutationReceipt>(2, _omitFieldNames ? '' : 'receipt',
+        subBuilder: $0.MutationReceipt.create)
+    ..aOB(3, _omitFieldNames ? '' : 'causallyAccepted')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeDeleteItem clone() =>
+      ReplicatedReceiptEdgeDeleteItem()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeDeleteItem copyWith(
+          void Function(ReplicatedReceiptEdgeDeleteItem) updates) =>
+      super.copyWith(
+              (message) => updates(message as ReplicatedReceiptEdgeDeleteItem))
+          as ReplicatedReceiptEdgeDeleteItem;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeDeleteItem create() =>
+      ReplicatedReceiptEdgeDeleteItem._();
+  @$core.override
+  ReplicatedReceiptEdgeDeleteItem createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptEdgeDeleteItem> createRepeated() =>
+      $pb.PbList<ReplicatedReceiptEdgeDeleteItem>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeDeleteItem getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedReceiptEdgeDeleteItem>(
+          create);
+  static ReplicatedReceiptEdgeDeleteItem? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $0.EdgeKey get key => $_getN(0);
+  @$pb.TagNumber(1)
+  set key($0.EdgeKey value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasKey() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearKey() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $0.EdgeKey ensureKey() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $0.MutationReceipt get receipt => $_getN(1);
+  @$pb.TagNumber(2)
+  set receipt($0.MutationReceipt value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceipt() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceipt() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $0.MutationReceipt ensureReceipt() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.bool get causallyAccepted => $_getBF(2);
+  @$pb.TagNumber(3)
+  set causallyAccepted($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCausallyAccepted() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCausallyAccepted() => $_clearField(3);
+}
+
+/// A complete, ordered logical call. Mutation.seq/origin/hlc outside this
+/// message are the sole causal coordinate. Receipt epoch and policy are kept
+/// alongside the graph transition; no-op calls still consume that sequence.
+/// This arm remains production-disabled until atomic follower replay,
+/// receipt-bearing Snapshot, and recovery are available.
+class ReplicatedReceiptEdgeDelete extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptEdgeDelete({
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? policyFingerprint,
+    $1.Timestamp? tombstoneExpiration,
+    $core.Iterable<ReplicatedReceiptEdgeDeleteItem>? items,
+  }) {
+    final result = create();
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (policyFingerprint != null) result.policyFingerprint = policyFingerprint;
+    if (tombstoneExpiration != null)
+      result.tombstoneExpiration = tombstoneExpiration;
+    if (items != null) result.items.addAll(items);
+    return result;
+  }
+
+  ReplicatedReceiptEdgeDelete._();
+
+  factory ReplicatedReceiptEdgeDelete.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptEdgeDelete.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptEdgeDelete',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'policyFingerprint', $pb.PbFieldType.OY)
+    ..aOM<$1.Timestamp>(3, _omitFieldNames ? '' : 'tombstoneExpiration',
+        subBuilder: $1.Timestamp.create)
+    ..pc<ReplicatedReceiptEdgeDeleteItem>(
+        4, _omitFieldNames ? '' : 'items', $pb.PbFieldType.PM,
+        subBuilder: ReplicatedReceiptEdgeDeleteItem.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeDelete clone() =>
+      ReplicatedReceiptEdgeDelete()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeDelete copyWith(
+          void Function(ReplicatedReceiptEdgeDelete) updates) =>
+      super.copyWith(
+              (message) => updates(message as ReplicatedReceiptEdgeDelete))
+          as ReplicatedReceiptEdgeDelete;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeDelete create() =>
+      ReplicatedReceiptEdgeDelete._();
+  @$core.override
+  ReplicatedReceiptEdgeDelete createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptEdgeDelete> createRepeated() =>
+      $pb.PbList<ReplicatedReceiptEdgeDelete>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeDelete getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedReceiptEdgeDelete>(create);
+  static ReplicatedReceiptEdgeDelete? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get deploymentEpoch => $_getN(0);
+  @$pb.TagNumber(1)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeploymentEpoch() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeploymentEpoch() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get policyFingerprint => $_getN(1);
+  @$pb.TagNumber(2)
+  set policyFingerprint($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPolicyFingerprint() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPolicyFingerprint() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $1.Timestamp get tombstoneExpiration => $_getN(2);
+  @$pb.TagNumber(3)
+  set tombstoneExpiration($1.Timestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasTombstoneExpiration() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearTombstoneExpiration() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $1.Timestamp ensureTombstoneExpiration() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<ReplicatedReceiptEdgeDeleteItem> get items => $_getList(3);
 }
 
 class VertexCausalBarrier extends $pb.GeneratedMessage {
@@ -977,6 +1198,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     $fixnum.Int64? fromLocalSeq,
     SubscribeProjection? projection,
     $core.bool? bootstrap,
+    $core.bool? acceptReceiptEnvelopes,
   }) {
     final result = create();
     if (fromSeqPerOrigin != null)
@@ -984,6 +1206,8 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     if (fromLocalSeq != null) result.fromLocalSeq = fromLocalSeq;
     if (projection != null) result.projection = projection;
     if (bootstrap != null) result.bootstrap = bootstrap;
+    if (acceptReceiptEnvelopes != null)
+      result.acceptReceiptEnvelopes = acceptReceiptEnvelopes;
     return result;
   }
 
@@ -1015,6 +1239,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
         valueOf: SubscribeProjection.valueOf,
         enumValues: SubscribeProjection.values)
     ..aOB(4, _omitFieldNames ? '' : 'bootstrap')
+    ..aOB(5, _omitFieldNames ? '' : 'acceptReceiptEnvelopes')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1079,6 +1304,18 @@ class SubscribeRequest extends $pb.GeneratedMessage {
   $core.bool hasBootstrap() => $_has(3);
   @$pb.TagNumber(4)
   void clearBootstrap() => $_clearField(4);
+
+  /// Full-Mutation consumers must explicitly accept receipt-bearing oneof
+  /// arms before the server can send one. Old full-mutation peers/consumers
+  /// omit this field and fail closed instead of losing receipt metadata.
+  @$pb.TagNumber(5)
+  $core.bool get acceptReceiptEnvelopes => $_getBF(4);
+  @$pb.TagNumber(5)
+  set acceptReceiptEnvelopes($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasAcceptReceiptEnvelopes() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearAcceptReceiptEnvelopes() => $_clearField(5);
 }
 
 /// A bootstrap checkpoint is the responder's contiguous publication cut,

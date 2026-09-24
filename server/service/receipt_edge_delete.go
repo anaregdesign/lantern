@@ -41,9 +41,9 @@ type receiptEdgeDeleteCall struct {
 // edgeDeleteReceiptEnvelope is one owned WAL payload. OriginalKeys and
 // Receipts retain request index and original result; Accepted records only
 // causally admitted graph transitions. Mutation is the graph-only projection
-// understood by today's Subscribe/peer path, including an empty DeleteEdges
-// operation when every receipt is a no-op. Its receipt fields are NOT yet
-// carried over that wire or by Snapshot/BackupSnapshot.
+// consumed internally by the coordinator. Subscribe projects the full owned
+// envelope as a receipt-bearing wire arm and refuses unadvertised full-stream
+// consumers. Peer apply and Snapshot/BackupSnapshot remain receipt-unaware.
 type edgeDeleteReceiptEnvelope struct {
 	Mutation            *pb.Mutation
 	Origin              hlc.NodeID
