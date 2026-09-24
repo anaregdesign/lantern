@@ -104,21 +104,25 @@ admission failures commit neither graph nor receipt; a duplicate receipt
 lookup precedes new-capacity admission.
 
 The staged version must have an infallible publication step (for example, an
-immutable root swap); calling a fallible graph or index mutation after the
-WAL commits is forbidden. The envelope is written to the configured WAL
-**before** any state becomes visible. A staging failure or a WAL failure
+immutable root swap, or release of a comprehensive read cut after reversible
+in-place staging). In the latter case, every observer must share that cut and
+a definite WAL abort must roll back all staged graph, receipt, index, and
+origin state before releasing it. Calling a fallible graph or index mutation
+after the WAL commits is forbidden. The envelope is written to the configured
+WAL **before** any state becomes visible. A staging failure or a WAL failure
 **proven to be a definite abort** releases every reservation and returns an
 error with no graph, result, receipt, origin seq, or subscriber-visible change.
 A generic I/O error, timeout, or lost acknowledgement is indeterminate: the
 WAL may already contain the envelope. Its seq must not be reused, and the
 endpoint must fail closed for graph reads, receipt status, new writes,
 Snapshot, and Subscribe until replay proves the committed frontier, or a
-verified complete Snapshot replaces the ambiguous state and rotates the
-epoch/generation. It must never report an indeterminate result as a definite
-abort. The [`WAL.Write(Entry) error`](../../core/mutationlog/mutationlog.go)
-signature alone provides neither an abort proof nor replay. After a successful
-WAL commit, installation of the already-validated graph/search state,
-receipt set, and log entry is one infallible publication under the same gate;
+verified complete Snapshot replaces the ambiguous state and establishes its
+certified epoch with a new local generation. It must never report an
+indeterminate result as a definite abort. The
+[`WAL.Write(Entry) error`](../../core/mutationlog/mutationlog.go) signature
+alone provides neither an abort proof nor replay. After a successful WAL
+commit, publication of the already-staged graph/search state, receipt set,
+and log entry is one infallible cut under the same gate;
 reads, status, Snapshot, and Subscribe see all of it or none of it. The public
 response is sent only after
 publication. A crash between a durable WAL commit and in-memory publication
