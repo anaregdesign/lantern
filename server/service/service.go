@@ -86,6 +86,9 @@ type LanternService struct {
 	publicationFaultCh     chan struct{}
 	publicationFaultCount  int
 	snapshotInstallFaulted bool
+	// An indeterminate internal receipt WAL commit has no append-only repair
+	// path. Keep admission stopped until a future certified restore.
+	receiptCommitFaulted bool
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the

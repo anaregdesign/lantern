@@ -489,6 +489,21 @@ func (tx *Tx) Stage() error {
 	return nil
 }
 
+// StagedReceipts returns owned copies for an external WAL envelope. It is
+// available only after Stage and before Commit/Abort, while the Store lock
+// still hides the tentative rows. The caller must serialize these receipts
+// with the matching graph mutation before allowing WAL publication.
+func (tx *Tx) StagedReceipts() ([]Receipt, error) {
+	if tx.closed || tx.mode != txStaged || tx.applied != len(tx.staged) {
+		return nil, ErrTransactionState
+	}
+	result := make([]Receipt, len(tx.staged))
+	for i, receipt := range tx.staged {
+		result[i] = cloneReceipt(receipt)
+	}
+	return result, nil
+}
+
 // Commit has no Store mutation or allocation: releasing mu makes all staged
 // rows visible at once to Store readers. Call only after the external WAL
 // commits. The caller must separately coordinate graph/log visibility under

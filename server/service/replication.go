@@ -84,6 +84,21 @@ type publicationStatusProvider interface {
 	publicationStatus() (<-chan struct{}, bool)
 }
 
+// graphMutationFromLog preserves the existing Mutation payload while allowing
+// a private WAL envelope to carry receipt metadata alongside its graph-only
+// Subscribe projection. Receipt metadata is not present on the current wire.
+func graphMutationFromLog(op mutationlog.MutationOp) (*pb.Mutation, bool) {
+	switch value := op.(type) {
+	case *pb.Mutation:
+		return value, value != nil
+	case interface{ GraphMutation() *pb.Mutation }:
+		mutation := value.GraphMutation()
+		return mutation, mutation != nil
+	default:
+		return nil, false
+	}
+}
+
 // SearchConfigFingerprintProvider supplies the search contract carried by
 // PeerStatus. *LanternService satisfies it with the same fingerprint exposed
 // through GetServerStatus.
@@ -289,7 +304,7 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				return connect.NewError(connect.CodeFailedPrecondition,
 					errors.New("gapped: subscriber fell behind; snapshot and resubscribe"))
 			}
-			mu, ok := entry.Op.(*pb.Mutation)
+			mu, ok := graphMutationFromLog(entry.Op)
 			if !ok {
 				l := s.loggerOrDefault()
 				l.Warn("replication: unexpected mutation log entry type",

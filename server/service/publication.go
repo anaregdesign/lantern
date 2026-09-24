@@ -104,6 +104,9 @@ func (s *LanternService) clearPublicationFault(pending *pendingMutation) {
 // mutation is appended as-is; in particular, a conditional Put or a bounded
 // prefix Delete is never re-evaluated while repairing its publication.
 func (s *LanternService) prepareLocalMutationLocked() error {
+	if s.receiptCommitFaulted {
+		return publicationGapError()
+	}
 	if pending := s.pendingLocalMutation; pending != nil {
 		if err := s.appendPreparedLocalMutationLocked(pending.mutation); err != nil {
 			return connect.NewError(connect.CodeUnavailable,
