@@ -2,15 +2,11 @@ package service
 
 import (
 	"context"
-	"crypto/tls"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -40,17 +36,18 @@ func newConnectTestClient(
 			NewLanternReplicationServiceConnectHandler(rep),
 		))
 	}
-	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
+	srv := httptest.NewUnstartedServer(mux)
+	serverProtocols := new(http.Protocols)
+	serverProtocols.SetHTTP1(true)
+	serverProtocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = serverProtocols
+	srv.Start()
 	t.Cleanup(srv.Close)
 
+	clientProtocols := new(http.Protocols)
+	clientProtocols.SetUnencryptedHTTP2(true)
 	httpClient := &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		},
+		Transport: &http.Transport{Protocols: clientProtocols},
 	}
 	return graphv1connect.NewLanternServiceClient(httpClient, srv.URL)
 }

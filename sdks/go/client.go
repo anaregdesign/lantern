@@ -297,8 +297,8 @@ type Lantern struct {
 // "https://host[:port]" for TLS. A trailing slash is stripped
 // defensively; an empty string or schemeless input is rejected.
 //
-// Override the default h2c http.Client via WithHTTPClient — for TLS
-// supply &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}.
+// Override the default h2c http.Client via WithHTTPClient — for TLS,
+// supply an http.Transport with TLSClientConfig and HTTP2 enabled in Protocols.
 func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 	if baseURL == "" {
 		return nil, errors.New("client: NewLantern requires a base URL with scheme")

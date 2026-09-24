@@ -265,7 +265,7 @@ type Config struct {
 	// pump talks plain HTTP/2 over the cluster network — sufficient
 	// for the HA topology where peers are only reachable via the
 	// cluster network. For TLS, supply an http.Client backed by an
-	// http2.Transport with a real *tls.Config.
+	// HTTP/2-enabled http.Transport with a real *tls.Config.
 	HTTPClient *http.Client
 
 	// BackoffMin is the initial reconnect delay after a session

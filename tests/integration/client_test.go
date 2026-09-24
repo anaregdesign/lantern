@@ -8,10 +8,35 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// TestLantern_DefaultH2CTransport verifies the SDK's own default transport
+// over the real Connect/h2c handler, including a missing-key edge case.
+func TestLantern_DefaultH2CTransport(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	srv := newConnectTestServer(t, service.NewLanternService(cache), nil)
+	l, err := client.NewLantern(srv.url)
+	if err != nil {
+		t.Fatalf("NewLantern: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := l.PutVertex(ctx, "default-h2c", "value", time.Minute); err != nil {
+		t.Fatalf("PutVertex: %v", err)
+	}
+	if _, err := l.GetVertex(ctx, "default-h2c"); err != nil {
+		t.Fatalf("GetVertex: %v", err)
+	}
+	if _, err := l.GetVertex(ctx, "absent"); !errors.Is(err, client.ErrNotFound) {
+		t.Fatalf("GetVertex(absent) = %v, want ErrNotFound", err)
+	}
+}
 
 func TestLantern_PutGetDeleteVertex(t *testing.T) {
 	l, cleanup := newInProcessClient(t)
