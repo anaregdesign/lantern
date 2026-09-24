@@ -167,6 +167,23 @@ def valid_vm_url(message):
     return url
 
 
+def process_alive(pid):
+    """A Simulator app PID is a host PID; distinguish its exit from a log stall."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    status, output, timed_out, exceeded = read_process(
+        [os.environ.get("IOS_SMOKE_PS_BIN", "ps"), "-p", str(pid), "-o", "stat="],
+        3, 1024, merge_stderr=True,
+    )
+    if timed_out or exceeded:
+        return True  # Unknown liveness must not be treated as an app crash.
+    return status == 0 and not output.strip().startswith(b"Z")
+
+
 def read_app_log(xcrun, device, pid, destination, phases, timeout):
     predicate = f'processID == {pid} AND eventMessage CONTAINS "flutter:"'
     command = [
@@ -322,6 +339,20 @@ def run_attempt(device, attempt, root):
                 break
             if terminal == "passed" and vm_url:
                 break
+            if not process_alive(pid):
+                # Unified logging can flush the final app messages just after
+                # the process exits. Give it one last bounded read first.
+                final_url, final_terminal = read_app_log(
+                    xcrun, device, pid, destination / "app.log", phases,
+                    remaining(deadline, 12),
+                )
+                vm_url = vm_url or final_url
+                terminal = final_terminal or terminal
+                classification = (
+                    "test_failure" if terminal or (phases / "body_started").exists()
+                    else "launch_failure"
+                )
+                return 72
             if (
                 not (phases / "body_started").exists()
                 and time.monotonic() - launch_started >= launch_limit

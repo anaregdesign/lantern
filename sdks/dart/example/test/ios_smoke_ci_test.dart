@@ -101,6 +101,20 @@ echo 'All tests passed!'
     expect(stopwatch.elapsed, lessThan(const Duration(seconds: 12)));
   });
 
+  test('attached iOS smoke does not retry an exited Runner', () async {
+    await _writeAttachedFakes(
+      sandbox,
+      fakeFlutter,
+      fakeXcrun,
+      runnerExited: true,
+    );
+
+    final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+    expect(result.exitCode, isNonZero);
+    expect(await _classification(sandbox), 'launch_failure');
+  });
+
   test('attached iOS smoke does not retry an app-side test failure', () async {
     await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun, appFailed: true);
 
@@ -915,6 +929,7 @@ Future<void> _writeAttachedFakes(
   bool closedPipeLaunch = false,
   bool appFailed = false,
   bool omitVmUrl = false,
+  bool runnerExited = false,
 }) async {
   final appLog = File('${sandbox.path}/app-log.json');
   await appLog.writeAsString(
@@ -925,13 +940,15 @@ Future<void> _writeAttachedFakes(
               'flutter: The Dart VM service is listening on '
               'http://127.0.0.1:1234/private-vm-code/',
         },
-      {'eventMessage': 'flutter: MOBILE_SMOKE_BODY_STARTED'},
-      {'eventMessage': 'flutter: MOBILE_SMOKE_PASS vertices=13'},
-      {
-        'eventMessage': appFailed
-            ? 'flutter: 00:00 +0 -1: Some tests failed.'
-            : 'flutter: 00:00 +1: All tests passed!',
-      },
+      if (!runnerExited) ...[
+        {'eventMessage': 'flutter: MOBILE_SMOKE_BODY_STARTED'},
+        {'eventMessage': 'flutter: MOBILE_SMOKE_PASS vertices=13'},
+        {
+          'eventMessage': appFailed
+              ? 'flutter: 00:00 +0 -1: Some tests failed.'
+              : 'flutter: 00:00 +1: All tests passed!',
+        },
+      ],
     ]),
   );
   await _writeExecutable(
@@ -970,7 +987,14 @@ case "${2:-}" in
       exec >/dev/null 2>&1
       sleep 30
     fi
-    echo 'com.anaregdesign.lanternExample: 1234'
+    if [[ '_RUNNER_EXITED_' == true ]]; then
+      sleep 0.01 &
+      exited_pid=$!
+      wait "$exited_pid"
+      echo "com.anaregdesign.lanternExample: $exited_pid"
+    else
+      echo "com.anaregdesign.lanternExample: $PPID"
+    fi
     ;;
   spawn)
     if [[ "${4:-}" == log ]]; then
@@ -983,6 +1007,7 @@ case "${2:-}" in
 esac
 '''
         .replaceAll('_CLOSED_PIPE_LAUNCH_', '$closedPipeLaunch')
+        .replaceAll('_RUNNER_EXITED_', '$runnerExited')
         .replaceAll('_APP_LOG_', appLog.path),
   );
 }
