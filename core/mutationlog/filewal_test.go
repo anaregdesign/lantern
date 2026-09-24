@@ -5,6 +5,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -67,6 +68,182 @@ func TestFileWALRoundTripAndCreateOnly(t *testing.T) {
 	want := []Entry{fileWALEntry(1, "first"), fileWALEntry(2, "second")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("replayed = %+v, want %+v", got, want)
+	}
+}
+
+func TestFileWALResumeRestoresBeforeAppend(t *testing.T) {
+	path, original := makeTwoRecordFileWAL(t)
+	var restored []Entry
+	w, err := ResumeFileWAL(path, fileWALStringEncode, fileWALStringDecode, func(e Entry) error {
+		restored = append(restored, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Entry{fileWALEntry(1, "first"), fileWALEntry(2, "second")}; !reflect.DeepEqual(restored, want) {
+		t.Fatalf("restored = %+v, want %+v", restored, want)
+	}
+	if w.lastSeq != 2 || w.offset != int64(len(original)) {
+		t.Fatalf("resume frontier = (%d, %d), want (2, %d)", w.lastSeq, w.offset, len(original))
+	}
+	var aborted *DefiniteWALAbort
+	if err := w.Write(fileWALEntry(4, "gap")); !errors.As(err, &aborted) || !errors.Is(err, ErrFileWALSequence) {
+		t.Fatalf("Write gap after resume = %v, want definite sequence abort", err)
+	}
+	if err := w.Write(fileWALEntry(3, "third")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var replayed []Entry
+	if err := ReplayFileWAL(path, fileWALStringDecode, func(e Entry) error {
+		replayed = append(replayed, e)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := append(restored, fileWALEntry(3, "third"))
+	if !reflect.DeepEqual(replayed, want) {
+		t.Fatalf("replayed = %+v, want %+v", replayed, want)
+	}
+}
+
+func TestFileWALResumeEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mutations.wal")
+	w, err := CreateFileWAL(path, fileWALStringEncode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	visits := 0
+	w, err = ResumeFileWAL(path, fileWALStringEncode, fileWALStringDecode, func(Entry) error {
+		visits++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visits != 0 || w.lastSeq != 0 || w.offset != int64(len(fileWALMagic)) {
+		t.Fatalf("empty resume = visits %d, seq %d, offset %d", visits, w.lastSeq, w.offset)
+	}
+	if err := w.Write(fileWALEntry(1, "first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileWALResumeRejectsDamageBeforeRestore(t *testing.T) {
+	_, valid := makeTwoRecordFileWAL(t)
+	second := len(fileWALMagic) + fileWALFrameHeader + int(binary.BigEndian.Uint32(valid[len(fileWALMagic):]))
+	tests := []struct {
+		name   string
+		mutate func([]byte) []byte
+		decode func([]byte) (MutationOp, error)
+		want   error
+	}{
+		{name: "torn header", mutate: func(b []byte) []byte { return b[:second+3] }, want: ErrFileWALTornTail},
+		{name: "torn body", mutate: func(b []byte) []byte { return b[:len(b)-2] }, want: ErrFileWALTornTail},
+		{name: "bad checksum", mutate: func(b []byte) []byte {
+			b[len(b)-1] ^= 0xff
+			return b
+		}, want: ErrFileWALCorrupt},
+		{name: "bad length", mutate: func(b []byte) []byte {
+			binary.BigEndian.PutUint32(b[second:second+4], maxFileWALBody+1)
+			return b
+		}, want: ErrFileWALCorrupt},
+		{name: "sequence gap", mutate: func(b []byte) []byte {
+			binary.BigEndian.PutUint64(b[second+fileWALFrameHeader:], 3)
+			body := b[second+fileWALFrameHeader:]
+			crc := crc32.Checksum(b[second:second+4], fileWALCRC)
+			crc = crc32.Update(crc, fileWALCRC, body)
+			binary.BigEndian.PutUint32(b[second+4:second+8], crc)
+			return b
+		}, want: ErrFileWALSequence},
+		{name: "bad magic", mutate: func(b []byte) []byte {
+			b[0] ^= 0xff
+			return b
+		}, want: ErrFileWALCorrupt},
+		{name: "decode failure", mutate: func(b []byte) []byte { return b }, decode: func(b []byte) (MutationOp, error) {
+			if string(b) == "second" {
+				return nil, errors.New("unsupported payload")
+			}
+			return string(b), nil
+		}, want: ErrFileWALCorrupt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mutations.wal")
+			damaged := tt.mutate(append([]byte(nil), valid...))
+			if err := os.WriteFile(path, damaged, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			decode := tt.decode
+			if decode == nil {
+				decode = fileWALStringDecode
+			}
+			visits := 0
+			w, err := ResumeFileWAL(path, fileWALStringEncode, decode, func(Entry) error {
+				visits++
+				return nil
+			})
+			if !errors.Is(err, tt.want) || w != nil || visits != 0 {
+				t.Fatalf("Resume = (%v, %v), visits=%d; want %v and no restore", w, err, visits, tt.want)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, damaged) {
+				t.Fatal("Resume modified the damaged WAL")
+			}
+		})
+	}
+}
+
+func TestFileWALResumeRestoreFailureNeverOpensWriter(t *testing.T) {
+	path, before := makeTwoRecordFileWAL(t)
+	restoreErr := errors.New("restore failed")
+	visits := 0
+	w, err := ResumeFileWAL(path, fileWALStringEncode, fileWALStringDecode, func(Entry) error {
+		visits++
+		return restoreErr
+	})
+	if !errors.Is(err, restoreErr) || w != nil || visits != 1 {
+		t.Fatalf("Resume = (%v, %v), visits=%d; want restore error after first entry", w, err, visits)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("restore failure modified the WAL")
+	}
+}
+
+func TestFileWALWriteRejectsOffsetOverflowBeforeIO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mutations.wal")
+	w, err := CreateFileWAL(path, fileWALStringEncode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	w.offset = math.MaxInt64
+	var aborted *DefiniteWALAbort
+	if err := w.Write(fileWALEntry(1, "first")); !errors.As(err, &aborted) || !errors.Is(err, ErrFileWALTooLarge) {
+		t.Fatalf("Write at max offset = %v, want definite overflow abort", err)
+	}
+	if w.unusable {
+		t.Fatal("pre-I/O offset rejection poisoned WAL")
+	}
+	w.offset = int64(len(fileWALMagic))
+	if err := w.Write(fileWALEntry(1, "first")); err != nil {
+		t.Fatalf("Write after offset rejection: %v", err)
 	}
 }
 
