@@ -280,6 +280,17 @@ decoded graph or receipt HLC before applying state. This remains unwired and
 does not yet constitute a complete replay or durable serving configuration;
 production activation also needs a WAL schema migration policy across future
 protobuf changes.
+The private [read-only mixed-WAL audit](../../server/service/receipt_wal_recovery.go)
+checks a complete, genesis-based FileWAL for frame/payload HLC agreement,
+contiguous per-origin sequences, one configured epoch/policy, and a bounded
+set of known unexpired receipt results. It validates those rows through the
+Store snapshot rules and releases expired entry/byte capacity as each frame's
+HLC advances, before admitting another row. It returns no Store or append
+writer. A missing ID has
+no status from this audit: aborted Store clock advances, graph/search state,
+and an atomic origin/log cut remain outside the WAL decision inventory. A
+non-genesis WAL requires a verified receipt-bearing Snapshot baseline before
+it can be audited or resumed.
 The guarded full Subscribe projection carries receipt-bearing entries as one
 `ReplicatedReceiptEdgeDelete` mutation arm. A full-stream consumer without
 `accept_receipt_envelopes` receives `INVALID_ARGUMENT` before that frame;
