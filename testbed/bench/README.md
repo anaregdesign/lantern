@@ -134,6 +134,32 @@ corresponding `BACKUP_VERTICES`, `BACKUP_DEGREE`, `BACKUP_INTERVAL_MS`,
 predeclared run or smoke check. If target-scale setup exceeds host resources,
 record that limit explicitly; do not treat a smaller run as equivalent.
 
+## Mixed edge reset/Add microbench (#1203)
+
+The content-free [raw baseline](evidence/issue-1203/base.txt) and
+[candidate](evidence/issue-1203/candidate.txt) outputs were captured on an
+Apple M3 Max (`darwin/arm64`, one benchmark CPU, three 500ms repetitions),
+comparing main `40b5127` with the #1203 candidate `5b0f8a4`. They are
+exploratory host measurements, not a release floor or production RSS sample.
+
+| Case | Baseline median | Candidate median | Baseline B/op | Candidate B/op |
+| --- | ---: | ---: | ---: | ---: |
+| Local `AddEdge`, 1k vertices | 316.8 ns | 316.8 ns | 233 | 312 |
+| Local `AddEdge`, 10k vertices | 427.8 ns | 443.8 ns | 265 | 400 |
+| Local `AddEdge`, 100k vertices | 601.9 ns | 644.7 ns | 322 | 432 |
+| Existing hot edge `AddEdge` | 283.4 ns | 266.6 ns | 348 | 504 |
+| Causal Add batch of 64 | — | 5.566 µs | — | 12,256 |
+| Replication Snapshot, 1k edges × (Put + 3 Adds) | — | 918.2 µs | — | 1,248,440 |
+
+The local Add allocation count stayed at two per operation; the HLC stored
+with every contribution increased allocation bytes. One HLC occupies 32 bytes,
+so 3.2 million retained single-contribution edges add about 102 MB of row
+payload before slice-capacity and allocator effects. The three samples do not
+establish a significant latency change. The on-demand
+[`mixed_edge_reset_add.yaml`](scenarios/mixed_edge_reset_add.yaml) scenario
+exercises the same operation mix over three replicas and is intentionally not
+in the short release sweep until a stable post-change baseline exists.
+
 ## Scenarios
 
 | File | What it stresses |

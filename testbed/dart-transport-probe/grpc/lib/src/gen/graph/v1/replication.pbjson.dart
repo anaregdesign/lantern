@@ -570,6 +570,14 @@ const SnapshotEdgeContribution$json = {
       '10': 'expiration'
     },
     {'1': 'contrib_id', '3': 3, '4': 1, '5': 12, '10': 'contribId'},
+    {
+      '1': 'hlc',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.HLCTimestamp',
+      '10': 'hlc'
+    },
   ],
 };
 
@@ -577,7 +585,8 @@ const SnapshotEdgeContribution$json = {
 final $typed_data.Uint8List snapshotEdgeContributionDescriptor = $convert.base64Decode(
     'ChhTbmFwc2hvdEVkZ2VDb250cmlidXRpb24SFgoGd2VpZ2h0GAEgASgCUgZ3ZWlnaHQSOgoKZX'
     'hwaXJhdGlvbhgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSCmV4cGlyYXRpb24S'
-    'HQoKY29udHJpYl9pZBgDIAEoDFIJY29udHJpYklk');
+    'HQoKY29udHJpYl9pZBgDIAEoDFIJY29udHJpYklkEigKA2hsYxgEIAEoCzIWLmdyYXBoLnYxLk'
+    'hMQ1RpbWVzdGFtcFIDaGxj');
 
 @$core.Deprecated('Use snapshotEdgeDescriptor instead')
 const SnapshotEdge$json = {

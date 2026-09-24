@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkGraphCacheAddEdges/v1k_d8_k80         	 1912603	       318.2 ns/op	     236 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v1k_d8_k80         	 1941234	       310.3 ns/op	     233 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v1k_d8_k80         	 2004202	       316.8 ns/op	     228 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v10k_d16_k80       	 1484281	       427.8 ns/op	     280 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v10k_d16_k80       	 1396896	       396.5 ns/op	     177 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v10k_d16_k80       	 1589532	       450.7 ns/op	     265 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v100k_d32_k80      	  970188	       596.4 ns/op	     322 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v100k_d32_k80      	  947896	       601.9 ns/op	     328 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v100k_d32_k80      	  988962	       627.3 ns/op	     317 B/op	       2 allocs/op
+BenchmarkAddEdge_Existing                      	 2087982	       286.5 ns/op	     349 B/op	       2 allocs/op
+BenchmarkAddEdge_Existing                      	 2101081	       257.5 ns/op	     348 B/op	       2 allocs/op
+BenchmarkAddEdge_Existing                      	 2165529	       283.4 ns/op	     339 B/op	       2 allocs/op
+PASS
+ok  	github.com/anaregdesign/lantern/core/graphcache	12.048s

@@ -726,11 +726,11 @@ func (x *ReplicatedPutEdges) GetEntries() []*ReplicatedPutEdge {
 }
 
 // Mutation is the unit of replication: a sequenced, HLC-stamped,
-// origin-tagged graph write. `seq` is assigned by the originating node's
-// mutation log (see core/mutationlog) and is strictly monotone within a
-// single origin.
+// origin-tagged graph write. `seq` is an origin-local committed sequence,
+// independent of the relay log's replica-local Entry.Seq, and is contiguous
+// within a single origin.
 //
-//	seq:    per-origin monotone sequence number, assigned at append time.
+//	seq:    per-origin contiguous sequence number, assigned at local commit.
 //	hlc:    causal timestamp stamped at append time.
 //	origin: 16-byte node identifier of the node that first accepted the
 //	        write; mirrors hlc.node_id but is kept as an explicit field so
@@ -1267,18 +1267,18 @@ func (x *SnapshotVertexCausalBarrier) GetHlc() *HLCTimestamp {
 // suppressing duplicates when peer-pump later re-delivers the same
 // contribution from the live tail.
 //
-//	contrib_id: 24-byte ContribID; empty/zero when the contribution
-//	            originated from a local non-replicated AddEdge and dedup
-//	            is disabled (the legacy zero-id semantics).
+//	contrib_id: 24-byte ContribID for a replicated Add. Empty denotes the
+//	            single Put row, or a local-only legacy contribution with no
+//	            dedup identity.
 type SnapshotEdgeContribution struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Weight float32                `protobuf:"fixed32,1,opt,name=weight,proto3" json:"weight,omitempty"`
 	// Absolute expiration. An absent timestamp means a permanent contribution.
 	Expiration *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expiration,proto3" json:"expiration,omitempty"`
 	ContribId  []byte                 `protobuf:"bytes,3,opt,name=contrib_id,json=contribId,proto3" json:"contrib_id,omitempty"`
-	// Original Add causal position. A reset delivered after this Add retains
-	// it iff this HLC is newer than the reset; the enclosing edge's Put HLC
-	// cannot stand in for each contribution's own position.
+	// Original Add causal position (required for nonzero contrib_id). A reset
+	// delivered after this Add retains it iff this HLC is newer than the reset;
+	// the enclosing edge's Put HLC cannot stand in for it.
 	Hlc           *HLCTimestamp `protobuf:"bytes,4,opt,name=hlc,proto3" json:"hlc,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1343,8 +1343,8 @@ func (x *SnapshotEdgeContribution) GetHlc() *HLCTimestamp {
 }
 
 // SnapshotEdge is the snapshot-time representation of a single live edge.
-// `hlc` carries the bucket's last Put-LWW position (zero when no Put has
-// happened); each additive contribution carries its own original HLC.
+// `hlc` carries the winning Put floor, including a retained causal barrier
+// (zero when no Put has happened). Each Add carries its own original HLC.
 type SnapshotEdge struct {
 	state         protoimpl.MessageState      `protogen:"open.v1"`
 	Tail          string                      `protobuf:"bytes,1,opt,name=tail,proto3" json:"tail,omitempty"`

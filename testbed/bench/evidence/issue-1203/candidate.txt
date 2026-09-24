@@ -1,0 +1,24 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkGraphCacheAddEdges/v1k_d8_k80         	 1801053	       316.6 ns/op	     320 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v1k_d8_k80         	 1874065	       324.3 ns/op	     309 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v1k_d8_k80         	 1854172	       316.8 ns/op	     312 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v10k_d16_k80       	 1388128	       429.2 ns/op	     237 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v10k_d16_k80       	 1423768	       443.8 ns/op	     405 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v10k_d16_k80       	 1446356	       445.1 ns/op	     400 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v100k_d32_k80      	  875425	       644.7 ns/op	     428 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v100k_d32_k80      	  967502	       642.0 ns/op	     432 B/op	       2 allocs/op
+BenchmarkGraphCacheAddEdges/v100k_d32_k80      	  893911	       748.7 ns/op	     452 B/op	       2 allocs/op
+BenchmarkAddEdge_Existing                      	 1943110	       302.4 ns/op	     586 B/op	       2 allocs/op
+BenchmarkAddEdge_Existing                      	 2300011	       266.6 ns/op	     504 B/op	       2 allocs/op
+BenchmarkAddEdge_Existing                      	 2339271	       265.7 ns/op	     497 B/op	       2 allocs/op
+BenchmarkWeightCausalAddBatch64                	   98827	      6529 ns/op	   12256 B/op	       8 allocs/op
+BenchmarkWeightCausalAddBatch64                	  107964	      5566 ns/op	   12256 B/op	       8 allocs/op
+BenchmarkWeightCausalAddBatch64                	  110242	      5547 ns/op	   12256 B/op	       8 allocs/op
+BenchmarkSnapshotReplicationMixedEdge          	     585	    967099 ns/op	 1248440 B/op	    2023 allocs/op
+BenchmarkSnapshotReplicationMixedEdge          	     688	    918189 ns/op	 1248440 B/op	    2023 allocs/op
+BenchmarkSnapshotReplicationMixedEdge          	     634	    907168 ns/op	 1248440 B/op	    2023 allocs/op
+PASS
+ok  	github.com/anaregdesign/lantern/core/graphcache	15.773s
