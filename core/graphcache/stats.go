@@ -80,11 +80,10 @@ func (c *GraphCache[S, T]) SearchIndexStats() (terms, docs int) {
 
 // SearchIndexMemoryStats returns the complete index capacity/health snapshot.
 func (c *GraphCache[S, T]) SearchIndexMemoryStats() search.IndexMemoryStats {
-	c.mu.RLock()
-	idx := c.searchIndex
-	c.mu.RUnlock()
+	idx, _, _ := c.lockSearchView()
 	if idx == nil {
 		return search.IndexMemoryStats{}
 	}
+	defer c.searchCommitMu.RUnlock()
 	return idx.MemoryStats()
 }

@@ -128,6 +128,10 @@ func (c *GraphCache[S, T]) EnableSearchIndex(extract func(S, T) search.Document,
 func (c *GraphCache[S, T]) RebuildSearchIndex() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.searchIndex != nil {
+		c.searchCommitMu.Lock()
+		defer c.searchCommitMu.Unlock()
+	}
 	return c.rebuildSearchIndexLocked()
 }
 
@@ -180,6 +184,28 @@ func (c *GraphCache[S, T]) rebuildIncompleteSearchLocked() {
 	if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
 		_ = c.rebuildSearchIndexLocked()
 	}
+}
+
+// lockSearchView captures the index and prefix references while holding both
+// the aggregate graph lock and the search commit barrier. Callers with a
+// non-nil index must release searchCommitMu.RLock after their read. Taking the
+// locks in this order matches vertex writers (mu, then searchCommitMu), and
+// keeping the barrier after mu is released prevents a future index-pointer
+// replacement from retiring the captured index before the query finishes.
+// This pins readers only; writers that prepare documents outside mu also
+// need index-identity revalidation before pointer replacement is enabled.
+func (c *GraphCache[S, T]) lockSearchView() (*search.InvertedIndex[S, search.Document], func(S) string, *radix) {
+	c.mu.RLock()
+	if c.searchIndex == nil {
+		c.mu.RUnlock()
+		return nil, nil, nil
+	}
+	c.searchCommitMu.RLock()
+	index := c.searchIndex
+	prefixExtract := c.prefixExtract
+	prefixIndex := c.prefixIndex
+	c.mu.RUnlock()
+	return index, prefixExtract, prefixIndex
 }
 
 // SearchVertices returns up to limit keys whose indexed content matches query,
@@ -257,16 +283,9 @@ func (c *GraphCache[S, T]) searchVerticesContext(ctx context.Context, query stri
 	if limit <= 0 {
 		return nil, search.Stats{}, nil
 	}
-	// Phase 1 — capture the immutable references the search path needs under a
-	// short RLock, then release c.mu before the expensive work. searchIndex and
-	// prefixExtract are both set once at Enable*Index time (before any vertex is
-	// stored) and never reassigned, so copying the pointers under the lock is
-	// sufficient; we do not need to hold c.mu while they are used.
-	c.mu.RLock()
-	index := c.searchIndex
-	prefixExtract := c.prefixExtract
-	prefixIndex := c.prefixIndex
-	c.mu.RUnlock()
+	// Phase 1 — overlap the short graph RLock with the search commit barrier
+	// while capturing the view. Expensive ranking still runs without c.mu.
+	index, prefixExtract, prefixIndex := c.lockSearchView()
 
 	if index == nil {
 		return nil, search.Stats{}, nil
@@ -276,7 +295,6 @@ func (c *GraphCache[S, T]) searchVerticesContext(ctx context.Context, query stri
 	// liveness filtering guarantees a search observes the complete pre-batch or
 	// post-batch view, never an index/store midpoint. The barrier does not cover
 	// analysis or any unrelated graph operation.
-	c.searchCommitMu.RLock()
 	defer c.searchCommitMu.RUnlock()
 	queryNow := time.Now()
 	// Phase 2 — query analysis, BM25 ranking, and liveness/prefix filtering all

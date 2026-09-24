@@ -81,12 +81,16 @@ type GraphCache[S comparable, T any] struct {
 	// are removed from search at query time using the index's expiration heap;
 	// the later cache Flush hook is an idempotent delete. When nil the put /
 	// evict paths pay only a single nil check.
+	// The pointer currently stays fixed after EnableSearchIndex. Batch/HLC
+	// document preparation reads it outside mu; a future pointer-swap writer
+	// must capture and revalidate that preparation before using this option.
 	searchIndex   *search.InvertedIndex[S, search.Document]
 	searchExtract func(S, T) search.Document
 	// searchCommitMu makes a prepared vertex batch visible to Search as one
-	// transition across both the vertex store and inverted index. Searches hold
-	// RLock across the same bounded execution interval that takes the index read
-	// lock; batch analysis is complete before the writer takes Lock.
+	// transition across both the vertex store and inverted index. Searches
+	// overlap mu.RLock with this RLock when capturing searchIndex, then keep
+	// this RLock through the query. Writers acquire mu before this barrier.
+	// Batch analysis is complete before the writer takes Lock.
 	searchCommitMu sync.RWMutex
 	// searchPreappliedEvictions suppresses the search-index portion of the
 	// synchronous vertex eviction hook when a prepared batch has already

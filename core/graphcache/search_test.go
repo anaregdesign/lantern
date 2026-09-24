@@ -199,6 +199,120 @@ func TestGraphCache_SearchRecoveryLockOrder(t *testing.T) {
 			t.Fatalf("health after complete = %q", got)
 		}
 	})
+
+	t.Run("rebuild", func(t *testing.T) {
+		c := newCache()
+		assertGraphLockFirst(t, c, c.RebuildSearchIndex)
+	})
+}
+
+func TestGraphCache_SearchViewPinsIndexThroughReplacement(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnableSearchIndex(textExtract, compareStringID)
+	expiration := time.Now().Add(time.Minute)
+	if err := c.PutVertexWithExpiration("k", "alpha", expiration); err != nil {
+		t.Fatal(err)
+	}
+	replacement := newSearchIndex[string](true, search.SearchAnalysisLimits{}, compareStringID)
+	if err := replacement.IndexWithExpiration("k", search.Text("zulu"), expiration); err != nil {
+		t.Fatal(err)
+	}
+
+	// This writer models only the publication side of a future staged Put.
+	// Production pointer replacement also needs to revalidate preparations.
+	index, _, _ := c.lockSearchView()
+	if index != c.searchIndex {
+		t.Fatal("captured index differs from the current index")
+	}
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		c.mu.Lock()
+		c.searchCommitMu.Lock()
+		c.vertices.UpsertWithExpiration("k", "zulu", expiration)
+		c.searchIndex = replacement
+		c.searchCommitMu.Unlock()
+		c.mu.Unlock()
+		close(done)
+	}()
+	<-started
+	// The writer may own mu while it waits for the pinned view, but it must
+	// not publish the replacement until that view releases the barrier.
+	deadline := time.Now().Add(time.Second)
+	writerWaiting := false
+	for time.Now().Before(deadline) {
+		if !c.mu.TryRLock() {
+			writerWaiting = true
+			break
+		}
+		c.mu.RUnlock()
+		runtime.Gosched()
+	}
+	if !writerWaiting {
+		c.searchCommitMu.RUnlock()
+		t.Fatal("replacement writer never reached the graph lock")
+	}
+	select {
+	case <-done:
+		c.searchCommitMu.RUnlock()
+		t.Fatal("replacement published while the old search view was pinned")
+	default:
+	}
+	c.searchCommitMu.RUnlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("replacement writer did not complete after the view was released")
+	}
+	if got := c.SearchVertices("alpha", 1, ""); len(got) != 0 {
+		t.Fatalf("old index remained visible after commit: %v", got)
+	}
+	if got := keys(c.SearchVertices("zulu", 1, "")); !reflect.DeepEqual(got, []string{"k"}) {
+		t.Fatalf("replacement index results = %v, want [k]", got)
+	}
+}
+
+func TestGraphCache_SearchRebuildWaitsForCommitBarrier(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	c.EnableSearchIndex(textExtract, compareStringID)
+	c.searchCommitMu.RLock()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- c.RebuildSearchIndex()
+	}()
+	<-started
+	deadline := time.Now().Add(time.Second)
+	writerWaiting := false
+	for time.Now().Before(deadline) {
+		if !c.mu.TryRLock() {
+			writerWaiting = true
+			break
+		}
+		c.mu.RUnlock()
+		runtime.Gosched()
+	}
+	if !writerWaiting {
+		c.searchCommitMu.RUnlock()
+		t.Fatal("rebuild never reached the graph lock")
+	}
+	select {
+	case err := <-done:
+		c.searchCommitMu.RUnlock()
+		t.Fatalf("rebuild crossed the commit barrier before its reader released it: %v", err)
+	default:
+	}
+	c.searchCommitMu.RUnlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rebuild did not complete after the barrier was released")
+	}
 }
 
 // keys returns just the IDs of a ranked result set, in rank order, for terse
