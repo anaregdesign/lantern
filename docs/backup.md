@@ -49,6 +49,18 @@ leaderless-replication invariant.
   a corrupt/truncated one for the next-newest. Retention deletes only an
   instance's **own** files.
 
+The current `.lbk` format contains graph records only. It does not preserve
+mutation receipts, contribution identities, origin cutoffs, or receipt clock
+high-water, so it cannot prove receipt continuity after restore. A separate
+private whole-state archive codec is being developed under [#1115](https://github.com/anaregdesign/lantern/issues/1115),
+but no production backup or restore path uses it. Receipt-enabled writes
+remain disabled; complete-cut capture and atomic restore are among their
+release prerequisites. The private codec checks frame order and integrity,
+while graph payload semantics and consistency with receipt/origin sections
+remain for a future installer. Its deterministic protobuf byte comparison
+must also become stable wire-field validation before production use because
+protobuf runtime versions need not emit identical bytes.
+
 ### Why per-instance files (the shared-storage decision)
 
 The volume can be shared across replicas, but **none** of the relevant backends
