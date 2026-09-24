@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // A future origin seq must not become read-visible before the missing prefix.
@@ -136,10 +138,20 @@ func (s *LanternService) prepareLocalMutationLocked() error {
 // while the caller still holds replicationCutMu. A failed WAL append leaves
 // one owned, exact mutation for append-only repair and poisons CDC until then.
 func (s *LanternService) publishLocalGraphMutationLocked(op *pb.MutationOp, ts hlc.Timestamp) error {
+	return s.publishLocalGraphMutationWithTombstoneLocked(op, ts, time.Time{})
+}
+
+// publishLocalGraphMutationWithTombstoneLocked preserves the deadline that
+// the caller already used for the graph Delete. A failed append retains this
+// exact mutation for repair; it must never sample a fresh deadline.
+func (s *LanternService) publishLocalGraphMutationWithTombstoneLocked(op *pb.MutationOp, ts hlc.Timestamp, expiration time.Time) error {
 	if op == nil || s.log == nil || s.clock == nil {
 		return nil
 	}
 	mutation := s.newLocalMutationLocked(op, ts)
+	if !expiration.IsZero() {
+		mutation.TombstoneExpiration = timestamppb.New(expiration)
+	}
 	if err := s.appendPreparedLocalMutationLocked(mutation); err != nil {
 		pending := &pendingMutation{mutation: cloneQueuedMutation(mutation), size: proto.Size(mutation), applied: true}
 		s.pendingLocalMutation = pending

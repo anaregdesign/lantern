@@ -1290,6 +1290,7 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 			return nil, err
 		}
 		ts := s.clock.Now()
+		tombExp := time.Time{}
 		if s.tombstoneTTL > 0 {
 			// Replicated path: sample the commit HLC ONCE and stamp BOTH the
 			// tombstone and the logged mutation with it. Sampling clock.Now()
@@ -1298,7 +1299,8 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 			// would lose to the delete on peers but beat the tombstone on the
 			// origin — divergence. Local expiration is best-effort wall clock.
 			var err error
-			outcomes, err = s.cache.DeleteVerticesHLCOutcomesChecked(in.GetKeys(), ts, s.tombstoneExpiration())
+			tombExp = s.tombstoneExpiration()
+			outcomes, err = s.cache.DeleteVerticesHLCOutcomesChecked(in.GetKeys(), ts, tombExp)
 			if err != nil {
 				return nil, writeError(err)
 			}
@@ -1309,7 +1311,7 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		if err != nil {
 			return nil, err
 		}
-		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts); err != nil {
+		if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts, tombExp); err != nil {
 			return nil, err
 		}
 		return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil
@@ -1589,11 +1591,13 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 			return nil, err
 		}
 		ts := s.clock.Now()
+		tombExp := time.Time{}
 		if s.tombstoneTTL > 0 {
 			// Share one commit HLC between the tombstone and the logged
 			// mutation (see DeleteVertices for the divergence this closes).
 			var err error
-			outcomes, err = s.cache.DeleteEdgesHLCOutcomesChecked(keys, ts, s.tombstoneExpiration())
+			tombExp = s.tombstoneExpiration()
+			outcomes, err = s.cache.DeleteEdgesHLCOutcomesChecked(keys, ts, tombExp)
 			if err != nil {
 				return nil, writeError(err)
 			}
@@ -1604,7 +1608,7 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		if err != nil {
 			return nil, err
 		}
-		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts); err != nil {
+		if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts, tombExp); err != nil {
 			return nil, err
 		}
 		return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: outcomes}, nil

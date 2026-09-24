@@ -123,6 +123,12 @@ message Mutation {
   HLCTimestamp hlc = 2;
   bytes origin = 3;
   MutationOp op = 4;
+  // The origin's absolute D4 tombstone deadline for an exact-identity
+  // DeleteVertex/Vertices or DeleteEdge/Edges. It is sampled once with the
+  // graph effect and retained unchanged by relay and WAL replay. A receiver
+  // with tombstone retention enabled must reject a Delete without it rather
+  // than extend the deadline from its own wall clock. Other operations omit it.
+  google.protobuf.Timestamp tombstone_expiration = 5;
 }
 
 // SubscribeRequest opens a stream of replicated mutations starting at

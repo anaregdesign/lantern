@@ -46,6 +46,72 @@ func TestApplyMutation_UnknownReceiptArmFailsClosed(t *testing.T) {
 	}
 }
 
+func TestApplyMutation_DeleteRetainsOriginDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   *pb.MutationOp
+		exp  *timestamppb.Timestamp
+		want connect.Code
+	}{
+		{"vertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, timestamppb.New(time.Now().Add(15 * time.Minute)), connect.Code(0)},
+		{"edge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}}, timestamppb.New(time.Now().Add(15 * time.Minute)), connect.Code(0)},
+		{"expired edge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}}, timestamppb.New(time.Now().Add(-time.Minute)), connect.Code(0)},
+		{"missing deadline", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, nil, connect.CodeInvalidArgument},
+		{"invalid deadline", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, &timestamppb.Timestamp{Seconds: 253402300800}, connect.CodeInvalidArgument},
+		{"non Delete deadline", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v"}}}}, timestamppb.New(time.Now().Add(time.Hour)), connect.CodeInvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			log := mutationlog.New(mutationlog.Options{Capacity: 8})
+			t.Cleanup(func() { _ = log.Close() })
+			origin := hlc.NodeID{0x73}
+			svc := NewLanternService(cache).WithTombstoneTTL(time.Hour).
+				WithReplication(log, hlc.New(hlc.NodeID{0x74}, hlc.Options{}), nil)
+			m := &pb.Mutation{Seq: 1, Origin: origin[:],
+				Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: time.Now().UnixNano()},
+				Op:  tc.op, TombstoneExpiration: tc.exp}
+			err := svc.ApplyMutation(context.Background(), m)
+			if tc.want == 0 && err != nil {
+				t.Fatalf("ApplyMutation = %v, want success", err)
+			}
+			if tc.want != 0 && connect.CodeOf(err) != tc.want {
+				t.Fatalf("ApplyMutation code = %v (%v), want %v", connect.CodeOf(err), err, tc.want)
+			}
+			if tc.want != 0 {
+				if svc.LocalSeq(origin) != 0 || log.Len() != 0 {
+					t.Fatal("invalid deadline advanced graph publication")
+				}
+				return
+			}
+			if svc.LocalSeq(origin) != 1 || log.Len() != 1 {
+				t.Fatal("valid deadline was not published")
+			}
+			tombs := cache.SnapshotReplication().Tombstones
+			if tc.name == "expired edge" {
+				if len(tombs.Edges) != 0 {
+					t.Fatalf("expired origin deadline renewed on replay: %+v", tombs.Edges)
+				}
+				return
+			}
+			var got time.Time
+			if tc.name == "vertex" {
+				if len(tombs.Vertices) != 1 {
+					t.Fatalf("vertex tombstones = %+v", tombs.Vertices)
+				}
+				got = tombs.Vertices[0].Expiration
+			} else {
+				if len(tombs.Edges) != 1 {
+					t.Fatalf("edge tombstones = %+v", tombs.Edges)
+				}
+				got = tombs.Edges[0].Expiration
+			}
+			if !got.Equal(tc.exp.AsTime()) {
+				t.Fatalf("replayed deadline = %v, want origin %v", got, tc.exp.AsTime())
+			}
+		})
+	}
+}
+
 // TestApplyMutation_CausalMetadataCapacityConvergesAcrossReplicas pins the
 // #1204 admission split: local-origin writes are bounded, but replication
 // apply must never reject state another replica already committed. Two peers
@@ -903,12 +969,18 @@ func TestApplyMutation_ConvergenceWithTombstones(t *testing.T) {
 			push := func(oi int, op *pb.MutationOp) {
 				wall++
 				seqPerOrigin[oi]++
-				tape = append(tape, &pb.Mutation{
+				mutation := &pb.Mutation{
 					Seq:    seqPerOrigin[oi],
 					Hlc:    newHLC(wall, origins[oi]),
 					Origin: origins[oi][:],
 					Op:     op,
-				})
+				}
+				switch op.GetOp().(type) {
+				case *pb.MutationOp_DeleteVertex, *pb.MutationOp_DeleteVertices,
+					*pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
+					mutation.TombstoneExpiration = exp
+				}
+				tape = append(tape, mutation)
 			}
 			putEdgeOp := func(e [2]string, w float32) *pb.MutationOp {
 				return &pb.MutationOp{Op: &pb.MutationOp_PutEdge{

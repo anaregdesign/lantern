@@ -62,6 +62,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		// would otherwise try a graph-only Snapshot as recovery.
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("receipt-bearing replication apply is not enabled"))
 	}
+	if _, err := mutationTombstoneExpiration(m, s.tombstoneTTL > 0); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
+	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
 	if s.receiptCommitFaulted {
@@ -77,15 +80,12 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 	origin := m.GetOrigin()
 	seq := m.GetSeq()
 
-	// Tombstone expiration is computed once per apply so a batch of
-	// per-edge contributions inside a single MutationOp_AddEdges shares
-	// the same wall-clock expiration. When the clamp is disabled
-	// (s.tombstoneTTL == 0) tombExp is the zero time and the underlying
-	// non-HLC backend variants are dispatched instead.
+	// Reuse the origin's absolute deadline. A delayed relay or FileWAL replay
+	// must not renew a Delete floor from its own wall clock.
 	useTomb := s.tombstoneTTL > 0
-	tombExp := time.Time{}
-	if useTomb {
-		tombExp = time.Now().Add(s.tombstoneTTL)
+	tombExp, err := mutationTombstoneExpiration(m, useTomb)
+	if err != nil {
+		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
 
 	// opName is set by each case after it commits to a backend call so
@@ -343,6 +343,45 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 	}
 
 	return opName, nil
+}
+
+// mutationTombstoneExpiration enforces the D4 wire contract before a remote
+// mutation enters the pending queue and again before graph replay. The
+// absolute deadline may already be past when a delayed record arrives.
+func mutationTombstoneExpiration(m *pb.Mutation, retentionEnabled bool) (time.Time, error) {
+	if m == nil || m.GetOp() == nil {
+		return time.Time{}, fmt.Errorf("mutation has no operation")
+	}
+	var deleting bool
+	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_DeleteVertex, *pb.MutationOp_DeleteVertices,
+		*pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
+		deleting = true
+	}
+	stamp := m.GetTombstoneExpiration()
+	if !deleting {
+		if stamp != nil {
+			return time.Time{}, fmt.Errorf("non-Delete mutation has a tombstone expiration")
+		}
+		return time.Time{}, nil
+	}
+	if !retentionEnabled {
+		if stamp != nil {
+			return time.Time{}, fmt.Errorf("Delete tombstone retention is disabled on this node")
+		}
+		return time.Time{}, nil
+	}
+	if stamp == nil {
+		return time.Time{}, fmt.Errorf("Delete mutation lacks its absolute tombstone expiration")
+	}
+	if err := stamp.CheckValid(); err != nil {
+		return time.Time{}, fmt.Errorf("invalid Delete tombstone expiration: %w", err)
+	}
+	expiration := stamp.AsTime()
+	if expiration.Unix() <= 0 {
+		return time.Time{}, fmt.Errorf("Delete tombstone expiration must be after Unix epoch")
+	}
+	return expiration, nil
 }
 
 // hlcFromProto converts the wire HLCTimestamp into the in-process value

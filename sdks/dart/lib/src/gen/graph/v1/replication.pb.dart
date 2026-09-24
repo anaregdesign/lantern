@@ -1069,12 +1069,15 @@ class Mutation extends $pb.GeneratedMessage {
     HLCTimestamp? hlc,
     $core.List<$core.int>? origin,
     MutationOp? op,
+    $1.Timestamp? tombstoneExpiration,
   }) {
     final result = create();
     if (seq != null) result.seq = seq;
     if (hlc != null) result.hlc = hlc;
     if (origin != null) result.origin = origin;
     if (op != null) result.op = op;
+    if (tombstoneExpiration != null)
+      result.tombstoneExpiration = tombstoneExpiration;
     return result;
   }
 
@@ -1099,6 +1102,8 @@ class Mutation extends $pb.GeneratedMessage {
         3, _omitFieldNames ? '' : 'origin', $pb.PbFieldType.OY)
     ..aOM<MutationOp>(4, _omitFieldNames ? '' : 'op',
         subBuilder: MutationOp.create)
+    ..aOM<$1.Timestamp>(5, _omitFieldNames ? '' : 'tombstoneExpiration',
+        subBuilder: $1.Timestamp.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1159,6 +1164,22 @@ class Mutation extends $pb.GeneratedMessage {
   void clearOp() => $_clearField(4);
   @$pb.TagNumber(4)
   MutationOp ensureOp() => $_ensure(3);
+
+  /// The origin's absolute D4 tombstone deadline for an exact-identity
+  /// DeleteVertex/Vertices or DeleteEdge/Edges. It is sampled once with the
+  /// graph effect and retained unchanged by relay and WAL replay. A receiver
+  /// with tombstone retention enabled must reject a Delete without it rather
+  /// than extend the deadline from its own wall clock. Other operations omit it.
+  @$pb.TagNumber(5)
+  $1.Timestamp get tombstoneExpiration => $_getN(4);
+  @$pb.TagNumber(5)
+  set tombstoneExpiration($1.Timestamp value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasTombstoneExpiration() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearTombstoneExpiration() => $_clearField(5);
+  @$pb.TagNumber(5)
+  $1.Timestamp ensureTombstoneExpiration() => $_ensure(4);
 }
 
 /// SubscribeRequest opens a stream of replicated mutations starting at

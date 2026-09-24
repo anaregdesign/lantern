@@ -9,11 +9,11 @@ import (
 
 // tombstoneEntry records a deletion's causal HLC and the wall-clock instant
 // at which the tombstone itself expires and can be reaped. The HLC is the
-// one stamped by the originating Delete RPC. Local and Subscribe-applied
-// Deletes compute expiration as now+TombstoneTTL; Snapshot replay preserves
-// the responder's absolute expiration instead of renewing that window.
-// Peers may still reap at slightly different times because Subscribe has no
-// deadline field. LWW is decided on the stored HLC while each floor is live.
+// one stamped by the originating Delete RPC. Local Deletes compute expiration
+// as now+TombstoneTTL and carry that same absolute deadline in the sequenced
+// Mutation. Subscribe and Snapshot replay preserve the origin's expiration
+// instead of renewing the window. Peers may still reap at slightly different
+// times because their wall clocks differ. LWW uses the HLC while a floor lives.
 //
 // Tombstones are intentionally kept outside the vertex / edge maps so
 // reads never accidentally surface a deleted key as "present". The

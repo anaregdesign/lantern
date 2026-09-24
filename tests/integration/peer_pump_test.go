@@ -1202,6 +1202,62 @@ func TestPeerPump_SearchPartitionHealConvergence(t *testing.T) {
 	}
 }
 
+func TestPeerPump_DeletePrefixKeepsOriginDeadlineAcrossWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	origin := newPumpNode(t, hlc.NodeID{0xD5})
+	follower := newPumpNode(t, hlc.NodeID{0xD6})
+	if _, err := origin.sdk.PutVertex(ctx, "deadline/vertex", "value", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := origin.sdk.PutEdge(ctx, "deadline/tail", "deadline/head", 1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	before, ok := origin.log.LastSeq()
+	if !ok {
+		t.Fatal("seed did not publish")
+	}
+	if _, err := origin.raw.DeleteVerticesByPrefix(ctx, connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{Prefix: "deadline/vertex"})); err != nil {
+		t.Fatalf("DeleteVerticesByPrefix over h2c: %v", err)
+	}
+	if _, err := origin.raw.DeleteEdgesByPrefix(ctx, connect.NewRequest(&pb.DeleteEdgesByPrefixRequest{TailPrefix: "deadline/tail"})); err != nil {
+		t.Fatalf("DeleteEdgesByPrefix over h2c: %v", err)
+	}
+	feed, err := newReplicationRawClient(t, origin.url).Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: before + 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer feed.Close()
+	for i := 0; i < 2; i++ {
+		if !feed.Receive() {
+			t.Fatalf("Delete mutation %d missing from h2c Subscribe: %v", i, feed.Err())
+		}
+		mutation := feed.Msg().GetMutation()
+		if mutation == nil || mutation.GetTombstoneExpiration() == nil || mutation.GetTombstoneExpiration().CheckValid() != nil {
+			t.Fatalf("Delete mutation %d has no valid absolute deadline: %+v", i, mutation)
+		}
+	}
+	originTombstones := origin.cache.SnapshotReplication().Tombstones
+	if len(originTombstones.Vertices) != 1 || len(originTombstones.Edges) != 1 {
+		t.Fatalf("origin tombstones = %+v", originTombstones)
+	}
+	follower.startPump(ctx, t, []string{origin.url})
+	wantSeq := origin.svc.LocalSeq(origin.nodeID)
+	for follower.svc.LocalSeq(origin.nodeID) != wantSeq {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("follower did not apply Delete mutations: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	followerTombstones := follower.cache.SnapshotReplication().Tombstones
+	if len(followerTombstones.Vertices) != 1 || len(followerTombstones.Edges) != 1 ||
+		!followerTombstones.Vertices[0].Expiration.Equal(originTombstones.Vertices[0].Expiration) ||
+		!followerTombstones.Edges[0].Expiration.Equal(originTombstones.Edges[0].Expiration) {
+		t.Fatalf("follower renewed or lost Delete deadlines: origin=%+v follower=%+v", originTombstones, followerTombstones)
+	}
+}
+
 func TestPeerPump_SearchConfigMismatchBlocksReadiness(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
