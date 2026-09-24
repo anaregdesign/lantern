@@ -23,7 +23,6 @@ git rev-parse HEAD
 flutter --version --machine
 flutter devices --machine
 (cd sdks/dart/example && flutter pub get --enforce-lockfile)
-go build -o <private-fixture-dir>/lantern-server ./server/cmd
 ```
 
 Verify that Flutter lists a physical Android and a physical iPhone. Record the
@@ -33,10 +32,15 @@ from this checkout. If code changes, start the matrix again with a new SHA.
 
 ## Disposable authenticated HTTPS fixture
 
-Use fresh random synthetic tokens and a task-owned Lantern server. Configure
-`LANTERN_AUTH_TOKENS` with an old and a new accepted token, disable reflection,
-and bind metrics to loopback. Serve a runtime token BFF that returns the new
-token as `{"access_token":"..."}` at an unguessable path; bind it to loopback.
+Use fresh random synthetic tokens and a task-owned Lantern server. The server
+listens on all interfaces inside its runtime, so build a static Linux binary
+for the local Docker architecture and run it in a disposable container whose
+port is published **only** as `127.0.0.1:6380:6380` on the host. Keep the
+Docker build context free of credentials. Supply `LANTERN_AUTH_TOKENS` with an
+old and a new accepted token through a private env file outside that context,
+disable reflection, and disable metrics or bind them to loopback. Serve a
+runtime token BFF that returns the new token as `{"access_token":"..."}` at
+an unguessable path; bind it to host loopback.
 Put tokens, the BFF path, and test URLs only in a mode-600 file outside the
 repository. Never write them into shell history, checked-in evidence, or logs.
 

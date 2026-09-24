@@ -338,9 +338,11 @@ integration driver with `--publish-port` if the device is classified as
 wirelessly tethered. The test requires `IDENTITY_CDC_BODY_STARTED`,
 `IDENTITY_CDC_PASS`, and `All tests passed!`. It verifies checkpoint recovery
 of stale Vertex and Edge residents, exact live invalidation, durable cursor and
-Unknown state after SQLite reopen, foreground resume, responder stability,
+Unknown state after SQLite reopen following live invalidation, foreground
+resume, responder stability,
 runtime token acquisition and post-checkpoint refresh, and partition wipe
-cancellation.
+cancellation. Gap-induced resident Unknown markers and their recovery are
+covered separately by the real-wire SQLite integration tests.
 
 If wireless Flutter VM-service discovery stalls after the iOS app installs,
 build this same integration target in profile mode and launch it with
