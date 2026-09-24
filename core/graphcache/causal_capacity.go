@@ -39,6 +39,7 @@ func (h *causalDeadlineHeap[K]) Pop() any {
 type indexedCausalDeadlineHeap[K comparable] struct {
 	entries   []causalDeadlineEntry[K]
 	positions map[K]int
+	peak      int
 }
 
 func (h indexedCausalDeadlineHeap[K]) Len() int { return len(h.entries) }
@@ -57,6 +58,9 @@ func (h *indexedCausalDeadlineHeap[K]) Push(value any) {
 	}
 	h.positions[entry.key] = len(h.entries)
 	h.entries = append(h.entries, entry)
+	if len(h.entries) > h.peak {
+		h.peak = len(h.entries)
+	}
 }
 func (h *indexedCausalDeadlineHeap[K]) Pop() any {
 	last := len(h.entries) - 1
@@ -67,6 +71,7 @@ func (h *indexedCausalDeadlineHeap[K]) Pop() any {
 	if last == 0 {
 		h.entries = nil
 		h.positions = nil
+		h.peak = 0
 	} else {
 		h.entries = h.entries[:last]
 	}
@@ -93,6 +98,24 @@ func (h *indexedCausalDeadlineHeap[K]) remove(key K) bool {
 	}
 	heap.Remove(h, pos)
 	return true
+}
+
+// shrink releases backing storage after a large fall in retained deadlines.
+// Call it from the periodic GC sweep, never from an individual write: rebuilding
+// the position map scans every surviving entry.
+func (h *indexedCausalDeadlineHeap[K]) shrink() {
+	if h.peak < causalUsageShrinkFloor || len(h.entries) > h.peak/causalUsageShrinkDivisor {
+		return
+	}
+	entries := make([]causalDeadlineEntry[K], len(h.entries))
+	copy(entries, h.entries) // The existing heap order remains valid.
+	positions := make(map[K]int, len(entries))
+	for i, entry := range entries {
+		positions[entry.key] = i
+	}
+	h.entries = entries
+	h.positions = positions
+	h.peak = len(entries)
 }
 
 // CausalMetadataLimits bounds locally-originated HA causal identities by

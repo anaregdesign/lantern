@@ -458,4 +458,5 @@ func (c *GraphCache[S, T]) sweepExpiredTombstonesLocked(now time.Time) {
 			c.clearEdgeTombstoneLocked(k.Tail, k.Head)
 		}
 	}
+	c.edgeTombstoneDeadlines.shrink()
 }

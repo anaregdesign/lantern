@@ -436,6 +436,65 @@ func TestEdgeTombstoneDeadlineIndexConcurrentStatsAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestEdgeTombstoneDeadlineIndexShrinksOnlyAtGCTick(t *testing.T) {
+	const count = 2048
+	const survivors = count / causalUsageShrinkDivisor
+	base := time.Now().Add(time.Hour)
+	keys := make([]EdgeKey[string], count)
+	for i := range keys {
+		keys[i] = EdgeKey[string]{Tail: fmt.Sprintf("tail-%05d", i), Head: "head"}
+	}
+
+	t.Run("ExpirySweep", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.DeleteEdgesHLC(keys[:count-survivors], hlc.Timestamp{WallNs: 1}, base)
+		c.DeleteEdgesHLC(keys[count-survivors:], hlc.Timestamp{WallNs: 1}, base.Add(time.Hour))
+		c.mu.Lock()
+		oldPositions := c.edgeTombstoneDeadlines.positions
+		c.sweepExpiredTombstonesLocked(base.Add(time.Minute))
+		h := &c.edgeTombstoneDeadlines
+		if h.Len() != survivors || cap(h.entries) != survivors || h.peak != survivors {
+			c.mu.Unlock()
+			t.Fatalf("GC index len/cap/peak = %d/%d/%d, want %d", h.Len(), cap(h.entries), h.peak, survivors)
+		}
+		// The old, oversized map must also be replaced, not just the slice.
+		oldPositions[EdgeKey[string]{Tail: "old-map-only", Head: "head"}] = 0
+		_, oldMapStillActive := h.positions[EdgeKey[string]{Tail: "old-map-only", Head: "head"}]
+		c.mu.Unlock()
+		if oldMapStillActive {
+			t.Fatal("GC retained the oversized position map")
+		}
+		assertEdgeTombstoneDeadlineIndex(t, c)
+	})
+
+	t.Run("WriteDefersShrink", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.DeleteEdgesHLC(keys, hlc.Timestamp{WallNs: 1}, base.Add(time.Hour))
+		for _, key := range keys[:count-survivors] {
+			if !c.PutEdgeWithExpirationHLC(key.Tail, key.Head, 1, base.Add(2*time.Hour), hlc.Timestamp{WallNs: 2}) {
+				t.Fatalf("Put %v rejected", key)
+			}
+		}
+		c.mu.RLock()
+		h := &c.edgeTombstoneDeadlines
+		if h.Len() != survivors || cap(h.entries) < count || h.peak != count {
+			c.mu.RUnlock()
+			t.Fatalf("pre-GC index len/cap/peak = %d/%d/%d", h.Len(), cap(h.entries), h.peak)
+		}
+		c.mu.RUnlock()
+		c.mu.Lock()
+		c.sweepExpiredTombstonesLocked(base)
+		c.mu.Unlock()
+		assertEdgeTombstoneDeadlineIndex(t, c)
+		c.mu.RLock()
+		if cap(c.edgeTombstoneDeadlines.entries) != survivors {
+			c.mu.RUnlock()
+			t.Fatalf("post-GC index capacity = %d, want %d", cap(c.edgeTombstoneDeadlines.entries), survivors)
+		}
+		c.mu.RUnlock()
+	})
+}
+
 func BenchmarkCausalMetadataCapacity(b *testing.B) {
 	expired := time.Unix(1, 0)
 	live := time.Now().Add(time.Hour)
