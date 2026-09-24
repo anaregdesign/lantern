@@ -5,6 +5,7 @@ import 'package:lantern_client/lantern_client.dart';
 
 import 'change_store.dart';
 import 'errors.dart';
+import 'identity_consumer.dart';
 import 'remote.dart';
 import 'store.dart';
 import 'types.dart';
@@ -63,6 +64,7 @@ final class OfflineLanternRepository {
       <String, _PartitionRuntime>{};
   final Map<String, Future<void>> _partitionWipes = <String, Future<void>>{};
   final Set<String> _wipingPartitions = <String>{};
+  final Set<String> _activeIdentitySessions = <String>{};
   late final _ReplayLimiter _replayLimiter;
   Future<void>? _disposing;
 
@@ -145,11 +147,14 @@ final class OfflineLanternRepository {
   /// Each result and removal of its Unknown marker commit together only while
   /// the checkpoint/change epoch is unchanged. On failure, unfinished keys
   /// remain durable for the next foreground recovery pass.
+  /// [beforeCommit] lets a stream coordinator assert that its plural-read
+  /// responder is still the checkpoint responder inside each cache commit.
   Future<int> revalidateResidentBatch(
     String partitionId, {
     required OfflineRecoveryRemote recoveryRemote,
     int limit = offlineMaxResidentRevalidationBatch,
     LanternCancellationToken? cancellation,
+    void Function()? beforeCommit,
   }) {
     _validatePartition(partitionId);
     _ensurePartitionActive(partitionId);
@@ -164,8 +169,44 @@ final class OfflineLanternRepository {
         recoveryRemote,
         limit,
         ownedCancellation,
+        beforeCommit,
       ),
     );
+  }
+
+  /// Consumes one foreground, identity-only CDC session for [partitionId].
+  ///
+  /// The injected [source] owns endpoint selection and credentials. Exactly
+  /// one session can be active per partition. Caller cancellation, logout
+  /// [wipePartition], and [dispose] cancel the stream and plural recovery
+  /// reads before releasing the partition. No background retry is scheduled.
+  Future<void> consumeIdentityChanges(
+    String partitionId, {
+    required OfflineIdentitySource source,
+    LanternCancellationToken? cancellation,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    if (!_activeIdentitySessions.add(partitionId)) {
+      throw const OfflineCapacityException();
+    }
+    Future<void> run;
+    try {
+      run = _runPartitionWork(
+        partitionId,
+        cancellation,
+        (owned) => runOfflineIdentityConsumer(
+          repository: this,
+          partitionId: partitionId,
+          source: source,
+          cancellation: owned,
+        ),
+      );
+    } catch (_) {
+      _activeIdentitySessions.remove(partitionId);
+      rethrow;
+    }
+    return run.whenComplete(() => _activeIdentitySessions.remove(partitionId));
   }
 
   Future<int> _revalidateResidentBatch(
@@ -173,6 +214,7 @@ final class OfflineLanternRepository {
     OfflineRecoveryRemote recoveryRemote,
     int limit,
     LanternCancellationToken cancellation,
+    void Function()? beforeCommit,
   ) async {
     final batch = await store.transaction(
       (transaction) async => (
@@ -293,6 +335,7 @@ final class OfflineLanternRepository {
       }
       try {
         final applied = await store.transaction((transaction) async {
+          beforeCommit?.call();
           if (await transaction.generation(partitionId) !=
               batch.stamp.generation) {
             return false;
@@ -305,6 +348,7 @@ final class OfflineLanternRepository {
               !_live(record.missingUntil, commitAt)) {
             return false;
           }
+          beforeCommit?.call();
           if (!await transaction.completeUnknownResident(
             partitionId,
             key,
@@ -314,9 +358,11 @@ final class OfflineLanternRepository {
           }
           // A normal Get may have written a hidden cache row while this key
           // remained Unknown. Replace it only with this checked batch result.
+          beforeCommit?.call();
           await transaction.deleteCache(partitionId, key);
           if (record != null &&
               (record.isMissing || _live(record.expiration, commitAt))) {
+            beforeCommit?.call();
             await transaction.putCache(partitionId, record);
           }
           return true;
@@ -326,10 +372,12 @@ final class OfflineLanternRepository {
         // No cache capacity means this identity is no longer resident. The
         // transaction above rolled back both the record and marker removal.
         if (await store.transaction((transaction) async {
+          beforeCommit?.call();
           if (await transaction.generation(partitionId) !=
               batch.stamp.generation) {
             return false;
           }
+          beforeCommit?.call();
           if (!await transaction.completeUnknownResident(
             partitionId,
             key,
@@ -337,6 +385,7 @@ final class OfflineLanternRepository {
           )) {
             return false;
           }
+          beforeCommit?.call();
           await transaction.deleteCache(partitionId, key);
           return true;
         })) {

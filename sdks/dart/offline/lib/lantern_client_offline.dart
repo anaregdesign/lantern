@@ -11,6 +11,14 @@ export 'src/change_store.dart';
 export 'src/codec.dart';
 export 'src/conformance.dart';
 export 'src/errors.dart';
+export 'src/identity_consumer.dart'
+    show
+        OfflineIdentityEvent,
+        OfflineIdentityCheckpoint,
+        OfflineIdentityChunk,
+        OfflineIdentityOperation,
+        OfflineIdentitySource,
+        OfflineIdentitySession;
 export 'src/memory_store.dart';
 export 'src/remote.dart';
 export 'src/repository.dart';
