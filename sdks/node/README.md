@@ -363,6 +363,47 @@ typed reasons, endpoint-sticky cursors, and HA. The maintained
 [`example/search.ts`](example/search.ts) compiles one-shot, capability,
 phrase/typo, pagination, disabled, cancellation, and incremental flows in CI.
 
+## Identity-only changes
+
+`subscribeIdentity({ bootstrap: true }, signal?)` opens a deployment-scoped,
+value-free CDC stream. Its first frame is an atomic checkpoint of **LAST**
+committed per-origin sequences; later chunk frames carry exact Vertex keys or
+Edge `(tail, head)` identities, operation category, HLC, and chunk position.
+The stream contains no Vertex values, Edge weights, or contribution IDs.
+
+```ts
+import { IdentityNextCursor, FailedPreconditionError } from "lantern-sdk";
+
+const stop = new AbortController();
+try {
+  for await (const frame of client.subscribeIdentity({ bootstrap: true }, stop.signal)) {
+    if (frame.kind === "checkpoint") {
+      // Mark resident cache records Unknown and revalidate them in bounded batches.
+      continue;
+    }
+    // Atomically invalidate frame.vertexKeys / frame.edgeKeys in your store.
+    // Advance this origin's LAST-applied cursor only after frame.isLast.
+  }
+} catch (error) {
+  if (!(error instanceof FailedPreconditionError)) throw error;
+  // The retained log gapped; bootstrap and revalidate resident keys again.
+}
+
+// On a later connection, convert durable LAST positions to wire NEXT values:
+const resume = IdentityNextCursor.fromLastApplied(lastAppliedByOrigin);
+for await (const frame of client.subscribeIdentity({ cursor: resume })) {
+  // Apply identities before advancing the durable cursor.
+}
+```
+
+The client does not advance a cursor on receipt or claim cluster-wide freshness
+from a checkpoint. A caller's `AbortSignal` or stopping iteration cancels the
+RPC. The client's `defaultTimeoutMs` does not apply to this long-lived stream;
+pass `timeoutMs` in the subscribe options for an explicit deadline. Current
+server auth scopes the stream to a whole Lantern deployment, with no tenant
+filtering. TTL expiry remains enforced locally; it does not synthesize CDC
+events.
+
 ## Backup & restore
 
 `backup(opts?)` streams a whole-graph, point-in-time dump as an **async

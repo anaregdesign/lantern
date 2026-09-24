@@ -49,6 +49,7 @@ import {
   type GetServerStatusResponse,
   type Vertex as PbVertex,
 } from "./gen/graph/v1/graph_pb.js";
+import { LanternReplicationService, SubscribeProjection } from "./gen/graph/v1/replication_pb.js";
 
 import {
   BatchError,
@@ -153,6 +154,12 @@ import {
   type RestoreStats,
 } from "./backup.js";
 import { pingHealth, type PingOptions } from "./health.js";
+import {
+  decodeIdentityFrame,
+  IdentityNextCursor,
+  type IdentityFrame,
+  type IdentitySubscribeOptions,
+} from "./changes.js";
 
 /**
  * Upper bound for the auto-chunk size. Contrib-ID idempotency keys (#895)
@@ -385,6 +392,7 @@ export { normaliseBaseUrl };
  */
 export class Lantern {
   private readonly client: Client<typeof LanternService>;
+  private readonly replicationClient: Client<typeof LanternReplicationService>;
   private readonly options: ConnectOptions;
   /**
    * The normalised base URL (`http(s)://host:port`, no trailing slash) the
@@ -401,10 +409,12 @@ export class Lantern {
 
   private constructor(
     client: Client<typeof LanternService>,
+    replicationClient: Client<typeof LanternReplicationService>,
     options: ConnectOptions,
     baseUrl?: string,
   ) {
     this.client = client;
+    this.replicationClient = replicationClient;
     this.options = options;
     this.baseUrl = baseUrl;
   }
@@ -437,6 +447,7 @@ export class Lantern {
   ): Lantern {
     return new Lantern(
       createClient(LanternService, transport),
+      createClient(LanternReplicationService, transport),
       {
         batchChunkSize: DEFAULT_BATCH_CHUNK_SIZE,
         ...options,
@@ -1222,6 +1233,73 @@ export class Lantern {
    */
   async getReplicationStatus(signal?: AbortSignal): Promise<GetReplicationStatusResponse> {
     return this.invoke(() => this.client.getReplicationStatus({}, this.callOpts(signal)));
+  }
+
+  /**
+   * Stream value-free, deployment-scoped identities for cache invalidation.
+   *
+   * Bootstrap yields one atomic LAST-sequence checkpoint before live chunks.
+   * Resume uses a per-origin NEXT cursor; the caller must durably apply every
+   * chunk before advancing its origin only after `isLast`. A gap raises
+   * {@link FailedPreconditionError} and requires resident-key revalidation.
+   * Neither a checkpoint nor stream EOF proves cluster-wide freshness.
+   *
+   * The client's default unary timeout is ignored for this long-lived stream.
+   * Pass `timeoutMs` for an explicit stream deadline or `signal` to abort it.
+   */
+  async *subscribeIdentity(
+    opts: IdentitySubscribeOptions = {},
+    signal?: AbortSignal,
+  ): AsyncIterable<IdentityFrame> {
+    const cursor = opts.cursor && new IdentityNextCursor(opts.cursor.nextSequences);
+    if (opts.bootstrap && cursor && Object.keys(cursor.nextSequences).length !== 0) {
+      throw new InvalidArgumentError("identity bootstrap requires an empty cursor");
+    }
+    if (
+      opts.timeoutMs !== undefined &&
+      (!Number.isSafeInteger(opts.timeoutMs) || opts.timeoutMs <= 0)
+    ) {
+      throw new InvalidArgumentError("identity stream timeoutMs must be a positive integer");
+    }
+    const request = {
+      fromSeqPerOrigin: { ...cursor?.nextSequences },
+      fromLocalSeq: 0n,
+      projection: SubscribeProjection.IDENTITY_ONLY,
+      bootstrap: opts.bootstrap ?? false,
+    };
+    // Connect v2's server-stream iterable deliberately omits return(), so
+    // breaking out of for-await cannot close the RPC without our own signal.
+    const cancellation = new AbortController();
+    const relayAbort = () => cancellation.abort(signal?.reason);
+    if (signal?.aborted) relayAbort();
+    else signal?.addEventListener("abort", relayAbort, { once: true });
+    const callOpts = {
+      signal: cancellation.signal,
+      ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+    };
+    let checkpointSeen = false;
+    try {
+      for await (const raw of this.replicationClient.subscribe(request, callOpts)) {
+        const frame = decodeIdentityFrame(raw);
+        if (frame.kind === "checkpoint") {
+          if (!opts.bootstrap || checkpointSeen) {
+            throw new LanternError("unexpected identity checkpoint");
+          }
+          checkpointSeen = true;
+        } else if (opts.bootstrap && !checkpointSeen) {
+          throw new LanternError("identity chunk preceded checkpoint");
+        }
+        yield frame;
+      }
+      if (opts.bootstrap && !checkpointSeen) {
+        throw new LanternError("identity bootstrap ended without checkpoint");
+      }
+    } catch (err) {
+      throw wrapConnectError(err);
+    } finally {
+      cancellation.abort();
+      signal?.removeEventListener("abort", relayAbort);
+    }
   }
 
   // --- Backup / restore (#685) ---

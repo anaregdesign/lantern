@@ -64,7 +64,7 @@ jobs:
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-positions.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
           env LANTERN_PORT=6383 LANTERN_METRICS_ADDR=:9093 LANTERN_SEARCH_MAX_QUERY_BYTES=4 \
-            LANTERN_SEARCH_MAX_QUERY_TERMS=4 \
+            LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
           for attempt in $(seq 1 60); do
@@ -99,9 +99,10 @@ jobs:
       - name: Verify codegen is up to date
         run: |
           bun run codegen
-          if ! git diff --quiet -- src/generated; then
+          if [ -n "$(git status --porcelain -- src/gen)" ]; then
             echo "::error::Generated stubs are out of date. Run 'sdks/node/scripts/codegen.sh' and commit."
-            git diff -- src/generated
+            git status --short -- src/gen
+            git diff -- src/gen
             exit 1
           fi
       - name: Lint
@@ -119,6 +120,7 @@ jobs:
           LANTERN_NODE_SEARCH_DISABLED_ENDPOINT: http://127.0.0.1:6381
           LANTERN_NODE_SEARCH_POSITIONS_DISABLED_ENDPOINT: http://127.0.0.1:6382
           LANTERN_NODE_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
+          LANTERN_NODE_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
       - name: Build
         run: bun run build
 
