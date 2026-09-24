@@ -15,7 +15,10 @@ import 'gen/google/protobuf/duration.pb.dart' as $duration;
 import 'gen/google/protobuf/timestamp.pb.dart' as $timestamp;
 import 'gen/graph/v1/graph.connect.client.dart' as $client;
 import 'gen/graph/v1/graph.pb.dart' as $graph;
+import 'gen/graph/v1/replication.connect.client.dart' as $replication_client;
+import 'gen/graph/v1/replication.pb.dart' as $replication;
 
+part 'changes.dart';
 part 'crud.dart';
 part 'data.dart';
 part 'decay.dart';
@@ -130,6 +133,7 @@ final class LanternCallOptions {
     this.deadline,
     this.cancellation,
     this.retry = true,
+    this.disableDefaultTimeout = false,
   }) {
     if (timeout != null && deadline != null) {
       throw ArgumentError('timeout and deadline are mutually exclusive');
@@ -154,6 +158,10 @@ final class LanternCallOptions {
   /// budget. Every RPC is then attempted at most once; a chunked plural call
   /// may still issue multiple RPCs.
   final bool retry;
+
+  /// Suppresses the client's default timeout when this call has no explicit
+  /// [timeout] or [deadline]. Long-lived streams use this by default.
+  final bool disableDefaultTimeout;
 }
 
 /// Stable SDK error categories suitable for mobile UI handling.
@@ -763,13 +771,63 @@ final class LanternInvoker {
     _InvocationContext? context;
     late final StreamController<T> controller;
     StreamSubscription<T>? subscription;
+    var stopped = false;
+    var paused = false;
 
-    // Keep the mapping/finally policy in an async* body, but put a controller
-    // in front of it so cancellation of the public subscription is observable
-    // immediately.  Dart async* cancellation otherwise waits for the current
-    // await (which can leave a network read alive until its timeout). Create
-    // the context on listen so an un-listened stream owns no timer or token
-    // listener.
+    void finish() {
+      if (stopped) return;
+      stopped = true;
+      context?.signal.cancel();
+      context?.dispose();
+      unawaited(controller.close());
+    }
+
+    void fail(Object error, StackTrace stack) {
+      if (stopped) return;
+      final invocation = context!;
+      final mapped = switch (error) {
+        connect.ConnectException() => _mapConnectException(error, invocation),
+        LanternException() => error,
+        _ => _mapUnknownException(
+          error,
+          invocation,
+          unknownIsUnavailable: _unknownIsUnavailable,
+        ),
+      };
+      controller.addError(mapped, stack);
+      final active = subscription;
+      if (active != null) unawaited(active.cancel());
+      finish();
+    }
+
+    Future<void> start(_InvocationContext invocation) async {
+      try {
+        final headers = await _requestHeaders(invocation);
+        if (stopped) return;
+        final source = call(
+          headers: headers,
+          signal: invocation.signal,
+          onHeader: invocation.onHeader,
+          onTrailer: invocation.onTrailer,
+        );
+        final active = source.listen(
+          (value) {
+            if (!stopped) controller.add(value);
+          },
+          onError: fail,
+          onDone: finish,
+        );
+        subscription = active;
+        if (paused) active.pause();
+        if (stopped) unawaited(active.cancel());
+      } catch (error, stack) {
+        fail(error, stack);
+      }
+    }
+
+    // Subscribe to the generated stream directly. An async* forwarding layer
+    // would retain events while paused and forward stream errors past its catch.
+    // Create the invocation on listen so an unused stream owns no resources.
     controller = StreamController<T>(
       sync: true,
       onListen: () {
@@ -777,19 +835,12 @@ final class LanternInvoker {
           options,
           _defaultTimeout,
         );
-        final body = _invokeStreamBody(call, invocation);
-        subscription = body.listen(
-          controller.add,
-          onError: (Object error, StackTrace stack) {
-            controller.addError(error, stack);
-          },
-          onDone: controller.close,
-        );
+        unawaited(start(invocation));
       },
       onCancel: () {
-        final invocation = context;
-        invocation?.signal.cancel();
-        invocation?.dispose();
+        stopped = true;
+        context?.signal.cancel();
+        context?.dispose();
         final active = subscription;
         if (active != null) {
           // Do not make the caller wait for a non-cooperative injected stream
@@ -798,36 +849,16 @@ final class LanternInvoker {
           unawaited(active.cancel());
         }
       },
+      onPause: () {
+        paused = true;
+        subscription?.pause();
+      },
+      onResume: () {
+        paused = false;
+        subscription?.resume();
+      },
     );
     return controller.stream;
-  }
-
-  Stream<T> _invokeStreamBody<T>(
-    LanternStreamCall<T> call,
-    _InvocationContext context,
-  ) async* {
-    try {
-      final headers = await _requestHeaders(context);
-      yield* call(
-        headers: headers,
-        signal: context.signal,
-        onHeader: context.onHeader,
-        onTrailer: context.onTrailer,
-      );
-    } on connect.ConnectException catch (error) {
-      throw _mapConnectException(error, context);
-    } on LanternException {
-      rethrow;
-    } catch (error) {
-      throw _mapUnknownException(
-        error,
-        context,
-        unknownIsUnavailable: _unknownIsUnavailable,
-      );
-    } finally {
-      context.signal.cancel();
-      context.dispose();
-    }
   }
 
   Future<connect.Headers> _requestHeaders(_InvocationContext context) async {
@@ -905,7 +936,10 @@ final class _InvocationContext {
     : signal = _CallSignal(
         timeout:
             options?.timeout ??
-            (options?.deadline == null ? defaultTimeout : null),
+            (options?.deadline == null &&
+                    !(options?.disableDefaultTimeout ?? false)
+                ? defaultTimeout
+                : null),
         deadline: options?.deadline,
         cancellation: options?.cancellation,
       );
