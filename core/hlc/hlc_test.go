@@ -243,6 +243,33 @@ func TestUpdateClampsExcessiveSkew(t *testing.T) {
 	}
 }
 
+func TestUpdateSkewCeilingSaturatesWithoutOverflow(t *testing.T) {
+	f := &fakeNow{}
+	f.ns.Store(math.MaxInt64 - 10)
+	var calls atomic.Int32
+	c := New(nodeID(1), Options{
+		Now: f.get, MaxSkew: 100 * time.Nanosecond,
+		OnSkewExceeded: func(Timestamp, int64, error) { calls.Add(1) },
+	})
+	remote := Timestamp{WallNs: math.MaxInt64 - 9, Logical: 3, NodeID: nodeID(2)}
+	out := c.Update(remote)
+	if calls.Load() != 0 || !remote.Less(out) || out.WallNs != remote.WallNs || out.Logical != 4 {
+		t.Fatalf("near-max skew Update = %+v, callback count = %d; want above in-window remote %+v", out, calls.Load(), remote)
+	}
+}
+
+func TestUpdateClampedLogicalOverflowStaysWithinSkewCeiling(t *testing.T) {
+	f := &fakeNow{}
+	f.set(time.Unix(0, 1_000_000_000))
+	const skew = 100 * time.Nanosecond
+	c := New(nodeID(1), Options{Now: f.get, MaxSkew: skew})
+	remote := Timestamp{WallNs: f.get() + int64(time.Second), Logical: math.MaxUint32, NodeID: nodeID(2)}
+	out := c.Update(remote)
+	if out.WallNs != f.get()+int64(skew) || out.Logical != 1 {
+		t.Fatalf("clamped Update = %+v, want wall at skew ceiling with fresh logical counter", out)
+	}
+}
+
 func TestUpdateInsideSkewWindowAcceptsRemote(t *testing.T) {
 	f := &fakeNow{}
 	f.set(time.Unix(0, 1_000_000_000))

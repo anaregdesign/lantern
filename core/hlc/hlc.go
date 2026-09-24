@@ -185,8 +185,8 @@ func (c *Clock) Now() Timestamp {
 }
 
 // Update integrates a timestamp received from a peer. The returned timestamp
-// is strictly greater than both the previous local state and remote, and
-// the clock's internal state advances accordingly.
+// is strictly greater than the previous local state and the effective remote
+// timestamp after any skew clamp, and the clock's internal state advances.
 //
 // If remote.WallNs is more than the configured MaxSkew ahead of local wall
 // time, the wall component is clamped to localWall + MaxSkew and the
@@ -196,10 +196,20 @@ func (c *Clock) Now() Timestamp {
 // callback (typically wired to a counter).
 func (c *Clock) Update(remote Timestamp) Timestamp {
 	wall := c.now()
+	// Saturate the skew ceiling instead of overflowing near MaxInt64.
+	ceiling := int64(math.MaxInt64)
+	if wall <= math.MaxInt64-c.maxSkewNs {
+		ceiling = wall + c.maxSkewNs
+	}
 	effectiveRemoteWall := remote.WallNs
+	effectiveRemoteLogical := remote.Logical
 	clamped := false
-	if remote.WallNs > wall+c.maxSkewNs {
-		effectiveRemoteWall = wall + c.maxSkewNs
+	if remote.WallNs > ceiling {
+		effectiveRemoteWall = ceiling
+		// The remote logical counter belongs to its rejected future wall
+		// instant. Carrying it into the clamped instant can push the
+		// result past the skew ceiling when that counter is exhausted.
+		effectiveRemoteLogical = 0
 		clamped = true
 	}
 
@@ -216,8 +226,8 @@ func (c *Clock) Update(remote Timestamp) Timestamp {
 	case maxWall == c.wallNs && maxWall == effectiveRemoteWall:
 		// Both local state and remote are at the same wall instant. The
 		// logical counter must exceed both contributing counters.
-		if remote.Logical > c.logical {
-			c.logical = remote.Logical
+		if effectiveRemoteLogical > c.logical {
+			c.logical = effectiveRemoteLogical
 		}
 		c.bumpLogical()
 	case maxWall == c.wallNs:
@@ -226,7 +236,7 @@ func (c *Clock) Update(remote Timestamp) Timestamp {
 	case maxWall == effectiveRemoteWall:
 		// Remote (possibly clamped) leads.
 		c.wallNs = maxWall
-		c.logical = remote.Logical
+		c.logical = effectiveRemoteLogical
 		c.bumpLogical()
 	default:
 		// Physical wall time has moved past both prior states.
