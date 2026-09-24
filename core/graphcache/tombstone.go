@@ -48,6 +48,10 @@ func (c *GraphCache[S, T]) vertexTombstoneLocked(key S) (hlc.Timestamp, bool) {
 // tombstone is keyed on the full (tail, head) pair so deleting one
 // direction of a parallel pair never accidentally hides the other.
 func (c *GraphCache[S, T]) edgeTombstoneLocked(tail, head S) (hlc.Timestamp, bool) {
+	return c.edgeTombstoneLockedAt(tail, head, time.Now())
+}
+
+func (c *GraphCache[S, T]) edgeTombstoneLockedAt(tail, head S, now time.Time) (hlc.Timestamp, bool) {
 	if c.edgeTombstones == nil {
 		return hlc.Timestamp{}, false
 	}
@@ -55,7 +59,7 @@ func (c *GraphCache[S, T]) edgeTombstoneLocked(tail, head S) (hlc.Timestamp, boo
 	if !ok {
 		return hlc.Timestamp{}, false
 	}
-	if !t.expiration.IsZero() && !time.Now().Before(t.expiration) {
+	if !t.expiration.IsZero() && !now.Before(t.expiration) {
 		return hlc.Timestamp{}, false
 	}
 	return t.ts, true
@@ -144,7 +148,11 @@ func (c *GraphCache[S, T]) vertexDeleteWriteAllowedLocked(key S, ts hlc.Timestam
 }
 
 func (c *GraphCache[S, T]) edgeDeleteWriteAllowedLocked(tail, head S, ts hlc.Timestamp) bool {
-	if tombstone, ok := c.edgeTombstoneLocked(tail, head); ok && ts.Less(tombstone) {
+	return c.edgeDeleteWriteAllowedLockedAt(tail, head, ts, time.Now())
+}
+
+func (c *GraphCache[S, T]) edgeDeleteWriteAllowedLockedAt(tail, head S, ts hlc.Timestamp, now time.Time) bool {
+	if tombstone, ok := c.edgeTombstoneLockedAt(tail, head, now); ok && ts.Less(tombstone) {
 		return false
 	}
 	if barrier, ok := c.edgeCausalBarriers[EdgeKey[S]{Tail: tail, Head: head}]; ok && ts.Less(barrier) {

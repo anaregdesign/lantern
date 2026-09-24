@@ -231,7 +231,7 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLocked(
 	stage := &stagedEdgeDelete[S, T]{cache: c, outcomes: make([]bool, len(keys)), ts: ts, expireAt: expiration}
 	byKey := make(map[EdgeKey[S]]*stagedEdgeDeletePlan[S], len(keys))
 	for i, key := range keys {
-		if !c.edgeDeleteWriteAllowedLocked(key.Tail, key.Head, ts) {
+		if !c.edgeDeleteWriteAllowedLockedAt(key.Tail, key.Head, ts, now) {
 			continue
 		}
 		plan := byKey[key]

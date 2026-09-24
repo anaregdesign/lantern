@@ -297,6 +297,32 @@ func TestStagedEdgeDeleteRollbackPreservesExpiredHigherFloor(t *testing.T) {
 	}
 }
 
+func TestStagedEdgeDeleteTombstoneExpiryUsesApplicationCut(t *testing.T) {
+	c := newGraphCacheWithStaging[string, string](time.Hour)
+	key := EdgeKey[string]{"tail", "head"}
+	deadline := time.Now().Add(time.Hour)
+	if _, err := c.DeleteEdgesHLCChecked([]EdgeKey[string]{key}, hlc.Timestamp{WallNs: 30}, deadline); err != nil {
+		t.Fatal(err)
+	}
+	c.AddEdgeWithExpiration(key.Tail, key.Head, 1, deadline.Add(time.Hour))
+	before := captureStagedDeleteState(c)
+	c.applicationClock = func() time.Time { return deadline.Add(-time.Nanosecond) }
+	if got := stageAndRollbackForTest(t, c, []EdgeKey[string]{key}, hlc.Timestamp{WallNs: 20}, deadline.Add(time.Hour), nil); !slices.Equal(got, []bool{false}) {
+		t.Fatalf("before deadline outcomes = %v, want [false]", got)
+	}
+	c.applicationClock = func() time.Time { return deadline }
+	if got := stageAndRollbackForTest(t, c, []EdgeKey[string]{key}, hlc.Timestamp{WallNs: 20}, deadline.Add(time.Hour), func(*stagedEdgeDelete[string, string]) {
+		if c.edges.bucket(key.Tail, key.Head) != nil {
+			t.Fatal("expired floor did not allow staged edge removal")
+		}
+	}); !slices.Equal(got, []bool{true}) {
+		t.Fatalf("at deadline outcomes = %v, want [true]", got)
+	}
+	if after := captureStagedDeleteState(c); !reflect.DeepEqual(after, before) {
+		t.Fatalf("expiry-boundary rollback drift: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestStagedEdgeDeleteRollbackRestoresNilCausalMaps(t *testing.T) {
 	c := newGraphCacheWithStaging[string, string](time.Hour)
 	expiration := time.Now().Add(time.Hour)
