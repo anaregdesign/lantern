@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"strconv"
 	"strings"
@@ -12,11 +13,142 @@ import (
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/replication"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func receiptEdgeDeleteTailFixture(t *testing.T, origin hlc.NodeID, seq uint64, accepted []bool) (*pb.Mutation, hlc.Timestamp) {
+	t.Helper()
+	epoch := mutationreceipt.Epoch{0x73}
+	group := mutationreceipt.GroupID{byte(seq)}
+	issued := time.Now().Add(-time.Second)
+	items := make([]*pb.ReplicatedReceiptEdgeDeleteItem, len(accepted))
+	for i, isAccepted := range accepted {
+		head := "edge/" + strconv.Itoa(i)
+		id, err := mutationreceipt.NewID(epoch, issued, [24]byte{byte(seq), byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		canonical := []byte{byte(mutationreceipt.DeleteEdge)}
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len("edge/tail")))
+		canonical = append(canonical, length[:]...)
+		canonical = append(canonical, "edge/tail"...)
+		binary.BigEndian.PutUint64(length[:], uint64(len(head)))
+		canonical = append(canonical, length[:]...)
+		canonical = append(canonical, head...)
+		digest := mutationreceipt.IntentDigest(canonical)
+		items[i] = &pb.ReplicatedReceiptEdgeDeleteItem{
+			Key: &pb.EdgeKey{Tail: "edge/tail", Head: head},
+			Receipt: &pb.MutationReceipt{
+				OperationId: id.Bytes(), LogicalCallId: group[:], ItemIndex: uint32(i),
+				ItemCount: uint32(len(accepted)), IntentSha256: digest[:],
+				DeadlineUnixMs: uint64(issued.Add(time.Hour).UnixMilli()),
+				OriginalResult: &pb.ReceiptResult{Result: &pb.ReceiptResult_DeleteEdgeExisted{DeleteEdgeExisted: isAccepted}},
+			},
+			CausallyAccepted: isAccepted,
+		}
+	}
+	stamp := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: origin}
+	return &pb.Mutation{
+		Seq: seq, Origin: origin[:], Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, NodeId: origin[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeDelete{
+			ReplicatedReceiptEdgeDelete: &pb.ReplicatedReceiptEdgeDelete{
+				DeploymentEpoch: epoch[:], PolicyFingerprint: append([]byte{0x51}, make([]byte, 31)...),
+				TombstoneExpiration: timestamppb.New(time.Now().Add(time.Hour)), Items: items,
+			},
+		}},
+	}, stamp
+}
+
+// Synthetic log entries exercise the production-disabled wire projection on
+// real Connect/h2c. No public receipt write or remote apply path is enabled.
+func TestIdentityCDC_ReceiptEdgeDeleteTailFailsClosedAndPreservesCursor(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	origin := hlc.NodeID{0xD1, 0x15}
+	node := newPumpNode(t, origin)
+	rep := newReplicationRawClient(t, node.url)
+	for seq, accepted := range [][]bool{{true, false}, {false}} {
+		mutation, stamp := receiptEdgeDeleteTailFixture(t, origin, uint64(seq+1), accepted)
+		if _, err := node.log.Append(mutation, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	legacy, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	if err == nil {
+		if legacy.Receive() {
+			t.Fatalf("legacy full Subscribe received downgrade frame: %+v", legacy.Msg())
+		}
+		err = legacy.Err()
+		_ = legacy.Close()
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("legacy full Subscribe error = %v, want InvalidArgument", err)
+	}
+	full, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1, AcceptReceiptEnvelopes: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = full.Close() }()
+	for seq, count := range []int{2, 1} {
+		if !full.Receive() {
+			t.Fatalf("receipt full frame %d: %v", seq+1, full.Err())
+		}
+		mutation := full.Msg().GetMutation()
+		call := mutation.GetOp().GetReplicatedReceiptEdgeDelete()
+		if mutation.GetSeq() != uint64(seq+1) || call == nil || len(call.GetItems()) != count || mutation.GetOp().GetDeleteEdges() != nil {
+			t.Fatalf("receipt full frame %d lost envelope: %+v", seq+1, full.Msg())
+		}
+	}
+	identity, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection:       pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+		FromSeqPerOrigin: map[string]uint64{hex.EncodeToString(origin[:]): 1},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = identity.Close() }()
+	if !identity.Receive() {
+		t.Fatalf("accepted identity: %v", identity.Err())
+	}
+	accepted := identity.Msg().GetIdentityChunk()
+	if accepted == nil || accepted.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE ||
+		accepted.GetSeq() != 1 || len(accepted.GetEdgeKeys()) != 1 || accepted.GetEdgeKeys()[0].GetHead() != "edge/0" {
+		t.Fatalf("accepted identity = %+v", identity.Msg())
+	}
+	if !identity.Receive() {
+		t.Fatalf("receipt-only identity: %v", identity.Err())
+	}
+	marker := identity.Msg().GetIdentityChunk()
+	if marker == nil || marker.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY ||
+		marker.GetSeq() != 2 || marker.GetChunkIndex() != 0 || marker.GetFirstItemIndex() != 0 ||
+		!marker.GetIsLast() || len(marker.GetVertexKeys())+len(marker.GetEdgeKeys()) != 0 {
+		t.Fatalf("receipt-only marker = %+v", identity.Msg())
+	}
+
+	bad, stamp := receiptEdgeDeleteTailFixture(t, origin, 3, []bool{false})
+	bad.GetOp().GetReplicatedReceiptEdgeDelete().Items[0].Receipt.IntentSha256[0] ^= 1
+	if _, err := node.log.Append(bad, stamp); err != nil {
+		t.Fatal(err)
+	}
+	malformed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 3, AcceptReceiptEnvelopes: true}))
+	if err == nil {
+		if malformed.Receive() {
+			t.Fatalf("malformed receipt full frame escaped: %+v", malformed.Msg())
+		}
+		err = malformed.Err()
+		_ = malformed.Close()
+	}
+	if connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("malformed receipt full error = %v, want Internal", err)
+	}
+}
 
 func TestIdentityCDC_BootstrapLiveExactVictimsAndFullCompatibility(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)

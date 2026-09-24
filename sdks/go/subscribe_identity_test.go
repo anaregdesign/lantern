@@ -113,3 +113,34 @@ func TestIdentityFrameParsingAndChunkContinuity(t *testing.T) {
 		t.Fatalf("malformed checkpoint = %v", err)
 	}
 }
+
+func TestIdentityReceiptOnlyMarkerAdvancesWithoutKeys(t *testing.T) {
+	origin := ChangeOrigin{0x31}
+	wire := &pb.IdentityChunk{
+		Origin: origin[:], Seq: 2, Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: 10},
+		Operation: IdentityReceiptOnly, IsLast: true,
+	}
+	chunk, err := parseIdentityChunk(wire)
+	if err != nil || chunk.Operation != IdentityReceiptOnly || len(chunk.VertexKeys)+len(chunk.EdgeKeys) != 0 {
+		t.Fatalf("receipt-only marker = %+v, %v", chunk, err)
+	}
+	tracker := identityStreamTracker{expected: ChangeCursor{origin: 2}}
+	if err := tracker.accept(chunk); err != nil || tracker.expected[origin] != 3 {
+		t.Fatalf("receipt-only cursor = %v, %v", tracker.expected, err)
+	}
+	for name, change := range map[string]func(*pb.IdentityChunk){
+		"edge key":     func(bad *pb.IdentityChunk) { bad.EdgeKeys = []*pb.EdgeKey{{Tail: "x", Head: "y"}} },
+		"vertex key":   func(bad *pb.IdentityChunk) { bad.VertexKeys = []string{"x"} },
+		"nonfinal":     func(bad *pb.IdentityChunk) { bad.IsLast = false },
+		"second chunk": func(bad *pb.IdentityChunk) { bad.ChunkIndex = 1 },
+		"nonzero item": func(bad *pb.IdentityChunk) { bad.FirstItemIndex = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := proto.Clone(wire).(*pb.IdentityChunk)
+			change(bad)
+			if _, err := parseIdentityChunk(bad); !errors.Is(err, ErrInvalidIdentityEvent) {
+				t.Fatalf("invalid receipt-only marker = %v", err)
+			}
+		})
+	}
+}

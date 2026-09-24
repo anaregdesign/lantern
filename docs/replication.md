@@ -84,7 +84,8 @@ is required for either reads or writes.
 The future bounded mutation-receipt extension is specified in
 [ADR 0010](decisions/0010-bounded-mutation-receipts.md). It requires an atomic
 graph/result/receipt/log boundary and the contiguous publication work in
-#1282; neither receipt RPCs nor that atomic boundary exists yet. D1 remains
+#1282; receipt RPCs remain disabled and the atomic follower boundary does not
+exist yet. The guarded receipt-tail wire arm does not enable peer apply. D1 remains
 the current crash-persistence rule.
 
 ## 4. CRDT semantics per RPC

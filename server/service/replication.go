@@ -84,11 +84,14 @@ type publicationStatusProvider interface {
 	publicationStatus() (<-chan struct{}, bool)
 }
 
-// graphMutationFromLog preserves the existing Mutation payload while allowing
-// a private WAL envelope to carry receipt metadata alongside its graph-only
-// Subscribe projection. Receipt metadata is not present on the current wire.
+// graphMutationFromLog projects an owned log payload onto the Subscribe wire.
+// A receipt envelope must take the ReplicationMutation path before the legacy
+// graph-only fallback, so a peer cannot advance an origin without receipts.
 func graphMutationFromLog(op mutationlog.MutationOp) (*pb.Mutation, bool) {
 	switch value := op.(type) {
+	case interface{ ReplicationMutation() (*pb.Mutation, error) }:
+		mutation, err := value.ReplicationMutation()
+		return mutation, err == nil && mutation != nil
 	case *pb.Mutation:
 		return value, value != nil
 	case interface{ GraphMutation() *pb.Mutation }:
@@ -312,6 +315,15 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 					slog.Uint64("seq", entry.Seq))
 				return connect.NewError(connect.CodeInternal, fmt.Errorf(
 					"replication: malformed mutation log entry at seq=%d", entry.Seq))
+			}
+			if _, receipt := mu.GetOp().GetOp().(*pb.MutationOp_ReplicatedReceiptEdgeDelete); receipt {
+				if !req.GetAcceptReceiptEnvelopes() {
+					return connect.NewError(connect.CodeInvalidArgument,
+						errors.New("full Subscribe consumer must accept receipt envelopes before receiving them"))
+				}
+				if _, err := acceptedReceiptEdgeDeleteKeys(mu); err != nil {
+					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: malformed receipt envelope at seq=%d: %w", entry.Seq, err))
+				}
 			}
 			// Per-origin filter: skip entries whose origin watermark
 			// the consumer already covers. Origins absent from the

@@ -44,6 +44,9 @@ enum OfflineIdentityOperation {
 
   /// Edge Delete, including exact capped-prefix victims.
   deleteEdge,
+
+  /// A committed receipt envelope without a graph invalidation.
+  receiptOnly,
 }
 
 /// One bounded, value-free fragment of a committed mutation.
@@ -68,6 +71,13 @@ final class OfflineIdentityChunk extends OfflineIdentityEvent {
     if (firstItemIndex < 0 ||
         firstItemIndex > 0x7fffffff ||
         (!isLast && this.keys.isEmpty)) {
+      throw const OfflineArgumentException();
+    }
+    if (operation == OfflineIdentityOperation.receiptOnly &&
+        (this.keys.isNotEmpty ||
+            !isLast ||
+            chunkIndex != 0 ||
+            firstItemIndex != 0)) {
       throw const OfflineArgumentException();
     }
     final vertexOperation =

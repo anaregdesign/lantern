@@ -48,7 +48,32 @@ message MutationOp {
     // when the receiver's wall clock differs from the origin's.
     ReplicatedPutVertices replicated_put_vertices = 13;
     ReplicatedPutEdges replicated_put_edges = 14;
+    // Receipt-bearing exact Edge Delete. A new oneof arm is intentional:
+    // peers unaware of this contract reject the unknown operation instead
+    // of applying a graph-only Delete and advancing the origin watermark.
+    ReplicatedReceiptEdgeDelete replicated_receipt_edge_delete = 15;
   }
+}
+
+// One request-index-aligned item in a receipt-bearing Edge Delete. The
+// receipt retains the original result even when a later mutation changes the
+// graph. An accepted item may have existed=false yet create a causal floor.
+message ReplicatedReceiptEdgeDeleteItem {
+  EdgeKey key = 1;
+  MutationReceipt receipt = 2;
+  bool causally_accepted = 3;
+}
+
+// A complete, ordered logical call. Mutation.seq/origin/hlc outside this
+// message are the sole causal coordinate. Receipt epoch and policy are kept
+// alongside the graph transition; no-op calls still consume that sequence.
+// This arm remains production-disabled until atomic follower replay,
+// receipt-bearing Snapshot, and recovery are available.
+message ReplicatedReceiptEdgeDelete {
+  bytes deployment_epoch = 1;
+  bytes policy_fingerprint = 2;
+  google.protobuf.Timestamp tombstone_expiration = 3;
+  repeated ReplicatedReceiptEdgeDeleteItem items = 4;
 }
 
 message VertexCausalBarrier {
@@ -147,6 +172,10 @@ message SubscribeRequest {
   // send its contiguous per-origin checkpoint before any identity chunk.
   // Requires an empty cursor and from_local_seq == 0.
   bool bootstrap = 4;
+  // Full-Mutation consumers must explicitly accept receipt-bearing oneof
+  // arms before the server can send one. Old full-mutation peers/consumers
+  // omit this field and fail closed instead of losing receipt metadata.
+  bool accept_receipt_envelopes = 5;
 }
 
 enum SubscribeProjection {
@@ -169,6 +198,9 @@ enum IdentityOperation {
   IDENTITY_OPERATION_ADD_EDGE = 3;
   IDENTITY_OPERATION_PUT_EDGE = 4;
   IDENTITY_OPERATION_DELETE_EDGE = 5;
+  // A committed receipt envelope with no causally accepted graph identity.
+  // It closes one origin sequence with a final, zero-key IdentityChunk.
+  IDENTITY_OPERATION_RECEIPT_ONLY = 6;
 }
 
 // One bounded fragment of an origin mutation's exact graph identities.

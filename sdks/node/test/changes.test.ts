@@ -202,6 +202,38 @@ describe("identity-only CDC facade", () => {
     }
   });
 
+  test("receipt-only final marker carries no invalidation keys", () => {
+    const marker = chunk({
+      operation: IdentityOperation.RECEIPT_ONLY,
+      vertexKeys: [],
+      edgeKeys: [],
+    });
+    const decoded = decodeIdentityFrame(marker);
+    expect(decoded.kind).toBe("chunk");
+    if (decoded.kind !== "chunk") throw new Error();
+    expect(decoded.operation).toBe("receiptOnly");
+    expect(decoded.isLast).toBe(true);
+    expect(decoded.vertexKeys).toEqual([]);
+    expect(decoded.edgeKeys).toEqual([]);
+    for (const bad of [
+      chunk({ operation: IdentityOperation.RECEIPT_ONLY, vertexKeys: ["x"] }),
+      chunk({
+        operation: IdentityOperation.RECEIPT_ONLY,
+        vertexKeys: [],
+        edgeKeys: [{ tail: "t", head: "h" }],
+      }),
+      chunk({ operation: IdentityOperation.RECEIPT_ONLY, vertexKeys: [], isLast: false }),
+    ]) {
+      expect(() => decodeIdentityFrame(bad)).toThrow(LanternError);
+    }
+    for (const field of ["chunkIndex", "firstItemIndex"] as const) {
+      const bad = chunk({ operation: IdentityOperation.RECEIPT_ONLY, vertexKeys: [] });
+      if (bad.event.case !== "identityChunk") throw new Error();
+      bad.event.value[field] = 1;
+      expect(() => decodeIdentityFrame(bad)).toThrow(LanternError);
+    }
+  });
+
   test("bootstrap and resume use identity projection, preserve high-bit uint64, and skip the unary timeout", async () => {
     let request: SubscribeRequest | undefined;
     let timeoutMs: number | undefined = -1;

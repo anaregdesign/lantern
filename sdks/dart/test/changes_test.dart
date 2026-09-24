@@ -346,6 +346,64 @@ void main() {
     }
   });
 
+  test('receipt-only marker has a final zero-key identity frame', () async {
+    final marker = _chunk(
+      operation: replication.IdentityOperation.IDENTITY_OPERATION_RECEIPT_ONLY,
+      vertexKeys: const [],
+    );
+    final transport = FakeTransportBuilder()
+        .server<replication.SubscribeRequest, replication.SubscribeResponse>(
+          replication_spec.LanternReplicationService.subscribe,
+          (_, _) => Stream.value(marker),
+        )
+        .build();
+    final client = _client(transport);
+    final frame = await client.subscribeIdentity().first as IdentityChunkFrame;
+    expect(frame.operation, IdentityOperation.receiptOnly);
+    expect(frame.isLast, isTrue);
+    expect(frame.vertexKeys, isEmpty);
+    expect(frame.edgeKeys, isEmpty);
+    await client.close();
+
+    final badIndex = _chunk(
+      operation: replication.IdentityOperation.IDENTITY_OPERATION_RECEIPT_ONLY,
+      vertexKeys: const [],
+    );
+    badIndex.identityChunk.chunkIndex = 1;
+    for (final bad in [
+      _chunk(
+        operation:
+            replication.IdentityOperation.IDENTITY_OPERATION_RECEIPT_ONLY,
+      ),
+      _chunk(
+        operation:
+            replication.IdentityOperation.IDENTITY_OPERATION_RECEIPT_ONLY,
+        vertexKeys: const [],
+        edgeKeys: [graph.EdgeKey(tail: 'tail', head: 'head')],
+      ),
+      _chunk(
+        operation:
+            replication.IdentityOperation.IDENTITY_OPERATION_RECEIPT_ONLY,
+        vertexKeys: const [],
+        isLast: false,
+      ),
+      badIndex,
+    ]) {
+      final badTransport = FakeTransportBuilder()
+          .server<replication.SubscribeRequest, replication.SubscribeResponse>(
+            replication_spec.LanternReplicationService.subscribe,
+            (_, _) => Stream.value(bad),
+          )
+          .build();
+      final badClient = _client(badTransport);
+      await expectLater(
+        badClient.subscribeIdentity().toList(),
+        throwsA(isA<LanternInternalException>()),
+      );
+      await badClient.close();
+    }
+  });
+
   test('bootstrap requires exactly one first checkpoint', () async {
     for (final frames in [
       <replication.SubscribeResponse>[],

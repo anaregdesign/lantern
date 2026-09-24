@@ -76,6 +76,9 @@ enum IdentityOperation {
 
   /// An Edge Delete, including exact victims of a capped prefix Delete.
   deleteEdge,
+
+  /// A committed receipt envelope without an accepted graph identity.
+  receiptOnly,
 }
 
 /// The original mutation's Hybrid Logical Clock coordinate.
@@ -362,14 +365,26 @@ IdentityChunkFrame _decodeIdentityChunk(
     3 => IdentityOperation.addEdge,
     4 => IdentityOperation.putEdge,
     5 => IdentityOperation.deleteEdge,
+    6 => IdentityOperation.receiptOnly,
     _ => throw _internalSdkException('identity chunk has unknown operation'),
   };
+  if (operation == IdentityOperation.receiptOnly &&
+      (count != 0 ||
+          !raw.isLast ||
+          raw.chunkIndex != 0 ||
+          raw.firstItemIndex != 0)) {
+    throw _internalSdkException(
+      'receipt-only marker must be one final zero-key chunk',
+    );
+  }
   if (switch (operation) {
     IdentityOperation.putVertex ||
     IdentityOperation.deleteVertex => raw.edgeKeys.isNotEmpty,
     IdentityOperation.addEdge ||
     IdentityOperation.putEdge ||
     IdentityOperation.deleteEdge => raw.vertexKeys.isNotEmpty,
+    IdentityOperation.receiptOnly =>
+      raw.vertexKeys.isNotEmpty || raw.edgeKeys.isNotEmpty,
   }) {
     throw _internalSdkException(
       'identity chunk mixes operation and key family',

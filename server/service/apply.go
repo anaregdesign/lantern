@@ -55,6 +55,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}
+	if _, receipt := m.GetOp().GetOp().(*pb.MutationOp_ReplicatedReceiptEdgeDelete); receipt {
+		// The wire can carry this envelope before follower Store/WAL/Snapshot
+		// integration exists. Reject it before queueing or moving a cutoff.
+		// FailedPrecondition is reserved for actual tail gaps: current pumps
+		// would otherwise try a graph-only Snapshot as recovery.
+		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("receipt-bearing replication apply is not enabled"))
+	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
 	if s.receiptCommitFaulted {

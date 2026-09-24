@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -124,7 +125,7 @@ func TestEdgeDeleteReceiptCoordinatorAlignedResultsAndDuplicate(t *testing.T) {
 	}
 	projected := envelope.Mutation.GetOp().GetDeleteEdges().GetEdges()
 	if len(projected) != 3 || projected[0].GetHead() != "present" || projected[1].GetHead() != "absent" || projected[2].GetHead() != "present" {
-		t.Fatalf("graph-only Subscribe projection = %+v", projected)
+		t.Fatalf("graph-only private projection = %+v", projected)
 	}
 	for i, item := range call.Items {
 		status, receipt, err := f.coordinator.Lookup(item.ID, time.Now())
@@ -166,6 +167,15 @@ func TestEdgeDeleteReceiptCoordinatorReceiptOnlyPositionProjectsZeroKeys(t *test
 	if len(envelope.Accepted) != 0 || len(envelope.Mutation.GetOp().GetDeleteEdges().GetEdges()) != 0 || len(envelope.Receipts) != 1 {
 		t.Fatalf("receipt-only WAL envelope = %+v", envelope)
 	}
+	oldSender := &receiptDeleteSubscribeSender{frames: make(chan *pb.SubscribeResponse, 1)}
+	if err := f.replication.Subscribe(context.Background(), &pb.SubscribeRequest{FromLocalSeq: 1}, oldSender); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("old full Subscribe consumer = %v, want InvalidArgument", err)
+	}
+	select {
+	case frame := <-oldSender.frames:
+		t.Fatalf("old full Subscribe received receipt frame: %+v", frame)
+	default:
+	}
 	for _, projection := range []pb.SubscribeProjection{
 		pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION,
 		pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
@@ -174,16 +184,16 @@ func TestEdgeDeleteReceiptCoordinatorReceiptOnlyPositionProjectsZeroKeys(t *test
 		sender := &receiptDeleteSubscribeSender{frames: make(chan *pb.SubscribeResponse, 1)}
 		done := make(chan error, 1)
 		go func() {
-			done <- f.replication.Subscribe(ctx, &pb.SubscribeRequest{Projection: projection, FromLocalSeq: 0}, sender)
+			done <- f.replication.Subscribe(ctx, &pb.SubscribeRequest{Projection: projection, FromLocalSeq: 0, AcceptReceiptEnvelopes: true}, sender)
 		}()
 		frame := waitReceiptTest(t, "receipt-only Subscribe", sender.frames)
 		if projection == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION {
-			if frame.GetMutation().GetSeq() != 1 || len(frame.GetMutation().GetOp().GetDeleteEdges().GetEdges()) != 0 {
+			if frame.GetMutation().GetSeq() != 1 || len(frame.GetMutation().GetOp().GetReplicatedReceiptEdgeDelete().GetItems()) != 1 {
 				t.Fatalf("full projection = %+v", frame)
 			}
 		} else {
 			chunk := frame.GetIdentityChunk()
-			if chunk.GetSeq() != 1 || !chunk.GetIsLast() || len(chunk.GetEdgeKeys()) != 0 {
+			if chunk.GetSeq() != 1 || !chunk.GetIsLast() || len(chunk.GetEdgeKeys()) != 0 || chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY {
 				t.Fatalf("identity projection = %+v", frame)
 			}
 		}
@@ -194,8 +204,41 @@ func TestEdgeDeleteReceiptCoordinatorReceiptOnlyPositionProjectsZeroKeys(t *test
 	t.Cleanup(func() { _ = peerLog.Close() })
 	peerClock := hlc.New(hlc.NodeID{0x55}, hlc.Options{})
 	peer := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).WithReplication(peerLog, peerClock, nil).WithTombstoneTTL(time.Hour)
-	if err := peer.ApplyMutation(context.Background(), envelope.Mutation); err != nil || peer.LocalSeq(f.service.clock.NodeID()) != 1 {
-		t.Fatalf("downstream empty DeleteEdges replay = %v, seq=%d", err, peer.LocalSeq(f.service.clock.NodeID()))
+	wire, err := envelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.ApplyMutation(context.Background(), wire); connect.CodeOf(err) != connect.CodeUnimplemented || peer.LocalSeq(f.service.clock.NodeID()) != 0 {
+		t.Fatalf("unwired downstream receipt replay = %v, seq=%d", err, peer.LocalSeq(f.service.clock.NodeID()))
+	}
+	malformed := proto.Clone(wire).(*pb.Mutation)
+	malformed.Seq = 2
+	malformed.Op.Op = &pb.MutationOp_ReplicatedReceiptEdgeDelete{}
+	if _, err := f.log.Append(malformed, hlcFromProto(malformed.Hlc)); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		optIn bool
+		want  connect.Code
+	}{
+		{name: "legacy", want: connect.CodeInvalidArgument},
+		{name: "opt-in", optIn: true, want: connect.CodeInternal},
+	} {
+		t.Run(tc.name+" rejects typed nil arm", func(t *testing.T) {
+			sender := &receiptDeleteSubscribeSender{frames: make(chan *pb.SubscribeResponse, 1)}
+			err := f.replication.Subscribe(context.Background(), &pb.SubscribeRequest{
+				FromLocalSeq: 2, AcceptReceiptEnvelopes: tc.optIn,
+			}, sender)
+			if connect.CodeOf(err) != tc.want {
+				t.Fatalf("typed nil receipt arm = %v, want %v", err, tc.want)
+			}
+			select {
+			case frame := <-sender.frames:
+				t.Fatalf("typed nil receipt arm produced frame: %+v", frame)
+			default:
+			}
+		})
 	}
 }
 
@@ -350,7 +393,7 @@ func TestEdgeDeleteReceiptCoordinatorHeldWALBlocksStagedReaders(t *testing.T) {
 	streamDone := make(chan error, 1)
 	go func() {
 		observerStarted <- struct{}{}
-		streamDone <- f.replication.Subscribe(streamCtx, &pb.SubscribeRequest{FromLocalSeq: 1}, frames)
+		streamDone <- f.replication.Subscribe(streamCtx, &pb.SubscribeRequest{FromLocalSeq: 1, AcceptReceiptEnvelopes: true}, frames)
 	}()
 	for range 8 {
 		waitReceiptTest(t, "observer start", observerStarted)

@@ -15,9 +15,36 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// An older peer's descriptor does not recognize MutationOp field 15. It
+// preserves the bytes as unknown fields but has no selected oneof arm. The
+// apply gate must reject that shape before graph, relay log, or origin seq can
+// advance; otherwise a rolling upgrade could silently lose receipts.
+func TestApplyMutation_UnknownReceiptArmFailsClosed(t *testing.T) {
+	origin := hlc.NodeID{0x71}
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).
+		WithReplication(log, hlc.New(hlc.NodeID{0x72}, hlc.Options{}), nil)
+	op := &pb.MutationOp{}
+	op.ProtoReflect().SetUnknown(protowire.AppendBytes(
+		protowire.AppendTag(nil, 15, protowire.BytesType), []byte{0x01},
+	))
+	if op.GetOp() != nil {
+		t.Fatal("unknown oneof arm became an applicable graph operation")
+	}
+	m := &pb.Mutation{Seq: 1, Origin: origin[:], Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: 1}, Op: op}
+	if err := svc.ApplyMutation(context.Background(), m); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unknown receipt arm = %v, want InvalidArgument", err)
+	}
+	if got := svc.LocalSeq(origin); got != 0 || log.Len() != 0 {
+		t.Fatalf("unknown receipt arm advanced origin/log to %d/%d", got, log.Len())
+	}
+}
 
 // TestApplyMutation_CausalMetadataCapacityConvergesAcrossReplicas pins the
 // #1204 admission split: local-origin writes are bounded, but replication
