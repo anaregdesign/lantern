@@ -102,6 +102,15 @@ const (
 	// LanternServiceGetReplicationStatusProcedure is the fully-qualified name of the LanternService's
 	// GetReplicationStatus RPC.
 	LanternServiceGetReplicationStatusProcedure = "/graph.v1.LanternService/GetReplicationStatus"
+	// LanternServiceGetReceiptCapabilityProcedure is the fully-qualified name of the LanternService's
+	// GetReceiptCapability RPC.
+	LanternServiceGetReceiptCapabilityProcedure = "/graph.v1.LanternService/GetReceiptCapability"
+	// LanternServiceGetReceiptStatusProcedure is the fully-qualified name of the LanternService's
+	// GetReceiptStatus RPC.
+	LanternServiceGetReceiptStatusProcedure = "/graph.v1.LanternService/GetReceiptStatus"
+	// LanternServiceGetReceiptStatusesProcedure is the fully-qualified name of the LanternService's
+	// GetReceiptStatuses RPC.
+	LanternServiceGetReceiptStatusesProcedure = "/graph.v1.LanternService/GetReceiptStatuses"
 	// LanternServiceBackupSnapshotProcedure is the fully-qualified name of the LanternService's
 	// BackupSnapshot RPC.
 	LanternServiceBackupSnapshotProcedure = "/graph.v1.LanternService/BackupSnapshot"
@@ -188,6 +197,16 @@ type LanternServiceClient interface {
 	// dashboard at any cadence the operator finds useful. On
 	// single-instance deployments enabled=false and peers is empty.
 	GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error)
+	// Receipt preflight follows LanternService auth. The initial implementation
+	// reports enabled=false and authorizes no receipt-bearing writes. An enabled
+	// capability requires configured auth and one certified policy/endpoint cut.
+	GetReceiptCapability(context.Context, *connect.Request[v1.GetReceiptCapabilityRequest]) (*connect.Response[v1.GetReceiptCapabilityResponse], error)
+	// Read-only original-result lookup. Until receipt storage and atomic
+	// publication exist, these fail with FAILED_PRECONDITION rather than
+	// inventing an absent or expired outcome. The singular form forwards to
+	// the plural canonical implementation.
+	GetReceiptStatus(context.Context, *connect.Request[v1.GetReceiptStatusRequest]) (*connect.Response[v1.GetReceiptStatusResponse], error)
+	GetReceiptStatuses(context.Context, *connect.Request[v1.GetReceiptStatusesRequest]) (*connect.Response[v1.GetReceiptStatusesResponse], error)
 	// BackupSnapshot streams a whole-graph, point-in-time backup: every
 	// live vertex and folded edge as a BackupRecord, materialised under a
 	// single GraphCache lock (SnapshotGraph). Unlike the replication
@@ -359,6 +378,24 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(lanternServiceMethods.ByName("GetReplicationStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		getReceiptCapability: connect.NewClient[v1.GetReceiptCapabilityRequest, v1.GetReceiptCapabilityResponse](
+			httpClient,
+			baseURL+LanternServiceGetReceiptCapabilityProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("GetReceiptCapability")),
+			connect.WithClientOptions(opts...),
+		),
+		getReceiptStatus: connect.NewClient[v1.GetReceiptStatusRequest, v1.GetReceiptStatusResponse](
+			httpClient,
+			baseURL+LanternServiceGetReceiptStatusProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("GetReceiptStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		getReceiptStatuses: connect.NewClient[v1.GetReceiptStatusesRequest, v1.GetReceiptStatusesResponse](
+			httpClient,
+			baseURL+LanternServiceGetReceiptStatusesProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("GetReceiptStatuses")),
+			connect.WithClientOptions(opts...),
+		),
 		backupSnapshot: connect.NewClient[v1.BackupSnapshotRequest, v1.BackupSnapshotResponse](
 			httpClient,
 			baseURL+LanternServiceBackupSnapshotProcedure,
@@ -395,6 +432,9 @@ type lanternServiceClient struct {
 	scanEdges              *connect.Client[v1.ScanEdgesRequest, v1.ScanEdgesResponse]
 	getServerStatus        *connect.Client[v1.GetServerStatusRequest, v1.GetServerStatusResponse]
 	getReplicationStatus   *connect.Client[v1.GetReplicationStatusRequest, v1.GetReplicationStatusResponse]
+	getReceiptCapability   *connect.Client[v1.GetReceiptCapabilityRequest, v1.GetReceiptCapabilityResponse]
+	getReceiptStatus       *connect.Client[v1.GetReceiptStatusRequest, v1.GetReceiptStatusResponse]
+	getReceiptStatuses     *connect.Client[v1.GetReceiptStatusesRequest, v1.GetReceiptStatusesResponse]
 	backupSnapshot         *connect.Client[v1.BackupSnapshotRequest, v1.BackupSnapshotResponse]
 }
 
@@ -523,6 +563,21 @@ func (c *lanternServiceClient) GetReplicationStatus(ctx context.Context, req *co
 	return c.getReplicationStatus.CallUnary(ctx, req)
 }
 
+// GetReceiptCapability calls graph.v1.LanternService.GetReceiptCapability.
+func (c *lanternServiceClient) GetReceiptCapability(ctx context.Context, req *connect.Request[v1.GetReceiptCapabilityRequest]) (*connect.Response[v1.GetReceiptCapabilityResponse], error) {
+	return c.getReceiptCapability.CallUnary(ctx, req)
+}
+
+// GetReceiptStatus calls graph.v1.LanternService.GetReceiptStatus.
+func (c *lanternServiceClient) GetReceiptStatus(ctx context.Context, req *connect.Request[v1.GetReceiptStatusRequest]) (*connect.Response[v1.GetReceiptStatusResponse], error) {
+	return c.getReceiptStatus.CallUnary(ctx, req)
+}
+
+// GetReceiptStatuses calls graph.v1.LanternService.GetReceiptStatuses.
+func (c *lanternServiceClient) GetReceiptStatuses(ctx context.Context, req *connect.Request[v1.GetReceiptStatusesRequest]) (*connect.Response[v1.GetReceiptStatusesResponse], error) {
+	return c.getReceiptStatuses.CallUnary(ctx, req)
+}
+
 // BackupSnapshot calls graph.v1.LanternService.BackupSnapshot.
 func (c *lanternServiceClient) BackupSnapshot(ctx context.Context, req *connect.Request[v1.BackupSnapshotRequest]) (*connect.ServerStreamForClient[v1.BackupSnapshotResponse], error) {
 	return c.backupSnapshot.CallServerStream(ctx, req)
@@ -609,6 +664,16 @@ type LanternServiceHandler interface {
 	// dashboard at any cadence the operator finds useful. On
 	// single-instance deployments enabled=false and peers is empty.
 	GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error)
+	// Receipt preflight follows LanternService auth. The initial implementation
+	// reports enabled=false and authorizes no receipt-bearing writes. An enabled
+	// capability requires configured auth and one certified policy/endpoint cut.
+	GetReceiptCapability(context.Context, *connect.Request[v1.GetReceiptCapabilityRequest]) (*connect.Response[v1.GetReceiptCapabilityResponse], error)
+	// Read-only original-result lookup. Until receipt storage and atomic
+	// publication exist, these fail with FAILED_PRECONDITION rather than
+	// inventing an absent or expired outcome. The singular form forwards to
+	// the plural canonical implementation.
+	GetReceiptStatus(context.Context, *connect.Request[v1.GetReceiptStatusRequest]) (*connect.Response[v1.GetReceiptStatusResponse], error)
+	GetReceiptStatuses(context.Context, *connect.Request[v1.GetReceiptStatusesRequest]) (*connect.Response[v1.GetReceiptStatusesResponse], error)
 	// BackupSnapshot streams a whole-graph, point-in-time backup: every
 	// live vertex and folded edge as a BackupRecord, materialised under a
 	// single GraphCache lock (SnapshotGraph). Unlike the replication
@@ -776,6 +841,24 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		connect.WithSchema(lanternServiceMethods.ByName("GetReplicationStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternServiceGetReceiptCapabilityHandler := connect.NewUnaryHandler(
+		LanternServiceGetReceiptCapabilityProcedure,
+		svc.GetReceiptCapability,
+		connect.WithSchema(lanternServiceMethods.ByName("GetReceiptCapability")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternServiceGetReceiptStatusHandler := connect.NewUnaryHandler(
+		LanternServiceGetReceiptStatusProcedure,
+		svc.GetReceiptStatus,
+		connect.WithSchema(lanternServiceMethods.ByName("GetReceiptStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternServiceGetReceiptStatusesHandler := connect.NewUnaryHandler(
+		LanternServiceGetReceiptStatusesProcedure,
+		svc.GetReceiptStatuses,
+		connect.WithSchema(lanternServiceMethods.ByName("GetReceiptStatuses")),
+		connect.WithHandlerOptions(opts...),
+	)
 	lanternServiceBackupSnapshotHandler := connect.NewServerStreamHandler(
 		LanternServiceBackupSnapshotProcedure,
 		svc.BackupSnapshot,
@@ -834,6 +917,12 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServiceGetServerStatusHandler.ServeHTTP(w, r)
 		case LanternServiceGetReplicationStatusProcedure:
 			lanternServiceGetReplicationStatusHandler.ServeHTTP(w, r)
+		case LanternServiceGetReceiptCapabilityProcedure:
+			lanternServiceGetReceiptCapabilityHandler.ServeHTTP(w, r)
+		case LanternServiceGetReceiptStatusProcedure:
+			lanternServiceGetReceiptStatusHandler.ServeHTTP(w, r)
+		case LanternServiceGetReceiptStatusesProcedure:
+			lanternServiceGetReceiptStatusesHandler.ServeHTTP(w, r)
 		case LanternServiceBackupSnapshotProcedure:
 			lanternServiceBackupSnapshotHandler.ServeHTTP(w, r)
 		default:
@@ -943,6 +1032,18 @@ func (UnimplementedLanternServiceHandler) GetServerStatus(context.Context, *conn
 
 func (UnimplementedLanternServiceHandler) GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.GetReplicationStatus is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) GetReceiptCapability(context.Context, *connect.Request[v1.GetReceiptCapabilityRequest]) (*connect.Response[v1.GetReceiptCapabilityResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.GetReceiptCapability is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) GetReceiptStatus(context.Context, *connect.Request[v1.GetReceiptStatusRequest]) (*connect.Response[v1.GetReceiptStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.GetReceiptStatus is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) GetReceiptStatuses(context.Context, *connect.Request[v1.GetReceiptStatusesRequest]) (*connect.Response[v1.GetReceiptStatusesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.GetReceiptStatuses is not implemented"))
 }
 
 func (UnimplementedLanternServiceHandler) BackupSnapshot(context.Context, *connect.Request[v1.BackupSnapshotRequest], *connect.ServerStream[v1.BackupSnapshotResponse]) error {

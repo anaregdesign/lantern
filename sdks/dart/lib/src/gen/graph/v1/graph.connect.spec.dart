@@ -238,6 +238,34 @@ abstract final class LanternService {
     graphv1graph.GetReplicationStatusResponse.new,
   );
 
+  /// Receipt preflight follows LanternService auth. The initial implementation
+  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
+  /// capability requires configured auth and one certified policy/endpoint cut.
+  static const getReceiptCapability = connect.Spec(
+    '/$name/GetReceiptCapability',
+    connect.StreamType.unary,
+    graphv1graph.GetReceiptCapabilityRequest.new,
+    graphv1graph.GetReceiptCapabilityResponse.new,
+  );
+
+  /// Read-only original-result lookup. Until receipt storage and atomic
+  /// publication exist, these fail with FAILED_PRECONDITION rather than
+  /// inventing an absent or expired outcome. The singular form forwards to
+  /// the plural canonical implementation.
+  static const getReceiptStatus = connect.Spec(
+    '/$name/GetReceiptStatus',
+    connect.StreamType.unary,
+    graphv1graph.GetReceiptStatusRequest.new,
+    graphv1graph.GetReceiptStatusResponse.new,
+  );
+
+  static const getReceiptStatuses = connect.Spec(
+    '/$name/GetReceiptStatuses',
+    connect.StreamType.unary,
+    graphv1graph.GetReceiptStatusesRequest.new,
+    graphv1graph.GetReceiptStatusesResponse.new,
+  );
+
   /// BackupSnapshot streams a whole-graph, point-in-time backup: every
   /// live vertex and folded edge as a BackupRecord, materialised under a
   /// single GraphCache lock (SnapshotGraph). Unlike the replication

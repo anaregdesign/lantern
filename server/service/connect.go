@@ -199,6 +199,15 @@ func (h *lanternServiceConnect) GetServerStatus(ctx context.Context, req *connec
 func (h *lanternServiceConnect) GetReplicationStatus(ctx context.Context, req *connect.Request[pb.GetReplicationStatusRequest]) (*connect.Response[pb.GetReplicationStatusResponse], error) {
 	return unary(ctx, req, h.svc.GetReplicationStatus)
 }
+func (h *lanternServiceConnect) GetReceiptCapability(ctx context.Context, req *connect.Request[pb.GetReceiptCapabilityRequest]) (*connect.Response[pb.GetReceiptCapabilityResponse], error) {
+	return unary(ctx, req, h.svc.GetReceiptCapability)
+}
+func (h *lanternServiceConnect) GetReceiptStatus(ctx context.Context, req *connect.Request[pb.GetReceiptStatusRequest]) (*connect.Response[pb.GetReceiptStatusResponse], error) {
+	return unary(ctx, req, h.svc.GetReceiptStatus)
+}
+func (h *lanternServiceConnect) GetReceiptStatuses(ctx context.Context, req *connect.Request[pb.GetReceiptStatusesRequest]) (*connect.Response[pb.GetReceiptStatusesResponse], error) {
+	return unary(ctx, req, h.svc.GetReceiptStatuses)
+}
 func (h *lanternServiceConnect) BackupSnapshot(ctx context.Context, req *connect.Request[pb.BackupSnapshotRequest], stream *connect.ServerStream[pb.BackupSnapshotResponse]) error {
 	// *connect.ServerStream[T] satisfies service.Sender[T] directly.
 	return h.svc.BackupSnapshot(ctx, req.Msg, stream)

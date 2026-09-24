@@ -1078,6 +1078,96 @@ message GetReplicationStatusResponse {
   repeated ReplicationPeer peers = 10;
 }
 
+// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A future
+// receipt-enabled server must keep these values stable for its active epoch.
+// All byte fields are absent while receipts are disabled.
+message ReceiptPolicy {
+  bytes deployment_epoch = 1; // 16 random bytes shared by HA members.
+  bytes fingerprint = 2; // SHA-256 of the immutable receipt policy.
+  uint64 retention_ms = 3;
+  uint64 max_entries = 4;
+  uint64 max_bytes = 5;
+}
+
+// ReceiptEndpoint identifies one instance and one certified generation of
+// its receipt state. A different endpoint or generation never authorizes a
+// blind retry of an uncertain mutation.
+message ReceiptEndpoint {
+  bytes node_id = 1; // Nonzero 16-byte HLC NodeID.
+  bytes generation = 2; // Opaque, nonzero continuity marker.
+}
+
+message GetReceiptCapabilityRequest {}
+
+message GetReceiptCapabilityResponse {
+  // False until the atomic graph/receipt/WAL and recovery gates are enabled.
+  // Disabled responses must omit policy and endpoint; they confer no retry
+  // authorization or proof that a past operation did not execute.
+  bool enabled = 1;
+  ReceiptPolicy policy = 2;
+  ReceiptEndpoint endpoint = 3;
+  uint64 server_now_unix_ms = 4;
+}
+
+// MutationReceiptState is a read-only observation on the serving replica.
+// NOT_YET_OBSERVED is never proof that the mutation was not executed elsewhere.
+enum MutationReceiptState {
+  MUTATION_RECEIPT_STATE_UNSPECIFIED = 0;
+  MUTATION_RECEIPT_STATE_CONFIRMED = 1;
+  MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED = 2;
+  MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE = 3;
+}
+
+// ReceiptResult stores the original public result, not the current graph
+// state. A oneof preserves the presence of a false Delete outcome. Further
+// mutation-family results are added only with their atomic write slices.
+message ReceiptResult {
+  oneof result {
+    bool delete_edge_existed = 1;
+  }
+}
+
+// MutationReceipt is one request-index-aligned item from an atomic logical
+// call. The 49-byte operation ID, 16-byte call ID, and semantic SHA-256 are
+// validated before any future receipt-enabled mutation. The deadline is the
+// ID issuance time plus the active policy's retention horizon.
+message MutationReceipt {
+  bytes operation_id = 1;
+  bytes logical_call_id = 2;
+  uint32 item_index = 3;
+  uint32 item_count = 4;
+  bytes intent_sha256 = 5;
+  uint64 deadline_unix_ms = 6;
+  ReceiptResult original_result = 7;
+}
+
+message ReceiptStatus {
+  bytes operation_id = 1;
+  MutationReceiptState state = 2;
+  // Set exactly when state is CONFIRMED. An absent receipt on a disabled or
+  // recovering endpoint must never be rendered as false, zero, or success.
+  MutationReceipt receipt = 3;
+}
+
+message GetReceiptStatusRequest {
+  bytes operation_id = 1;
+}
+
+message GetReceiptStatusResponse {
+  ReceiptStatus status = 1;
+}
+
+message GetReceiptStatusesRequest {
+  repeated bytes operation_ids = 1;
+}
+
+message GetReceiptStatusesResponse {
+  // Index-aligned with operation_ids, including duplicate IDs. An invalid
+  // request fails as a whole; a future implementation must not return a
+  // partial list or silently interpret absence as NO_LONGER_PROVABLE.
+  repeated ReceiptStatus statuses = 1;
+}
+
 // BackupSnapshotRequest parameterises a whole-graph backup stream.
 // vertex_prefix, when non-empty, restricts the backup to the induced
 // subgraph over vertices whose key has this prefix (an edge is included
@@ -1201,6 +1291,18 @@ service LanternService {
   // dashboard at any cadence the operator finds useful. On
   // single-instance deployments enabled=false and peers is empty.
   rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse);
+
+  // Receipt preflight follows LanternService auth. The initial implementation
+  // reports enabled=false and authorizes no receipt-bearing writes. An enabled
+  // capability requires configured auth and one certified policy/endpoint cut.
+  rpc GetReceiptCapability(GetReceiptCapabilityRequest) returns (GetReceiptCapabilityResponse);
+
+  // Read-only original-result lookup. Until receipt storage and atomic
+  // publication exist, these fail with FAILED_PRECONDITION rather than
+  // inventing an absent or expired outcome. The singular form forwards to
+  // the plural canonical implementation.
+  rpc GetReceiptStatus(GetReceiptStatusRequest) returns (GetReceiptStatusResponse);
+  rpc GetReceiptStatuses(GetReceiptStatusesRequest) returns (GetReceiptStatusesResponse);
 
   // BackupSnapshot streams a whole-graph, point-in-time backup: every
   // live vertex and folded edge as a BackupRecord, materialised under a

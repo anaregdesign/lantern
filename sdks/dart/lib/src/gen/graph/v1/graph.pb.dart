@@ -6238,6 +6238,877 @@ class GetReplicationStatusResponse extends $pb.GeneratedMessage {
   $pb.PbList<ReplicationPeer> get peers => $_getList(3);
 }
 
+/// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A future
+/// receipt-enabled server must keep these values stable for its active epoch.
+/// All byte fields are absent while receipts are disabled.
+class ReceiptPolicy extends $pb.GeneratedMessage {
+  factory ReceiptPolicy({
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? fingerprint,
+    $fixnum.Int64? retentionMs,
+    $fixnum.Int64? maxEntries,
+    $fixnum.Int64? maxBytes,
+  }) {
+    final result = create();
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (fingerprint != null) result.fingerprint = fingerprint;
+    if (retentionMs != null) result.retentionMs = retentionMs;
+    if (maxEntries != null) result.maxEntries = maxEntries;
+    if (maxBytes != null) result.maxBytes = maxBytes;
+    return result;
+  }
+
+  ReceiptPolicy._();
+
+  factory ReceiptPolicy.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReceiptPolicy.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReceiptPolicy',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'fingerprint', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(
+        3, _omitFieldNames ? '' : 'retentionMs', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'maxEntries', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        5, _omitFieldNames ? '' : 'maxBytes', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptPolicy clone() => ReceiptPolicy()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptPolicy copyWith(void Function(ReceiptPolicy) updates) =>
+      super.copyWith((message) => updates(message as ReceiptPolicy))
+          as ReceiptPolicy;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReceiptPolicy create() => ReceiptPolicy._();
+  @$core.override
+  ReceiptPolicy createEmptyInstance() => create();
+  static $pb.PbList<ReceiptPolicy> createRepeated() =>
+      $pb.PbList<ReceiptPolicy>();
+  @$core.pragma('dart2js:noInline')
+  static ReceiptPolicy getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReceiptPolicy>(create);
+  static ReceiptPolicy? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get deploymentEpoch => $_getN(0);
+  @$pb.TagNumber(1)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeploymentEpoch() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeploymentEpoch() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get fingerprint => $_getN(1);
+  @$pb.TagNumber(2)
+  set fingerprint($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasFingerprint() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearFingerprint() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get retentionMs => $_getI64(2);
+  @$pb.TagNumber(3)
+  set retentionMs($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasRetentionMs() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearRetentionMs() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get maxEntries => $_getI64(3);
+  @$pb.TagNumber(4)
+  set maxEntries($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasMaxEntries() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearMaxEntries() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get maxBytes => $_getI64(4);
+  @$pb.TagNumber(5)
+  set maxBytes($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasMaxBytes() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearMaxBytes() => $_clearField(5);
+}
+
+/// ReceiptEndpoint identifies one instance and one certified generation of
+/// its receipt state. A different endpoint or generation never authorizes a
+/// blind retry of an uncertain mutation.
+class ReceiptEndpoint extends $pb.GeneratedMessage {
+  factory ReceiptEndpoint({
+    $core.List<$core.int>? nodeId,
+    $core.List<$core.int>? generation,
+  }) {
+    final result = create();
+    if (nodeId != null) result.nodeId = nodeId;
+    if (generation != null) result.generation = generation;
+    return result;
+  }
+
+  ReceiptEndpoint._();
+
+  factory ReceiptEndpoint.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReceiptEndpoint.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReceiptEndpoint',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'nodeId', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'generation', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptEndpoint clone() => ReceiptEndpoint()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptEndpoint copyWith(void Function(ReceiptEndpoint) updates) =>
+      super.copyWith((message) => updates(message as ReceiptEndpoint))
+          as ReceiptEndpoint;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReceiptEndpoint create() => ReceiptEndpoint._();
+  @$core.override
+  ReceiptEndpoint createEmptyInstance() => create();
+  static $pb.PbList<ReceiptEndpoint> createRepeated() =>
+      $pb.PbList<ReceiptEndpoint>();
+  @$core.pragma('dart2js:noInline')
+  static ReceiptEndpoint getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReceiptEndpoint>(create);
+  static ReceiptEndpoint? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get nodeId => $_getN(0);
+  @$pb.TagNumber(1)
+  set nodeId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasNodeId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearNodeId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get generation => $_getN(1);
+  @$pb.TagNumber(2)
+  set generation($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasGeneration() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearGeneration() => $_clearField(2);
+}
+
+class GetReceiptCapabilityRequest extends $pb.GeneratedMessage {
+  factory GetReceiptCapabilityRequest() => create();
+
+  GetReceiptCapabilityRequest._();
+
+  factory GetReceiptCapabilityRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetReceiptCapabilityRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetReceiptCapabilityRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptCapabilityRequest clone() =>
+      GetReceiptCapabilityRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptCapabilityRequest copyWith(
+          void Function(GetReceiptCapabilityRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetReceiptCapabilityRequest))
+          as GetReceiptCapabilityRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptCapabilityRequest create() =>
+      GetReceiptCapabilityRequest._();
+  @$core.override
+  GetReceiptCapabilityRequest createEmptyInstance() => create();
+  static $pb.PbList<GetReceiptCapabilityRequest> createRepeated() =>
+      $pb.PbList<GetReceiptCapabilityRequest>();
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptCapabilityRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetReceiptCapabilityRequest>(create);
+  static GetReceiptCapabilityRequest? _defaultInstance;
+}
+
+class GetReceiptCapabilityResponse extends $pb.GeneratedMessage {
+  factory GetReceiptCapabilityResponse({
+    $core.bool? enabled,
+    ReceiptPolicy? policy,
+    ReceiptEndpoint? endpoint,
+    $fixnum.Int64? serverNowUnixMs,
+  }) {
+    final result = create();
+    if (enabled != null) result.enabled = enabled;
+    if (policy != null) result.policy = policy;
+    if (endpoint != null) result.endpoint = endpoint;
+    if (serverNowUnixMs != null) result.serverNowUnixMs = serverNowUnixMs;
+    return result;
+  }
+
+  GetReceiptCapabilityResponse._();
+
+  factory GetReceiptCapabilityResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetReceiptCapabilityResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetReceiptCapabilityResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOB(1, _omitFieldNames ? '' : 'enabled')
+    ..aOM<ReceiptPolicy>(2, _omitFieldNames ? '' : 'policy',
+        subBuilder: ReceiptPolicy.create)
+    ..aOM<ReceiptEndpoint>(3, _omitFieldNames ? '' : 'endpoint',
+        subBuilder: ReceiptEndpoint.create)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'serverNowUnixMs', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptCapabilityResponse clone() =>
+      GetReceiptCapabilityResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptCapabilityResponse copyWith(
+          void Function(GetReceiptCapabilityResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetReceiptCapabilityResponse))
+          as GetReceiptCapabilityResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptCapabilityResponse create() =>
+      GetReceiptCapabilityResponse._();
+  @$core.override
+  GetReceiptCapabilityResponse createEmptyInstance() => create();
+  static $pb.PbList<GetReceiptCapabilityResponse> createRepeated() =>
+      $pb.PbList<GetReceiptCapabilityResponse>();
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptCapabilityResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetReceiptCapabilityResponse>(create);
+  static GetReceiptCapabilityResponse? _defaultInstance;
+
+  /// False until the atomic graph/receipt/WAL and recovery gates are enabled.
+  /// Disabled responses must omit policy and endpoint; they confer no retry
+  /// authorization or proof that a past operation did not execute.
+  @$pb.TagNumber(1)
+  $core.bool get enabled => $_getBF(0);
+  @$pb.TagNumber(1)
+  set enabled($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasEnabled() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearEnabled() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  ReceiptPolicy get policy => $_getN(1);
+  @$pb.TagNumber(2)
+  set policy(ReceiptPolicy value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPolicy() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPolicy() => $_clearField(2);
+  @$pb.TagNumber(2)
+  ReceiptPolicy ensurePolicy() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  ReceiptEndpoint get endpoint => $_getN(2);
+  @$pb.TagNumber(3)
+  set endpoint(ReceiptEndpoint value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasEndpoint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearEndpoint() => $_clearField(3);
+  @$pb.TagNumber(3)
+  ReceiptEndpoint ensureEndpoint() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get serverNowUnixMs => $_getI64(3);
+  @$pb.TagNumber(4)
+  set serverNowUnixMs($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasServerNowUnixMs() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearServerNowUnixMs() => $_clearField(4);
+}
+
+enum ReceiptResult_Result { deleteEdgeExisted, notSet }
+
+/// ReceiptResult stores the original public result, not the current graph
+/// state. A oneof preserves the presence of a false Delete outcome. Further
+/// mutation-family results are added only with their atomic write slices.
+class ReceiptResult extends $pb.GeneratedMessage {
+  factory ReceiptResult({
+    $core.bool? deleteEdgeExisted,
+  }) {
+    final result = create();
+    if (deleteEdgeExisted != null) result.deleteEdgeExisted = deleteEdgeExisted;
+    return result;
+  }
+
+  ReceiptResult._();
+
+  factory ReceiptResult.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReceiptResult.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static const $core.Map<$core.int, ReceiptResult_Result>
+      _ReceiptResult_ResultByTag = {
+    1: ReceiptResult_Result.deleteEdgeExisted,
+    0: ReceiptResult_Result.notSet
+  };
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReceiptResult',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..oo(0, [1])
+    ..aOB(1, _omitFieldNames ? '' : 'deleteEdgeExisted')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptResult clone() => ReceiptResult()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptResult copyWith(void Function(ReceiptResult) updates) =>
+      super.copyWith((message) => updates(message as ReceiptResult))
+          as ReceiptResult;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReceiptResult create() => ReceiptResult._();
+  @$core.override
+  ReceiptResult createEmptyInstance() => create();
+  static $pb.PbList<ReceiptResult> createRepeated() =>
+      $pb.PbList<ReceiptResult>();
+  @$core.pragma('dart2js:noInline')
+  static ReceiptResult getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReceiptResult>(create);
+  static ReceiptResult? _defaultInstance;
+
+  ReceiptResult_Result whichResult() =>
+      _ReceiptResult_ResultByTag[$_whichOneof(0)]!;
+  void clearResult() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
+  $core.bool get deleteEdgeExisted => $_getBF(0);
+  @$pb.TagNumber(1)
+  set deleteEdgeExisted($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeleteEdgeExisted() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeleteEdgeExisted() => $_clearField(1);
+}
+
+/// MutationReceipt is one request-index-aligned item from an atomic logical
+/// call. The 49-byte operation ID, 16-byte call ID, and semantic SHA-256 are
+/// validated before any future receipt-enabled mutation. The deadline is the
+/// ID issuance time plus the active policy's retention horizon.
+class MutationReceipt extends $pb.GeneratedMessage {
+  factory MutationReceipt({
+    $core.List<$core.int>? operationId,
+    $core.List<$core.int>? logicalCallId,
+    $core.int? itemIndex,
+    $core.int? itemCount,
+    $core.List<$core.int>? intentSha256,
+    $fixnum.Int64? deadlineUnixMs,
+    ReceiptResult? originalResult,
+  }) {
+    final result = create();
+    if (operationId != null) result.operationId = operationId;
+    if (logicalCallId != null) result.logicalCallId = logicalCallId;
+    if (itemIndex != null) result.itemIndex = itemIndex;
+    if (itemCount != null) result.itemCount = itemCount;
+    if (intentSha256 != null) result.intentSha256 = intentSha256;
+    if (deadlineUnixMs != null) result.deadlineUnixMs = deadlineUnixMs;
+    if (originalResult != null) result.originalResult = originalResult;
+    return result;
+  }
+
+  MutationReceipt._();
+
+  factory MutationReceipt.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory MutationReceipt.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MutationReceipt',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'operationId', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'logicalCallId', $pb.PbFieldType.OY)
+    ..a<$core.int>(3, _omitFieldNames ? '' : 'itemIndex', $pb.PbFieldType.OU3)
+    ..a<$core.int>(4, _omitFieldNames ? '' : 'itemCount', $pb.PbFieldType.OU3)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'intentSha256', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(
+        6, _omitFieldNames ? '' : 'deadlineUnixMs', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<ReceiptResult>(7, _omitFieldNames ? '' : 'originalResult',
+        subBuilder: ReceiptResult.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MutationReceipt clone() => MutationReceipt()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MutationReceipt copyWith(void Function(MutationReceipt) updates) =>
+      super.copyWith((message) => updates(message as MutationReceipt))
+          as MutationReceipt;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static MutationReceipt create() => MutationReceipt._();
+  @$core.override
+  MutationReceipt createEmptyInstance() => create();
+  static $pb.PbList<MutationReceipt> createRepeated() =>
+      $pb.PbList<MutationReceipt>();
+  @$core.pragma('dart2js:noInline')
+  static MutationReceipt getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<MutationReceipt>(create);
+  static MutationReceipt? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get operationId => $_getN(0);
+  @$pb.TagNumber(1)
+  set operationId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOperationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOperationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get logicalCallId => $_getN(1);
+  @$pb.TagNumber(2)
+  set logicalCallId($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasLogicalCallId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearLogicalCallId() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.int get itemIndex => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set itemIndex($core.int value) => $_setUnsignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasItemIndex() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearItemIndex() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.int get itemCount => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set itemCount($core.int value) => $_setUnsignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasItemCount() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearItemCount() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get intentSha256 => $_getN(4);
+  @$pb.TagNumber(5)
+  set intentSha256($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasIntentSha256() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearIntentSha256() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get deadlineUnixMs => $_getI64(5);
+  @$pb.TagNumber(6)
+  set deadlineUnixMs($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasDeadlineUnixMs() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearDeadlineUnixMs() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  ReceiptResult get originalResult => $_getN(6);
+  @$pb.TagNumber(7)
+  set originalResult(ReceiptResult value) => $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasOriginalResult() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearOriginalResult() => $_clearField(7);
+  @$pb.TagNumber(7)
+  ReceiptResult ensureOriginalResult() => $_ensure(6);
+}
+
+class ReceiptStatus extends $pb.GeneratedMessage {
+  factory ReceiptStatus({
+    $core.List<$core.int>? operationId,
+    MutationReceiptState? state,
+    MutationReceipt? receipt,
+  }) {
+    final result = create();
+    if (operationId != null) result.operationId = operationId;
+    if (state != null) result.state = state;
+    if (receipt != null) result.receipt = receipt;
+    return result;
+  }
+
+  ReceiptStatus._();
+
+  factory ReceiptStatus.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReceiptStatus.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReceiptStatus',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'operationId', $pb.PbFieldType.OY)
+    ..e<MutationReceiptState>(
+        2, _omitFieldNames ? '' : 'state', $pb.PbFieldType.OE,
+        defaultOrMaker: MutationReceiptState.MUTATION_RECEIPT_STATE_UNSPECIFIED,
+        valueOf: MutationReceiptState.valueOf,
+        enumValues: MutationReceiptState.values)
+    ..aOM<MutationReceipt>(3, _omitFieldNames ? '' : 'receipt',
+        subBuilder: MutationReceipt.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptStatus clone() => ReceiptStatus()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReceiptStatus copyWith(void Function(ReceiptStatus) updates) =>
+      super.copyWith((message) => updates(message as ReceiptStatus))
+          as ReceiptStatus;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReceiptStatus create() => ReceiptStatus._();
+  @$core.override
+  ReceiptStatus createEmptyInstance() => create();
+  static $pb.PbList<ReceiptStatus> createRepeated() =>
+      $pb.PbList<ReceiptStatus>();
+  @$core.pragma('dart2js:noInline')
+  static ReceiptStatus getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReceiptStatus>(create);
+  static ReceiptStatus? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get operationId => $_getN(0);
+  @$pb.TagNumber(1)
+  set operationId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOperationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOperationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  MutationReceiptState get state => $_getN(1);
+  @$pb.TagNumber(2)
+  set state(MutationReceiptState value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasState() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearState() => $_clearField(2);
+
+  /// Set exactly when state is CONFIRMED. An absent receipt on a disabled or
+  /// recovering endpoint must never be rendered as false, zero, or success.
+  @$pb.TagNumber(3)
+  MutationReceipt get receipt => $_getN(2);
+  @$pb.TagNumber(3)
+  set receipt(MutationReceipt value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceipt() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceipt() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationReceipt ensureReceipt() => $_ensure(2);
+}
+
+class GetReceiptStatusRequest extends $pb.GeneratedMessage {
+  factory GetReceiptStatusRequest({
+    $core.List<$core.int>? operationId,
+  }) {
+    final result = create();
+    if (operationId != null) result.operationId = operationId;
+    return result;
+  }
+
+  GetReceiptStatusRequest._();
+
+  factory GetReceiptStatusRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetReceiptStatusRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetReceiptStatusRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'operationId', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusRequest clone() =>
+      GetReceiptStatusRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusRequest copyWith(
+          void Function(GetReceiptStatusRequest) updates) =>
+      super.copyWith((message) => updates(message as GetReceiptStatusRequest))
+          as GetReceiptStatusRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusRequest create() => GetReceiptStatusRequest._();
+  @$core.override
+  GetReceiptStatusRequest createEmptyInstance() => create();
+  static $pb.PbList<GetReceiptStatusRequest> createRepeated() =>
+      $pb.PbList<GetReceiptStatusRequest>();
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetReceiptStatusRequest>(create);
+  static GetReceiptStatusRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get operationId => $_getN(0);
+  @$pb.TagNumber(1)
+  set operationId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOperationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOperationId() => $_clearField(1);
+}
+
+class GetReceiptStatusResponse extends $pb.GeneratedMessage {
+  factory GetReceiptStatusResponse({
+    ReceiptStatus? status,
+  }) {
+    final result = create();
+    if (status != null) result.status = status;
+    return result;
+  }
+
+  GetReceiptStatusResponse._();
+
+  factory GetReceiptStatusResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetReceiptStatusResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetReceiptStatusResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<ReceiptStatus>(1, _omitFieldNames ? '' : 'status',
+        subBuilder: ReceiptStatus.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusResponse clone() =>
+      GetReceiptStatusResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusResponse copyWith(
+          void Function(GetReceiptStatusResponse) updates) =>
+      super.copyWith((message) => updates(message as GetReceiptStatusResponse))
+          as GetReceiptStatusResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusResponse create() => GetReceiptStatusResponse._();
+  @$core.override
+  GetReceiptStatusResponse createEmptyInstance() => create();
+  static $pb.PbList<GetReceiptStatusResponse> createRepeated() =>
+      $pb.PbList<GetReceiptStatusResponse>();
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetReceiptStatusResponse>(create);
+  static GetReceiptStatusResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  ReceiptStatus get status => $_getN(0);
+  @$pb.TagNumber(1)
+  set status(ReceiptStatus value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasStatus() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearStatus() => $_clearField(1);
+  @$pb.TagNumber(1)
+  ReceiptStatus ensureStatus() => $_ensure(0);
+}
+
+class GetReceiptStatusesRequest extends $pb.GeneratedMessage {
+  factory GetReceiptStatusesRequest({
+    $core.Iterable<$core.List<$core.int>>? operationIds,
+  }) {
+    final result = create();
+    if (operationIds != null) result.operationIds.addAll(operationIds);
+    return result;
+  }
+
+  GetReceiptStatusesRequest._();
+
+  factory GetReceiptStatusesRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetReceiptStatusesRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetReceiptStatusesRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..p<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'operationIds', $pb.PbFieldType.PY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusesRequest clone() =>
+      GetReceiptStatusesRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusesRequest copyWith(
+          void Function(GetReceiptStatusesRequest) updates) =>
+      super.copyWith((message) => updates(message as GetReceiptStatusesRequest))
+          as GetReceiptStatusesRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusesRequest create() => GetReceiptStatusesRequest._();
+  @$core.override
+  GetReceiptStatusesRequest createEmptyInstance() => create();
+  static $pb.PbList<GetReceiptStatusesRequest> createRepeated() =>
+      $pb.PbList<GetReceiptStatusesRequest>();
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusesRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetReceiptStatusesRequest>(create);
+  static GetReceiptStatusesRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<$core.List<$core.int>> get operationIds => $_getList(0);
+}
+
+class GetReceiptStatusesResponse extends $pb.GeneratedMessage {
+  factory GetReceiptStatusesResponse({
+    $core.Iterable<ReceiptStatus>? statuses,
+  }) {
+    final result = create();
+    if (statuses != null) result.statuses.addAll(statuses);
+    return result;
+  }
+
+  GetReceiptStatusesResponse._();
+
+  factory GetReceiptStatusesResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetReceiptStatusesResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetReceiptStatusesResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pc<ReceiptStatus>(
+        1, _omitFieldNames ? '' : 'statuses', $pb.PbFieldType.PM,
+        subBuilder: ReceiptStatus.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusesResponse clone() =>
+      GetReceiptStatusesResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetReceiptStatusesResponse copyWith(
+          void Function(GetReceiptStatusesResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetReceiptStatusesResponse))
+          as GetReceiptStatusesResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusesResponse create() => GetReceiptStatusesResponse._();
+  @$core.override
+  GetReceiptStatusesResponse createEmptyInstance() => create();
+  static $pb.PbList<GetReceiptStatusesResponse> createRepeated() =>
+      $pb.PbList<GetReceiptStatusesResponse>();
+  @$core.pragma('dart2js:noInline')
+  static GetReceiptStatusesResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetReceiptStatusesResponse>(create);
+  static GetReceiptStatusesResponse? _defaultInstance;
+
+  /// Index-aligned with operation_ids, including duplicate IDs. An invalid
+  /// request fails as a whole; a future implementation must not return a
+  /// partial list or silently interpret absence as NO_LONGER_PROVABLE.
+  @$pb.TagNumber(1)
+  $pb.PbList<ReceiptStatus> get statuses => $_getList(0);
+}
+
 /// BackupSnapshotRequest parameterises a whole-graph backup stream.
 /// vertex_prefix, when non-empty, restricts the backup to the induced
 /// subgraph over vertices whose key has this prefix (an edge is included
@@ -6569,6 +7440,27 @@ class LanternServiceApi {
           $pb.ClientContext? ctx, GetReplicationStatusRequest request) =>
       _client.invoke<GetReplicationStatusResponse>(ctx, 'LanternService',
           'GetReplicationStatus', request, GetReplicationStatusResponse());
+
+  /// Receipt preflight follows LanternService auth. The initial implementation
+  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
+  /// capability requires configured auth and one certified policy/endpoint cut.
+  $async.Future<GetReceiptCapabilityResponse> getReceiptCapability(
+          $pb.ClientContext? ctx, GetReceiptCapabilityRequest request) =>
+      _client.invoke<GetReceiptCapabilityResponse>(ctx, 'LanternService',
+          'GetReceiptCapability', request, GetReceiptCapabilityResponse());
+
+  /// Read-only original-result lookup. Until receipt storage and atomic
+  /// publication exist, these fail with FAILED_PRECONDITION rather than
+  /// inventing an absent or expired outcome. The singular form forwards to
+  /// the plural canonical implementation.
+  $async.Future<GetReceiptStatusResponse> getReceiptStatus(
+          $pb.ClientContext? ctx, GetReceiptStatusRequest request) =>
+      _client.invoke<GetReceiptStatusResponse>(ctx, 'LanternService',
+          'GetReceiptStatus', request, GetReceiptStatusResponse());
+  $async.Future<GetReceiptStatusesResponse> getReceiptStatuses(
+          $pb.ClientContext? ctx, GetReceiptStatusesRequest request) =>
+      _client.invoke<GetReceiptStatusesResponse>(ctx, 'LanternService',
+          'GetReceiptStatuses', request, GetReceiptStatusesResponse());
 
   /// BackupSnapshot streams a whole-graph, point-in-time backup: every
   /// live vertex and folded edge as a BackupRecord, materialised under a
