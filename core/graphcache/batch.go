@@ -109,21 +109,38 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsent(items []VertexItem[
 // with an error). An item observed expired remains not-ready: a final
 // application clock may move backwards and make it live, in which case the
 // retry must prepare its real document before storage can commit.
-type searchPreparation struct {
+type searchPreparation[S comparable, T any] struct {
+	index     *search.InvertedIndex[S, search.Document]
+	extract   func(S, T) search.Document
 	documents []search.PreparedDocument
 	errs      []error
 	ready     []bool
 }
 
-func (c *GraphCache[S, T]) newSearchPreparation(n int) *searchPreparation {
-	if c.searchIndex == nil {
+func (c *GraphCache[S, T]) newSearchPreparation(n int) *searchPreparation[S, T] {
+	c.mu.RLock()
+	index, extract := c.searchIndex, c.searchExtract
+	c.mu.RUnlock()
+	if index == nil {
 		return nil
 	}
-	return &searchPreparation{
+	return &searchPreparation[S, T]{
+		index:     index,
+		extract:   extract,
 		documents: make([]search.PreparedDocument, n),
 		errs:      make([]error, n),
 		ready:     make([]bool, n),
 	}
+}
+
+// The caller holds c.mu. A future search-index pointer replacement may happen
+// while analysis runs outside that lock; prepared documents belong to the
+// captured index and cannot be applied to its replacement.
+func (c *GraphCache[S, T]) searchPreparationCurrentLocked(preparation *searchPreparation[S, T]) bool {
+	if preparation == nil {
+		return c.searchIndex == nil
+	}
+	return preparation.index == c.searchIndex
 }
 
 // prepareSearchDocsBounded performs the expensive projection, tokenization,
@@ -131,7 +148,7 @@ func (c *GraphCache[S, T]) newSearchPreparation(n int) *searchPreparation {
 // is expired at this optimistic sample is deliberately left not-ready. The
 // final-lock revalidation can then detect a clock rollback and analyze it
 // before allowing a live storage mutation (#1178).
-func (c *GraphCache[S, T]) prepareSearchDocsBounded(items []VertexItem[S, T], indexes []int, now time.Time, preparation *searchPreparation) {
+func (c *GraphCache[S, T]) prepareSearchDocsBounded(items []VertexItem[S, T], indexes []int, now time.Time, preparation *searchPreparation[S, T]) {
 	if preparation == nil {
 		return
 	}
@@ -143,7 +160,7 @@ func (c *GraphCache[S, T]) prepareSearchDocsBounded(items []VertexItem[S, T], in
 			continue
 		}
 		preparation.ready[i] = true
-		preparation.documents[i], _, preparation.errs[i] = c.searchIndex.Prepare(c.searchExtract(items[i].Key, items[i].Value))
+		preparation.documents[i], _, preparation.errs[i] = preparation.index.Prepare(preparation.extract(items[i].Key, items[i].Value))
 	}
 }
 
@@ -172,7 +189,7 @@ func allVertexIndexes[S comparable, T any](items []VertexItem[S, T]) []int {
 	return indexes
 }
 
-func missingPreparedIndexesAt[S comparable, T any](preparation *searchPreparation, items []VertexItem[S, T], indexes []int, now time.Time) []int {
+func missingPreparedIndexesAt[S comparable, T any](preparation *searchPreparation[S, T], items []VertexItem[S, T], indexes []int, now time.Time) []int {
 	if preparation == nil {
 		return nil
 	}
@@ -192,7 +209,7 @@ func missingPreparedIndexesAt[S comparable, T any](preparation *searchPreparatio
 // preparation error is relevant only while its item is live at that sample: a
 // crossed-expiry item is a valid delete-like overwrite and must not poison the
 // batch with an analysis error for content that will never be indexed.
-func preparedItemsForIndexesAt[S comparable, T any](items []VertexItem[S, T], indexes []int, preparation *searchPreparation, now time.Time) ([]search.PreparedItem[S], error) {
+func preparedItemsForIndexesAt[S comparable, T any](items []VertexItem[S, T], indexes []int, preparation *searchPreparation[S, T], now time.Time) ([]search.PreparedItem[S], error) {
 	if preparation == nil {
 		return nil, nil
 	}
@@ -259,6 +276,15 @@ func (c *GraphCache[S, T]) putVerticesWithExpiration(items []VertexItem[S, T], o
 				observeLock(time.Since(lockedAt))
 			}
 			c.mu.Unlock()
+		}
+		if !c.searchPreparationCurrentLocked(preparation) {
+			unlock()
+			preparation = c.newSearchPreparation(len(items))
+			if preparation != nil {
+				final = finalVertexIndexes(items, allVertexIndexes(items))
+				c.prepareSearchDocsBounded(items, final, time.Now(), preparation)
+			}
+			continue
 		}
 		if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
 			unlock()
@@ -368,6 +394,11 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 				observeLock(time.Since(lockedAt))
 			}
 			c.mu.Unlock()
+		}
+		if !c.searchPreparationCurrentLocked(preparation) {
+			unlock()
+			preparation = c.newSearchPreparation(len(items))
+			continue
 		}
 		if c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
 			unlock()
@@ -767,6 +798,11 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 	preparation := c.newSearchPreparation(len(items))
 	for {
 		c.mu.Lock()
+		if !c.searchPreparationCurrentLocked(preparation) {
+			c.mu.Unlock()
+			preparation = c.newSearchPreparation(len(items))
+			continue
+		}
 		accepted, rejected := c.planVerticesHLCLocked(items, ts)
 		if strict && ts != (hlc.Timestamp{}) && c.causalLimits.MaxVertexEntries > 0 {
 			keys := make([]S, 0, len(accepted))

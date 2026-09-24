@@ -442,3 +442,47 @@ func TestPutVertexWithExpirationHLCSearchClockRollback(t *testing.T) {
 		t.Fatalf("SearchVertices = %v, want v", results)
 	}
 }
+
+func TestPutVertexWithExpirationHLCRevalidatesReplacedSearchIndex(t *testing.T) {
+	entered, resume := make(chan struct{}), make(chan struct{})
+	first := true
+	c := NewGraphCache[string, string](time.Hour)
+	c.EnableSearchIndex(func(_ string, value string) search.Document {
+		if first {
+			first = false
+			close(entered)
+			<-resume
+		}
+		return search.Text(value)
+	}, strings.Compare)
+	result := make(chan bool, 1)
+	go func() {
+		result <- c.PutVertexWithExpirationHLC("k", "oversized", time.Now().Add(time.Hour), hlc.Timestamp{WallNs: 20})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("singular HLC writer did not reach out-of-lock projection")
+	}
+	replacement := newSearchIndex[string](true, search.SearchAnalysisLimits{MaxDocumentBytes: 4}, strings.Compare)
+	c.mu.Lock()
+	c.searchCommitMu.Lock()
+	c.searchIndex = replacement
+	c.searchCommitMu.Unlock()
+	c.mu.Unlock()
+	close(resume)
+	select {
+	case applied := <-result:
+		if !applied {
+			t.Fatal("replication apply rejected a causally admissible write")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("singular HLC writer did not retry against replacement index")
+	}
+	if got, ok := c.GetVertex("k"); !ok || got != "oversized" {
+		t.Fatalf("replicated vertex = %q/%v, want oversized/true", got, ok)
+	}
+	if got := c.SearchIndexMemoryStats().Health; got != search.IndexIncomplete {
+		t.Fatalf("replacement index health = %q, want incomplete after analysis rejection", got)
+	}
+}

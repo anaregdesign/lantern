@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,78 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/search"
 )
+
+func TestVertexBatchSearchPreparationRevalidatesReplacedIndex(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	item := []VertexItem[string, string]{{Key: "k", Value: "oversized", Expiration: live}}
+	for _, tc := range []struct {
+		name  string
+		write func(*GraphCache[string, string]) error
+	}{
+		{"put", func(c *GraphCache[string, string]) error {
+			_, err := c.PutVerticesWithExpirationOutcomesChecked(item)
+			return err
+		}},
+		{"put-if-absent", func(c *GraphCache[string, string]) error {
+			_, err := c.PutVerticesWithExpirationIfAbsentOutcomesChecked(item)
+			return err
+		}},
+		{"hlc-put", func(c *GraphCache[string, string]) error {
+			_, err := c.PutVerticesWithExpirationHLCOutcomesChecked(item, hlc.Timestamp{WallNs: 20})
+			return err
+		}},
+		{"hlc-put-if-absent", func(c *GraphCache[string, string]) error {
+			_, _, err := c.PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(item, hlc.Timestamp{WallNs: 20})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entered, resume := make(chan struct{}), make(chan struct{})
+			first := true
+			c := NewGraphCache[string, string](time.Hour)
+			c.EnableSearchIndex(func(_ string, value string) search.Document {
+				if first {
+					first = false
+					close(entered)
+					<-resume
+				}
+				return search.Text(value)
+			}, strings.Compare)
+			result := make(chan error, 1)
+			go func() { result <- tc.write(c) }()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("writer did not reach out-of-lock projection")
+			}
+			// Model a future staged pointer publication while the old index is
+			// still analyzing. The replacement has a stricter admission limit.
+			replacement := newSearchIndex[string](true, search.SearchAnalysisLimits{MaxDocumentBytes: 4}, strings.Compare)
+			c.mu.Lock()
+			c.searchCommitMu.Lock()
+			c.searchIndex = replacement
+			c.searchCommitMu.Unlock()
+			c.mu.Unlock()
+			close(resume)
+			var err error
+			select {
+			case err = <-result:
+			case <-time.After(time.Second):
+				t.Fatal("writer did not retry against replacement index")
+			}
+			var limit *search.AnalysisLimitError
+			if !errors.As(err, &limit) || limit.Kind != search.LimitDocumentBytes {
+				t.Fatalf("error = %v, want replacement's document byte limit", err)
+			}
+			if _, ok := c.GetVertex("k"); ok {
+				t.Fatal("rejected batch mutated the vertex cache")
+			}
+			if got := c.SearchIndexMemoryStats().Documents; got != 0 {
+				t.Fatalf("replacement index documents = %d, want 0", got)
+			}
+		})
+	}
+}
 
 func TestPutOutcomesUseFinalApplicationTime(t *testing.T) {
 	wallNow := time.Now()

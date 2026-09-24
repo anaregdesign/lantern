@@ -82,8 +82,8 @@ type GraphCache[S comparable, T any] struct {
 	// the later cache Flush hook is an idempotent delete. When nil the put /
 	// evict paths pay only a single nil check.
 	// The pointer currently stays fixed after EnableSearchIndex. Batch/HLC
-	// document preparation reads it outside mu; a future pointer-swap writer
-	// must capture and revalidate that preparation before using this option.
+	// document preparation captures its identity under mu and revalidates it
+	// at commit, so a future pointer-swap writer cannot publish stale analysis.
 	searchIndex   *search.InvertedIndex[S, search.Document]
 	searchExtract func(S, T) search.Document
 	// searchCommitMu makes a prepared vertex batch visible to Search as one
