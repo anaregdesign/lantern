@@ -231,6 +231,75 @@ func TestConnectAdapter_GetVerticesBatchDoesNotBlockPublication(t *testing.T) {
 	}
 }
 
+type blockingPrefixCountBackend struct {
+	Backend
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingPrefixCountBackend) CountByPrefix(prefix string) int {
+	close(b.entered)
+	<-b.release
+	return b.Backend.CountByPrefix(prefix)
+}
+
+func TestConnectAdapter_PrefixCountDoesNotBlockPublication(t *testing.T) {
+	cases := []struct {
+		name string
+		read func(graphv1connect.LanternServiceHandler) error
+	}{
+		{"CountVerticesByPrefix", func(h graphv1connect.LanternServiceHandler) error {
+			_, err := h.CountVerticesByPrefix(context.Background(), connect.NewRequest(&pb.CountVerticesByPrefixRequest{Prefix: "a"}))
+			return err
+		}},
+		{"DeleteVerticesByPrefixDryRun", func(h graphv1connect.LanternServiceHandler) error {
+			_, err := h.DeleteVerticesByPrefix(context.Background(), connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{Prefix: "a", DryRun: true}))
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log := mutationlog.New(mutationlog.Options{})
+			defer func() { _ = log.Close() }()
+			backend := &blockingPrefixCountBackend{
+				Backend: newFakeBackend(), entered: make(chan struct{}), release: make(chan struct{}),
+			}
+			defer func() {
+				select {
+				case <-backend.release:
+				default:
+					close(backend.release)
+				}
+			}()
+			svc := NewLanternService(backend).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
+			handler := NewLanternServiceConnectHandler(svc)
+			readDone := make(chan error, 1)
+			go func() { readDone <- tc.read(handler) }()
+			<-backend.entered
+			writerDone := make(chan struct{})
+			go func() {
+				svc.replicationCutMu.Lock()
+				svc.replicationCutMu.Unlock()
+				close(writerDone)
+			}()
+			select {
+			case <-writerDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("prefix count blocked publication")
+			}
+			close(backend.release)
+			select {
+			case err := <-readDone:
+				if connect.CodeOf(err) != connect.CodeUnavailable {
+					t.Fatalf("overlapping prefix count = %v, want retryable Unavailable", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("prefix count did not finish")
+			}
+		})
+	}
+}
+
 // BenchmarkConnectAdapter_GetEdgesPublicationCut isolates the read-side
 // publication gate cost from the network and Connect framing overhead.
 func BenchmarkConnectAdapter_GetEdgesPublicationCut(b *testing.B) {

@@ -146,11 +146,11 @@ func (h *lanternServiceConnect) SearchVertices(ctx context.Context, req *connect
 	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.SearchVertices)
 }
 func (h *lanternServiceConnect) CountVerticesByPrefix(ctx context.Context, req *connect.Request[pb.CountVerticesByPrefixRequest]) (*connect.Response[pb.CountVerticesByPrefixResponse], error) {
-	return unaryGraphRead(ctx, req, h.svc, h.svc.CountVerticesByPrefix)
+	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.CountVerticesByPrefix)
 }
 func (h *lanternServiceConnect) DeleteVerticesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteVerticesByPrefixRequest]) (*connect.Response[pb.DeleteVerticesByPrefixResponse], error) {
 	if req.Msg.GetDryRun() {
-		return unaryGraphRead(ctx, req, h.svc, h.svc.DeleteVerticesByPrefix)
+		return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.DeleteVerticesByPrefix)
 	}
 	return unary(ctx, req, h.svc.DeleteVerticesByPrefix)
 }
