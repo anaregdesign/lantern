@@ -359,6 +359,20 @@ func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
 	return nil
 }
 
+// withReplicationSubscribeCut pins the same publication boundary while an
+// identity consumer registers its log tail and captures/validates the origin
+// vector. The fault channel belongs to that cut's generation, so a transient
+// publication failure still gaps the stream even if repair finishes quickly.
+func (s *LanternService) withReplicationSubscribeCut(capture func(<-chan struct{})) error {
+	s.replicationCutMu.RLock()
+	defer s.replicationCutMu.RUnlock()
+	if s.publicationFaultCount != 0 {
+		return publicationGapError()
+	}
+	capture(s.publicationFaultCh)
+	return nil
+}
+
 // publicationStatus returns one fault generation. A stream keeps this
 // channel even after repair, so a relay publication gap always terminates
 // that stream before it can be mistaken for a continuous CDC feed.

@@ -74,7 +74,7 @@ is required for either reads or writes.
 | # | Decision | Default | Rationale |
 |---|---|---|---|
 | D1 | Crash persistence | **None for v1.** WAL is a hook only. | Bootstrap from peers covers single-node loss; persistence adds operational surface area we don't yet need. |
-| D2 | External CDC | **Same `Subscribe` RPC**, gated by auth/ACL later. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. The offline storage prerequisite is specified in [ADR 0002](decisions/0002-dart-offline-repository-contract.md#sqlite-and-asynchronous-store-implementation): atomically persist invalidation and chunk progress, advance the last-applied origin sequence only on the final chunk, then resume at that sequence plus one. The #1116 identity-only wire projection remains separate work. |
+| D2 | External CDC | **Same `Subscribe` RPC**, gated by auth/ACL later. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. The offline storage prerequisite is specified in [ADR 0002](decisions/0002-dart-offline-repository-contract.md#sqlite-and-asynchronous-store-implementation): atomically persist invalidation and chunk progress, advance the last-applied origin sequence only on the final chunk, then resume at that sequence plus one. The #1116 identity-only server projection is implemented; SDK facades and the offline live consumer remain separate work. |
 | D3 | WAN replication | **Out of scope for v1**, single DC only. HLC max skew bound = **500 ms**. | Geo replication requires looser skew + read repair; defer until single-DC HA is proven. |
 | D4 | Tombstone TTL | **Cluster-wide config, default 1 year (8760h).** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
 | D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery; leaves room for an optional WAL PVC later. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
@@ -472,14 +472,15 @@ Handler implementation notes (issue #180):
   `lantern_subscribe_dropped_total{reason}` (counter; `reason ∈ {gapped,
   send_failed}`) are pre-rendered in `server/metrics/metrics.go`.
 
-#### Identity-only CDC contract (#1116; proposed)
+#### Identity-only CDC contract (#1116; server projection implemented)
 
 External cache invalidation will use this same `Subscribe` RPC and mutation
 log. Its explicit `IDENTITY_ONLY` projection does not change the zero/default
 full-`Mutation` stream used by peer replication. The request distinguishes
 ordinary vector-cursor resume from bootstrap. The response carries exactly one
 of a bootstrap checkpoint, a full mutation, or an identity chunk. This is the
-wire design for #1116, not a claim that the projection is implemented yet.
+server wire projection implemented by #1294. SDK facades, the offline live
+consumer, and physical-device release qualification remain separate work.
 
 A checkpoint contains the responder's **contiguous published** last sequence
 for each origin. On bootstrap the server holds the publication cut gate while
@@ -507,7 +508,8 @@ it cannot create an invisible cursor hole.
 An identity chunk carries `(origin, origin_seq, HLC, operation category,
 chunk_index, is_last)` plus exact Vertex keys or collision-free Edge
 `(tail, head)` pairs. It has no graph value, Edge weight, contribution ID,
-credential, or auth metadata. The projector maps origin-authoritative Put,
+credential, or auth metadata. `first_item_index` counts identities within the
+projected mutation, starting at zero, including earlier chunks. The projector maps origin-authoritative Put,
 Add, and exact Delete mutations to their exact committed identities. Capped
 prefix Delete is already logged as an exact victim list; projecting the old
 prefix predicate would invalidate keys outside the capped commit. Legacy
@@ -526,7 +528,8 @@ asynchronously replicated cluster. Local append failures and any graph change
 that cannot be published must force existing and new CDC streams into a
 detectable fail-closed recovery state. #1282 closes the remote relay
 boundary, and #1293 closes local Put/Delete graph-first publication. The
-identity projection and mobile consumer still require their own gates.
+server identity projection is implemented by #1294; SDK facades, the mobile
+consumer, and physical-device release qualification retain separate gates.
 
 After `gapped`, a mobile consumer opens bootstrap and atomically marks its
 **resident confirmed cache** Unknown at that checkpoint. It retains resident

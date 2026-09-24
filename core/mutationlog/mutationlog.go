@@ -256,6 +256,20 @@ func (l *Log) Evicted() uint64 {
 	return l.evicted
 }
 
+// RetainedEntries returns the ring's current entries in replica-local seq
+// order. The slice is owned by the caller; each Entry.Op remains the original
+// immutable payload. Subscribe admission uses this bounded view to determine
+// whether a portable per-origin cursor needs an already-evicted mutation.
+func (l *Log) RetainedEntries() []Entry {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]Entry, l.size)
+	for i := range out {
+		out[i] = l.ring[(l.head+i)%l.capacity]
+	}
+	return out
+}
+
 // Append assigns the next sequence number to op, persists the entry through
 // the WAL hook, stores it in the ring buffer, and hands it off to the
 // dispatcher goroutine which performs per-subscriber fan-out. The

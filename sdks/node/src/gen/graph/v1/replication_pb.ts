@@ -2,11 +2,11 @@
 // @generated from file graph/v1/replication.proto (package graph.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
-import type { AddEdgeRequest, AddEdgesRequest, DeleteEdgeRequest, DeleteEdgesByPrefixRequest, DeleteEdgesRequest, DeleteVertexRequest, DeleteVerticesByPrefixRequest, DeleteVerticesRequest, Edge, PutEdgeRequest, PutEdgesRequest, PutVertexRequest, PutVerticesRequest, Vertex } from "./graph_pb.js";
+import type { AddEdgeRequest, AddEdgesRequest, DeleteEdgeRequest, DeleteEdgesByPrefixRequest, DeleteEdgesRequest, DeleteVertexRequest, DeleteVerticesByPrefixRequest, DeleteVerticesRequest, Edge, EdgeKey, PutEdgeRequest, PutEdgesRequest, PutVertexRequest, PutVerticesRequest, Vertex } from "./graph_pb.js";
 import { file_graph_v1_graph } from "./graph_pb.js";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file graph/v1/replication.proto.
  */
 export const file_graph_v1_replication: GenFile = /*@__PURE__*/
-  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqwGCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIABJCChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0aWNlc0gAEjwKFHJlcGxpY2F0ZWRfcHV0X2VkZ2VzGA4gASgLMhwuZ3JhcGgudjEuUmVwbGljYXRlZFB1dEVkZ2VzSABCBAoCb3AiIgoTVmVydGV4Q2F1c2FsQmFycmllchILCgNrZXkYASABKAkiewoTUmVwbGljYXRlZFB1dFZlcnRleBIgCgRsaXZlGAEgASgLMhAuZ3JhcGgudjEuVmVydGV4SAASNwoOY2F1c2FsX2JhcnJpZXIYAiABKAsyHS5ncmFwaC52MS5WZXJ0ZXhDYXVzYWxCYXJyaWVySABCCQoHb3V0Y29tZSJHChVSZXBsaWNhdGVkUHV0VmVydGljZXMSLgoHZW50cmllcxgBIAMoCzIdLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0ZXgiLwoRRWRnZUNhdXNhbEJhcnJpZXISDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJInUKEVJlcGxpY2F0ZWRQdXRFZGdlEh4KBGxpdmUYASABKAsyDi5ncmFwaC52MS5FZGdlSAASNQoOY2F1c2FsX2JhcnJpZXIYAiABKAsyGy5ncmFwaC52MS5FZGdlQ2F1c2FsQmFycmllckgAQgkKB291dGNvbWUiQgoSUmVwbGljYXRlZFB1dEVkZ2VzEiwKB2VudHJpZXMYASADKAsyGy5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZSJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AisgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5EhYKDmZyb21fbG9jYWxfc2VxGAIgASgEGjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IuIBCg5TbmFwc2hvdEhlYWRlchJPChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIqCgpjdXRvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEhgKEGN1dG9mZl9sb2NhbF9zZXEYAyABKAQaOQoXQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgEOgI4ASLAAQoOU25hcHNob3RGb290ZXISFAoMdmVydGV4X2NvdW50GAEgASgEEhIKCmVkZ2VfY291bnQYAiABKAQSIwobdmVydGV4X2NhdXNhbF9iYXJyaWVyX2NvdW50GAMgASgEEiEKGWVkZ2VfY2F1c2FsX2JhcnJpZXJfY291bnQYBCABKAQSHgoWdmVydGV4X3RvbWJzdG9uZV9jb3VudBgFIAEoBBIcChRlZGdlX3RvbWJzdG9uZV9jb3VudBgGIAEoBCJXCg5TbmFwc2hvdFZlcnRleBIgCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXgSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIk8KG1NuYXBzaG90VmVydGV4Q2F1c2FsQmFycmllchILCgNrZXkYASABKAkSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIpMBChhTbmFwc2hvdEVkZ2VDb250cmlidXRpb24SDgoGd2VpZ2h0GAEgASgCEi4KCmV4cGlyYXRpb24YAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmNvbnRyaWJfaWQYAyABKAwSIwoDaGxjGAQgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIooBCgxTbmFwc2hvdEVkZ2USDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJEiMKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcBI5Cg1jb250cmlidXRpb25zGAQgAygLMiIuZ3JhcGgudjEuU25hcHNob3RFZGdlQ29udHJpYnV0aW9uIlwKGVNuYXBzaG90RWRnZUNhdXNhbEJhcnJpZXISDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJEiMKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJ7ChdTbmFwc2hvdFZlcnRleFRvbWJzdG9uZRILCgNrZXkYASABKAkSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEi4KCmV4cGlyYXRpb24YAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIogBChVTbmFwc2hvdEVkZ2VUb21ic3RvbmUSDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJEiMKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcBIuCgpleHBpcmF0aW9uGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCLNAwoQU25hcHNob3RSZXNwb25zZRIqCgZoZWFkZXIYASABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlckgAEioKBnZlcnRleBgCIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4SAASJgoEZWRnZRgDIAEoCzIWLmdyYXBoLnYxLlNuYXBzaG90RWRnZUgAEioKBmZvb3RlchgEIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90Rm9vdGVySAASRgoVdmVydGV4X2NhdXNhbF9iYXJyaWVyGAUgASgLMiUuZ3JhcGgudjEuU25hcHNob3RWZXJ0ZXhDYXVzYWxCYXJyaWVySAASQgoTZWRnZV9jYXVzYWxfYmFycmllchgGIAEoCzIjLmdyYXBoLnYxLlNuYXBzaG90RWRnZUNhdXNhbEJhcnJpZXJIABI9ChB2ZXJ0ZXhfdG9tYnN0b25lGAcgASgLMiEuZ3JhcGgudjEuU25hcHNob3RWZXJ0ZXhUb21ic3RvbmVIABI5Cg5lZGdlX3RvbWJzdG9uZRgIIAEoCzIfLmdyYXBoLnYxLlNuYXBzaG90RWRnZVRvbWJzdG9uZUgAQgcKBWVudHJ5IhMKEVBlZXJTdGF0dXNSZXF1ZXN0IlkKC09yaWdpblN0YXRlEg4KBm9yaWdpbhgBIAEoDBIQCghsYXN0X3NlcRgCIAEoBBIoCghsYXN0X2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJ0ChJQZWVyU3RhdHVzUmVzcG9uc2USEwoLc2VsZl9vcmlnaW4YASABKAwSJgoHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlEiEKGXNlYXJjaF9jb25maWdfZmluZ2VycHJpbnQYAyABKAky8QEKGUxhbnRlcm5SZXBsaWNhdGlvblNlcnZpY2USRgoJU3Vic2NyaWJlEhouZ3JhcGgudjEuU3Vic2NyaWJlUmVxdWVzdBobLmdyYXBoLnYxLlN1YnNjcmliZVJlc3BvbnNlMAESQwoIU25hcHNob3QSGS5ncmFwaC52MS5TbmFwc2hvdFJlcXVlc3QaGi5ncmFwaC52MS5TbmFwc2hvdFJlc3BvbnNlMAESRwoKUGVlclN0YXR1cxIbLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXF1ZXN0GhwuZ3JhcGgudjEuUGVlclN0YXR1c1Jlc3BvbnNlQmEKDGNvbS5ncmFwaC52MUIQUmVwbGljYXRpb25Qcm90b1ABogIDR1hYqgIIR3JhcGguVjHKAghHcmFwaFxWMeICFEdyYXBoXFYxXEdQQk1ldGFkYXRh6gIJR3JhcGg6OlYxYgZwcm90bzM", [file_google_protobuf_timestamp, file_graph_v1_graph]);
+  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqwGCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIABJCChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0aWNlc0gAEjwKFHJlcGxpY2F0ZWRfcHV0X2VkZ2VzGA4gASgLMhwuZ3JhcGgudjEuUmVwbGljYXRlZFB1dEVkZ2VzSABCBAoCb3AiIgoTVmVydGV4Q2F1c2FsQmFycmllchILCgNrZXkYASABKAkiewoTUmVwbGljYXRlZFB1dFZlcnRleBIgCgRsaXZlGAEgASgLMhAuZ3JhcGgudjEuVmVydGV4SAASNwoOY2F1c2FsX2JhcnJpZXIYAiABKAsyHS5ncmFwaC52MS5WZXJ0ZXhDYXVzYWxCYXJyaWVySABCCQoHb3V0Y29tZSJHChVSZXBsaWNhdGVkUHV0VmVydGljZXMSLgoHZW50cmllcxgBIAMoCzIdLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0ZXgiLwoRRWRnZUNhdXNhbEJhcnJpZXISDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJInUKEVJlcGxpY2F0ZWRQdXRFZGdlEh4KBGxpdmUYASABKAsyDi5ncmFwaC52MS5FZGdlSAASNQoOY2F1c2FsX2JhcnJpZXIYAiABKAsyGy5ncmFwaC52MS5FZGdlQ2F1c2FsQmFycmllckgAQgkKB291dGNvbWUiQgoSUmVwbGljYXRlZFB1dEVkZ2VzEiwKB2VudHJpZXMYASADKAsyGy5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZSJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3Ai+AEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5EhYKDmZyb21fbG9jYWxfc2VxGAIgASgEEjEKCnByb2plY3Rpb24YAyABKA4yHS5ncmFwaC52MS5TdWJzY3JpYmVQcm9qZWN0aW9uEhEKCWJvb3RzdHJhcBgEIAEoCBo3ChVGcm9tU2VxUGVyT3JpZ2luRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgEOgI4ASKeAQoSSWRlbnRpdHlDaGVja3BvaW50Ek8KE2xhc3Rfc2VxX3Blcl9vcmlnaW4YASADKAsyMi5ncmFwaC52MS5JZGVudGl0eUNoZWNrcG9pbnQuTGFzdFNlcVBlck9yaWdpbkVudHJ5GjcKFUxhc3RTZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIvwBCg1JZGVudGl0eUNodW5rEg4KBm9yaWdpbhgBIAEoDBILCgNzZXEYAiABKAQSIwoDaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEi4KCW9wZXJhdGlvbhgEIAEoDjIbLmdyYXBoLnYxLklkZW50aXR5T3BlcmF0aW9uEhMKC2NodW5rX2luZGV4GAUgASgNEg8KB2lzX2xhc3QYBiABKAgSEwoLdmVydGV4X2tleXMYByADKAkSJAoJZWRnZV9rZXlzGAggAygLMhEuZ3JhcGgudjEuRWRnZUtleRIYChBmaXJzdF9pdGVtX2luZGV4GAkgASgNIqsBChFTdWJzY3JpYmVSZXNwb25zZRImCghtdXRhdGlvbhgBIAEoCzISLmdyYXBoLnYxLk11dGF0aW9uSAASMgoKY2hlY2twb2ludBgCIAEoCzIcLmdyYXBoLnYxLklkZW50aXR5Q2hlY2twb2ludEgAEjEKDmlkZW50aXR5X2NodW5rGAMgASgLMhcuZ3JhcGgudjEuSWRlbnRpdHlDaHVua0gAQgcKBWV2ZW50IhEKD1NuYXBzaG90UmVxdWVzdCLiAQoOU25hcHNob3RIZWFkZXISTwoVY3V0b2ZmX3NlcV9wZXJfb3JpZ2luGAEgAygLMjAuZ3JhcGgudjEuU25hcHNob3RIZWFkZXIuQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnkSKgoKY3V0b2ZmX2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcBIYChBjdXRvZmZfbG9jYWxfc2VxGAMgASgEGjkKF0N1dG9mZlNlcVBlck9yaWdpbkVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoBDoCOAEiwAEKDlNuYXBzaG90Rm9vdGVyEhQKDHZlcnRleF9jb3VudBgBIAEoBBISCgplZGdlX2NvdW50GAIgASgEEiMKG3ZlcnRleF9jYXVzYWxfYmFycmllcl9jb3VudBgDIAEoBBIhChllZGdlX2NhdXNhbF9iYXJyaWVyX2NvdW50GAQgASgEEh4KFnZlcnRleF90b21ic3RvbmVfY291bnQYBSABKAQSHAoUZWRnZV90b21ic3RvbmVfY291bnQYBiABKAQiVwoOU25hcHNob3RWZXJ0ZXgSIAoGdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydGV4EiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJPChtTbmFwc2hvdFZlcnRleENhdXNhbEJhcnJpZXISCwoDa2V5GAEgASgJEiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCKTAQoYU25hcHNob3RFZGdlQ29udHJpYnV0aW9uEg4KBndlaWdodBgBIAEoAhIuCgpleHBpcmF0aW9uGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpjb250cmliX2lkGAMgASgMEiMKA2hsYxgEIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCKKAQoMU25hcHNob3RFZGdlEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXASOQoNY29udHJpYnV0aW9ucxgEIAMoCzIiLmdyYXBoLnYxLlNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbiJcChlTbmFwc2hvdEVkZ2VDYXVzYWxCYXJyaWVyEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXAiewoXU25hcHNob3RWZXJ0ZXhUb21ic3RvbmUSCwoDa2V5GAEgASgJEiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcBIuCgpleHBpcmF0aW9uGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKIAQoVU25hcHNob3RFZGdlVG9tYnN0b25lEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXASLgoKZXhwaXJhdGlvbhgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAizQMKEFNuYXBzaG90UmVzcG9uc2USKgoGaGVhZGVyGAEgASgLMhguZ3JhcGgudjEuU25hcHNob3RIZWFkZXJIABIqCgZ2ZXJ0ZXgYAiABKAsyGC5ncmFwaC52MS5TbmFwc2hvdFZlcnRleEgAEiYKBGVkZ2UYAyABKAsyFi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VIABIqCgZmb290ZXIYBCABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEZvb3RlckgAEkYKFXZlcnRleF9jYXVzYWxfYmFycmllchgFIAEoCzIlLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4Q2F1c2FsQmFycmllckgAEkIKE2VkZ2VfY2F1c2FsX2JhcnJpZXIYBiABKAsyIy5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDYXVzYWxCYXJyaWVySAASPQoQdmVydGV4X3RvbWJzdG9uZRgHIAEoCzIhLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4VG9tYnN0b25lSAASOQoOZWRnZV90b21ic3RvbmUYCCABKAsyHy5ncmFwaC52MS5TbmFwc2hvdEVkZ2VUb21ic3RvbmVIAEIHCgVlbnRyeSITChFQZWVyU3RhdHVzUmVxdWVzdCJZCgtPcmlnaW5TdGF0ZRIOCgZvcmlnaW4YASABKAwSEAoIbGFzdF9zZXEYAiABKAQSKAoIbGFzdF9obGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXAidAoSUGVlclN0YXR1c1Jlc3BvbnNlEhMKC3NlbGZfb3JpZ2luGAEgASgMEiYKB29yaWdpbnMYAiADKAsyFS5ncmFwaC52MS5PcmlnaW5TdGF0ZRIhChlzZWFyY2hfY29uZmlnX2ZpbmdlcnByaW50GAMgASgJKosBChNTdWJzY3JpYmVQcm9qZWN0aW9uEiQKIFNVQlNDUklCRV9QUk9KRUNUSU9OX1VOU1BFQ0lGSUVEEAASJgoiU1VCU0NSSUJFX1BST0pFQ1RJT05fRlVMTF9NVVRBVElPThABEiYKIlNVQlNDUklCRV9QUk9KRUNUSU9OX0lERU5USVRZX09OTFkQAirmAQoRSWRlbnRpdHlPcGVyYXRpb24SIgoeSURFTlRJVFlfT1BFUkFUSU9OX1VOU1BFQ0lGSUVEEAASIQodSURFTlRJVFlfT1BFUkFUSU9OX1BVVF9WRVJURVgQARIkCiBJREVOVElUWV9PUEVSQVRJT05fREVMRVRFX1ZFUlRFWBACEh8KG0lERU5USVRZX09QRVJBVElPTl9BRERfRURHRRADEh8KG0lERU5USVRZX09QRVJBVElPTl9QVVRfRURHRRAEEiIKHklERU5USVRZX09QRVJBVElPTl9ERUxFVEVfRURHRRAFMvEBChlMYW50ZXJuUmVwbGljYXRpb25TZXJ2aWNlEkYKCVN1YnNjcmliZRIaLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QaGy5ncmFwaC52MS5TdWJzY3JpYmVSZXNwb25zZTABEkMKCFNuYXBzaG90EhkuZ3JhcGgudjEuU25hcHNob3RSZXF1ZXN0GhouZ3JhcGgudjEuU25hcHNob3RSZXNwb25zZTABEkcKClBlZXJTdGF0dXMSGy5ncmFwaC52MS5QZWVyU3RhdHVzUmVxdWVzdBocLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXNwb25zZUJhCgxjb20uZ3JhcGgudjFCEFJlcGxpY2F0aW9uUHJvdG9QAaICA0dYWKoCCEdyYXBoLlYxygIIR3JhcGhcVjHiAhRHcmFwaFxWMVxHUEJNZXRhZGF0YeoCCUdyYXBoOjpWMWIGcHJvdG8z", [file_google_protobuf_timestamp, file_graph_v1_graph]);
 
 /**
  * HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
@@ -364,9 +364,9 @@ export const MutationSchema: GenMessage<Mutation> = /*@__PURE__*/
  *     the oldest retained entry; this lets a consumer that has only
  *     ever talked to a subset of replicas naturally pick up entries
  *     from a newly-joined origin.
- *   - If the resulting overall earliest requested seq is below the
- *     server's first retained log seq the call fails with
- *     FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+ *   - A truncated responder-local log returns FAILED_PRECONDITION; the
+ *     portable origin cursor cannot recover evicted entries. Identity-only
+ *     consumers use an explicit checkpoint to revalidate resident keys.
  *
  * Keys are 32-character lowercase hexadecimal encodings of the 16-byte
  * HLC NodeID (matching `HLCTimestamp.node_id` and `Mutation.origin`).
@@ -380,7 +380,7 @@ export const MutationSchema: GenMessage<Mutation> = /*@__PURE__*/
 export type SubscribeRequest = Message<"graph.v1.SubscribeRequest"> & {
   /**
    * Per-origin resume cursor. Keys are 32-char lowercase hex of the
-   * 16-byte HLC NodeID; values are the next local `seq` the consumer
+   * 16-byte HLC NodeID; values are the next origin `seq` the consumer
    * expects from that origin.
    *
    * @generated from field: map<string, uint64> from_seq_per_origin = 1;
@@ -397,6 +397,22 @@ export type SubscribeRequest = Message<"graph.v1.SubscribeRequest"> & {
    * @generated from field: uint64 from_local_seq = 2;
    */
   fromLocalSeq: bigint;
+
+  /**
+   * The zero value preserves the full Mutation stream used by peers.
+   *
+   * @generated from field: graph.v1.SubscribeProjection projection = 3;
+   */
+  projection: SubscribeProjection;
+
+  /**
+   * Identity-only cold start/recovery: atomically register the live tail and
+   * send its contiguous per-origin checkpoint before any identity chunk.
+   * Requires an empty cursor and from_local_seq == 0.
+   *
+   * @generated from field: bool bootstrap = 4;
+   */
+  bootstrap: boolean;
 };
 
 /**
@@ -407,15 +423,115 @@ export const SubscribeRequestSchema: GenMessage<SubscribeRequest> = /*@__PURE__*
   messageDesc(file_graph_v1_replication, 9);
 
 /**
- * SubscribeResponse carries one replicated mutation per message.
+ * A bootstrap checkpoint is the responder's contiguous publication cut,
+ * not a cluster-wide consensus or freshness barrier.
+ *
+ * @generated from message graph.v1.IdentityCheckpoint
+ */
+export type IdentityCheckpoint = Message<"graph.v1.IdentityCheckpoint"> & {
+  /**
+   * @generated from field: map<string, uint64> last_seq_per_origin = 1;
+   */
+  lastSeqPerOrigin: { [key: string]: bigint };
+};
+
+/**
+ * Describes the message graph.v1.IdentityCheckpoint.
+ * Use `create(IdentityCheckpointSchema)` to create a new message.
+ */
+export const IdentityCheckpointSchema: GenMessage<IdentityCheckpoint> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 10);
+
+/**
+ * One bounded fragment of an origin mutation's exact graph identities.
+ * Final empty chunks are valid: they close a mutation with no identities.
+ * No graph value, edge weight, contribution ID, or auth metadata is present.
+ *
+ * @generated from message graph.v1.IdentityChunk
+ */
+export type IdentityChunk = Message<"graph.v1.IdentityChunk"> & {
+  /**
+   * @generated from field: bytes origin = 1;
+   */
+  origin: Uint8Array;
+
+  /**
+   * @generated from field: uint64 seq = 2;
+   */
+  seq: bigint;
+
+  /**
+   * @generated from field: graph.v1.HLCTimestamp hlc = 3;
+   */
+  hlc?: HLCTimestamp | undefined;
+
+  /**
+   * @generated from field: graph.v1.IdentityOperation operation = 4;
+   */
+  operation: IdentityOperation;
+
+  /**
+   * @generated from field: uint32 chunk_index = 5;
+   */
+  chunkIndex: number;
+
+  /**
+   * @generated from field: bool is_last = 6;
+   */
+  isLast: boolean;
+
+  /**
+   * @generated from field: repeated string vertex_keys = 7;
+   */
+  vertexKeys: string[];
+
+  /**
+   * @generated from field: repeated graph.v1.EdgeKey edge_keys = 8;
+   */
+  edgeKeys: EdgeKey[];
+
+  /**
+   * @generated from field: uint32 first_item_index = 9;
+   */
+  firstItemIndex: number;
+};
+
+/**
+ * Describes the message graph.v1.IdentityChunk.
+ * Use `create(IdentityChunkSchema)` to create a new message.
+ */
+export const IdentityChunkSchema: GenMessage<IdentityChunk> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 11);
+
+/**
+ * Exactly one frame variant is set. Existing default full-Mutation peers
+ * receive the same field-1 payload as before.
  *
  * @generated from message graph.v1.SubscribeResponse
  */
 export type SubscribeResponse = Message<"graph.v1.SubscribeResponse"> & {
   /**
-   * @generated from field: graph.v1.Mutation mutation = 1;
+   * @generated from oneof graph.v1.SubscribeResponse.event
    */
-  mutation?: Mutation | undefined;
+  event: {
+    /**
+     * @generated from field: graph.v1.Mutation mutation = 1;
+     */
+    value: Mutation;
+    case: "mutation";
+  } | {
+    /**
+     * @generated from field: graph.v1.IdentityCheckpoint checkpoint = 2;
+     */
+    value: IdentityCheckpoint;
+    case: "checkpoint";
+  } | {
+    /**
+     * @generated from field: graph.v1.IdentityChunk identity_chunk = 3;
+     */
+    value: IdentityChunk;
+    case: "identityChunk";
+  } | { case: undefined; value?: undefined };
 };
 
 /**
@@ -423,7 +539,7 @@ export type SubscribeResponse = Message<"graph.v1.SubscribeResponse"> & {
  * Use `create(SubscribeResponseSchema)` to create a new message.
  */
 export const SubscribeResponseSchema: GenMessage<SubscribeResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 10);
+  messageDesc(file_graph_v1_replication, 12);
 
 /**
  * SnapshotRequest opens a server-streaming snapshot of the live graph and
@@ -441,7 +557,7 @@ export type SnapshotRequest = Message<"graph.v1.SnapshotRequest"> & {
  * Use `create(SnapshotRequestSchema)` to create a new message.
  */
 export const SnapshotRequestSchema: GenMessage<SnapshotRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 11);
+  messageDesc(file_graph_v1_replication, 13);
 
 /**
  * SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
@@ -490,7 +606,7 @@ export type SnapshotHeader = Message<"graph.v1.SnapshotHeader"> & {
  * Use `create(SnapshotHeaderSchema)` to create a new message.
  */
 export const SnapshotHeaderSchema: GenMessage<SnapshotHeader> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 12);
+  messageDesc(file_graph_v1_replication, 14);
 
 /**
  * SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -537,7 +653,7 @@ export type SnapshotFooter = Message<"graph.v1.SnapshotFooter"> & {
  * Use `create(SnapshotFooterSchema)` to create a new message.
  */
 export const SnapshotFooterSchema: GenMessage<SnapshotFooter> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 13);
+  messageDesc(file_graph_v1_replication, 15);
 
 /**
  * SnapshotVertex is the snapshot-time representation of a single live
@@ -566,7 +682,7 @@ export type SnapshotVertex = Message<"graph.v1.SnapshotVertex"> & {
  * Use `create(SnapshotVertexSchema)` to create a new message.
  */
 export const SnapshotVertexSchema: GenMessage<SnapshotVertex> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 14);
+  messageDesc(file_graph_v1_replication, 16);
 
 /**
  * SnapshotVertexCausalBarrier carries the retained LWW floor of a PutVertex
@@ -593,7 +709,7 @@ export type SnapshotVertexCausalBarrier = Message<"graph.v1.SnapshotVertexCausal
  * Use `create(SnapshotVertexCausalBarrierSchema)` to create a new message.
  */
 export const SnapshotVertexCausalBarrierSchema: GenMessage<SnapshotVertexCausalBarrier> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 15);
+  messageDesc(file_graph_v1_replication, 17);
 
 /**
  * SnapshotEdgeContribution is one additive (or LWW-imported) entry inside
@@ -641,7 +757,7 @@ export type SnapshotEdgeContribution = Message<"graph.v1.SnapshotEdgeContributio
  * Use `create(SnapshotEdgeContributionSchema)` to create a new message.
  */
 export const SnapshotEdgeContributionSchema: GenMessage<SnapshotEdgeContribution> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 16);
+  messageDesc(file_graph_v1_replication, 18);
 
 /**
  * SnapshotEdge is the snapshot-time representation of a single live edge.
@@ -677,7 +793,7 @@ export type SnapshotEdge = Message<"graph.v1.SnapshotEdge"> & {
  * Use `create(SnapshotEdgeSchema)` to create a new message.
  */
 export const SnapshotEdgeSchema: GenMessage<SnapshotEdge> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 17);
+  messageDesc(file_graph_v1_replication, 19);
 
 /**
  * SnapshotEdgeCausalBarrier is the edge sibling of
@@ -708,7 +824,7 @@ export type SnapshotEdgeCausalBarrier = Message<"graph.v1.SnapshotEdgeCausalBarr
  * Use `create(SnapshotEdgeCausalBarrierSchema)` to create a new message.
  */
 export const SnapshotEdgeCausalBarrierSchema: GenMessage<SnapshotEdgeCausalBarrier> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 18);
+  messageDesc(file_graph_v1_replication, 20);
 
 /**
  * SnapshotVertexTombstone and SnapshotEdgeTombstone carry active Delete
@@ -739,7 +855,7 @@ export type SnapshotVertexTombstone = Message<"graph.v1.SnapshotVertexTombstone"
  * Use `create(SnapshotVertexTombstoneSchema)` to create a new message.
  */
 export const SnapshotVertexTombstoneSchema: GenMessage<SnapshotVertexTombstone> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 19);
+  messageDesc(file_graph_v1_replication, 21);
 
 /**
  * @generated from message graph.v1.SnapshotEdgeTombstone
@@ -771,7 +887,7 @@ export type SnapshotEdgeTombstone = Message<"graph.v1.SnapshotEdgeTombstone"> & 
  * Use `create(SnapshotEdgeTombstoneSchema)` to create a new message.
  */
 export const SnapshotEdgeTombstoneSchema: GenMessage<SnapshotEdgeTombstone> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 20);
+  messageDesc(file_graph_v1_replication, 22);
 
 /**
  * SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
@@ -844,7 +960,7 @@ export type SnapshotResponse = Message<"graph.v1.SnapshotResponse"> & {
  * Use `create(SnapshotResponseSchema)` to create a new message.
  */
 export const SnapshotResponseSchema: GenMessage<SnapshotResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 21);
+  messageDesc(file_graph_v1_replication, 23);
 
 /**
  * PeerStatusRequest is intentionally empty — the responder always
@@ -861,7 +977,7 @@ export type PeerStatusRequest = Message<"graph.v1.PeerStatusRequest"> & {
  * Use `create(PeerStatusRequestSchema)` to create a new message.
  */
 export const PeerStatusRequestSchema: GenMessage<PeerStatusRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 22);
+  messageDesc(file_graph_v1_replication, 24);
 
 /**
  * OriginState is the responder's last-applied position for a single
@@ -894,7 +1010,7 @@ export type OriginState = Message<"graph.v1.OriginState"> & {
  * Use `create(OriginStateSchema)` to create a new message.
  */
 export const OriginStateSchema: GenMessage<OriginState> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 23);
+  messageDesc(file_graph_v1_replication, 25);
 
 /**
  * PeerStatusResponse carries the responder's per-origin convergence
@@ -932,7 +1048,76 @@ export type PeerStatusResponse = Message<"graph.v1.PeerStatusResponse"> & {
  * Use `create(PeerStatusResponseSchema)` to create a new message.
  */
 export const PeerStatusResponseSchema: GenMessage<PeerStatusResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 24);
+  messageDesc(file_graph_v1_replication, 26);
+
+/**
+ * @generated from enum graph.v1.SubscribeProjection
+ */
+export enum SubscribeProjection {
+  /**
+   * Omitted projection preserves the historical full-Mutation stream.
+   *
+   * @generated from enum value: SUBSCRIBE_PROJECTION_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: SUBSCRIBE_PROJECTION_FULL_MUTATION = 1;
+   */
+  FULL_MUTATION = 1,
+
+  /**
+   * @generated from enum value: SUBSCRIBE_PROJECTION_IDENTITY_ONLY = 2;
+   */
+  IDENTITY_ONLY = 2,
+}
+
+/**
+ * Describes the enum graph.v1.SubscribeProjection.
+ */
+export const SubscribeProjectionSchema: GenEnum<SubscribeProjection> = /*@__PURE__*/
+  enumDesc(file_graph_v1_replication, 0);
+
+/**
+ * @generated from enum graph.v1.IdentityOperation
+ */
+export enum IdentityOperation {
+  /**
+   * @generated from enum value: IDENTITY_OPERATION_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: IDENTITY_OPERATION_PUT_VERTEX = 1;
+   */
+  PUT_VERTEX = 1,
+
+  /**
+   * @generated from enum value: IDENTITY_OPERATION_DELETE_VERTEX = 2;
+   */
+  DELETE_VERTEX = 2,
+
+  /**
+   * @generated from enum value: IDENTITY_OPERATION_ADD_EDGE = 3;
+   */
+  ADD_EDGE = 3,
+
+  /**
+   * @generated from enum value: IDENTITY_OPERATION_PUT_EDGE = 4;
+   */
+  PUT_EDGE = 4,
+
+  /**
+   * @generated from enum value: IDENTITY_OPERATION_DELETE_EDGE = 5;
+   */
+  DELETE_EDGE = 5,
+}
+
+/**
+ * Describes the enum graph.v1.IdentityOperation.
+ */
+export const IdentityOperationSchema: GenEnum<IdentityOperation> = /*@__PURE__*/
+  enumDesc(file_graph_v1_replication, 1);
 
 /**
  * LanternReplicationService carries the peer-to-peer (and CDC) replication

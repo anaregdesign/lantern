@@ -18,6 +18,43 @@ import '../../google/protobuf/duration.pbjson.dart' as $2;
 import '../../google/protobuf/timestamp.pbjson.dart' as $1;
 import 'graph.pbjson.dart' as $0;
 
+@$core.Deprecated('Use subscribeProjectionDescriptor instead')
+const SubscribeProjection$json = {
+  '1': 'SubscribeProjection',
+  '2': [
+    {'1': 'SUBSCRIBE_PROJECTION_UNSPECIFIED', '2': 0},
+    {'1': 'SUBSCRIBE_PROJECTION_FULL_MUTATION', '2': 1},
+    {'1': 'SUBSCRIBE_PROJECTION_IDENTITY_ONLY', '2': 2},
+  ],
+};
+
+/// Descriptor for `SubscribeProjection`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List subscribeProjectionDescriptor = $convert.base64Decode(
+    'ChNTdWJzY3JpYmVQcm9qZWN0aW9uEiQKIFNVQlNDUklCRV9QUk9KRUNUSU9OX1VOU1BFQ0lGSU'
+    'VEEAASJgoiU1VCU0NSSUJFX1BST0pFQ1RJT05fRlVMTF9NVVRBVElPThABEiYKIlNVQlNDUklC'
+    'RV9QUk9KRUNUSU9OX0lERU5USVRZX09OTFkQAg==');
+
+@$core.Deprecated('Use identityOperationDescriptor instead')
+const IdentityOperation$json = {
+  '1': 'IdentityOperation',
+  '2': [
+    {'1': 'IDENTITY_OPERATION_UNSPECIFIED', '2': 0},
+    {'1': 'IDENTITY_OPERATION_PUT_VERTEX', '2': 1},
+    {'1': 'IDENTITY_OPERATION_DELETE_VERTEX', '2': 2},
+    {'1': 'IDENTITY_OPERATION_ADD_EDGE', '2': 3},
+    {'1': 'IDENTITY_OPERATION_PUT_EDGE', '2': 4},
+    {'1': 'IDENTITY_OPERATION_DELETE_EDGE', '2': 5},
+  ],
+};
+
+/// Descriptor for `IdentityOperation`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List identityOperationDescriptor = $convert.base64Decode(
+    'ChFJZGVudGl0eU9wZXJhdGlvbhIiCh5JREVOVElUWV9PUEVSQVRJT05fVU5TUEVDSUZJRUQQAB'
+    'IhCh1JREVOVElUWV9PUEVSQVRJT05fUFVUX1ZFUlRFWBABEiQKIElERU5USVRZX09QRVJBVElP'
+    'Tl9ERUxFVEVfVkVSVEVYEAISHwobSURFTlRJVFlfT1BFUkFUSU9OX0FERF9FREdFEAMSHwobSU'
+    'RFTlRJVFlfT1BFUkFUSU9OX1BVVF9FREdFEAQSIgoeSURFTlRJVFlfT1BFUkFUSU9OX0RFTEVU'
+    'RV9FREdFEAU=');
+
 @$core.Deprecated('Use hLCTimestampDescriptor instead')
 const HLCTimestamp$json = {
   '1': 'HLCTimestamp',
@@ -369,6 +406,15 @@ const SubscribeRequest$json = {
       '10': 'fromSeqPerOrigin'
     },
     {'1': 'from_local_seq', '3': 2, '4': 1, '5': 4, '10': 'fromLocalSeq'},
+    {
+      '1': 'projection',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SubscribeProjection',
+      '10': 'projection'
+    },
+    {'1': 'bootstrap', '3': 4, '4': 1, '5': 8, '10': 'bootstrap'},
   ],
   '3': [SubscribeRequest_FromSeqPerOriginEntry$json],
 };
@@ -387,8 +433,90 @@ const SubscribeRequest_FromSeqPerOriginEntry$json = {
 final $typed_data.Uint8List subscribeRequestDescriptor = $convert.base64Decode(
     'ChBTdWJzY3JpYmVSZXF1ZXN0El8KE2Zyb21fc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC'
     '52MS5TdWJzY3JpYmVSZXF1ZXN0LkZyb21TZXFQZXJPcmlnaW5FbnRyeVIQZnJvbVNlcVBlck9y'
-    'aWdpbhIkCg5mcm9tX2xvY2FsX3NlcRgCIAEoBFIMZnJvbUxvY2FsU2VxGkMKFUZyb21TZXFQZX'
-    'JPcmlnaW5FbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoBFIFdmFsdWU6AjgB');
+    'aWdpbhIkCg5mcm9tX2xvY2FsX3NlcRgCIAEoBFIMZnJvbUxvY2FsU2VxEj0KCnByb2plY3Rpb2'
+    '4YAyABKA4yHS5ncmFwaC52MS5TdWJzY3JpYmVQcm9qZWN0aW9uUgpwcm9qZWN0aW9uEhwKCWJv'
+    'b3RzdHJhcBgEIAEoCFIJYm9vdHN0cmFwGkMKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRIQCgNrZX'
+    'kYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoBFIFdmFsdWU6AjgB');
+
+@$core.Deprecated('Use identityCheckpointDescriptor instead')
+const IdentityCheckpoint$json = {
+  '1': 'IdentityCheckpoint',
+  '2': [
+    {
+      '1': 'last_seq_per_origin',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry',
+      '10': 'lastSeqPerOrigin'
+    },
+  ],
+  '3': [IdentityCheckpoint_LastSeqPerOriginEntry$json],
+};
+
+@$core.Deprecated('Use identityCheckpointDescriptor instead')
+const IdentityCheckpoint_LastSeqPerOriginEntry$json = {
+  '1': 'LastSeqPerOriginEntry',
+  '2': [
+    {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+    {'1': 'value', '3': 2, '4': 1, '5': 4, '10': 'value'},
+  ],
+  '7': {'7': true},
+};
+
+/// Descriptor for `IdentityCheckpoint`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List identityCheckpointDescriptor = $convert.base64Decode(
+    'ChJJZGVudGl0eUNoZWNrcG9pbnQSYQoTbGFzdF9zZXFfcGVyX29yaWdpbhgBIAMoCzIyLmdyYX'
+    'BoLnYxLklkZW50aXR5Q2hlY2twb2ludC5MYXN0U2VxUGVyT3JpZ2luRW50cnlSEGxhc3RTZXFQ'
+    'ZXJPcmlnaW4aQwoVTGFzdFNlcVBlck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2V5EhQKBX'
+    'ZhbHVlGAIgASgEUgV2YWx1ZToCOAE=');
+
+@$core.Deprecated('Use identityChunkDescriptor instead')
+const IdentityChunk$json = {
+  '1': 'IdentityChunk',
+  '2': [
+    {'1': 'origin', '3': 1, '4': 1, '5': 12, '10': 'origin'},
+    {'1': 'seq', '3': 2, '4': 1, '5': 4, '10': 'seq'},
+    {
+      '1': 'hlc',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.HLCTimestamp',
+      '10': 'hlc'
+    },
+    {
+      '1': 'operation',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.IdentityOperation',
+      '10': 'operation'
+    },
+    {'1': 'chunk_index', '3': 5, '4': 1, '5': 13, '10': 'chunkIndex'},
+    {'1': 'is_last', '3': 6, '4': 1, '5': 8, '10': 'isLast'},
+    {'1': 'vertex_keys', '3': 7, '4': 3, '5': 9, '10': 'vertexKeys'},
+    {
+      '1': 'edge_keys',
+      '3': 8,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.EdgeKey',
+      '10': 'edgeKeys'
+    },
+    {'1': 'first_item_index', '3': 9, '4': 1, '5': 13, '10': 'firstItemIndex'},
+  ],
+};
+
+/// Descriptor for `IdentityChunk`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List identityChunkDescriptor = $convert.base64Decode(
+    'Cg1JZGVudGl0eUNodW5rEhYKBm9yaWdpbhgBIAEoDFIGb3JpZ2luEhAKA3NlcRgCIAEoBFIDc2'
+    'VxEigKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcFIDaGxjEjkKCW9wZXJhdGlv'
+    'bhgEIAEoDjIbLmdyYXBoLnYxLklkZW50aXR5T3BlcmF0aW9uUglvcGVyYXRpb24SHwoLY2h1bm'
+    'tfaW5kZXgYBSABKA1SCmNodW5rSW5kZXgSFwoHaXNfbGFzdBgGIAEoCFIGaXNMYXN0Eh8KC3Zl'
+    'cnRleF9rZXlzGAcgAygJUgp2ZXJ0ZXhLZXlzEi4KCWVkZ2Vfa2V5cxgIIAMoCzIRLmdyYXBoLn'
+    'YxLkVkZ2VLZXlSCGVkZ2VLZXlzEigKEGZpcnN0X2l0ZW1faW5kZXgYCSABKA1SDmZpcnN0SXRl'
+    'bUluZGV4');
 
 @$core.Deprecated('Use subscribeResponseDescriptor instead')
 const SubscribeResponse$json = {
@@ -400,15 +528,39 @@ const SubscribeResponse$json = {
       '4': 1,
       '5': 11,
       '6': '.graph.v1.Mutation',
+      '9': 0,
       '10': 'mutation'
     },
+    {
+      '1': 'checkpoint',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.IdentityCheckpoint',
+      '9': 0,
+      '10': 'checkpoint'
+    },
+    {
+      '1': 'identity_chunk',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.IdentityChunk',
+      '9': 0,
+      '10': 'identityChunk'
+    },
+  ],
+  '8': [
+    {'1': 'event'},
   ],
 };
 
 /// Descriptor for `SubscribeResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List subscribeResponseDescriptor = $convert.base64Decode(
-    'ChFTdWJzY3JpYmVSZXNwb25zZRIuCghtdXRhdGlvbhgBIAEoCzISLmdyYXBoLnYxLk11dGF0aW'
-    '9uUghtdXRhdGlvbg==');
+    'ChFTdWJzY3JpYmVSZXNwb25zZRIwCghtdXRhdGlvbhgBIAEoCzISLmdyYXBoLnYxLk11dGF0aW'
+    '9uSABSCG11dGF0aW9uEj4KCmNoZWNrcG9pbnQYAiABKAsyHC5ncmFwaC52MS5JZGVudGl0eUNo'
+    'ZWNrcG9pbnRIAFIKY2hlY2twb2ludBJACg5pZGVudGl0eV9jaHVuaxgDIAEoCzIXLmdyYXBoLn'
+    'YxLklkZW50aXR5Q2h1bmtIAFINaWRlbnRpdHlDaHVua0IHCgVldmVudA==');
 
 @$core.Deprecated('Use snapshotRequestDescriptor instead')
 const SnapshotRequest$json = {
@@ -921,6 +1073,10 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.ReplicatedPutEdges': ReplicatedPutEdges$json,
   '.graph.v1.ReplicatedPutEdge': ReplicatedPutEdge$json,
   '.graph.v1.EdgeCausalBarrier': EdgeCausalBarrier$json,
+  '.graph.v1.IdentityCheckpoint': IdentityCheckpoint$json,
+  '.graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry':
+      IdentityCheckpoint_LastSeqPerOriginEntry$json,
+  '.graph.v1.IdentityChunk': IdentityChunk$json,
   '.graph.v1.SnapshotRequest': SnapshotRequest$json,
   '.graph.v1.SnapshotResponse': SnapshotResponse$json,
   '.graph.v1.SnapshotHeader': SnapshotHeader$json,

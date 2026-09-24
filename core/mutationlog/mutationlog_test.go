@@ -33,6 +33,19 @@ func TestAppendAssignsMonotonicSeq(t *testing.T) {
 	if !ok || first != 2 {
 		t.Fatalf("FirstSeq = (%d, %v), want (2, true)", first, ok)
 	}
+	retained := l.RetainedEntries()
+	if len(retained) != 4 {
+		t.Fatalf("RetainedEntries length = %d, want 4", len(retained))
+	}
+	for i, entry := range retained {
+		if entry.Seq != uint64(i+2) || entry.Op != i+2 {
+			t.Fatalf("RetainedEntries[%d] = %+v, want seq/op %d", i, entry, i+2)
+		}
+	}
+	retained[0] = Entry{}
+	if fresh := l.RetainedEntries()[0]; fresh.Seq != 2 {
+		t.Fatalf("mutating retained copy changed log entry: %+v", fresh)
+	}
 }
 
 func TestSubscribeReplaysAndStreams(t *testing.T) {

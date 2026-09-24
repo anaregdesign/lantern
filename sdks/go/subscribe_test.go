@@ -90,8 +90,8 @@ func TestSubscribe(t *testing.T) {
 		{Seq: 43, Origin: origin[:]},
 	}
 	handler := &subscribeTestHandler{responses: []*pb.SubscribeResponse{
-		{Mutation: want[0]},
-		{Mutation: want[1]},
+		{Event: &pb.SubscribeResponse_Mutation{Mutation: want[0]}},
+		{Event: &pb.SubscribeResponse_Mutation{Mutation: want[1]}},
 	}}
 	client := newSubscribeTestClient(t, handler)
 

@@ -120,9 +120,9 @@ message Mutation {
 //     the oldest retained entry; this lets a consumer that has only
 //     ever talked to a subset of replicas naturally pick up entries
 //     from a newly-joined origin.
-//   - If the resulting overall earliest requested seq is below the
-//     server's first retained log seq the call fails with
-//     FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+//   - A truncated responder-local log returns FAILED_PRECONDITION; the
+//     portable origin cursor cannot recover evicted entries. Identity-only
+//     consumers use an explicit checkpoint to revalidate resident keys.
 //
 // Keys are 32-character lowercase hexadecimal encodings of the 16-byte
 // HLC NodeID (matching `HLCTimestamp.node_id` and `Mutation.origin`).
@@ -132,7 +132,7 @@ message Mutation {
 // debug experience uniform across wire, metrics, and UI.
 message SubscribeRequest {
   // Per-origin resume cursor. Keys are 32-char lowercase hex of the
-  // 16-byte HLC NodeID; values are the next local `seq` the consumer
+  // 16-byte HLC NodeID; values are the next origin `seq` the consumer
   // expects from that origin.
   map<string, uint64> from_seq_per_origin = 1;
   // Next entry in this responder's replica-local mutation log. This is only
@@ -141,11 +141,59 @@ message SubscribeRequest {
   // Keeping the two sequence domains separate prevents a stale per-origin
   // cursor from bypassing ring-buffer gap detection.
   uint64 from_local_seq = 2;
+  // The zero value preserves the full Mutation stream used by peers.
+  SubscribeProjection projection = 3;
+  // Identity-only cold start/recovery: atomically register the live tail and
+  // send its contiguous per-origin checkpoint before any identity chunk.
+  // Requires an empty cursor and from_local_seq == 0.
+  bool bootstrap = 4;
 }
 
-// SubscribeResponse carries one replicated mutation per message.
+enum SubscribeProjection {
+  // Omitted projection preserves the historical full-Mutation stream.
+  SUBSCRIBE_PROJECTION_UNSPECIFIED = 0;
+  SUBSCRIBE_PROJECTION_FULL_MUTATION = 1;
+  SUBSCRIBE_PROJECTION_IDENTITY_ONLY = 2;
+}
+
+// A bootstrap checkpoint is the responder's contiguous publication cut,
+// not a cluster-wide consensus or freshness barrier.
+message IdentityCheckpoint {
+  map<string, uint64> last_seq_per_origin = 1;
+}
+
+enum IdentityOperation {
+  IDENTITY_OPERATION_UNSPECIFIED = 0;
+  IDENTITY_OPERATION_PUT_VERTEX = 1;
+  IDENTITY_OPERATION_DELETE_VERTEX = 2;
+  IDENTITY_OPERATION_ADD_EDGE = 3;
+  IDENTITY_OPERATION_PUT_EDGE = 4;
+  IDENTITY_OPERATION_DELETE_EDGE = 5;
+}
+
+// One bounded fragment of an origin mutation's exact graph identities.
+// Final empty chunks are valid: they close a mutation with no identities.
+// No graph value, edge weight, contribution ID, or auth metadata is present.
+message IdentityChunk {
+  bytes origin = 1;
+  uint64 seq = 2;
+  HLCTimestamp hlc = 3;
+  IdentityOperation operation = 4;
+  uint32 chunk_index = 5;
+  bool is_last = 6;
+  repeated string vertex_keys = 7;
+  repeated EdgeKey edge_keys = 8;
+  uint32 first_item_index = 9;
+}
+
+// Exactly one frame variant is set. Existing default full-Mutation peers
+// receive the same field-1 payload as before.
 message SubscribeResponse {
-  Mutation mutation = 1;
+  oneof event {
+    Mutation mutation = 1;
+    IdentityCheckpoint checkpoint = 2;
+    IdentityChunk identity_chunk = 3;
+  }
 }
 
 // SnapshotRequest opens a server-streaming snapshot of the live graph and
