@@ -74,7 +74,7 @@ is required for either reads or writes.
 | # | Decision | Default | Rationale |
 |---|---|---|---|
 | D1 | Crash persistence | **None for v1.** WAL is a hook only. | Bootstrap from peers covers single-node loss; persistence adds operational surface area we don't yet need. |
-| D2 | External CDC | **Same `Subscribe` RPC**, gated by auth/ACL later. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. The offline storage prerequisite is specified in [ADR 0002](decisions/0002-dart-offline-repository-contract.md#sqlite-and-asynchronous-store-implementation): atomically persist invalidation and chunk progress, advance the last-applied origin sequence only on the final chunk, then resume at that sequence plus one. The #1116 identity-only server projection is implemented; SDK facades and the offline live consumer remain separate work. |
+| D2 | External CDC | **Same `Subscribe` RPC**, authenticated within one deployment-wide security domain; tenant ACLs are not defined. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. The offline storage contract is specified in [ADR 0002](decisions/0002-dart-offline-repository-contract.md#sqlite-and-asynchronous-store-implementation): atomically persist invalidation and chunk progress, advance the last-applied origin sequence only on the final chunk, then resume at that sequence plus one. The #1116 projection, typed SDK facades, and storage-neutral offline consumer are implemented. The production Dart bridge and physical release qualification remain in #1314. |
 | D3 | WAN replication | **Out of scope for v1**, single DC only. HLC max skew bound = **500 ms**. | Geo replication requires looser skew + read repair; defer until single-DC HA is proven. |
 | D4 | Tombstone TTL | **Cluster-wide config, default 1 year (8760h).** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
 | D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery; leaves room for an optional WAL PVC later. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
@@ -434,8 +434,9 @@ and exact prefix victims, for append-only repair before any later local write
 can claim that origin seq. A failed repair leaves the graph untouched and CDC
 `gapped`. `AddEdges` remains log-first; it repairs an earlier local gap before
 its own append. A retried client request is a new operation after repair, so
-original-result recovery still requires #1115 receipts. Identity-only CDC
-and its offline consumer remain part of #1116.
+original-result recovery still requires #1115 receipts. The identity-only CDC
+server and storage-neutral offline consumer are implemented under #1116;
+their production Dart package bridge and release qualification remain #1314.
 
 The internal peer pump uses the same RPC. Ordinary sessions start with an
 empty portable cursor and rely on `ApplyMutation`'s contiguous cursor to dedup
@@ -473,16 +474,17 @@ Handler implementation notes (issue #180):
   `lantern_subscribe_dropped_total{reason}` (counter; `reason ∈ {gapped,
   send_failed}`) are pre-rendered in `server/metrics/metrics.go`.
 
-#### Identity-only CDC contract (#1116; server projection implemented)
+#### Identity-only CDC contract (#1116; server and core consumer implemented)
 
-External cache invalidation will use this same `Subscribe` RPC and mutation
+External cache invalidation uses this same `Subscribe` RPC and mutation
 log. Its explicit `IDENTITY_ONLY` projection does not change the zero/default
 full-`Mutation` stream used by peer replication. The request distinguishes
 ordinary vector-cursor resume from bootstrap. The response carries exactly one
 of a bootstrap checkpoint, a full mutation, or an identity chunk. This is the
-server wire projection implemented by #1294 and typed Dart facade by #1303.
-Go/Node facades, the offline live consumer, and physical-device release
-qualification remain separate work.
+server wire projection implemented by #1294 and typed SDK facades by
+#1302/#1303/#1305. The storage-neutral offline live consumer is implemented by
+#1300. The production Dart adapter and physical-device release qualification
+remain in #1314.
 
 A checkpoint contains the responder's **contiguous published** last sequence
 for each origin. On bootstrap the server holds the publication cut gate while
@@ -535,10 +537,9 @@ generation before replaying graph frames: those changes have no individual
 local-log entries. New streams remain gapped throughout replay, and an
 interrupted or invalid Snapshot keeps that gap until a later verified install
 advances the origin watermarks. A fresh bootstrap then revalidates resident
-identities against the repaired responder. The server identity projection is
-implemented by #1294 and the typed Dart facade by #1303; Go/Node facades,
-the mobile consumer, and physical-device release qualification retain separate
-gates.
+identities against the repaired responder. The server identity projection,
+typed SDK facades, and storage-neutral mobile consumer are implemented;
+physical-device release qualification retains its separate #1314 gate.
 
 After `gapped`, a mobile consumer opens bootstrap and atomically marks its
 **resident confirmed cache** Unknown at that checkpoint. It retains resident

@@ -497,8 +497,8 @@ and `resetChangeCursor`:
 
 - Origin IDs are the existing 16-byte IDs encoded as lower-case hex. The cursor
   stores a **last fully applied sequence per origin**, losslessly as uint64
-  decimal text; a future Subscribe consumer resumes at sequence plus one and
-  must reject uint64 exhaustion. HLC is not a replacement for this vector.
+  decimal text; the Subscribe consumer resumes at sequence plus one and
+  rejects uint64 exhaustion. HLC is not a replacement for this vector.
 - Each bounded chunk carries only exact entity keys and literal vertex-key
   prefixes. Cache invalidation and the next expected chunk index commit
   atomically. Only the final chunk advances the completed sequence. Duplicate
@@ -509,18 +509,19 @@ and `resetChangeCursor`:
   state together with the partition generation barrier.
 - A partition admits at most 128 origins and a store at most 4096 origin records;
   a chunk admits at most 1024 identities
-  and prefixes and 1 MiB of encoded identity text. Overflow requires the future
+  and prefixes and 1 MiB of encoded identity text. Overflow requires the
   consumer to stop and recover; it must not silently discard cursor origins.
-- The reference snapshot is now schema v6 with `changeProgress`; v1–v5 still
-  migrate with empty CDC state and preserve their existing safety rules.
+- The reference snapshot is now schema v7 with `changeProgress`, change epoch,
+  and key-only Unknown residents. Schema v6 restores with an empty resident
+  queue and epoch zero; v1–v5 migrate with empty CDC state.
 
-This is the storage contract, not the complete #1116 implementation. The full
-identity-only Subscribe projection, bounded checkpoint/bootstrap, buffering,
-gap recovery, and coordination with in-flight reads remain in that Issue.
-Storage invalidation does not by itself establish freshness or implement
-server-enforced tenant filtering. TTL remains absolute and local.
+The storage contract, identity-only Subscribe projection, and storage-neutral
+consumer are implemented. The production Dart package bridge and physical
+release qualification remain in #1314. Storage invalidation does not by itself
+establish freshness or implement server-enforced tenant filtering. TTL remains
+absolute and local.
 
-### Identity-only CDC consumer design (#1116; not yet implemented)
+### Identity-only CDC consumer contract (#1116; storage-neutral core implemented)
 
 The consumer uses the same authenticated `Subscribe` stream as peer
 replication, explicitly requesting identity-only events. Its durable cursor
@@ -550,9 +551,10 @@ bounded pages without loading the full resident set into Dart memory. Only
 epoch-checked plural revalidation completes a resident marker. Ordinary
 singular Get calls, including `serverOnly`, leave it Unknown while pending Put
 overlays remain visible. Capacity eviction may discard a marker because that
-identity is then no longer resident. The #1116 network Subscribe consumer,
-gap/bootstrap orchestration, and end-to-end recovery completion remain to be
-implemented.
+identity is then no longer resident. The #1116 network Subscribe consumer and
+gap/bootstrap orchestration are implemented in the storage-neutral core. The
+official online-to-offline Dart adapter and end-to-end mobile release remain
+#1314.
 
 Every applied identity chunk, including a partial chunk, also advances a
 partition change epoch atomically with invalidation. A remote Get captures
