@@ -30,6 +30,7 @@ const (
 	receiptWALUnionEdgeDelete        = byte(2)
 	receiptWALUnionGraphDeleteEffect = byte(3)
 	receiptWALUnionGraphPutEffect    = byte(4)
+	receiptWALUnionGraphAddEffect    = byte(5)
 	receiptWALGraphHeaderSize        = 12 // protobuf length, repeated-slot count, nil count
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
 	// The existing LRED receipt body has a stricter independent 8 MiB cap.
@@ -76,6 +77,9 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	case *graphPutEffectEnvelope:
 		kind = receiptWALUnionGraphPutEffect
 		body, err = encodeGraphPutEffectWAL(value)
+	case *graphAddEffectEnvelope:
+		kind = receiptWALUnionGraphAddEffect
+		body, err = encodeGraphAddEffectWAL(value)
 	default:
 		return nil, receiptWALUnionError("unexpected operation type %T", op)
 	}
@@ -127,6 +131,8 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 		return decodeGraphDeleteEffectWAL(body)
 	case receiptWALUnionGraphPutEffect:
 		return decodeGraphPutEffectWAL(body)
+	case receiptWALUnionGraphAddEffect:
+		return decodeGraphAddEffectWAL(body)
 	default:
 		return nil, receiptWALUnionError("unknown operation kind %d", raw[8])
 	}
@@ -177,6 +183,18 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
 			return receiptWALUnionError("FileWAL HLC differs from graph Put effect HLC")
+		}
+		return nil
+	case *graphAddEffectEnvelope:
+		if err := validateGraphAddEffectEnvelope(value); err != nil {
+			return err
+		}
+		m := value.Mutation
+		var node hlc.NodeID
+		copy(node[:], m.GetHlc().GetNodeId())
+		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
+		if !entry.HLC.Equal(payloadHLC) {
+			return receiptWALUnionError("FileWAL HLC differs from graph Add effect HLC")
 		}
 		return nil
 	case *edgeDeleteReceiptEnvelope:

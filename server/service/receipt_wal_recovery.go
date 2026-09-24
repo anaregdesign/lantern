@@ -28,6 +28,8 @@ type receiptWALDecisionAudit struct {
 	// first receipt remain readable but cannot certify a future mixed replay.
 	evidencedGraphPutRows uint64
 	unprovenGraphPutRows  uint64
+	evidencedGraphAddRows uint64
+	unprovenGraphAddRows  uint64
 }
 
 // auditReceiptDecisionsFromFileWAL validates a closed mixed FileWAL without
@@ -72,12 +74,22 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 				}
 				report.unprovenGraphPutRows++
 			}
+			if isAnyGraphAdd(value) {
+				if seenReceipt {
+					return fmt.Errorf("receipt WAL local seq %d: %w: graph Add lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
+				}
+				report.unprovenGraphAddRows++
+			}
 			copy(origin[:], value.GetOrigin())
 			seq = value.GetSeq()
 		case *graphPutEffectEnvelope:
 			copy(origin[:], value.Mutation.GetOrigin())
 			seq = value.Mutation.GetSeq()
 			report.evidencedGraphPutRows++
+		case *graphAddEffectEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			seq = value.Mutation.GetSeq()
+			report.evidencedGraphAddRows++
 		case *graphDeleteEffectEnvelope:
 			copy(origin[:], value.Mutation.GetOrigin())
 			seq = value.Mutation.GetSeq()
@@ -208,8 +220,8 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // any state externally visible. The caller must own path exclusively through
 // both replay passes; this function closes the resumed writer before return.
 // A graph-only exact Delete now has an absolute deadline and a private
-// accepted-index envelope, and graph Put has an accepted-effect envelope,
-// but this candidate cannot safely replay either yet:
+// accepted-index envelope, and graph Put/Add have accepted-effect envelopes,
+// but this candidate cannot safely replay them yet:
 // a later graph Put/Add may have been rejected by a floor that has since
 // expired. Predicate-shaped prefix Delete is still unrepresentable; prefix
 // origins publish exact victim batches instead. Graph writes after the first
@@ -252,6 +264,8 @@ func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now t
 			// candidate has no historical-time/effect replay for later graph
 			// Put/Add. Never turn a private codec seam into serving recovery.
 			return fmt.Errorf("receipt WAL local seq %d: %w: graph Delete effects are not replayable yet", entry.Seq, errReceiptWALUnion)
+		case *graphAddEffectEnvelope:
+			return fmt.Errorf("receipt WAL local seq %d: %w: graph Add effects are not replayable yet", entry.Seq, errReceiptWALUnion)
 		case *edgeDeleteReceiptEnvelope:
 			seenReceipt = true
 			origin, seq = value.Origin, value.OriginSeq

@@ -66,6 +66,27 @@ func auditGraphPutEffectEntry(t *testing.T, seq uint64, outcomes ...graphcache.P
 	return entry
 }
 
+func auditGraphAddEntry(seq uint64) mutationlog.Entry {
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+		AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 1}},
+	}})
+	graph.Seq = seq
+	graph.Hlc.Logical += uint32(seq - 1)
+	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(graph), Op: graph}
+}
+
+func auditGraphAddEffectEntry(t *testing.T, seq uint64, accepted bool) mutationlog.Entry {
+	t.Helper()
+	entry := auditGraphAddEntry(seq)
+	m := entry.Op.(*pb.Mutation)
+	effect, err := newGraphAddEffectEnvelope(m, []bool{accepted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Op = effect
+	return entry
+}
+
 func recoveryEdgeEntry(seq uint64) mutationlog.Entry {
 	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutEdge{
 		PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{
@@ -163,6 +184,7 @@ func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testin
 		{"graph Delete after receipt remains gated", []mutationlog.Entry{auditGraphEntry(1), receiptEntry, deleteEntry}},
 		{"graph write after receipt", []mutationlog.Entry{receiptEntry, auditGraphEntry(1)}},
 		{"evidenced graph Put remains gated", []mutationlog.Entry{receiptEntry, auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeAppliedAndLive)}},
+		{"evidenced graph Add remains gated", []mutationlog.Entry{receiptEntry, auditGraphAddEffectEntry(t, 1, true)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeReceiptWALAuditEntries(t, tc.entries...)
@@ -307,6 +329,28 @@ func TestReceiptWALDecisionAuditRejectsOldPutAfterReceiptWithoutPartialReport(t 
 	report, err = auditReceiptDecisionsFromFileWAL(path, config, time.Now())
 	if err != nil || report.evidencedGraphPutRows != 1 || report.unprovenGraphPutRows != 0 || report.lastLocalSeq != 2 {
 		t.Fatalf("zero-accepted Put audit = %+v, %v", report, err)
+	}
+}
+
+func TestReceiptWALDecisionAuditRejectsOldAddAfterReceiptWithoutPartialReport(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	path := writeReceiptWALAuditEntries(t, auditGraphAddEntry(1), receiptEntry,
+		auditGraphAddEffectEntry(t, 2, true))
+	report, err := auditReceiptDecisionsFromFileWAL(path, config, time.Now())
+	if err != nil || report.unprovenGraphAddRows != 1 || report.evidencedGraphAddRows != 1 || report.lastLocalSeq != 3 {
+		t.Fatalf("Add evidence audit = %+v, %v", report, err)
+	}
+	path = writeReceiptWALAuditEntries(t, receiptEntry, auditGraphAddEntry(1))
+	report, err = auditReceiptDecisionsFromFileWAL(path, config, time.Now())
+	if !errors.Is(err, errReceiptWALUnion) || !reflect.DeepEqual(report, receiptWALDecisionAudit{}) {
+		t.Fatalf("old Add audit = %+v, %v; want no certified partial report", report, err)
+	}
+	// A zero-accepted sidecar proves a local no-op, without authorizing
+	// serving replay or receipt admission.
+	path = writeReceiptWALAuditEntries(t, receiptEntry, auditGraphAddEffectEntry(t, 1, false))
+	report, err = auditReceiptDecisionsFromFileWAL(path, config, time.Now())
+	if err != nil || report.evidencedGraphAddRows != 1 || report.unprovenGraphAddRows != 0 || report.lastLocalSeq != 2 {
+		t.Fatalf("zero-accepted Add audit = %+v, %v", report, err)
 	}
 }
 
