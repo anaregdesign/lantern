@@ -20,13 +20,19 @@ Lantern serves Connect, gRPC, and gRPC-Web on one socket, `:6380` by default
 HTTP client can make unary Connect calls by POSTing JSON to
 `/{service}/{method}` with `Content-Type: application/json`. The example below
 uses the standard library; it needs no generated code or package installation.
-Use HTTPS and application-owned authentication outside a local h2c fixture.
+It is an unauthenticated local h2c fixture; a production application must use
+HTTPS and application-owned authentication.
 
-Start Lantern from the repository root and run the [executable
-example](examples/connect_json_smoke.py):
+Start Lantern from the repository root in one terminal:
 
 ```bash
 go run ./server/cmd
+```
+
+In another terminal, run the [executable
+example](examples/connect_json_smoke.py):
+
+```bash
 python3 sdks/python.archived/examples/connect_json_smoke.py \
   --endpoint http://127.0.0.1:6380
 ```
