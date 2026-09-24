@@ -529,21 +529,18 @@ outcome from their local wall clock.
 | Add-only `AddEdge*` history | Both sides accumulate contributions. | G-Set union: every contribution survives. Weight = sum. |
 | Put-only `PutVertex*` / `PutEdge*` history | Both sides accept an authoritative live or causal-barrier outcome. | Higher HLC wins (LWW); same HLC → higher origin ID wins. Losing outcome is silently superseded. |
 | Put/Delete LWW history | Both sides accept. | Higher-HLC value, barrier, or tombstone wins while D4 is retained. **Resurrection hazard if partition > `tombstone_ttl`**. |
-| Mixed `PutEdge`/`AddEdge` or `DeleteEdge`/`AddEdge` | Both sides accept. | **Unsupported:** arbitrary delivery order can leave different weights; tracked by #1203. |
+| Mixed `PutEdge`/`AddEdge` or `DeleteEdge`/`AddEdge` | Both sides accept. | The greatest reset floor wins; only Add contributions with later HLCs survive. Weight is summed in canonical `(HLC, ContribID)` order after heal. Delete still needs D4 retention. |
 
-Snapshot bootstrap preserves the current mixed edge state it observes: if a
-live additive bucket coexists with a retained Put barrier, the edge frame uses
-the maximum of the bucket's Put HLC and the barrier floor, and barrier frames
-arrive first. That max-floor rule fences delayed older Puts, but it does not
-make subsequent arbitrary-order Put/Add or Delete/Add delivery convergent.
+Snapshot bootstrap preserves each Add's original HLC along with its ContribID.
+Put barriers and Delete tombstones arrive before live edge rows, so the same
+reset floor applies after bootstrap and during Subscribe-tail replay.
 Active Delete tombstones also cross Snapshot with their original absolute D4
 deadline, before live graph frames. A newly bootstrapped peer therefore rejects
 pre-cutoff older Put/Add mutations that arrive from another peer during D4;
 Snapshot replay does not renew the Delete window.
 
-**Known convergence boundaries** are therefore (a) a partition that exceeds
-the D4 tombstone horizon, and (b) the mixed edge operation families above. For
-the D4 case, a `Delete` on side A may be reaped before side B learns about it,
+**Known convergence boundary:** a partition that exceeds the D4 tombstone
+horizon. A `Delete` on side A may be reaped before side B learns about it,
 after which side B's stale Put can resurrect the identity. Mitigations, in
 order of preference:
 
@@ -556,10 +553,9 @@ order of preference:
 3. After a long partition heals, [force re-snapshot](#9-recovery-procedures)
    from the side you trust.
 
-For mixed edge operation families, route all operations for one edge identity
-to a single replica or use one operation family until #1203 lands. If weights
-already diverged, quiesce writes and force a snapshot from the authoritative
-replica.
+If mixed edge weights differ after lag reaches zero, inspect whether a Delete
+floor expired during a long partition. Quiesce that identity and force a
+snapshot from the authoritative replica if it did.
 
 There is no "split-brain detector"; the RFC is explicit that
 partitions are healed by anti-entropy ([RFC §§6, 10](replication.md)).
@@ -841,7 +837,7 @@ operator actions.
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
 | Causal metadata approaches its budget | For a non-zero limit, guarded `lantern_causal_metadata_entries / limit` rises; rejects or `over_limit` become non-zero | Stop new identity churn, inspect oldest retention deadline and high-water, then raise the per-kind causal budget or shorten D4 only after validating the resurrection window. Exact Delete changes barrier→tombstone but retains the slot until that floor expires/supersedes. |
-| Mixed Put/Add or Delete/Add edge history diverges | Lag is zero but the same edge weight differs | Unsupported pending #1203. Quiesce that identity and force a snapshot from the authoritative replica. |
+| Mixed Put/Add or Delete/Add edge weights differ after lag reaches zero | Compare active D4 floors and mutation history | A floor may have expired during a long partition; reconcile that edge from an authoritative snapshot. |
 | Search config mismatch | `search_config_match{peer}=0`, readiness 503 | Make search-affecting env identical; graph replication is intentionally still active. |
 
 ---

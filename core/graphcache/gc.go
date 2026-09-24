@@ -122,10 +122,14 @@ func (c *GraphCache[S, T]) migrateExpiredEdgeHLCToBarriersLocked(now time.Time) 
 		visible := nonEmpty && c.vertices.HasAt(tail, now) && c.vertices.HasAt(head, now)
 		if visible {
 			var sum float32
+			causalContribution := false
 			for _, contribution := range contribs {
 				sum += contribution.Weight
+				causalContribution = causalContribution || !contribution.ContribID.IsZero()
 			}
-			visible = sum != 0
+			// A cancelling Add pair is hidden from reads but its ContribIDs
+			// remain essential dedup evidence until a later reset/expiry.
+			visible = sum != 0 || causalContribution
 		}
 		if !visible {
 			// A retained barrier can coexist with an Add-only bucket, whose

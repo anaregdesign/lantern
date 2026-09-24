@@ -224,6 +224,76 @@ func applySnapshotEdge(snap SnapshotApplier, tail, head string, weight float32, 
 	snap.AddEdgeWithExpirationContribHLC(tail, head, weight, exp, cid, ts)
 }
 
+type snapshotEdgeRow struct {
+	weight     float32
+	expiration time.Time
+	contribID  graphcache.ContribID
+	hlc        hlc.Timestamp
+}
+
+// snapshotEdgeRows validates a complete edge frame before applying any row.
+// Each Add must retain its own causal HLC: the edge-level HLC is only the
+// winning Put floor and cannot replace the Add's position across a reset.
+func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
+	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || len(edge.GetContributions()) == 0 {
+		return nil, snapshotProtocolError("nil or empty live edge payload")
+	}
+	var putHLC hlc.Timestamp
+	if edge.GetHlc() != nil {
+		var err error
+		putHLC, err = snapshotFloorHLC(edge.GetHlc())
+		if err != nil {
+			return nil, snapshotProtocolError("invalid live edge Put floor")
+		}
+	}
+	rows := make([]snapshotEdgeRow, 0, len(edge.GetContributions()))
+	seenPut := false
+	seenAdds := make(map[graphcache.ContribID]struct{}, len(edge.GetContributions()))
+	for _, contribution := range edge.GetContributions() {
+		if contribution == nil {
+			return nil, snapshotProtocolError("nil live edge contribution")
+		}
+		if exp := contribution.GetExpiration(); exp != nil && exp.CheckValid() != nil {
+			return nil, snapshotProtocolError("invalid live edge contribution expiration")
+		}
+		var id graphcache.ContribID
+		rawID := contribution.GetContribId()
+		if len(rawID) != 0 && len(rawID) != len(id) {
+			return nil, snapshotProtocolError("invalid live edge ContribID length")
+		}
+		copy(id[:], rawID)
+		row := snapshotEdgeRow{
+			weight: contribution.GetWeight(), expiration: prototime.Expiration(contribution.GetExpiration()),
+			contribID: id,
+		}
+		if id.IsZero() {
+			if seenPut || len(rawID) != 0 {
+				return nil, snapshotProtocolError("duplicate or zero live edge Put identity")
+			}
+			if stamp := contribution.GetHlc(); stamp != nil && snapshotHLC(stamp) != putHLC {
+				return nil, snapshotProtocolError("live edge Put HLC differs from floor")
+			}
+			seenPut = true
+			row.hlc = putHLC
+		} else {
+			if _, duplicate := seenAdds[id]; duplicate {
+				return nil, snapshotProtocolError("duplicate live edge ContribID")
+			}
+			seenAdds[id] = struct{}{}
+			addHLC, err := snapshotFloorHLC(contribution.GetHlc())
+			if err != nil {
+				return nil, snapshotProtocolError("invalid live edge Add HLC")
+			}
+			if putHLC != (hlc.Timestamp{}) && !putHLC.Less(addHLC) {
+				return nil, snapshotProtocolError("live edge Add is not newer than the Put floor")
+			}
+			row.hlc = addHLC
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
 // Metrics is the narrow surface the pump uses to publish per-peer
 // counters. Wiring the prometheus collectors themselves lands in #187;
 // for now we expose just the hook signatures so the pump compiles in
@@ -704,20 +774,13 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 				return nil, err
 			}
 			se := e.Edge
-			if se == nil || len(se.GetContributions()) == 0 {
-				return nil, snapshotProtocolError("nil or empty live edge payload")
+			rows, err := snapshotEdgeRows(se)
+			if err != nil {
+				return nil, err
 			}
-			edgeHLC := snapshotHLC(se.GetHlc())
-			for _, c := range se.GetContributions() {
-				if c == nil {
-					return nil, snapshotProtocolError("nil live edge contribution")
-				}
-				var cid graphcache.ContribID
-				copy(cid[:], c.GetContribId())
-				applySnapshotEdge(
-					p.snap, se.GetTail(), se.GetHead(), c.GetWeight(),
-					prototime.Expiration(c.GetExpiration()), cid, edgeHLC,
-				)
+			for _, row := range rows {
+				applySnapshotEdge(p.snap, se.GetTail(), se.GetHead(), row.weight,
+					row.expiration, row.contribID, row.hlc)
 			}
 			replay.counts.edges++
 		case *pb.SnapshotResponse_Footer:

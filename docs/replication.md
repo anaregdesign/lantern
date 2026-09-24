@@ -96,10 +96,10 @@ whether re-applying an already-seen mutation is a no-op.
 | RPC | CRDT shape | Conflict rule |
 |---|---|---|
 | `PutVertex(es)` | LWW-Register | Higher HLC wins; same HLC ⇒ higher origin ID wins (deterministic tiebreak). |
-| `AddEdge(s)` | G-Set of contributions | Each `(origin, contributionID)` is an element. Re-apply = set-insert ⇒ no-op. Weight = Σ live contributions. |
-| `PutEdge(s)` | LWW-Register on `(tail, head)` | Replaces all contributions atomically. Higher HLC wins; same HLC ⇒ higher origin ID wins. |
+| `AddEdge(s)` | G-Set of contributions above a reset floor | Each unique `ContribID` is an element at its own HLC. Re-apply = set-insert ⇒ no-op. A Put/Delete at HLC `R` removes rows at or before `R`; a later Add survives regardless of delivery order. Weight is the float32 sum of live rows in `(HLC, ContribID)` order. |
+| `PutEdge(s)` | LWW reset on `(tail, head)` | The greatest Put/Delete HLC is the reset floor. The Put supplies one base value and keeps every Add whose HLC is strictly greater than its own. Higher HLC wins; the origin ID is part of the HLC tiebreak. |
 | `DeleteVertex(es)` | Tombstone (LWW) | A tombstone is itself an entry with HLC. Any `Put*` / `Add*` whose HLC < tombstone HLC is dropped. Tombstone TTL = D4. |
-| `DeleteEdge(s)` | Tombstone (LWW) on `(tail, head)` | Same as vertex tombstone. |
+| `DeleteEdge(s)` | Tombstone (LWW reset) on `(tail, head)` | Removes the base value and every Add at or before its HLC while preserving later Adds. The floor is retained for D4, including when later Adds make the edge live. |
 
 An unconditional Put whose absolute expiration is already past at the
 serving node is still an accepted LWW mutation. It returns `EXPIRED`, removes
@@ -127,12 +127,12 @@ cannot discover or reclaim an identity represented only by a barrier. Use an
 exact-key/pair Delete when bounded D4 retention is required for such an
 identity.
 
-The convergence classifications in the table apply to homogeneous histories:
-Put-only LWW/barrier histories and Add-only contribution histories. Edge
-histories delivered in arbitrary orders that mix `PutEdge` with `AddEdge`, or
-`DeleteEdge` with `AddEdge`, are not yet a supported convergence contract.
-That reset-aware contribution model is tracked in
-[#1203](https://github.com/anaregdesign/lantern/issues/1203).
+For mixed edge histories, each replica keeps the winning reset floor and only
+the Add rows causally later than it. A Delete floor is D4-bounded: convergence
+requires all lagging replicas to learn it before that deadline, just as for
+Put/Delete histories. A reused `ContribID` with a different payload is outside
+the contract until server-authoritative operation receipts (#1115) provide
+matching evidence.
 
 Reads (`GetVertex(es)`, `GetEdge(s)`, `Illuminate`, `SearchVertices`) are
 local-only — they never block on peers and never read-repair. Read-after-write
@@ -599,6 +599,7 @@ message SnapshotEdgeContribution {
   float weight = 1;
   google.protobuf.Timestamp expiration = 2;
   bytes contrib_id = 3;   // 24-byte ContribID; empty = local-only
+  HLCTimestamp hlc = 4;    // original Add HLC; Put row uses SnapshotEdge.hlc
 }
 ```
 
@@ -650,17 +651,17 @@ Framing contract:
   each `SnapshotEdge` carries its full list of live `SnapshotEdgeContribution`
   rows rather than a pre-summed weight. A zero-`ContribID` row represents the
   LWW Put value and is restored through `PutEdgeWithExpirationHLC`; non-zero
-  rows are restored through `AddEdgeWithExpirationContribHLC`. The latter's
-  `ContribID` dedup makes the snapshot-then-Subscribe-tail handoff idempotent:
+  rows retain their original Add HLC and are restored through
+  `AddEdgeWithExpirationContribHLC`. `SnapshotEdge.hlc` carries the winning Put
+  floor, including a retained accepted-expired Put barrier. Receivers reject
+  malformed or missing Add HLCs and duplicate contribution identities before
+  applying the frame. `ContribID` dedup makes the snapshot-then-Subscribe-tail handoff idempotent:
   any additive contribution that also appears in the replayed tail is detected
   and dropped at apply time.
-- A live additive edge may coexist with a retained Put barrier. Because the
-  current contribution rows do not carry individual HLCs, the source stamps
-  `SnapshotEdge.hlc` with `max(bucket.lastPutHLC, retainedBarrierHLC)`.
-  Barrier-first replay then admits the contributions at the equal floor while
-  continuing to reject a delayed older Put. This **max-floor** rule preserves
-  bootstrap state; it does not claim arbitrary-order convergence for mixed
-  Put/Add or Delete/Add histories (see #1203).
+- A live additive edge may coexist with a retained Put barrier or Delete
+  tombstone. The source streams those floors before the live edge, then replays
+  only Add rows newer than the floor at their own HLCs. Repeating Snapshot or
+  replaying the overlapping Subscribe tail cannot duplicate the rows.
 
 Implementation notes:
 
@@ -675,7 +676,7 @@ Implementation notes:
   local log-before-graph AddEdges cannot publish a cutoff ahead of the graph.
   It releases the gate before sending any frame. Before copying state, the
   method moves Put floors with non-visible payloads (expired vertices and
-  expired, zero-weight, or dangling edge buckets) into the retained barrier
+  expired or dangling edge buckets) into the retained barrier
   maps. Capturing barriers and live state in separate lock passes is forbidden:
   TTL/GC could move a floor between the passes and make the snapshot omit both
   representations. The completed owned slices are then streamed frame-by-frame,
@@ -844,12 +845,11 @@ Lantern is **AP** in CAP terms. During a partition:
   the tombstone may GC before the other side learns about it, allowing a stale
   value to resurrect. Operators must keep partition duration below the
   tombstone TTL or extend D4.
-- Arbitrary delivery orders mixing `PutEdge` and `AddEdge`, or `DeleteEdge`
-  and `AddEdge`, for the same identity are a known unsupported HA boundary.
-  Current Put/Delete floors and Add contributions are not a reset-aware CRDT,
-  so different arrival orders can produce different final weights. Do not use
-  these mixed operation families concurrently across replicas until #1203 is
-  complete.
+- Mixed `PutEdge`/`AddEdge` and `DeleteEdge`/`AddEdge` histories converge after
+  the same mutation set is delivered: the greatest reset floor wins, and only
+  strictly later Add rows survive. A Delete still requires the D4 retention
+  bound above. Each origin's sequence is published in order so Snapshot and
+  Subscribe expose one contiguous committed prefix.
 
 The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_seq` and
 `lantern_anti_entropy_gaps_found_total`) and recovery (forced re-snapshot).
@@ -866,7 +866,7 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
-| Mixed `PutEdge`/`AddEdge` or `DeleteEdge`/`AddEdge` delivered in different orders | Replica edge weights differ after lag reaches zero | Unsupported pending #1203. Quiesce writes for that edge identity and force a snapshot from the authoritative replica. |
+| Mixed edge histories have different weights while lag remains | Replication lag and unequal edge weights | Wait for the missing origin prefix; if a D4 Delete floor expired before heal, reconcile from an authoritative snapshot. |
 
 ## 12. Deployment-topology suitability matrix
 

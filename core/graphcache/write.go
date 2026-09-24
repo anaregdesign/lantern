@@ -23,9 +23,13 @@ func (c *GraphCache[S, T]) addEdgeLocked(tail, head S, w float32, expiration tim
 // weight sum (#897; on a dedup no-op, the current live sum). `now` supplies the
 // liveness clock. Caller must hold c.mu.
 func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32) {
+	return c.addEdgeContribHLCLocked(tail, head, w, expiration, contribID, hlc.Timestamp{}, now)
+}
+
+func (c *GraphCache[S, T]) addEdgeContribHLCLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time) (applied bool, effective float32) {
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
-	created, tailID, headID, applied, effective := c.edges.addWithExpirationContribAt(tail, head, w, expiration, contribID, now)
+	created, tailID, headID, applied, effective := c.edges.addWithExpirationContribHLCAt(tail, head, w, expiration, contribID, ts, now)
 	if applied || created {
 		c.onEdgeAddedLocked(created, tailID, headID, head)
 	}

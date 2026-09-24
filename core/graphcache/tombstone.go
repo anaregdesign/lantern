@@ -251,13 +251,16 @@ func (c *GraphCache[S, T]) DeleteEdgeHLC(tail, head S, ts hlc.Timestamp, expirat
 	if !c.edgeDeleteWriteAllowedLocked(tail, head, ts) {
 		return false
 	}
+	existed := c.edges.bucket(tail, head) != nil
 	c.setEdgeTombstoneLocked(tail, head, ts, expiration)
-	deleted := c.deleteEdgeLocked(tail, head)
+	if !c.edges.resetDeleteHLC(tail, head, ts) {
+		c.deleteEdgeLocked(tail, head)
+	}
 	key := EdgeKey[S]{Tail: tail, Head: head}
 	if barrier, ok := c.edgeCausalBarriers[key]; ok && !ts.Less(barrier) {
 		c.clearEdgeCausalBarrierLocked(tail, head)
 	}
-	return deleted
+	return existed
 }
 
 // DeleteEdgesHLC is the batch sibling of DeleteEdgeHLC.
@@ -291,8 +294,12 @@ func (c *GraphCache[S, T]) deleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, e
 	}
 	n := 0
 	for _, k := range accepted {
+		existed := c.edges.bucket(k.Tail, k.Head) != nil
 		c.setEdgeTombstoneLocked(k.Tail, k.Head, ts, expiration)
-		if c.deleteEdgeLocked(k.Tail, k.Head) {
+		if !c.edges.resetDeleteHLC(k.Tail, k.Head, ts) {
+			c.deleteEdgeLocked(k.Tail, k.Head)
+		}
+		if existed {
 			n++
 		}
 		if barrier, ok := c.edgeCausalBarriers[k]; ok && !ts.Less(barrier) {

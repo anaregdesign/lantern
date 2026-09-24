@@ -124,6 +124,46 @@ func TestApplySnapshotEdge(t *testing.T) {
 	})
 }
 
+func TestSnapshotEdgeRows(t *testing.T) {
+	stamp := func(wall int64) *pb.HLCTimestamp {
+		return &pb.HLCTimestamp{WallNs: wall, NodeId: []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
+	}
+	id := make([]byte, len(graphcache.ContribID{}))
+	id[0] = 1
+	frame := func(addStamp *pb.HLCTimestamp) *pb.SnapshotEdge {
+		return &pb.SnapshotEdge{
+			Tail: "tail", Head: "head", Hlc: stamp(20),
+			Contributions: []*pb.SnapshotEdgeContribution{
+				{Weight: 5, Hlc: stamp(20)},
+				{Weight: 3, ContribId: id, Hlc: addStamp},
+			},
+		}
+	}
+	rows, err := snapshotEdgeRows(frame(stamp(30)))
+	if err != nil || len(rows) != 2 || rows[0].hlc.WallNs != 20 || rows[1].hlc.WallNs != 30 {
+		t.Fatalf("valid mixed rows=%+v err=%v", rows, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		frame *pb.SnapshotEdge
+	}{
+		{"missing Add HLC", frame(nil)},
+		{"Add below reset", frame(stamp(10))},
+		{"Add equal to reset", frame(stamp(20))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := snapshotEdgeRows(tc.frame); err == nil {
+				t.Fatal("invalid mixed Snapshot frame accepted")
+			}
+		})
+	}
+	duplicate := frame(stamp(30))
+	duplicate.Contributions = append(duplicate.Contributions, duplicate.Contributions[1])
+	if _, err := snapshotEdgeRows(duplicate); err == nil {
+		t.Fatal("duplicate Add identity accepted")
+	}
+}
+
 // TestApplySnapshotEdgeIdempotent is the end-to-end #735 regression against a
 // real GraphCache: replaying the SAME zero-cid (LWW/Put-origin) snapshot edge
 // many times must NOT accumulate weight. Before the fix, applySnapshotEdge

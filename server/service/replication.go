@@ -464,6 +464,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 				Weight:     c.Weight,
 				Expiration: timestamppb.New(c.Expiration),
 				ContribId:  contribIDBytes(c.ContribID),
+				Hlc:        hlcToProto(c.HLC),
 			})
 		}
 		entry := &pb.SnapshotResponse{

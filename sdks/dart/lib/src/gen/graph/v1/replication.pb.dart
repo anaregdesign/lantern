@@ -1565,11 +1565,13 @@ class SnapshotEdgeContribution extends $pb.GeneratedMessage {
     $core.double? weight,
     $1.Timestamp? expiration,
     $core.List<$core.int>? contribId,
+    HLCTimestamp? hlc,
   }) {
     final result = create();
     if (weight != null) result.weight = weight;
     if (expiration != null) result.expiration = expiration;
     if (contribId != null) result.contribId = contribId;
+    if (hlc != null) result.hlc = hlc;
     return result;
   }
 
@@ -1591,6 +1593,8 @@ class SnapshotEdgeContribution extends $pb.GeneratedMessage {
         subBuilder: $1.Timestamp.create)
     ..a<$core.List<$core.int>>(
         3, _omitFieldNames ? '' : 'contribId', $pb.PbFieldType.OY)
+    ..aOM<HLCTimestamp>(4, _omitFieldNames ? '' : 'hlc',
+        subBuilder: HLCTimestamp.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1645,13 +1649,25 @@ class SnapshotEdgeContribution extends $pb.GeneratedMessage {
   $core.bool hasContribId() => $_has(2);
   @$pb.TagNumber(3)
   void clearContribId() => $_clearField(3);
+
+  /// Original Add causal position. A reset delivered after this Add retains
+  /// it iff this HLC is newer than the reset; the enclosing edge's Put HLC
+  /// cannot stand in for each contribution's own position.
+  @$pb.TagNumber(4)
+  HLCTimestamp get hlc => $_getN(3);
+  @$pb.TagNumber(4)
+  set hlc(HLCTimestamp value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasHlc() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearHlc() => $_clearField(4);
+  @$pb.TagNumber(4)
+  HLCTimestamp ensureHlc() => $_ensure(3);
 }
 
 /// SnapshotEdge is the snapshot-time representation of a single live edge.
-/// `hlc` carries the bucket's lastHLC (the most recent Put-LWW position;
-/// zero when no LWW write has happened) so receivers can apply each
-/// contribution via AddEdgeWithExpirationContribHLC with the right LWW
-/// floor, keeping ContribID dedup intact.
+/// `hlc` carries the bucket's last Put-LWW position (zero when no Put has
+/// happened); each additive contribution carries its own original HLC.
 class SnapshotEdge extends $pb.GeneratedMessage {
   factory SnapshotEdge({
     $core.String? tail,

@@ -28,14 +28,13 @@ type SnapshotContribution struct {
 	Weight     float32
 	Expiration time.Time
 	ContribID  ContribID
+	HLC        hlc.Timestamp
 }
 
 // SnapshotEdge is one entry of GraphCache.SnapshotEdges. HLC carries the
-// bucket's last LWW position (zero when no LWW write has happened); the
-// receiver uses it as the causal floor when replaying the bucket. A zero-ID
-// contribution is the LWW Put row and is restored through
-// PutEdgeWithExpirationHLC; non-zero-ID additive rows use
-// AddEdgeWithExpirationContribHLC so ContribID dedup remains effective.
+// winning Put floor (zero when no Put has happened). A zero-ID contribution
+// is the LWW Put row; non-zero-ID Add rows retain their own HLC and ContribID
+// so reset filtering and replay dedup remain effective.
 type SnapshotEdge[S comparable] struct {
 	Tail          S
 	Head          S
@@ -287,10 +286,8 @@ func (c *GraphCache[S, T]) snapshotEdgesRLocked(now time.Time) []SnapshotEdge[S]
 			return true
 		}
 		// A retained accepted-expired Put floor may coexist with newer additive
-		// contributions. Add contributions do not carry per-contribution HLC on
-		// the Snapshot wire, so lift the edge frame's bucket floor to the maximum
-		// of the physical bucket and retained barrier. Barrier-first replay then
-		// accepts the equal-HLC Add rows while continuing to fence older Puts.
+		// contributions. Include that floor in the edge header; each Add retains
+		// its own HLC for the receiver to replay above it.
 		if barrier, ok := c.edgeCausalBarriers[EdgeKey[S]{Tail: tail, Head: head}]; ok && ts.Less(barrier) {
 			ts = barrier
 		}
