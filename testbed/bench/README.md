@@ -99,9 +99,9 @@ operator RPO remain unavailable.
 The GC script runs three repetitions of at least 100 direct `GraphCache.Watch`
 ticks per configuration: uniform degree 32 or a skewed graph with one
 100,000-head tail, crossed with a full sweep or a 5,000-tail budget. Uniform
-seeds 3.2 million edges; skew seeds 3.2 million plus approximately 100,000
-additional edges, preserving the same order of magnitude while exposing that
-a tail budget does not bound one high-degree tail. Five expiry bands each add
+seeds 3,200,000 edges; skew seeds 3,199,969 because the hub has 100,000
+heads and each other tail has 31. This exposes how a tail budget handles one
+high-degree tail at nearly identical total edge count. Five expiry bands add
 live-edge contributions and short-only buckets; two vertex-deletion bands
 create dangling edges. The JSON retains every timestamped raw tick duration,
 scanned tail/edge count, expired contributions (including those compacted in
@@ -118,7 +118,8 @@ the real Connect/h2c path. The JSON records each completed periodic tick's
 start/end and materialization/send/finalization durations and every call's
 start/end, latency, and success status. Each tick is paired with equal-length
 before/during/after windows per producer. A comparison requires at least 100
-successful calls and no errors in each window; missing data yields `unknown`.
+successful calls and no errors in each window; missing data yields `unknown`,
+and a failed periodic attempt breaks a three-tick streak.
 The synthetic read trigger fires only if one named read producer's during p99
 exceeds twice its matched before p99 for three consecutive completed ticks.
 The local results do not establish an operator RPO or deletion-survives-restore

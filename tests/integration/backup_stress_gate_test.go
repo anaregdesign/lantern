@@ -44,6 +44,12 @@ type backupStressTick struct {
 	Edges             int    `json:"edges"`
 }
 
+type backupStressAttempt struct {
+	TickID    string `json:"tick_id"`
+	StartNS   int64  `json:"started_unix_ns"`
+	Completed bool   `json:"completed"`
+}
+
 type backupStressWindow struct {
 	Count     int     `json:"count"`
 	Errors    int     `json:"errors"`
@@ -189,6 +195,7 @@ func TestPeriodicBackupStress(t *testing.T) {
 	}
 
 	var ticks []backupStressTick
+	var attempts []backupStressAttempt
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
 		var record struct {
 			Msg string `json:"msg"`
@@ -197,11 +204,26 @@ func TestPeriodicBackupStress(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatal(err)
 		}
-		if record.Msg == "backup: wrote dump" && record.Source == "periodic" {
+		if record.Source != "periodic" {
+			continue
+		}
+		switch record.Msg {
+		case "backup: dump started":
+			attempts = append(attempts, backupStressAttempt{TickID: record.TickID, StartNS: record.StartNS})
+		case "backup: wrote dump":
 			ticks = append(ticks, record.backupStressTick)
 		}
 	}
 	sort.Slice(ticks, func(i, j int) bool { return ticks[i].StartNS < ticks[j].StartNS })
+	sort.Slice(attempts, func(i, j int) bool { return attempts[i].StartNS < attempts[j].StartNS })
+	for i := range attempts {
+		for _, tick := range ticks {
+			if attempts[i].TickID == tick.TickID {
+				attempts[i].Completed = true
+				break
+			}
+		}
+	}
 	var correlations []backupStressCorrelation
 	for _, tick := range ticks {
 		span := tick.EndNS - tick.StartNS
@@ -217,7 +239,7 @@ func TestPeriodicBackupStress(t *testing.T) {
 			})
 		}
 	}
-	signal := backupStressSignal(ticks, correlations)
+	signal := backupStressSignal(attempts, correlations)
 	artifact := struct {
 		SHA          string                    `json:"sha"`
 		GoVersion    string                    `json:"go_version"`
@@ -229,12 +251,13 @@ func TestPeriodicBackupStress(t *testing.T) {
 		IntervalMS   int                       `json:"backup_interval_ms"`
 		ReadRPS      int                       `json:"offered_read_rps_per_producer"`
 		WriteRPS     int                       `json:"offered_write_rps"`
+		Attempts     []backupStressAttempt     `json:"periodic_attempts"`
 		Ticks        []backupStressTick        `json:"periodic_ticks"`
 		Calls        []backupStressCall        `json:"calls"`
 		Correlations []backupStressCorrelation `json:"correlations"`
 		Signal       string                    `json:"synthetic_backup_signal"`
 	}{sha, runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), vertices,
-		vertices * degree, intervalMS, readRPS, writeRPS, ticks, calls, correlations, signal}
+		vertices * degree, intervalMS, readRPS, writeRPS, attempts, ticks, calls, correlations, signal}
 	data, err := json.MarshalIndent(artifact, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -291,18 +314,23 @@ func backupStressWindowFor(calls []backupStressCall, name string, from, until in
 	return window
 }
 
-func backupStressSignal(ticks []backupStressTick, correlations []backupStressCorrelation) string {
-	if len(ticks) < 3 {
+func backupStressSignal(attempts []backupStressAttempt, correlations []backupStressCorrelation) string {
+	if len(attempts) < 3 {
 		return "unknown"
 	}
 	allConclusive := true
 	for _, name := range []string{"GetVertex", "ScanVertices", "Illuminate"} {
 		var streak, completeStreak int
 		conclusiveTriple := false
-		for _, tick := range ticks {
+		for _, attempt := range attempts {
+			if !attempt.Completed {
+				streak = 0
+				completeStreak = 0
+				continue
+			}
 			var matched *backupStressCorrelation
 			for i := range correlations {
-				if correlations[i].TickID == tick.TickID && correlations[i].Producer == name {
+				if correlations[i].TickID == attempt.TickID && correlations[i].Producer == name {
 					matched = &correlations[i]
 					break
 				}
@@ -336,19 +364,19 @@ func backupStressSignal(ticks []backupStressTick, correlations []backupStressCor
 }
 
 func TestBackupStressSignalIgnoresIncompleteTrailingTick(t *testing.T) {
-	ticks := []backupStressTick{{TickID: "1"}, {TickID: "2"}, {TickID: "3"}, {TickID: "4"}}
+	attempts := []backupStressAttempt{{TickID: "1", Completed: true}, {TickID: "2", Completed: true}, {TickID: "3", Completed: true}, {TickID: "4"}}
 	var rows []backupStressCorrelation
-	for _, tick := range ticks[:3] {
+	for _, attempt := range attempts[:3] {
 		for _, name := range []string{"GetVertex", "ScanVertices", "Illuminate"} {
 			rows = append(rows, backupStressCorrelation{
-				TickID: tick.TickID, Producer: name,
+				TickID: attempt.TickID, Producer: name,
 				Before: backupStressWindow{Count: 100, P99NS: 100, Complete: true},
 				During: backupStressWindow{Count: 100, P99NS: 110, Complete: true},
 				After:  backupStressWindow{Count: 100, P99NS: 100, Complete: true},
 			})
 		}
 	}
-	if got := backupStressSignal(ticks, rows); got != "not_fired" {
+	if got := backupStressSignal(attempts, rows); got != "not_fired" {
 		t.Fatalf("signal = %s, want not_fired with 3 complete ticks", got)
 	}
 	for i := range rows {
@@ -356,7 +384,11 @@ func TestBackupStressSignalIgnoresIncompleteTrailingTick(t *testing.T) {
 			rows[i].During.P99NS = 201
 		}
 	}
-	if got := backupStressSignal(ticks, rows); got != "fired" {
+	if got := backupStressSignal(attempts, rows); got != "fired" {
 		t.Fatalf("signal = %s, want fired", got)
+	}
+	withFailedMiddle := []backupStressAttempt{attempts[0], attempts[1], {TickID: "failed"}, attempts[2]}
+	if got := backupStressSignal(withFailedMiddle, rows); got != "unknown" {
+		t.Fatalf("signal = %s, want unknown when a failed attempt breaks the streak", got)
 	}
 }

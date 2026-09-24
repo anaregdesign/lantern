@@ -19,7 +19,11 @@ type BackupStressFile struct {
 	IntervalMS  int    `json:"backup_interval_ms"`
 	ReadRPS     int    `json:"offered_read_rps_per_producer"`
 	WriteRPS    int    `json:"offered_write_rps"`
-	Ticks       []struct {
+	Attempts    []struct {
+		TickID    string `json:"tick_id"`
+		Completed bool   `json:"completed"`
+	} `json:"periodic_attempts"`
+	Ticks []struct {
 		Source            string `json:"source"`
 		TickID            string `json:"tick_id"`
 		StartNS           int64  `json:"started_unix_ns"`
@@ -71,8 +75,8 @@ func renderBackupStress(w *errWriter, file *BackupStressFile) {
 		w.printf("_no periodic backup artifact found_\n\n")
 		return
 	}
-	w.printf("Synthetic host run at SHA `%s`: %d vertices / %d edges, %d ms backup interval, %d offered calls/s per named read and %d writes/s. Result: `%s`. A window needs 100 successful calls and no errors; otherwise its p99 is shown for context but the comparison is inconclusive.\n\n",
-		file.SHA, file.Vertices, file.SeededEdges, file.IntervalMS, file.ReadRPS, file.WriteRPS, file.Signal)
+	w.printf("Synthetic host run at SHA `%s`: %d vertices / %d edges, %d ms backup interval, %d offered calls/s per named read and %d writes/s; %d/%d periodic attempts completed. Result: `%s`. A window needs 100 successful calls and no errors; otherwise its p99 is shown for context but the comparison is inconclusive. A failed attempt breaks a three-tick streak.\n\n",
+		file.SHA, file.Vertices, file.SeededEdges, file.IntervalMS, file.ReadRPS, file.WriteRPS, len(file.Ticks), len(file.Attempts), file.Signal)
 	w.printf("| periodic tick | duration ms | materialization ms | send ms | finalization ms | vertices / edges |\n")
 	w.printf("| --- | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, tick := range file.Ticks {
@@ -80,15 +84,15 @@ func renderBackupStress(w *errWriter, file *BackupStressFile) {
 			tick.TickID, nsToMs(tick.EndNS-tick.StartNS), nsToMs(tick.MaterializationNS),
 			nsToMs(tick.SendNS), nsToMs(tick.FinalizationNS), tick.Vertices, tick.Edges)
 	}
-	w.printf("\n| periodic tick | producer | before p99 ms / count / errors | during p99 ms / count / errors | after p99 ms / count / errors | comparable |\n")
+	w.printf("\n| periodic tick | producer | before p99 ms / count / error rate | during p99 ms / count / error rate | after p99 ms / count / error rate | comparable |\n")
 	w.printf("| --- | --- | ---: | ---: | ---: | --- |\n")
 	for _, row := range file.Correlations {
 		comparable := row.Before.Complete && row.During.Complete && row.After.Complete
-		w.printf("| `%s` | `%s` | %.2f / %d / %d | %.2f / %d / %d | %.2f / %d / %d | %t |\n",
+		w.printf("| `%s` | `%s` | %.2f / %d / %.3f | %.2f / %d / %.3f | %.2f / %d / %.3f | %t |\n",
 			row.TickID, row.Producer,
-			nsToMs(row.Before.P99NS), row.Before.Count, row.Before.Errors,
-			nsToMs(row.During.P99NS), row.During.Count, row.During.Errors,
-			nsToMs(row.After.P99NS), row.After.Count, row.After.Errors, comparable)
+			nsToMs(row.Before.P99NS), row.Before.Count, row.Before.ErrorRate,
+			nsToMs(row.During.P99NS), row.During.Count, row.During.ErrorRate,
+			nsToMs(row.After.P99NS), row.After.Count, row.After.ErrorRate, comparable)
 	}
 	w.printf("\n")
 }
