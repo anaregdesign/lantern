@@ -726,11 +726,11 @@ func (x *ReplicatedPutEdges) GetEntries() []*ReplicatedPutEdge {
 }
 
 // Mutation is the unit of replication: a sequenced, HLC-stamped,
-// origin-tagged graph write. `seq` is assigned by the originating node's
-// mutation log (see core/mutationlog) and is strictly monotone within a
-// single origin.
+// origin-tagged graph write. `seq` is an origin-local committed sequence,
+// independent of the relay log's replica-local Entry.Seq, and is contiguous
+// within a single origin.
 //
-//	seq:    per-origin monotone sequence number, assigned at append time.
+//	seq:    per-origin contiguous sequence number, assigned at local commit.
 //	hlc:    causal timestamp stamped at append time.
 //	origin: 16-byte node identifier of the node that first accepted the
 //	        write; mirrors hlc.node_id but is kept as an explicit field so
@@ -1267,15 +1267,19 @@ func (x *SnapshotVertexCausalBarrier) GetHlc() *HLCTimestamp {
 // suppressing duplicates when peer-pump later re-delivers the same
 // contribution from the live tail.
 //
-//	contrib_id: 24-byte ContribID; empty/zero when the contribution
-//	            originated from a local non-replicated AddEdge and dedup
-//	            is disabled (the legacy zero-id semantics).
+//	contrib_id: 24-byte ContribID for a replicated Add. Empty denotes the
+//	            single Put row, or a local-only legacy contribution with no
+//	            dedup identity.
 type SnapshotEdgeContribution struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Weight float32                `protobuf:"fixed32,1,opt,name=weight,proto3" json:"weight,omitempty"`
 	// Absolute expiration. An absent timestamp means a permanent contribution.
-	Expiration    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expiration,proto3" json:"expiration,omitempty"`
-	ContribId     []byte                 `protobuf:"bytes,3,opt,name=contrib_id,json=contribId,proto3" json:"contrib_id,omitempty"`
+	Expiration *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expiration,proto3" json:"expiration,omitempty"`
+	ContribId  []byte                 `protobuf:"bytes,3,opt,name=contrib_id,json=contribId,proto3" json:"contrib_id,omitempty"`
+	// Original Add causal position (required for nonzero contrib_id). A reset
+	// delivered after this Add retains it iff this HLC is newer than the reset;
+	// the enclosing edge's Put HLC cannot stand in for it.
+	Hlc           *HLCTimestamp `protobuf:"bytes,4,opt,name=hlc,proto3" json:"hlc,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1331,11 +1335,16 @@ func (x *SnapshotEdgeContribution) GetContribId() []byte {
 	return nil
 }
 
+func (x *SnapshotEdgeContribution) GetHlc() *HLCTimestamp {
+	if x != nil {
+		return x.Hlc
+	}
+	return nil
+}
+
 // SnapshotEdge is the snapshot-time representation of a single live edge.
-// `hlc` carries the bucket's lastHLC (the most recent Put-LWW position;
-// zero when no LWW write has happened) so receivers can apply each
-// contribution via AddEdgeWithExpirationContribHLC with the right LWW
-// floor, keeping ContribID dedup intact.
+// `hlc` carries the winning Put floor, including a retained causal barrier
+// (zero when no Put has happened). Each Add carries its own original HLC.
 type SnapshotEdge struct {
 	state         protoimpl.MessageState      `protogen:"open.v1"`
 	Tail          string                      `protobuf:"bytes,1,opt,name=tail,proto3" json:"tail,omitempty"`
@@ -2037,14 +2046,15 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"Y\n" +
 	"\x1bSnapshotVertexCausalBarrier\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12(\n" +
-	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"\x8d\x01\n" +
+	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"\xb7\x01\n" +
 	"\x18SnapshotEdgeContribution\x12\x16\n" +
 	"\x06weight\x18\x01 \x01(\x02R\x06weight\x12:\n" +
 	"\n" +
 	"expiration\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"expiration\x12\x1d\n" +
 	"\n" +
-	"contrib_id\x18\x03 \x01(\fR\tcontribId\"\xaa\x01\n" +
+	"contrib_id\x18\x03 \x01(\fR\tcontribId\x12(\n" +
+	"\x03hlc\x18\x04 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"\xaa\x01\n" +
 	"\fSnapshotEdge\x12\x12\n" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\x12(\n" +
@@ -2182,34 +2192,35 @@ var file_graph_v1_replication_proto_depIdxs = []int32{
 	0,  // 27: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
 	0,  // 28: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
 	41, // 29: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
-	0,  // 30: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
-	16, // 31: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
-	0,  // 32: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
-	0,  // 33: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	41, // 34: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
-	0,  // 35: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	41, // 36: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
-	12, // 37: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
-	14, // 38: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
-	17, // 39: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
-	13, // 40: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
-	15, // 41: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
-	18, // 42: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
-	19, // 43: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
-	20, // 44: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
-	0,  // 45: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
-	23, // 46: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
-	9,  // 47: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
-	11, // 48: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
-	22, // 49: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
-	10, // 50: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
-	21, // 51: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
-	24, // 52: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
-	50, // [50:53] is the sub-list for method output_type
-	47, // [47:50] is the sub-list for method input_type
-	47, // [47:47] is the sub-list for extension type_name
-	47, // [47:47] is the sub-list for extension extendee
-	0,  // [0:47] is the sub-list for field type_name
+	0,  // 30: graph.v1.SnapshotEdgeContribution.hlc:type_name -> graph.v1.HLCTimestamp
+	0,  // 31: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
+	16, // 32: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
+	0,  // 33: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	0,  // 34: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	41, // 35: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
+	0,  // 36: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	41, // 37: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
+	12, // 38: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
+	14, // 39: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
+	17, // 40: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
+	13, // 41: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
+	15, // 42: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
+	18, // 43: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
+	19, // 44: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
+	20, // 45: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
+	0,  // 46: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
+	23, // 47: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
+	9,  // 48: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
+	11, // 49: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
+	22, // 50: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
+	10, // 51: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
+	21, // 52: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
+	24, // 53: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
+	51, // [51:54] is the sub-list for method output_type
+	48, // [48:51] is the sub-list for method input_type
+	48, // [48:48] is the sub-list for extension type_name
+	48, // [48:48] is the sub-list for extension extendee
+	0,  // [0:48] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_replication_proto_init() }

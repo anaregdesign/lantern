@@ -38,7 +38,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -504,20 +503,13 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 				return err
 			}
 			se := e.Edge
-			if se == nil || len(se.GetContributions()) == 0 {
-				return snapshotProtocolError("nil or empty live edge payload")
+			rows, err := snapshotEdgeRows(se)
+			if err != nil {
+				return err
 			}
-			edgeHLC := snapshotHLC(se.GetHlc())
-			for _, c := range se.GetContributions() {
-				if c == nil {
-					return snapshotProtocolError("nil live edge contribution")
-				}
-				var cid graphcache.ContribID
-				copy(cid[:], c.GetContribId())
-				applySnapshotEdge(
-					a.snap, se.GetTail(), se.GetHead(), c.GetWeight(),
-					prototime.Expiration(c.GetExpiration()), cid, edgeHLC,
-				)
+			for _, row := range rows {
+				applySnapshotEdge(a.snap, se.GetTail(), se.GetHead(), row.weight,
+					row.expiration, row.contribID, row.hlc)
 			}
 			replay.counts.edges++
 		case *pb.SnapshotResponse_Footer:

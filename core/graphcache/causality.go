@@ -14,20 +14,17 @@ import (
 // newer than ts the contribution is dropped and false is returned, preventing
 // a late Add* from resurrecting a freshly-deleted edge. Otherwise behaviour
 // matches AddEdgeWithExpirationContrib, including ContribID-based dedup. A
-// successful apply clears any existing tombstone for the edge.
+// successful apply leaves an older live Delete tombstone in place so late
+// pre-Delete mutations remain fenced for the rest of its D4 window.
 func (c *GraphCache[S, T]) AddEdgeWithExpirationContribHLC(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.edgeWriteAllowedLocked(tail, head, ts) {
+	if !c.edgeAddWriteAllowedLocked(tail, head, ts) {
 		return false
 	}
-	applied, _ := c.addEdgeContribLocked(tail, head, w, expiration, contribID, time.Now())
-	if applied {
-		// Add does not carry a replacement Put watermark in the edge bucket.
-		// Keep any accepted-expired Put barrier so a delayed Put older than
-		// that floor still cannot reset the newer additive state.
-		c.clearEdgeTombstoneLocked(tail, head)
-	}
+	applied, _ := c.addEdgeContribHLCLocked(tail, head, w, expiration, contribID, ts, time.Now())
+	// A newer Add does not erase the earlier Delete floor. A delayed Put or
+	// Add older than that Delete must remain fenced for the whole D4 horizon.
 	return applied
 }
 
@@ -163,7 +160,9 @@ func (c *GraphCache[S, T]) ApplyEdgeCausalBarrierHLC(tail, head S, ts hlc.Timest
 
 func (c *GraphCache[S, T]) applyEdgeCausalBarrierLocked(tail, head S, ts hlc.Timestamp) {
 	c.recordEdgeCausalBarrierLocked(tail, head, ts)
-	c.deleteEdgeLocked(tail, head)
+	if !c.edges.resetWithoutPutHLC(tail, head, ts) {
+		c.deleteEdgeLocked(tail, head)
+	}
 }
 
 func (c *GraphCache[S, T]) vertexWriteAllowedLocked(key S, ts hlc.Timestamp) bool {
@@ -240,6 +239,24 @@ func (c *GraphCache[S, T]) edgeWriteAllowedLocked(tail, head S, ts hlc.Timestamp
 		return false
 	}
 	if barrier, ok := c.edgeCausalBarriers[EdgeKey[S]{Tail: tail, Head: head}]; ok && ts.Less(barrier) {
+		return false
+	}
+	return true
+}
+
+// Add must be strictly newer than the winning Put/Delete reset. Equality is
+// reserved for replay of the reset mutation itself; a distinct Add carrying
+// the same HLC is not a valid history.
+func (c *GraphCache[S, T]) edgeAddWriteAllowedLocked(tail, head S, ts hlc.Timestamp) bool {
+	if tombTs, ok := c.edgeTombstoneLocked(tail, head); ok && !tombTs.Less(ts) {
+		return false
+	}
+	if barrier, ok := c.edgeCausalBarriers[EdgeKey[S]{Tail: tail, Head: head}]; ok && !barrier.Less(ts) {
+		return false
+	}
+	// Check before addEdgeContribHLCLocked revives endpoint vertices. The
+	// weight repeats this check under its own lock for direct callers.
+	if floor, ok := c.edges.lastPutHLC(tail, head); ok && floor != (hlc.Timestamp{}) && !floor.Less(ts) {
 		return false
 	}
 	return true

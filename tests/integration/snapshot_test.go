@@ -179,9 +179,18 @@ func TestSnapshot_E2E_PrimaryToFollower(t *testing.T) {
 			for _, c := range se.GetContributions() {
 				var cid graphcache.ContribID
 				copy(cid[:], c.GetContribId())
+				if cid.IsZero() {
+					follower.cache.PutEdgeWithExpirationHLC(
+						se.GetTail(), se.GetHead(), c.GetWeight(), c.GetExpiration().AsTime(), edgeHLC,
+					)
+					continue
+				}
+				if c.GetHlc() == nil {
+					t.Fatal("snapshot Add contribution omitted its HLC")
+				}
 				follower.cache.AddEdgeWithExpirationContribHLC(
 					se.GetTail(), se.GetHead(), c.GetWeight(),
-					c.GetExpiration().AsTime(), cid, edgeHLC,
+					c.GetExpiration().AsTime(), cid, snapshotHLC(c.GetHlc()),
 				)
 			}
 			gotEdgeCount++
@@ -349,6 +358,90 @@ func TestSnapshot_E2E_AcceptedExpiredCausalBarriers(t *testing.T) {
 	}
 	if len(searchResp.Msg.GetHits()) != 0 {
 		t.Fatalf("barrier marker became searchable: %+v", searchResp.Msg.GetHits())
+	}
+}
+
+// TestSnapshot_E2E_MixedEdgeResetAndAdd keeps the original Add HLC across
+// the real Snapshot wire, then replays the same snapshot twice. A Put base
+// and a Delete floor both coexist with later Add rows; older Add rows remain
+// rejected after bootstrap.
+func TestSnapshot_E2E_MixedEdgeResetAndAdd(t *testing.T) {
+	primary := newSnapshotPeer(t, hlc.NodeID{0x41})
+	follower := newSnapshotPeer(t, hlc.NodeID{0x42})
+	node := hlc.NodeID{0x43}
+	stamp := func(wall int64) hlc.Timestamp { return hlc.Timestamp{WallNs: wall, NodeID: node} }
+	exp := time.Now().Add(time.Hour)
+	id := func(b byte) graphcache.ContribID { var out graphcache.ContribID; out[0] = b; return out }
+
+	if !primary.cache.PutEdgeWithExpirationHLC("put-tail", "put-head", 5, exp, stamp(20)) ||
+		!primary.cache.AddEdgeWithExpirationContribHLC("put-tail", "put-head", 3, exp, id(1), stamp(30)) {
+		t.Fatal("could not seed Put followed by Add")
+	}
+	if !primary.cache.AddEdgeWithExpirationContribHLC("delete-tail", "delete-head", 7, exp, id(2), stamp(10)) {
+		t.Fatal("could not seed old Add")
+	}
+	primary.cache.DeleteEdgeHLC("delete-tail", "delete-head", stamp(20), exp)
+	if !primary.cache.AddEdgeWithExpirationContribHLC("delete-tail", "delete-head", 3, exp, id(3), stamp(30)) {
+		t.Fatal("could not seed Add after Delete")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for pass := 0; pass < 2; pass++ {
+		stream, err := primary.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+		if err != nil {
+			t.Fatalf("Snapshot pass %d: %v", pass, err)
+		}
+		var addRows, tombstones int
+		for stream.Receive() {
+			switch entry := stream.Msg().GetEntry().(type) {
+			case *pb.SnapshotResponse_Vertex:
+				v := entry.Vertex.GetVertex()
+				follower.cache.PutVertexWithExpirationHLC(v.GetKey(), v, v.GetExpiration().AsTime(), snapshotHLC(entry.Vertex.GetHlc()))
+			case *pb.SnapshotResponse_EdgeTombstone:
+				m := entry.EdgeTombstone
+				follower.cache.ApplySnapshotEdgeTombstoneHLC(m.GetTail(), m.GetHead(), snapshotHLC(m.GetHlc()), m.GetExpiration().AsTime())
+				tombstones++
+			case *pb.SnapshotResponse_Edge:
+				e := entry.Edge
+				for _, contribution := range e.GetContributions() {
+					var cid graphcache.ContribID
+					copy(cid[:], contribution.GetContribId())
+					if cid.IsZero() {
+						follower.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), contribution.GetWeight(), contribution.GetExpiration().AsTime(), snapshotHLC(e.GetHlc()))
+						continue
+					}
+					if contribution.GetHlc() == nil {
+						t.Fatal("Snapshot Add row lost its HLC")
+					}
+					follower.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), contribution.GetWeight(), contribution.GetExpiration().AsTime(), cid, snapshotHLC(contribution.GetHlc()))
+					addRows++
+				}
+			}
+		}
+		if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("Snapshot pass %d stream: %v", pass, err)
+		}
+		_ = stream.Close()
+		if addRows != 2 || tombstones != 1 {
+			t.Fatalf("Snapshot pass %d Add rows=%d tombstones=%d, want 2/1", pass, addRows, tombstones)
+		}
+		for _, edge := range []struct {
+			tail, head string
+			weight     float32
+		}{
+			{"put-tail", "put-head", 8}, {"delete-tail", "delete-head", 3},
+		} {
+			if got, ok := follower.cache.GetWeight(edge.tail, edge.head); !ok || got != edge.weight {
+				t.Errorf("Snapshot pass %d %s->%s weight=%g/%v, want %g", pass, edge.tail, edge.head, got, ok, edge.weight)
+			}
+		}
+	}
+	if follower.cache.AddEdgeWithExpirationContribHLC("delete-tail", "delete-head", 7, exp, id(4), stamp(10)) {
+		t.Fatal("older Add crossed the replayed Delete floor")
+	}
+	if follower.cache.AddEdgeWithExpirationContribHLC("put-tail", "put-head", 7, exp, id(5), stamp(10)) {
+		t.Fatal("older Add crossed the replayed Put floor")
 	}
 }
 

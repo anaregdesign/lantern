@@ -980,7 +980,7 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S],
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, it := range items {
-		if !c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
+		if !c.edgeAddWriteAllowedLocked(it.Tail, it.Head, ts) {
 			// Fenced by a newer tombstone: this item applies nothing, but the
 			// edge may still hold live weight from another contribution. Report
 			// that real live sum, the same value the dedup no-op path returns.
@@ -988,12 +988,11 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S],
 			deduped++
 			continue
 		}
-		applied, eff := c.addEdgeContribLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, now)
+		applied, eff := c.addEdgeContribHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, ts, now)
 		effective[i] = eff
 		if applied {
-			// The additive bucket has no replacement Put watermark. Retain an
-			// accepted-expired Put barrier so a delayed older Put remains fenced.
-			c.clearEdgeTombstoneLocked(it.Tail, it.Head)
+			// Keep an earlier Delete floor while its D4 deadline remains
+			// active; a newer Add does not supersede its reset semantics.
 			continue
 		}
 		deduped++

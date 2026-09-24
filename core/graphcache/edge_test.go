@@ -782,3 +782,18 @@ func Test_weight_effectiveExcludesExpired(t *testing.T) {
 		}
 	})
 }
+
+// BenchmarkWeightCausalAddBatch64 tracks the replicated Add hot path after
+// per-contribution HLC and canonical float32 summation were introduced.
+func BenchmarkWeightCausalAddBatch64(b *testing.B) {
+	now := time.Now()
+	expiration := now.Add(time.Hour)
+	b.ReportAllocs()
+	for b.Loop() {
+		w := newWeight()
+		for i := 0; i < 64; i++ {
+			w.addWithExpirationContribHLCAt(1, expiration, ContribID{byte(i + 1)}, hlc.Timestamp{WallNs: int64(i + 1)}, now)
+		}
+		w.snapshotAt(now)
+	}
+}

@@ -1,0 +1,33 @@
+# mixed_edge_reset_add — bounded three-replica performance probe for #1203.
+# Put and Delete reset the same 128 edge identities that Add contributes to;
+# per-Add ContribIDs are unique, so the run measures causal row retention and
+# canonical summation rather than accidental client ID reuse. GetEdges uses
+# plural OK+missing semantics while replicas converge asynchronously.
+# This is an on-demand diagnostic until a post-change baseline supports a
+# stable perf gate; it is not part of the short release sweep.
+name: mixed_edge_reset_add
+cluster:
+  gc_interval_seconds: 10
+  search_enabled: false
+phases:
+  warmup:   { duration: 15s, concurrency: 8, rps: 200 }
+  steady:   { duration: 2m, concurrency: 32, rps: 800 }
+  cooldown: 20s
+target:
+  endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
+  calls:
+    - call: graph.v1.LanternService/PutEdge
+      data_template: |
+        {"edge":{"tail":"mixed-{{mod .RequestNumber 128}}","head":"mixed-head","weight":2.0}}
+    - call: graph.v1.LanternService/AddEdge
+      data_template: |
+        {"edge":{"tail":"mixed-{{mod .RequestNumber 128}}","head":"mixed-head","weight":0.5},"contribId":"{{ printf `%024d` .RequestNumber | b64enc }}"}
+    - call: graph.v1.LanternService/DeleteEdge
+      data_template: |
+        {"tail":"mixed-{{mod .RequestNumber 128}}","head":"mixed-head"}
+    - call: graph.v1.LanternService/GetEdges
+      data_template: |
+        {"edges":[{"tail":"mixed-{{mod .RequestNumber 128}}","head":"mixed-head"}]}
+leak_gate:
+  goroutine_max_delta: 30
+  heap_alloc_max_delta_mb: 64

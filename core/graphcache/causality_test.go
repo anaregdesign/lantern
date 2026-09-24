@@ -2,6 +2,8 @@ package graphcache
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,219 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/search"
 )
+
+func TestMixedEdgeResetAddPermutations(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	type event struct {
+		name  string
+		apply func(*GraphCache[string, string])
+	}
+	ts := func(wall int64) hlc.Timestamp { return hlc.Timestamp{WallNs: wall, NodeID: hlc.NodeID{byte(wall)}} }
+	add := func(wall int64, value float32, id byte) event {
+		return event{fmt.Sprintf("Add%d", wall), func(c *GraphCache[string, string]) {
+			c.AddEdgeWithExpirationContribHLC("tail", "head", value, live, ContribID{id}, ts(wall))
+		}}
+	}
+	put := func(wall int64, value float32) event {
+		return event{fmt.Sprintf("Put%d", wall), func(c *GraphCache[string, string]) {
+			c.PutEdgeWithExpirationHLC("tail", "head", value, live, ts(wall))
+		}}
+	}
+	deleteAt := func(wall int64) event {
+		return event{fmt.Sprintf("Delete%d", wall), func(c *GraphCache[string, string]) {
+			c.DeleteEdgeHLC("tail", "head", ts(wall), live)
+		}}
+	}
+	for _, tc := range []struct {
+		name   string
+		events []event
+		want   float32
+	}{
+		{"PutAdd", []event{put(20, 5), add(30, 1, 1), add(40, 2, 2)}, 8},
+		{"DeleteAdd", []event{add(10, 7, 1), deleteAt(20), add(30, 3, 2)}, 3},
+		{"PutDeleteAdd", []event{put(10, 5), add(20, 1, 1), deleteAt(30), add(40, 4, 2)}, 4},
+		{"DeletePutAdd", []event{deleteAt(20), add(30, 3, 1), put(40, 9), add(50, 4, 2)}, 13},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			order := make([]int, len(tc.events))
+			for i := range order {
+				order[i] = i
+			}
+			var visit func(int)
+			visit = func(start int) {
+				if start == len(order) {
+					c := NewGraphCache[string, string](time.Hour)
+					for _, i := range order {
+						tc.events[i].apply(c)
+					}
+					// Re-delivery after every reset must be idempotent too.
+					for _, i := range order {
+						tc.events[i].apply(c)
+					}
+					if got, ok := c.GetWeight("tail", "head"); !ok || got != tc.want {
+						t.Errorf("order %v: weight=%g/%v, want %g", order, got, ok, tc.want)
+					}
+					c.flush()
+					if got, ok := c.GetWeight("tail", "head"); !ok || got != tc.want {
+						t.Errorf("order %v after GC: weight=%g/%v, want %g", order, got, ok, tc.want)
+					}
+					return
+				}
+				for i := start; i < len(order); i++ {
+					order[start], order[i] = order[i], order[start]
+					visit(start + 1)
+					order[start], order[i] = order[i], order[start]
+				}
+			}
+			visit(0)
+		})
+	}
+}
+
+func TestMixedEdgeResetAddRandomizedConvergence(t *testing.T) {
+	// Every tape has one total HLC order. Delivery is shuffled independently;
+	// duplicates exercise ContribID dedup and equal-HLC reset replay.
+	rng := rand.New(rand.NewSource(1203))
+	live := time.Now().Add(time.Hour)
+	for tapeIndex := 0; tapeIndex < 80; tapeIndex++ {
+		type event struct {
+			kind   int // 0=Put, 1=Delete, 2=Add
+			weight float32
+			stamp  hlc.Timestamp
+			id     ContribID
+		}
+		length := 3 + rng.Intn(5)
+		events := make([]event, length)
+		lastReset := -1
+		for i := range events {
+			events[i] = event{
+				kind:   rng.Intn(3),
+				weight: float32(1 + rng.Intn(7)),
+				stamp:  hlc.Timestamp{WallNs: int64(i + 1), NodeID: hlc.NodeID{byte(tapeIndex + 1)}},
+				id:     ContribID{byte(tapeIndex + 1), byte(i + 1)},
+			}
+			if events[i].kind != 2 {
+				lastReset = i
+			}
+		}
+		want := float32(0)
+		present := false
+		if lastReset >= 0 && events[lastReset].kind == 0 {
+			want, present = events[lastReset].weight, true
+		}
+		for i, e := range events {
+			if e.kind == 2 && i > lastReset {
+				want += e.weight
+				present = true
+			}
+		}
+		for delivery := 0; delivery < 20; delivery++ {
+			cache := NewGraphCache[string, string](time.Hour)
+			order := rng.Perm(length)
+			for _, index := range order {
+				e := events[index]
+				switch e.kind {
+				case 0:
+					cache.PutEdgeWithExpirationHLC("tail", "head", e.weight, live, e.stamp)
+				case 1:
+					cache.DeleteEdgeHLC("tail", "head", e.stamp, live)
+				case 2:
+					cache.AddEdgeWithExpirationContribHLC("tail", "head", e.weight, live, e.id, e.stamp)
+				}
+			}
+			for _, index := range order {
+				e := events[index]
+				if e.kind == 2 {
+					cache.AddEdgeWithExpirationContribHLC("tail", "head", e.weight, live, e.id, e.stamp)
+				}
+			}
+			cache.flush()
+			got, ok := cache.GetWeight("tail", "head")
+			if ok != present || (present && got != want) {
+				t.Fatalf("tape=%d delivery=%d order=%v: weight=%g/%v, want %g/%v; events=%+v", tapeIndex, delivery, order, got, ok, want, present, events)
+			}
+		}
+	}
+}
+
+func TestStaleCausalAddDoesNotReviveEndpointBehindPutFloor(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	live := time.Now().Add(time.Hour)
+	put := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{1}}
+	staleAdd := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{1}}
+	if !c.PutEdgeWithExpirationHLC("tail", "head", 5, live, put) {
+		t.Fatal("Put did not establish an edge floor")
+	}
+	if err := c.PutVertexWithExpiration("tail", "", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("test setup left tail live")
+	}
+	if c.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, ContribID{1}, staleAdd) {
+		t.Fatal("Add older than the Put floor was accepted")
+	}
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("fenced Add revived an absent endpoint vertex")
+	}
+}
+
+func TestZeroSumCausalAddsSurviveGCAndReplay(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	live := time.Now().Add(time.Hour)
+	first := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{1}}
+	second := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{2}}
+	c.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, ContribID{1}, first)
+	c.AddEdgeWithExpirationContribHLC("tail", "head", -1, live, ContribID{2}, second)
+	if _, ok := c.GetWeight("tail", "head"); ok {
+		t.Fatal("zero-sum edge should be hidden from reads")
+	}
+	c.flush()
+	if c.edges.count() != 1 {
+		t.Fatal("GC discarded live zero-sum ContribIDs")
+	}
+	snapshot := c.SnapshotReplication()
+	if len(snapshot.Graph.Edges) != 1 || len(snapshot.Graph.Edges[0].Contributions) != 2 {
+		t.Fatalf("zero-sum dedup evidence missing from replication Snapshot: %+v", snapshot.Graph.Edges)
+	}
+	restored := NewGraphCache[string, string](time.Hour)
+	replayReplicationSnapshot(restored, snapshot)
+	if restored.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, ContribID{1}, first) {
+		t.Fatal("duplicate Add was re-applied after Snapshot bootstrap")
+	}
+	if _, ok := restored.GetWeight("tail", "head"); ok {
+		t.Fatal("Snapshot replay exposed a zero-sum edge")
+	}
+	if c.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, ContribID{1}, first) {
+		t.Fatal("duplicate Add was re-applied after GC")
+	}
+	if _, ok := c.GetWeight("tail", "head"); ok {
+		t.Fatal("duplicate resurrected zero-sum edge")
+	}
+}
+
+func TestCausalAddFloat32SumUsesCanonicalOrder(t *testing.T) {
+	live := time.Now().Add(time.Hour)
+	for _, order := range [][]int{{0, 1, 2}, {0, 2, 1}, {2, 1, 0}} {
+		c := NewGraphCache[string, string](time.Hour)
+		rows := []struct {
+			weight float32
+			id     ContribID
+			hlc    hlc.Timestamp
+		}{
+			{16777216, ContribID{1}, hlc.Timestamp{WallNs: 10}},
+			{1, ContribID{2}, hlc.Timestamp{WallNs: 20}},
+			{-16777215, ContribID{3}, hlc.Timestamp{WallNs: 30}},
+		}
+		for _, i := range order {
+			row := rows[i]
+			c.AddEdgeWithExpirationContribHLC("tail", "head", row.weight, live, row.id, row.hlc)
+		}
+		if got, ok := c.GetWeight("tail", "head"); !ok || got != 1 {
+			t.Errorf("order %v: canonical float32 sum = %g/%v, want 1/true", order, got, ok)
+		}
+	}
+}
 
 func TestAcceptedExpiredPutCausalBarrierSurvivesGC(t *testing.T) {
 	newer := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0x20}}

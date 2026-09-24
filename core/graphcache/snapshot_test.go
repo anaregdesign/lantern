@@ -53,7 +53,7 @@ func replayReplicationSnapshot(dst *GraphCache[string, string], snapshot Replica
 				dst.PutEdgeWithExpirationHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, edge.HLC)
 				continue
 			}
-			dst.AddEdgeWithExpirationContribHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, contribution.ContribID, edge.HLC)
+			dst.AddEdgeWithExpirationContribHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, contribution.ContribID, contribution.HLC)
 		}
 	}
 }
@@ -365,19 +365,19 @@ func TestGraphCache_SnapshotReplicationRetainsCausalFloors(t *testing.T) {
 		}
 	})
 
-	t.Run("barrier coexists with equal Add and frame uses greatest Put floor", func(t *testing.T) {
+	t.Run("barrier coexists with newer Add and frame uses greatest Put floor", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Hour)
 		if !c.ApplyEdgeCausalBarrierHLC("tail", "head", newer) {
 			t.Fatal("barrier rejected")
 		}
 		var addID ContribID
 		addID[0] = 0x20
-		if !c.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, addID, newer) {
-			t.Fatal("Add equal to barrier should be accepted")
+		if !c.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, addID, hlc.Timestamp{WallNs: 21}) {
+			t.Fatal("Add newer than barrier should be accepted")
 		}
 		snapshot := c.SnapshotReplication()
 		if len(snapshot.Barriers.Edges) != 1 || len(snapshot.Graph.Edges) != 1 || snapshot.Graph.Edges[0].HLC != newer {
-			t.Fatalf("equal Add snapshot = %+v", snapshot)
+			t.Fatalf("newer Add snapshot = %+v", snapshot)
 		}
 
 		higher := hlc.Timestamp{WallNs: 30, NodeID: hlc.NodeID{0x30}}
@@ -598,4 +598,23 @@ func TestSnapshotRLockContract(t *testing.T) {
 		close(stop)
 		wg.Wait()
 	})
+}
+
+// BenchmarkSnapshotReplicationMixedEdge records allocation cost when each
+// edge carries both a Put reset and several causally newer Add rows.
+func BenchmarkSnapshotReplicationMixedEdge(b *testing.B) {
+	c := NewGraphCache[string, string](time.Hour)
+	live := time.Now().Add(time.Hour)
+	for i := 0; i < 1000; i++ {
+		tail := "tail-" + strconv.Itoa(i)
+		c.PutEdgeWithExpirationHLC(tail, "head", 1, live, hlc.Timestamp{WallNs: 10})
+		for j := 0; j < 3; j++ {
+			c.AddEdgeWithExpirationContribHLC(tail, "head", 1, live, ContribID{byte(j + 1)}, hlc.Timestamp{WallNs: int64(20 + j)})
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = c.SnapshotReplication()
+	}
 }

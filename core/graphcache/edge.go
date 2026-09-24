@@ -1,6 +1,8 @@
 package graphcache
 
 import (
+	"bytes"
+	"sort"
 	"sync"
 	"time"
 
@@ -11,6 +13,10 @@ import (
 type weightValue struct {
 	value      float32
 	expiration time.Time
+	// hlc is the original causal position of a replicated Add. A reset may
+	// arrive after a newer Add, so the bucket must retain this position to
+	// decide which contributions survive independently of delivery order.
+	hlc hlc.Timestamp
 	// contribID identifies the originating contribution for replicated
 	// (idempotent) writes. The zero value means "no identity" and disables
 	// dedup; local non-replicated writes always use the zero value so two
@@ -44,6 +50,10 @@ type weight struct {
 	// *later* than the true earliest expiration: stale-early costs one
 	// wasted flush, stale-late would leak expired weight back into the sum.
 	minExp time.Time
+	// A read/compaction sums replicated rows in canonical causal order so
+	// every replica rounds a float32 sum in the same order. Local rows carry
+	// zero HLC and retain insertion order.
+	needsSort bool
 	// lastHLC is the most recent HLC timestamp accepted by a Put-style
 	// (LWW) write. Zero value means "no LWW write has happened yet" — in
 	// that case the next Put-with-HLC always wins. Used only by the
@@ -139,6 +149,10 @@ func (w *weight) addWithExpirationContrib(value float32, expiration time.Time, c
 // exact: the applied path (`true, w.sum`) and the ContribID-dedup no-op path
 // (`false, w.sum`).
 func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32) {
+	return w.addWithExpirationContribHLCAt(value, expiration, contribID, hlc.Timestamp{}, now)
+}
+
+func (w *weight) addWithExpirationContribHLCAt(value float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time) (applied bool, effective float32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	// Reconcile before we read sum back: once now reaches the earliest
@@ -147,6 +161,9 @@ func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time,
 	// future or absent), and a bounded flush exactly when staleness exists.
 	if !w.minExp.IsZero() && !now.Before(w.minExp) {
 		w.flushLockedAt(now)
+	}
+	if ts != (hlc.Timestamp{}) && w.lastHLC != (hlc.Timestamp{}) && !w.lastHLC.Less(ts) {
+		return false, w.sum
 	}
 	if !contribID.IsZero() {
 		for _, v := range w.values {
@@ -159,10 +176,17 @@ func (w *weight) addWithExpirationContribAt(value float32, expiration time.Time,
 		value:      value,
 		expiration: expiration,
 		contribID:  contribID,
+		hlc:        ts,
 	})
+	if ts != (hlc.Timestamp{}) && len(w.values) > 1 {
+		prev := w.values[len(w.values)-2]
+		if ts.Less(prev.hlc) || (ts == prev.hlc && bytes.Compare(contribID[:], prev.contribID[:]) < 0) {
+			w.needsSort = true
+		}
+	}
 	w.sum += value
 	w.noteExpirationLocked(expiration)
-	if n := len(w.values); n > weightCompactMin && n > 2*w.lastFlushLen {
+	if n := len(w.values); w.needsSort || (n > weightCompactMin && n > 2*w.lastFlushLen) {
 		w.flushLockedAt(now)
 	}
 	return true, w.sum
@@ -172,12 +196,10 @@ func (w *weight) addWithTTL(value float32, ttl time.Duration) {
 	w.addWithExpiration(value, time.Now().Add(ttl))
 }
 
-// putWithExpirationHLC atomically replaces the contributions with a single
-// (value, expiration) contribution if ts is at or after the most recent
-// HLC accepted by this method. Returns applied=true when the write went
-// through. Used by the replication apply path (#182) to enforce Put-style
-// last-writer-wins semantics across origins; the cached sum and lastHLC
-// move together so subsequent comparisons are consistent.
+// putWithExpirationHLC installs the Put base at ts and retains Add rows
+// causally newer than it, even if those Adds arrived first. Returns
+// applied=true when ts is at least the previous Put floor. The cached sum
+// and lastHLC move together so subsequent comparisons are consistent.
 //
 // A zero ts is treated as "no causality" and is always applied (the local
 // PutEdge path goes through addWithExpiration / direct mutation instead;
@@ -188,14 +210,50 @@ func (w *weight) putWithExpirationHLC(value float32, expiration time.Time, ts hl
 	if ts.Less(w.lastHLC) {
 		return false
 	}
-	w.values = w.values[:0]
-	w.values = append(w.values, weightValue{value: value, expiration: expiration})
-	w.sum = value
-	w.lastFlushLen = 1
-	w.minExp = time.Time{}
-	w.noteExpirationLocked(expiration)
+	// A Put is a reset floor, not an erasure of causally newer Adds that
+	// happened to arrive first through another replica.
+	w.retainAddsNewerThanLocked(ts)
+	w.values = append(w.values, weightValue{value: value, expiration: expiration, hlc: ts})
+	w.needsSort = true
+	w.flushLockedAt(time.Now())
 	w.lastHLC = ts
 	return true
+}
+
+// resetWithoutPutHLC applies a born-expired Put: newer Adds survive, while
+// the Put floor remains in lastHLC and is also retained outside the bucket.
+func (w *weight) resetWithoutPutHLC(ts hlc.Timestamp) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ts.Less(w.lastHLC) {
+		return len(w.values) > 0
+	}
+	w.retainAddsNewerThanLocked(ts)
+	w.lastHLC = ts
+	w.flushLockedAt(time.Now())
+	return len(w.values) > 0
+}
+
+// resetDeleteHLC leaves only Adds causally newer than an explicit Delete.
+// Delete's floor lives in the D4 tombstone, not in the permanent Put slot.
+func (w *weight) resetDeleteHLC(ts hlc.Timestamp) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.retainAddsNewerThanLocked(ts)
+	w.lastHLC = hlc.Timestamp{}
+	w.flushLockedAt(time.Now())
+	return len(w.values) > 0
+}
+
+func (w *weight) retainAddsNewerThanLocked(ts hlc.Timestamp) {
+	kept := w.values[:0]
+	for _, v := range w.values {
+		if !v.contribID.IsZero() && ts.Less(v.hlc) {
+			kept = append(kept, v)
+		}
+	}
+	w.values = kept
+	w.needsSort = true
 }
 
 // lastPutTimestamp returns the causal floor carried by this bucket without
@@ -221,7 +279,19 @@ func (w *weight) isZeroAndPruned() (bool, int) {
 	defer w.mu.Unlock()
 	before := len(w.values)
 	w.flushLocked()
-	return w.sum == 0, before - len(w.values)
+	pruned := before - len(w.values)
+	if w.sum != 0 {
+		return false, pruned
+	}
+	// A zero-sum bucket can still carry live replicated ContribIDs. Removing
+	// it would forget dedup evidence and allow one half of a cancelling pair
+	// to reappear when an old Add is replayed.
+	for _, v := range w.values {
+		if !v.contribID.IsZero() {
+			return false, pruned
+		}
+	}
+	return true, pruned
 }
 
 // replace atomically swaps all contributions for a single (value, expiration)
@@ -245,6 +315,7 @@ func (w *weight) replace(value float32, expiration time.Time) {
 	w.minExp = time.Time{}
 	w.noteExpirationLocked(expiration)
 	w.lastHLC = hlc.Timestamp{}
+	w.needsSort = false
 }
 
 // snapshot returns the cached sum, the furthest-future expiration among the
@@ -293,6 +364,7 @@ func (w *weight) snapshotEntry(now time.Time) ([]SnapshotContribution, hlc.Times
 			Weight:     v.value,
 			Expiration: v.expiration,
 			ContribID:  v.contribID,
+			HLC:        v.hlc,
 		})
 	}
 	if len(out) == 0 {
@@ -311,6 +383,16 @@ func (w *weight) flushLocked() {
 // Caller must hold w.mu. It also recomputes minExp over the survivors so the
 // reconcile-at-read trigger (#917) tracks the new earliest expiration.
 func (w *weight) flushLockedAt(now time.Time) {
+	if w.needsSort {
+		sort.SliceStable(w.values, func(i, j int) bool {
+			a, b := w.values[i], w.values[j]
+			if a.hlc != b.hlc {
+				return a.hlc.Less(b.hlc)
+			}
+			return bytes.Compare(a.contribID[:], b.contribID[:]) < 0
+		})
+		w.needsSort = false
+	}
 	write := 0
 	var sum float32
 	var minExp time.Time
@@ -630,13 +712,17 @@ func (c *edgeCache[S]) addWithExpiration(tail, head S, w float32, expiration tim
 // `now` supplies the liveness clock and `effective` returns the post-apply
 // live weight sum for the edge (#897); see weight.addWithExpirationContribAt.
 func (c *edgeCache[S]) addWithExpirationContribAt(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (created bool, tailID, headID vertexID, applied bool, effective float32) {
+	return c.addWithExpirationContribHLCAt(tail, head, w, expiration, contribID, hlc.Timestamp{}, now)
+}
+
+func (c *edgeCache[S]) addWithExpirationContribHLCAt(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time) (created bool, tailID, headID vertexID, applied bool, effective float32) {
 	if c.dict != nil {
 		if tID, hID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
 			c.mu.RLock()
 			if heads, ok := c.tf[tID]; ok {
 				if edge, ok := heads[hID]; ok {
 					c.mu.RUnlock()
-					applied, effective = edge.addWithExpirationContribAt(w, expiration, contribID, now)
+					applied, effective = edge.addWithExpirationContribHLCAt(w, expiration, contribID, ts, now)
 					return false, tID, hID, applied, effective
 				}
 			}
@@ -676,8 +762,28 @@ func (c *edgeCache[S]) addWithExpirationContribAt(tail, head S, w float32, expir
 		c.dict.release(headID)
 	}
 
-	applied, effective = edge.addWithExpirationContribAt(w, expiration, contribID, now)
+	applied, effective = edge.addWithExpirationContribHLCAt(w, expiration, contribID, ts, now)
 	return created, tailID, headID, applied, effective
+}
+
+func (c *edgeCache[S]) resetWithoutPutHLC(tail, head S, ts hlc.Timestamp) bool {
+	w := c.bucket(tail, head)
+	return w != nil && w.resetWithoutPutHLC(ts)
+}
+
+func (c *edgeCache[S]) resetDeleteHLC(tail, head S, ts hlc.Timestamp) bool {
+	w := c.bucket(tail, head)
+	return w != nil && w.resetDeleteHLC(ts)
+}
+
+func (c *edgeCache[S]) bucket(tail, head S) *weight {
+	tailID, headID, ok := c.lookupIDs(tail, head)
+	if !ok {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tf[tailID][headID]
 }
 
 func (c *edgeCache[S]) internEndpoints(tail, head S) (vertexID, vertexID) {

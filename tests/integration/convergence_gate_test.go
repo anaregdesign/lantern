@@ -9,6 +9,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/proto"
@@ -324,6 +325,64 @@ func TestConvergence_BornExpiredPutRemovesPriorLiveState(t *testing.T) {
 		[]string{"expired-overwrite", "if-absent-expired"},
 		[][2]string{{"expired-tail", "expired-head"}},
 	)
+}
+
+// TestConvergence_MixedEdgeResetAndAdd proves that a later Add survives an
+// earlier reset even when a replica receives the Add first. Both writes are
+// committed over Connect/h2c while partitioned; the full-mesh pumps then
+// deliver the same mutations in opposite orders on the two origin nodes.
+func TestConvergence_MixedEdgeResetAndAdd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping mixed edge HA convergence gate in short mode")
+	}
+	for _, tc := range []struct {
+		name  string
+		reset func(context.Context, *pumpNode) error
+		want  float32
+	}{
+		{
+			name: "PutThenAdd",
+			reset: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.sdk.PutEdge(ctx, "mixed-tail", "mixed-head", 10, time.Hour)
+				return err
+			},
+			want: 13,
+		},
+		{
+			name: "DeleteThenAdd",
+			reset: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.sdk.DeleteEdge(ctx, "mixed-tail", "mixed-head")
+				return err
+			},
+			want: 3,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			a := newConvergenceNode(t, hlc.NodeID{0xE1}, 24*time.Hour)
+			b := newConvergenceNode(t, hlc.NodeID{0xE2}, 24*time.Hour)
+			if _, err := b.sdk.AddEdge(ctx, "mixed-tail", "mixed-head", 7, time.Hour); err != nil {
+				t.Fatalf("AddEdge before reset: %v", err)
+			}
+			time.Sleep(25 * time.Millisecond)
+			if err := tc.reset(ctx, a); err != nil {
+				t.Fatalf("reset: %v", err)
+			}
+			time.Sleep(25 * time.Millisecond)
+			if _, err := b.sdk.AddEdge(ctx, "mixed-tail", "mixed-head", 3, time.Hour); err != nil {
+				t.Fatalf("AddEdge after reset: %v", err)
+			}
+			a.startPump(ctx, t, []string{b.url})
+			b.startPump(ctx, t, []string{a.url})
+			for name, n := range map[string]*pumpNode{"A": a, "B": b} {
+				raw := graphv1connect.NewLanternServiceClient(h2cClient(), n.url)
+				if got, ok := waitForWireEdge(t, ctx, raw, "mixed-tail", "mixed-head", tc.want, 5*time.Second); !ok || got != tc.want {
+					t.Errorf("node %s edge weight=%g ok=%v, want %g", name, got, ok, tc.want)
+				}
+			}
+		})
+	}
 }
 
 // assertReplicasIdentical fails the test if any vertex key or edge pair
