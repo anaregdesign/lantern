@@ -46,7 +46,7 @@ func commitTestBatch(t testing.TB, s *Store, now time.Time, intents []Intent, re
 	if err := tx.Reserve(results); err != nil {
 		t.Fatal(err)
 	}
-	tx.Install()
+	tx.ApplyInMemory()
 }
 
 func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {

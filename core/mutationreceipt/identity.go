@@ -1,7 +1,10 @@
 // Package mutationreceipt provides bounded, in-memory bookkeeping for the
 // mutation receipts specified by ADR 0010. It does not publish mutations,
-// write a WAL, or provide an RPC. A caller must keep its graph, log, and
-// receipt cuts under one commit gate before enabling receipt-capable writes.
+// write a WAL, or provide an RPC. Its mutable map/heap implementation is an
+// isolated bookkeeping prototype, not an atomic post-WAL publication path.
+// Receipt-capable writes must remain disabled until the server can prepare a
+// complete graph/receipt/log root and publish that root with one infallible
+// state transition after WAL commit.
 package mutationreceipt
 
 import (

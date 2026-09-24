@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -120,9 +119,9 @@ type Stats struct {
 }
 
 // Store holds only receipt bookkeeping. It does not make graph mutations,
-// log entries, or Snapshot cuts atomic; that obligation belongs to its future
-// server integration. A Tx keeps the store lock across duplicate detection,
-// result staging, WAL commit, and installation under that outer commit gate.
+// log entries, or Snapshot cuts atomic. In particular, ApplyInMemory writes
+// into mutable maps and a heap, may allocate, and cannot safely run after a
+// WAL commit. Do not attach this Store to a serving mutation path.
 type Store struct {
 	mu              sync.Mutex
 	epoch           Epoch
@@ -178,10 +177,10 @@ func (s *Store) Epoch() Epoch { return s.epoch }
 
 func (s *Store) PolicyFingerprint() [sha256.Size]byte { return s.fingerprint }
 
-// Begin takes the receipt lock for one origin commit attempt. The caller must
-// call Abort on every error, or Install after an already-successful WAL commit.
-// The observed clock high-water advances even when the attempt aborts; a
-// future durable integration must preserve this metadata across restart.
+// Begin takes the receipt lock for one in-memory bookkeeping attempt. The
+// caller must call Abort on every error or ApplyInMemory after Reserve. The
+// observed clock high-water advances even when the attempt aborts; a future
+// durable integration must preserve this metadata across restart.
 func (s *Store) Begin(now time.Time) (*Tx, error) {
 	s.mu.Lock()
 	effective, err := s.advanceLocked(now)
@@ -290,9 +289,9 @@ func (h *deadlineHeap) Pop() any {
 	return v
 }
 
-// Tx serializes classification, capacity reservation, and installation. It
-// intentionally holds Store.mu until Install or Abort; callers must acquire
-// their outer graph/log commit gate before Begin to prevent lock inversion.
+// Tx serializes classification, capacity reservation, and in-memory apply.
+// It intentionally holds Store.mu until ApplyInMemory or Abort. This only
+// protects Store's own data; it cannot form an atomic graph/log publication.
 type Tx struct {
 	store       *Store
 	effectiveMS int64
@@ -399,8 +398,8 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 }
 
 // Reserve copies all original results and proves that the entire new batch
-// fits without evicting any live receipt. Call this after graph/result staging
-// but before a WAL commit. It does not install receipts or publish a result.
+// fits without evicting any live receipt. It does not publish a result or
+// preallocate a complete immutable root for a post-WAL swap.
 func (tx *Tx) Reserve(results [][]byte) error {
 	if tx.closed || tx.mode != txFresh {
 		return ErrTransactionState
@@ -442,13 +441,13 @@ func (tx *Tx) Reserve(results [][]byte) error {
 	return nil
 }
 
-// Install performs no validation and has no semantic failure path. It is
-// called only after the caller's WAL commit succeeds and while the outer
-// graph/log publication gate is held. It cannot independently establish the
-// atomic boundary required by ADR 0010.
-func (tx *Tx) Install() {
+// ApplyInMemory inserts staged receipts into mutable maps and a heap. It may
+// allocate or panic partway through and is unsuitable after WAL commit. It
+// exists only for isolated bookkeeping conformance tests; a future serving
+// integration must replace it with an allocation-free prepared-root swap.
+func (tx *Tx) ApplyInMemory() {
 	if tx.closed || tx.mode != txStaged {
-		panic(fmt.Sprintf("%v: Install requires a reserved transaction", ErrTransactionState))
+		panic(ErrTransactionState)
 	}
 	s := tx.store
 	for _, r := range tx.staged {
@@ -462,8 +461,8 @@ func (tx *Tx) Install() {
 	tx.close()
 }
 
-// Abort drops a prepared result after any pre-WAL failure. No receipt was
-// published. It is safe to defer and is idempotent after Install.
+// Abort drops a prepared result. No receipt was published. It is safe to
+// defer and is idempotent after ApplyInMemory.
 func (tx *Tx) Abort() {
 	if tx != nil && !tx.closed {
 		tx.close()
