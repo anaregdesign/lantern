@@ -3,6 +3,7 @@ package graphcache
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -199,6 +200,62 @@ func TestStagedEdgeDeleteSparseRollback(t *testing.T) {
 	c.AddEdgeWithExpiration("other", "new", 1, expiration)
 	if id, _ := c.dict.lookup("self"); id != selfID {
 		t.Fatalf("rollback ID reused after another insert: %d, want %d", id, selfID)
+	}
+}
+
+func TestStagedEdgeDeleteCausalCapacity(t *testing.T) {
+	expiration := time.Now().Add(time.Hour)
+	first := EdgeKey[string]{"missing", "first"}
+	second := EdgeKey[string]{"missing", "second"}
+	for _, tc := range []struct {
+		name      string
+		seedFirst bool
+		keys      []EdgeKey[string]
+		current   int
+		requested int
+	}{
+		{"distinct absent keys", false, []EdgeKey[string]{first, first, second}, 0, 2},
+		{"retained identity plus new key", true, []EdgeKey[string]{first, second}, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newGraphCacheWithStaging[string, string](time.Hour)
+			c.SetCausalMetadataLimits(CausalMetadataLimits{MaxEdgeEntries: 1})
+			if tc.seedFirst {
+				if _, err := c.DeleteEdgesHLCChecked([]EdgeKey[string]{first}, hlc.Timestamp{WallNs: 10}, expiration); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := captureStagedDeleteState(c)
+			c.mu.Lock()
+			c.publicationGate.Lock()
+			stage, err := c.prepareStagedEdgeDeleteLocked(tc.keys, hlc.Timestamp{WallNs: 20}, expiration, c.applicationTime(), nil)
+			c.publicationGate.Unlock()
+			c.mu.Unlock()
+			var capacityErr *CausalMetadataCapacityError
+			if stage != nil || !errors.As(err, &capacityErr) || capacityErr.Kind != "edge" ||
+				capacityErr.Current != tc.current || capacityErr.Requested != tc.requested || capacityErr.Limit != 1 {
+				t.Fatalf("prepare = (%v, %v), want edge capacity rejection current=%d requested=%d", stage, err, tc.current, tc.requested)
+			}
+			before.stats.EdgeRejected++
+			if after := captureStagedDeleteState(c); !reflect.DeepEqual(after, before) {
+				t.Fatalf("rejected stage changed state: before=%+v after=%+v", before, after)
+			}
+		})
+	}
+
+	c := newGraphCacheWithStaging[string, string](time.Hour)
+	c.SetCausalMetadataLimits(CausalMetadataLimits{MaxEdgeEntries: 1})
+	before := captureStagedDeleteState(c)
+	got := stageAndRollbackForTest(t, c, []EdgeKey[string]{first, first}, hlc.Timestamp{WallNs: 20}, expiration, func(*stagedEdgeDelete[string, string]) {
+		if len(c.edgeCausalUsage) != 1 || c.edgeCausalRejected != 0 {
+			t.Fatal("duplicate accepted key consumed more than one causal slot")
+		}
+	})
+	if !slices.Equal(got, []bool{false, false}) {
+		t.Fatalf("duplicate absent outcomes = %v, want [false false]", got)
+	}
+	if after := captureStagedDeleteState(c); !reflect.DeepEqual(after, before) {
+		t.Fatalf("accepted stage rollback drift: before=%+v after=%+v", before, after)
 	}
 }
 

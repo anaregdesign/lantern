@@ -275,6 +275,15 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLocked(
 			plan.after = nil
 		}
 	}
+	if ts != (hlc.Timestamp{}) && c.causalLimits.MaxEdgeEntries > 0 {
+		accepted := make([]EdgeKey[S], len(stage.plans))
+		for i, plan := range stage.plans {
+			accepted[i] = plan.key
+		}
+		if err := c.checkEdgeCausalCapacityLocked(accepted); err != nil {
+			return nil, err
+		}
+	}
 	stage.captureUndoLocked()
 	needed := make(map[vertexID]uint32)
 	for _, plan := range stage.plans {
