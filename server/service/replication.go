@@ -71,6 +71,12 @@ type snapshotCutProvider interface {
 	withReplicationSnapshotCut(capture func()) error
 }
 
+// subscribeCutProvider registers a log tail and captures its publication
+// fault generation under the same cut as graph writes and Snapshot.
+type subscribeCutProvider interface {
+	withReplicationSubscribeCut(capture func(<-chan struct{})) error
+}
+
 // publicationStatusProvider exposes a local/relay log fault generation. It
 // is implemented by the production LanternService; narrow test providers
 // can omit it when they do not publish mutations.
@@ -165,10 +171,11 @@ func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintPr
 // does not require deduplication or seq remapping.
 //
 // Flow:
-//  1. Open a log subscription at req.FromLocalSeq when a snapshot consumer
-//     resumes against the same responder; otherwise start at local seq 1 so
-//     ring eviction remains a detectable gap. Per-origin sequence is unrelated
-//     to this replica-local position and filtering happens at this layer.
+//  1. Open a log subscription under the service publication cut at
+//     req.FromLocalSeq when a snapshot consumer resumes against the same
+//     responder; otherwise start at local seq 1 so ring eviction remains a
+//     detectable gap. Per-origin sequence is unrelated to this replica-local
+//     position and filtering happens at this layer.
 //  2. For each entry, filter by the per-origin cursor: deliver only
 //     when mu.Seq >= cursor[origin]. Origins absent from the cursor
 //     are delivered from the oldest retained entry — this lets a
@@ -184,7 +191,9 @@ func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintPr
 //  4. If the channel is closed mid-stream the subscriber fell behind
 //     the per-subscriber buffer (Options.SubscriberBuffer). Surface
 //     this as FailedPrecondition + "gapped" — symmetric with case 3.
-//  5. Honor ctx cancellation throughout.
+//  5. Wait for the publication cut before forwarding a dispatched entry,
+//     then release it before Send so slow consumers do not stall writers.
+//     Honor ctx cancellation throughout.
 //
 // Send errors terminate the stream and increment
 // dropped{reason="send_failed"}.
@@ -202,28 +211,46 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 	default:
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown Subscribe projection %d", req.GetProjection()))
 	}
-	var faultCh <-chan struct{}
-	if status, ok := s.origins.(publicationStatusProvider); ok {
-		var faulted bool
-		faultCh, faulted = status.publicationStatus()
-		if faulted {
-			s.metrics.OnSubscribeDropped("gapped")
-			return publicationGapError()
-		}
-	}
 	cursor := req.GetFromSeqPerOrigin()
 	fromLocalSeq := req.GetFromLocalSeq()
 	if fromLocalSeq == 0 {
 		fromLocalSeq = 1
 	}
-	ch, cancel, err := s.log.Subscribe(fromLocalSeq)
-	if err != nil {
-		if errors.Is(err, mutationlog.ErrGapped) {
+	var (
+		faultCh <-chan struct{}
+		ch      <-chan mutationlog.Entry
+		cancel  func() error
+		openErr error
+	)
+	register := func(generation <-chan struct{}) {
+		faultCh = generation
+		ch, cancel, openErr = s.log.Subscribe(fromLocalSeq)
+	}
+	if cut, ok := s.origins.(subscribeCutProvider); ok {
+		if err := cut.withReplicationSubscribeCut(register); err != nil {
+			s.metrics.OnSubscribeDropped("gapped")
+			return err
+		}
+	} else {
+		// Narrow test origin providers may lack the production publication
+		// gate. Retain their historical read-only fallback.
+		if status, ok := s.origins.(publicationStatusProvider); ok {
+			var faulted bool
+			faultCh, faulted = status.publicationStatus()
+			if faulted {
+				s.metrics.OnSubscribeDropped("gapped")
+				return publicationGapError()
+			}
+		}
+		register(faultCh)
+	}
+	if openErr != nil {
+		if errors.Is(openErr, mutationlog.ErrGapped) {
 			s.metrics.OnSubscribeDropped("gapped")
 			return connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("gapped: log truncated below requested local seq %d; snapshot and resubscribe", fromLocalSeq))
 		}
-		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", err))
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", openErr))
 	}
 	defer func() { _ = cancel() }()
 
@@ -238,6 +265,16 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			s.metrics.OnSubscribeDropped("gapped")
 			return publicationGapError()
 		case entry, ok := <-ch:
+			// Append can hand an entry to the log dispatcher before its
+			// enclosing graph/receipt publication gate is released. Wait for
+			// that cut before exposing the frame, without holding the gate
+			// across a potentially slow network Send.
+			if cut, hasCut := s.origins.(snapshotCutProvider); hasCut {
+				if err := cut.withReplicationSnapshotCut(func() {}); err != nil {
+					s.metrics.OnSubscribeDropped("gapped")
+					return err
+				}
+			}
 			// When log and fault channels are both ready, the select may
 			// choose an entry. Do not send it on a poisoned stream.
 			select {
@@ -546,7 +583,16 @@ func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerSt
 	if s.origins == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
-	rows := s.origins.OriginStates()
+	var rows []OriginState
+	if cut, ok := s.origins.(snapshotCutProvider); ok {
+		if err := cut.withReplicationSnapshotCut(func() {
+			rows = s.origins.OriginStates()
+		}); err != nil {
+			return nil, err
+		}
+	} else {
+		rows = s.origins.OriginStates()
+	}
 	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}
 	if s.search != nil {
 		out.SearchConfigFingerprint = s.search.SearchConfigFingerprint()

@@ -20,10 +20,6 @@ const (
 	maxIdentityFrameBytes = 1 << 20
 )
 
-type identitySubscribeCutProvider interface {
-	withReplicationSubscribeCut(capture func(<-chan struct{})) error
-}
-
 func identityCursor(raw map[string]uint64) (map[string]uint64, error) {
 	cursor := make(map[string]uint64, len(raw))
 	for origin, next := range raw {
@@ -98,7 +94,7 @@ func (s *LanternReplicationService) subscribeIdentity(ctx context.Context, req *
 	if err != nil {
 		return err
 	}
-	cut, ok := s.origins.(identitySubscribeCutProvider)
+	cut, ok := s.origins.(subscribeCutProvider)
 	if !ok {
 		return connect.NewError(connect.CodeUnavailable, errors.New("identity subscription requires a publication-cut provider"))
 	}

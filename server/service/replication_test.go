@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -78,6 +80,221 @@ func (s *replicationSnapshotRecorder) Send(frame *pb.SnapshotResponse) error {
 type replicationSnapshotCounter struct {
 	frames int
 	bytes  int
+}
+
+type replicationSubscribeRecorder struct {
+	frames  chan *pb.SubscribeResponse
+	entered chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (s *replicationSubscribeRecorder) Send(frame *pb.SubscribeResponse) error {
+	if s.entered != nil {
+		s.once.Do(func() { close(s.entered) })
+		<-s.release
+	}
+	s.frames <- frame
+	return nil
+}
+
+type replicationSubscribeStartMetrics struct{ started chan struct{} }
+
+func (m *replicationSubscribeStartMetrics) OnSubscribeStarted()       { close(m.started) }
+func (m *replicationSubscribeStartMetrics) OnSubscribeEnded()         {}
+func (m *replicationSubscribeStartMetrics) OnSubscribeDropped(string) {}
+
+func TestLanternReplicationService_SubscribeAndPeerStatusWaitForPublication(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	backend := &blockedLocalPutSnapshotBackend{Backend: cache, cache: cache, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-backend.release:
+		default:
+			close(backend.release)
+		}
+	})
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x04}
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(backend).WithReplication(log, clock, nil)
+	metrics := &replicationSubscribeStartMetrics{started: make(chan struct{})}
+	replication := NewLanternReplicationService(log, backend, clock).WithOriginStates(svc).WithMetrics(metrics)
+
+	putDone := make(chan error, 1)
+	go func() {
+		_, err := svc.PutVertices(context.Background(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+			Key: "held-put", Value: &pb.Vertex_String_{String_: "committed"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+		}}})
+		putDone <- err
+	}()
+	select {
+	case <-backend.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("local Put did not reach the backend")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	recorder := &replicationSubscribeRecorder{frames: make(chan *pb.SubscribeResponse, 2)}
+	subscribeDone := make(chan error, 1)
+	go func() { subscribeDone <- replication.Subscribe(ctx, &pb.SubscribeRequest{FromLocalSeq: 1}, recorder) }()
+	statusDone := make(chan struct {
+		response *pb.PeerStatusResponse
+		err      error
+	}, 1)
+	go func() {
+		response, err := replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
+		statusDone <- struct {
+			response *pb.PeerStatusResponse
+			err      error
+		}{response, err}
+	}()
+	select {
+	case <-metrics.started:
+		t.Fatal("Subscribe registered across an in-progress Put")
+	case status := <-statusDone:
+		t.Fatalf("PeerStatus crossed an in-progress Put: %+v", status)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(backend.release)
+	if err := <-putDone; err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	select {
+	case <-metrics.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not register after publication")
+	}
+	select {
+	case frame := <-recorder.frames:
+		if got := frame.GetMutation(); got.GetSeq() != 1 || got.GetOp().GetReplicatedPutVertices() == nil {
+			t.Fatalf("Subscribe frame after publication = %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not replay committed Put")
+	}
+	select {
+	case status := <-statusDone:
+		if status.err != nil || len(status.response.GetOrigins()) != 1 || status.response.GetOrigins()[0].GetLastSeq() != 1 {
+			t.Fatalf("PeerStatus after publication = %+v, %v", status.response, status.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PeerStatus did not complete after publication")
+	}
+	cancel()
+	<-subscribeDone
+}
+
+func TestLanternReplicationService_SubscribeWaitsForDispatchedEntryCutWithoutHoldingSend(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x05}
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(cache).WithReplication(log, clock, nil)
+	metrics := &replicationSubscribeStartMetrics{started: make(chan struct{})}
+	replication := NewLanternReplicationService(log, cache, clock).WithOriginStates(svc).WithMetrics(metrics)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sendRelease := make(chan struct{})
+	defer func() {
+		select {
+		case <-sendRelease:
+		default:
+			close(sendRelease)
+		}
+	}()
+	recorder := &replicationSubscribeRecorder{frames: make(chan *pb.SubscribeResponse, 2), entered: make(chan struct{}), release: sendRelease}
+	subscribeDone := make(chan error, 1)
+	go func() { subscribeDone <- replication.Subscribe(ctx, &pb.SubscribeRequest{FromLocalSeq: 1}, recorder) }()
+	select {
+	case <-metrics.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not register")
+	}
+
+	ts := clock.Now()
+	mutation := &pb.Mutation{Origin: origin[:], Seq: 1, Hlc: hlcToProto(ts), Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "staged"}}}}
+	svc.replicationCutMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			svc.replicationCutMu.Unlock()
+		}
+	}()
+	if _, err := log.Append(mutation, ts); err != nil {
+		t.Fatalf("Append staged entry: %v", err)
+	}
+	if !svc.origins.Record(origin, 1, ts) {
+		t.Fatal("Record staged frontier")
+	}
+	select {
+	case <-recorder.entered:
+		t.Fatal("Subscribe exposed a dispatched entry before publication cut")
+	case <-time.After(200 * time.Millisecond):
+	}
+	svc.replicationCutMu.Unlock()
+	locked = false
+	select {
+	case <-recorder.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not reach Send after publication cut")
+	}
+
+	putDone := make(chan error, 1)
+	go func() {
+		_, err := svc.PutVertices(context.Background(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+			Key: "later", Value: &pb.Vertex_String_{String_: "value"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+		}}})
+		putDone <- err
+	}()
+	select {
+	case err := <-putDone:
+		if err != nil {
+			t.Fatalf("PutVertices during slow Send: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow Subscribe Send held the publication cut")
+	}
+	close(sendRelease)
+	cancel()
+	<-subscribeDone
+}
+
+func TestLanternReplicationService_SubscribeAndPeerStatusRejectSnapshotFault(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0x06}, hlc.Options{})
+	svc := NewLanternService(cache).WithReplication(log, clock, nil)
+	replication := NewLanternReplicationService(log, cache, clock).WithOriginStates(svc)
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatalf("BeginSnapshotInstall: %v", err)
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			finish(false)
+		}
+	}()
+	recorder := &replicationSubscribeRecorder{frames: make(chan *pb.SubscribeResponse, 1)}
+	if err := replication.Subscribe(context.Background(), &pb.SubscribeRequest{}, recorder); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("Subscribe during Snapshot install = %v, want FailedPrecondition", err)
+	}
+	if len(recorder.frames) != 0 {
+		t.Fatal("Subscribe sent a frame during Snapshot install")
+	}
+	if _, err := replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("PeerStatus during Snapshot install = %v, want FailedPrecondition", err)
+	}
+	finish(true)
+	finished = true
+	if _, err := replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{}); err != nil {
+		t.Fatalf("PeerStatus after verified Snapshot install: %v", err)
+	}
 }
 
 func (s *replicationSnapshotCounter) Send(frame *pb.SnapshotResponse) error {
