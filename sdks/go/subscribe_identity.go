@@ -213,13 +213,21 @@ func parseIdentityChunk(wire *pb.IdentityChunk) (*IdentityChunk, error) {
 
 type identityStreamTracker struct {
 	expected ChangeCursor
-	active   *IdentityChunk
+	active   *identityChunkProgress
+}
+
+type identityChunkProgress struct {
+	origin    ChangeOrigin
+	seq       uint64
+	operation IdentityOperation
+	index     uint32
+	nextItem  uint64
 }
 
 func (t *identityStreamTracker) accept(chunk *IdentityChunk) error {
 	count := uint64(len(chunk.VertexKeys) + len(chunk.EdgeKeys))
 	if previous := t.active; previous != nil {
-		if chunk.Origin != previous.Origin || chunk.Seq != previous.Seq || chunk.Operation != previous.Operation || previous.ChunkIndex == math.MaxUint32 || chunk.ChunkIndex != previous.ChunkIndex+1 || uint64(chunk.FirstItemIndex) != uint64(previous.FirstItemIndex)+uint64(len(previous.VertexKeys)+len(previous.EdgeKeys)) {
+		if chunk.Origin != previous.origin || chunk.Seq != previous.seq || chunk.Operation != previous.operation || previous.index == math.MaxUint32 || chunk.ChunkIndex != previous.index+1 || uint64(chunk.FirstItemIndex) != previous.nextItem {
 			return fmt.Errorf("%w: noncontiguous mutation chunk", ErrInvalidIdentityEvent)
 		}
 	} else {
@@ -240,7 +248,10 @@ func (t *identityStreamTracker) accept(chunk *IdentityChunk) error {
 	} else if count == 0 {
 		return fmt.Errorf("%w: empty non-final chunk", ErrInvalidIdentityEvent)
 	} else {
-		t.active = chunk
+		t.active = &identityChunkProgress{
+			origin: chunk.Origin, seq: chunk.Seq, operation: chunk.Operation,
+			index: chunk.ChunkIndex, nextItem: uint64(chunk.FirstItemIndex) + count,
+		}
 	}
 	return nil
 }

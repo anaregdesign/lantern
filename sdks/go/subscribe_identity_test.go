@@ -75,6 +75,8 @@ func TestIdentityFrameParsingAndChunkContinuity(t *testing.T) {
 		t.Fatalf("first chunk: %v", err)
 	}
 	last := *chunk
+	chunk.ChunkIndex = 55 // consumer mutation must not change tracker state
+	chunk.EdgeKeys = nil
 	last.ChunkIndex = 1
 	last.FirstItemIndex = 1
 	last.IsLast = true
