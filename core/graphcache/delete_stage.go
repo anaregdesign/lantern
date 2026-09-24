@@ -8,14 +8,14 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
-// stagedEdgeDelete is an internal part of a future WAL-first Delete envelope.
-// Its caller must hold c.mu and publicationGate for the entire
-// prepare/apply/rollback interval. No publication or WAL callback is exposed
-// until the enclosing receipt/log cut is implemented.
+// stagedEdgeDelete is the sparse undo journal behind EdgeDeleteTransaction.
+// Its caller must hold c.mu and publicationGate throughout preparation,
+// application, rollback, and the eventual WAL publication boundary.
 type stagedEdgeDelete[S comparable, T any] struct {
 	cache    *GraphCache[S, T]
 	plans    []*stagedEdgeDeletePlan[S]
 	outcomes []bool
+	accepted []IndexedEdgeDelete[S]
 	undo     stagedEdgeDeleteUndo[S]
 	ts       hlc.Timestamp
 	expireAt time.Time
@@ -228,12 +228,16 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLocked(
 	if c.dict == nil {
 		return nil, errors.New("graphcache: staged Delete requires a dictionary")
 	}
-	stage := &stagedEdgeDelete[S, T]{cache: c, outcomes: make([]bool, len(keys)), ts: ts, expireAt: expiration}
+	stage := &stagedEdgeDelete[S, T]{
+		cache: c, outcomes: make([]bool, len(keys)),
+		accepted: make([]IndexedEdgeDelete[S], 0, len(keys)), ts: ts, expireAt: expiration,
+	}
 	byKey := make(map[EdgeKey[S]]*stagedEdgeDeletePlan[S], len(keys))
 	for i, key := range keys {
 		if !c.edgeDeleteWriteAllowedLockedAt(key.Tail, key.Head, ts, now) {
 			continue
 		}
+		stage.accepted = append(stage.accepted, IndexedEdgeDelete[S]{Index: i, Key: key})
 		plan := byKey[key]
 		if plan == nil {
 			before := c.edges.bucket(key.Tail, key.Head)
@@ -379,8 +383,8 @@ func (s *stagedEdgeDelete[S, T]) captureUndoLocked() {
 }
 
 // applyLocked changes graph, head index, dictionary, tombstone, deadline
-// index, and causal usage under the two exclusive gates. Only rollbackLocked
-// is currently supported; a future envelope will own the publication step.
+// index, and causal usage under the two exclusive gates. Its changes stay
+// hidden until the transaction releases those gates after the external commit.
 func (s *stagedEdgeDelete[S, T]) applyLocked() {
 	if s.applied {
 		panic("graphcache: staged Delete applied twice")

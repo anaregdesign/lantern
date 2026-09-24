@@ -210,14 +210,19 @@ func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S,
 	return c
 }
 
-// newGraphCacheWithStaging enables the visibility gate needed by prepared
-// mutations. Existing caches retain their lock-free point-read path. A
-// prepared mutation holds both the aggregate lock and this gate while it is
-// validated and installed, so no reader or Add fast path sees a partial cut.
-func newGraphCacheWithStaging[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
+// NewGraphCacheWithStaging enables the visibility gate needed by prepared
+// mutations. The gate must be selected at construction, before concurrent
+// access; an ordinary GraphCache cannot begin a staged transaction. A staged
+// mutation holds both the aggregate lock and this gate until Commit or Abort,
+// so point readers and the existing-edge Add fast path cannot see partial work.
+func NewGraphCacheWithStaging[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
 	c := NewGraphCache[S, T](defaultTTL)
 	c.publicationGate = new(sync.RWMutex)
 	return c
+}
+
+func newGraphCacheWithStaging[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
+	return NewGraphCacheWithStaging[S, T](defaultTTL)
 }
 
 // EnablePrefixIndex turns on the optional prefix index, projecting each
