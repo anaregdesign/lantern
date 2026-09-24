@@ -193,8 +193,10 @@ func (s *Store) Begin(now time.Time) (*Tx, error) {
 	return &Tx{store: s, effectiveMS: effective}, nil
 }
 
-// Lookup is read-only with respect to receipts. It advances the clock
-// high-water and evicts only receipts already past their deadline.
+// Lookup is read-only with respect to live receipts. It advances the clock
+// high-water and evicts only receipts already past their own deadline. A
+// retained exact old-epoch receipt may answer Confirmed, but an absent
+// old-epoch ID is never executable or reported NotYetObserved.
 func (s *Store) Lookup(id ID, now time.Time) (Status, Receipt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,15 +209,23 @@ func (s *Store) Lookup(id ID, now time.Time) (Status, Receipt, error) {
 	if err != nil {
 		return 0, Receipt{}, err
 	}
+	// An exact retained receipt remains authoritative even after an epoch
+	// rollover. It carries its own original deadline; the new active epoch
+	// may have a different retention policy. Absence in a retired epoch must
+	// still never authorize execution of that ID.
+	if r, ok := s.receipts[id]; ok {
+		if r.DeadlineMillis > effective {
+			return Confirmed, cloneReceipt(r), nil
+		}
+		s.unknownLookups++
+		return NoLongerProvable, Receipt{}, nil
+	}
 	if issued > math.MaxInt64-s.retentionMS || tooFarFuture(issued, effective) {
 		return 0, Receipt{}, ErrInvalidID
 	}
 	if issued+s.retentionMS <= effective || epoch != s.epoch {
 		s.unknownLookups++
 		return NoLongerProvable, Receipt{}, nil
-	}
-	if r, ok := s.receipts[id]; ok {
-		return Confirmed, cloneReceipt(r), nil
 	}
 	return NotYetObserved, Receipt{}, nil
 }

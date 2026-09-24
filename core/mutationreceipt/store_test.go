@@ -372,6 +372,63 @@ func TestStoreRestoredClockHighWaterRejectsBackwardExpiry(t *testing.T) {
 	}
 }
 
+func TestStoreRetainedOldEpochReceiptsUseOriginalDeadline(t *testing.T) {
+	s, err := New(Config{Epoch: Epoch{1}, Retention: 2 * time.Hour, MaxEntries: 3, MaxBytes: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldEpoch := Epoch{2}
+	longID, _ := NewID(oldEpoch, testStart, [24]byte{1})
+	shortID, _ := NewID(oldEpoch, testStart, [24]byte{2})
+	absentID, _ := NewID(oldEpoch, testStart, [24]byte{3})
+	long := Receipt{
+		Intent: Intent{ID: longID, Group: GroupID{1}, Count: 1, Kind: PutVertex, Digest: IntentDigest([]byte("old-long"))},
+		Result: []byte("original result"), DeadlineMillis: testStart.Add(3 * time.Hour).UnixMilli(),
+	}
+	short := Receipt{
+		Intent: Intent{ID: shortID, Group: GroupID{2}, Count: 1, Kind: PutVertex, Digest: IntentDigest([]byte("old-short"))},
+		Result: []byte("short result"), DeadlineMillis: testStart.Add(time.Hour).UnixMilli(),
+	}
+	// The future backup loader will validate an old-epoch receipt set before
+	// installing it at the graph/Snapshot cut. Seed only that retained state
+	// here because this internal Store does not implement backup import.
+	s.mu.Lock()
+	for _, receipt := range []Receipt{long, short} {
+		s.receipts[receipt.ID] = receipt
+		s.deadlines.insert(deadlineEntry{id: receipt.ID, deadlineMS: receipt.DeadlineMillis})
+		s.bytes += receipt.cost()
+	}
+	s.mu.Unlock()
+
+	check := func(id ID, at time.Time, want Status, wantResult string) {
+		t.Helper()
+		status, receipt, err := s.Lookup(id, at)
+		if err != nil || status != want || string(receipt.Result) != wantResult {
+			t.Fatalf("Lookup(%x, %v) = %v, %q, %v; want %v, %q",
+				id, at, status, receipt.Result, err, want, wantResult)
+		}
+	}
+	check(longID, testStart.Add(90*time.Minute), Confirmed, "original result")
+	check(shortID, testStart.Add(90*time.Minute), NoLongerProvable, "")
+	check(absentID, testStart.Add(90*time.Minute), NoLongerProvable, "")
+	// The active epoch's two-hour horizon must not truncate this known
+	// three-hour old-epoch receipt.
+	check(longID, testStart.Add(150*time.Minute), Confirmed, "original result")
+	tx, err := s.Begin(testStart.Add(150 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = tx.Classify([]Intent{long.Intent})
+	tx.Abort()
+	if !errors.Is(err, ErrNoLongerProvable) {
+		t.Fatalf("retired-epoch mutation retry = %v, want ErrNoLongerProvable", err)
+	}
+	check(longID, testStart.Add(3*time.Hour), NoLongerProvable, "")
+	if stats := s.Stats(); stats.Entries != 0 || stats.Bytes != 0 {
+		t.Fatalf("old-epoch receipts remained past their original deadlines: %+v", stats)
+	}
+}
+
 func TestStorePreWALStageHiddenAndFaultRollbackTouchesOnlyNewRows(t *testing.T) {
 	const resident = 1000
 	s := testStore(t, resident+3, 200000)
