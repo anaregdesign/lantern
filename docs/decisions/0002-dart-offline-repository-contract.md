@@ -542,17 +542,17 @@ terminal configuration error, because bootstrap cannot make it smaller. A
 disconnected client retains finite-age cache semantics; the
 absence of an identity event is never proof of freshness.
 
-The current `resetChangeCursor` deletes confirmed cache rows and therefore
-loses their identities. The live consumer requires an adapter migration to
-retain **key-only**, crash-safe resident recovery state. One viable shape is
-a partition recovery epoch plus per-record validation epoch: reset advances
-the partition epoch, hides all older confirmed records as Unknown in one
-transaction, and keeps their indexed identities for bounded page scans.
-Revalidated keys receive the current epoch; eviction may discard an old key
-because it is then no longer resident. Recovery is complete only when no
-older-epoch resident keys remain. The reference and SQLite adapters must
-offer the same bounded scan and reopen semantics without loading the full
-resident key set in memory or deleting pending Put overlays.
+`resetChangeCursor` now removes confirmed values and retains bounded,
+**key-only** resident identities as Unknown in the same transaction. The
+reference store's canonical snapshot and the migrated SQLite adapter both
+preserve this work across reopen; SQLite scans its indexed recovery table in
+bounded pages without loading the full resident set into Dart memory. Only
+epoch-checked plural revalidation completes a resident marker. Ordinary
+singular Get calls, including `serverOnly`, leave it Unknown while pending Put
+overlays remain visible. Capacity eviction may discard a marker because that
+identity is then no longer resident. The #1116 network Subscribe consumer,
+gap/bootstrap orchestration, and end-to-end recovery completion remain to be
+implemented.
 
 Every applied identity chunk, including a partial chunk, also advances a
 partition change epoch atomically with invalidation. A remote Get captures
@@ -565,7 +565,9 @@ exact Edge invalidations. The final cursor can advance only after the last
 chunk commits. A CDC-specific remote port exposes bounded plural Get calls so
 resident recovery does not issue one network request per key. All returned
 values still obey their absolute Lantern expiration and the configured finite
-freshness age; CDC synthesizes no TTL-expiration events.
+freshness age. Each plural response's observation time anchors its validation
+and negative-cache deadline, and commit rechecks expiration and negative TTL;
+CDC synthesizes no TTL-expiration events.
 
 This capability is deployment-scoped. The current bearer token authenticates
 access to one graph; application `partitionId` does not grant server-side
