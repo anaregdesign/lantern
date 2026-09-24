@@ -62,7 +62,7 @@ func TestSubscribeAndPeerStatus_RealWireWaitForPublicationCut(t *testing.T) {
 	go func() {
 		stream, err := subCli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
 		if err == nil {
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			if stream.Receive() {
 				streamDone <- struct {
 					mutation *pb.Mutation
