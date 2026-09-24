@@ -136,13 +136,14 @@ func receiptStoreError(err error) error {
 }
 
 // Commit serializes one logical call under the service publication cut. The
-// lock order is service -> Store -> GraphCache -> origin tracker -> Log. Every
-// allocating/fallible graph and receipt step completes before WAL.Write. The
-// callback only releases already-staged locks; the Log publishes its ring
-// entry afterwards and the service gate releases last. Direct Store, cache,
-// and LocalSeq readers bypass that gate and can briefly lead the log ring.
-// Production wiring must gate those readers or strengthen publication. This
-// is an in-process prerequisite, not a durable or multi-replica guarantee.
+// lock order is service -> receipt origin cut -> Store -> GraphCache -> origin
+// tracker -> Log. Every allocating/fallible graph and receipt step completes
+// before WAL.Write. The callback only releases already-staged locks; the Log
+// publishes its ring entry afterwards and the service gate releases last.
+// LocalSeq shares the receipt origin cut; direct Store and cache readers can
+// still briefly lead the log ring. Production wiring must gate those readers
+// or strengthen publication. This is an in-process prerequisite, not a
+// durable or multi-replica guarantee.
 func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptEdgeDeleteCall) (*pb.DeleteEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
@@ -154,6 +155,8 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	s := c.service
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
+	s.receiptOriginCutMu.Lock()
+	defer s.receiptOriginCutMu.Unlock()
 	walAttempted := false
 	defer func() {
 		if recovered := recover(); recovered != nil {

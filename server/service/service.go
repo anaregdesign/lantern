@@ -69,6 +69,10 @@ type LanternService struct {
 	// replicationCutMu keeps a Snapshot cutoff from overtaking a remote
 	// ApplyMutation or any local graph/log publication boundary.
 	replicationCutMu publicationGate
+	// receiptOriginCutMu covers the private receipt coordinator's staged
+	// origin row through publication of its matching log entry. LocalSeq
+	// readers share this cut without waiting on unrelated legacy WAL retries.
+	receiptOriginCutMu sync.RWMutex
 	// A peer Snapshot replay may change the graph without appending each
 	// mutation to this replica's log. Serialize installs so a successful one
 	// cannot clear another install's CDC gap while it is still applying.
@@ -572,8 +576,13 @@ func (s *LanternService) OriginStates() []OriginState {
 
 // LocalSeq returns the contiguous committed per-origin cutoff (0 when the
 // origin has never been seen, or the tracker is unwired). Used by the
-// anti-entropy driver (#186) to compute its catch-up start seq.
+// anti-entropy driver (#186) to compute its catch-up start seq. The receipt
+// origin cut prevents a staged receipt publication from exposing its origin
+// row before the matching log entry becomes visible, while a legacy WAL retry
+// can still expose its prior committed cutoff.
 func (s *LanternService) LocalSeq(origin hlc.NodeID) uint64 {
+	s.receiptOriginCutMu.RLock()
+	defer s.receiptOriginCutMu.RUnlock()
 	if s.origins == nil {
 		return 0
 	}

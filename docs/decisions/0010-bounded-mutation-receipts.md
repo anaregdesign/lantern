@@ -337,14 +337,15 @@ publication fault; it reports pump health, not a receipt or graph cut.
 This coordinator blocks service-gated reads, its own receipt Lookup, PeerStatus,
 Snapshot, BackupSnapshot capture, and Subscribe until log publication. Its
 callback releases the Store, GraphCache, and origin tracker locks before the
-log ring is updated. Direct `Store.Lookup`, GraphCache reads, and
-`LanternService.LocalSeq` bypass the service gate and may briefly observe
-receipt, graph, or origin state ahead of that ring. The held-WAL test proves
+log ring is updated. Direct `Store.Lookup` and GraphCache reads bypass the
+service gate and may briefly observe receipt or graph state ahead of that ring.
+`LanternService.LocalSeq` shares a receipt-specific origin cut through ring
+publication without blocking legacy relay WAL retries. The held-WAL test proves
 those readers cannot see *tentative* state while WAL.Write is pending; it does
 not prove a single cut for direct readers during callback publication.
-Production wiring must gate direct consumers such as anti-entropy LocalSeq or
-strengthen the publication primitive before claiming the every-observer
-atomicity required above.
+Production wiring must gate the remaining direct readers or strengthen the
+publication primitive before claiming the every-observer atomicity required
+above.
 
 No production provider uses the staged cache or coordinator. A durable WAL
 encoder/replayer, atomic remote receipt apply, a PeerStatus capability gate,

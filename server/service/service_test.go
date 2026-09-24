@@ -142,6 +142,61 @@ func TestLanternService_ApplySnapshotWatermarks(t *testing.T) {
 	}
 }
 
+func TestLanternService_LocalSeqWaitsForLogPublication(t *testing.T) {
+	svc := &LanternService{origins: newOriginStateTracker()}
+	log := mutationlog.New(mutationlog.Options{Capacity: 2})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x31}
+	ts := hlc.Timestamp{WallNs: 42, NodeID: origin}
+	rowVisible := make(chan struct{})
+	release := make(chan struct{})
+	committed := make(chan error, 1)
+	go func() {
+		svc.replicationCutMu.Lock()
+		defer svc.replicationCutMu.Unlock()
+		svc.receiptOriginCutMu.Lock()
+		defer svc.receiptOriginCutMu.Unlock()
+		stage, ok := svc.origins.stageNext(origin, 1, ts)
+		if !ok {
+			committed <- errors.New("could not stage origin row")
+			return
+		}
+		defer stage.Abort()
+		_, err := log.CommitWithPublication(&pb.Mutation{}, ts, func(mutationlog.Entry) {
+			stage.Commit()
+			close(rowVisible)
+			<-release
+		})
+		committed <- err
+	}()
+	select {
+	case <-rowVisible:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("origin row was not staged for log publication")
+	}
+	readStarted := make(chan struct{})
+	read := make(chan uint64, 1)
+	go func() {
+		close(readStarted)
+		read <- svc.LocalSeq(origin)
+	}()
+	<-readStarted
+	select {
+	case seq := <-read:
+		close(release)
+		t.Fatalf("LocalSeq observed seq %d before the log published it", seq)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	if seq := <-read; seq != 1 || log.Len() != 1 {
+		t.Fatalf("published origin seq %d, log entries %d; want 1/1", seq, log.Len())
+	}
+}
+
 func TestLanternService_OriginSeqIndependentOfRelayLogPosition(t *testing.T) {
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
