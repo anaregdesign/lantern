@@ -257,7 +257,30 @@ HLC, while its local seq is independent of the origin-local seq. Tombstone
 expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
 clock metadata. The codec is not wired to a serving WAL or replay path and
 does not certify receipt recovery, replication, or status continuity.
-The guarded full Subscribe projection carries these as one
+The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.go)
+adds a versioned kind discriminator for the two service Log payloads: a
+graph-only `Mutation` or that receipt Edge Delete envelope. Its graph kind
+encodes protobuf plus an ordered sidecar for nil repeated-message slots,
+which protobuf otherwise turns into empty messages on decode. The decoder
+checks the exact kind, version, lengths, sidecar indexes, supported oneof
+arms, and nested unknown fields. A raw protobuf wire scan rejects duplicate
+oneof arms at every depth and duplicate outer `Mutation.op` fields, so a
+receipt arm cannot be hidden by a later graph arm. Other valid protobuf field
+orders and duplicate scalar values retain protobuf semantics. The decoder
+accepts valid protobuf encodings without requiring a byte-for-byte match with
+this build's deterministic encoder:
+protobuf does not promise stable deterministic bytes across library versions.
+The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
+are indistinguishable from present empty messages and would change meaning on
+replay. The receipt kind retains the existing LRED validation and its 8 MiB
+body cap under the FileWAL frame's
+32 MiB bound. The `FileWAL` payload decoder cannot see frame metadata, so a
+replay/restore visitor must additionally validate the frame HLC against the
+decoded graph or receipt HLC before applying state. This remains unwired and
+does not yet constitute a complete replay or durable serving configuration;
+production activation also needs a WAL schema migration policy across future
+protobuf changes.
+The guarded full Subscribe projection carries receipt-bearing entries as one
 `ReplicatedReceiptEdgeDelete` mutation arm. A full-stream consumer without
 `accept_receipt_envelopes` receives `INVALID_ARGUMENT` before that frame;
 an old peer that receives the unknown oneof rejects the operation before
