@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -20,8 +21,39 @@ void main() {
     const endpointValue = String.fromEnvironment('LANTERN_ENDPOINT');
     expect(endpointValue, isNotEmpty, reason: 'pass LANTERN_ENDPOINT');
     final endpoint = Uri.parse(endpointValue);
+    const tokenEndpoint = String.fromEnvironment('LANTERN_TOKEN_ENDPOINT');
+    final tokenHttp = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    addTearDown(() => tokenHttp.close(force: true));
     final client = LanternClient.connect(
       endpoint,
+      tokenProvider: tokenEndpoint.isEmpty
+          ? null
+          : () async {
+              final uri = Uri.parse(tokenEndpoint);
+              if (uri.scheme != 'https' &&
+                  !const bool.fromEnvironment('LANTERN_ALLOW_INSECURE')) {
+                throw StateError('smoke_token_https_required');
+              }
+              final request = await tokenHttp
+                  .getUrl(uri)
+                  .timeout(const Duration(seconds: 5));
+              final response = await request.close().timeout(
+                const Duration(seconds: 5),
+              );
+              final body = await utf8
+                  .decodeStream(response)
+                  .timeout(const Duration(seconds: 5));
+              if (response.statusCode != HttpStatus.ok) {
+                throw StateError('smoke_token_status');
+              }
+              final decoded = jsonDecode(body) as Map<String, Object?>;
+              final token = decoded['access_token'];
+              if (token is! String || token.isEmpty) {
+                throw StateError('smoke_token_missing');
+              }
+              return token;
+            },
       allowInsecure: const bool.fromEnvironment('LANTERN_ALLOW_INSECURE'),
       retryPolicy: const RetryPolicy(),
       idempotentAdds: true,
