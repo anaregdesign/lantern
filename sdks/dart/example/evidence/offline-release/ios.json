@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "kind": "physical_offline_release_evidence",
+  "repository": "anaregdesign/lantern",
+  "testedCommit": "b2f64a8e94eedf0f9c3a9a98c487d1c77fe598bc",
+  "recordedAt": "2026-09-24T09:39:02Z",
+  "physicalDevice": true,
+  "contentFree": true,
+  "cleanCheckout": true,
+  "toolchain": {
+    "flutter": "3.44.6",
+    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
+    "dart": "3.12.2"
+  },
+  "application": {
+    "packageId": "com.anaregdesign.lanternExample",
+    "target": "integration_test/mobile_smoke_test.dart",
+    "binarySha256": "283b3e97ee7448f0983a93b7ebac8c85758e9733dd9d03d5ef3ebb1906d794de"
+  },
+  "platform": {
+    "kind": "physical-ios",
+    "model": "iPhone 16 Pro",
+    "os": "iOS 26.7"
+  },
+  "network": {
+    "transport": "Connect/HTTPS",
+    "topology": "Temporary public-CA HTTPS tunnel to local test server and synthetic-token BFF",
+    "authenticated": true,
+    "platformTrustedTls": true
+  },
+  "scenarios": [
+    "authoritative_server_expiry",
+    "ios_local_network_privacy_denial_retry",
+    "offline_put_replay",
+    "online_exact_values",
+    "platform_trusted_tls",
+    "radio_offline_foreground_recovery",
+    "sqlite_expired_before_replay",
+    "sqlite_logout_wipe_reopen",
+    "sqlite_original_ttl_preserved",
+    "sqlite_partition_isolation",
+    "sqlite_pending_close_reopen",
+    "token_rotation",
+    "untrusted_tls_rejection",
+    "watch_cleanup",
+    "wipe_before_send"
+  ],
+  "result": "passed",
+  "limitations": []
+}
