@@ -84,5 +84,31 @@ class IdentityOperation extends $pb.ProtobufEnum {
   const IdentityOperation._(super.value, super.name);
 }
 
+/// Snapshot format is an explicit compatibility boundary. A graph-only image
+/// cannot prove mutation-receipt continuity, even when its origin cutoffs are
+/// ahead of every retained log entry. Format 2 is reserved for a future
+/// receipt-bearing image; this server does not produce it yet.
+class SnapshotFormat extends $pb.ProtobufEnum {
+  static const SnapshotFormat SNAPSHOT_FORMAT_UNSPECIFIED =
+      SnapshotFormat._(0, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_UNSPECIFIED');
+  static const SnapshotFormat SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = SnapshotFormat._(
+      1, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_GRAPH_ONLY_V1');
+  static const SnapshotFormat SNAPSHOT_FORMAT_RECEIPT_V1 =
+      SnapshotFormat._(2, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_RECEIPT_V1');
+
+  static const $core.List<SnapshotFormat> values = <SnapshotFormat>[
+    SNAPSHOT_FORMAT_UNSPECIFIED,
+    SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+    SNAPSHOT_FORMAT_RECEIPT_V1,
+  ];
+
+  static final $core.List<SnapshotFormat?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 2);
+  static SnapshotFormat? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SnapshotFormat._(super.value, super.name);
+}
+
 const $core.bool _omitEnumNames =
     $core.bool.fromEnvironment('protobuf.omit_enum_names');

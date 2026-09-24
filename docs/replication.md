@@ -559,6 +559,16 @@ staleness from expiring additive contributions.
 ```proto
 rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 
+enum SnapshotFormat {
+  SNAPSHOT_FORMAT_UNSPECIFIED = 0;
+  SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = 1;
+  SNAPSHOT_FORMAT_RECEIPT_V1 = 2; // reserved until receipt Snapshot exists
+}
+
+message SnapshotRequest {
+  SnapshotFormat required_format = 1;
+}
+
 message SnapshotResponse {
   oneof entry {
     SnapshotHeader header = 1;   // first frame: origin/local cutoffs + cutoff_hlc
@@ -580,6 +590,7 @@ message SnapshotHeader {
   map<string, uint64> cutoff_seq_per_origin = 1;
   HLCTimestamp cutoff_hlc = 2;
   uint64 cutoff_local_seq = 3; // same-responder log position
+  SnapshotFormat format = 4;
 }
 
 message SnapshotFooter {
@@ -621,6 +632,18 @@ message SnapshotEdgeContribution {
 
 Framing contract:
 
+- The request and first header negotiate the image format. Zero request and
+  zero header retain the legacy graph-only interpretation while receipt writes
+  are disabled. Current Pump and anti-entropy explicitly request
+  `GRAPH_ONLY_V1` and accept zero or `GRAPH_ONLY_V1` in the first header, but
+  reject `RECEIPT_V1` before applying any frame. A future receipt receiver
+  must request `RECEIPT_V1` and reject an old server's zero/graph-only header
+  before installation. When receipt continuity is required, the responder
+  advertises `PeerStatus.required_snapshot_format = RECEIPT_V1`, rejects
+  legacy full Subscribe before checking the retained ring, and rejects every
+  graph-only Snapshot request. The receipt image producer and atomic installer
+  are not yet implemented, so this mode currently fails closed on Snapshot;
+  no production provider enables it.
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
   the primary's contiguous per-origin committed prefix (every prior
   mutation has been applied to the graph and published to its relay log,

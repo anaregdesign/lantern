@@ -56,6 +56,22 @@ final $typed_data.Uint8List identityOperationDescriptor = $convert.base64Decode(
     'RFTlRJVFlfT1BFUkFUSU9OX1BVVF9FREdFEAQSIgoeSURFTlRJVFlfT1BFUkFUSU9OX0RFTEVU'
     'RV9FREdFEAUSIwofSURFTlRJVFlfT1BFUkFUSU9OX1JFQ0VJUFRfT05MWRAG');
 
+@$core.Deprecated('Use snapshotFormatDescriptor instead')
+const SnapshotFormat$json = {
+  '1': 'SnapshotFormat',
+  '2': [
+    {'1': 'SNAPSHOT_FORMAT_UNSPECIFIED', '2': 0},
+    {'1': 'SNAPSHOT_FORMAT_GRAPH_ONLY_V1', '2': 1},
+    {'1': 'SNAPSHOT_FORMAT_RECEIPT_V1', '2': 2},
+  ],
+};
+
+/// Descriptor for `SnapshotFormat`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List snapshotFormatDescriptor = $convert.base64Decode(
+    'Cg5TbmFwc2hvdEZvcm1hdBIfChtTTkFQU0hPVF9GT1JNQVRfVU5TUEVDSUZJRUQQABIhCh1TTk'
+    'FQU0hPVF9GT1JNQVRfR1JBUEhfT05MWV9WMRABEh4KGlNOQVBTSE9UX0ZPUk1BVF9SRUNFSVBU'
+    'X1YxEAI=');
+
 @$core.Deprecated('Use hLCTimestampDescriptor instead')
 const HLCTimestamp$json = {
   '1': 'HLCTimestamp',
@@ -662,11 +678,22 @@ final $typed_data.Uint8List subscribeResponseDescriptor = $convert.base64Decode(
 @$core.Deprecated('Use snapshotRequestDescriptor instead')
 const SnapshotRequest$json = {
   '1': 'SnapshotRequest',
+  '2': [
+    {
+      '1': 'required_format',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SnapshotFormat',
+      '10': 'requiredFormat'
+    },
+  ],
 };
 
 /// Descriptor for `SnapshotRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List snapshotRequestDescriptor =
-    $convert.base64Decode('Cg9TbmFwc2hvdFJlcXVlc3Q=');
+final $typed_data.Uint8List snapshotRequestDescriptor = $convert.base64Decode(
+    'Cg9TbmFwc2hvdFJlcXVlc3QSQQoPcmVxdWlyZWRfZm9ybWF0GAEgASgOMhguZ3JhcGgudjEuU2'
+    '5hcHNob3RGb3JtYXRSDnJlcXVpcmVkRm9ybWF0');
 
 @$core.Deprecated('Use snapshotHeaderDescriptor instead')
 const SnapshotHeader$json = {
@@ -689,6 +716,14 @@ const SnapshotHeader$json = {
       '10': 'cutoffHlc'
     },
     {'1': 'cutoff_local_seq', '3': 3, '4': 1, '5': 4, '10': 'cutoffLocalSeq'},
+    {
+      '1': 'format',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SnapshotFormat',
+      '10': 'format'
+    },
   ],
   '3': [SnapshotHeader_CutoffSeqPerOriginEntry$json],
 };
@@ -708,9 +743,10 @@ final $typed_data.Uint8List snapshotHeaderDescriptor = $convert.base64Decode(
     'Cg5TbmFwc2hvdEhlYWRlchJjChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC'
     '52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeVISY3V0b2ZmU2VxUGVy'
     'T3JpZ2luEjUKCmN1dG9mZl9obGMYAiABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSCWN1dG'
-    '9mZkhsYxIoChBjdXRvZmZfbG9jYWxfc2VxGAMgASgEUg5jdXRvZmZMb2NhbFNlcRpFChdDdXRv'
-    'ZmZTZXFQZXJPcmlnaW5FbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoBFIFdm'
-    'FsdWU6AjgB');
+    '9mZkhsYxIoChBjdXRvZmZfbG9jYWxfc2VxGAMgASgEUg5jdXRvZmZMb2NhbFNlcRIwCgZmb3Jt'
+    'YXQYBCABKA4yGC5ncmFwaC52MS5TbmFwc2hvdEZvcm1hdFIGZm9ybWF0GkUKF0N1dG9mZlNlcV'
+    'Blck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2V5EhQKBXZhbHVlGAIgASgEUgV2YWx1ZToC'
+    'OAE=');
 
 @$core.Deprecated('Use snapshotFooterDescriptor instead')
 const SnapshotFooter$json = {
@@ -1103,6 +1139,14 @@ const PeerStatusResponse$json = {
       '5': 9,
       '10': 'searchConfigFingerprint'
     },
+    {
+      '1': 'required_snapshot_format',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SnapshotFormat',
+      '10': 'requiredSnapshotFormat'
+    },
   ],
 };
 
@@ -1110,7 +1154,9 @@ const PeerStatusResponse$json = {
 final $typed_data.Uint8List peerStatusResponseDescriptor = $convert.base64Decode(
     'ChJQZWVyU3RhdHVzUmVzcG9uc2USHwoLc2VsZl9vcmlnaW4YASABKAxSCnNlbGZPcmlnaW4SLw'
     'oHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlUgdvcmlnaW5zEjoKGXNlYXJj'
-    'aF9jb25maWdfZmluZ2VycHJpbnQYAyABKAlSF3NlYXJjaENvbmZpZ0ZpbmdlcnByaW50');
+    'aF9jb25maWdfZmluZ2VycHJpbnQYAyABKAlSF3NlYXJjaENvbmZpZ0ZpbmdlcnByaW50ElIKGH'
+    'JlcXVpcmVkX3NuYXBzaG90X2Zvcm1hdBgEIAEoDjIYLmdyYXBoLnYxLlNuYXBzaG90Rm9ybWF0'
+    'UhZyZXF1aXJlZFNuYXBzaG90Rm9ybWF0');
 
 const $core.Map<$core.String, $core.dynamic>
     LanternReplicationServiceBase$json = {

@@ -132,12 +132,22 @@ func snapshotProtocolError(format string, args ...any) error {
 	return connect.NewError(connect.CodeInternal, fmt.Errorf("snapshot: "+format, args...))
 }
 
+func graphOnlySnapshotFormat(format pb.SnapshotFormat) bool {
+	return format == pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED ||
+		format == pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+}
+
 func (s *snapshotReplayState) acceptHeader(header *pb.SnapshotHeader) error {
 	if header == nil {
 		return snapshotProtocolError("nil header frame")
 	}
 	if s.gotHeader || s.phase != 0 || s.sawFooter {
 		return snapshotProtocolError("duplicate or out-of-order header frame")
+	}
+	// This receiver installs only graph state. A receipt format must be
+	// handled by a future staged graph+receipt installer, never by this path.
+	if !graphOnlySnapshotFormat(header.GetFormat()) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("graph-only receiver cannot install this Snapshot format"))
 	}
 	s.gotHeader = true
 	s.header = header
@@ -572,11 +582,14 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	cli := graphv1connect.NewLanternReplicationServiceClient(
 		p.cfg.HTTPClient, peerBaseURL(addr),
 	)
+	status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+	if err != nil {
+		return fmt.Errorf("peer capability status: %w", err)
+	}
+	if !graphOnlySnapshotFormat(status.Msg.GetRequiredSnapshotFormat()) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("peer requires receipt-bearing Snapshot unsupported by this pump"))
+	}
 	if p.cfg.SearchConfigFingerprint != "" {
-		status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
-		if err != nil {
-			return fmt.Errorf("peer search-config status: %w", err)
-		}
 		remote := status.Msg.GetSearchConfigFingerprint()
 		matched := remote != "" && remote == p.cfg.SearchConfigFingerprint
 		p.cfg.Metrics.OnSearchConfig(addr, matched)
@@ -591,7 +604,7 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	log.Info("replication pump: peer transition",
 		slog.String("transition", "connect"))
 
-	err := p.subscribe(ctx, cli, addr, nil, 0)
+	err = p.subscribe(ctx, cli, addr, nil, 0)
 	if err == nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 		log.Info("replication pump: peer transition",
@@ -694,7 +707,9 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 // watermark cut for the live tail. Replaying those cutoffs before Subscribe
 // prevents both duplicate application and an infinite gapped-snapshot loop.
 func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) (*pb.SnapshotHeader, error) {
-	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -706,10 +721,6 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		}
 	}()
 	var recovery searchIndexRecovery
-	if candidate, ok := p.snap.(searchIndexRecovery); ok {
-		recovery = candidate
-		recovery.BeginSearchIndexRecovery()
-	}
 	start := time.Now()
 	var replay snapshotReplayState
 	for stream.Receive() {
@@ -722,6 +733,13 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			finishInstall, err = beginSnapshotInstall(p.apply)
 			if err != nil {
 				return nil, err
+			}
+			// A mismatched or malformed first header must not mark an intact
+			// search index incomplete. Begin recovery only after format and
+			// install admission have both succeeded.
+			if candidate, ok := p.snap.(searchIndexRecovery); ok {
+				recovery = candidate
+				recovery.BeginSearchIndexRecovery()
 			}
 		case *pb.SnapshotResponse_VertexCausalBarrier:
 			if err := replay.acceptBody("vertex causal barrier", snapshotPhaseVertexBarrier); err != nil {

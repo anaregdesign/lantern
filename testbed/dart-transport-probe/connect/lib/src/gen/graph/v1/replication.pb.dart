@@ -1636,12 +1636,19 @@ class SubscribeResponse extends $pb.GeneratedMessage {
   IdentityChunk ensureIdentityChunk() => $_ensure(2);
 }
 
-/// SnapshotRequest opens a server-streaming snapshot of the live graph and
-/// retained causal floors at a single cutoff. The request body is intentionally
-/// empty in this phase (#184); future revisions may add prefix / shard
-/// filters without breaking the wire contract.
+/// SnapshotRequest opens a server-streaming snapshot at a single cutoff.
+/// Legacy zero means graph-only while receipt writes are disabled. A receiver
+/// that needs receipts MUST request RECEIPT_V1 and check the first header's
+/// format before applying any body frame. An old server may ignore the new
+/// request field, so the header check is mandatory.
 class SnapshotRequest extends $pb.GeneratedMessage {
-  factory SnapshotRequest() => create();
+  factory SnapshotRequest({
+    SnapshotFormat? requiredFormat,
+  }) {
+    final result = create();
+    if (requiredFormat != null) result.requiredFormat = requiredFormat;
+    return result;
+  }
 
   SnapshotRequest._();
 
@@ -1656,6 +1663,11 @@ class SnapshotRequest extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'SnapshotRequest',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
+    ..e<SnapshotFormat>(
+        1, _omitFieldNames ? '' : 'requiredFormat', $pb.PbFieldType.OE,
+        defaultOrMaker: SnapshotFormat.SNAPSHOT_FORMAT_UNSPECIFIED,
+        valueOf: SnapshotFormat.valueOf,
+        enumValues: SnapshotFormat.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1678,15 +1690,25 @@ class SnapshotRequest extends $pb.GeneratedMessage {
   static SnapshotRequest getDefault() => _defaultInstance ??=
       $pb.GeneratedMessage.$_defaultFor<SnapshotRequest>(create);
   static SnapshotRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SnapshotFormat get requiredFormat => $_getN(0);
+  @$pb.TagNumber(1)
+  set requiredFormat(SnapshotFormat value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRequiredFormat() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRequiredFormat() => $_clearField(1);
 }
 
 /// SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
 /// freezes the per-origin watermark and the snapshot-open HLC the server
 /// used to materialise the snapshot.
 ///
-/// A bootstrapping peer MUST persist `cutoff_seq_per_origin`,
-/// `cutoff_local_seq`, and `cutoff_hlc` before applying any payload entries and
-/// MUST resume Subscribe against the SAME responder with both
+/// A bootstrapping graph-only peer advances the cutoffs only after a verified
+/// footer. A future RECEIPT_V1 receiver must stage and atomically install its
+/// graph, receipt, epoch, policy, and clock image before advancing these
+/// cutoffs. It then resumes Subscribe against the SAME responder with both
 /// `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
 /// cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
 /// snapshot and the live tail stitch without gap or overlap.
@@ -1703,12 +1725,14 @@ class SnapshotHeader extends $pb.GeneratedMessage {
         cutoffSeqPerOrigin,
     HLCTimestamp? cutoffHlc,
     $fixnum.Int64? cutoffLocalSeq,
+    SnapshotFormat? format,
   }) {
     final result = create();
     if (cutoffSeqPerOrigin != null)
       result.cutoffSeqPerOrigin.addEntries(cutoffSeqPerOrigin);
     if (cutoffHlc != null) result.cutoffHlc = cutoffHlc;
     if (cutoffLocalSeq != null) result.cutoffLocalSeq = cutoffLocalSeq;
+    if (format != null) result.format = format;
     return result;
   }
 
@@ -1736,6 +1760,10 @@ class SnapshotHeader extends $pb.GeneratedMessage {
     ..a<$fixnum.Int64>(
         3, _omitFieldNames ? '' : 'cutoffLocalSeq', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
+    ..e<SnapshotFormat>(4, _omitFieldNames ? '' : 'format', $pb.PbFieldType.OE,
+        defaultOrMaker: SnapshotFormat.SNAPSHOT_FORMAT_UNSPECIFIED,
+        valueOf: SnapshotFormat.valueOf,
+        enumValues: SnapshotFormat.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1784,6 +1812,17 @@ class SnapshotHeader extends $pb.GeneratedMessage {
   $core.bool hasCutoffLocalSeq() => $_has(2);
   @$pb.TagNumber(3)
   void clearCutoffLocalSeq() => $_clearField(3);
+
+  /// Zero is a legacy graph-only image. A receipt-capable receiver must reject
+  /// zero or GRAPH_ONLY_V1 before changing any local state.
+  @$pb.TagNumber(4)
+  SnapshotFormat get format => $_getN(3);
+  @$pb.TagNumber(4)
+  set format(SnapshotFormat value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasFormat() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearFormat() => $_clearField(4);
 }
 
 /// SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -2916,12 +2955,15 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
     $core.List<$core.int>? selfOrigin,
     $core.Iterable<OriginState>? origins,
     $core.String? searchConfigFingerprint,
+    SnapshotFormat? requiredSnapshotFormat,
   }) {
     final result = create();
     if (selfOrigin != null) result.selfOrigin = selfOrigin;
     if (origins != null) result.origins.addAll(origins);
     if (searchConfigFingerprint != null)
       result.searchConfigFingerprint = searchConfigFingerprint;
+    if (requiredSnapshotFormat != null)
+      result.requiredSnapshotFormat = requiredSnapshotFormat;
     return result;
   }
 
@@ -2943,6 +2985,11 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
     ..pc<OriginState>(2, _omitFieldNames ? '' : 'origins', $pb.PbFieldType.PM,
         subBuilder: OriginState.create)
     ..aOS(3, _omitFieldNames ? '' : 'searchConfigFingerprint')
+    ..e<SnapshotFormat>(
+        4, _omitFieldNames ? '' : 'requiredSnapshotFormat', $pb.PbFieldType.OE,
+        defaultOrMaker: SnapshotFormat.SNAPSHOT_FORMAT_UNSPECIFIED,
+        valueOf: SnapshotFormat.valueOf,
+        enumValues: SnapshotFormat.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2989,6 +3036,18 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
   $core.bool hasSearchConfigFingerprint() => $_has(2);
   @$pb.TagNumber(3)
   void clearSearchConfigFingerprint() => $_clearField(3);
+
+  /// The minimum Snapshot format needed to preserve the responder's durable
+  /// state. Old peers may ignore this field; Snapshot itself must reject a
+  /// graph-only request when RECEIPT_V1 is required.
+  @$pb.TagNumber(4)
+  SnapshotFormat get requiredSnapshotFormat => $_getN(3);
+  @$pb.TagNumber(4)
+  set requiredSnapshotFormat(SnapshotFormat value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasRequiredSnapshotFormat() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearRequiredSnapshotFormat() => $_clearField(4);
 }
 
 /// LanternReplicationService carries the peer-to-peer (and CDC) replication
