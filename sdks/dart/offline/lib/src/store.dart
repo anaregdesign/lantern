@@ -202,6 +202,10 @@ abstract interface class OfflineStoreTransaction {
   /// reset advances this value in the same transaction as cache invalidation.
   FutureOr<int> changeEpoch(String partitionId);
 
+  /// Whether [key] still needs checkpoint-authoritative revalidation.
+  /// Ordinary singular Get responses must not complete this marker.
+  FutureOr<bool> hasUnknownResident(String partitionId, OfflineEntityKey key);
+
   /// Returns up to [limit] Unknown resident identities in stable key order.
   ///
   /// Repeated calls start at the first unfinished identity; resolving a key

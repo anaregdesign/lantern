@@ -203,6 +203,7 @@ final class OfflineLanternRepository {
               cancellation: cancellation,
             ),
           );
+    final verticesReceivedAt = config.clock().toUtc();
     _throwIfCanceled(cancellation);
     final edges = edgeKeys.isEmpty
         ? <OfflineRemoteRead<Edge>>[]
@@ -211,6 +212,7 @@ final class OfflineLanternRepository {
             cancellation,
             () => recoveryRemote.getEdges(edgeKeys, cancellation: cancellation),
           );
+    final edgesReceivedAt = config.clock().toUtc();
     _throwIfCanceled(cancellation);
     if (vertices.length != vertexKeys.length ||
         edges.length != edgeKeys.length) {
@@ -238,19 +240,21 @@ final class OfflineLanternRepository {
     var completed = 0;
     for (final key in batch.keys) {
       _throwIfCanceled(cancellation);
-      final now = config.clock().toUtc();
+      final receivedAt = key.kind == OfflineEntityKind.vertex
+          ? verticesReceivedAt
+          : edgesReceivedAt;
       OfflineCacheRecord? record;
       if (key.kind == OfflineEntityKind.vertex) {
         final result = vertexResults[key.vertexKey!]!;
         if (result is OfflineRemotePresent<Vertex>) {
-          if (_live(result.value.expiration, now)) {
+          if (_live(result.value.expiration, receivedAt)) {
             record = OfflineCacheRecord.value(
               partitionId: partitionId,
               generation: batch.stamp.generation,
               key: key,
               entity: result.value,
-              validatedAt: now,
-              lastAccessAt: now,
+              validatedAt: receivedAt,
+              lastAccessAt: receivedAt,
             );
           }
         } else {
@@ -258,22 +262,22 @@ final class OfflineLanternRepository {
             partitionId: partitionId,
             generation: batch.stamp.generation,
             key: key,
-            validatedAt: now,
-            lastAccessAt: now,
-            missingUntil: _durableDeadline(now, config.missingTtl),
+            validatedAt: receivedAt,
+            lastAccessAt: receivedAt,
+            missingUntil: _durableDeadline(receivedAt, config.missingTtl),
           );
         }
       } else {
         final result = edgeResults[key.canonical]!;
         if (result is OfflineRemotePresent<Edge>) {
-          if (_live(result.value.expiration, now)) {
+          if (_live(result.value.expiration, receivedAt)) {
             record = OfflineCacheRecord.value(
               partitionId: partitionId,
               generation: batch.stamp.generation,
               key: key,
               entity: result.value,
-              validatedAt: now,
-              lastAccessAt: now,
+              validatedAt: receivedAt,
+              lastAccessAt: receivedAt,
             );
           }
         } else {
@@ -281,9 +285,9 @@ final class OfflineLanternRepository {
             partitionId: partitionId,
             generation: batch.stamp.generation,
             key: key,
-            validatedAt: now,
-            lastAccessAt: now,
-            missingUntil: _durableDeadline(now, config.missingTtl),
+            validatedAt: receivedAt,
+            lastAccessAt: receivedAt,
+            missingUntil: _durableDeadline(receivedAt, config.missingTtl),
           );
         }
       }
@@ -291,6 +295,14 @@ final class OfflineLanternRepository {
         final applied = await store.transaction((transaction) async {
           if (await transaction.generation(partitionId) !=
               batch.stamp.generation) {
+            return false;
+          }
+          // A slow second family must not renew an earlier response's TTL.
+          // An elapsed negative result remains Unknown for a new batch.
+          final commitAt = config.clock().toUtc();
+          if (record != null &&
+              record.isMissing &&
+              !_live(record.missingUntil, commitAt)) {
             return false;
           }
           if (!await transaction.completeUnknownResident(
@@ -303,7 +315,10 @@ final class OfflineLanternRepository {
           // A normal Get may have written a hidden cache row while this key
           // remained Unknown. Replace it only with this checked batch result.
           await transaction.deleteCache(partitionId, key);
-          if (record != null) await transaction.putCache(partitionId, record);
+          if (record != null &&
+              (record.isMissing || _live(record.expiration, commitAt))) {
+            await transaction.putCache(partitionId, record);
+          }
           return true;
         });
         if (applied) completed++;
@@ -1401,8 +1416,11 @@ final class OfflineLanternRepository {
     required LanternCancellationToken? cancellation,
   }) async {
     await _expireOrAgeOut(partitionId, entityKey: OfflineEntityKey.vertex(key));
-    final stamp = await _readStamp(partitionId);
+    final stamp = await _readStamp(partitionId, OfflineEntityKey.vertex(key));
     final local = await _localVertex(partitionId, key);
+    // An ordinary Get cannot establish authority across a checkpoint gap.
+    // Only the explicit plural recovery path may complete this resident key.
+    if (stamp.unknownResident) return _guardRead(partitionId, stamp, local);
     if (_usesLocalFirst(policy) && _eligible(local, allowStale: allowStale)) {
       return _guardRead(partitionId, stamp, local);
     }
@@ -1544,8 +1562,12 @@ final class OfflineLanternRepository {
       partitionId,
       entityKey: OfflineEntityKey.edge(edge.tail, edge.head),
     );
-    final stamp = await _readStamp(partitionId);
+    final stamp = await _readStamp(
+      partitionId,
+      OfflineEntityKey.edge(edge.tail, edge.head),
+    );
     final local = await _localEdge(partitionId, edge);
+    if (stamp.unknownResident) return _guardRead(partitionId, stamp, local);
     if (_usesLocalFirst(policy) && _eligible(local, allowStale: allowStale)) {
       return _guardRead(partitionId, stamp, local);
     }
@@ -2869,12 +2891,17 @@ final class OfflineLanternRepository {
     }
   }
 
-  Future<_ReadStamp> _readStamp(String partitionId) => store.transaction(
-    (transaction) async => _ReadStamp(
-      await transaction.generation(partitionId),
-      await transaction.changeEpoch(partitionId),
-    ),
-  );
+  Future<_ReadStamp> _readStamp(String partitionId, OfflineEntityKey key) =>
+      store.transaction(
+        (transaction) async => _ReadStamp(
+          await transaction.generation(partitionId),
+          await transaction.changeEpoch(partitionId),
+          unknownResident: await transaction.hasUnknownResident(
+            partitionId,
+            key,
+          ),
+        ),
+      );
 
   Future<bool> _readStampCurrent(String partitionId, _ReadStamp stamp) =>
       store.transaction(
@@ -4065,10 +4092,11 @@ final class _LeaseRenewal {
 enum _CacheStoreOutcome { stored, staleGeneration, capacityRejected }
 
 final class _ReadStamp {
-  const _ReadStamp(this.generation, this.epoch);
+  const _ReadStamp(this.generation, this.epoch, {this.unknownResident = false});
 
   final int generation;
   final int epoch;
+  final bool unknownResident;
 }
 
 enum _ClaimSendState { sendable, pausedForAuth, stale }

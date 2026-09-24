@@ -601,6 +601,7 @@ enum OfflineReadPolicy {
   serverFirst,
 
   /// Use remote only while still updating the confirmed cache on success.
+  /// A checkpoint-Unknown resident waits for explicit plural revalidation.
   serverOnly,
 }
 

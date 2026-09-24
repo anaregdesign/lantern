@@ -52,6 +52,10 @@ Future<void> runChangeStoreConformanceSuite(
       store.transaction(
         (transaction) => transaction.unknownResidents(partition, limit: limit),
       );
+  Future<bool> isUnknown(String key) => store.transaction(
+    (transaction) =>
+        transaction.hasUnknownResident(partition, OfflineEntityKey.vertex(key)),
+  );
   final first = OfflineChangeChunk(
     origin: origin,
     sequence: sequence,
@@ -179,8 +183,11 @@ Future<void> runChangeStoreConformanceSuite(
   _require(resetEpoch == 4, 'change_checkpoint_epoch');
   _require((await unknown(limit: 1)).length == 1, 'change_resident_bounded');
   _require((await unknown()).length == 2, 'change_resident_retained');
+  _require(await isUnknown('first'), 'change_resident_identity');
+  _require(!await isUnknown('absent'), 'change_nonresident_identity');
   store = await reopen(store);
   _require((await unknown()).length == 2, 'change_resident_reopen');
+  _require(await isUnknown('first'), 'change_resident_identity_reopen');
   _require(await epoch() == resetEpoch, 'change_epoch_reopen');
   await cache('first');
   _require(!await cached('first'), 'change_unknown_hides_unresolved_cache');
@@ -228,6 +235,7 @@ Future<void> runChangeStoreConformanceSuite(
     'change_resident_completion',
   );
   _require(await cached('first'), 'change_revalidated_cache_visible');
+  _require(!await isUnknown('first'), 'change_resident_identity_completed');
   _require((await unknown()).length == 1, 'change_progress_bounded');
   final pending = await store.transaction(
     (transaction) => transaction.getOutbox(partition, 'pending-record'),
@@ -242,6 +250,7 @@ Future<void> runChangeStoreConformanceSuite(
   store = await reopen(store);
   _require((await cursor()).sequences.isEmpty, 'change_wipe_cursor');
   _require((await unknown()).isEmpty, 'change_wipe_residents');
+  _require(!await isUnknown('first'), 'change_wipe_resident_identity');
   _require(await epoch() == 0, 'change_wipe_epoch');
 }
 

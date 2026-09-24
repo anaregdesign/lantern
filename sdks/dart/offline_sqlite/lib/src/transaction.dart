@@ -962,6 +962,21 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       _run(() async => (await _partition(partitionId))['change_epoch']! as int);
 
   @override
+  Future<bool> hasUnknownResident(String partitionId, OfflineEntityKey key) =>
+      _run(() async {
+        _ensureOpen();
+        _validatePartition(partitionId);
+        final rows = await sql.query(
+          'recovery',
+          columns: ['entity_key'],
+          where: 'partition_id=? AND entity_key=?',
+          whereArgs: [partitionId, key.canonical],
+          limit: 1,
+        );
+        return rows.isNotEmpty;
+      });
+
+  @override
   Future<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,

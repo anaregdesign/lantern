@@ -189,6 +189,12 @@ final class _DelayedTransaction implements OfflineStoreTransaction {
       await inner.changeEpoch(partitionId);
 
   @override
+  Future<bool> hasUnknownResident(
+    String partitionId,
+    OfflineEntityKey key,
+  ) async => await inner.hasUnknownResident(partitionId, key);
+
+  @override
   Future<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,

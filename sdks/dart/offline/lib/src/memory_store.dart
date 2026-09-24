@@ -209,6 +209,16 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
   }
 
   @override
+  bool hasUnknownResident(String partitionId, OfflineEntityKey key) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    return _state
+        .partition(partitionId)
+        .unknownResidents
+        .containsKey(key.canonical);
+  }
+
+  @override
   List<OfflineEntityKey> unknownResidents(
     String partitionId, {
     required int limit,

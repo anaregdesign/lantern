@@ -77,6 +77,11 @@ receipts and the offline package has conformance and response-loss evidence for
 that receipt contract.
 
 `readVertex`/`readEdge` expose cache-only, cache-first, and server-only policies.
+After a checkpoint reset, a bounded resident identity stays Unknown until the
+explicit plural recovery batch revalidates it. An ordinary `serverOnly` Get
+does not clear this marker or return its unverified response; a pending Put
+overlay remains visible. Accepted CDC chunks advance a durable epoch, so an
+ordinary Get already in flight cannot publish a late confirmed result.
 `watchVertex`/`watchEdge` emit the cache immediately, revalidate once against
 Lantern, coalesce identical snapshots, and then follow local store changes.
 Snapshots distinguish fresh, stale, missing, expired, and unknown states and

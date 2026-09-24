@@ -73,6 +73,9 @@ reset preserves bounded resident identities as key-only Unknown work and
 removes confirmed values, while keeping pending outbox work. Bounded scans and
 epoch-checked completion survive reopen. Partition wipe removes CDC and
 recovery state.
+An ordinary `serverOnly` Get cannot clear a checkpoint-Unknown resident marker;
+only the explicit plural recovery batch does so, while pending Put overlays
+remain visible.
 
 This adapter does not start a CDC subscription. The identity-only server stream
 and gap/bootstrap orchestration remain separate #1116 work. Ordinary Get and

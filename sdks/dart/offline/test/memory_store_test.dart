@@ -2794,6 +2794,10 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
       inner.changeEpoch(partitionId);
 
   @override
+  FutureOr<bool> hasUnknownResident(String partitionId, OfflineEntityKey key) =>
+      inner.hasUnknownResident(partitionId, key);
+
+  @override
   FutureOr<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
