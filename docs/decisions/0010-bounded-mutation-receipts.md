@@ -17,9 +17,11 @@ exactly-once guarantee in Lantern's leaderless, asynchronous cluster.
 Today's write paths are not an atomic receipt seam. Put/Delete change
 `GraphCache` before `logMutationAt`, whose append failure is only logged.
 Add appends before graph application to obtain its contribution sequence.
-Remote `ApplyMutation` can advance an origin watermark before graph apply or
-local relay publication. A condition-not-met Put has no graph mutation to
-replicate, while `BackupSnapshot` and restore carry live graph records only.
+Before #1282, remote `ApplyMutation` could advance an origin watermark before
+graph apply or local relay publication; its contiguous-publication fix alone
+still does not provide an atomic receipt seam. A condition-not-met Put has no
+graph mutation to replicate, while `BackupSnapshot` and restore carry live
+graph records only.
 Simply adding a receipt map to any one of these paths would permit graph,
 result, receipt, and log to disagree. The future implementation must replace
 that ordering; this ADR changes no current RPC or write behavior.
