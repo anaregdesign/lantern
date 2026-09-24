@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
@@ -46,9 +48,9 @@ var errWholeStateArchive = errors.New("backup: invalid whole-state archive")
 type wholeStateArchive struct {
 	// Graph is an ordered, counted replication Snapshot frame stream, retaining
 	// causal floors and the per-contribution edge decomposition that .lbk
-	// discards. This codec does not validate graph payload semantics or prove
-	// that Graph, Receipts, and Origins came from one atomic publication cut;
-	// a future installer must do both before serving.
+	// discards. The codec validates each graph payload but cannot prove that
+	// Graph, Receipts, and Origins came from one atomic publication cut; a
+	// future producer and installer must establish that cut before serving.
 	Graph    []*pb.SnapshotResponse
 	Receipts mutationreceipt.Snapshot
 	Policy   mutationreceipt.Config
@@ -246,29 +248,120 @@ func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []service.Origi
 	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
 		return wholeStateArchiveError("graph Snapshot is not receipt format v1")
 	}
-	if header.GetCutoffHlc() == nil || header.GetCutoffHlc().GetWallNs() <= 0 || len(header.GetCutoffHlc().GetNodeId()) != 16 {
+	if _, ok := archiveHLC(header.GetCutoffHlc()); !ok {
 		return wholeStateArchiveError("invalid graph cutoff HLC")
 	}
 	var counts [6]uint64
 	lastRank := 0
+	vertexBarriers := make(map[string]hlc.Timestamp)
+	edgeBarriers := make(map[archiveEdgeKey]hlc.Timestamp)
+	vertexTombstones := make(map[string]struct{})
+	edgeTombstones := make(map[archiveEdgeKey]hlc.Timestamp)
+	vertices := make(map[string]struct{})
+	edges := make(map[archiveEdgeKey]struct{})
 	for _, frame := range frames[1 : len(frames)-1] {
 		if frame == nil {
 			return wholeStateArchiveError("nil graph frame")
 		}
 		rank := 0
-		switch frame.GetEntry().(type) {
+		switch entry := frame.GetEntry().(type) {
 		case *pb.SnapshotResponse_VertexCausalBarrier:
 			rank = 1
+			barrier := entry.VertexCausalBarrier
+			if barrier == nil || barrier.GetKey() == "" || !validArchiveHLC(barrier.GetHlc()) {
+				return wholeStateArchiveError("invalid vertex causal barrier")
+			}
+			if _, exists := vertexBarriers[barrier.GetKey()]; exists {
+				return wholeStateArchiveError("duplicate vertex causal barrier")
+			}
+			vertexBarriers[barrier.GetKey()], _ = archiveHLC(barrier.GetHlc())
 		case *pb.SnapshotResponse_EdgeCausalBarrier:
 			rank = 2
+			barrier := entry.EdgeCausalBarrier
+			if barrier == nil || barrier.GetTail() == "" || barrier.GetHead() == "" || !validArchiveHLC(barrier.GetHlc()) {
+				return wholeStateArchiveError("invalid edge causal barrier")
+			}
+			key := archiveEdgeKey{barrier.GetTail(), barrier.GetHead()}
+			if _, exists := edgeBarriers[key]; exists {
+				return wholeStateArchiveError("duplicate edge causal barrier")
+			}
+			edgeBarriers[key], _ = archiveHLC(barrier.GetHlc())
 		case *pb.SnapshotResponse_VertexTombstone:
 			rank = 3
+			marker := entry.VertexTombstone
+			if marker == nil || marker.GetKey() == "" || !validArchiveHLC(marker.GetHlc()) || !validArchiveTimestamp(marker.GetExpiration()) {
+				return wholeStateArchiveError("invalid vertex tombstone")
+			}
+			if _, exists := vertexTombstones[marker.GetKey()]; exists {
+				return wholeStateArchiveError("duplicate vertex tombstone")
+			}
+			if _, exists := vertexBarriers[marker.GetKey()]; exists {
+				return wholeStateArchiveError("vertex causal barrier and tombstone overlap")
+			}
+			vertexTombstones[marker.GetKey()] = struct{}{}
 		case *pb.SnapshotResponse_EdgeTombstone:
 			rank = 4
+			marker := entry.EdgeTombstone
+			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" || !validArchiveHLC(marker.GetHlc()) || !validArchiveTimestamp(marker.GetExpiration()) {
+				return wholeStateArchiveError("invalid edge tombstone")
+			}
+			key := archiveEdgeKey{marker.GetTail(), marker.GetHead()}
+			if _, exists := edgeTombstones[key]; exists {
+				return wholeStateArchiveError("duplicate edge tombstone")
+			}
+			if _, exists := edgeBarriers[key]; exists {
+				return wholeStateArchiveError("edge causal barrier and tombstone overlap")
+			}
+			edgeTombstones[key], _ = archiveHLC(marker.GetHlc())
 		case *pb.SnapshotResponse_Vertex:
 			rank = 5
+			item := entry.Vertex
+			if item == nil || item.GetVertex() == nil ||
+				!validOptionalArchiveHLC(item.GetHlc()) || !validOptionalArchiveTimestamp(item.GetVertex().GetExpiration()) ||
+				!validArchiveVertexValue(item.GetVertex()) {
+				return wholeStateArchiveError("invalid live vertex")
+			}
+			if _, exists := vertices[item.GetVertex().GetKey()]; exists {
+				return wholeStateArchiveError("duplicate live vertex")
+			}
+			if barrier, exists := vertexBarriers[item.GetVertex().GetKey()]; exists {
+				var liveHLC hlc.Timestamp
+				if item.GetHlc() != nil {
+					liveHLC, _ = archiveHLC(item.GetHlc())
+				}
+				if liveHLC.Less(barrier) {
+					return wholeStateArchiveError("live vertex is older than its causal barrier")
+				}
+			}
+			vertices[item.GetVertex().GetKey()] = struct{}{}
 		case *pb.SnapshotResponse_Edge:
 			rank = 6
+			item := entry.Edge
+			key := archiveEdgeKey{item.GetTail(), item.GetHead()}
+			if err := validateArchiveEdge(item, edgeTombstones[key]); err != nil {
+				return err
+			}
+			if _, exists := edges[key]; exists {
+				return wholeStateArchiveError("duplicate live edge")
+			}
+			var putFloor hlc.Timestamp
+			if item.GetHlc() != nil {
+				putFloor, _ = archiveHLC(item.GetHlc())
+			}
+			if barrier, exists := edgeBarriers[key]; exists {
+				if putFloor != barrier {
+					return wholeStateArchiveError("live edge Put floor differs from its causal barrier")
+				}
+			} else if putFloor != (hlc.Timestamp{}) {
+				return wholeStateArchiveError("live edge Put floor lacks a causal barrier")
+			}
+			if _, exists := vertices[key.tail]; !exists {
+				return wholeStateArchiveError("live edge tail is absent")
+			}
+			if _, exists := vertices[key.head]; !exists {
+				return wholeStateArchiveError("live edge head is absent")
+			}
+			edges[key] = struct{}{}
 		default:
 			return wholeStateArchiveError("unexpected graph frame")
 		}
@@ -294,6 +387,110 @@ func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []service.Origi
 		previous = origin.Origin
 		if header.GetCutoffSeqPerOrigin()[hex.EncodeToString(origin.Origin[:])] != origin.LastSeq {
 			return wholeStateArchiveError("origin state and graph cutoff mismatch")
+		}
+	}
+	return nil
+}
+
+type archiveEdgeKey struct{ tail, head string }
+
+// A nil HLC represents a local-only live row with no recorded causal floor.
+// Every explicit floor must be a complete nonzero timestamp and node identity.
+func archiveHLC(stamp *pb.HLCTimestamp) (hlc.Timestamp, bool) {
+	if stamp == nil || stamp.GetWallNs() <= 0 || len(stamp.GetNodeId()) != 16 {
+		return hlc.Timestamp{}, false
+	}
+	var id hlc.NodeID
+	copy(id[:], stamp.GetNodeId())
+	if id == (hlc.NodeID{}) {
+		return hlc.Timestamp{}, false
+	}
+	return hlc.Timestamp{WallNs: stamp.GetWallNs(), Logical: stamp.GetLogical(), NodeID: id}, true
+}
+
+func validArchiveHLC(stamp *pb.HLCTimestamp) bool {
+	_, ok := archiveHLC(stamp)
+	return ok
+}
+
+func validOptionalArchiveHLC(stamp *pb.HLCTimestamp) bool {
+	return stamp == nil || validArchiveHLC(stamp)
+}
+
+func validArchiveTimestamp(stamp *timestamppb.Timestamp) bool {
+	return stamp != nil && stamp.CheckValid() == nil
+}
+
+func validOptionalArchiveTimestamp(stamp *timestamppb.Timestamp) bool {
+	return stamp == nil || stamp.CheckValid() == nil
+}
+
+func validArchiveVertexValue(vertex *pb.Vertex) bool {
+	switch value := vertex.GetValue().(type) {
+	case *pb.Vertex_Timestamp:
+		return validArchiveTimestamp(value.Timestamp)
+	case *pb.Vertex_Duration:
+		return value.Duration != nil && value.Duration.CheckValid() == nil
+	case *pb.Vertex_Nil:
+		return value.Nil
+	default:
+		return true
+	}
+}
+
+func validateArchiveEdge(edge *pb.SnapshotEdge, tombstone hlc.Timestamp) error {
+	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || len(edge.GetContributions()) == 0 {
+		return wholeStateArchiveError("invalid live edge")
+	}
+	var putFloor hlc.Timestamp
+	if edge.GetHlc() != nil {
+		var ok bool
+		putFloor, ok = archiveHLC(edge.GetHlc())
+		if !ok {
+			return wholeStateArchiveError("invalid live edge Put floor")
+		}
+	}
+	var seenPut bool
+	seenAdds := make(map[[24]byte]struct{})
+	for _, contribution := range edge.GetContributions() {
+		if contribution == nil || !validOptionalArchiveTimestamp(contribution.GetExpiration()) {
+			return wholeStateArchiveError("invalid live edge contribution")
+		}
+		idBytes := contribution.GetContribId()
+		switch len(idBytes) {
+		case 0:
+			if tombstone != (hlc.Timestamp{}) {
+				return wholeStateArchiveError("live edge Put contribution conflicts with tombstone")
+			}
+			if seenPut {
+				return wholeStateArchiveError("duplicate live edge Put contribution")
+			}
+			seenPut = true
+			if contribution.GetHlc() != nil {
+				stamp, ok := archiveHLC(contribution.GetHlc())
+				if !ok || stamp != putFloor {
+					return wholeStateArchiveError("live edge Put contribution HLC mismatch")
+				}
+			}
+		case 24:
+			var id [24]byte
+			copy(id[:], idBytes)
+			if id == ([24]byte{}) {
+				return wholeStateArchiveError("zero live edge Add ContribID")
+			}
+			if _, exists := seenAdds[id]; exists {
+				return wholeStateArchiveError("duplicate live edge Add ContribID")
+			}
+			seenAdds[id] = struct{}{}
+			addHLC, ok := archiveHLC(contribution.GetHlc())
+			if !ok || (putFloor != (hlc.Timestamp{}) && !putFloor.Less(addHLC)) {
+				return wholeStateArchiveError("invalid live edge Add HLC")
+			}
+			if tombstone != (hlc.Timestamp{}) && !tombstone.Less(addHLC) {
+				return wholeStateArchiveError("live edge Add does not follow tombstone")
+			}
+		default:
+			return wholeStateArchiveError("invalid live edge ContribID length")
 		}
 	}
 	return nil

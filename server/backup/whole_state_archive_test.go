@@ -8,10 +8,13 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
@@ -63,10 +66,11 @@ func wholeStateArchiveFixture(t *testing.T) wholeStateArchive {
 			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
 		}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: &pb.Vertex{Key: "tail"}, Hlc: frameHLC}}},
+		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: &pb.Vertex{Key: "head"}, Hlc: frameHLC}}},
 		{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{Tail: "tail", Head: "head", Contributions: []*pb.SnapshotEdgeContribution{
 			{Weight: 1.5, ContribId: intent.ContribID[:], Hlc: frameHLC},
 		}}}},
-		{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{VertexCount: 1, EdgeCount: 1}}},
+		{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{VertexCount: 2, EdgeCount: 1}}},
 	}
 	return wholeStateArchive{Graph: graph, Receipts: receipts, Policy: policy,
 		Origins: []service.OriginState{{Origin: origin, LastSeq: 7, LastHLC: ts}}}
@@ -108,7 +112,7 @@ func TestWholeStateArchiveRoundTrip(t *testing.T) {
 			t.Fatalf("graph frame %d changed", i)
 		}
 	}
-	if got.Graph[2].GetEdge().GetContributions()[0].GetContribId()[0] != 7 {
+	if got.Graph[3].GetEdge().GetContributions()[0].GetContribId()[0] != 7 {
 		t.Fatal("Add contribution identity was folded away")
 	}
 	var second bytes.Buffer
@@ -202,7 +206,7 @@ func TestWholeStateArchiveRejectsInconsistentCut(t *testing.T) {
 		{"missing origin", func(a *wholeStateArchive) { a.Origins = nil }},
 		{"origin cutoff drift", func(a *wholeStateArchive) { a.Origins[0].LastSeq++ }},
 		{"graph footer drift", func(a *wholeStateArchive) { a.Graph[len(a.Graph)-1].GetFooter().EdgeCount++ }},
-		{"graph order", func(a *wholeStateArchive) { a.Graph[1], a.Graph[2] = a.Graph[2], a.Graph[1] }},
+		{"graph order", func(a *wholeStateArchive) { a.Graph[1], a.Graph[3] = a.Graph[3], a.Graph[1] }},
 		{"unknown nested graph field", func(a *wholeStateArchive) {
 			a.Graph[1].GetVertex().ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
 		}},
@@ -216,4 +220,237 @@ func TestWholeStateArchiveRejectsInconsistentCut(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An archive producer must refuse malformed graph frames, and a decoder must
+// still refuse the same frames if an attacker repairs the container checksum.
+func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
+	badTimestamp := func() *timestamppb.Timestamp { return &timestamppb.Timestamp{Seconds: 253402300800} }
+	insertBody := func(a *wholeStateArchive, frames ...*pb.SnapshotResponse) {
+		a.Graph = append(a.Graph[:1], append(frames, a.Graph[1:]...)...)
+	}
+	for _, tc := range []struct {
+		name string
+		want string
+		edit func(*wholeStateArchive)
+	}{
+		{"nil vertex", "invalid live vertex", func(a *wholeStateArchive) { a.Graph[1].GetVertex().Vertex = nil }},
+		{"invalid vertex expiration", "invalid live vertex", func(a *wholeStateArchive) { a.Graph[1].GetVertex().Vertex.Expiration = badTimestamp() }},
+		{"invalid vertex value timestamp", "invalid live vertex", func(a *wholeStateArchive) {
+			a.Graph[1].GetVertex().Vertex.Value = &pb.Vertex_Timestamp{Timestamp: badTimestamp()}
+		}},
+		{"invalid vertex value duration", "invalid live vertex", func(a *wholeStateArchive) {
+			a.Graph[1].GetVertex().Vertex.Value = &pb.Vertex_Duration{Duration: &durationpb.Duration{Seconds: 315576000001}}
+		}},
+		{"false vertex nil marker", "invalid live vertex", func(a *wholeStateArchive) {
+			a.Graph[1].GetVertex().Vertex.Value = &pb.Vertex_Nil{Nil: false}
+		}},
+		{"invalid live vertex HLC", "invalid live vertex", func(a *wholeStateArchive) {
+			a.Graph[1].GetVertex().Hlc = &pb.HLCTimestamp{WallNs: 1, NodeId: make([]byte, 16)}
+		}},
+		{"duplicate vertex", "duplicate live vertex", func(a *wholeStateArchive) { a.Graph[2].GetVertex().Vertex.Key = "tail" }},
+		{"dangling edge", "live edge head is absent", func(a *wholeStateArchive) { a.Graph[3].GetEdge().Head = "missing" }},
+		{"empty edge", "invalid live edge", func(a *wholeStateArchive) { a.Graph[3].GetEdge().Contributions = nil }},
+		{"invalid edge Put floor", "invalid live edge Put floor", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Hlc = &pb.HLCTimestamp{WallNs: 1, NodeId: make([]byte, 16)}
+		}},
+		{"missing Add HLC", "invalid live edge Add HLC", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Contributions[0].Hlc = nil
+		}},
+		{"short Add ContribID", "invalid live edge ContribID length", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Contributions[0].ContribId = []byte{7}
+		}},
+		{"zero Add ContribID", "zero live edge Add ContribID", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Contributions[0].ContribId = make([]byte, 24)
+		}},
+		{"duplicate Add ContribID", "duplicate live edge Add ContribID", func(a *wholeStateArchive) {
+			edge := a.Graph[3].GetEdge()
+			edge.Contributions = append(edge.Contributions, proto.Clone(edge.Contributions[0]).(*pb.SnapshotEdgeContribution))
+		}},
+		{"Add does not follow Put floor", "invalid live edge Add HLC", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Hlc = proto.Clone(a.Graph[3].GetEdge().Contributions[0].GetHlc()).(*pb.HLCTimestamp)
+		}},
+		{"duplicate Put contribution", "duplicate live edge Put contribution", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Contributions = []*pb.SnapshotEdgeContribution{{Weight: 1}, {Weight: 2}}
+		}},
+		{"Put contribution HLC mismatch", "live edge Put contribution HLC mismatch", func(a *wholeStateArchive) {
+			edge := a.Graph[3].GetEdge()
+			edge.Hlc = proto.Clone(edge.Contributions[0].GetHlc()).(*pb.HLCTimestamp)
+			edge.Contributions[0].ContribId = nil
+			edge.Contributions[0].Hlc = proto.Clone(edge.Hlc).(*pb.HLCTimestamp)
+			edge.Contributions[0].Hlc.WallNs++
+		}},
+		{"invalid contribution expiration", "invalid live edge contribution", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Contributions[0].Expiration = badTimestamp()
+		}},
+		{"duplicate edge", "duplicate live edge", func(a *wholeStateArchive) {
+			a.Graph = append(a.Graph[:4], append([]*pb.SnapshotResponse{proto.Clone(a.Graph[3]).(*pb.SnapshotResponse)}, a.Graph[4:]...)...)
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeCount++
+		}},
+		{"invalid vertex barrier", "invalid vertex causal barrier", func(a *wholeStateArchive) {
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "expired"}}})
+			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
+		}},
+		{"duplicate vertex barrier", "duplicate vertex causal barrier", func(a *wholeStateArchive) {
+			barrier := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "expired", Hlc: a.Graph[0].GetHeader().GetCutoffHlc()}}}
+			insertBody(a, barrier, proto.Clone(barrier).(*pb.SnapshotResponse))
+			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount += 2
+		}},
+		{"vertex older than its barrier", "live vertex is older than its causal barrier", func(a *wholeStateArchive) {
+			newer := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			newer.WallNs++
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "tail", Hlc: newer}}})
+			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
+		}},
+		{"invalid edge barrier", "invalid edge causal barrier", func(a *wholeStateArchive) {
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head"}}})
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount++
+		}},
+		{"edge floor differs from barrier", "live edge Put floor differs from its causal barrier", func(a *wholeStateArchive) {
+			newer := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			newer.WallNs++
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head", Hlc: newer}}})
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount++
+		}},
+		{"edge floor lacks barrier", "live edge Put floor lacks a causal barrier", func(a *wholeStateArchive) {
+			floor := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			floor.WallNs--
+			a.Graph[3].GetEdge().Hlc = floor
+		}},
+		{"invalid vertex tombstone", "invalid vertex tombstone", func(a *wholeStateArchive) {
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{VertexTombstone: &pb.SnapshotVertexTombstone{Key: "dead", Hlc: a.Graph[0].GetHeader().GetCutoffHlc(), Expiration: badTimestamp()}}})
+			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
+		}},
+		{"vertex barrier and tombstone overlap", "vertex causal barrier and tombstone overlap", func(a *wholeStateArchive) {
+			stamp := a.Graph[0].GetHeader().GetCutoffHlc()
+			insertBody(a,
+				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "dead", Hlc: stamp}}},
+				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{VertexTombstone: &pb.SnapshotVertexTombstone{Key: "dead", Hlc: stamp, Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))}}},
+			)
+			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
+			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
+		}},
+		{"invalid edge tombstone", "invalid edge tombstone", func(a *wholeStateArchive) {
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeTombstone{EdgeTombstone: &pb.SnapshotEdgeTombstone{Tail: "tail", Head: "head", Hlc: a.Graph[0].GetHeader().GetCutoffHlc()}}})
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++
+		}},
+		{"edge barrier and tombstone overlap", "edge causal barrier and tombstone overlap", func(a *wholeStateArchive) {
+			stamp := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			stamp.WallNs--
+			a.Graph[3].GetEdge().Hlc = stamp
+			insertBody(a,
+				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head", Hlc: stamp}}},
+				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeTombstone{EdgeTombstone: &pb.SnapshotEdgeTombstone{Tail: "tail", Head: "head", Hlc: stamp, Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))}}},
+			)
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount++
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++
+		}},
+		{"edge Add not newer than tombstone", "live edge Add does not follow tombstone", func(a *wholeStateArchive) {
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeTombstone{EdgeTombstone: &pb.SnapshotEdgeTombstone{
+				Tail: "tail", Head: "head", Hlc: a.Graph[0].GetHeader().GetCutoffHlc(),
+				Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)),
+			}}})
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := wholeStateArchiveFixture(t)
+			tc.edit(&a)
+			if err := encodeWholeStateArchive(&bytes.Buffer{}, a); !errors.Is(err, errWholeStateArchive) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("encode malformed graph = %v, want %q", err, tc.want)
+			}
+			raw := uncheckedArchiveWithGraph(t, a)
+			if decoded, err := decodeWholeStateArchive(bytes.NewReader(raw)); !errors.Is(err, errWholeStateArchive) ||
+				!strings.Contains(err.Error(), tc.want) || len(decoded.Graph) != 0 {
+				t.Fatalf("decode malformed graph = %+v, %v, want %q", decoded, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestWholeStateArchiveAcceptsCausalAndLocalOnlyGraphPayload(t *testing.T) {
+	a := wholeStateArchiveFixture(t)
+	cutoff := a.Graph[0].GetHeader().GetCutoffHlc()
+	putFloor := proto.Clone(cutoff).(*pb.HLCTimestamp)
+	putFloor.WallNs--
+	deadline := timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	body := []*pb.SnapshotResponse{
+		{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "expired-v", Hlc: cutoff}}},
+		{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head", Hlc: putFloor}}},
+		{Entry: &pb.SnapshotResponse_VertexTombstone{VertexTombstone: &pb.SnapshotVertexTombstone{Key: "deleted-v", Hlc: cutoff, Expiration: deadline}}},
+		{Entry: &pb.SnapshotResponse_EdgeTombstone{EdgeTombstone: &pb.SnapshotEdgeTombstone{Tail: "deleted-v", Head: "head", Hlc: cutoff, Expiration: deadline}}},
+	}
+	a.Graph = append(a.Graph[:1], append(body, a.Graph[1:]...)...)
+	a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount = 1
+	a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount = 1
+	a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount = 1
+	a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount = 1
+	a.Graph[5].GetVertex().Hlc = nil // local-only live vertex has no HLC
+	a.Graph[5].GetVertex().Vertex.Value = &pb.Vertex_Nil{Nil: true}
+	edge := a.Graph[7].GetEdge()
+	add := edge.Contributions[0]
+	edge.Hlc = putFloor
+	edge.Contributions = []*pb.SnapshotEdgeContribution{
+		{Weight: 2, Hlc: putFloor}, // zero ContribID is the single Put row
+		add,                        // Add retains its own later causal position
+	}
+	raw := encodedWholeStateArchive(t, a)
+	if decoded, err := decodeWholeStateArchive(bytes.NewReader(raw)); err != nil || len(decoded.Graph) != len(a.Graph) {
+		t.Fatalf("causal graph archive = %d frames, %v", len(decoded.Graph), err)
+	}
+}
+
+func TestWholeStateArchiveAcceptsNewerAddOverRetainedEdgeTombstone(t *testing.T) {
+	a := wholeStateArchiveFixture(t)
+	older := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+	older.WallNs--
+	marker := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeTombstone{EdgeTombstone: &pb.SnapshotEdgeTombstone{
+		Tail: "tail", Head: "head", Hlc: older,
+		Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)),
+	}}}
+	a.Graph = append(a.Graph[:1], append([]*pb.SnapshotResponse{marker}, a.Graph[1:]...)...)
+	a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++
+	raw := encodedWholeStateArchive(t, a)
+	if _, err := decodeWholeStateArchive(bytes.NewReader(raw)); err != nil {
+		t.Fatalf("newer Add over retained tombstone: %v", err)
+	}
+}
+
+// Forge a correctly framed and checksummed archive after bypassing the
+// producer's semantic checks. This tests the decoder rather than checksum
+// rejection; it is never used by the production path.
+func uncheckedArchiveWithGraph(t *testing.T, a wholeStateArchive) []byte {
+	t.Helper()
+	baseline := encodedWholeStateArchive(t, wholeStateArchiveFixture(t))
+	var out bytes.Buffer
+	out.Write(baseline[:wholeStateArchiveHeaderSize])
+	for _, frame := range a.Graph {
+		payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeArchiveRecord(&out, wholeStateGraphRecord, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, receipt := range a.Receipts.Receipts {
+		if err := writeArchiveRecord(&out, wholeStateReceiptRecord, encodeArchiveReceipt(receipt)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, origin := range a.Origins {
+		if err := writeArchiveRecord(&out, wholeStateOriginRecord, encodeArchiveOrigin(origin)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	digest := sha256.Sum256(out.Bytes())
+	var footer bytes.Buffer
+	writeArchiveU64(&footer, uint64(len(a.Graph)))
+	writeArchiveU64(&footer, uint64(len(a.Receipts.Receipts)))
+	writeArchiveU64(&footer, uint64(len(a.Origins)))
+	footer.Write(digest[:])
+	if err := writeArchiveRecord(&out, wholeStateFooterRecord, footer.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
