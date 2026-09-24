@@ -41,6 +41,7 @@ const IdentityOperation$json = {
     {'1': 'IDENTITY_OPERATION_ADD_EDGE', '2': 3},
     {'1': 'IDENTITY_OPERATION_PUT_EDGE', '2': 4},
     {'1': 'IDENTITY_OPERATION_DELETE_EDGE', '2': 5},
+    {'1': 'IDENTITY_OPERATION_RECEIPT_ONLY', '2': 6},
   ],
 };
 
@@ -50,7 +51,7 @@ final $typed_data.Uint8List identityOperationDescriptor = $convert.base64Decode(
     'IhCh1JREVOVElUWV9PUEVSQVRJT05fUFVUX1ZFUlRFWBABEiQKIElERU5USVRZX09QRVJBVElP'
     'Tl9ERUxFVEVfVkVSVEVYEAISHwobSURFTlRJVFlfT1BFUkFUSU9OX0FERF9FREdFEAMSHwobSU'
     'RFTlRJVFlfT1BFUkFUSU9OX1BVVF9FREdFEAQSIgoeSURFTlRJVFlfT1BFUkFUSU9OX0RFTEVU'
-    'RV9FREdFEAU=');
+    'RV9FREdFEAUSIwofSURFTlRJVFlfT1BFUkFUSU9OX1JFQ0VJUFRfT05MWRAG');
 
 @$core.Deprecated('Use hLCTimestampDescriptor instead')
 const HLCTimestamp$json = {
@@ -197,6 +198,15 @@ const MutationOp$json = {
       '9': 0,
       '10': 'replicatedPutEdges'
     },
+    {
+      '1': 'replicated_receipt_edge_delete',
+      '3': 15,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptEdgeDelete',
+      '9': 0,
+      '10': 'replicatedReceiptEdgeDelete'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -223,7 +233,86 @@ final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
     'ByZWZpeBJZChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxp'
     'Y2F0ZWRQdXRWZXJ0aWNlc0gAUhVyZXBsaWNhdGVkUHV0VmVydGljZXMSUAoUcmVwbGljYXRlZF'
     '9wdXRfZWRnZXMYDiABKAsyHC5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZXNIAFIScmVwbGlj'
-    'YXRlZFB1dEVkZ2VzQgQKAm9w');
+    'YXRlZFB1dEVkZ2VzEmwKHnJlcGxpY2F0ZWRfcmVjZWlwdF9lZGdlX2RlbGV0ZRgPIAEoCzIlLm'
+    'dyYXBoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0RWRnZURlbGV0ZUgAUhtyZXBsaWNhdGVkUmVjZWlw'
+    'dEVkZ2VEZWxldGVCBAoCb3A=');
+
+@$core.Deprecated('Use replicatedReceiptEdgeDeleteItemDescriptor instead')
+const ReplicatedReceiptEdgeDeleteItem$json = {
+  '1': 'ReplicatedReceiptEdgeDeleteItem',
+  '2': [
+    {
+      '1': 'key',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.EdgeKey',
+      '10': 'key'
+    },
+    {
+      '1': 'receipt',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+    {
+      '1': 'causally_accepted',
+      '3': 3,
+      '4': 1,
+      '5': 8,
+      '10': 'causallyAccepted'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptEdgeDeleteItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptEdgeDeleteItemDescriptor =
+    $convert.base64Decode(
+        'Ch9SZXBsaWNhdGVkUmVjZWlwdEVkZ2VEZWxldGVJdGVtEiMKA2tleRgBIAEoCzIRLmdyYXBoLn'
+        'YxLkVkZ2VLZXlSA2tleRIzCgdyZWNlaXB0GAIgASgLMhkuZ3JhcGgudjEuTXV0YXRpb25SZWNl'
+        'aXB0UgdyZWNlaXB0EisKEWNhdXNhbGx5X2FjY2VwdGVkGAMgASgIUhBjYXVzYWxseUFjY2VwdG'
+        'Vk');
+
+@$core.Deprecated('Use replicatedReceiptEdgeDeleteDescriptor instead')
+const ReplicatedReceiptEdgeDelete$json = {
+  '1': 'ReplicatedReceiptEdgeDelete',
+  '2': [
+    {'1': 'deployment_epoch', '3': 1, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 2,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+    {
+      '1': 'tombstone_expiration',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'tombstoneExpiration'
+    },
+    {
+      '1': 'items',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptEdgeDeleteItem',
+      '10': 'items'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptEdgeDelete`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptEdgeDeleteDescriptor = $convert.base64Decode(
+    'ChtSZXBsaWNhdGVkUmVjZWlwdEVkZ2VEZWxldGUSKQoQZGVwbG95bWVudF9lcG9jaBgBIAEoDF'
+    'IPZGVwbG95bWVudEVwb2NoEi0KEnBvbGljeV9maW5nZXJwcmludBgCIAEoDFIRcG9saWN5Rmlu'
+    'Z2VycHJpbnQSTQoUdG9tYnN0b25lX2V4cGlyYXRpb24YAyABKAsyGi5nb29nbGUucHJvdG9idW'
+    'YuVGltZXN0YW1wUhN0b21ic3RvbmVFeHBpcmF0aW9uEj8KBWl0ZW1zGAQgAygLMikuZ3JhcGgu'
+    'djEuUmVwbGljYXRlZFJlY2VpcHRFZGdlRGVsZXRlSXRlbVIFaXRlbXM=');
 
 @$core.Deprecated('Use vertexCausalBarrierDescriptor instead')
 const VertexCausalBarrier$json = {
@@ -412,6 +501,13 @@ const SubscribeRequest$json = {
       '10': 'projection'
     },
     {'1': 'bootstrap', '3': 4, '4': 1, '5': 8, '10': 'bootstrap'},
+    {
+      '1': 'accept_receipt_envelopes',
+      '3': 5,
+      '4': 1,
+      '5': 8,
+      '10': 'acceptReceiptEnvelopes'
+    },
   ],
   '3': [SubscribeRequest_FromSeqPerOriginEntry$json],
 };
@@ -432,8 +528,9 @@ final $typed_data.Uint8List subscribeRequestDescriptor = $convert.base64Decode(
     '52MS5TdWJzY3JpYmVSZXF1ZXN0LkZyb21TZXFQZXJPcmlnaW5FbnRyeVIQZnJvbVNlcVBlck9y'
     'aWdpbhIkCg5mcm9tX2xvY2FsX3NlcRgCIAEoBFIMZnJvbUxvY2FsU2VxEj0KCnByb2plY3Rpb2'
     '4YAyABKA4yHS5ncmFwaC52MS5TdWJzY3JpYmVQcm9qZWN0aW9uUgpwcm9qZWN0aW9uEhwKCWJv'
-    'b3RzdHJhcBgEIAEoCFIJYm9vdHN0cmFwGkMKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRIQCgNrZX'
-    'kYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoBFIFdmFsdWU6AjgB');
+    'b3RzdHJhcBgEIAEoCFIJYm9vdHN0cmFwEjgKGGFjY2VwdF9yZWNlaXB0X2VudmVsb3BlcxgFIA'
+    'EoCFIWYWNjZXB0UmVjZWlwdEVudmVsb3BlcxpDChVGcm9tU2VxUGVyT3JpZ2luRW50cnkSEAoD'
+    'a2V5GAEgASgJUgNrZXkSFAoFdmFsdWUYAiABKARSBXZhbHVlOgI4AQ==');
 
 @$core.Deprecated('Use identityCheckpointDescriptor instead')
 const IdentityCheckpoint$json = {
