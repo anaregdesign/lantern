@@ -12,9 +12,11 @@ import 'package:sqflite/sqflite.dart' as sqflite;
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final result = _PhysicalResultMarker();
 
-  test(
+  _recordPhysicalTest(
     'physical pinned identity CDC recovers native SQLite residents',
+    result,
     () async {
       // ignore: avoid_print
       print('IDENTITY_CDC_BODY_STARTED');
@@ -39,6 +41,7 @@ void main() {
         expect(endpoint.scheme, 'https');
         expect(tokenEndpoint.scheme, 'https');
       }
+      await result.recordPhase('authenticated_rpc');
 
       var tokenFetches = 0;
       String? previousIssuedToken;
@@ -98,10 +101,11 @@ void main() {
         allowInsecure: allowInsecure,
         defaultTimeout: const Duration(seconds: 20),
       );
-      addTearDown(client.close);
+      result.addTrackedTearDown(client.close);
       await client.ping();
       final responder = (await client.getReplicationStatus()).nodeId;
       expect(responder, matches(RegExp(r'^[0-9a-f]{32}$')));
+      await result.recordPhase('seed_remote');
 
       final unique = DateTime.now().microsecondsSinceEpoch;
       final vertexKey = 'physical-cdc:$unique:vertex';
@@ -124,18 +128,19 @@ void main() {
           expiresIn: const Duration(minutes: 5),
         ),
       );
+      await result.recordPhase('seed_sqlite');
 
       final databaseRoot = Directory(await sqflite.getDatabasesPath());
       await databaseRoot.create(recursive: true);
       final directory = await databaseRoot.createTemp('lantern-identity-cdc-');
-      addTearDown(() => directory.delete(recursive: true));
+      result.addTrackedTearDown(() => directory.delete(recursive: true));
       final path = '${directory.path}/offline.db';
       var store = await SqliteOfflineStore.open(path: path);
       var repository = OfflineLanternRepository(
         store: store,
         remote: LanternClientOfflineRemote(client),
       );
-      addTearDown(() async {
+      result.addTrackedTearDown(() async {
         await repository.dispose();
         await store.close();
       });
@@ -174,6 +179,7 @@ void main() {
           ),
         );
       });
+      await result.recordPhase('checkpoint_revalidation');
 
       final source = LanternClientIdentitySource(client);
       final foreground = LanternCancellationToken();
@@ -186,7 +192,7 @@ void main() {
         _diagnoseFailure(firstRun, 'first'),
         throwsA(isA<OfflineCanceledException>()),
       );
-      addTearDown(foreground.cancel);
+      result.addTrackedTearDown(foreground.cancel);
       await _waitUntil(() async {
         final vertex = await repository.readVertex(
           partition,
@@ -206,6 +212,7 @@ void main() {
         (transaction) => transaction.changeCursor(partition),
       );
       expect(initialCursor.sequences[responder], isNotNull);
+      await result.recordPhase('live_invalidation');
       final tokenFetchesAtCheckpoint = tokenFetches;
       cachedToken = null;
 
@@ -248,6 +255,7 @@ void main() {
       expect(tokenFetches, greaterThan(tokenFetchesAtCheckpoint));
       foreground.cancel();
       await firstStopped;
+      await result.recordPhase('sqlite_reopen');
 
       await repository.dispose();
       await store.close();
@@ -298,9 +306,10 @@ void main() {
         )).value?.weight,
         2,
       );
+      await result.recordPhase('foreground_resume');
 
       final resumed = LanternCancellationToken();
-      addTearDown(resumed.cancel);
+      result.addTrackedTearDown(resumed.cancel);
       final secondRun = repository.consumeIdentityChanges(
         partition,
         source: source,
@@ -340,6 +349,7 @@ void main() {
             checkedEdge.state == OfflineReadState.unknown;
       });
       expect((await client.getReplicationStatus()).nodeId, responder);
+      await result.recordPhase('partition_wipe');
       await repository.wipePartition(partition);
       await secondStopped;
       expect(
@@ -365,6 +375,108 @@ void main() {
       );
     },
   );
+}
+
+void _recordPhysicalTest(
+  String description,
+  _PhysicalResultMarker result,
+  Future<void> Function() body,
+) {
+  test(description, () async {
+    await result.recordPhase('setup');
+    var bodyPassed = false;
+    // addTearDown runs in reverse registration order. This finalizer therefore
+    // sees all test-owned cleanup callbacks before recording a pass.
+    addTearDown(() async {
+      if (!bodyPassed) return;
+      final cleanupFailureType = result.cleanupFailureType;
+      if (cleanupFailureType != null) {
+        await result.recordOutcome(
+          'failed',
+          'cleanup',
+          failureType: cleanupFailureType,
+        );
+      } else {
+        await result.recordOutcome('passed', 'complete');
+      }
+    });
+    try {
+      await body();
+      await result.recordPhase('cleanup');
+      bodyPassed = true;
+    } catch (error) {
+      try {
+        await result.recordOutcome(
+          'failed',
+          result.phase,
+          failureType: _safeFailureType(error),
+        );
+      } catch (_) {
+        // Preserve the test failure when the diagnostic file cannot be written.
+      }
+      rethrow;
+    }
+  });
+}
+
+String _safeFailureType(Object error) => switch (error) {
+  TestFailure() || AssertionError() => 'assertion',
+  TimeoutException() => 'timeout',
+  SocketException() || HandshakeException() => 'network',
+  OfflineRemoteFailure() || connect.ConnectException() => 'remote',
+  FileSystemException() => 'filesystem',
+  FormatException() || TypeError() => 'format',
+  StateError() => 'state',
+  _ => 'other',
+};
+
+class _PhysicalResultMarker {
+  _PhysicalResultMarker()
+    : _startedAt = DateTime.now().toUtc(),
+      _file = File(
+        '${Directory.systemTemp.path}/lantern-identity-cdc-result.json',
+      );
+
+  final DateTime _startedAt;
+  final File _file;
+  String phase = 'setup';
+  String? cleanupFailureType;
+
+  void addTrackedTearDown(FutureOr<dynamic> Function() cleanup) {
+    addTearDown(() async {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupFailureType ??= _safeFailureType(error);
+        rethrow;
+      }
+    });
+  }
+
+  Future<void> recordPhase(String nextPhase) =>
+      recordOutcome('running', nextPhase);
+
+  Future<void> recordOutcome(
+    String status,
+    String nextPhase, {
+    String? failureType,
+  }) async {
+    phase = nextPhase;
+    final fields = <String, Object>{
+      'schema': 1,
+      'kind': 'physical_identity_cdc_on_device_result',
+      'contentFree': true,
+      'status': status,
+      'phase': phase,
+      'startedAt': _startedAt.toIso8601String(),
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    if (failureType != null) fields['failureType'] = failureType;
+    final encoded = jsonEncode(fields);
+    final temporaryFile = File('${_file.path}.tmp');
+    await temporaryFile.writeAsString(encoded, flush: true);
+    await temporaryFile.rename(_file.path);
+  }
 }
 
 Future<void> _waitUntil(FutureOr<bool> Function() ready) async {

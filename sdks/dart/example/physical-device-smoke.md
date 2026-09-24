@@ -334,6 +334,33 @@ Unknown state after SQLite reopen, foreground resume, responder stability,
 runtime token acquisition and post-checkpoint refresh, and partition wipe
 cancellation.
 
+If wireless Flutter VM-service discovery stalls after the iOS app installs,
+build this same integration target in profile mode and launch it with
+CoreDevice. The target writes a content-free JSON result to its app data
+container at `tmp/lantern-identity-cdc-result.json`; the result contains only
+`running`/`passed`/`failed`, the current test phase, UTC timestamps, and a
+bounded failure category. It contains no endpoint, token, key, responder, or
+device identifier. Locate and copy it after launch:
+
+```bash
+xcrun devicectl device info files --device <physical-ios-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.anaregdesign.lanternExample \
+  --search lantern-identity-cdc-result.json
+xcrun devicectl device copy from --device <physical-ios-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.anaregdesign.lanternExample \
+  --source tmp/lantern-identity-cdc-result.json \
+  --destination <private-host-result-path>
+```
+
+Only a fresh marker whose `startedAt` is after this launch and whose `status`
+is `passed` with `phase: complete` demonstrates that the test body and its
+registered cleanup completed. A missing, stale, `running`, or `failed` marker
+is not a pass. The marker supplements the exact-binary, trusted-HTTPS, and
+sanitized RPC evidence required above; it does not qualify a different app
+build or network route.
+
 For a cabled Android development run when the LAN route is unstable, forward
 the fixture ports over USB and use device loopback. Configure the local BFF to
 rotate between two test tokens accepted by the server. This proves native
