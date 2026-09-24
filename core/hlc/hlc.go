@@ -15,6 +15,7 @@ package hlc
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"time"
 )
@@ -28,6 +29,10 @@ const DefaultMaxSkew = 500 * time.Millisecond
 // time. The remote timestamp is clamped, never rejected, so replication
 // continues to make progress even when peers drift.
 var ErrSkewExceeded = errors.New("hlc: remote wall time exceeds MaxSkew")
+
+// ErrInvalidRestoreFloor means a persisted timestamp cannot safely seed a
+// clock. RestoreFloor leaves the clock unchanged when it returns this error.
+var ErrInvalidRestoreFloor = errors.New("hlc: invalid restore floor")
 
 // NodeID identifies the origin of a timestamp. It is opaque to this package;
 // callers typically derive it from a stable per-process UUID.
@@ -125,6 +130,43 @@ func New(nodeID NodeID, opts Options) *Clock {
 // NodeID returns the origin identifier this clock stamps timestamps with.
 func (c *Clock) NodeID() NodeID { return c.nodeID }
 
+// RestoreFloor seeds the clock from a verified, committed timestamp. It does
+// not apply the live-peer skew clamp: a backward wall-clock jump must not put
+// new mutations below a timestamp that was already committed. The caller must
+// validate the durable WAL/Snapshot cut before calling this method; an
+// untrusted remote timestamp belongs in Update instead.
+//
+// RestoreFloor is safe to call concurrently with Now and Update. It never
+// moves an already-used clock backward. A negative wall timestamp or the
+// maximum representable wall/logical pair cannot provide a safe next stamp.
+func (c *Clock) RestoreFloor(floor Timestamp) error {
+	if floor.WallNs < 0 || (floor.WallNs == math.MaxInt64 && floor.Logical == math.MaxUint32) {
+		return ErrInvalidRestoreFloor
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if floor.WallNs > c.wallNs || (floor.WallNs == c.wallNs && floor.Logical > c.logical) {
+		c.wallNs = floor.WallNs
+		c.logical = floor.Logical
+	}
+	return nil
+}
+
+// bumpLogical advances the clock past the current wall/logical pair. The
+// representable HLC space is exhausted only at its absolute maximum; fail
+// closed there instead of wrapping into an older timestamp.
+func (c *Clock) bumpLogical() {
+	if c.logical == math.MaxUint32 {
+		if c.wallNs == math.MaxInt64 {
+			panic("hlc: timestamp space exhausted")
+		}
+		c.wallNs++
+		c.logical = 0
+		return
+	}
+	c.logical++
+}
+
 // Now returns the next timestamp from this clock. The returned timestamp is
 // strictly greater than every previously returned timestamp from the same
 // clock and from any remote timestamp previously passed to [Clock.Update].
@@ -137,7 +179,7 @@ func (c *Clock) Now() Timestamp {
 		c.wallNs = wall
 		c.logical = 0
 	} else {
-		c.logical++
+		c.bumpLogical()
 	}
 	return Timestamp{WallNs: c.wallNs, Logical: c.logical, NodeID: c.nodeID}
 }
@@ -175,17 +217,17 @@ func (c *Clock) Update(remote Timestamp) Timestamp {
 		// Both local state and remote are at the same wall instant. The
 		// logical counter must exceed both contributing counters.
 		if remote.Logical > c.logical {
-			c.logical = remote.Logical + 1
-		} else {
-			c.logical++
+			c.logical = remote.Logical
 		}
+		c.bumpLogical()
 	case maxWall == c.wallNs:
 		// Local state already at the leading wall instant.
-		c.logical++
+		c.bumpLogical()
 	case maxWall == effectiveRemoteWall:
 		// Remote (possibly clamped) leads.
 		c.wallNs = maxWall
-		c.logical = remote.Logical + 1
+		c.logical = remote.Logical
+		c.bumpLogical()
 	default:
 		// Physical wall time has moved past both prior states.
 		c.wallNs = maxWall

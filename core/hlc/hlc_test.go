@@ -1,6 +1,8 @@
 package hlc
 
 import (
+	"errors"
+	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -93,6 +95,71 @@ func TestNowResetsLogicalWhenWallAdvances(t *testing.T) {
 	}
 	if !second.Less(third) {
 		t.Fatal("third must order after second")
+	}
+}
+
+func TestRestoreFloorKeepsCommittedOrderAfterWallClockRollback(t *testing.T) {
+	f := &fakeNow{}
+	f.set(time.Unix(1, 0))
+	c := New(nodeID(1), Options{Now: f.get, MaxSkew: time.Millisecond})
+	floor := Timestamp{WallNs: time.Unix(10, 0).UnixNano(), Logical: 7, NodeID: nodeID(9)}
+	if err := c.RestoreFloor(floor); err != nil {
+		t.Fatal(err)
+	}
+	first := c.Now()
+	if !floor.Less(first) || first.WallNs != floor.WallNs || first.Logical != floor.Logical+1 {
+		t.Fatalf("restored Now = %+v, want strictly after %+v", first, floor)
+	}
+	remote := Timestamp{WallNs: floor.WallNs - 1, Logical: 100, NodeID: nodeID(2)}
+	second := c.Update(remote)
+	if !first.Less(second) || !remote.Less(second) {
+		t.Fatalf("restored Update = %+v, want after local %+v and remote %+v", second, first, remote)
+	}
+	// A later, lower persisted floor cannot undo a stamp already emitted.
+	if err := c.RestoreFloor(floor); err != nil {
+		t.Fatal(err)
+	}
+	if third := c.Now(); !second.Less(third) {
+		t.Fatalf("re-restored Now = %+v, want after %+v", third, second)
+	}
+}
+
+func TestRestoreFloorAvoidsLogicalWraparound(t *testing.T) {
+	f := &fakeNow{}
+	f.set(time.Unix(0, 1))
+	c := New(nodeID(1), Options{Now: f.get})
+	floor := Timestamp{WallNs: 100, Logical: math.MaxUint32, NodeID: nodeID(9)}
+	if err := c.RestoreFloor(floor); err != nil {
+		t.Fatal(err)
+	}
+	first := c.Now()
+	if first.WallNs != 101 || first.Logical != 0 || !floor.Less(first) {
+		t.Fatalf("logical overflow produced %+v from %+v", first, floor)
+	}
+	// The same overflow rule applies when a live remote stamp leads.
+	remote := Timestamp{WallNs: 200, Logical: math.MaxUint32, NodeID: nodeID(2)}
+	out := c.Update(remote)
+	if out.WallNs != 201 || out.Logical != 0 || !remote.Less(out) {
+		t.Fatalf("Update logical overflow produced %+v from %+v", out, remote)
+	}
+}
+
+func TestRestoreFloorRejectsUnrepresentableWithoutChangingClock(t *testing.T) {
+	f := &fakeNow{}
+	f.set(time.Unix(0, 100))
+	c := New(nodeID(1), Options{Now: f.get})
+	first := c.Now()
+	for _, floor := range []Timestamp{
+		{WallNs: -1},
+		{WallNs: math.MaxInt64, Logical: math.MaxUint32},
+	} {
+		if err := c.RestoreFloor(floor); !errors.Is(err, ErrInvalidRestoreFloor) {
+			t.Fatalf("RestoreFloor(%+v) = %v, want ErrInvalidRestoreFloor", floor, err)
+		}
+	}
+	second := c.Now()
+	if second.WallNs != first.WallNs || second.Logical != first.Logical+1 {
+		t.Fatalf("rejected floor changed clock: first=%+v second=%+v", first, second)
 	}
 }
 

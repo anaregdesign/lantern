@@ -294,6 +294,12 @@ no status from this audit: aborted Store clock advances, graph/search state,
 and an atomic origin/log cut remain outside the WAL decision inventory. A
 non-genesis WAL requires a verified receipt-bearing Snapshot baseline before
 it can be audited or resumed.
+The HLC `RestoreFloor` API can seed a clock from the greatest verified
+committed timestamp without applying the live-peer skew clamp, so a wall-clock
+rollback cannot put the next local mutation below that frontier. No serving
+restore currently calls it. The caller must validate the entire WAL/Snapshot
+cut first; this clock floor does not recover graph state, Store clock
+high-water, receipt epoch continuity, or an absent-ID status.
 The guarded full Subscribe projection carries receipt-bearing entries as one
 `ReplicatedReceiptEdgeDelete` mutation arm. A full-stream consumer without
 `accept_receipt_envelopes` receives `INVALID_ARGUMENT` before that frame;
