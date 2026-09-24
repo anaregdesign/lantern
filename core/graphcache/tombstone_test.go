@@ -2,11 +2,99 @@ package graphcache
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 )
+
+func TestDeleteHLCOutcomesRespectCausalAdmissionAndCapacity(t *testing.T) {
+	expiration := time.Now().Add(time.Hour)
+	older := hlc.Timestamp{WallNs: 10}
+	newer := hlc.Timestamp{WallNs: 20}
+
+	t.Run("vertex and edge positions", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if !c.PutVertexWithExpirationHLC("protected", "value", expiration, newer) ||
+			!c.PutVertexWithExpirationHLC("deletable", "value", expiration, older) {
+			t.Fatal("seed vertex Put failed")
+		}
+		vertex, err := c.DeleteVerticesHLCOutcomesChecked(
+			[]string{"protected", "missing", "protected", "deletable", "deletable"}, older, expiration)
+		if err != nil || !slices.Equal(vertex, []bool{false, false, false, true, false}) {
+			t.Fatalf("vertex outcomes = (%v, %v)", vertex, err)
+		}
+		if _, ok := c.GetVertex("protected"); !ok {
+			t.Fatal("older Delete removed protected vertex")
+		}
+		if !c.PutEdgeWithExpirationHLC("a", "protected", 1, expiration, newer) ||
+			!c.PutEdgeWithExpirationHLC("a", "deletable", 1, expiration, older) {
+			t.Fatal("seed edge Put failed")
+		}
+		edge, err := c.DeleteEdgesHLCOutcomesChecked([]EdgeKey[string]{
+			{Tail: "a", Head: "protected"}, {Tail: "missing", Head: "edge"},
+			{Tail: "a", Head: "protected"}, {Tail: "a", Head: "deletable"},
+			{Tail: "a", Head: "deletable"},
+		}, older, expiration)
+		if err != nil || !slices.Equal(edge, []bool{false, false, false, true, false}) {
+			t.Fatalf("edge outcomes = (%v, %v)", edge, err)
+		}
+		if _, ok := c.GetWeight("a", "protected"); !ok {
+			t.Fatal("older Delete removed protected edge")
+		}
+	})
+
+	t.Run("edge newer Add survives repeated older Delete observations", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		contrib := ContribID{0: 1}
+		if !c.AddEdgeWithExpirationContribHLC("a", "b", 1, expiration, contrib, hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("seed Add failed")
+		}
+		outcomes, err := c.DeleteEdgesHLCOutcomesChecked([]EdgeKey[string]{
+			{Tail: "a", Head: "b"}, {Tail: "a", Head: "b"},
+		}, newer, expiration)
+		if err != nil || !slices.Equal(outcomes, []bool{true, true}) {
+			t.Fatalf("newer-contribution Delete outcomes = (%v, %v)", outcomes, err)
+		}
+		if weight, ok := c.GetWeight("a", "b"); !ok || weight != 1 {
+			t.Fatalf("newer Add was removed: (%g, %v)", weight, ok)
+		}
+	})
+
+	t.Run("capacity rejection returns no outcomes and changes no graph state", func(t *testing.T) {
+		vertices := NewGraphCache[string, string](time.Minute)
+		vertices.SetCausalMetadataLimits(CausalMetadataLimits{MaxVertexEntries: 1})
+		if !vertices.PutVertexWithExpirationHLC("present", "value", expiration, older) {
+			t.Fatal("seed vertex Put failed")
+		}
+		outcomes, err := vertices.DeleteVerticesHLCOutcomesChecked(
+			[]string{"present", "new"}, newer, expiration)
+		var capacity *CausalMetadataCapacityError
+		if outcomes != nil || !errors.As(err, &capacity) {
+			t.Fatalf("vertex capacity = (%v, %v)", outcomes, err)
+		}
+		if _, ok := vertices.GetVertex("present"); !ok {
+			t.Fatal("rejected vertex batch partially deleted")
+		}
+
+		edges := NewGraphCache[string, string](time.Minute)
+		edges.SetCausalMetadataLimits(CausalMetadataLimits{MaxEdgeEntries: 1})
+		if !edges.PutEdgeWithExpirationHLC("a", "b", 1, expiration, older) {
+			t.Fatal("seed edge Put failed")
+		}
+		outcomes, err = edges.DeleteEdgesHLCOutcomesChecked([]EdgeKey[string]{
+			{Tail: "a", Head: "b"}, {Tail: "a", Head: "new"},
+		}, newer, expiration)
+		if outcomes != nil || !errors.As(err, &capacity) {
+			t.Fatalf("edge capacity = (%v, %v)", outcomes, err)
+		}
+		if _, ok := edges.GetWeight("a", "b"); !ok {
+			t.Fatal("rejected edge batch partially deleted")
+		}
+	})
+}
 
 // After DeleteVertexHLC at T1, a later Put with strictly-older T0 must
 // not resurrect the key. A Put with T2 > T1 (or equal) is allowed and

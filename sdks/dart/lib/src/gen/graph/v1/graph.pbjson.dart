@@ -669,13 +669,15 @@ const DeleteVerticesResponse$json = {
   '1': 'DeleteVerticesResponse',
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
+    {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
   ],
 };
 
 /// Descriptor for `DeleteVerticesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List deleteVerticesResponseDescriptor =
     $convert.base64Decode(
-        'ChZEZWxldGVWZXJ0aWNlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQ=');
+        'ChZEZWxldGVWZXJ0aWNlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQSGAoHZX'
+        'hpc3RlZBgCIAMoCFIHZXhpc3RlZA==');
 
 @$core.Deprecated('Use scanVerticesRequestDescriptor instead')
 const ScanVerticesRequest$json = {
@@ -1190,13 +1192,14 @@ const DeleteEdgesResponse$json = {
   '1': 'DeleteEdgesResponse',
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
+    {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
   ],
 };
 
 /// Descriptor for `DeleteEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List deleteEdgesResponseDescriptor =
-    $convert.base64Decode(
-        'ChNEZWxldGVFZGdlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQ=');
+final $typed_data.Uint8List deleteEdgesResponseDescriptor = $convert.base64Decode(
+    'ChNEZWxldGVFZGdlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQSGAoHZXhpc3'
+    'RlZBgCIAMoCFIHZXhpc3RlZA==');
 
 @$core.Deprecated('Use deleteEdgesByPrefixRequestDescriptor instead')
 const DeleteEdgesByPrefixRequest$json = {

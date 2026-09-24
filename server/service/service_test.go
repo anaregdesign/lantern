@@ -29,6 +29,62 @@ func newTestService(t *testing.T) *LanternService {
 	return NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute))
 }
 
+type shortDeleteBackend struct{ Backend }
+
+func (shortDeleteBackend) DeleteVerticesOutcomes([]string) []bool { return nil }
+func (shortDeleteBackend) DeleteEdgesOutcomes([]graphcache.EdgeKey[string]) []bool {
+	return nil
+}
+
+func TestLanternService_DeleteOutcomesAndLengthDrift(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	for _, key := range []string{"a", "b"} {
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vertices, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"a", "missing", "a", "b"}})
+	if err != nil || vertices.GetDeleted() != 2 || !slices.Equal(vertices.GetExisted(), []bool{true, false, false, true}) {
+		t.Fatalf("DeleteVertices = (%+v, %v)", vertices, err)
+	}
+	if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	edges, err := svc.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{
+		{Tail: "a", Head: "b"}, {Tail: "missing", Head: "edge"}, {Tail: "a", Head: "b"},
+	}})
+	if err != nil || edges.GetDeleted() != 1 || !slices.Equal(edges.GetExisted(), []bool{true, false, false}) {
+		t.Fatalf("DeleteEdges = (%+v, %v)", edges, err)
+	}
+	if empty, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{}); err != nil || len(empty.GetExisted()) != 0 || empty.GetDeleted() != 0 {
+		t.Fatalf("empty DeleteVertices = (%+v, %v)", empty, err)
+	}
+
+	bad := NewLanternService(shortDeleteBackend{Backend: newFakeBackend()})
+	for _, call := range []struct {
+		name string
+		fn   func() error
+	}{
+		{"plural vertex", func() error {
+			_, err := bad.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"a"}})
+			return err
+		}},
+		{"singular vertex", func() error { _, err := bad.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "a"}); return err }},
+		{"plural edge", func() error {
+			_, err := bad.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "a", Head: "b"}}})
+			return err
+		}},
+		{"singular edge", func() error { _, err := bad.DeleteEdge(ctx, &pb.DeleteEdgeRequest{Tail: "a", Head: "b"}); return err }},
+	} {
+		t.Run(call.name, func(t *testing.T) {
+			if err := call.fn(); connect.CodeOf(err) != connect.CodeInternal {
+				t.Fatalf("length drift error = %v, want Internal", err)
+			}
+		})
+	}
+}
+
 func futureTs(d time.Duration) *timestamppb.Timestamp {
 	return timestamppb.New(time.Now().Add(d))
 }

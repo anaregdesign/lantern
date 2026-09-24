@@ -29,6 +29,7 @@ type Backend interface {
 	PutVerticesWithExpirationIfAbsentOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex]) ([]graphcache.PutOutcome, error)
 	PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) (writtenIdx []int, outcomes []graphcache.PutOutcome, err error)
 	DeleteVertices(keys []string) int
+	DeleteVerticesOutcomes(keys []string) []bool
 
 	// edge reads/writes
 	GetEdgeDetail(tail, head string) (float32, time.Time, bool)
@@ -42,6 +43,7 @@ type Backend interface {
 	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) (effective []float32, deduped int)
 	PutEdgesWithExpirationOutcomes(items []graphcache.EdgeItem[string]) []graphcache.PutOutcome
 	DeleteEdges(keys []graphcache.EdgeKey[string]) int
+	DeleteEdgesOutcomes(keys []graphcache.EdgeKey[string]) []bool
 
 	// replicated-write entry points used by ApplyMutation (#182).
 	//
@@ -103,9 +105,11 @@ type Backend interface {
 	DeleteVertexHLC(key string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteVerticesHLC(keys []string, ts hlc.Timestamp, expiration time.Time) int
 	DeleteVerticesHLCChecked(keys []string, ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteVerticesHLCOutcomesChecked(keys []string, ts hlc.Timestamp, expiration time.Time) ([]bool, error)
 	DeleteEdgeHLC(tail, head string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteEdgesHLC(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
 	DeleteEdgesHLCChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (int, error)
+	DeleteEdgesHLCOutcomesChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) ([]bool, error)
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteByPrefixHLCChecked(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteByPrefixHLCCheckedKeys(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) ([]string, error)

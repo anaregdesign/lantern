@@ -219,22 +219,44 @@ func (c *Cache[S, T]) Delete(key S) bool {
 // installed, else the per-key hook once per removed key — so a layered cache
 // amortizes its index cleanup over one pass (#738).
 func (c *Cache[S, T]) DeleteMany(keys []S) []S {
+	evicted, _ := c.deleteMany(keys, false)
+	return evicted
+}
+
+// DeleteManyWithOutcomes also reports whether each input removed a present
+// entry at its position in the batch. A duplicate key can be true only on
+// its first successful removal. The returned evicted keys retain DeleteMany's
+// callback and ordering contract.
+func (c *Cache[S, T]) DeleteManyWithOutcomes(keys []S) (evicted []S, existed []bool) {
+	return c.deleteMany(keys, true)
+}
+
+func (c *Cache[S, T]) deleteMany(keys []S, withOutcomes bool) (evicted []S, existed []bool) {
 	if len(keys) == 0 {
-		return nil
+		if withOutcomes {
+			return nil, []bool{}
+		}
+		return nil, nil
 	}
 	c.mu.Lock()
-	evicted := make([]S, 0, len(keys))
-	for _, k := range keys {
+	evicted = make([]S, 0, len(keys))
+	if withOutcomes {
+		existed = make([]bool, len(keys))
+	}
+	for i, k := range keys {
 		if _, ok := c.cache[k]; ok {
 			delete(c.cache, k)
 			evicted = append(evicted, k)
+			if withOutcomes {
+				existed[i] = true
+			}
 		}
 	}
 	one, many := c.snapshotHooks()
 	c.mu.Unlock()
 
 	c.fireEvicted(one, many, evicted)
-	return evicted
+	return evicted, existed
 }
 
 func (c *Cache[S, T]) Has(key S) bool {

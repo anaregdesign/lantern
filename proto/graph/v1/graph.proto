@@ -304,8 +304,13 @@ message DeleteVerticesRequest {
 }
 
 message DeleteVerticesResponse {
-  // Number of keys the server attempted to delete (equals len(keys) on success).
+  // Number of request items that observed and deleted a present vertex.
+  // Equals the number of true values in existed, not necessarily len(keys).
   int32 deleted = 1;
+  // Index-aligned with request.keys and always the same length. A true item
+  // found a stored vertex at its turn in the batch and passed causal admission;
+  // absent, duplicate-after-delete, or causally rejected items are false.
+  repeated bool existed = 2;
 }
 
 // ScanOrder selects the key order a ScanVertices / ScanVertexKeys page walks
@@ -670,8 +675,13 @@ message DeleteEdgesRequest {
 }
 
 message DeleteEdgesResponse {
-  // Number of edges the server attempted to delete (equals len(edges) on success).
+  // Number of request items that observed a present edge bucket and passed
+  // causal admission. Equals the number of true values in existed.
   int32 deleted = 1;
+  // Index-aligned with request.edges and always the same length. Each item is
+  // observed at its turn in the batch; a newer HLC Add may remain live after
+  // an accepted Delete while existed still reports the pre-item bucket.
+  repeated bool existed = 2;
 }
 
 // DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key

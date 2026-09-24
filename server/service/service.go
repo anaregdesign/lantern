@@ -1225,6 +1225,24 @@ func writeError(err error) error {
 
 func searchIndexWriteError(err error) error { return writeError(err) }
 
+func countExisted(outcomes []bool) int {
+	count := 0
+	for _, existed := range outcomes {
+		if existed {
+			count++
+		}
+	}
+	return count
+}
+
+func checkedDeleteOutcomes(outcomes []bool, want int) (int32, error) {
+	if len(outcomes) != want {
+		return 0, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("backend returned %d Delete outcomes for %d inputs", len(outcomes), want))
+	}
+	return int32(countExisted(outcomes)), nil
+}
+
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
 	// Per the proto contract, deleting a vertex leaves its edges orphaned;
 	// the periodic GC loop reaps any tf/df rows whose endpoints disappear.
@@ -1232,7 +1250,10 @@ func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRe
 	if err != nil {
 		return nil, err
 	}
-	return &pb.DeleteVertexResponse{Existed: resp.GetDeleted() == 1}, nil
+	if len(resp.GetExisted()) != 1 {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("DeleteVertices returned %d outcomes for singular request", len(resp.GetExisted())))
+	}
+	return &pb.DeleteVertexResponse{Existed: resp.GetExisted()[0]}, nil
 }
 
 func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
@@ -1240,7 +1261,7 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		return nil, ctxToConnect(err)
 	}
 	s.metrics.OnBatch("DeleteVertices", len(in.GetKeys()))
-	var n int
+	var outcomes []bool
 	if s.clock != nil {
 		s.replicationCutMu.Lock()
 		defer s.replicationCutMu.Unlock()
@@ -1256,20 +1277,29 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 			// would lose to the delete on peers but beat the tombstone on the
 			// origin — divergence. Local expiration is best-effort wall clock.
 			var err error
-			n, err = s.cache.DeleteVerticesHLCChecked(in.GetKeys(), ts, s.tombstoneExpiration())
+			outcomes, err = s.cache.DeleteVerticesHLCOutcomesChecked(in.GetKeys(), ts, s.tombstoneExpiration())
 			if err != nil {
 				return nil, writeError(err)
 			}
 		} else {
-			n = s.cache.DeleteVertices(in.GetKeys())
+			outcomes = s.cache.DeleteVerticesOutcomes(in.GetKeys())
+		}
+		deleted, err := checkedDeleteOutcomes(outcomes, len(in.GetKeys()))
+		if err != nil {
+			return nil, err
 		}
 		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts); err != nil {
 			return nil, err
 		}
+		return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil
 	} else {
-		n = s.cache.DeleteVertices(in.GetKeys())
+		outcomes = s.cache.DeleteVerticesOutcomes(in.GetKeys())
 	}
-	return &pb.DeleteVerticesResponse{Deleted: int32(n)}, nil
+	deleted, err := checkedDeleteOutcomes(outcomes, len(in.GetKeys()))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil
 }
 
 func (s *LanternService) GetEdge(ctx context.Context, request *pb.GetEdgeRequest) (*pb.GetEdgeResponse, error) {
@@ -1506,7 +1536,10 @@ func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeReques
 	if err != nil {
 		return nil, err
 	}
-	return &pb.DeleteEdgeResponse{Existed: resp.GetDeleted() == 1}, nil
+	if len(resp.GetExisted()) != 1 {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("DeleteEdges returned %d outcomes for singular request", len(resp.GetExisted())))
+	}
+	return &pb.DeleteEdgeResponse{Existed: resp.GetExisted()[0]}, nil
 }
 
 func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequest) (*pb.DeleteEdgesResponse, error) {
@@ -1519,7 +1552,7 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	for _, e := range inEdges {
 		keys = append(keys, graphcache.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 	}
-	var n int
+	var outcomes []bool
 	if s.clock != nil {
 		s.replicationCutMu.Lock()
 		defer s.replicationCutMu.Unlock()
@@ -1531,20 +1564,29 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 			// Share one commit HLC between the tombstone and the logged
 			// mutation (see DeleteVertices for the divergence this closes).
 			var err error
-			n, err = s.cache.DeleteEdgesHLCChecked(keys, ts, s.tombstoneExpiration())
+			outcomes, err = s.cache.DeleteEdgesHLCOutcomesChecked(keys, ts, s.tombstoneExpiration())
 			if err != nil {
 				return nil, writeError(err)
 			}
 		} else {
-			n = s.cache.DeleteEdges(keys)
+			outcomes = s.cache.DeleteEdgesOutcomes(keys)
+		}
+		deleted, err := checkedDeleteOutcomes(outcomes, len(keys))
+		if err != nil {
+			return nil, err
 		}
 		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts); err != nil {
 			return nil, err
 		}
+		return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: outcomes}, nil
 	} else {
-		n = s.cache.DeleteEdges(keys)
+		outcomes = s.cache.DeleteEdgesOutcomes(keys)
 	}
-	return &pb.DeleteEdgesResponse{Deleted: int32(n)}, nil
+	deleted, err := checkedDeleteOutcomes(outcomes, len(keys))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: outcomes}, nil
 }
 
 // LanternServer ties the Connect HTTP/2 server, its listener, the cache GC loop, and
