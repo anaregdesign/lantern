@@ -89,14 +89,14 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer graphStream.Close()
+	defer func() { _ = graphStream.Close() }()
 	if !graphStream.Receive() || graphStream.Msg().GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
 		t.Fatalf("graph Snapshot header = (%v, %v)", graphStream.Msg(), graphStream.Err())
 	}
 	for _, required := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1, pb.SnapshotFormat(99)} {
 		stream, err := graphPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{RequiredFormat: required}))
 		if err == nil {
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			if stream.Receive() {
 				t.Fatalf("unsupported format %v sent a frame", required)
 			}
@@ -135,7 +135,7 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 	}
 	legacyTail, err := receiptPeer.repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
 	if err == nil {
-		defer legacyTail.Close()
+		defer func() { _ = legacyTail.Close() }()
 		if legacyTail.Receive() {
 			t.Fatal("legacy full Subscribe emitted an entry in receipt mode")
 		}
@@ -146,7 +146,7 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 	}
 	legacySnapshot, err := receiptPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
 	if err == nil {
-		defer legacySnapshot.Close()
+		defer func() { _ = legacySnapshot.Close() }()
 		if legacySnapshot.Receive() {
 			t.Fatal("legacy Snapshot emitted a graph-only frame in receipt mode")
 		}
