@@ -226,6 +226,36 @@ void main() {
     },
   );
 
+  test(
+    'remote cancellation keeps residents Unknown and retries checkpoint',
+    () async {
+      remote.vertices['resident'] = _vertex('old');
+      await repository.readVertex('p', 'resident');
+      final first = _Session('one');
+      final second = _Session('two');
+      source
+        ..queue(first)
+        ..queue(second);
+      final cancellation = LanternCancellationToken();
+      final consume = repository.consumeIdentityChanges(
+        'p',
+        source: source,
+        cancellation: cancellation,
+      );
+      await _waitUntil(() => first.listening);
+      first.addError(const OfflineCanceledException());
+      await _waitUntil(() => second.listening);
+      expect(cancellation.isCanceled, isFalse);
+      expect(source.opens.map((open) => open.bootstrap), [true, true]);
+      expect(
+        await store.transaction((t) => t.hasUnknownResident('p', _key)),
+        isTrue,
+      );
+      cancellation.cancel();
+      await expectLater(consume, throwsA(isA<OfflineCanceledException>()));
+    },
+  );
+
   test('changed responder during plural recovery remains Unknown', () async {
     remote.vertices['resident'] = _vertex('old');
     await repository.readVertex('p', 'resident');

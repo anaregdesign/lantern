@@ -261,9 +261,15 @@ Future<void> runOfflineIdentityConsumer({
         _checkResponder(activeSession, responder);
         await progress.apply(repository, partitionId, frame);
       }
-    } on OfflineCanceledException {
-      rethrow;
     } catch (error, stack) {
+      if (error is OfflineCanceledException && cancellation.isCanceled) {
+        Error.throwWithStackTrace(error, stack);
+      }
+      // A source may report a responder-side cancellation with an active
+      // caller token. The stream is broken, so confirmed residents are Unknown.
+      final recoveryError = error is OfflineCanceledException
+          ? const OfflineChangeGapException()
+          : error;
       // A broken stream can no longer prove that any confirmed row is fresh.
       await repository.store.transaction(
         (transaction) => transaction.resetChangeCursor(
@@ -272,12 +278,12 @@ Future<void> runOfflineIdentityConsumer({
         ),
       );
       _checkCancellation(cancellation);
-      if (error is OfflineChangeGapException && recoveryAttempts == 0) {
+      if (recoveryError is OfflineChangeGapException && recoveryAttempts == 0) {
         recoveryAttempts = 1;
         forceBootstrap = true;
         continue;
       }
-      Error.throwWithStackTrace(error, stack);
+      Error.throwWithStackTrace(recoveryError, stack);
     } finally {
       removeCancellation?.call();
       try {
