@@ -486,6 +486,14 @@ const Mutation$json = {
       '6': '.graph.v1.MutationOp',
       '10': 'op'
     },
+    {
+      '1': 'tombstone_expiration',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'tombstoneExpiration'
+    },
   ],
 };
 
@@ -493,7 +501,8 @@ const Mutation$json = {
 final $typed_data.Uint8List mutationDescriptor = $convert.base64Decode(
     'CghNdXRhdGlvbhIQCgNzZXEYASABKARSA3NlcRIoCgNobGMYAiABKAsyFi5ncmFwaC52MS5ITE'
     'NUaW1lc3RhbXBSA2hsYxIWCgZvcmlnaW4YAyABKAxSBm9yaWdpbhIkCgJvcBgEIAEoCzIULmdy'
-    'YXBoLnYxLk11dGF0aW9uT3BSAm9w');
+    'YXBoLnYxLk11dGF0aW9uT3BSAm9wEk0KFHRvbWJzdG9uZV9leHBpcmF0aW9uGAUgASgLMhouZ2'
+    '9vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFITdG9tYnN0b25lRXhwaXJhdGlvbg==');
 
 @$core.Deprecated('Use subscribeRequestDescriptor instead')
 const SubscribeRequest$json = {

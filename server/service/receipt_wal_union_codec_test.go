@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -24,11 +25,17 @@ import (
 
 func receiptWALUnionGraphFixture(op *pb.MutationOp) *pb.Mutation {
 	origin := bytes.Repeat([]byte{0x31}, len(hlc.NodeID{}))
-	return &pb.Mutation{
+	m := &pb.Mutation{
 		Seq: 7, Origin: origin,
 		Hlc: &pb.HLCTimestamp{WallNs: 1730000000000000000, Logical: 4, NodeId: append([]byte(nil), origin...)},
 		Op:  op,
 	}
+	switch op.GetOp().(type) {
+	case *pb.MutationOp_DeleteVertex, *pb.MutationOp_DeleteVertices,
+		*pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
+		m.TombstoneExpiration = timestamppb.New(time.Unix(1730003600, 0))
+	}
+	return m
 }
 
 func receiptWALUnionGraphHLC(m *pb.Mutation) hlc.Timestamp {
@@ -52,8 +59,8 @@ func receiptWALUnionRawGraphProto(protobuf []byte, repeatedCount uint32) []byte 
 
 func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
-	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV1 {
-		t.Fatalf("WAL union v1 graph schema changed to %s; review replay and migration", got)
+	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV2 {
+		t.Fatalf("WAL union v2 graph schema changed to %s; review replay and migration", got)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -83,8 +90,8 @@ func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV1 {
-				t.Fatal("new graph mutation field did not invalidate WAL union v1 schema")
+			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV2 {
+				t.Fatal("new graph mutation field did not invalidate WAL union v2 schema")
 			}
 		})
 	}
@@ -235,6 +242,34 @@ func TestReceiptWALUnionCodecMixedFileWALRoundTrip(t *testing.T) {
 	}
 	if err := resumed.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReceiptWALUnionCodecDeleteDeadlineFailClosed(t *testing.T) {
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "t", Head: "h"}}},
+	}})
+	raw, err := encodeReceiptWALUnion(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeReceiptWALUnion(raw)
+	if err != nil || !proto.Equal(decoded.(*pb.Mutation).GetTombstoneExpiration(), graph.GetTombstoneExpiration()) {
+		t.Fatalf("Delete deadline WAL round-trip = %v, %v", decoded, err)
+	}
+	graph.TombstoneExpiration = nil
+	if _, err := encodeReceiptWALUnion(graph); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("missing Delete deadline encoded: %v", err)
+	}
+	graph.TombstoneExpiration = &timestamppb.Timestamp{Seconds: 253402300800}
+	if _, err := encodeReceiptWALUnion(graph); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("invalid Delete deadline encoded: %v", err)
+	}
+	// The previous union version has no certified Delete deadline contract.
+	// It must not be silently treated as the new graph schema on restart.
+	raw[4] = 1
+	if _, err := decodeReceiptWALUnion(raw); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("old WAL union version decoded: %v", err)
 	}
 }
 
@@ -405,6 +440,11 @@ func TestReceiptWALUnionCodecRejectsHiddenReceiptArmAndDuplicateOneofs(t *testin
 	reordered = protowire.AppendBytes(protowire.AppendTag(reordered, 3, protowire.BytesType), graph.Origin)
 	reordered = protowire.AppendBytes(protowire.AppendTag(reordered, 2, protowire.BytesType), hlcWire)
 	reordered = protowire.AppendVarint(protowire.AppendTag(reordered, 1, protowire.VarintType), graph.Seq)
+	deadlineWire, err := proto.Marshal(graph.TombstoneExpiration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered = protowire.AppendBytes(protowire.AppendTag(reordered, 5, protowire.BytesType), deadlineWire)
 	decoded, err := decodeReceiptWALUnion(receiptWALUnionRawGraphProto(reordered, 0))
 	if err != nil || !proto.Equal(decoded.(*pb.Mutation), graph) {
 		t.Fatalf("reordered protobuf fields = %v, %v", decoded, err)

@@ -145,6 +145,41 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	}
 }
 
+func TestPublishLocalDeleteRepairKeepsOriginalDeadline(t *testing.T) {
+	ctx := context.Background()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	cache.PutVertexWithExpiration("victim", &pb.Vertex{Key: "victim"}, time.Now().Add(time.Hour))
+	wal := &heldPublicationWAL{}
+	wal.failed.Store(true)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, WAL: wal})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := bytes16("delete-repair")
+	svc := NewLanternService(cache).WithTombstoneTTL(time.Hour).
+		WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	if _, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"victim"}}); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("Delete WAL failure = %v, want Unavailable", err)
+	}
+	pending := svc.pendingLocalMutation
+	tombstones := cache.SnapshotReplication().Tombstones.Vertices
+	if pending == nil || pending.mutation.GetTombstoneExpiration() == nil || len(tombstones) != 1 ||
+		!pending.mutation.GetTombstoneExpiration().AsTime().Equal(tombstones[0].Expiration) {
+		t.Fatalf("pending Delete deadline differs from applied tombstone: pending=%v tombstones=%+v", pending, tombstones)
+	}
+	wal.failed.Store(false)
+	if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "repair"}}); err != nil {
+		t.Fatalf("repairing next write: %v", err)
+	}
+	entries, cancel, err := log.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	repaired := (<-entries).Op.(*pb.Mutation)
+	if repaired.GetSeq() != 1 || !repaired.GetTombstoneExpiration().AsTime().Equal(tombstones[0].Expiration) {
+		t.Fatalf("repaired Delete renewed deadline: %v", repaired)
+	}
+}
+
 func TestPublishLocalMutation_BornExpiredPutKeepsBarrier(t *testing.T) {
 	ctx := context.Background()
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)

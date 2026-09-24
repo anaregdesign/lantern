@@ -182,11 +182,14 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
-		ts := s.clock.Now()
+		ts, tombExp, err := s.sampleDeleteStamp()
+		if err != nil {
+			return nil, err
+		}
 		var keys []string
 		if s.tombstoneTTL > 0 {
 			var err error
-			keys, err = s.cache.DeleteByPrefixHLCCheckedKeys(ctx, in.GetPrefix(), limit, ts, s.tombstoneExpiration())
+			keys, err = s.cache.DeleteByPrefixHLCCheckedKeys(ctx, in.GetPrefix(), limit, ts, tombExp)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, ctxToConnect(err)
@@ -198,9 +201,9 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		}
 		deleted = len(keys)
 		if len(keys) > 0 {
-			if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+			if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
 				DeleteVertices: &pb.DeleteVerticesRequest{Keys: keys},
-			}}, ts); err != nil {
+			}}, ts, tombExp); err != nil {
 				return nil, err
 			}
 		}
@@ -260,11 +263,14 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 		// Share one commit HLC between the edge tombstones and the logged
 		// mutation so a peer replaying this delete stamps the same watermark
 		// the origin did (see DeleteEdges for the divergence this closes).
-		ts := s.clock.Now()
+		ts, tombExp, err := s.sampleDeleteStamp()
+		if err != nil {
+			return nil, err
+		}
 		var keys []graphcache.EdgeKey[string]
 		if s.tombstoneTTL > 0 {
 			var err error
-			keys, err = s.cache.DeleteEdgesByPrefixHLCCheckedKeys(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), ts, s.tombstoneExpiration())
+			keys, err = s.cache.DeleteEdgesByPrefixHLCCheckedKeys(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), ts, tombExp)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, ctxToConnect(err)
@@ -280,9 +286,9 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 			for i, key := range keys {
 				edges[i] = &pb.EdgeKey{Tail: key.Tail, Head: key.Head}
 			}
-			if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+			if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
 				DeleteEdges: &pb.DeleteEdgesRequest{Edges: edges},
-			}}, ts); err != nil {
+			}}, ts, tombExp); err != nil {
 				return nil, err
 			}
 		}

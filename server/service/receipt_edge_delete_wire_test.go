@@ -22,6 +22,7 @@ func wireReceiptEdgeDeleteFixture(t *testing.T) *edgeDeleteReceiptEnvelope {
 	origin := hlc.NodeID{0x41}
 	stamp := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: origin}
 	issued := time.Now().Add(-time.Second)
+	expiration := time.Now().Add(time.Hour)
 	group := mutationreceipt.GroupID{0x7f}
 	keys := []graphcache.EdgeKey[string]{
 		{Tail: "tail", Head: "accepted"},
@@ -41,12 +42,13 @@ func wireReceiptEdgeDeleteFixture(t *testing.T) *edgeDeleteReceiptEnvelope {
 	}
 	return &edgeDeleteReceiptEnvelope{
 		Mutation: &pb.Mutation{Seq: 3, Origin: origin[:], Hlc: hlcToProto(stamp),
+			TombstoneExpiration: timestamppb.New(expiration),
 			Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{
 				Edges: []*pb.EdgeKey{{Tail: keys[0].Tail, Head: keys[0].Head}},
 			}}}},
 		Origin: origin, OriginSeq: 3, HLC: stamp,
 		Epoch: epoch, PolicyFingerprint: [32]byte{0x51},
-		TombstoneExpiration: time.Now().Add(time.Hour),
+		TombstoneExpiration: expiration,
 		OriginalKeys:        keys,
 		Accepted:            []graphcache.IndexedEdgeDelete[string]{{Index: 0, Key: keys[0]}},
 		Receipts:            receipts,

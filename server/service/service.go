@@ -556,6 +556,35 @@ func (s *LanternService) tombstoneExpiration() time.Time {
 	return time.Now().Add(s.tombstoneTTL)
 }
 
+// tombstoneDeadlineBounds applies the same origin-HLC and receiver-clock D4
+// limits to locally prepared Deletes and replicated Deletes. Local callers
+// check it before changing the graph so a clock rollback between sampling
+// the deadline and HLC cannot publish a row that peers will reject.
+func (s *LanternService) tombstoneDeadlineBounds(wallNs int64, expiration time.Time) error {
+	if expiration.IsZero() || s.tombstoneTTL <= 0 {
+		return nil
+	}
+	if expiration.After(time.Unix(0, wallNs).Add(s.tombstoneTTL)) {
+		return fmt.Errorf("Delete tombstone expiration exceeds origin HLC plus LANTERN_TOMBSTONE_TTL")
+	}
+	if expiration.After(time.Now().Add(s.tombstoneTTL).Add(hlc.DefaultMaxSkew)) {
+		return fmt.Errorf("Delete tombstone expiration exceeds LANTERN_TOMBSTONE_TTL plus maximum clock skew")
+	}
+	return nil
+}
+
+// sampleDeleteStamp samples the absolute deadline first, then one HLC for
+// both the graph effect and published mutation. A clock rollback fails before
+// the graph changes rather than making a mutation that followers reject.
+func (s *LanternService) sampleDeleteStamp() (hlc.Timestamp, time.Time, error) {
+	expiration := s.tombstoneExpiration()
+	ts := s.clock.Now()
+	if err := s.tombstoneDeadlineBounds(ts.WallNs, expiration); err != nil {
+		return hlc.Timestamp{}, time.Time{}, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	return ts, expiration, nil
+}
+
 // OriginStates returns a snapshot of the per-origin (last_seq, hlc)
 // watermark map maintained by local publication and ApplyMutation. Used by
 // the PeerStatus RPC (#186). Returns nil when replication is unwired
@@ -1289,7 +1318,10 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
-		ts := s.clock.Now()
+		ts, tombExp, err := s.sampleDeleteStamp()
+		if err != nil {
+			return nil, err
+		}
 		if s.tombstoneTTL > 0 {
 			// Replicated path: sample the commit HLC ONCE and stamp BOTH the
 			// tombstone and the logged mutation with it. Sampling clock.Now()
@@ -1298,7 +1330,7 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 			// would lose to the delete on peers but beat the tombstone on the
 			// origin — divergence. Local expiration is best-effort wall clock.
 			var err error
-			outcomes, err = s.cache.DeleteVerticesHLCOutcomesChecked(in.GetKeys(), ts, s.tombstoneExpiration())
+			outcomes, err = s.cache.DeleteVerticesHLCOutcomesChecked(in.GetKeys(), ts, tombExp)
 			if err != nil {
 				return nil, writeError(err)
 			}
@@ -1309,7 +1341,7 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		if err != nil {
 			return nil, err
 		}
-		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts); err != nil {
+		if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts, tombExp); err != nil {
 			return nil, err
 		}
 		return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil
@@ -1588,12 +1620,15 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
-		ts := s.clock.Now()
+		ts, tombExp, err := s.sampleDeleteStamp()
+		if err != nil {
+			return nil, err
+		}
 		if s.tombstoneTTL > 0 {
 			// Share one commit HLC between the tombstone and the logged
 			// mutation (see DeleteVertices for the divergence this closes).
 			var err error
-			outcomes, err = s.cache.DeleteEdgesHLCOutcomesChecked(keys, ts, s.tombstoneExpiration())
+			outcomes, err = s.cache.DeleteEdgesHLCOutcomesChecked(keys, ts, tombExp)
 			if err != nil {
 				return nil, writeError(err)
 			}
@@ -1604,7 +1639,7 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		if err != nil {
 			return nil, err
 		}
-		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts); err != nil {
+		if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts, tombExp); err != nil {
 			return nil, err
 		}
 		return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: outcomes}, nil

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -271,7 +272,8 @@ func receiptEdgeDeleteWALMutation(e *edgeDeleteReceiptEnvelope) *pb.Mutation {
 	}
 	return &pb.Mutation{
 		Origin: append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
-		Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: accepted}}},
+		Op:                  &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: accepted}}},
+		TombstoneExpiration: timestamppb.New(e.TombstoneExpiration),
 	}
 }
 

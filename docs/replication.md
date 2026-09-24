@@ -102,6 +102,21 @@ whether re-applying an already-seen mutation is a no-op.
 | `DeleteVertex(es)` | Tombstone (LWW) | A tombstone is itself an entry with HLC. Any `Put*` / `Add*` whose HLC < tombstone HLC is dropped. Tombstone TTL = D4. |
 | `DeleteEdge(s)` | Tombstone (LWW reset) on `(tail, head)` | Removes the base value and every Add at or before its HLC while preserving later Adds. The floor is retained for D4, including when later Adds make the edge live. |
 
+An origin samples one absolute D4 deadline for each exact Delete batch and
+publishes it as `Mutation.tombstone_expiration` alongside the HLC and victim
+identities. Prefix Deletes publish exact victim batches with the same rule.
+Followers apply that deadline unchanged, even when delivery is delayed past
+it; a D4-enabled receiver rejects a Delete missing the deadline before it
+enters the pending replication queue. This keeps Subscribe and FileWAL replay
+from silently starting a new retention window. The origin samples the deadline
+before its HLC stamp. A receiver rejects deadlines later than either the
+origin HLC wall time plus its configured D4 TTL or its own current wall time
+plus D4 TTL and the D3 skew allowance. Both checks are needed: the first
+prevents a late relay from stretching the origin's window, while the second
+prevents a forged future HLC from creating an unbounded tombstone. The origin
+runs the same checks before changing its graph, so a wall-clock rollback
+between deadline and HLC sampling fails closed.
+
 An unconditional Put whose absolute expiration is already past at the
 serving node is still an accepted LWW mutation. It returns `EXPIRED`, removes
 the previous value/edge at that identity, records its HLC, and is replicated.

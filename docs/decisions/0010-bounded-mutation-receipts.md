@@ -270,6 +270,20 @@ orders and duplicate scalar values retain protobuf semantics. The decoder
 accepts valid protobuf encodings without requiring a byte-for-byte match with
 this build's deterministic encoder:
 protobuf does not promise stable deterministic bytes across library versions.
+Union version 2 pins `Mutation.tombstone_expiration`: each graph-only exact
+Vertex or Edge Delete must retain the origin's absolute D4 deadline. Origin
+handlers use one sampled deadline for the graph effect and published mutation;
+follower apply uses that value without renewing it. An older graph Delete WAL
+record lacking the field, an invalid timestamp, or a version 1 union fails
+closed on replay. Prefix Deletes still publish exact victim batches and carry
+that same sampled deadline. The deadline is sampled before the origin HLC and
+checked against both origin HLC + D4 and receiver now + D4 + D3 maximum skew;
+an arbitrary future deadline or forged future HLC fails closed. The origin
+checks those bounds before graph mutation, including after a clock rollback.
+A genesis
+recovery audit must not infer a missing
+deadline from its current clock; accepting these new records does not by itself
+certify a complete graph/receipt restore.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
 replay. The receipt kind retains the existing LRED validation and its 8 MiB

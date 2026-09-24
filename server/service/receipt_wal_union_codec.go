@@ -24,7 +24,7 @@ import (
 // header is versioned independently of the inner LRED receipt format. No
 // production provider or write path selects this codec yet.
 const (
-	receiptWALUnionMagic      = "LRWU\x01\x00\x00\x00"
+	receiptWALUnionMagic      = "LRWU\x02\x00\x00\x00"
 	receiptWALUnionHeaderSize = 16 // magic, kind, reserved[3], body length
 	receiptWALUnionGraph      = byte(1)
 	receiptWALUnionEdgeDelete = byte(2)
@@ -32,17 +32,17 @@ const (
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
 	// The existing LRED receipt body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
-	// A new reachable Mutation field must not silently change what the v1
+	// A new reachable Mutation field must not silently change what the v2
 	// graph kind persists or replays. Review and version the WAL schema first.
-	receiptWALGraphSchemaFingerprintV1 = "6e23c70ce9e21e00421181fbda915baab3830fa07f5784562e6ae0b57757cfc9"
+	receiptWALGraphSchemaFingerprintV2 = "7940660efd6cbc80ebf0e6804cd22e285e292d498c66c178fd175d68f4213d3d"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
 
 var receiptWALGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
-	if digest != receiptWALGraphSchemaFingerprintV1 {
-		return receiptWALUnionError("WAL union v1 graph schema changed: %s", digest)
+	if digest != receiptWALGraphSchemaFingerprintV2 {
+		return receiptWALUnionError("WAL union v2 graph schema changed: %s", digest)
 	}
 	return nil
 })
@@ -314,6 +314,9 @@ func validateReceiptWALGraph(m *pb.Mutation) error {
 	}
 	if _, err := receiptWALGraphArm(m); err != nil {
 		return err
+	}
+	if _, err := mutationTombstoneExpiration(m, true); err != nil {
+		return receiptWALUnionError("graph Delete deadline: %v", err)
 	}
 	return rejectReceiptWALUnknownFields(m.ProtoReflect())
 }

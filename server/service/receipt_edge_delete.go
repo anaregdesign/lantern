@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -187,8 +188,10 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 
 	origin := s.clock.NodeID()
 	seq := s.origins.LocalSeq(origin) + 1 // prepareLocalMutationLocked rejected overflow.
-	ts := s.clock.Now()
-	expiration := s.tombstoneExpiration()
+	ts, expiration, err := s.sampleDeleteStamp()
+	if err != nil {
+		return nil, err
+	}
 	graphTx, err := c.cache.BeginEdgeDelete(keys, ts, expiration)
 	if err != nil {
 		return nil, writeError(err)
@@ -226,7 +229,8 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	}
 	mutation := &pb.Mutation{
 		Origin: append([]byte(nil), origin[:]...), Seq: seq, Hlc: hlcToProto(ts),
-		Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: accepted}}},
+		Op:                  &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: accepted}}},
+		TombstoneExpiration: timestamppb.New(expiration),
 	}
 	envelope := &edgeDeleteReceiptEnvelope{
 		Mutation: mutation, Origin: origin, OriginSeq: seq, HLC: ts,

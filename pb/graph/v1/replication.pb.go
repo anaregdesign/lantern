@@ -1058,13 +1058,19 @@ func (x *ReplicatedPutEdges) GetEntries() []*ReplicatedPutEdge {
 //	        anti-entropy can index by origin without inspecting the HLC.
 //	op:     the actual write payload (see MutationOp).
 type Mutation struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Seq           uint64                 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
-	Hlc           *HLCTimestamp          `protobuf:"bytes,2,opt,name=hlc,proto3" json:"hlc,omitempty"`
-	Origin        []byte                 `protobuf:"bytes,3,opt,name=origin,proto3" json:"origin,omitempty"`
-	Op            *MutationOp            `protobuf:"bytes,4,opt,name=op,proto3" json:"op,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Seq    uint64                 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	Hlc    *HLCTimestamp          `protobuf:"bytes,2,opt,name=hlc,proto3" json:"hlc,omitempty"`
+	Origin []byte                 `protobuf:"bytes,3,opt,name=origin,proto3" json:"origin,omitempty"`
+	Op     *MutationOp            `protobuf:"bytes,4,opt,name=op,proto3" json:"op,omitempty"`
+	// The origin's absolute D4 tombstone deadline for an exact-identity
+	// DeleteVertex/Vertices or DeleteEdge/Edges. It is sampled once with the
+	// graph effect and retained unchanged by relay and WAL replay. A receiver
+	// with tombstone retention enabled must reject a Delete without it rather
+	// than extend the deadline from its own wall clock. Other operations omit it.
+	TombstoneExpiration *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=tombstone_expiration,json=tombstoneExpiration,proto3" json:"tombstone_expiration,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *Mutation) Reset() {
@@ -1121,6 +1127,13 @@ func (x *Mutation) GetOrigin() []byte {
 func (x *Mutation) GetOp() *MutationOp {
 	if x != nil {
 		return x.Op
+	}
+	return nil
+}
+
+func (x *Mutation) GetTombstoneExpiration() *timestamppb.Timestamp {
+	if x != nil {
+		return x.TombstoneExpiration
 	}
 	return nil
 }
@@ -2615,12 +2628,13 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x0ecausal_barrier\x18\x02 \x01(\v2\x1b.graph.v1.EdgeCausalBarrierH\x00R\rcausalBarrierB\t\n" +
 	"\aoutcome\"K\n" +
 	"\x12ReplicatedPutEdges\x125\n" +
-	"\aentries\x18\x01 \x03(\v2\x1b.graph.v1.ReplicatedPutEdgeR\aentries\"\x84\x01\n" +
+	"\aentries\x18\x01 \x03(\v2\x1b.graph.v1.ReplicatedPutEdgeR\aentries\"\xd3\x01\n" +
 	"\bMutation\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12(\n" +
 	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\x12\x16\n" +
 	"\x06origin\x18\x03 \x01(\fR\x06origin\x12$\n" +
-	"\x02op\x18\x04 \x01(\v2\x14.graph.v1.MutationOpR\x02op\"\xf5\x02\n" +
+	"\x02op\x18\x04 \x01(\v2\x14.graph.v1.MutationOpR\x02op\x12M\n" +
+	"\x14tombstone_expiration\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x13tombstoneExpiration\"\xf5\x02\n" +
 	"\x10SubscribeRequest\x12_\n" +
 	"\x13from_seq_per_origin\x18\x01 \x03(\v20.graph.v1.SubscribeRequest.FromSeqPerOriginEntryR\x10fromSeqPerOrigin\x12$\n" +
 	"\x0efrom_local_seq\x18\x02 \x01(\x04R\ffromLocalSeq\x12=\n" +
@@ -2851,53 +2865,54 @@ var file_graph_v1_replication_proto_depIdxs = []int32{
 	11, // 24: graph.v1.ReplicatedPutEdges.entries:type_name -> graph.v1.ReplicatedPutEdge
 	3,  // 25: graph.v1.Mutation.hlc:type_name -> graph.v1.HLCTimestamp
 	4,  // 26: graph.v1.Mutation.op:type_name -> graph.v1.MutationOp
-	32, // 27: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
-	0,  // 28: graph.v1.SubscribeRequest.projection:type_name -> graph.v1.SubscribeProjection
-	33, // 29: graph.v1.IdentityCheckpoint.last_seq_per_origin:type_name -> graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry
-	3,  // 30: graph.v1.IdentityChunk.hlc:type_name -> graph.v1.HLCTimestamp
-	1,  // 31: graph.v1.IdentityChunk.operation:type_name -> graph.v1.IdentityOperation
-	47, // 32: graph.v1.IdentityChunk.edge_keys:type_name -> graph.v1.EdgeKey
-	13, // 33: graph.v1.SubscribeResponse.mutation:type_name -> graph.v1.Mutation
-	15, // 34: graph.v1.SubscribeResponse.checkpoint:type_name -> graph.v1.IdentityCheckpoint
-	16, // 35: graph.v1.SubscribeResponse.identity_chunk:type_name -> graph.v1.IdentityChunk
-	2,  // 36: graph.v1.SnapshotRequest.required_format:type_name -> graph.v1.SnapshotFormat
-	34, // 37: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
-	3,  // 38: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
-	2,  // 39: graph.v1.SnapshotHeader.format:type_name -> graph.v1.SnapshotFormat
-	50, // 40: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
-	3,  // 41: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
-	3,  // 42: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
-	49, // 43: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
-	3,  // 44: graph.v1.SnapshotEdgeContribution.hlc:type_name -> graph.v1.HLCTimestamp
-	3,  // 45: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
-	23, // 46: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
-	3,  // 47: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
-	3,  // 48: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	49, // 49: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
-	3,  // 50: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	49, // 51: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
-	19, // 52: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
-	21, // 53: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
-	24, // 54: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
-	20, // 55: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
-	22, // 56: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
-	25, // 57: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
-	26, // 58: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
-	27, // 59: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
-	3,  // 60: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
-	30, // 61: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
-	2,  // 62: graph.v1.PeerStatusResponse.required_snapshot_format:type_name -> graph.v1.SnapshotFormat
-	14, // 63: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
-	18, // 64: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
-	29, // 65: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
-	17, // 66: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
-	28, // 67: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
-	31, // 68: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
-	66, // [66:69] is the sub-list for method output_type
-	63, // [63:66] is the sub-list for method input_type
-	63, // [63:63] is the sub-list for extension type_name
-	63, // [63:63] is the sub-list for extension extendee
-	0,  // [0:63] is the sub-list for field type_name
+	49, // 27: graph.v1.Mutation.tombstone_expiration:type_name -> google.protobuf.Timestamp
+	32, // 28: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
+	0,  // 29: graph.v1.SubscribeRequest.projection:type_name -> graph.v1.SubscribeProjection
+	33, // 30: graph.v1.IdentityCheckpoint.last_seq_per_origin:type_name -> graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry
+	3,  // 31: graph.v1.IdentityChunk.hlc:type_name -> graph.v1.HLCTimestamp
+	1,  // 32: graph.v1.IdentityChunk.operation:type_name -> graph.v1.IdentityOperation
+	47, // 33: graph.v1.IdentityChunk.edge_keys:type_name -> graph.v1.EdgeKey
+	13, // 34: graph.v1.SubscribeResponse.mutation:type_name -> graph.v1.Mutation
+	15, // 35: graph.v1.SubscribeResponse.checkpoint:type_name -> graph.v1.IdentityCheckpoint
+	16, // 36: graph.v1.SubscribeResponse.identity_chunk:type_name -> graph.v1.IdentityChunk
+	2,  // 37: graph.v1.SnapshotRequest.required_format:type_name -> graph.v1.SnapshotFormat
+	34, // 38: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
+	3,  // 39: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
+	2,  // 40: graph.v1.SnapshotHeader.format:type_name -> graph.v1.SnapshotFormat
+	50, // 41: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
+	3,  // 42: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
+	3,  // 43: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	49, // 44: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
+	3,  // 45: graph.v1.SnapshotEdgeContribution.hlc:type_name -> graph.v1.HLCTimestamp
+	3,  // 46: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
+	23, // 47: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
+	3,  // 48: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	3,  // 49: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	49, // 50: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
+	3,  // 51: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	49, // 52: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
+	19, // 53: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
+	21, // 54: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
+	24, // 55: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
+	20, // 56: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
+	22, // 57: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
+	25, // 58: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
+	26, // 59: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
+	27, // 60: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
+	3,  // 61: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
+	30, // 62: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
+	2,  // 63: graph.v1.PeerStatusResponse.required_snapshot_format:type_name -> graph.v1.SnapshotFormat
+	14, // 64: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
+	18, // 65: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
+	29, // 66: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
+	17, // 67: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
+	28, // 68: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
+	31, // 69: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
+	67, // [67:70] is the sub-list for method output_type
+	64, // [64:67] is the sub-list for method input_type
+	64, // [64:64] is the sub-list for extension type_name
+	64, // [64:64] is the sub-list for extension extendee
+	0,  // [0:64] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_replication_proto_init() }
