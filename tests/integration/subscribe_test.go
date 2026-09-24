@@ -367,6 +367,7 @@ bootstrapLoop:
 		t.Fatalf("resumed cursor: %v", err)
 	}
 	streamCtx, stop := context.WithCancel(ctx)
+	defer stop()
 	var cancelErr error
 	for event, streamErr := range node.sdk.BootstrapIdentity(streamCtx) {
 		if streamErr != nil {
