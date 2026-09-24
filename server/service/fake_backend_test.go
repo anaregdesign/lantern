@@ -214,15 +214,22 @@ func (f *fakeBackend) PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items 
 }
 
 func (f *fakeBackend) DeleteVertices(keys []string) int {
+	outcomes := f.DeleteVerticesOutcomes(keys)
+	return countExisted(outcomes)
+}
+
+func (f *fakeBackend) DeleteVerticesOutcomes(keys []string) []bool {
 	n := 0
-	for _, k := range keys {
+	outcomes := make([]bool, len(keys))
+	for i, k := range keys {
 		if _, ok := f.vertices[k]; ok {
 			delete(f.vertices, k)
 			n++
+			outcomes[i] = true
 		}
 	}
 	f.deleteVertices += n
-	return n
+	return outcomes
 }
 
 func (f *fakeBackend) GetEdgeDetail(tail, head string) (float32, time.Time, bool) {
@@ -290,17 +297,24 @@ func (f *fakeBackend) PutEdgesWithExpirationOutcomes(items []graphcache.EdgeItem
 }
 
 func (f *fakeBackend) DeleteEdges(keys []graphcache.EdgeKey[string]) int {
+	outcomes := f.DeleteEdgesOutcomes(keys)
+	return countExisted(outcomes)
+}
+
+func (f *fakeBackend) DeleteEdgesOutcomes(keys []graphcache.EdgeKey[string]) []bool {
 	n := 0
-	for _, k := range keys {
+	outcomes := make([]bool, len(keys))
+	for i, k := range keys {
 		if row, ok := f.edges[k.Tail]; ok {
 			if _, ok := row[k.Head]; ok {
 				delete(row, k.Head)
 				n++
+				outcomes[i] = true
 			}
 		}
 	}
 	f.deleteEdges += n
-	return n
+	return outcomes
 }
 
 func (f *fakeBackend) NeighborWithExpirationsContext(
@@ -777,6 +791,10 @@ func (f *fakeBackend) DeleteVerticesHLCChecked(keys []string, ts hlc.Timestamp, 
 	return f.DeleteVerticesHLC(keys, ts, expiration), nil
 }
 
+func (f *fakeBackend) DeleteVerticesHLCOutcomesChecked(keys []string, _ hlc.Timestamp, _ time.Time) ([]bool, error) {
+	return f.DeleteVerticesOutcomes(keys), nil
+}
+
 func (f *fakeBackend) DeleteEdgeHLC(tail, head string, _ hlc.Timestamp, _ time.Time) bool {
 	return f.DeleteEdges([]graphcache.EdgeKey[string]{{Tail: tail, Head: head}}) > 0
 }
@@ -787,6 +805,10 @@ func (f *fakeBackend) DeleteEdgesHLC(keys []graphcache.EdgeKey[string], _ hlc.Ti
 
 func (f *fakeBackend) DeleteEdgesHLCChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (int, error) {
 	return f.DeleteEdgesHLC(keys, ts, expiration), nil
+}
+
+func (f *fakeBackend) DeleteEdgesHLCOutcomesChecked(keys []graphcache.EdgeKey[string], _ hlc.Timestamp, _ time.Time) ([]bool, error) {
+	return f.DeleteEdgesOutcomes(keys), nil
 }
 
 func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, _ hlc.Timestamp, _ time.Time) (int, error) {

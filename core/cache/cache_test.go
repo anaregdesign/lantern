@@ -541,6 +541,20 @@ func TestCache_DeleteMany(t *testing.T) {
 	}
 }
 
+func TestCache_DeleteManyWithOutcomes(t *testing.T) {
+	c := NewCache[string, int](time.Minute)
+	c.Put("a", 1)
+	c.Put("b", 2)
+	removed, existed := c.DeleteManyWithOutcomes([]string{"a", "missing", "a", "b"})
+	if !reflect.DeepEqual(removed, []string{"a", "b"}) || !reflect.DeepEqual(existed, []bool{true, false, false, true}) {
+		t.Fatalf("DeleteManyWithOutcomes = (%v, %v)", removed, existed)
+	}
+	removed, existed = c.DeleteManyWithOutcomes(nil)
+	if removed != nil || existed == nil || len(existed) != 0 {
+		t.Fatalf("empty DeleteManyWithOutcomes = (%v, %v)", removed, existed)
+	}
+}
+
 // TestCache_OnEvictMany_Batch verifies the batch hook fires exactly once with
 // the full set of removed keys for Delete (one-element slice), DeleteMany,
 // Clear, and Flush, and that it takes precedence over a per-key hook.

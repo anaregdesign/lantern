@@ -676,6 +676,39 @@ func BenchmarkDeleteVertices_Indexed(b *testing.B) {
 	}
 }
 
+// BenchmarkDeleteVerticesOutcomes_Indexed tracks the per-item result cost on
+// the same indexed batch shape as BenchmarkDeleteVertices_Indexed.
+func BenchmarkDeleteVerticesOutcomes_Indexed(b *testing.B) {
+	for _, n := range []int{1000, 10000} {
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			exp := time.Now().Add(time.Hour)
+			keys := make([]string, n)
+			for i := range keys {
+				keys[i] = makeKey("https://example.com", i, 32)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for iter := 0; iter < b.N; iter++ {
+				b.StopTimer()
+				c := NewGraphCache[string, string](time.Hour)
+				c.EnablePrefixIndex(func(k string) string { return k })
+				c.EnableSearchIndex(func(_ string, v string) search.Document { return search.Text(v) }, compareStringID)
+				vs := make([]VertexItem[string, string], n)
+				for i, k := range keys {
+					vs[i] = VertexItem[string, string]{Key: k, Value: benchSearchCorpus[i%len(benchSearchCorpus)], Expiration: exp}
+				}
+				c.PutVerticesWithExpiration(vs)
+				b.StartTimer()
+
+				outcomes := c.DeleteVerticesOutcomes(keys)
+				if len(outcomes) != n {
+					b.Fatalf("DeleteVerticesOutcomes returned %d items, want %d", len(outcomes), n)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkDeleteByPrefix_Indexed measures the batched DeleteByPrefix path
 // (#738): it walks the prefix radix to collect victims, then removes them in a
 // single DeleteMany that fires one batched index-maintenance pass. Setup is

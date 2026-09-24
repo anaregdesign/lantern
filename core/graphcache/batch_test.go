@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -260,6 +261,36 @@ func TestPutOutcomesUseFinalApplicationTime(t *testing.T) {
 			assertAbsent(t, c, "hlc-tail", "hlc-head")
 		})
 	})
+}
+
+func TestDeleteOutcomesPreserveBatchOrder(t *testing.T) {
+	c := NewGraphCache[string, string](time.Minute)
+	expiration := time.Now().Add(time.Hour)
+	for _, key := range []string{"a", "b"} {
+		if err := c.PutVertexWithExpiration(key, key, expiration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vertexOutcomes := c.DeleteVerticesOutcomes([]string{"a", "missing", "a", "b"})
+	if want := []bool{true, false, false, true}; !slices.Equal(vertexOutcomes, want) {
+		t.Fatalf("vertex outcomes = %v, want %v", vertexOutcomes, want)
+	}
+	if got := c.DeleteVerticesOutcomes(nil); got == nil || len(got) != 0 {
+		t.Fatalf("empty vertex outcomes = %v", got)
+	}
+
+	c.PutEdgeWithExpiration("a", "b", 1, expiration)
+	c.PutEdgeWithExpiration("a", "c", 1, expiration)
+	edgeOutcomes := c.DeleteEdgesOutcomes([]EdgeKey[string]{
+		{Tail: "a", Head: "b"}, {Tail: "missing", Head: "edge"},
+		{Tail: "a", Head: "b"}, {Tail: "a", Head: "c"},
+	})
+	if want := []bool{true, false, false, true}; !slices.Equal(edgeOutcomes, want) {
+		t.Fatalf("edge outcomes = %v, want %v", edgeOutcomes, want)
+	}
+	if got := c.DeleteEdgesOutcomes(nil); got == nil || len(got) != 0 {
+		t.Fatalf("empty edge outcomes = %v", got)
+	}
 }
 
 func TestPutVertexSearchPreparationRevalidatesClockRollback(t *testing.T) {

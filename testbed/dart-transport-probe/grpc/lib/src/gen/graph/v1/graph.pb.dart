@@ -1631,9 +1631,11 @@ class DeleteVerticesRequest extends $pb.GeneratedMessage {
 class DeleteVerticesResponse extends $pb.GeneratedMessage {
   factory DeleteVerticesResponse({
     $core.int? deleted,
+    $core.Iterable<$core.bool>? existed,
   }) {
     final result = create();
     if (deleted != null) result.deleted = deleted;
+    if (existed != null) result.existed.addAll(existed);
     return result;
   }
 
@@ -1651,6 +1653,7 @@ class DeleteVerticesResponse extends $pb.GeneratedMessage {
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
     ..aI(1, _omitFieldNames ? '' : 'deleted')
+    ..p<$core.bool>(2, _omitFieldNames ? '' : 'existed', $pb.PbFieldType.KB)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1673,7 +1676,8 @@ class DeleteVerticesResponse extends $pb.GeneratedMessage {
       $pb.GeneratedMessage.$_defaultFor<DeleteVerticesResponse>(create);
   static DeleteVerticesResponse? _defaultInstance;
 
-  /// Number of keys the server attempted to delete (equals len(keys) on success).
+  /// Number of request items that observed and deleted a present vertex.
+  /// Equals the number of true values in existed, not necessarily len(keys).
   @$pb.TagNumber(1)
   $core.int get deleted => $_getIZ(0);
   @$pb.TagNumber(1)
@@ -1682,6 +1686,12 @@ class DeleteVerticesResponse extends $pb.GeneratedMessage {
   $core.bool hasDeleted() => $_has(0);
   @$pb.TagNumber(1)
   void clearDeleted() => $_clearField(1);
+
+  /// Index-aligned with request.keys and always the same length. A true item
+  /// found a stored vertex at its turn in the batch and passed causal admission;
+  /// absent, duplicate-after-delete, or causally rejected items are false.
+  @$pb.TagNumber(2)
+  $pb.PbList<$core.bool> get existed => $_getList(1);
 }
 
 /// ScanVerticesRequest streams vertices whose key starts with `prefix` in
@@ -3671,9 +3681,11 @@ class DeleteEdgesRequest extends $pb.GeneratedMessage {
 class DeleteEdgesResponse extends $pb.GeneratedMessage {
   factory DeleteEdgesResponse({
     $core.int? deleted,
+    $core.Iterable<$core.bool>? existed,
   }) {
     final result = create();
     if (deleted != null) result.deleted = deleted;
+    if (existed != null) result.existed.addAll(existed);
     return result;
   }
 
@@ -3691,6 +3703,7 @@ class DeleteEdgesResponse extends $pb.GeneratedMessage {
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
     ..aI(1, _omitFieldNames ? '' : 'deleted')
+    ..p<$core.bool>(2, _omitFieldNames ? '' : 'existed', $pb.PbFieldType.KB)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3712,7 +3725,8 @@ class DeleteEdgesResponse extends $pb.GeneratedMessage {
       $pb.GeneratedMessage.$_defaultFor<DeleteEdgesResponse>(create);
   static DeleteEdgesResponse? _defaultInstance;
 
-  /// Number of edges the server attempted to delete (equals len(edges) on success).
+  /// Number of request items that observed a present edge bucket and passed
+  /// causal admission. Equals the number of true values in existed.
   @$pb.TagNumber(1)
   $core.int get deleted => $_getIZ(0);
   @$pb.TagNumber(1)
@@ -3721,6 +3735,12 @@ class DeleteEdgesResponse extends $pb.GeneratedMessage {
   $core.bool hasDeleted() => $_has(0);
   @$pb.TagNumber(1)
   void clearDeleted() => $_clearField(1);
+
+  /// Index-aligned with request.edges and always the same length. Each item is
+  /// observed at its turn in the batch; a newer HLC Add may remain live after
+  /// an accepted Delete while existed still reports the pre-item bucket.
+  @$pb.TagNumber(2)
+  $pb.PbList<$core.bool> get existed => $_getList(1);
 }
 
 /// DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key

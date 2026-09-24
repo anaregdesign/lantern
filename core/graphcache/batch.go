@@ -622,8 +622,23 @@ func (c *GraphCache[S, T]) putEdgesWithExpiration(items []EdgeItem[S], outcomes 
 // search postings) are cleaned in one pass via the batch eviction hook so a
 // large delete pays one acquisition per index instead of one per key (#738).
 func (c *GraphCache[S, T]) DeleteVertices(keys []S) int {
+	n, _ := c.deleteVertices(keys, false)
+	return n
+}
+
+// DeleteVerticesOutcomes preserves request order and reports the exact
+// per-item observation made under the same batch lock as DeleteVertices.
+func (c *GraphCache[S, T]) DeleteVerticesOutcomes(keys []S) []bool {
+	_, outcomes := c.deleteVertices(keys, true)
+	return outcomes
+}
+
+func (c *GraphCache[S, T]) deleteVertices(keys []S, withOutcomes bool) (int, []bool) {
 	if len(keys) == 0 {
-		return 0
+		if withOutcomes {
+			return 0, []bool{}
+		}
+		return 0, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -631,32 +646,62 @@ func (c *GraphCache[S, T]) DeleteVertices(keys []S) int {
 		c.searchCommitMu.Lock()
 		defer c.searchCommitMu.Unlock()
 	}
-	n := len(c.vertices.DeleteMany(keys))
+	var n int
+	var outcomes []bool
+	if withOutcomes {
+		removed, observed := c.vertices.DeleteManyWithOutcomes(keys)
+		n, outcomes = len(removed), observed
+	} else {
+		n = len(c.vertices.DeleteMany(keys))
+	}
 	for _, key := range keys {
 		c.clearVertexCausalBarrierLocked(key)
 		c.clearVertexHLCLocked(key)
 	}
 	c.rebuildIncompleteSearchLocked()
-	return n
+	return n, outcomes
 }
 
 // DeleteEdges removes every supplied edge under a single write lock and
 // returns the count of edges that were actually present. Concurrent
 // readers observe either the pre-batch or the post-batch state.
 func (c *GraphCache[S, T]) DeleteEdges(keys []EdgeKey[S]) int {
+	n, _ := c.deleteEdges(keys, false)
+	return n
+}
+
+// DeleteEdgesOutcomes reports whether each request item found a bucket at
+// its turn in the batch. Duplicate identities retain their input positions.
+func (c *GraphCache[S, T]) DeleteEdgesOutcomes(keys []EdgeKey[S]) []bool {
+	_, outcomes := c.deleteEdges(keys, true)
+	return outcomes
+}
+
+func (c *GraphCache[S, T]) deleteEdges(keys []EdgeKey[S], withOutcomes bool) (int, []bool) {
 	if len(keys) == 0 {
-		return 0
+		if withOutcomes {
+			return 0, []bool{}
+		}
+		return 0, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var n int
-	for _, k := range keys {
-		if c.deleteEdgeLocked(k.Tail, k.Head) {
+	var outcomes []bool
+	if withOutcomes {
+		outcomes = make([]bool, len(keys))
+	}
+	for i, k := range keys {
+		deleted := c.deleteEdgeLocked(k.Tail, k.Head)
+		if deleted {
 			n++
+		}
+		if withOutcomes {
+			outcomes[i] = deleted
 		}
 		c.clearEdgeCausalBarrierLocked(k.Tail, k.Head)
 	}
-	return n
+	return n, outcomes
 }
 
 // PutVerticesWithExpirationHLC is the LWW-aware, single-lock batch sibling of

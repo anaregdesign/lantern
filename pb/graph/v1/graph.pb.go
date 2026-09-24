@@ -2120,8 +2120,13 @@ func (x *DeleteVerticesRequest) GetKeys() []string {
 
 type DeleteVerticesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Number of keys the server attempted to delete (equals len(keys) on success).
-	Deleted       int32 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	// Number of request items that observed and deleted a present vertex.
+	// Equals the number of true values in existed, not necessarily len(keys).
+	Deleted int32 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	// Index-aligned with request.keys and always the same length. A true item
+	// found a stored vertex at its turn in the batch and passed causal admission;
+	// absent, duplicate-after-delete, or causally rejected items are false.
+	Existed       []bool `protobuf:"varint,2,rep,packed,name=existed,proto3" json:"existed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2161,6 +2166,13 @@ func (x *DeleteVerticesResponse) GetDeleted() int32 {
 		return x.Deleted
 	}
 	return 0
+}
+
+func (x *DeleteVerticesResponse) GetExisted() []bool {
+	if x != nil {
+		return x.Existed
+	}
+	return nil
 }
 
 // ScanVerticesRequest streams vertices whose key starts with `prefix` in
@@ -3674,8 +3686,13 @@ func (x *DeleteEdgesRequest) GetEdges() []*EdgeKey {
 
 type DeleteEdgesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Number of edges the server attempted to delete (equals len(edges) on success).
-	Deleted       int32 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	// Number of request items that observed a present edge bucket and passed
+	// causal admission. Equals the number of true values in existed.
+	Deleted int32 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	// Index-aligned with request.edges and always the same length. Each item is
+	// observed at its turn in the batch; a newer HLC Add may remain live after
+	// an accepted Delete while existed still reports the pre-item bucket.
+	Existed       []bool `protobuf:"varint,2,rep,packed,name=existed,proto3" json:"existed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3715,6 +3732,13 @@ func (x *DeleteEdgesResponse) GetDeleted() int32 {
 		return x.Deleted
 	}
 	return 0
+}
+
+func (x *DeleteEdgesResponse) GetExisted() []bool {
+	if x != nil {
+		return x.Existed
+	}
+	return nil
 }
 
 // DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
@@ -5687,9 +5711,10 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x14DeleteVertexResponse\x12\x18\n" +
 	"\aexisted\x18\x01 \x01(\bR\aexisted\"+\n" +
 	"\x15DeleteVerticesRequest\x12\x12\n" +
-	"\x04keys\x18\x01 \x03(\tR\x04keys\"2\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"L\n" +
 	"\x16DeleteVerticesResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x05R\adeleted\"\x86\x01\n" +
+	"\adeleted\x18\x01 \x01(\x05R\adeleted\x12\x18\n" +
+	"\aexisted\x18\x02 \x03(\bR\aexisted\"\x86\x01\n" +
 	"\x13ScanVerticesRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12\x16\n" +
@@ -5792,9 +5817,10 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\vnext_cursor\x18\x02 \x01(\fR\n" +
 	"nextCursor\"=\n" +
 	"\x12DeleteEdgesRequest\x12'\n" +
-	"\x05edges\x18\x01 \x03(\v2\x11.graph.v1.EdgeKeyR\x05edges\"/\n" +
+	"\x05edges\x18\x01 \x03(\v2\x11.graph.v1.EdgeKeyR\x05edges\"I\n" +
 	"\x13DeleteEdgesResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x05R\adeleted\"\x8d\x01\n" +
+	"\adeleted\x18\x01 \x01(\x05R\adeleted\x12\x18\n" +
+	"\aexisted\x18\x02 \x03(\bR\aexisted\"\x8d\x01\n" +
 	"\x1aDeleteEdgesByPrefixRequest\x12\x1f\n" +
 	"\vtail_prefix\x18\x01 \x01(\tR\n" +
 	"tailPrefix\x12\x1f\n" +
