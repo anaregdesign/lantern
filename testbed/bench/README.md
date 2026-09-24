@@ -78,6 +78,60 @@ The exit code folds together the leak gate and any declared metric, semantic,
 and perf gates (`0` = all pass, `1` = at least one failed). Run artifacts are
 written under `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
 
+## Host-only GC and periodic-backup stress (#1183)
+
+`gc_stress.sh` and `backup_stress.sh` are opt-in measurements outside the
+Compose release sweep. They seed an in-process 100,000-vertex, approximately
+3.2-million-edge graph on the host, because a container VM with less than that
+working-set capacity would change the result. Both scripts require committed
+source and record its exact SHA, Go version, CPU/RAM, container-VM memory (when
+available), scale, intervals, and offered rates in `host.txt`. They write
+content-free timing/count artifacts under ignored `testbed/bench/out/`.
+There is currently no running Lantern deployment, so these runs establish
+synthetic signals only; observed deployment scale, production latency, and
+operator RPO remain unavailable.
+
+```bash
+./testbed/bench/gc_stress.sh
+./testbed/bench/backup_stress.sh
+```
+
+The GC script runs three repetitions of at least 100 direct `GraphCache.Watch`
+ticks per configuration: uniform degree 32 or a skewed graph with one
+100,000-head tail, crossed with a full sweep or a 5,000-tail budget. Uniform
+seeds 3,200,000 edges; skew seeds 3,199,969 because the hub has 100,000
+heads and each other tail has 31. This exposes how a tail budget handles one
+high-degree tail at nearly identical total edge count. Five expiry bands add
+live-edge contributions and short-only buckets; two vertex-deletion bands
+create dangling edges. The JSON retains every timestamped raw tick duration,
+scanned tail/edge count, expired contributions (including those compacted in
+still-live buckets), zero/dangling bucket removals, backlog, and a sampled
+expiry-to-physical-reclamation lag. `report.md` recomputes `gc_p99` from the
+raw ticks, separately for every run. The script also keeps ten target-scale
+single-flush benchmark repetitions and `benchstat.txt`; those benchmarks are
+not substitutes for a tick p99. `benchstat` must be installed in `PATH`.
+
+The backup script drives the actual periodic `Backupper.Run` for four
+30-second intervals while named `GetVertex`, `ScanVertices`, and `Illuminate`
+read producers each offer 200 calls/s, and `PutVertex` offers 50 calls/s, over
+the real Connect/h2c path. The JSON records each completed periodic tick's
+start/end and materialization/send/finalization durations and every call's
+start/end, latency, and success status. Each tick is paired with equal-length
+before/during/after windows per producer. A comparison requires at least 100
+successful calls and no errors in each window; missing data yields `unknown`,
+and a failed periodic attempt breaks a three-tick streak.
+The synthetic read trigger fires only if one named read producer's during p99
+exceeds twice its matched before p99 for three consecutive completed ticks.
+The local results do not establish an operator RPO or deletion-survives-restore
+requirement and cannot by themselves justify WAL.
+
+The environment variables `GC_VERTICES`, `GC_DEGREE`, `GC_TICKS`,
+`GC_INTERVAL_MS`, `GC_REPETITIONS`, `GC_SHAPES`, `GC_BUDGETS`, and the
+corresponding `BACKUP_VERTICES`, `BACKUP_DEGREE`, `BACKUP_INTERVAL_MS`,
+`BACKUP_READ_RPS`, `BACKUP_WRITE_RPS` override script defaults for a
+predeclared run or smoke check. If target-scale setup exceeds host resources,
+record that limit explicitly; do not treat a smaller run as equivalent.
+
 ## Scenarios
 
 | File | What it stresses |

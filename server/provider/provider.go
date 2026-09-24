@@ -103,6 +103,7 @@ type ObservabilityConfig struct {
 //
 //   - LANTERN_DEFAULT_TTL_SECONDS        (default 60)
 //   - LANTERN_GC_INTERVAL_SECONDS        (default 60) — GraphCache.Watch tick
+//   - LANTERN_GC_EDGE_BUDGET             (default 0) — tail buckets scanned per tick; 0 = full sweep
 //   - LANTERN_MAX_VERTICES               (default 0 = unlimited)
 //   - LANTERN_MAX_EDGES                  (default 0 = unlimited)
 //   - LANTERN_MAX_VERTEX_CAUSAL_ENTRIES  (default 0 = unlimited)
@@ -123,6 +124,7 @@ type ObservabilityConfig struct {
 type CacheConfig struct {
 	TTL                    time.Duration
 	GCInterval             time.Duration
+	GCEdgeBudget           int
 	MaxVertices            int
 	MaxEdges               int
 	MaxVertexCausalEntries int
@@ -326,6 +328,7 @@ func NewConfig() (*Config, error) {
 		Cache: CacheConfig{
 			TTL:                    time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
 			GCInterval:             time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
+			GCEdgeBudget:           envconfig.Int("LANTERN_GC_EDGE_BUDGET", 0),
 			MaxVertices:            envconfig.Int("LANTERN_MAX_VERTICES", 0),
 			MaxEdges:               envconfig.Int("LANTERN_MAX_EDGES", 0),
 			MaxVertexCausalEntries: envconfig.Int("LANTERN_MAX_VERTEX_CAUSAL_ENTRIES", 0),
@@ -412,6 +415,9 @@ func NewConfig() (*Config, error) {
 	}
 	if cfg.Cache.MaxEdgeCausalEntries < 0 {
 		return nil, fmt.Errorf("LANTERN_MAX_EDGE_CAUSAL_ENTRIES must be zero (unlimited) or positive")
+	}
+	if cfg.Cache.GCEdgeBudget < 0 {
+		return nil, fmt.Errorf("LANTERN_GC_EDGE_BUDGET must be zero (full sweep) or positive")
 	}
 	if err := validateSearchConfig(cfg.Search); err != nil {
 		return nil, err
@@ -591,6 +597,7 @@ func newLogger(o ObservabilityConfig, w io.Writer) *slog.Logger {
 
 func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string, *v1.Vertex] {
 	gc := graphcache.NewGraphCache[string, *v1.Vertex](c.TTL)
+	gc.SetGCEdgeBudget(c.GCEdgeBudget)
 	gc.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{
 		MaxVertexEntries: c.MaxVertexCausalEntries,
 		MaxEdgeEntries:   c.MaxEdgeCausalEntries,
@@ -709,6 +716,8 @@ func WireCacheGCHooks(
 	}
 	onGC := func(d time.Duration) {
 		m.OnGCDuration(d)
+		stats := cache.LastGCSweepStats()
+		m.SetGCEdgeBacklog(stats.BacklogTails)
 		logger.LogAttrs(context.Background(), slog.LevelInfo, "graph cache: gc tick",
 			slog.Int("vertices_expired", tick.vertices),
 			slog.Int("edges_expired", tick.edges),
@@ -716,6 +725,12 @@ func WireCacheGCHooks(
 			slog.Int("vertices_remaining", cache.VertexCount()),
 			slog.Int("edges_remaining", cache.EdgeCount()),
 			slog.Int64("duration_ms", d.Milliseconds()),
+			slog.Int64("duration_ns", d.Nanoseconds()),
+			slog.Int("tails_scanned", stats.ScannedTails),
+			slog.Int("edges_scanned", stats.ScannedEdges),
+			slog.Int("contributions_expired", stats.ExpiredContributions),
+			slog.Int("contributions_compacted_in_live_edges", stats.CompactedContributionsInLiveBuckets),
+			slog.Int("tail_backlog", stats.BacklogTails),
 		)
 		tick.vertices, tick.edges, tick.dangling = 0, 0, 0
 	}

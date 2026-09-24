@@ -1,10 +1,14 @@
 package backup
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +105,54 @@ func TestBackupper_RoundTrip(t *testing.T) {
 	}
 	if dst.beginRecovery != 1 || dst.completeRecovery != 1 {
 		t.Fatalf("search recovery lifecycle = begin %d complete %d, want 1/1", dst.beginRecovery, dst.completeRecovery)
+	}
+}
+
+func TestBackupper_PeriodicTickEmitsCorrelatableStages(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	cfg := testConfig(t.TempDir())
+	cfg.Interval = 20 * time.Millisecond
+	b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("synthetic")}}, cfg, nil, logger)
+	ctx, cancel := context.WithTimeout(context.Background(), 160*time.Millisecond)
+	defer cancel()
+	if err := b.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	starts := make(map[string]int64)
+	completed := 0
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["source"] != "periodic" {
+			continue
+		}
+		id, _ := record["tick_id"].(string)
+		if id == "" {
+			t.Fatalf("periodic record lacks tick_id: %v", record)
+		}
+		switch record["msg"] {
+		case "backup: dump started":
+			starts[id] = int64(record["started_unix_ns"].(float64))
+		case "backup: wrote dump":
+			completed++
+			if _, ok := starts[id]; !ok {
+				t.Fatalf("completed periodic tick %s lacks start", id)
+			}
+			if record["finished_unix_ns"].(float64) < record["started_unix_ns"].(float64) {
+				t.Fatalf("negative backup window: %v", record)
+			}
+			for _, field := range []string{"materialization_ns", "send_ns", "finalization_ns"} {
+				if value, ok := record[field].(float64); !ok || value < 0 {
+					t.Fatalf("invalid %s in %v", field, record)
+				}
+			}
+		}
+	}
+	if completed < 3 {
+		t.Fatalf("completed periodic ticks = %d, want >=3", completed)
 	}
 }
 

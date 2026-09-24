@@ -2,7 +2,12 @@ package graphcache
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -107,6 +112,51 @@ func TestGraphCache_GCDoesNotPromoteZeroHLCToCausalBarrier(t *testing.T) {
 	}
 	if _, _, ok := c.GetEdgeDetail("tail", "head"); ok {
 		t.Fatal("expired zero-HLC edge survived GC")
+	}
+}
+
+func TestGraphCache_GCSweepStatsDistinguishesLiveContributionCompaction(t *testing.T) {
+	for _, budget := range []int{0, 1} {
+		t.Run(fmt.Sprintf("budget_%d", budget), func(t *testing.T) {
+			c := NewGraphCache[string, string](time.Hour)
+			live := time.Now().Add(time.Hour)
+			past := time.Now().Add(-time.Second)
+			for _, key := range []string{"a", "b", "c", "d"} {
+				c.PutVertexWithExpiration(key, key, live)
+			}
+			c.AddEdgeWithExpiration("a", "b", 1, live)
+			c.AddEdgeWithExpiration("a", "b", 2, past)
+			c.AddEdgeWithExpiration("a", "c", 1, past)
+			c.AddEdgeWithExpiration("c", "d", 1, live)
+			c.DeleteVertex("d")
+			c.SetGCEdgeBudget(budget)
+
+			var total GCSweepStats
+			ticks := 1
+			if budget > 0 {
+				ticks = 2 // one tail per tick
+			}
+			for range ticks {
+				c.flush()
+				got := c.LastGCSweepStats()
+				if budget > 0 && got.ScannedTails > budget {
+					t.Fatalf("scanned tails = %d, budget = %d", got.ScannedTails, budget)
+				}
+				total.ScannedTails += got.ScannedTails
+				total.ScannedEdges += got.ScannedEdges
+				total.ExpiredContributions += got.ExpiredContributions
+				total.CompactedContributionsInLiveBuckets += got.CompactedContributionsInLiveBuckets
+				total.ZeroRemoved += got.ZeroRemoved
+				total.DanglingRemoved += got.DanglingRemoved
+			}
+			if total.ScannedTails != 2 || total.ScannedEdges != 3 || total.ExpiredContributions != 2 ||
+				total.CompactedContributionsInLiveBuckets != 1 || total.ZeroRemoved != 1 || total.DanglingRemoved != 1 {
+				t.Errorf("sweep stats = %+v, want tails=2 edges=3 expired=2 compacted-live=1 zero=1 dangling=1", total)
+			}
+			if got := c.GCSweepBacklog(); got != 0 {
+				t.Errorf("backlog after full cycle = %d, want 0", got)
+			}
+		})
 	}
 }
 
@@ -394,4 +444,252 @@ func BenchmarkGCFlushDanglingSweep(b *testing.B) {
 			b.Fatalf("dangling = %d, want %d", dangling, tails*headsPerTail)
 		}
 	}
+}
+
+// TestGraphCache_GCStress is an opt-in host-only measurement. It is skipped
+// during ordinary go test; testbed/bench/gc_stress.sh supplies its environment
+// and writes content-free artifacts outside the repository. The measured
+// duration is GraphCache.Watch's complete tick, not a standalone flush or an
+// RPC latency proxy.
+func TestGraphCache_GCStress(t *testing.T) {
+	out := os.Getenv("LANTERN_GC_STRESS_OUT")
+	if out == "" {
+		t.Skip("set LANTERN_GC_STRESS_OUT to run target-scale GC stress")
+	}
+	vertices := gcStressEnvInt(t, "LANTERN_GC_STRESS_VERTICES", 100_000)
+	degree := gcStressEnvInt(t, "LANTERN_GC_STRESS_DEGREE", 32)
+	ticks := gcStressEnvInt(t, "LANTERN_GC_STRESS_TICKS", 100)
+	intervalMS := gcStressEnvInt(t, "LANTERN_GC_STRESS_INTERVAL_MS", 1_000)
+	budget := gcStressEnvInt(t, "LANTERN_GC_STRESS_BUDGET", 0)
+	shape := os.Getenv("LANTERN_GC_STRESS_SHAPE")
+	if shape == "" {
+		shape = "uniform"
+	}
+	if vertices < 100 || degree < 2 || degree+6 >= vertices || ticks < 10 || intervalMS < 1 || budget < 0 || (shape != "uniform" && shape != "hub") {
+		t.Fatalf("invalid GC stress parameters: vertices=%d degree=%d ticks=%d interval_ms=%d budget=%d shape=%q", vertices, degree, ticks, intervalMS, budget, shape)
+	}
+	sha := os.Getenv("LANTERN_GC_STRESS_SHA")
+	if sha == "" {
+		t.Fatal("LANTERN_GC_STRESS_SHA must identify the measured build")
+	}
+	interval := time.Duration(intervalMS) * time.Millisecond
+	cache := NewGraphCache[string, string](time.Hour)
+	cache.SetGCEdgeBudget(budget)
+	keys := make([]string, vertices)
+	vertexBatch := make([]VertexItem[string, string], 0, 1000)
+	liveUntil := time.Now().Add(time.Hour)
+	for i := range keys {
+		keys[i] = makeKey("https://example.com", i, 80)
+		vertexBatch = append(vertexBatch, VertexItem[string, string]{Key: keys[i], Value: "", Expiration: liveUntil})
+		if len(vertexBatch) == cap(vertexBatch) {
+			if err := cache.PutVerticesWithExpiration(vertexBatch); err != nil {
+				t.Fatal(err)
+			}
+			vertexBatch = vertexBatch[:0]
+		}
+	}
+	if len(vertexBatch) > 0 {
+		if err := cache.PutVerticesWithExpiration(vertexBatch); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The hub shape keeps approximately the same edge count as uniform, but
+	// puts 100k heads under one tail. A tail budget cannot cap that tick's
+	// edge scan, and the comparison makes the limitation observable.
+	edgeBatch := make([]EdgeItem[string], 0, 10_000)
+	seededEdges := 0
+	for tail := range keys {
+		fanOut := degree
+		if shape == "hub" {
+			fanOut = degree - 1
+			if tail == 0 {
+				fanOut = vertices
+			}
+		}
+		for offset := 1; offset <= fanOut; offset++ {
+			head := (tail + offset) % vertices
+			edgeBatch = append(edgeBatch, EdgeItem[string]{Tail: keys[tail], Head: keys[head], Weight: 1, Expiration: liveUntil})
+			seededEdges++
+			if len(edgeBatch) == cap(edgeBatch) {
+				cache.AddEdgesWithExpiration(edgeBatch)
+				edgeBatch = edgeBatch[:0]
+			}
+		}
+	}
+	if len(edgeBatch) > 0 {
+		cache.AddEdgesWithExpiration(edgeBatch)
+	}
+	if got := cache.EdgeCount(); got != seededEdges {
+		t.Fatalf("seeded edges = %d, want %d", got, seededEdges)
+	}
+
+	// Five absolute deadlines keep expiry work spread across different
+	// Watch ticks. Each group adds short-lived weight to already-live edges
+	// and short-only edge buckets. A small deterministic sample of the latter
+	// tracks physical reclamation without perturbing the timed sweep.
+	total := time.Duration(ticks) * interval
+	contribsPerGroup := max(1, vertices/10)
+	zeroPerGroup := max(1, vertices/200)
+	probesPerGroup := min(20, zeroPerGroup)
+	type probe struct {
+		tail, head string
+		expires    time.Time
+		reclaimed  bool
+	}
+	probes := make([]probe, 0, 5*probesPerGroup)
+	for group := range 5 {
+		deadline := time.Now().Add(time.Duration(20+10*group) * total / 100)
+		for n := range contribsPerGroup {
+			tail := 1 + (group*contribsPerGroup+n)%(vertices/2)
+			cache.AddEdgeWithExpiration(keys[tail], keys[(tail+1)%vertices], 1, deadline)
+		}
+		for n := range zeroPerGroup {
+			tail := 1 + (group*zeroPerGroup+n)%(vertices/2)
+			head := (tail + degree + 5) % vertices
+			cache.AddEdgeWithExpiration(keys[tail], keys[head], 1, deadline)
+			if n < probesPerGroup {
+				probes = append(probes, probe{tail: keys[tail], head: keys[head], expires: deadline})
+			}
+		}
+	}
+
+	type sample struct {
+		FinishedAt time.Time    `json:"finished_at"`
+		DurationNS int64        `json:"duration_ns"`
+		Sweep      GCSweepStats `json:"sweep"`
+	}
+	tickCh := make(chan sample, 1)
+	cache.SetGCHooks(nil, func(d time.Duration) {
+		tickCh <- sample{FinishedAt: time.Now().UTC(), DurationNS: d.Nanoseconds(), Sweep: cache.LastGCSweepStats()}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	started := time.Now()
+	go func() {
+		cache.Watch(ctx, interval)
+		close(done)
+	}()
+	// Delete two disjoint one-percent vertex bands. Their incoming edges
+	// survive physically until GC and exercise the dangling sweep.
+	deletionsDone := make(chan struct{})
+	go func() {
+		defer close(deletionsDone)
+		for _, fraction := range []int{30, 50} {
+			deadline := started.Add(time.Duration(fraction) * total / 100)
+			if wait := time.Until(deadline); wait > 0 {
+				time.Sleep(wait)
+			}
+			band := 0
+			if fraction == 50 {
+				band = 1
+			}
+			width := max(1, vertices/100)
+			for i := vertices - (band+1)*width; i < vertices-band*width; i++ {
+				cache.DeleteVertex(keys[i])
+			}
+		}
+	}()
+
+	samples := make([]sample, 0, ticks)
+	var scannedEdges, compactedLive, expiredContribs, zeroRemoved, danglingRemoved int64
+	maxBacklog := 0
+	var maxReclaimLag time.Duration
+	for range ticks {
+		select {
+		case got := <-tickCh:
+			samples = append(samples, got)
+			scannedEdges += int64(got.Sweep.ScannedEdges)
+			compactedLive += int64(got.Sweep.CompactedContributionsInLiveBuckets)
+			expiredContribs += int64(got.Sweep.ExpiredContributions)
+			zeroRemoved += int64(got.Sweep.ZeroRemoved)
+			danglingRemoved += int64(got.Sweep.DanglingRemoved)
+			maxBacklog = max(maxBacklog, got.Sweep.BacklogTails)
+			for i := range probes {
+				p := &probes[i]
+				if p.reclaimed || got.FinishedAt.Before(p.expires) {
+					continue
+				}
+				if _, exists := cache.edges.lastPutHLC(p.tail, p.head); !exists {
+					p.reclaimed = true
+					maxReclaimLag = max(maxReclaimLag, got.FinishedAt.Sub(p.expires))
+				}
+			}
+		case <-time.After(2 * total):
+			cancel()
+			<-done
+			t.Fatal("GC stress timed out waiting for a tick")
+		}
+	}
+	cancel()
+	<-done
+	<-deletionsDone
+	missingProbes := 0
+	for _, p := range probes {
+		if !p.reclaimed {
+			missingProbes++
+		}
+	}
+	durations := make([]int64, len(samples))
+	for i, s := range samples {
+		durations[i] = s.DurationNS
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	quantile := func(p int) int64 {
+		index := (p*len(durations) + 99) / 100 // nearest rank
+		return durations[index-1]
+	}
+	artifact := struct {
+		SHA                  string        `json:"sha"`
+		GoVersion            string        `json:"go_version"`
+		GOOS                 string        `json:"goos"`
+		GOARCH               string        `json:"goarch"`
+		CPUs                 int           `json:"cpus"`
+		Vertices             int           `json:"vertices"`
+		SeededEdges          int           `json:"seeded_edges"`
+		Shape                string        `json:"shape"`
+		Degree               int           `json:"degree"`
+		BudgetTails          int           `json:"budget_tails"`
+		IntervalMS           int           `json:"interval_ms"`
+		Samples              []sample      `json:"samples"`
+		P95NS                int64         `json:"gc_p95_ns"`
+		P99NS                int64         `json:"gc_p99_ns"`
+		MaxNS                int64         `json:"gc_max_ns"`
+		ScannedEdges         int64         `json:"scanned_edges"`
+		ExpiredContributions int64         `json:"expired_contributions"`
+		CompactedLive        int64         `json:"compacted_contributions_in_live_edges"`
+		ZeroRemoved          int64         `json:"zero_edges_removed"`
+		DanglingRemoved      int64         `json:"dangling_edges_removed"`
+		MaxBacklogTails      int           `json:"max_backlog_tails"`
+		MaxReclaimLag        time.Duration `json:"max_probe_reclaim_lag_ns"`
+		UnreclaimedProbes    int           `json:"unreclaimed_probes"`
+	}{sha, runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), vertices, seededEdges,
+		shape, degree, budget, intervalMS, samples, quantile(95), quantile(99), durations[len(durations)-1],
+		scannedEdges, expiredContribs, compactedLive, zeroRemoved, danglingRemoved, maxBacklog,
+		maxReclaimLag, missingProbes}
+	data, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("GC stress: shape=%s budget=%d p99=%s scanned=%d compacted_live=%d backlog=%d unreclaimed_probes=%d artifact=%s",
+		shape, budget, time.Duration(quantile(99)), scannedEdges, compactedLive, maxBacklog, missingProbes, out)
+}
+
+func gcStressEnvInt(t *testing.T, key string, def int) int {
+	t.Helper()
+	value := os.Getenv(key)
+	if value == "" {
+		return def
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		t.Fatalf("%s: %v", key, err)
+	}
+	return n
 }

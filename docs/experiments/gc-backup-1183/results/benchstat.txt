@@ -1,0 +1,21 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+                                    │ benchmark.txt │
+                                    │    sec/op     │
+GCFlush/v100k_d32_k80-16               622.8m ± 10%
+GCFlushIncremental/v100k_d32_k80-16    58.62m ± 13%
+geomean                                191.1m
+
+                                    │ benchmark.txt │
+                                    │     B/op      │
+GCFlush/v100k_d32_k80-16               2.801Mi ± 0%
+GCFlushIncremental/v100k_d32_k80-16    2.705Mi ± 0%
+geomean                                2.753Mi
+
+                                    │ benchmark.txt │
+                                    │   allocs/op   │
+GCFlush/v100k_d32_k80-16                 551.0 ± 0%
+GCFlushIncremental/v100k_d32_k80-16      531.0 ± 0%
+geomean                                  540.9

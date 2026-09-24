@@ -8,6 +8,8 @@
 //   - semantic_{pre,post}.json       -> Bounded Search correctness probes
 //   - perf_gate.json                 -> Aggregate and named-producer ratchets
 //   - ghz_*.json                     -> Per-phase / per-call latency tables
+//   - gc_*.json                      -> Direct raw Watch tick duration tables
+//   - backup_periodic.json            -> Matched periodic backup/read windows
 //   - prom/_index.ndjson             -> Indexed list of Prom range queries
 //   - pprof/                         -> Inventory of captured pprof profiles
 //
@@ -207,6 +209,8 @@ type Input struct {
 	SemanticPost *SemanticGate
 	PerfGate     *PerfGate
 	GhzFiles     []GhzFile
+	GCFiles      []GCFile
+	Backup       *BackupStressFile
 	PromIndex    []PromIndexEntry
 	PprofList    []string
 }
@@ -288,6 +292,12 @@ func LoadInput(dir, scenario, ts string) (Input, error) {
 		in.GhzFiles = append(in.GhzFiles, GhzFile{Name: name, Summary: s})
 	}
 	sort.Slice(in.GhzFiles, func(i, j int) bool { return in.GhzFiles[i].Name < in.GhzFiles[j].Name })
+	if err := loadGCFiles(dir, entries, &in); err != nil {
+		return in, err
+	}
+	if err := loadBackupStress(dir, &in); err != nil {
+		return in, err
+	}
 
 	if b, err := os.ReadFile(filepath.Join(dir, "prom", "_index.ndjson")); err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
@@ -480,6 +490,9 @@ func RenderReport(w io.Writer, in Input) error {
 			bw.printf("\n")
 		}
 	}
+
+	renderGCTicks(bw, in.GCFiles)
+	renderBackupStress(bw, in.Backup)
 
 	bw.printf("## ghz runs\n\n")
 	if len(in.GhzFiles) == 0 {

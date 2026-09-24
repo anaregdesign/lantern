@@ -182,13 +182,13 @@ func (b *Backupper) Run(ctx context.Context) error {
 			// Final best-effort dump on graceful shutdown, bounded so it
 			// never blocks the drain budget.
 			finalCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if _, err := b.backupOnce(finalCtx); err != nil {
+			if _, err := b.backupOnceWithSource(finalCtx, "shutdown"); err != nil {
 				b.logger.Warn("backup: final dump on shutdown failed", slog.Any("err", err))
 			}
 			cancel()
 			return nil
 		case <-ticker.C:
-			if _, err := b.backupOnce(ctx); err != nil {
+			if _, err := b.backupOnceWithSource(ctx, "periodic"); err != nil {
 				b.logger.Warn("backup: periodic dump failed", slog.Any("err", err))
 			}
 		}
@@ -206,7 +206,16 @@ func (b *Backupper) BackupNow(ctx context.Context) (Stats, error) {
 // backupOnce writes one whole-graph dump atomically (temp file + rename),
 // then prunes to Retain newest of this instance's own dumps.
 func (b *Backupper) backupOnce(ctx context.Context) (Stats, error) {
+	return b.backupOnceWithSource(ctx, "manual")
+}
+
+func (b *Backupper) backupOnceWithSource(ctx context.Context, source string) (Stats, error) {
 	start := b.now()
+	tickID := strconv.FormatInt(start.UnixNano(), 10)
+	b.logger.Info("backup: dump started",
+		slog.String("source", source),
+		slog.String("tick_id", tickID),
+		slog.Int64("started_unix_ns", start.UnixNano()))
 	if err := os.MkdirAll(b.cfg.Dir, 0o755); err != nil {
 		b.failed()
 		return Stats{}, fmt.Errorf("backup: mkdir %s: %w", b.cfg.Dir, err)
@@ -220,8 +229,14 @@ func (b *Backupper) backupOnce(ctx context.Context) (Stats, error) {
 		b.failed()
 		return Stats{}, fmt.Errorf("backup: create %s: %w", tmp, err)
 	}
-	sender := &protoFileSender{w: bufio.NewWriter(f)}
+	sender := &protoFileSender{w: bufio.NewWriter(f), now: b.now}
+	snapshotStart := b.now()
 	serr := b.svc.BackupSnapshot(ctx, &pb.BackupSnapshotRequest{}, sender)
+	snapshotEnd := b.now()
+	materializationEnd := sender.firstSend
+	if materializationEnd.IsZero() {
+		materializationEnd = snapshotEnd
+	}
 	if serr == nil {
 		serr = sender.w.Flush()
 	}
@@ -240,14 +255,22 @@ func (b *Backupper) backupOnce(ctx context.Context) (Stats, error) {
 	}
 
 	stats := Stats{Vertices: sender.vertices, Edges: sender.edges}
+	finished := b.now()
 	if b.metrics != nil {
-		b.metrics.observeBackup(stats, b.now().Sub(start), b.now())
+		b.metrics.observeBackup(stats, finished.Sub(start), finished)
 	}
 	b.logger.Info("backup: wrote dump",
+		slog.String("source", source),
+		slog.String("tick_id", tickID),
+		slog.Int64("started_unix_ns", start.UnixNano()),
+		slog.Int64("finished_unix_ns", finished.UnixNano()),
+		slog.Int64("materialization_ns", materializationEnd.Sub(snapshotStart).Nanoseconds()),
+		slog.Int64("send_ns", snapshotEnd.Sub(materializationEnd).Nanoseconds()),
+		slog.Int64("finalization_ns", finished.Sub(snapshotEnd).Nanoseconds()),
 		slog.String("file", final),
 		slog.Int("vertices", stats.Vertices),
 		slog.Int("edges", stats.Edges),
-		slog.Duration("took", b.now().Sub(start)))
+		slog.Duration("took", finished.Sub(start)))
 	b.prune()
 	return stats, nil
 }
@@ -425,12 +448,21 @@ func fileStamp(name string) (int64, bool) {
 // writing each frame as length-delimited protobuf — byte-identical to the
 // SDK / CLI proto dump format.
 type protoFileSender struct {
-	w        *bufio.Writer
-	vertices int
-	edges    int
+	w         *bufio.Writer
+	now       func() time.Time
+	firstSend time.Time
+	vertices  int
+	edges     int
 }
 
 func (s *protoFileSender) Send(rec *pb.BackupSnapshotResponse) error {
+	if s.firstSend.IsZero() {
+		if s.now == nil {
+			s.firstSend = time.Now()
+		} else {
+			s.firstSend = s.now()
+		}
+	}
 	if _, err := protodelim.MarshalTo(s.w, rec); err != nil {
 		return err
 	}

@@ -1,0 +1,15 @@
+sha=d3ceef7729a54212cb1958a19299993d02deedec
+measured_at_utc=20260924T051256Z
+uname=Darwin 25.6.0 arm64
+go_version=go version go1.27.0 darwin/arm64
+goos=darwin
+goarch=arm64
+vertices=100000
+degree=32
+interval_ms=30000
+read_rps_per_producer=200
+write_rps=150
+machdep.cpu.brand_string=Apple M3 Max
+hw.ncpu=16
+hw.memsize=68719476736
+docker_vm_mem_bytes=8216018944

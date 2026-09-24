@@ -42,6 +42,7 @@ type GraphCache[S comparable, T any] struct {
 	hookMu       sync.RWMutex
 	onExpire     func(kind string, n int)
 	onGCDuration func(d time.Duration)
+	gcLastSweep  GCSweepStats
 
 	// prefixIndex is an optional secondary index keyed by the string
 	// projection of S (see EnablePrefixIndex). When non-nil it is kept in

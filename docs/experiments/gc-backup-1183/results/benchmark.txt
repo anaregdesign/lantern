@@ -1,0 +1,26 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 665693499 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 640350792 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 553589334 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 561900375 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 609454084 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 673017375 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 610125750 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 612467209 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 633109209 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlush/v100k_d32_k80-16 	       1	 668463500 ns/op	 2936840 B/op	     551 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  59760959 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  56143417 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  52488166 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  51142042 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  59605543 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  89625376 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  58545292 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  58687333 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  62271917 ns/op	 2836616 B/op	     531 allocs/op
+BenchmarkGCFlushIncremental/v100k_d32_k80-16         	       1	  49801958 ns/op	 2836616 B/op	     531 allocs/op
+PASS
+ok  	github.com/anaregdesign/lantern/core/graphcache	41.812s

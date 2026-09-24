@@ -111,6 +111,7 @@ func TestDomainMetrics_ExposesLanternFamilies(t *testing.T) {
 	m.OnExpire("edge", 5)
 	m.OnExpire("dangling_edge", 1)
 	m.OnGCDuration(7 * time.Millisecond)
+	m.SetGCEdgeBacklog(3)
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -125,6 +126,7 @@ func TestDomainMetrics_ExposesLanternFamilies(t *testing.T) {
 		"lantern_edges",
 		"lantern_ttl_expirations_total",
 		"lantern_gc_duration_seconds",
+		"lantern_gc_edge_backlog_tails",
 		"lantern_build_info",
 	} {
 		if !names[want] {
@@ -146,6 +148,9 @@ func TestDomainMetrics_ExposesLanternFamilies(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.expirations.WithLabelValues("dangling_edge")); got != 1 {
 		t.Errorf("expirations[dangling_edge] = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.gcEdgeBacklog); got != 3 {
+		t.Errorf("gc edge backlog = %v, want 3", got)
 	}
 
 	// build_info should be exactly 1 with the labels we passed.

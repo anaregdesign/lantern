@@ -66,11 +66,39 @@ func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
 	}
 	for _, k := range []string{
 		"vertices_expired", "edges_expired", "dangling_edges_removed",
-		"vertices_remaining", "edges_remaining", "duration_ms",
+		"vertices_remaining", "edges_remaining", "duration_ms", "duration_ns",
+		"tails_scanned", "edges_scanned", "contributions_expired",
+		"contributions_compacted_in_live_edges", "tail_backlog",
 	} {
 		if _, ok := rec[k]; !ok {
 			t.Errorf("missing field %q in record: %v", k, rec)
 		}
+	}
+}
+
+func TestNewGraphCache_GCEdgeBudget(t *testing.T) {
+	cache := NewGraphCache(CacheConfig{TTL: time.Minute, GCEdgeBudget: 1}, SearchConfig{})
+	live := time.Now().Add(time.Minute)
+	for _, key := range []string{"a", "b", "c"} {
+		cache.PutVertexWithExpiration(key, &v1.Vertex{Key: key}, live)
+	}
+	cache.AddEdgeWithExpiration("a", "b", 1, live)
+	cache.AddEdgeWithExpiration("b", "c", 1, live)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seen := make(chan graphcache.GCSweepStats, 1)
+	cache.SetGCHooks(nil, func(time.Duration) {
+		seen <- cache.LastGCSweepStats()
+		cancel()
+	})
+	go cache.Watch(ctx, time.Millisecond)
+	select {
+	case stats := <-seen:
+		if stats.ScannedTails != 1 || stats.BacklogTails != 1 {
+			t.Fatalf("budgeted first tick = %+v, want one scanned and one backlog tail", stats)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no GC tick")
 	}
 }
 
@@ -80,6 +108,23 @@ func TestWireCacheGCHooks_EmitsTickSummary(t *testing.T) {
 // failure happens inside NewConfig — the first provider wire constructs — so
 // a refused boot never reaches listener construction.
 func TestNewConfigValidation(t *testing.T) {
+	t.Run("GC edge budget loads and rejects a negative value", func(t *testing.T) {
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_GC_EDGE_BUDGET", "5000")
+		cfg, err := NewConfig()
+		if err != nil {
+			t.Fatalf("NewConfig: %v", err)
+		}
+		if cfg.Cache.GCEdgeBudget != 5000 {
+			t.Fatalf("GCEdgeBudget = %d, want 5000", cfg.Cache.GCEdgeBudget)
+		}
+		envconfig.ResetForTesting()
+		t.Setenv("LANTERN_GC_EDGE_BUDGET", "-1")
+		if _, err := NewConfig(); err == nil || !strings.Contains(err.Error(), "LANTERN_GC_EDGE_BUDGET") {
+			t.Fatalf("NewConfig error = %v, want negative-budget rejection", err)
+		}
+	})
+
 	t.Run("bootstrap validation uses configured JSON logger", func(t *testing.T) {
 		envconfig.ResetForTesting()
 		t.Setenv("LANTERN_STRICT_CONFIG", "false")

@@ -1,0 +1,1326 @@
+{
+  "sha": "42a8d707b6d3a19e0d6b90a5dae79984c2f81771",
+  "go_version": "go1.27.0",
+  "goos": "darwin",
+  "goarch": "arm64",
+  "cpus": 16,
+  "vertices": 100000,
+  "seeded_edges": 3200000,
+  "shape": "uniform",
+  "degree": 32,
+  "budget_tails": 5000,
+  "interval_ms": 1000,
+  "samples": [
+    {
+      "finished_at": "2026-09-24T04:54:40.998523Z",
+      "duration_ns": 49840833,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160121,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 95000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:41.991277Z",
+      "duration_ns": 42655958,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160129,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 90000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:42.991991Z",
+      "duration_ns": 43401334,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 85000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:43.988978Z",
+      "duration_ns": 40417584,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160131,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 80000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:44.986719Z",
+      "duration_ns": 38180292,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160119,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 75000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:45.991369Z",
+      "duration_ns": 42846167,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 70000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:46.990438Z",
+      "duration_ns": 43126917,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160125,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 65000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:48.000238Z",
+      "duration_ns": 51765917,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 60000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:48.990292Z",
+      "duration_ns": 43772209,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 55000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:49.998832Z",
+      "duration_ns": 50405875,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 50000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:50.987188Z",
+      "duration_ns": 39615000,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160123,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 45000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:51.988518Z",
+      "duration_ns": 40985416,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 40000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:52.998061Z",
+      "duration_ns": 51301334,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160123,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 35000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:53.986491Z",
+      "duration_ns": 38172667,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160124,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 30000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:54.995815Z",
+      "duration_ns": 47516584,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160129,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 25000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:56.002225Z",
+      "duration_ns": 53951542,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160123,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 20000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:56.987797Z",
+      "duration_ns": 39540584,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160123,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 15000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:57.99294Z",
+      "duration_ns": 44729500,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 10000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:58.986195Z",
+      "duration_ns": 38010959,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160124,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 5000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:54:59.986745Z",
+      "duration_ns": 39424834,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160124,
+        "ExpiredContributions": 524,
+        "CompactedContributionsInLiveBuckets": 498,
+        "ZeroRemoved": 26,
+        "DanglingRemoved": 0,
+        "BacklogTails": 0
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:00.998755Z",
+      "duration_ns": 47407416,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160122,
+        "ExpiredContributions": 522,
+        "CompactedContributionsInLiveBuckets": 498,
+        "ZeroRemoved": 24,
+        "DanglingRemoved": 0,
+        "BacklogTails": 95000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:02.010408Z",
+      "duration_ns": 62662750,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160119,
+        "ExpiredContributions": 352,
+        "CompactedContributionsInLiveBuckets": 334,
+        "ZeroRemoved": 18,
+        "DanglingRemoved": 0,
+        "BacklogTails": 90000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:02.98621Z",
+      "duration_ns": 38105209,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160107,
+        "ExpiredContributions": 178,
+        "CompactedContributionsInLiveBuckets": 170,
+        "ZeroRemoved": 8,
+        "DanglingRemoved": 0,
+        "BacklogTails": 85000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:03.986787Z",
+      "duration_ns": 38729667,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160124,
+        "ExpiredContributions": 523,
+        "CompactedContributionsInLiveBuckets": 498,
+        "ZeroRemoved": 25,
+        "DanglingRemoved": 0,
+        "BacklogTails": 80000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:04.993614Z",
+      "duration_ns": 45569209,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160125,
+        "ExpiredContributions": 530,
+        "CompactedContributionsInLiveBuckets": 505,
+        "ZeroRemoved": 25,
+        "DanglingRemoved": 0,
+        "BacklogTails": 75000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:06.004522Z",
+      "duration_ns": 52321625,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160127,
+        "ExpiredContributions": 530,
+        "CompactedContributionsInLiveBuckets": 503,
+        "ZeroRemoved": 27,
+        "DanglingRemoved": 0,
+        "BacklogTails": 70000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:06.993877Z",
+      "duration_ns": 45885292,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160124,
+        "ExpiredContributions": 518,
+        "CompactedContributionsInLiveBuckets": 495,
+        "ZeroRemoved": 23,
+        "DanglingRemoved": 0,
+        "BacklogTails": 65000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:07.988843Z",
+      "duration_ns": 40882084,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160127,
+        "ExpiredContributions": 526,
+        "CompactedContributionsInLiveBuckets": 501,
+        "ZeroRemoved": 25,
+        "DanglingRemoved": 0,
+        "BacklogTails": 60000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:08.991523Z",
+      "duration_ns": 43586583,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160125,
+        "ExpiredContributions": 523,
+        "CompactedContributionsInLiveBuckets": 497,
+        "ZeroRemoved": 26,
+        "DanglingRemoved": 0,
+        "BacklogTails": 55000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:09.987852Z",
+      "duration_ns": 41201208,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160125,
+        "ExpiredContributions": 1043,
+        "CompactedContributionsInLiveBuckets": 992,
+        "ZeroRemoved": 51,
+        "DanglingRemoved": 0,
+        "BacklogTails": 50000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:10.98871Z",
+      "duration_ns": 41436750,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160127,
+        "ExpiredContributions": 1058,
+        "CompactedContributionsInLiveBuckets": 1009,
+        "ZeroRemoved": 49,
+        "DanglingRemoved": 1632,
+        "BacklogTails": 45000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:11.995545Z",
+      "duration_ns": 44506708,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160128,
+        "ExpiredContributions": 1046,
+        "CompactedContributionsInLiveBuckets": 994,
+        "ZeroRemoved": 52,
+        "DanglingRemoved": 1659,
+        "BacklogTails": 40000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:12.998668Z",
+      "duration_ns": 47025042,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160118,
+        "ExpiredContributions": 1045,
+        "CompactedContributionsInLiveBuckets": 998,
+        "ZeroRemoved": 47,
+        "DanglingRemoved": 1608,
+        "BacklogTails": 35000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:13.986097Z",
+      "duration_ns": 38356375,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160127,
+        "ExpiredContributions": 1054,
+        "CompactedContributionsInLiveBuckets": 1004,
+        "ZeroRemoved": 50,
+        "DanglingRemoved": 1657,
+        "BacklogTails": 30000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:14.992061Z",
+      "duration_ns": 45949875,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160128,
+        "ExpiredContributions": 1043,
+        "CompactedContributionsInLiveBuckets": 993,
+        "ZeroRemoved": 50,
+        "DanglingRemoved": 1659,
+        "BacklogTails": 25000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:16.005768Z",
+      "duration_ns": 59310250,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160122,
+        "ExpiredContributions": 1059,
+        "CompactedContributionsInLiveBuckets": 1007,
+        "ZeroRemoved": 52,
+        "DanglingRemoved": 1434,
+        "BacklogTails": 20000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:16.994987Z",
+      "duration_ns": 48509416,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160122,
+        "ExpiredContributions": 1038,
+        "CompactedContributionsInLiveBuckets": 991,
+        "ZeroRemoved": 47,
+        "DanglingRemoved": 1609,
+        "BacklogTails": 15000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:18.003858Z",
+      "duration_ns": 56483708,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160129,
+        "ExpiredContributions": 1061,
+        "CompactedContributionsInLiveBuckets": 1008,
+        "ZeroRemoved": 53,
+        "DanglingRemoved": 1759,
+        "BacklogTails": 10000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:19.003108Z",
+      "duration_ns": 56882625,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160126,
+        "ExpiredContributions": 1051,
+        "CompactedContributionsInLiveBuckets": 1001,
+        "ZeroRemoved": 50,
+        "DanglingRemoved": 1519,
+        "BacklogTails": 5000
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:19.994921Z",
+      "duration_ns": 47237708,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160122,
+        "ExpiredContributions": 1570,
+        "CompactedContributionsInLiveBuckets": 1497,
+        "ZeroRemoved": 73,
+        "DanglingRemoved": 1600,
+        "BacklogTails": 0
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:20.996337Z",
+      "duration_ns": 49748750,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160067,
+        "ExpiredContributions": 532,
+        "CompactedContributionsInLiveBuckets": 504,
+        "ZeroRemoved": 28,
+        "DanglingRemoved": 0,
+        "BacklogTails": 94505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:21.993023Z",
+      "duration_ns": 45991625,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160021,
+        "ExpiredContributions": 532,
+        "CompactedContributionsInLiveBuckets": 507,
+        "ZeroRemoved": 25,
+        "DanglingRemoved": 0,
+        "BacklogTails": 89505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:22.99297Z",
+      "duration_ns": 45821625,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160049,
+        "ExpiredContributions": 533,
+        "CompactedContributionsInLiveBuckets": 507,
+        "ZeroRemoved": 26,
+        "DanglingRemoved": 0,
+        "BacklogTails": 84505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:23.987637Z",
+      "duration_ns": 41172625,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160045,
+        "ExpiredContributions": 521,
+        "CompactedContributionsInLiveBuckets": 498,
+        "ZeroRemoved": 23,
+        "DanglingRemoved": 0,
+        "BacklogTails": 79505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:24.989012Z",
+      "duration_ns": 41470875,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160040,
+        "ExpiredContributions": 533,
+        "CompactedContributionsInLiveBuckets": 509,
+        "ZeroRemoved": 24,
+        "DanglingRemoved": 0,
+        "BacklogTails": 74505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:25.991121Z",
+      "duration_ns": 45408292,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160045,
+        "ExpiredContributions": 532,
+        "CompactedContributionsInLiveBuckets": 502,
+        "ZeroRemoved": 30,
+        "DanglingRemoved": 0,
+        "BacklogTails": 69505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:26.995627Z",
+      "duration_ns": 48834000,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160056,
+        "ExpiredContributions": 475,
+        "CompactedContributionsInLiveBuckets": 452,
+        "ZeroRemoved": 23,
+        "DanglingRemoved": 0,
+        "BacklogTails": 64505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:27.994614Z",
+      "duration_ns": 47153791,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160022,
+        "ExpiredContributions": 114,
+        "CompactedContributionsInLiveBuckets": 108,
+        "ZeroRemoved": 6,
+        "DanglingRemoved": 224,
+        "BacklogTails": 59505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:28.995764Z",
+      "duration_ns": 49101875,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160100,
+        "ExpiredContributions": 1051,
+        "CompactedContributionsInLiveBuckets": 1004,
+        "ZeroRemoved": 47,
+        "DanglingRemoved": 1622,
+        "BacklogTails": 54505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:29.996816Z",
+      "duration_ns": 49482584,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160096,
+        "ExpiredContributions": 1562,
+        "CompactedContributionsInLiveBuckets": 1491,
+        "ZeroRemoved": 71,
+        "DanglingRemoved": 1641,
+        "BacklogTails": 49505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:30.990208Z",
+      "duration_ns": 44726750,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160104,
+        "ExpiredContributions": 1581,
+        "CompactedContributionsInLiveBuckets": 1503,
+        "ZeroRemoved": 78,
+        "DanglingRemoved": 3381,
+        "BacklogTails": 44505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:31.996392Z",
+      "duration_ns": 49188583,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160099,
+        "ExpiredContributions": 1573,
+        "CompactedContributionsInLiveBuckets": 1497,
+        "ZeroRemoved": 76,
+        "DanglingRemoved": 3168,
+        "BacklogTails": 39505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:33.001539Z",
+      "duration_ns": 55238125,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160097,
+        "ExpiredContributions": 1584,
+        "CompactedContributionsInLiveBuckets": 1509,
+        "ZeroRemoved": 75,
+        "DanglingRemoved": 3100,
+        "BacklogTails": 34505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:33.993926Z",
+      "duration_ns": 45499500,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160103,
+        "ExpiredContributions": 1564,
+        "CompactedContributionsInLiveBuckets": 1488,
+        "ZeroRemoved": 76,
+        "DanglingRemoved": 3220,
+        "BacklogTails": 29505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:34.992292Z",
+      "duration_ns": 46100958,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160097,
+        "ExpiredContributions": 1586,
+        "CompactedContributionsInLiveBuckets": 1512,
+        "ZeroRemoved": 74,
+        "DanglingRemoved": 3294,
+        "BacklogTails": 24505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:36.000336Z",
+      "duration_ns": 53067792,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160102,
+        "ExpiredContributions": 1560,
+        "CompactedContributionsInLiveBuckets": 1487,
+        "ZeroRemoved": 73,
+        "DanglingRemoved": 3167,
+        "BacklogTails": 19505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:36.998115Z",
+      "duration_ns": 50875541,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160098,
+        "ExpiredContributions": 1542,
+        "CompactedContributionsInLiveBuckets": 1469,
+        "ZeroRemoved": 73,
+        "DanglingRemoved": 3284,
+        "BacklogTails": 14505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:38.000088Z",
+      "duration_ns": 53028958,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160074,
+        "ExpiredContributions": 1061,
+        "CompactedContributionsInLiveBuckets": 1011,
+        "ZeroRemoved": 50,
+        "DanglingRemoved": 2976,
+        "BacklogTails": 9505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:38.991115Z",
+      "duration_ns": 43932291,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160077,
+        "ExpiredContributions": 1038,
+        "CompactedContributionsInLiveBuckets": 990,
+        "ZeroRemoved": 48,
+        "DanglingRemoved": 1728,
+        "BacklogTails": 4505
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:39.992129Z",
+      "duration_ns": 45020917,
+      "sweep": {
+        "ScannedTails": 4505,
+        "ScannedEdges": 144171,
+        "ExpiredContributions": 1445,
+        "CompactedContributionsInLiveBuckets": 1375,
+        "ZeroRemoved": 70,
+        "DanglingRemoved": 1403,
+        "BacklogTails": 0
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:40.988529Z",
+      "duration_ns": 41394375,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159990,
+        "ExpiredContributions": 1054,
+        "CompactedContributionsInLiveBuckets": 1005,
+        "ZeroRemoved": 49,
+        "DanglingRemoved": 1404,
+        "BacklogTails": 93504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:41.9994Z",
+      "duration_ns": 52277500,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160032,
+        "ExpiredContributions": 1064,
+        "CompactedContributionsInLiveBuckets": 1016,
+        "ZeroRemoved": 48,
+        "DanglingRemoved": 1838,
+        "BacklogTails": 88504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:42.992442Z",
+      "duration_ns": 45335208,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160047,
+        "ExpiredContributions": 1064,
+        "CompactedContributionsInLiveBuckets": 1013,
+        "ZeroRemoved": 51,
+        "DanglingRemoved": 1582,
+        "BacklogTails": 83504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:43.994638Z",
+      "duration_ns": 49414084,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160001,
+        "ExpiredContributions": 1058,
+        "CompactedContributionsInLiveBuckets": 1007,
+        "ZeroRemoved": 51,
+        "DanglingRemoved": 1633,
+        "BacklogTails": 78504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:44.995973Z",
+      "duration_ns": 46992000,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160027,
+        "ExpiredContributions": 717,
+        "CompactedContributionsInLiveBuckets": 681,
+        "ZeroRemoved": 36,
+        "DanglingRemoved": 1657,
+        "BacklogTails": 73504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:45.99734Z",
+      "duration_ns": 51196833,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160023,
+        "ExpiredContributions": 535,
+        "CompactedContributionsInLiveBuckets": 509,
+        "ZeroRemoved": 26,
+        "DanglingRemoved": 488,
+        "BacklogTails": 68504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:46.999898Z",
+      "duration_ns": 54605000,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159974,
+        "ExpiredContributions": 540,
+        "CompactedContributionsInLiveBuckets": 516,
+        "ZeroRemoved": 24,
+        "DanglingRemoved": 0,
+        "BacklogTails": 63504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:47.998151Z",
+      "duration_ns": 51273083,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160018,
+        "ExpiredContributions": 533,
+        "CompactedContributionsInLiveBuckets": 508,
+        "ZeroRemoved": 25,
+        "DanglingRemoved": 0,
+        "BacklogTails": 58504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:48.999156Z",
+      "duration_ns": 52208042,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159991,
+        "ExpiredContributions": 527,
+        "CompactedContributionsInLiveBuckets": 504,
+        "ZeroRemoved": 23,
+        "DanglingRemoved": 0,
+        "BacklogTails": 53504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:49.993377Z",
+      "duration_ns": 46464292,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160012,
+        "ExpiredContributions": 541,
+        "CompactedContributionsInLiveBuckets": 515,
+        "ZeroRemoved": 26,
+        "DanglingRemoved": 0,
+        "BacklogTails": 48504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:50.991956Z",
+      "duration_ns": 46520333,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160004,
+        "ExpiredContributions": 540,
+        "CompactedContributionsInLiveBuckets": 511,
+        "ZeroRemoved": 29,
+        "DanglingRemoved": 0,
+        "BacklogTails": 43504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:51.99335Z",
+      "duration_ns": 48355167,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159974,
+        "ExpiredContributions": 532,
+        "CompactedContributionsInLiveBuckets": 507,
+        "ZeroRemoved": 25,
+        "DanglingRemoved": 0,
+        "BacklogTails": 38504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:52.99859Z",
+      "duration_ns": 53258042,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160025,
+        "ExpiredContributions": 531,
+        "CompactedContributionsInLiveBuckets": 506,
+        "ZeroRemoved": 25,
+        "DanglingRemoved": 0,
+        "BacklogTails": 33504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:53.986394Z",
+      "duration_ns": 40623792,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160028,
+        "ExpiredContributions": 536,
+        "CompactedContributionsInLiveBuckets": 508,
+        "ZeroRemoved": 28,
+        "DanglingRemoved": 0,
+        "BacklogTails": 28504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:54.995837Z",
+      "duration_ns": 49057041,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159983,
+        "ExpiredContributions": 92,
+        "CompactedContributionsInLiveBuckets": 87,
+        "ZeroRemoved": 5,
+        "DanglingRemoved": 0,
+        "BacklogTails": 23504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:55.99679Z",
+      "duration_ns": 51832167,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160037,
+        "ExpiredContributions": 996,
+        "CompactedContributionsInLiveBuckets": 951,
+        "ZeroRemoved": 45,
+        "DanglingRemoved": 1464,
+        "BacklogTails": 18504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:56.995743Z",
+      "duration_ns": 49045875,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159994,
+        "ExpiredContributions": 1071,
+        "CompactedContributionsInLiveBuckets": 1020,
+        "ZeroRemoved": 51,
+        "DanglingRemoved": 1757,
+        "BacklogTails": 13504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:58.002933Z",
+      "duration_ns": 56461041,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160024,
+        "ExpiredContributions": 1050,
+        "CompactedContributionsInLiveBuckets": 999,
+        "ZeroRemoved": 51,
+        "DanglingRemoved": 1509,
+        "BacklogTails": 8504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:58.985658Z",
+      "duration_ns": 40047042,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160022,
+        "ExpiredContributions": 1063,
+        "CompactedContributionsInLiveBuckets": 1015,
+        "ZeroRemoved": 48,
+        "DanglingRemoved": 1734,
+        "BacklogTails": 3504
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:55:59.982297Z",
+      "duration_ns": 35654000,
+      "sweep": {
+        "ScannedTails": 3504,
+        "ScannedEdges": 112153,
+        "ExpiredContributions": 743,
+        "CompactedContributionsInLiveBuckets": 706,
+        "ZeroRemoved": 37,
+        "DanglingRemoved": 1118,
+        "BacklogTails": 0
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:00.989945Z",
+      "duration_ns": 43316875,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159980,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 92999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:01.994837Z",
+      "duration_ns": 48229875,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159970,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 87999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:02.99556Z",
+      "duration_ns": 48976541,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159949,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 82999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:03.990728Z",
+      "duration_ns": 44179834,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160000,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 77999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:04.998505Z",
+      "duration_ns": 51978500,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160000,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 72999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:05.991357Z",
+      "duration_ns": 44860500,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159978,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 67999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:06.997815Z",
+      "duration_ns": 51337083,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160000,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 62999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:07.997231Z",
+      "duration_ns": 50761625,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159970,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 57999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:08.992945Z",
+      "duration_ns": 47093208,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159976,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 52999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:09.998253Z",
+      "duration_ns": 51849584,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 160000,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 47999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:10.998096Z",
+      "duration_ns": 51703625,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159974,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 42999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:11.998747Z",
+      "duration_ns": 52743500,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159961,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 37999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:12.994434Z",
+      "duration_ns": 49948542,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159970,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 32999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:13.992847Z",
+      "duration_ns": 47544709,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159950,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 27999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:14.998742Z",
+      "duration_ns": 52254916,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159949,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 22999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:15.986889Z",
+      "duration_ns": 40648500,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159966,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 17999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:16.988343Z",
+      "duration_ns": 42123459,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159966,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 12999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:17.997189Z",
+      "duration_ns": 50983958,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159973,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 7999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:19.000184Z",
+      "duration_ns": 54001125,
+      "sweep": {
+        "ScannedTails": 5000,
+        "ScannedEdges": 159993,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 2999
+      }
+    },
+    {
+      "finished_at": "2026-09-24T04:56:19.982779Z",
+      "duration_ns": 37637583,
+      "sweep": {
+        "ScannedTails": 2999,
+        "ScannedEdges": 95947,
+        "ExpiredContributions": 0,
+        "CompactedContributionsInLiveBuckets": 0,
+        "ZeroRemoved": 0,
+        "DanglingRemoved": 0,
+        "BacklogTails": 0
+      }
+    }
+  ],
+  "gc_p95_ns": 55238125,
+  "gc_p99_ns": 59310250,
+  "gc_max_ns": 62662750,
+  "scanned_edges": 15878368,
+  "expired_contributions": 52500,
+  "compacted_contributions_in_live_edges": 50000,
+  "zero_edges_removed": 2500,
+  "dangling_edges_removed": 64528,
+  "max_backlog_tails": 95000,
+  "max_probe_reclaim_lag_ns": 30051840000,
+  "unreclaimed_probes": 0
+}

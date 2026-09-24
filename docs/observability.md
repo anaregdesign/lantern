@@ -398,6 +398,17 @@ though both intentionally charge Put barriers. Sustained growth is a workload-
 retention signal rather than a TTL-GC failure (see replication RFC §4/§8);
 RSS/heap remains the final allocator-level backstop.
 
+For edge TTL churn, compare `lantern_gc_duration_seconds` with
+`lantern_gc_edge_backlog_tails`. The latter is the number of tail buckets not
+yet visited in the budgeted sweep cycle; a positive budget caps tails, not
+edges within a high-degree tail. Each `graph cache: gc tick` structured log
+records raw `duration_ns`, scanned tails and edges, expired contributions,
+contributions compacted inside still-live edge buckets, and tail backlog.
+Use direct raw tick samples to decide a 200 ms p99 threshold: the Prometheus
+histogram and rounded `duration_ms` log are unsuitable for that exact
+comparison. See the host-only stress method in
+[`testbed/bench/README.md`](../testbed/bench/README.md).
+
 ---
 
 ## 6. Logs

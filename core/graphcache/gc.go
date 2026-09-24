@@ -8,6 +8,21 @@ import (
 	"github.com/anaregdesign/lantern/core/search"
 )
 
+// GCSweepStats describes the physical edge work in the last GC tick. A
+// positive edge budget counts tail buckets; ScannedEdges exposes high-degree
+// tails that can still dominate a budgeted tick. Contribution counts include
+// expiry inside buckets that remain live, which the edge-expiration counter
+// cannot represent.
+type GCSweepStats struct {
+	ScannedTails                        int
+	ScannedEdges                        int
+	ExpiredContributions                int
+	CompactedContributionsInLiveBuckets int
+	ZeroRemoved                         int
+	DanglingRemoved                     int
+	BacklogTails                        int
+}
+
 // flush performs the fused GC sweep over the edge map in a single walk.
 // It removes zero-weight edges (returned as `zero`) and edges whose endpoints
 // reference vertices that are no longer live (returned as `dangling`).
@@ -72,7 +87,10 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 		// that guarantees every expired/dangling edge is reclaimed each tick.
 		c.gcSweepPlan = nil
 		c.gcSweepPos = 0
-		return c.edges.flushFunc(keep, onDelete)
+		zero, dangling, stats := c.edges.flushFunc(keep, onDelete)
+		stats.ZeroRemoved, stats.DanglingRemoved = zero, dangling
+		c.gcLastSweep = stats
+		return zero, dangling
 	}
 	return c.flushIncrementalLocked(keep, onDelete)
 }
@@ -153,14 +171,27 @@ func (c *GraphCache[S, T]) flushIncrementalLocked(
 	}
 	batch := c.gcSweepPlan[c.gcSweepPos:end]
 	c.gcSweepPos = end
-	zero, dangling = c.edges.flushTails(batch, keep, onDelete)
+	var stats GCSweepStats
+	zero, dangling, stats = c.edges.flushTails(batch, keep, onDelete)
 	if c.gcSweepPos >= len(c.gcSweepPlan) {
 		// Cycle consumed: drop the plan so its backing array can be GC'd and
 		// the next tick rebuilds the cursor against the current tail set.
 		c.gcSweepPlan = nil
 		c.gcSweepPos = 0
 	}
+	stats.ZeroRemoved, stats.DanglingRemoved = zero, dangling
+	stats.BacklogTails = len(c.gcSweepPlan) - c.gcSweepPos
+	c.gcLastSweep = stats
 	return zero, dangling
+}
+
+// LastGCSweepStats returns the physical work from the most recent edge GC
+// sweep. It is safe to call from an onGCDuration hook after Watch releases
+// its aggregate lock.
+func (c *GraphCache[S, T]) LastGCSweepStats() GCSweepStats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.gcLastSweep
 }
 
 // vertexHLCShrinkFloor and vertexHLCShrinkDivisor govern when
@@ -218,8 +249,10 @@ func (c *GraphCache[S, T]) sweepStaleVertexHLCLocked(now time.Time) {
 }
 
 // SetGCHooks installs optional observability callbacks invoked from Watch
-// after every GC tick. Either argument may be nil. Hooks must not call back
-// into the cache (re-entrant locking would deadlock). Safe for concurrent use.
+// after every GC tick. Either argument may be nil. Hooks run after the sweep
+// releases its locks, so a duration hook may read LastGCSweepStats. Avoid
+// writes from hooks; they would add work between measured ticks. Safe for
+// concurrent use.
 func (c *GraphCache[S, T]) SetGCHooks(onExpire func(kind string, n int), onGCDuration func(d time.Duration)) {
 	c.hookMu.Lock()
 	defer c.hookMu.Unlock()
