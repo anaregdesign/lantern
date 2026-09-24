@@ -85,16 +85,8 @@ func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
 		if err != nil {
 			return wholeStateArchiveError("marshal graph frame: %v", err)
 		}
-		// TODO(#1115): deterministic proto.Marshal byte equality depends on
-		// protobuf runtime behavior across versions. Replace it with stable
-		// wire-field validation before this codec becomes a production archive.
-		known := &pb.SnapshotResponse{}
-		if err := (proto.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(payload, known); err != nil {
-			return wholeStateArchiveError("invalid graph frame: %v", err)
-		}
-		canonical, err := (proto.MarshalOptions{Deterministic: true}).Marshal(known)
-		if err != nil || !bytes.Equal(payload, canonical) {
-			return wholeStateArchiveError("noncanonical or unknown graph frame")
+		if err := validateArchiveGraphFrameWire(payload); err != nil {
+			return err
 		}
 		if err := writeArchiveRecord(&out, wholeStateGraphRecord, payload); err != nil {
 			return err
@@ -199,13 +191,12 @@ func decodeWholeStateArchive(r io.Reader) (wholeStateArchive, error) {
 		phase = kind
 		switch kind {
 		case wholeStateGraphRecord:
-			frame := &pb.SnapshotResponse{}
-			if err := (proto.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(payload, frame); err != nil || frame.GetEntry() == nil {
-				return wholeStateArchive{}, wholeStateArchiveError("invalid graph frame")
+			if err := validateArchiveGraphFrameWire(payload); err != nil {
+				return wholeStateArchive{}, err
 			}
-			canonical, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
-			if err != nil || !bytes.Equal(payload, canonical) {
-				return wholeStateArchive{}, wholeStateArchiveError("noncanonical or unknown graph frame")
+			frame := &pb.SnapshotResponse{}
+			if err := proto.Unmarshal(payload, frame); err != nil || frame.GetEntry() == nil {
+				return wholeStateArchive{}, wholeStateArchiveError("invalid graph frame")
 			}
 			a.Graph = append(a.Graph, frame)
 		case wholeStateReceiptRecord:
