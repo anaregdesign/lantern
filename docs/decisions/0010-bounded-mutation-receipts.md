@@ -380,6 +380,22 @@ durable recovery frontier. The service binds the first private coordinator's
 Store pointer, rejecting a different Store even with matching policy; a
 misconfigured first binding therefore fails closed on later construction.
 Direct Core Store access remains outside the service publication gate.
+The private [archive staging path](../../server/backup/receipt_archive_stage.go)
+decodes the complete `RECEIPT_V1` container before reconstructing a fresh,
+unpublished GraphCache and receipt Store. It prepares the identity prefix/head
+index before replay, allows the caller to configure an optional search index,
+rejects any graph configurator that leaves physical or hidden state, and
+requires a successful bounded search rebuild before returning detached
+graph, Store, policy, origin rows, local log position, and HLC cutoff. An
+implicit endpoint may coexist with a retained Vertex Put barrier or Delete
+tombstone: staging preserves that floor instead of interpreting the endpoint
+as a new HLC Put. Staging rejects a tombstone whose absolute D4 deadline has
+already elapsed and verifies every staged tombstone's HLC and deadline before
+returning; it also rejects a live implicit endpoint whose HLC conflicts with
+its retained floor. A failed decode, apply, or index rebuild discards the whole
+candidate. No production provider or restore path consumes this candidate;
+the existing graph-only Snapshot receiver's in-place overlay is not an
+atomic receipt installer.
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
 recovery still needs an
