@@ -138,12 +138,12 @@ func receiptStoreError(err error) error {
 // Commit serializes one logical call under the service publication cut. The
 // lock order is service -> receipt origin cut -> Store -> GraphCache -> origin
 // tracker -> Log. Every allocating/fallible graph and receipt step completes
-// before WAL.Write. The callback only releases already-staged locks; the Log
-// publishes its ring entry afterwards and the service gate releases last.
-// LocalSeq shares the receipt origin cut; direct Store and cache readers can
-// still briefly lead the log ring. Production wiring must gate those readers
-// or strengthen publication. This is an in-process prerequisite, not a
-// durable or multi-replica guarantee.
+// before WAL.Write. The post-ring callback only releases already-staged
+// locks, after the matching log entry is installed and before dispatcher
+// handoff can block. The service gate releases last. LocalSeq shares the
+// receipt origin cut. This is an in-process prerequisite, not a durable or
+// multi-replica guarantee; raw Core APIs cannot fail closed on an
+// indeterminate WAL outcome because most return no error.
 func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptEdgeDeleteCall) (*pb.DeleteEdgesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
@@ -245,11 +245,12 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		return nil, ctxToConnect(err)
 	}
 	walAttempted = true
-	_, err = s.log.CommitWithPublication(envelope, ts, func(mutationlog.Entry) {
-		// The Store is private. Release it before GraphCache so a direct
-		// graph reader cannot get ahead of its receipt, and release the
-		// origin frontier last so LocalSeq cannot get ahead of graph.
-		// Public observers remain blocked by replicationCutMu throughout.
+	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
+		// The ring/seq now contain the matching entry, but log readers
+		// still wait on Log.mu. Release Store before GraphCache, then the
+		// origin frontier last. The dispatcher handoff follows this callback,
+		// so no Core lock is held across its back-pressure wait. Server-owned
+		// observers remain blocked by replicationCutMu throughout.
 		tx.Commit()
 		graphTx.Commit()
 		originTx.Commit()

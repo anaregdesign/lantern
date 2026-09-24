@@ -132,6 +132,26 @@ func (l *Log) markUnusableLocked(cause error) {
 // [ErrLegacyWALUncertain]; mixing it into that history would not restore the
 // unique durable sequence that Append's retry semantics cannot prove.
 func (l *Log) CommitWithPublication(op MutationOp, ts hlc.Timestamp, publish func(Entry), stampers ...SeqStamper) (Entry, error) {
+	return l.commitWithPublication(op, ts, publish, nil, stampers...)
+}
+
+// CommitWithPostRingPublication keeps external staged state hidden until the
+// matching entry has been installed in the log ring and its sequence advanced.
+// The callback runs while l.mu still excludes log readers, but before the
+// potentially blocking dispatcher handoff. It may only release already-staged
+// visibility locks: it must be infallible and must not call this Log, wait for
+// a log reader, or perform another mutation. Readers of those released stores
+// may then observe the committed state while log readers wait for this method
+// to return; once the latter resume, the matching entry is already present.
+//
+// This is for a caller that staged its external state under locks before the
+// WAL write. It does not by itself supply recovery or a fail-closed read API
+// for a WAL error whose commit outcome is indeterminate.
+func (l *Log) CommitWithPostRingPublication(op MutationOp, ts hlc.Timestamp, release func(Entry), stampers ...SeqStamper) (Entry, error) {
+	return l.commitWithPublication(op, ts, nil, release, stampers...)
+}
+
+func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, publishBeforeRing, releaseAfterRing func(Entry), stampers ...SeqStamper) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.commitReadyLocked(); err != nil {
@@ -167,12 +187,15 @@ func (l *Log) CommitWithPublication(op MutationOp, ts hlc.Timestamp, publish fun
 	// Any panic after the WAL succeeds may leave a durable entry without a
 	// complete in-memory publication. Fail closed even if an upper layer
 	// recovers the panic, rather than allowing the next writer to reuse seq.
-	if publish != nil {
-		publish(entry)
+	if publishBeforeRing != nil {
+		publishBeforeRing(entry)
 	}
 	l.storeLocked(entry)
 	l.lastSeq = seq
 	l.hasEntries = true
+	if releaseAfterRing != nil {
+		releaseAfterRing(entry)
+	}
 	l.dispatch <- entry
 	resolved = true
 	return entry, nil
