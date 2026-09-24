@@ -1,132 +1,94 @@
 # lantern-sdk-python (archived)
 
-**Archived 2026-06-06** pending Connect-Python stabilization. See
-[#341](https://github.com/anaregdesign/lantern/issues/341) and the
-parent Connect-only migration epic
-[#335](https://github.com/anaregdesign/lantern/issues/335).
+The former gRPC Python SDK was archived on 2026-06-06. Its source and
+historical tags (`sdks/python/v0.1.x`) remain here for reference, but the SDK
+is no longer built, tested, or published. The existing PyPI `lantern-sdk`
+v0.1.x releases use that historical gRPC implementation; they are not a
+maintained Connect client.
 
-The grpc-based Python SDK that used to live at `sdks/python/` has
-been moved here without modification so historical tags
-(`sdks/python/v0.1.x`) still resolve. The code is **no longer
-built, tested, or published** — CI is removed and PyPI publishes
-are intentionally not cut. A future v1.0 Python SDK built on
-Connect-Python will replace it once that ecosystem (currently
-alpha) stabilizes; that work is tracked separately as a new issue
-opened when this archive lands.
+[#355](https://github.com/anaregdesign/lantern/issues/355) tracks a new Python
+SDK only if both upstream Connect Python reaches a documented stable 1.x
+contract and a Lantern user identifies a concrete Python workflow. As of
+2026-09-24, upstream [`connectrpc`](https://pypi.org/project/connectrpc/)
+is still classified Beta. This interim HTTP+JSON example does not revive the
+archived SDK.
 
-## Interim usage path: HTTP+JSON over Connect
+## Interim usage: Connect HTTP+JSON
 
-The Lantern server speaks the Connect protocol on its primary
-`:6380` port (after [#347](https://github.com/anaregdesign/lantern/issues/347))
-and on its additive `LANTERN_CONNECT_PORT` listener
-([#337](https://github.com/anaregdesign/lantern/issues/337)) today.
-Connect+JSON is the simplest interop path for Python — POST to
-`/{service}/{method}` with a JSON body, get a JSON response back.
-No codegen required.
+Lantern serves Connect, gRPC, and gRPC-Web on one socket, `:6380` by default
+(`LANTERN_PORT` changes it). There is no separate Connect listener. A Python
+HTTP client can make unary Connect calls by POSTing JSON to
+`/{service}/{method}` with `Content-Type: application/json`. The example below
+uses the standard library; it needs no generated code or package installation.
+It is an unauthenticated local h2c fixture; a production application must use
+HTTPS and application-owned authentication.
 
-### Unary RPC (most calls)
+Start Lantern from the repository root in one terminal:
 
-```python
-import httpx
-
-BASE = "http://lantern:6381"  # or :6380 after #347
-
-def get_vertex(key: str) -> dict | None:
-    r = httpx.post(
-        f"{BASE}/graph.v1.LanternService/GetVertex",
-        json={"key": key},
-        headers={"Content-Type": "application/json"},
-        timeout=5.0,
-    )
-    if r.status_code == 404 or (r.is_success and r.json().get("vertex") is None):
-        return None
-    r.raise_for_status()
-    return r.json().get("vertex")
-
-def put_vertex(key: str, value: str) -> None:
-    httpx.post(
-        f"{BASE}/graph.v1.LanternService/PutVertex",
-        json={"vertex": {"key": key, "string": value}},
-        headers={"Content-Type": "application/json"},
-        timeout=5.0,
-    ).raise_for_status()
+```bash
+go run ./server/cmd
 ```
 
-The protobuf JSON spec puts oneof fields flat on the message, so
-`{"key": "...", "string": "..."}` (not `{"value": {"string": "..."}}`)
-is the correct payload shape for `Vertex.string`. The full kind
-set — `float64`, `float32`, `int32`, `int64`, `uint32`, `uint64`,
-`bool`, `string`, `bytes` (base64), `timestamp` (ISO 8601),
-`duration` (Go duration format), `nil` (boolean `true`) — is
-documented in [`pb/graph/v1/graph.proto`](../../pb/graph/v1/graph.proto).
+In another terminal, run the [executable
+example](examples/connect_json_smoke.py):
 
-### Streaming RPCs (`Illuminate`, `Subscribe`, `Snapshot`)
-
-The Connect protocol's server-streaming wire format is a sequence
-of length-prefixed envelopes over a single HTTP response body.
-The simplest portable approach is to use `httpx.stream`:
-
-```python
-import json
-import struct
-import httpx
-
-def illuminate(seed: str, *, step: int = 2, k: int = 10) -> dict:
-    """One-shot Illuminate call. Returns the merged Graph dict."""
-    with httpx.stream(
-        "POST",
-        f"{BASE}/graph.v1.LanternService/Illuminate",
-        json={"seed": seed, "step": step, "k": k},
-        headers={"Content-Type": "application/json"},
-        timeout=30.0,
-    ) as r:
-        r.raise_for_status()
-        # Illuminate is unary today; if it ever becomes streaming,
-        # the response body is a series of 5-byte framed envelopes.
-        return r.json()
+```bash
+python3 sdks/python.archived/examples/connect_json_smoke.py \
+  --endpoint http://127.0.0.1:6380
 ```
 
-For long-lived `Subscribe`, frame the response body as Connect's
-streaming envelopes (1 byte flags + 4-byte big-endian length +
-payload). The
-[Connect protocol reference](https://connectrpc.com/docs/protocol#streaming-response)
-documents the exact frame layout.
+The example sends `PutVertex`, `GetVertex`, and `Illuminate` through the real
+Connect handler, verifies a missing Vertex returns `not_found`, and deletes its
+unique synthetic key. Its request shapes are:
 
-### Error semantics
-
-A non-2xx response carries a JSON body shaped
-`{"code": "not_found", "message": "..."}`. The 16-entry code set
-matches gRPC's status codes verbatim:
-```python
-import httpx
-
-try:
-    r = httpx.post(...)
-    r.raise_for_status()
-except httpx.HTTPStatusError as e:
-    body = e.response.json()
-    if body.get("code") == "not_found":
-        ...
+```json
+{"vertex":{"key":"<unique-key>","string":"archive-smoke"}}
 ```
 
-### Message shapes
+```json
+{"seed":"<unique-key>","bfs":{"step":1,"fanOut":1}}
+```
 
-The canonical wire schemas live in
-[`pb/graph/v1/graph.proto`](../../pb/graph/v1/graph.proto) and
-[`pb/graph/v1/replication.proto`](../../pb/graph/v1/replication.proto).
-For a typed Python representation, the easiest path is to run
-`buf generate` with a Python plugin (e.g.
-[`grpcio-tools`](https://pypi.org/project/grpcio-tools/) or
-[`mypy-protobuf`](https://pypi.org/project/mypy-protobuf/))
-against `proto/` locally — no Lantern-side codegen step is needed.
+`Illuminate` is unary. Its `bfs` family arm is required, and `fanOut` is the
+protobuf JSON name of `BfsParams.fan_out`; the retired flat `step`/`k` fields
+are invalid. `Vertex.string` is a oneof field directly on `Vertex`, not under
+an additional `value` object. A missing `GetVertex` returns an HTTP 404
+Connect error with JSON code `not_found`.
 
----
+### Streaming RPCs
+
+`BackupSnapshot` on `graph.v1.LanternService`, and `Subscribe`/`Snapshot` on
+`graph.v1.LanternReplicationService`, are **server-streaming** RPCs. Their
+Connect responses contain length-prefixed envelopes rather than one JSON
+document. Use a Connect streaming client or implement the framing and
+end-of-stream semantics from the [Connect protocol
+reference](https://connectrpc.com/docs/protocol#streaming-response).
+`Subscribe` and `Snapshot` are replication interfaces for peers; they are not
+the interim Python application's cache API. See #1116 for the later
+client-facing identity-only change stream.
+
+### Schema and upstream tooling
+
+The canonical schemas are
+[`proto/graph/v1/graph.proto`](../../proto/graph/v1/graph.proto) and
+[`proto/graph/v1/replication.proto`](../../proto/graph/v1/replication.proto).
+The executable example is exercised against a real in-process Connect server
+by `go test ./tests/integration -run TestPythonArchiveHTTPJSONFixture`; that
+gate checks the current request shape and a missing-key failure on every Go
+CI run.
+
+If the conditions in #355 later justify a maintained typed SDK, use upstream
+[`connectrpc/connect-py`](https://github.com/connectrpc/connect-py), the
+`connectrpc` runtime, and its current Buf remote plugin
+`buf.build/connectrpc/py` (or local `protoc-gen-connectrpc`). Start a new
+package rather than importing the generated gRPC files in this archive.
 
 ## Historical content
 
-The original `README.md`, source layout (`lantern_client/`, `src/`,
-`tests/`, `examples/`), and `pyproject.toml` are preserved as-is
-in this directory. They are documentation only; no part of this
-tree is wired into the workspace's build, test, or release flows
-after the archive landed in
-[#341](https://github.com/anaregdesign/lantern/issues/341).
+The archived `src/`, `tests/`, `pyproject.toml`, and old `examples/quickstart.py`
+remain unchanged and are not wired into the workspace's build or release.
+Only the standalone HTTP+JSON documentation fixture above is exercised.
+The archive decision is recorded in
+[#341](https://github.com/anaregdesign/lantern/issues/341) and the parent
+Connect-only migration epic
+[#335](https://github.com/anaregdesign/lantern/issues/335).
