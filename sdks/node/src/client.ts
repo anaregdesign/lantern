@@ -53,6 +53,7 @@ import { LanternReplicationService, SubscribeProjection } from "./gen/graph/v1/r
 
 import {
   BatchError,
+  FailedPreconditionError,
   InvalidArgumentError,
   LanternError,
   NotFoundError,
@@ -1291,9 +1292,13 @@ export class Lantern {
         }
         yield frame;
       }
+      if (signal?.aborted) return;
       if (opts.bootstrap && !checkpointSeen) {
         throw new LanternError("identity bootstrap ended without checkpoint");
       }
+      throw new FailedPreconditionError(
+        "identity stream ended unexpectedly; bootstrap and revalidate resident keys",
+      );
     } catch (err) {
       throw wrapConnectError(err);
     } finally {

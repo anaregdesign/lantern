@@ -399,10 +399,11 @@ for await (const frame of client.subscribeIdentity({ cursor: resume })) {
 The client does not advance a cursor on receipt or claim cluster-wide freshness
 from a checkpoint. A caller's `AbortSignal` or stopping iteration cancels the
 RPC. The client's `defaultTimeoutMs` does not apply to this long-lived stream;
-pass `timeoutMs` in the subscribe options for an explicit deadline. Current
-server auth scopes the stream to a whole Lantern deployment, with no tenant
-filtering. TTL expiry remains enforced locally; it does not synthesize CDC
-events.
+pass `timeoutMs` in the subscribe options for an explicit deadline. An
+unexpected clean EOF is reported as `FailedPreconditionError` and requires the
+same bootstrap/revalidation path as a gap. Current server auth scopes the
+stream to a whole Lantern deployment, with no tenant filtering. TTL expiry
+remains enforced locally; it does not synthesize CDC events.
 
 ## Backup & restore
 

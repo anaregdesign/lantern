@@ -182,6 +182,12 @@ export function decodeIdentityFrame(raw: SubscribeResponse): IdentityFrame {
       }
       const operation = operationFromWire(chunk.operation);
       if (
+        chunk.vertexKeys.some((key) => key.length === 0) ||
+        chunk.edgeKeys.some((key) => key.tail.length === 0 || key.head.length === 0)
+      ) {
+        throw new LanternError("identity chunk has an empty graph identity");
+      }
+      if (
         operation === "putVertex" || operation === "deleteVertex"
           ? chunk.edgeKeys.length !== 0
           : chunk.vertexKeys.length !== 0

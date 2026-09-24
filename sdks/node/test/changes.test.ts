@@ -178,6 +178,17 @@ describe("identity-only CDC facade", () => {
       chunk({ operation: IdentityOperation.ADD_EDGE }),
       chunk({ hlcOrigin: new Uint8Array(16) }),
       chunk({ vertexKeys: [], isLast: false }),
+      chunk({ vertexKeys: [""] }),
+      chunk({
+        operation: IdentityOperation.ADD_EDGE,
+        vertexKeys: [],
+        edgeKeys: [{ tail: "", head: "h" }],
+      }),
+      chunk({
+        operation: IdentityOperation.ADD_EDGE,
+        vertexKeys: [],
+        edgeKeys: [{ tail: "t", head: "" }],
+      }),
       chunk({ vertexKeys: Array.from({ length: 1025 }, (_, index) => `v${index}`) }),
       chunk({ vertexKeys: ["x".repeat(1 << 20)] }),
       checkpoint({ bad: 1n }),
@@ -207,8 +218,10 @@ describe("identity-only CDC facade", () => {
       ),
       { defaultTimeoutMs: 1 },
     );
-    const frames: IdentityFrame[] = [];
-    for await (const frame of client.subscribeIdentity({ bootstrap: true })) frames.push(frame);
+    const bootstrapStream = client.subscribeIdentity({ bootstrap: true });
+    const iterator = bootstrapStream[Symbol.asyncIterator]();
+    const frames = [(await iterator.next()).value, (await iterator.next()).value];
+    await iterator.return?.();
     expect(frames.map((frame) => frame.kind)).toEqual(["checkpoint", "chunk"]);
     expect(request?.projection).toBe(2);
     expect(request?.bootstrap).toBe(true);
@@ -302,6 +315,37 @@ describe("identity-only CDC facade", () => {
       }),
     );
     await expect(collect(resume.subscribeIdentity())).rejects.toThrow(LanternError);
+  });
+
+  test("unexpected clean EOF requires recovery, but explicit cancellation does not", async () => {
+    const resumed = Lantern.withTransport(
+      fakeTransport(async function* () {
+        yield chunk();
+      }),
+    );
+    const stream = resumed.subscribeIdentity()[Symbol.asyncIterator]();
+    expect((await stream.next()).value?.kind).toBe("chunk");
+    await expect(stream.next()).rejects.toThrow(FailedPreconditionError);
+
+    const bootstrapped = Lantern.withTransport(
+      fakeTransport(async function* () {
+        yield checkpoint();
+      }),
+    );
+    const bootstrap = bootstrapped.subscribeIdentity({ bootstrap: true })[Symbol.asyncIterator]();
+    expect((await bootstrap.next()).value?.kind).toBe("checkpoint");
+    await expect(bootstrap.next()).rejects.toThrow(FailedPreconditionError);
+
+    const canceled = new AbortController();
+    canceled.abort();
+    const empty = Lantern.withTransport(
+      fakeTransport(async function* () {
+        yield* [] as SubscribeResponse[];
+      }),
+    );
+    expect(await collect(empty.subscribeIdentity({ bootstrap: true }, canceled.signal))).toEqual(
+      [],
+    );
   });
 });
 
