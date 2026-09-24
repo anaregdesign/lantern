@@ -65,6 +65,106 @@ func receiptEdgeDeleteTailFixture(t *testing.T, origin hlc.NodeID, seq uint64, a
 	}, stamp
 }
 
+func TestIdentityCDC_SupersededEdgePutDoesNotReviveUnloggedEndpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	origin := newPumpNode(t, hlc.NodeID{0xD1, 0x21})
+	follower := newPumpNode(t, hlc.NodeID{0xD1, 0x22})
+	remote := hlc.NodeID{0xD1, 0x23}
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+	// A remote future-HLC winner leaves a newer bucket floor on the origin.
+	// The local clock has not observed that HLC, so its next wire Put loses.
+	winner := &pb.Mutation{
+		Seq: 1, Origin: remote[:],
+		Hlc: &pb.HLCTimestamp{NodeId: remote[:], WallNs: time.Now().Add(time.Minute).UnixNano()},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{
+			Edges: []*pb.Edge{{Tail: "lww/tail", Head: "lww/head", Weight: 2, Expiration: expiration}},
+		}}},
+	}
+	if err := origin.svc.ApplyMutation(ctx, winner); err != nil {
+		t.Fatalf("seed remote winner: %v", err)
+	}
+	follower.startPump(ctx, t, []string{origin.url})
+	for follower.svc.LocalSeq(remote) != 1 {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("follower missed winning Edge: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := origin.raw.DeleteVertex(ctx, connect.NewRequest(&pb.DeleteVertexRequest{Key: "lww/tail"})); err != nil {
+		t.Fatalf("remove endpoint over h2c: %v", err)
+	}
+	for follower.svc.LocalSeq(origin.nodeID) != 1 {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("follower missed endpoint Delete: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, node := range []*pumpNode{origin, follower} {
+		if _, ok := node.cache.GetVertex("lww/tail"); ok {
+			t.Fatalf("%x kept removed endpoint", node.nodeID)
+		}
+	}
+	before, ok := origin.log.LastSeq()
+	if !ok {
+		t.Fatal("seed mutations did not enter the log")
+	}
+	feed, err := newReplicationRawClient(t, origin.url).Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+		Bootstrap:  true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = feed.Close() }()
+	if !feed.Receive() || feed.Msg().GetCheckpoint() == nil {
+		t.Fatalf("identity CDC missed initial checkpoint: %v", feed.Err())
+	}
+	stale, err := origin.raw.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: []*pb.Edge{{
+		Tail: "lww/tail", Head: "lww/head", Weight: 9, Expiration: expiration,
+	}}}))
+	if err != nil || len(stale.Msg.GetOutcomes()) != 1 || stale.Msg.GetOutcomes()[0] != pb.PutOutcome_PUT_OUTCOME_SUPERSEDED {
+		t.Fatalf("stale Edge Put over h2c = %v, %v", stale, err)
+	}
+	if got, _ := origin.log.LastSeq(); got != before || origin.svc.LocalSeq(origin.nodeID) != 1 {
+		t.Fatalf("superseded Put emitted a mutation: local/origin seq = %d/%d, want %d/1", got, origin.svc.LocalSeq(origin.nodeID), before)
+	}
+	for _, node := range []*pumpNode{origin, follower} {
+		if _, ok := node.cache.GetVertex("lww/tail"); ok {
+			t.Fatalf("%x revived endpoint without a CDC mutation", node.nodeID)
+		}
+	}
+
+	accepted, err := origin.raw.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: []*pb.Edge{{
+		Tail: "lww/control", Head: "lww/new", Weight: 3, Expiration: expiration,
+	}}}))
+	if err != nil || len(accepted.Msg.GetOutcomes()) != 1 || accepted.Msg.GetOutcomes()[0] != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatalf("accepted Edge Put over h2c = %v, %v", accepted, err)
+	}
+	if !feed.Receive() {
+		t.Fatalf("identity CDC missed accepted control Put: %v", feed.Err())
+	}
+	chunk := feed.Msg().GetIdentityChunk()
+	if chunk == nil || chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE ||
+		hex.EncodeToString(chunk.GetOrigin()) != hex.EncodeToString(origin.nodeID[:]) ||
+		chunk.GetSeq() != 2 || len(chunk.GetEdgeKeys()) != 1 ||
+		chunk.GetEdgeKeys()[0].GetTail() != "lww/control" || chunk.GetEdgeKeys()[0].GetHead() != "lww/new" {
+		t.Fatalf("identity CDC emitted a stale or wrong Edge Put: %+v", feed.Msg())
+	}
+	for follower.svc.LocalSeq(origin.nodeID) != 2 {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("follower missed accepted control Put: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := follower.cache.GetVertex("lww/tail"); ok {
+		t.Fatal("follower revived stale endpoint")
+	}
+	if weight, ok := follower.cache.GetWeight("lww/control", "lww/new"); !ok || weight != 3 {
+		t.Fatalf("follower accepted control Edge = %v/%v, want 3/true", weight, ok)
+	}
+}
+
 // Synthetic log entries exercise the production-disabled wire projection on
 // real Connect/h2c. No public receipt write or remote apply path is enabled.
 func TestIdentityCDC_ReceiptEdgeDeleteTailFailsClosedAndPreservesCursor(t *testing.T) {

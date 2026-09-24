@@ -127,9 +127,9 @@ func (c *GraphCache[S, T]) applyVertexCausalBarrierLocked(key S, ts hlc.Timestam
 
 // PutEdgeWithExpirationHLC is the LWW-aware sibling of PutEdgeWithExpiration
 // used by the replication apply path. Returns applied=false when the stored
-// edge's last accepted HLC is strictly newer than ts. Endpoint vertices are
-// auto-created (matching PutEdgeWithExpiration) regardless of the LWW outcome,
-// unless an edge tombstone rejects the write before storage is touched.
+// edge's last accepted HLC is strictly newer than ts. A rejected Put is an
+// exact no-op, including its endpoint vertices; accepted live Puts still
+// auto-create endpoints as PutEdgeWithExpiration does.
 func (c *GraphCache[S, T]) PutEdgeWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -142,11 +142,10 @@ func (c *GraphCache[S, T]) PutEdgeWithExpirationHLC(tail, head S, w float32, exp
 		c.clearEdgeTombstoneLocked(tail, head)
 		return true
 	}
-	// Keep the normal live hot path on its historical single bucket lookup:
-	// edgeWriteAllowedLocked checks tombstone/barrier maps, then the weight's
-	// putWithExpirationHLC performs the current-bucket LWW comparison while it
-	// applies. Only the delete-like expired branch above needs a separate read.
-	if !c.edgeWriteAllowedLocked(tail, head, ts) {
+	// Check the complete causal floor before putEdgeHLCLocked creates endpoint
+	// vertices. Its weight-level LWW check remains defensive, but a losing Put
+	// must not leave an unlogged endpoint-only effect behind.
+	if !c.edgePutWriteAllowedLocked(tail, head, ts) {
 		return false
 	}
 	applied := c.putEdgeHLCLocked(tail, head, w, expiration, ts)
