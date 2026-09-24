@@ -99,6 +99,15 @@ func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {
 	if !errors.Is(err, ErrInvalidBatch) {
 		t.Fatalf("different logical-call grouping = %v", err)
 	}
+	for i := range changed {
+		changed[i].Group = GroupID{9}
+	}
+	tx, _ = s.Begin(testStart.Add(12 * time.Minute))
+	_, _, err = tx.Classify(changed)
+	tx.Abort()
+	if !errors.Is(err, ErrIntentConflict) {
+		t.Fatalf("same IDs reused in another valid group = %v", err)
+	}
 }
 
 func TestStoreExpiryAndHighWaterPreventOldIDReexecution(t *testing.T) {
