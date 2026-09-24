@@ -258,8 +258,9 @@ expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
 clock metadata. The codec is not wired to a serving WAL or replay path and
 does not certify receipt recovery, replication, or status continuity.
 The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.go)
-adds a versioned kind discriminator for graph-only `Mutation`, a private
-[graph Delete effect envelope](../../server/service/graph_delete_effect_wal.go),
+adds a versioned kind discriminator for graph-only `Mutation`, private
+[graph Delete effect](../../server/service/graph_delete_effect_wal.go) and
+[graph Put effect](../../server/service/graph_put_effect_wal.go) envelopes,
 or the receipt Edge Delete envelope. Its ordinary graph kind
 encodes protobuf plus an ordered sidecar for nil repeated-message slots,
 which protobuf otherwise turns into empty messages on decode. The decoder
@@ -299,6 +300,18 @@ recovery candidate still rejects graph Delete envelopes and all graph writes
 after receipt envelopes. A later Put/Add rejected while a tombstone was live
 can become accepted on replay after it expires; Delete evidence alone cannot
 certify a complete graph/receipt restore.
+The graph Put kind records the original Mutation and a strictly ordered subset
+of receiver-local accepted request indexes. Each accepted index distinguishes
+a live value or Edge from an accepted-expired causal barrier; omitted indexes
+include locally rejected Put slots. Nil plural slots retain their original
+positions, and a zero-accepted mutation is valid evidence. The outcome list
+comes from the GraphCache application lock, not an origin projection or later
+read. The inner Put body has its own version, length, and reserved-byte checks.
+Raw older Put rows can be read before a receipt but remain unproven; the
+read-only audit rejects one after a receipt instead of treating its original
+mutation as evidence of a receiver-local effect. The new kind remains unwired
+to the serving writer, and the detached recovery candidate refuses it: no
+graph replay, Store admission, or absent-ID answer is enabled by this sidecar.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
 replay. The receipt kind retains the existing LRED validation and its 8 MiB

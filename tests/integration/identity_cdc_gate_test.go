@@ -163,6 +163,46 @@ func TestIdentityCDC_SupersededEdgePutDoesNotReviveUnloggedEndpoint(t *testing.T
 	if weight, ok := follower.cache.GetWeight("lww/control", "lww/new"); !ok || weight != 3 {
 		t.Fatalf("follower accepted control Edge = %v/%v, want 3/true", weight, ok)
 	}
+	// One wire batch now mixes a stale loser, a live winner, and a born-
+	// expired causal barrier. The private WAL sidecar can represent these
+	// receiver-local decisions, while current identity CDC still projects
+	// only the two accepted identities in their request order.
+	mixed, err := origin.raw.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "lww/tail", Head: "lww/head", Weight: 8, Expiration: expiration},
+		{Tail: "mixed/live", Head: "mixed/head", Weight: 4, Expiration: expiration},
+		{Tail: "mixed/expired", Head: "mixed/head", Weight: 5, Expiration: timestamppb.New(time.Now().Add(-time.Minute))},
+	}}))
+	if err != nil || len(mixed.Msg.GetOutcomes()) != 3 ||
+		mixed.Msg.GetOutcomes()[0] != pb.PutOutcome_PUT_OUTCOME_SUPERSEDED ||
+		mixed.Msg.GetOutcomes()[1] != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
+		mixed.Msg.GetOutcomes()[2] != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
+		t.Fatalf("mixed Edge Put outcomes over h2c = %v, %v", mixed, err)
+	}
+	if !feed.Receive() {
+		t.Fatalf("identity CDC missed mixed accepted Put: %v", feed.Err())
+	}
+	chunk = feed.Msg().GetIdentityChunk()
+	if chunk == nil || chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE ||
+		chunk.GetSeq() != 3 || len(chunk.GetEdgeKeys()) != 2 ||
+		chunk.GetEdgeKeys()[0].GetTail() != "mixed/live" || chunk.GetEdgeKeys()[0].GetHead() != "mixed/head" ||
+		chunk.GetEdgeKeys()[1].GetTail() != "mixed/expired" || chunk.GetEdgeKeys()[1].GetHead() != "mixed/head" {
+		t.Fatalf("identity CDC changed mixed Put projection: %+v", feed.Msg())
+	}
+	for follower.svc.LocalSeq(origin.nodeID) != 3 {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("follower missed mixed Put: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := follower.cache.GetVertex("lww/tail"); ok {
+		t.Fatal("mixed rejected Put revived stale follower endpoint")
+	}
+	if weight, ok := follower.cache.GetWeight("mixed/live", "mixed/head"); !ok || weight != 4 {
+		t.Fatalf("follower mixed live Edge = %v/%v, want 4/true", weight, ok)
+	}
+	if _, ok := follower.cache.GetVertex("mixed/expired"); ok {
+		t.Fatal("accepted-expired Put created follower endpoint")
+	}
 }
 
 func TestIdentityCDC_DedupedAddDoesNotReviveEndpoint(t *testing.T) {

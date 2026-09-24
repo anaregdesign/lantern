@@ -24,6 +24,10 @@ type receiptWALDecisionAudit struct {
 	origins         []OriginState
 	lastLocalSeq    uint64
 	highWaterMillis int64
+	// Put effect evidence is diagnostic only. Old graph Put rows before the
+	// first receipt remain readable but cannot certify a future mixed replay.
+	evidencedGraphPutRows uint64
+	unprovenGraphPutRows  uint64
 }
 
 // auditReceiptDecisionsFromFileWAL validates a closed mixed FileWAL without
@@ -52,6 +56,7 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 	rows := make(map[hlc.NodeID]originRow)
 	report := receiptWALDecisionAudit{}
 	var knownBytes uint64
+	seenReceipt := false
 	err = mutationlog.ReplayFileWAL(path, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
 		if err := validateReceiptWALUnionEntry(entry); err != nil {
 			return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, err)
@@ -61,12 +66,23 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 		var envelope *edgeDeleteReceiptEnvelope
 		switch value := entry.Op.(type) {
 		case *pb.Mutation:
+			if isAnyGraphPut(value) {
+				if seenReceipt {
+					return fmt.Errorf("receipt WAL local seq %d: %w: graph Put lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
+				}
+				report.unprovenGraphPutRows++
+			}
 			copy(origin[:], value.GetOrigin())
 			seq = value.GetSeq()
+		case *graphPutEffectEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			seq = value.Mutation.GetSeq()
+			report.evidencedGraphPutRows++
 		case *graphDeleteEffectEnvelope:
 			copy(origin[:], value.Mutation.GetOrigin())
 			seq = value.Mutation.GetSeq()
 		case *edgeDeleteReceiptEnvelope:
+			seenReceipt = true
 			origin, seq = value.Origin, value.OriginSeq
 			if value.Epoch != config.Epoch || value.PolicyFingerprint != base.PolicyFingerprint() {
 				return fmt.Errorf("receipt WAL local seq %d: %w: epoch or policy mismatch", entry.Seq, errReceiptWALUnion)
@@ -192,7 +208,8 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // any state externally visible. The caller must own path exclusively through
 // both replay passes; this function closes the resumed writer before return.
 // A graph-only exact Delete now has an absolute deadline and a private
-// accepted-index envelope, but this candidate cannot safely replay it yet:
+// accepted-index envelope, and graph Put has an accepted-effect envelope,
+// but this candidate cannot safely replay either yet:
 // a later graph Put/Add may have been rejected by a floor that has since
 // expired. Predicate-shaped prefix Delete is still unrepresentable; prefix
 // origins publish exact victim batches instead. Graph writes after the first

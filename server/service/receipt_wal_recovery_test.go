@@ -54,6 +54,18 @@ func auditGraphEntry(seq uint64) mutationlog.Entry {
 	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(graph), Op: graph}
 }
 
+func auditGraphPutEffectEntry(t *testing.T, seq uint64, outcomes ...graphcache.PutOutcome) mutationlog.Entry {
+	t.Helper()
+	entry := auditGraphEntry(seq)
+	m := entry.Op.(*pb.Mutation)
+	effect, err := newGraphPutEffectEnvelope(m, outcomes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Op = effect
+	return entry
+}
+
 func recoveryEdgeEntry(seq uint64) mutationlog.Entry {
 	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutEdge{
 		PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{
@@ -150,6 +162,7 @@ func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testin
 		{"graph Delete accepted effect is not replayable yet", []mutationlog.Entry{auditGraphEntry(1), deleteEntry, receiptEntry}},
 		{"graph Delete after receipt remains gated", []mutationlog.Entry{auditGraphEntry(1), receiptEntry, deleteEntry}},
 		{"graph write after receipt", []mutationlog.Entry{receiptEntry, auditGraphEntry(1)}},
+		{"evidenced graph Put remains gated", []mutationlog.Entry{receiptEntry, auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeAppliedAndLive)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeReceiptWALAuditEntries(t, tc.entries...)
@@ -249,7 +262,8 @@ func TestReceiptWALRecoveryCandidateRejectsCorruptAndIndeterminateTail(t *testin
 
 func TestReceiptWALDecisionAuditMixedGenesisAndKnownResults(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
-	path := writeReceiptWALAuditEntries(t, auditGraphEntry(1), receiptEntry, auditGraphEntry(2))
+	path := writeReceiptWALAuditEntries(t, auditGraphEntry(1), receiptEntry,
+		auditGraphPutEffectEntry(t, 2, graphcache.PutOutcomeAppliedAndLive))
 	report, err := auditReceiptDecisionsFromFileWAL(path, config, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -257,6 +271,9 @@ func TestReceiptWALDecisionAuditMixedGenesisAndKnownResults(t *testing.T) {
 	want := receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts
 	if report.lastLocalSeq != 3 || len(report.origins) != 2 || len(report.knownReceipts) != len(want) {
 		t.Fatalf("incomplete audit: %+v", report)
+	}
+	if report.unprovenGraphPutRows != 1 || report.evidencedGraphPutRows != 1 {
+		t.Fatalf("Put evidence inventory = %+v", report)
 	}
 	for i, receipt := range report.knownReceipts {
 		if receipt.ID != want[i].ID || !reflect.DeepEqual(receipt.Result, want[i].Result) ||
@@ -273,6 +290,23 @@ func TestReceiptWALDecisionAuditMixedGenesisAndKnownResults(t *testing.T) {
 	want[0].Result[0] ^= 1
 	if report.knownReceipts[0].Result[0] == want[0].Result[0] {
 		t.Fatal("audit aliased the decoded result")
+	}
+}
+
+func TestReceiptWALDecisionAuditRejectsOldPutAfterReceiptWithoutPartialReport(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	path := writeReceiptWALAuditEntries(t, receiptEntry, auditGraphEntry(1))
+	report, err := auditReceiptDecisionsFromFileWAL(path, config, time.Now())
+	if !errors.Is(err, errReceiptWALUnion) || !reflect.DeepEqual(report, receiptWALDecisionAudit{}) {
+		t.Fatalf("old Put audit = %+v, %v; want no certified partial report", report, err)
+	}
+	// A zero-accepted sidecar still proves the local result. It does not
+	// authorize serving replay or receipt admission.
+	path = writeReceiptWALAuditEntries(t, receiptEntry,
+		auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeSuperseded))
+	report, err = auditReceiptDecisionsFromFileWAL(path, config, time.Now())
+	if err != nil || report.evidencedGraphPutRows != 1 || report.unprovenGraphPutRows != 0 || report.lastLocalSeq != 2 {
+		t.Fatalf("zero-accepted Put audit = %+v, %v", report, err)
 	}
 }
 
@@ -388,9 +422,9 @@ func TestReceiptWALDecisionAuditReleasesExpiredCapacityBeforeLaterReceipt(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			entries := []mutationlog.Entry{{HLC: first.HLC, Op: first}}
 			if tc.withGraph {
-				graph := auditGraphEntry(1)
-				graph.Op.(*pb.Mutation).Hlc.WallNs = later.Add(-time.Millisecond).UnixNano()
-				graph.HLC = receiptWALUnionGraphHLC(graph.Op.(*pb.Mutation))
+				graph := auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeAppliedAndLive)
+				graph.Op.(*graphPutEffectEnvelope).Mutation.Hlc.WallNs = later.Add(-time.Millisecond).UnixNano()
+				graph.HLC = receiptWALUnionGraphHLC(graph.Op.(*graphPutEffectEnvelope).Mutation)
 				entries = append(entries, graph)
 			}
 			entries = append(entries, mutationlog.Entry{HLC: second.HLC, Op: second})
