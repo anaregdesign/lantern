@@ -70,6 +70,15 @@ type LanternService struct {
 	// ApplyMutation or the local AddEdges log-before-graph commit. Other local
 	// writes apply graph-first, so a torn cut can only replay them from tail.
 	replicationCutMu sync.RWMutex
+	// pendingMutations and its accounting are guarded by replicationCutMu.
+	pendingMutations map[hlc.NodeID]map[uint64]*pendingMutation
+	pendingCount     int
+	pendingBytes     int
+	// publicationFaultCh closes on the first relay WAL failure. A fresh
+	// channel is installed only after all failed frontiers are repaired, so
+	// subscribers attached to the old generation cannot silently resume.
+	publicationFaultCh    chan struct{}
+	publicationFaultCount int
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the
@@ -200,6 +209,7 @@ func NewLanternService(cache Backend) *LanternService {
 		searchConfigFingerprint: computeSearchConfigFingerprint(searchLimits),
 		searchSessions:          newSearchSessionStore(searchLimits),
 		origins:                 newOriginStateTracker(),
+		publicationFaultCh:      make(chan struct{}),
 		metrics:                 noopHotPathMetrics{},
 		traversalTimeout:        5 * time.Second,
 		traversalWorkBudget:     graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
@@ -337,10 +347,23 @@ func (s *LanternService) WithReplication(log *mutationlog.Log, clock *hlc.Clock,
 // withReplicationSnapshotCut holds the service commit boundary only while
 // Snapshot copies its origin/log cutoffs and graph image, never while it sends
 // frames to a potentially slow client.
-func (s *LanternService) withReplicationSnapshotCut(capture func()) {
+func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
 	s.replicationCutMu.RLock()
 	defer s.replicationCutMu.RUnlock()
+	if s.publicationFaultCount != 0 {
+		return publicationGapError()
+	}
 	capture()
+	return nil
+}
+
+// publicationStatus returns one fault generation. A stream keeps this
+// channel even after repair, so a relay publication gap always terminates
+// that stream before it can be mistaken for a continuous CDC feed.
+func (s *LanternService) publicationStatus() (<-chan struct{}, bool) {
+	s.replicationCutMu.RLock()
+	defer s.replicationCutMu.RUnlock()
+	return s.publicationFaultCh, s.publicationFaultCount != 0
 }
 
 // WithLogger replaces the slog handle used for replication-side warnings
@@ -508,10 +531,9 @@ func (s *LanternService) OriginStates() []OriginState {
 	return s.origins.States()
 }
 
-// LocalSeq returns the highest per-origin seq the local node has
-// recorded for the given origin (0 when the origin has never been
-// seen, or when the tracker is unwired). Used by the anti-entropy
-// driver (#186) to compute its catch-up start seq.
+// LocalSeq returns the contiguous committed per-origin cutoff (0 when the
+// origin has never been seen, or the tracker is unwired). Used by the
+// anti-entropy driver (#186) to compute its catch-up start seq.
 func (s *LanternService) LocalSeq(origin hlc.NodeID) uint64 {
 	if s.origins == nil {
 		return 0
@@ -539,10 +561,25 @@ func (s *LanternService) ApplySnapshotWatermarks(cutoffs map[string]uint64, ts h
 		}
 		var origin hlc.NodeID
 		copy(origin[:], decoded)
+		if origin == (hlc.NodeID{}) {
+			return fmt.Errorf("snapshot cutoff origin %q is a forbidden zero NodeID", encoded)
+		}
 		validated = append(validated, cutoff{origin: origin, seq: seq})
 	}
+	s.replicationCutMu.Lock()
+	defer s.replicationCutMu.Unlock()
 	for _, item := range validated {
-		s.origins.Record(item.origin, item.seq, ts)
+		s.origins.AdvanceSnapshot(item.origin, item.seq, ts)
+		for seq := range s.pendingMutations[item.origin] {
+			if seq <= item.seq {
+				s.dropPending(item.origin, seq)
+			}
+		}
+	}
+	for _, item := range validated {
+		if err := s.drainRemoteOrigin(context.Background(), item.origin); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -607,10 +644,37 @@ func (s *LanternService) logMutation(op *pb.MutationOp) {
 // origin and the other way on its peers. Returns immediately when the log is
 // not wired (test path); callers may pass a zero ts in that case.
 func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) uint64 {
-	if s.log == nil || s.clock == nil {
-		return 0
+	s.replicationCutMu.Lock()
+	defer s.replicationCutMu.Unlock()
+	seq, err := s.appendLocalMutationAtLocked(op, ts)
+	if err != nil {
+		l := s.logger
+		if l == nil {
+			l = slog.Default()
+		}
+		l.Warn("mutation log append failed", slog.Any("err", err))
 	}
+	return seq
+}
+
+// appendLocalMutationAtLocked assigns an origin-local seq independently of
+// the relay log's Entry.Seq. Caller holds replicationCutMu. A failed append
+// leaves the origin seq unconsumed so the next attempt can reuse it.
+func (s *LanternService) appendLocalMutationAtLocked(op *pb.MutationOp, ts hlc.Timestamp) (uint64, error) {
+	if s.log == nil || s.clock == nil {
+		return 0, nil
+	}
+	origin := s.clock.NodeID()
+	if origin == (hlc.NodeID{}) {
+		return 0, connect.NewError(connect.CodeFailedPrecondition, errors.New("mutation log origin NodeID is zero"))
+	}
+	committed := s.origins.LocalSeq(origin)
+	if committed == ^uint64(0) {
+		return 0, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("mutation origin %x sequence exhausted", origin))
+	}
+	seq := committed + 1
 	mu := &pb.Mutation{
+		Seq: seq,
 		Hlc: &pb.HLCTimestamp{
 			WallNs:  ts.WallNs,
 			Logical: ts.Logical,
@@ -618,33 +682,23 @@ func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) uint
 		},
 		Origin: append([]byte(nil), s.origin...),
 		Op:     op,
-		// Seq is stamped atomically inside Append via the
-		// SeqStamper callback below — by the time Append returns,
-		// the dispatcher has already broadcast the entry to
-		// subscribers with mu.Seq already set to the assigned
-		// origin's seq. This is what keeps the leaderless
-		// Subscribe contract (#415) race-free: Subscribe relay
-		// forwards mu unchanged, so downstream consumers always
-		// see (origin, origin_seq) anchored to the originating
-		// writer regardless of how many replicas the entry
-		// transits.
+		// Seq is origin-local; mutationlog.Entry.Seq is the position in
+		// this node's mixed local-and-relay stream. Holding the service
+		// gate prevents concurrent local writes from claiming the same seq.
 	}
-	entry, err := s.log.Append(mu, ts, func(seq uint64) { mu.Seq = seq })
+	_, err := s.log.Append(mu, ts)
 	if err != nil {
-		l := s.logger
-		if l == nil {
-			l = slog.Default()
-		}
-		l.Warn("mutation log append failed", slog.Any("err", err))
-		return 0
+		return 0, err
 	}
 	if s.origins != nil {
-		s.origins.Record(ts.NodeID, entry.Seq, ts)
+		if !s.origins.Record(origin, seq, ts) {
+			return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("mutation origin %x failed to record appended seq %d", origin, seq))
+		}
 	}
 	if s.onAppend != nil {
 		s.onAppend()
 	}
-	return entry.Seq
+	return seq, nil
 }
 
 // Illuminate returns a subgraph rooted at the seed, optionally reduced via
@@ -1316,7 +1370,11 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		// emits it verbatim, and a re-pulled snapshot re-adds it additively
 		// — doubling edge weight without bound on a gapped follower (#733).
 		// Mirrors the once-sampled HLC discipline PutVertices uses for LWW.
-		seq := s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
+		seq, err := s.appendLocalMutationAtLocked(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
+		if err != nil {
+			s.replicationCutMu.Unlock()
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("AddEdges mutation log append: %w", err))
+		}
 		for i := range items {
 			if items[i].ContribID.IsZero() {
 				items[i].ContribID = contribIDFor(s.origin, seq, uint16(i))

@@ -232,22 +232,40 @@ Properties:
 ## 7. Mutation log
 
 In-memory ring buffer (`core/mutationlog`), append-only, with a WAL hook
-(D1 leaves the hook empty for v1).
+(D1 leaves the hook empty for v1). Each stored `Entry.Seq` is a position in
+that replica's mixed local-and-relay log. The carried `Mutation.Seq` is a
+separate, contiguous sequence belonging to `Mutation.Origin`:
 
 ```go
 type Mutation struct {
-    Seq        uint64        // local sequence number (monotonic per node)
-    Origin     uint64        // contribID >> 64
-    ContribSeq uint64        // contribID & 0xFFFFFFFFFFFFFFFF
-    HLC        HLC
-    Op         MutationOp    // PUT_VERTEX | PUT_EDGE | ADD_EDGE | DELETE_VERTEX | DELETE_EDGE
-    Payload    []byte        // marshaled per-op body
+    Seq    uint64   // next seq for this origin only
+    Origin []byte   // 16-byte HLC NodeID
+    HLC    HLC
+    Op     MutationOp
 }
 ```
 
-The log indexes by `Seq` for `Subscribe(from_seq=...)` resume, and tracks the
-**high-water mark per origin** (`map[uint64]uint64 // origin -> last contribSeq`)
-to detect duplicates from out-of-order Subscribe delivery.
+`Subscribe.from_local_seq` indexes the responder's `Entry.Seq` ring position;
+`from_seq_per_origin` filters by each mutation's portable `(origin, seq)`.
+The service tracks the **contiguous committed prefix** per origin, rather
+than the maximum seq observed. A relay may receive seq 4 before seq 1–3, but
+it must keep seq 4 outside its graph, relay log, and Snapshot cutoff until
+the gap closes. The pending queue is bounded (4,096 mutations, 32 MiB of
+encoded mutation bytes, and a maximum seq gap of 4,096); overflow rejects
+the incoming mutation before graph apply. A failed relay-log append leaves
+the graph-applied frontier retryable without advancing the advertised cutoff.
+`Pump.PeerSnapshot.AppliedSeq` is an arrival observation that can include a
+queued future seq; it is not a contiguous committed cursor. Resume and
+Snapshot decisions use `OriginStates` and the Snapshot header cutoff instead.
+A relay-log append failure also marks the responder's CDC generation as
+`gapped`: all already-open `Subscribe` streams close with
+`FailedPrecondition`, and new `Subscribe`/`Snapshot` calls fail the same way
+until append-only retry or verified Snapshot repair clears the fault. Streams
+from the old generation never resume after repair. This prevents an external
+consumer from mistaking a graph-visible but unpublished remote mutation for
+a complete mutation history.
+A completed Snapshot replay may advance the prefix past unavailable log
+entries because its graph image supplies the missing effects.
 
 Buffer size is `LANTERN_MUTATION_LOG_CAPACITY` (default 100,000). Overflow
 drops **oldest** entries; consumers that fall behind that far are forced to
@@ -326,6 +344,9 @@ the origin committed under its per-call limit and causal-metadata budget. The
 prefix oneof arms remain decodable for older mutation logs, but must not be
 used for new origin writes: applying a broad predicate on a peer could widen a
 bounded origin commit and permanently diverge the replicas.
+Receivers reject legacy predicate-shaped Delete relay records before graph
+apply. A context-interrupted predicate scan could otherwise mutate only part
+of the graph before returning an error, with no safe retry boundary.
 
 Deviations from the §7 conceptual sketch (recorded as part of #178):
 
@@ -375,8 +396,8 @@ local mutation log retains entries from every cluster origin: a write
 that lands at replica X via `PutVertex` is appended at X's local log
 (via `logMutation`); replicas Y and Z then receive it through the peer
 pump and append it to their own local logs via
-`LanternService.ApplyMutation` (which calls `Log.Append` only after a
-per-origin watermark CAS to avoid double-Append from fan-out triangles).
+`LanternService.ApplyMutation` (which publishes only the next contiguous
+origin seq to avoid double-Append from fan-out triangles).
 
 Consequence:
 
@@ -385,7 +406,7 @@ Consequence:
   ordered by per-origin local seq inside each origin and HLC-orderable
   across origins. There is no need to subscribe to every replica and
   dedupe by `(origin, seq)` on the client side; the server already
-  does that work via the watermark CAS.
+  does that work via the per-origin commit cursor.
 - A consumer that fails over from replica X to replica Y resumes by
   sending the highest seq it has already observed FOR EACH origin in
   `from_seq_per_origin`. The new replica delivers only entries with
@@ -395,20 +416,29 @@ Consequence:
   automatically).
 - `Mutation.Seq` is the originating writer's local seq, NOT the
   forwarding replica's local seq. This is preserved end-to-end: the
-  Subscribe relay never overwrites `mu.Seq`, and the originating
-  writer stamps it atomically at `Log.Append` time via the
-  `SeqStamper` callback (see `core/mutationlog`).
+  Subscribe relay never overwrites `mu.Seq`, and the originating writer
+  allocates it independently of the mixed relay log's `Entry.Seq`.
+
+The current fail-closed publication handling covers **remote**
+`ApplyMutation` relay-log failures. Local Put/Delete still apply graph-first
+and report local log-append failure as a warning; that can leave a
+read-visible local write without a CDC record. Full external CDC completeness
+therefore remains blocked on #1116 Phase 2. The contract above describes
+successful publication, not a guarantee across that local failure mode.
 
 The internal peer pump uses the same RPC. Ordinary sessions start with an
-empty portable cursor and rely on `ApplyMutation`'s watermark CAS to dedup
+empty portable cursor and rely on `ApplyMutation`'s contiguous cursor to dedup
 duplicate hops; snapshot recovery resumes with both header-derived origin and
 same-responder local cursors. It still performs input-side self-echo
 suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
 
-Back-pressure: server terminates the stream with `FAILED_PRECONDITION`
-(`gapped`) if either (a) the ring has been truncated below the requested
-responder-local replay position, or (b) the consumer's send buffer
-overflows. In both cases the consumer must re-bootstrap via
+Back-pressure and publication faults: server terminates the stream with
+`FAILED_PRECONDITION` (`gapped`) if (a) the ring has been truncated below the
+requested responder-local replay position, (b) the consumer's send buffer
+overflows, or (c) a remote mutation changed the graph but its relay-log
+append failed. The fault also rejects new Subscribe/Snapshot attempts until
+repair, and closes every stream from the previous generation even if repair
+completes quickly. After repair the consumer must re-bootstrap via
 `Snapshot` and resume `Subscribe` with the
 `cutoff_seq_per_origin` and `cutoff_local_seq` returned by `SnapshotHeader`.
 
@@ -569,10 +599,10 @@ message SnapshotEdgeContribution {
 Framing contract:
 
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
-  the primary's per-origin watermark (every (origin, seq) the primary
-  had already applied at snapshot-open time, with seq = the
-  origin-anchored local seq stamped by the originating writer's
-  `logMutation`). `cutoff_hlc` is the primary's `clock.Now()` at
+  the primary's contiguous per-origin committed prefix (every prior
+  mutation has been applied to the graph and published to its relay log,
+  or supplied by a verified Snapshot). Pending future seqs are absent from
+  both the graph image and this cutoff. `cutoff_hlc` is the primary's `clock.Now()` at
   snapshot-open time. The consumer Subscribes with
   `from_seq_per_origin = {origin: seq + 1 for each (origin, seq) in
   cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq + 1`

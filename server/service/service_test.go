@@ -60,6 +60,107 @@ func TestLanternService_ApplySnapshotWatermarks(t *testing.T) {
 	if got := svc.LocalSeq(other); got != 0 {
 		t.Fatalf("partially validated cutoff changed other LocalSeq to %d, want 0", got)
 	}
+	if err := svc.ApplySnapshotWatermarks(map[string]uint64{hex.EncodeToString(make([]byte, 16)): 1}, ts); err == nil {
+		t.Fatal("ApplySnapshotWatermarks accepted a zero origin")
+	}
+
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	queued := NewLanternService(cache)
+	buffered := &pb.Mutation{Seq: 2, Origin: origin[:], Hlc: newHLC(2, origin),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "after-cutoff"}}}},
+	}
+	if err := queued.ApplyMutation(context.Background(), buffered); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cache.GetVertex("after-cutoff"); ok {
+		t.Fatal("future seq applied before snapshot watermark")
+	}
+	if err := queued.ApplySnapshotWatermarks(map[string]uint64{hex.EncodeToString(origin[:]): 1}, ts); err != nil {
+		t.Fatal(err)
+	}
+	if got := queued.LocalSeq(origin); got != 2 {
+		t.Fatalf("queued contiguous seq after snapshot cutoff = %d, want 2", got)
+	}
+	if _, ok := cache.GetVertex("after-cutoff"); !ok {
+		t.Fatal("queued seq not drained after snapshot watermark")
+	}
+}
+
+func TestLanternService_OriginSeqIndependentOfRelayLogPosition(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	local, remote := hlc.NodeID{0x11}, hlc.NodeID{0x22}
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+	ctx := context.Background()
+	put := func(key string) {
+		t.Helper()
+		if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("local-1")
+	if err := svc.ApplyMutation(ctx, &pb.Mutation{Seq: 1, Origin: remote[:], Hlc: newHLC(1, remote),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "remote-1"}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "local-1", Head: "local-2", Weight: 2}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.LocalSeq(local); got != 2 {
+		t.Fatalf("local origin seq = %d, want 2 despite relay append", got)
+	}
+	edges := cache.SnapshotEdges()
+	if len(edges) != 1 || len(edges[0].Contributions) != 1 || edges[0].Contributions[0].ContribID != contribIDFor(local[:], 2, 0) {
+		t.Fatalf("local AddEdges ContribID used relay-log position instead of origin seq: %+v", edges)
+	}
+	entries, cancel, err := log.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cancel() }()
+	wantOriginSeq := []struct {
+		origin hlc.NodeID
+		seq    uint64
+	}{{local, 1}, {remote, 1}, {local, 2}}
+	for i, want := range wantOriginSeq {
+		select {
+		case entry := <-entries:
+			mutation, ok := entry.Op.(*pb.Mutation)
+			if !ok || entry.Seq != uint64(i+1) || mutation.GetSeq() != want.seq || !slices.Equal(mutation.GetOrigin(), want.origin[:]) {
+				t.Fatalf("mixed log entry %d = %+v, want origin %x seq %d", i+1, entry, want.origin, want.seq)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("mixed log entry %d unavailable", i+1)
+		}
+	}
+}
+
+func TestLanternService_LocalOriginSeqExhaustionRejectsBeforeAppend(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x11}
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).
+		WithReplication(log, clock, nil)
+	if !svc.origins.AdvanceSnapshot(origin, ^uint64(0), clock.Now()) {
+		t.Fatal("failed to seed exhausted origin cursor")
+	}
+	svc.replicationCutMu.Lock()
+	seq, err := svc.appendLocalMutationAtLocked(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+		PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "unpublished"}},
+	}}, clock.Now())
+	svc.replicationCutMu.Unlock()
+	if connect.CodeOf(err) != connect.CodeResourceExhausted || seq != 0 {
+		t.Fatalf("exhausted origin append = (%d,%v), want (0,ResourceExhausted)", seq, err)
+	}
+	if got := log.Len(); got != 0 {
+		t.Fatalf("exhausted origin appended %d entries", got)
+	}
+	if got := svc.LocalSeq(origin); got != ^uint64(0) {
+		t.Fatalf("exhausted origin cursor changed to %d", got)
+	}
 }
 
 func TestLanternService_PutAndGetVertex(t *testing.T) {

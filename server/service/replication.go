@@ -68,7 +68,14 @@ type OriginStatesProvider interface {
 // and the graph share its replication commit boundary. A narrow fake origin
 // provider may omit it; production always passes LanternService here.
 type snapshotCutProvider interface {
-	withReplicationSnapshotCut(capture func())
+	withReplicationSnapshotCut(capture func()) error
+}
+
+// publicationStatusProvider exposes a relay-log fault generation. It is
+// implemented by the production LanternService; narrow test providers can
+// omit it when they do not publish remote mutations.
+type publicationStatusProvider interface {
+	publicationStatus() (<-chan struct{}, bool)
 }
 
 // SearchConfigFingerprintProvider supplies the search contract carried by
@@ -185,6 +192,15 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 	if s.log == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
+	var faultCh <-chan struct{}
+	if status, ok := s.origins.(publicationStatusProvider); ok {
+		var faulted bool
+		faultCh, faulted = status.publicationStatus()
+		if faulted {
+			s.metrics.OnSubscribeDropped("gapped")
+			return publicationGapError()
+		}
+	}
 	cursor := req.GetFromSeqPerOrigin()
 	fromLocalSeq := req.GetFromLocalSeq()
 	if fromLocalSeq == 0 {
@@ -208,7 +224,18 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		select {
 		case <-ctx.Done():
 			return ctxToConnect(ctx.Err())
+		case <-faultCh:
+			s.metrics.OnSubscribeDropped("gapped")
+			return publicationGapError()
 		case entry, ok := <-ch:
+			// When log and fault channels are both ready, the select may
+			// choose an entry. Do not send it on a poisoned stream.
+			select {
+			case <-faultCh:
+				s.metrics.OnSubscribeDropped("gapped")
+				return publicationGapError()
+			default:
+			}
 			if !ok {
 				// Slow subscriber: log closed our channel mid-stream.
 				s.metrics.OnSubscribeDropped("gapped")
@@ -317,7 +344,9 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 		}
 	}
 	if gate, ok := s.origins.(snapshotCutProvider); ok {
-		gate.withReplicationSnapshotCut(capture)
+		if err := gate.withReplicationSnapshotCut(capture); err != nil {
+			return err
+		}
 	} else {
 		capture()
 	}

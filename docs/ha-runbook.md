@@ -69,8 +69,9 @@ Triggered when `LANTERN_PEER_DISCOVERY=dns` **or** when
 - `/healthz/ready` returns `NOT_SERVING` (503) while replication lag
   for any peer exceeds `LANTERN_MAX_REPLICATION_LAG`, so load
   balancers drain the pod.
-- Bootstrap = `Snapshot` against the first responding peer, then
-  tail `Subscribe(from_seq = cutoff+1)`.
+- Bootstrap = `Snapshot` against the first responding peer, then tail
+  `Subscribe` from the responder-local log position and each origin's
+  contiguous cutoff plus one. These are separate cursors.
   See RFC §[9](replication.md#9-bootstrap-flow).
 
 Use one of the §3 topologies to deliver this mode.
@@ -714,6 +715,26 @@ increasing the log capacity.
 If overflow is **chronic**, write rate has outgrown
 `mutation_log_capacity`. Bump
 `LANTERN_MUTATION_LOG_CAPACITY` or add cluster capacity.
+
+A different gap occurs when a relay receives an origin's future seq before
+its missing prefix. That mutation stays out of reads, `Subscribe`, and the
+Snapshot cutoff until the prefix commits. If the pending queue exceeds its
+bounded count, byte, or seq-distance limit, the pump logs
+`replication: pending mutation buffer full` or `seq gap exceeds` and retries;
+it does not publish a higher cutoff over the hole. Check the source's
+`PeerStatus` for the missing origin. If the gap persists, restart the affected
+replica to bootstrap from a healthy peer's Snapshot.
+
+If the relay WAL append fails **after** a remote graph apply, the responder
+marks its current publication generation `gapped`. Existing Subscribe streams
+close with `FailedPrecondition`; new Subscribe and Snapshot calls fail until
+the mutation is append-retried or a verified Snapshot repairs the replica.
+The peer pump normally reconnects and retries the same origin seq without
+reapplying the graph. If the fault persists, inspect the WAL error and the
+source peer, repair storage, or restart the affected in-memory replica and
+bootstrap it from a healthy peer. A new subscriber must take a fresh Snapshot
+after recovery; a pre-fault stream never resumes. Local Put/Delete log-append
+failure is a separate #1116 Phase 2 blocker for complete external CDC.
 
 ### 9.3 Pod stuck `NOT_SERVING` after restart
 

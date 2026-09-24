@@ -332,10 +332,12 @@ func TestApplyMutation_BasicOps(t *testing.T) {
 	origin := bytes16("origin-A")
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	ts := newHLC(1, origin)
+	var seq uint64
 
 	mustApply := func(t *testing.T, name string, op *pb.MutationOp) {
 		t.Helper()
-		m := &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: op}
+		seq++
+		m := &pb.Mutation{Seq: seq, Hlc: ts, Origin: origin[:], Op: op}
 		if err := svc.ApplyMutation(ctx, m); err != nil {
 			t.Fatalf("ApplyMutation %s: %v", name, err)
 		}
@@ -371,12 +373,6 @@ func TestApplyMutation_BasicOps(t *testing.T) {
 	mustApply(t, "DeleteVertices", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
 		DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"v2"}},
 	}})
-	mustApply(t, "DeleteVerticesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{
-		DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "x"},
-	}})
-	mustApply(t, "DeleteEdgesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{
-		DeleteEdgesByPrefix: &pb.DeleteEdgesByPrefixRequest{TailPrefix: "v1"},
-	}})
 
 	// Nil-safety: empty mutation, nil op, nil request all return nil err.
 	if err := svc.ApplyMutation(ctx, nil); err != nil {
@@ -384,6 +380,41 @@ func TestApplyMutation_BasicOps(t *testing.T) {
 	}
 	if err := svc.ApplyMutation(ctx, &pb.Mutation{}); err != nil {
 		t.Errorf("ApplyMutation(empty) returned %v, want nil", err)
+	}
+}
+
+func TestApplyMutation_RejectsLegacyPredicateDeletesBeforeGraphApply(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   *pb.MutationOp
+	}{
+		{"vertices", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "victim"}}}},
+		{"edges", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: &pb.DeleteEdgesByPrefixRequest{TailPrefix: "victim"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			expiration := time.Now().Add(time.Hour)
+			if err := cache.PutVertexWithExpiration("victim", &pb.Vertex{Key: "victim"}, expiration); err != nil {
+				t.Fatal(err)
+			}
+			cache.PutEdgeWithExpiration("victim", "head", 2, expiration)
+			svc := NewLanternService(cache).WithTombstoneTTL(time.Hour)
+			origin := hlc.NodeID{0x01}
+			mutation := &pb.Mutation{Origin: origin[:], Seq: 1,
+				Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]}, Op: tc.op}
+			if err := svc.ApplyMutation(context.Background(), mutation); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("legacy predicate replay error = %v, want InvalidArgument", err)
+			}
+			if _, ok := cache.GetVertex("victim"); !ok {
+				t.Fatal("legacy predicate removed a vertex")
+			}
+			if weight, ok := cache.GetWeight("victim", "head"); !ok || weight != 2 {
+				t.Fatalf("legacy predicate changed edge: (%v,%v)", weight, ok)
+			}
+			if got := svc.LocalSeq(origin); got != 0 {
+				t.Fatalf("legacy predicate advanced origin cutoff to %d", got)
+			}
+		})
 	}
 }
 
@@ -402,10 +433,12 @@ func TestApplyMutation_ReplicationApplyHook(t *testing.T) {
 	origin := bytes16("origin-A")
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	ts := newHLC(1, origin)
+	var seq uint64
 
 	mustApply := func(t *testing.T, op *pb.MutationOp) {
 		t.Helper()
-		m := &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: op}
+		seq++
+		m := &pb.Mutation{Seq: seq, Hlc: ts, Origin: origin[:], Op: op}
 		if err := svc.ApplyMutation(ctx, m); err != nil {
 			t.Fatalf("ApplyMutation: %v", err)
 		}
@@ -425,8 +458,6 @@ func TestApplyMutation_ReplicationApplyHook(t *testing.T) {
 		{"DeleteEdges", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "v1", Head: "v2"}}}}}},
 		{"DeleteVertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v1"}}}},
 		{"DeleteVertices", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"v2"}}}}},
-		{"DeleteVerticesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "x"}}}},
-		{"DeleteEdgesByPrefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: &pb.DeleteEdgesByPrefixRequest{TailPrefix: "v1"}}}},
 	}
 	for _, c := range cases {
 		mustApply(t, c.op)
@@ -450,8 +481,8 @@ func TestApplyMutation_ReplicationApplyHook(t *testing.T) {
 	if err := svc.ApplyMutation(ctx, &pb.Mutation{}); err != nil {
 		t.Errorf("ApplyMutation(empty) returned %v, want nil", err)
 	}
-	if err := svc.ApplyMutation(ctx, &pb.Mutation{Seq: 2, Hlc: ts, Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: nil}}}); err != nil {
-		t.Errorf("ApplyMutation(nil PutVertex) returned %v, want nil", err)
+	if err := svc.ApplyMutation(ctx, &pb.Mutation{Seq: seq + 1, Hlc: ts, Origin: origin[:], Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: nil}}}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("ApplyMutation(nil PutVertex) = %v, want InvalidArgument", err)
 	}
 	if len(recorded) != before {
 		t.Errorf("hook fired on no-op path: recorded grew from %d to %d", before, len(recorded))
@@ -532,12 +563,80 @@ func TestApplyMutation_DoesNotReAppendDuplicate(t *testing.T) {
 	}
 }
 
+func TestApplyMutation_ContiguousPublicationAfterReverseRelay(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 16})
+	t.Cleanup(func() { _ = log.Close() })
+	local := bytes16("local")
+	origin := bytes16("remote")
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+	mutation := func(seq uint64) *pb.Mutation {
+		key := fmt.Sprintf("reverse-%d", seq)
+		return &pb.Mutation{Origin: origin[:], Seq: seq, Hlc: newHLC(int64(seq), origin),
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: key, Expiration: expiration},
+			}}},
+		}
+	}
+	for _, seq := range []uint64{4, 3, 2} {
+		if err := svc.ApplyMutation(context.Background(), mutation(seq)); err != nil {
+			t.Fatalf("buffer seq=%d: %v", seq, err)
+		}
+	}
+	if got := svc.LocalSeq(origin); got != 0 {
+		t.Fatalf("origin cutoff crossed missing seq 1: %d", got)
+	}
+	if got := log.Len(); got != 0 {
+		t.Fatalf("relay log published %d entries before seq 1", got)
+	}
+	if _, ok := cache.GetVertex("reverse-4"); ok {
+		t.Fatal("future origin seq became visible before contiguous publication")
+	}
+	if err := svc.ApplyMutation(context.Background(), mutation(1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.LocalSeq(origin); got != 4 {
+		t.Fatalf("contiguous origin cutoff = %d, want 4", got)
+	}
+	if got := log.Len(); got != 4 {
+		t.Fatalf("relay log has %d entries, want 4", got)
+	}
+	entries, cancel, err := log.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cancel() }()
+	for seq := uint64(1); seq <= 4; seq++ {
+		select {
+		case entry := <-entries:
+			mu, ok := entry.Op.(*pb.Mutation)
+			if !ok || mu.GetSeq() != seq || entry.Seq != seq {
+				t.Fatalf("relay entry %d = %+v, want origin/local seq %d", seq, entry, seq)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("relay entry %d unavailable", seq)
+		}
+		if _, ok := cache.GetVertex(fmt.Sprintf("reverse-%d", seq)); !ok {
+			t.Fatalf("committed origin seq %d missing from graph", seq)
+		}
+	}
+	if err := svc.ApplyMutation(context.Background(), mutation(4)); err != nil {
+		t.Fatal(err)
+	}
+	if got := log.Len(); got != 4 {
+		t.Fatalf("duplicate relay added entry, log len=%d", got)
+	}
+}
+
 // TestApplyMutation_Convergence is the cluster-wide property test. It
 // builds three independent caches, generates a random batch of
 // mutations from a fixed pool of synthetic origins, then delivers the
 // same batch to every node in a SHUFFLED order (with occasional
-// duplicates). The post-condition: all three nodes hold identical
-// vertex and edge state.
+// duplicates). ApplyMutation restores per-origin FIFO before graph apply;
+// this test therefore varies inter-origin order while asserting all three
+// nodes finish with identical vertex and edge state. Core graphcache tests
+// separately exercise same-origin graph-operation permutations.
 //
 // Restrictions for the #182 universe:
 //
@@ -662,7 +761,7 @@ func TestApplyMutation_Convergence(t *testing.T) {
 // sibling of TestApplyMutation_Convergence (#718). It stresses the
 // steady-state guarantee that reordered + duplicated delivery of a
 // workload that ALSO contains Delete* mutations still converges to an
-// identical state on every replica.
+// identical state on every replica after per-origin FIFO admission.
 //
 // TestApplyMutation_Convergence deliberately excludes Delete* because,
 // without a tombstone TTL, a late Put re-inserts a deleted key on some
@@ -670,7 +769,7 @@ func TestApplyMutation_Convergence(t *testing.T) {
 // WithTombstoneTTL, so a Delete* installs an HLC-fenced tombstone and a
 // strictly-older Put/Add is clamped (LWW) instead of resurrecting the key.
 //
-// Order-independence is kept inside the documented convergence subset
+// Inter-origin order-independence is kept inside the documented convergence subset
 // (README "Conflict resolution"; docs/ha-runbook.md) by construction:
 //
 //   - Every mutation carries an EXPLICIT, globally-monotonic wall_ns, so
@@ -889,7 +988,7 @@ func TestApplyMutation_ConvergenceWithTombstones(t *testing.T) {
 				states[n] = snapshotCache(cache, vertexPool, edges)
 			}
 
-			// (a) Order-independence: every node converges to node 0's state.
+			// (a) Inter-origin order-independence: every node converges to node 0's state.
 			for n := 1; n < numNodes; n++ {
 				if diff := states[0].diff(states[n]); diff != "" {
 					t.Fatalf("trace=%d seedHi=%#x: node 0 vs node %d divergence:\n%s", trace, seedHi, n, diff)
@@ -926,7 +1025,7 @@ func TestApplyMutation_Idempotence(t *testing.T) {
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	ts := newHLC(42, origin)
 	mkMutation := func(op *pb.MutationOp) *pb.Mutation {
-		return &pb.Mutation{Seq: 7, Hlc: ts, Origin: origin[:], Op: op}
+		return &pb.Mutation{Seq: 1, Hlc: ts, Origin: origin[:], Op: op}
 	}
 
 	cases := []struct {
@@ -1274,11 +1373,13 @@ func TestApplyMutation_BatchBornExpiredAlignment(t *testing.T) {
 	ctx := context.Background()
 	origin := bytes16("origin-A")
 
-	apply := func(t *testing.T, seq uint64, op *pb.MutationOp) {
+	var nextSeq uint64
+	apply := func(t *testing.T, wall int64, op *pb.MutationOp) {
 		t.Helper()
-		m := &pb.Mutation{Seq: seq, Hlc: newHLC(int64(seq), origin), Origin: origin[:], Op: op}
+		nextSeq++
+		m := &pb.Mutation{Seq: nextSeq, Hlc: newHLC(wall, origin), Origin: origin[:], Op: op}
 		if err := svc.ApplyMutation(ctx, m); err != nil {
-			t.Fatalf("ApplyMutation seq=%d: %v", seq, err)
+			t.Fatalf("ApplyMutation seq=%d: %v", nextSeq, err)
 		}
 	}
 
@@ -1337,7 +1438,7 @@ func TestApplyMutation_TombstoneClampRejectHook(t *testing.T) {
 
 	apply := func(t *testing.T, svc *LanternService, seq uint64, op *pb.MutationOp) {
 		t.Helper()
-		m := &pb.Mutation{Seq: seq, Hlc: newHLC(int64(seq), origin), Origin: origin[:], Op: op}
+		m := &pb.Mutation{Seq: svc.LocalSeq(origin) + 1, Hlc: newHLC(int64(seq), origin), Origin: origin[:], Op: op}
 		if err := svc.ApplyMutation(context.Background(), m); err != nil {
 			t.Fatalf("ApplyMutation seq=%d: %v", seq, err)
 		}
