@@ -1,10 +1,6 @@
 package backup
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
-	"sort"
 	"sync"
 	"unicode/utf8"
 
@@ -12,6 +8,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/protoschema"
 )
 
 // validateArchiveGraphFrameWire validates the protobuf wire shape without
@@ -36,56 +33,12 @@ const archiveWireMaxDepth = 32
 const archiveGraphSchemaFingerprintV1 = "fed3f32f77295f18c8689ba997923564516028326422669751eae3acfe524d83"
 
 var archiveGraphSchemaError = sync.OnceValue(func() error {
-	digest := archiveMessageSchemaFingerprint((&pb.SnapshotResponse{}).ProtoReflect().Descriptor())
+	digest := protoschema.Fingerprint((&pb.SnapshotResponse{}).ProtoReflect().Descriptor())
 	if digest != archiveGraphSchemaFingerprintV1 {
 		return wholeStateArchiveError("archive v1 graph schema changed: %s", digest)
 	}
 	return nil
 })
-
-func archiveMessageSchemaFingerprint(descriptor protoreflect.MessageDescriptor) string {
-	h := sha256.New()
-	visited := make(map[protoreflect.FullName]struct{})
-	var visit func(protoreflect.MessageDescriptor)
-	visit = func(message protoreflect.MessageDescriptor) {
-		if _, ok := visited[message.FullName()]; ok {
-			fmt.Fprintf(h, "reference %s\n", message.FullName())
-			return
-		}
-		visited[message.FullName()] = struct{}{}
-		fmt.Fprintf(h, "message %s %d %t\n", message.FullName(), message.ParentFile().Syntax(), message.IsMapEntry())
-		fields := message.Fields()
-		numbers := make([]int, 0, fields.Len())
-		for i := 0; i < fields.Len(); i++ {
-			numbers = append(numbers, int(fields.Get(i).Number()))
-		}
-		sort.Ints(numbers)
-		for _, number := range numbers {
-			field := fields.ByNumber(protoreflect.FieldNumber(number))
-			oneof := protoreflect.FullName("")
-			if field.ContainingOneof() != nil {
-				oneof = field.ContainingOneof().FullName()
-			}
-			fmt.Fprintf(h, "field %d %s %d %d %t %t %t %t %t %s\n",
-				field.Number(), field.Name(), field.Kind(), field.Cardinality(),
-				field.IsList(), field.IsMap(), field.IsPacked(), field.HasPresence(),
-				field.IsExtension(), oneof)
-			if field.Kind() == protoreflect.EnumKind {
-				enum := field.Enum()
-				fmt.Fprintf(h, "enum %s\n", enum.FullName())
-				for i := 0; i < enum.Values().Len(); i++ {
-					value := enum.Values().Get(i)
-					fmt.Fprintf(h, "value %s %d\n", value.Name(), value.Number())
-				}
-			}
-			if field.Kind() == protoreflect.MessageKind {
-				visit(field.Message())
-			}
-		}
-	}
-	visit(descriptor)
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 func validateArchiveMessageWire(raw []byte, descriptor protoreflect.MessageDescriptor, depth int) error {
 	if depth > archiveWireMaxDepth {

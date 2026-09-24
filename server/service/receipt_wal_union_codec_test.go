@@ -10,12 +10,16 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/protoschema"
 )
 
 func receiptWALUnionGraphFixture(op *pb.MutationOp) *pb.Mutation {
@@ -44,6 +48,46 @@ func receiptWALUnionRawGraphProto(protobuf []byte, repeatedCount uint32) []byte 
 	binary.BigEndian.PutUint32(raw[12:16], uint32(len(body)))
 	copy(raw[receiptWALUnionHeaderSize:], body)
 	return raw
+}
+
+func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
+	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
+	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV1 {
+		t.Fatalf("WAL union v1 graph schema changed to %s; review replay and migration", got)
+	}
+	for _, tc := range []struct {
+		name  string
+		field *descriptorpb.FieldDescriptorProto
+	}{
+		{"scalar", &descriptorpb.FieldDescriptorProto{
+			Name: proto.String("future_field"), Number: proto.Int32(99),
+			Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:  descriptorpb.FieldDescriptorProto_TYPE_UINT64.Enum(),
+		}},
+		{"recursive", &descriptorpb.FieldDescriptorProto{
+			Name: proto.String("future_cycle"), Number: proto.Int32(99),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+			TypeName: proto.String(".graph.v1.MutationOp"),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := protodesc.ToFileDescriptorProto(current.ParentFile())
+			for _, message := range file.MessageType {
+				if message.GetName() == "MutationOp" {
+					message.Field = append(message.Field, tc.field)
+					break
+				}
+			}
+			changed, err := protodesc.NewFile(file, protoregistry.GlobalFiles)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV1 {
+				t.Fatal("new graph mutation field did not invalidate WAL union v1 schema")
+			}
+		})
+	}
 }
 
 func TestReceiptWALUnionCodecEveryGraphArm(t *testing.T) {

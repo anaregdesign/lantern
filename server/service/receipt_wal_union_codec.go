@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -14,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/protoschema"
 )
 
 // This private, unwired codec covers both concrete service Log payloads:
@@ -30,9 +32,20 @@ const (
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
 	// The existing LRED receipt body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
+	// A new reachable Mutation field must not silently change what the v1
+	// graph kind persists or replays. Review and version the WAL schema first.
+	receiptWALGraphSchemaFingerprintV1 = "6e23c70ce9e21e00421181fbda915baab3830fa07f5784562e6ae0b57757cfc9"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
+
+var receiptWALGraphSchemaError = sync.OnceValue(func() error {
+	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
+	if digest != receiptWALGraphSchemaFingerprintV1 {
+		return receiptWALUnionError("WAL union v1 graph schema changed: %s", digest)
+	}
+	return nil
+})
 
 func receiptWALUnionError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errReceiptWALUnion, fmt.Sprintf(format, args...))
@@ -291,6 +304,9 @@ func scanReceiptWALGraphWire(raw []byte, descriptor protoreflect.MessageDescript
 }
 
 func validateReceiptWALGraph(m *pb.Mutation) error {
+	if err := receiptWALGraphSchemaError(); err != nil {
+		return err
+	}
 	if m == nil || m.GetSeq() == 0 || m.GetHlc() == nil || m.GetHlc().GetWallNs() <= 0 ||
 		len(m.GetOrigin()) != len(hlc.NodeID{}) || len(m.GetHlc().GetNodeId()) != len(hlc.NodeID{}) ||
 		zeroNodeID(m.GetOrigin()) || !bytes.Equal(m.GetOrigin(), m.GetHlc().GetNodeId()) {
