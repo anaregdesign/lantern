@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
@@ -244,6 +246,110 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('inactive to resumed keeps the foreground CDC session owned', (
+    tester,
+  ) async {
+    final source = _TrackingIdentitySource();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: _FakeRemote(),
+    );
+    addTearDown(repository.dispose);
+    await _pumpOfflineDemo(
+      tester,
+      repository,
+      partition: partition,
+      vertexKey: vertexKey,
+      edgeTail: edgeTail,
+      edgeHead: edgeHead,
+      identitySource: source,
+    );
+    await _pumpUntil(tester, () => source.sessions.length == 1);
+    expect(source.sessions.single.listening, isTrue);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(source.sessions, hasLength(1));
+    expect(source.tokens.single.isCanceled, isFalse);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    expect(source.tokens.single.isCanceled, isTrue);
+    await _waitReal(tester, () => source.sessions.single.closed);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'foreground CDC starts once, resumes, and stays off after logout',
+    (tester) async {
+      final source = _TrackingIdentitySource();
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: _FakeRemote(),
+      );
+      addTearDown(repository.dispose);
+      var signedIn = true;
+      await _pumpOfflineDemo(
+        tester,
+        repository,
+        partition: partition,
+        vertexKey: vertexKey,
+        edgeTail: edgeTail,
+        edgeHead: edgeHead,
+        identitySource: source,
+        identityAllowed: () => signedIn,
+      );
+      await _pumpUntil(tester, () => source.sessions.length == 1);
+      expect(source.sessions.single.listening, isTrue);
+      source.sessions.single.add(OfflineIdentityCheckpoint(const {}));
+      await _pumpUntilAsync(
+        tester,
+        () async => await repository.store.transaction((t) async {
+          final epoch = await t.changeEpoch(partition);
+          final unknown = await t.unknownResidents(partition, limit: 1);
+          return epoch > 0 && unknown.isEmpty;
+        }),
+      );
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(source.sessions.single.closed, isFalse);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      expect(source.tokens.single.isCanceled, isTrue);
+      await _waitReal(tester, () => source.sessions.single.closed);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await _pumpUntil(tester, () => source.sessions.length == 2);
+      expect(source.sessions.last.listening, isTrue);
+      source.sessions.last.add(OfflineIdentityCheckpoint(const {}));
+      await _pumpUntilAsync(
+        tester,
+        () async => await repository.store.transaction((t) async {
+          final epoch = await t.changeEpoch(partition);
+          final unknown = await t.unknownResidents(partition, limit: 1);
+          return epoch > 1 && unknown.isEmpty;
+        }),
+      );
+
+      signedIn = false;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await _waitReal(tester, () => source.sessions.last.closed);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(source.sessions, hasLength(2));
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 Future<void> _pumpOfflineDemo(
@@ -253,6 +359,8 @@ Future<void> _pumpOfflineDemo(
   required String vertexKey,
   required String edgeTail,
   required String edgeHead,
+  OfflineIdentitySource? identitySource,
+  bool Function()? identityAllowed,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -262,10 +370,43 @@ Future<void> _pumpOfflineDemo(
         vertexKey: vertexKey,
         edgeTail: edgeTail,
         edgeHead: edgeHead,
+        identitySource: identitySource,
+        identityAllowed: identityAllowed,
       ),
     ),
   );
   await tester.pumpAndSettle();
+}
+
+Future<void> _pumpUntil(WidgetTester tester, bool Function() done) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    await tester.pump(const Duration(milliseconds: 10));
+    if (done()) return;
+  }
+  fail('foreground CDC lifecycle did not settle');
+}
+
+Future<void> _pumpUntilAsync(
+  WidgetTester tester,
+  Future<bool> Function() done,
+) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    await tester.pump(const Duration(milliseconds: 10));
+    if (await done()) return;
+  }
+  fail('foreground CDC did not apply its checkpoint');
+}
+
+Future<void> _waitReal(WidgetTester tester, bool Function() done) async {
+  await tester.runAsync(() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 2));
+    while (!done()) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('foreground CDC cancellation did not settle');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+  });
 }
 
 Future<void> _scroll(WidgetTester tester, double dy) async {
@@ -340,5 +481,66 @@ final class _FakeRemote implements OfflineRemote {
   }) async {
     edges[EdgeRef(edge.tail, edge.head)] = edge;
     return PutOutcome.appliedAndLive;
+  }
+}
+
+final class _TrackingIdentitySource implements OfflineIdentitySource {
+  final List<_TrackingIdentitySession> sessions = [];
+  final List<LanternCancellationToken> tokens = [];
+
+  @override
+  Future<OfflineIdentitySession> open({
+    required bool bootstrap,
+    required Map<String, BigInt> nextExpected,
+    required LanternCancellationToken cancellation,
+  }) async {
+    final session = _TrackingIdentitySession();
+    sessions.add(session);
+    tokens.add(cancellation);
+    return session;
+  }
+}
+
+final class _TrackingIdentitySession implements OfflineIdentitySession {
+  _TrackingIdentitySession() {
+    _frames = StreamController<OfflineIdentityEvent>(
+      sync: true,
+      onListen: () => listening = true,
+    );
+  }
+
+  late final StreamController<OfflineIdentityEvent> _frames;
+  bool listening = false;
+  bool closed = false;
+
+  void add(OfflineIdentityEvent frame) => _frames.add(frame);
+
+  @override
+  String get responderId => 'test-responder';
+
+  @override
+  Stream<OfflineIdentityEvent> get events => _frames.stream;
+
+  @override
+  Future<List<OfflineRemoteRead<Vertex>>> getVertices(
+    List<String> keys, {
+    LanternCancellationToken? cancellation,
+  }) async => [for (final _ in keys) const OfflineRemoteMissing<Vertex>()];
+
+  @override
+  Future<List<OfflineRemoteRead<Edge>>> getEdges(
+    List<EdgeRef> edges, {
+    LanternCancellationToken? cancellation,
+  }) async => [for (final _ in edges) const OfflineRemoteMissing<Edge>()];
+
+  @override
+  Future<void> close() async {
+    if (closed) return;
+    closed = true;
+    if (listening) {
+      await _frames.close();
+    } else {
+      unawaited(_frames.close());
+    }
   }
 }

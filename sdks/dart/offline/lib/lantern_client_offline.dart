@@ -19,6 +19,7 @@ export 'src/identity_consumer.dart'
         OfflineIdentityOperation,
         OfflineIdentitySource,
         OfflineIdentitySession;
+export 'src/lantern_identity_source.dart' show LanternClientIdentitySource;
 export 'src/memory_store.dart';
 export 'src/remote.dart';
 export 'src/repository.dart';

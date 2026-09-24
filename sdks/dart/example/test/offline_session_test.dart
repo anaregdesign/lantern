@@ -53,6 +53,27 @@ void main() {
     );
   });
 
+  test('foreground CDC requires an explicit pinned-responder opt-in', () {
+    final endpoint = Uri.parse('https://lantern.example.com');
+    expect(
+      DemoConfiguration(
+        endpoint: endpoint,
+        tokenEndpoint: null,
+        allowInsecure: false,
+      ).offlineCdcPinnedResponder,
+      isFalse,
+    );
+    expect(
+      DemoConfiguration(
+        endpoint: endpoint,
+        tokenEndpoint: null,
+        allowInsecure: false,
+        offlineCdcPinnedResponder: true,
+      ).offlineCdcPinnedResponder,
+      isTrue,
+    );
+  });
+
   testWidgets(
     'missing account scope fails before storage and disposes cleanly',
     (tester) async {

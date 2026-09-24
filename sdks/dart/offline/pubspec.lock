@@ -58,7 +58,7 @@ packages:
     source: hosted
     version: "1.19.1"
   connectrpc:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: connectrpc
       sha256: a1dbf301d0dfa189bb879a9f15bbe72f31dbac581f385035a10fcc2d31a93a18
@@ -98,7 +98,7 @@ packages:
     source: hosted
     version: "7.0.1"
   fixnum:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: fixnum
       sha256: b6dc7065e46c974bc7c5f143080a6764ec7a4be6da1285ececdc37be96de53be
@@ -157,10 +157,10 @@ packages:
     dependency: "direct main"
     description:
       name: lantern_client
-      sha256: dbb0c5abd554f7df5952be3d1b4663b5a49b341ea23fc4c04defa7e735d6a828
+      sha256: "46e560a57c46cd09d9c8dcc7d3ccc96a578529264f37acb4bc6807c8ab6eee60"
       url: "https://pub.dev"
     source: hosted
-    version: "0.2.0"
+    version: "0.3.0"
   lints:
     dependency: "direct dev"
     description:

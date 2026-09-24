@@ -29,6 +29,16 @@ gateway; the server's static token list is an operator-side deployment input.
 the user/tenant whose state is stored locally. It is never an access token.
 Anonymous local development uses an `anonymous` scope.
 
+The Offline screen starts foreground identity CDC only when
+`--dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true` is set. Set it only
+when `LANTERN_ENDPOINT` routes every Subscribe, status, and plural read to one
+real Lantern responder for the session. An ordinary load-balancing URL is not
+sufficient. The example never infers responder pinning from a URL or starts CDC
+in the background. Opening the Offline screen starts one session; hide/pause or
+navigation cancels it, and resume starts a new session only while the account
+remains active. `wipeOnLogout()` blocks new sessions before quiescing and wiping
+the old partition.
+
 Plaintext requires both the SDK opt-in and a debug/trusted-LAN build:
 
 ```bash
@@ -98,8 +108,9 @@ placeholder byte variables shown above.
   resume;
 - an opt-in `lantern_client_offline` screen with immediate cached snapshots,
   locally committed Put pending state, explicit probe/replay, and authorized
-  dead-letter inspect/retry/delete controls. Durable Add is intentionally absent
-  until #1115 provides server-authoritative operation receipts.
+  dead-letter inspect/retry/delete controls, plus an independently opt-in
+  foreground identity CDC session. Durable Add is intentionally absent until
+  #1115 provides server-authoritative operation receipts.
 
 The app deliberately does not close its app-scoped client on `inactive`, which
 can be caused by a phone call or system dialog. It cancels screen work on

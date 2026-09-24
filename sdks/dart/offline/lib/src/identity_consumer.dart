@@ -11,8 +11,8 @@ import 'types.dart';
 
 /// An identity-only event from one explicitly selected Lantern responder.
 ///
-/// This port deliberately does not depend on the newer online SDK's CDC API:
-/// the first offline release still resolves against hosted lantern_client 0.2.0.
+/// This port itself does not depend on the online SDK's CDC API. The concrete
+/// bridge requires a parent SDK release that exports the typed identity stream.
 sealed class OfflineIdentityEvent {
   /// Creates an identity-only event.
   const OfflineIdentityEvent();

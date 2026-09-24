@@ -86,6 +86,14 @@ with `xcrun devicectl device install app`, and launch it with CoreDevice. Keep
 only a sanitized content-free RPC category/status summary as real-wire evidence;
 do not attach the raw server trace.
 
+The `mobile_smoke_test.dart` target also writes a content-free result to its
+app data container at `tmp/lantern-mobile-smoke-result.json`. Use the
+CoreDevice `device info files` and `device copy from` commands shown in the
+identity CDC section below, substituting that file name. A fresh `passed`
+marker with `phase: complete` means the test body and its registered cleanup
+finished; a missing, stale, `running`, or `failed` marker does not qualify the
+run. Match the installed binary and trusted HTTPS route to the evidence record.
+
 ## Required matrix
 
 | Scenario | Physical Android | Physical iOS |
@@ -298,6 +306,95 @@ process-kill/relaunch, pending TTL, durable logout wipe, and local user-partitio
 isolation. The evidence records its transport and local build limitations and
 does not replace the complete first-publication matrix in #1162.
 
+## Identity CDC physical qualification
+
+`integration_test/physical_identity_cdc_test.dart` is an opt-in native Android/iOS
+test of the production `LanternClientIdentitySource` and platform SQLite. Run it
+from a clean checkout with an authenticated endpoint that routes Subscribe,
+GetReplicationStatus, GetVertices, and GetEdges to one real responder. The
+operator must establish that route; the stream frame cannot prove it. Use a
+platform-trusted HTTPS endpoint and a runtime token BFF that issues a distinct
+valid token on the test's post-checkpoint refresh. The responder must accept
+both issued tokens during the run. For release evidence:
+
+```bash
+flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
+  -d <physical-android-id> --reporter=expanded --timeout=3m \
+  --dart-define=LANTERN_ENDPOINT=https://<pinned-responder> \
+  --dart-define=LANTERN_TOKEN_ENDPOINT=https://<token-bff>/token \
+  --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true
+
+flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
+  -d <physical-ios-id> --reporter=expanded --timeout=3m \
+  --dart-define=LANTERN_ENDPOINT=https://<pinned-responder> \
+  --dart-define=LANTERN_TOKEN_ENDPOINT=https://<token-bff>/token \
+  --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true
+```
+
+For a trusted-LAN development fixture only, both URLs may use HTTP with
+`--dart-define=LANTERN_ALLOW_INSECURE=true`; record that limitation and do not
+claim platform-trusted TLS. On iOS, use the checked-in `flutter drive`
+integration driver with `--publish-port` if the device is classified as
+wirelessly tethered. The test requires `IDENTITY_CDC_BODY_STARTED`,
+`IDENTITY_CDC_PASS`, and `All tests passed!`. It verifies checkpoint recovery
+of stale Vertex and Edge residents, exact live invalidation, durable cursor and
+Unknown state after SQLite reopen following live invalidation, foreground
+resume, responder stability,
+runtime token acquisition and post-checkpoint refresh, and partition wipe
+cancellation. Gap-induced resident Unknown markers and their recovery are
+covered separately by the real-wire SQLite integration tests.
+
+If wireless Flutter VM-service discovery stalls after the iOS app installs,
+build this same integration target in profile mode and launch it with
+CoreDevice. The target writes a content-free JSON result to its app data
+container at `tmp/lantern-identity-cdc-result.json`; the result contains only
+`running`/`passed`/`failed`, the current test phase, UTC timestamps, and a
+bounded failure category. It contains no endpoint, token, key, responder, or
+device identifier. Locate and copy it after launch:
+
+```bash
+xcrun devicectl device info files --device <physical-ios-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.anaregdesign.lanternExample \
+  --search lantern-identity-cdc-result.json
+xcrun devicectl device copy from --device <physical-ios-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.anaregdesign.lanternExample \
+  --source tmp/lantern-identity-cdc-result.json \
+  --destination <private-host-result-path>
+```
+
+Only a fresh marker whose `startedAt` is after this launch and whose `status`
+is `passed` with `phase: complete` demonstrates that the test body and its
+registered cleanup completed. A missing, stale, `running`, or `failed` marker
+is not a pass. The marker supplements the exact-binary, trusted-HTTPS, and
+sanitized RPC evidence required above; it does not qualify a different app
+build or network route.
+
+For a cabled Android development run when the LAN route is unstable, forward
+the fixture ports over USB and use device loopback. Configure the local BFF to
+rotate between two test tokens accepted by the server. This proves native
+SQLite and CDC behavior, but does not qualify the release network/TLS contract:
+
+```bash
+adb -s <physical-android-id> reverse tcp:6380 tcp:6380
+adb -s <physical-android-id> reverse tcp:6381 tcp:6381
+flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
+  -d <physical-android-id> --reporter=expanded --timeout=3m \
+  --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
+  --dart-define=LANTERN_TOKEN_ENDPOINT=http://127.0.0.1:6381/token \
+  --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true \
+  --dart-define=LANTERN_ALLOW_INSECURE=true
+adb -s <physical-android-id> reverse --remove tcp:6380
+adb -s <physical-android-id> reverse --remove tcp:6381
+```
+
+Record each physical run against the exact clean code SHA, Flutter revision,
+device model/OS, installed binary SHA-256, authenticated network topology, and
+sanitized markers. Keep endpoints, tokens, device identifiers, and graph keys
+out of evidence. This dedicated target has its own binary and evidence record;
+the offline release gate checks it separately from `mobile_smoke_test.dart`.
+
 ## Offline core publication matrix
 
 For the repeatable clean-checkout, temporary HTTPS fixture, per-device test,
@@ -305,30 +402,39 @@ and teardown sequence, use the
 [offline release resume runbook](offline-release-resume.md).
 
 Before an `sdks/dart/offline/vX.Y.Z` tag, test a clean code commit on both
-physical platforms using the current Put-only app and a platform-trusted HTTPS
-endpoint. Record `android.json` and `ios.json` under
-`evidence/offline-release/` only after the runs pass. Each file must set
-`kind: physical_offline_release_evidence`, `schema: 1`, `contentFree: true`,
+physical platforms using a platform-trusted HTTPS endpoint. Record the
+`mobile_smoke_test.dart` runs as `android.json` and `ios.json`, and the
+`physical_identity_cdc_test.dart` runs as `android-cdc.json` and
+`ios-cdc.json`, under `evidence/offline-release/`. The smoke records use
+`kind: physical_offline_release_evidence`; the CDC records use
+`kind: physical_offline_identity_cdc_evidence`. Each file must set `schema: 1`,
+`contentFree: true`,
 `physicalDevice: true`, `cleanCheckout: true`, `repository:
 anaregdesign/lantern`, `testedCommit` to the full tested code SHA,
 `recordedAt` to a UTC timestamp, and `result: passed` with empty `limitations`.
 Include the exact Flutter/Dart versions and Flutter framework revision, the
-platform package ID and installed binary SHA-256, device model/OS without an
-identifier, and `network` with `transport: Connect/HTTPS`, authenticated and
-platform-trusted TLS both true, plus a sanitized topology description. Use
-`application.target: integration_test/mobile_smoke_test.dart`.
+platform package ID and each target's own installed binary SHA-256, device
+model/OS without an identifier, and `network` with `transport: Connect/HTTPS`,
+authenticated and platform-trusted TLS both true, plus a sanitized topology
+description. Set `application.target` to the corresponding integration test.
 
-The `scenarios` array must contain the ten native smoke scenarios listed in
+The smoke `scenarios` array must contain the ten native smoke scenarios listed in
 the example above, plus `platform_trusted_tls`, `untrusted_tls_rejection`,
 `token_rotation`, and `radio_offline_foreground_recovery`. Android also needs
 `android_doze_like_pause`; iOS also needs
-`ios_local_network_privacy_denial_retry`. The record must describe actual
-observed passes, not planned work. Keep endpoints, IP addresses, certificates,
-tokens, device identifiers, and raw traces out of the files.
+`ios_local_network_privacy_denial_retry`. The CDC array must contain
+`identity_checkpoint_revalidation`, `identity_live_vertex_invalidation`,
+`identity_live_edge_invalidation`, `identity_cursor_persisted`,
+`identity_unknown_survives_sqlite_reopen`,
+`identity_resume_live_invalidation`, `identity_partition_wipe`,
+`identity_same_responder`, `identity_runtime_token_refresh`, and
+`identity_cancellation`. Each record must describe actual observed passes,
+not planned work. Keep endpoints, IP addresses, certificates, tokens, device
+identifiers, and raw traces out of the files.
 
 Commit **only** these evidence files (and an optional README in the same
 directory) as the immediate child of the tested code commit. Tag that child.
-The release gate requires its parent to equal both `testedCommit` fields and
+The release gate requires its parent to equal all four `testedCommit` fields and
 rejects every other changed path. It also compares toolchain/package identity
 to the tag's Android/iOS simulator manifests from the current workflow attempt.
 This proves the tagged code is

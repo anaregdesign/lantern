@@ -5,11 +5,13 @@ Experimental, storage-neutral offline Repository support for
 versioned cache/outbox codec, a deterministic non-production in-memory reference
 store, latency-compensated Put writes, and explicit foreground replay.
 
-The independent release is tracked under
-[#1162](https://github.com/anaregdesign/lantern/issues/1162). For `0.2.0`,
-qualification requires an exact-code physical Android/iOS matrix and a one-time
-interactive OAuth publication. The core depends on hosted `lantern_client`
-0.2.0; the maintained Flutter example uses local overrides for development.
+The initial independent `0.2.0` release under
+[#1162](https://github.com/anaregdesign/lantern/issues/1162) used an exact-code
+physical Android/iOS matrix and a one-time interactive OAuth publication.
+The `0.3.0` bridge release is tracked under
+[#1314](https://github.com/anaregdesign/lantern/issues/1314). It depends on
+hosted `lantern_client 0.3.0`; the maintained Flutter example uses local
+overrides for development.
 
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
@@ -246,8 +248,28 @@ server's bounded stream buffer may still gap during a slow revalidation; that
 also triggers Unknown recovery. No network subscription starts at Repository
 construction, and the application remains responsible for foreground timing.
 
-The injected source keeps this core compatible with hosted `lantern_client`
-0.2.0. A concrete adapter for the newer typed parent CDC facade belongs to a
-later parent-compatible release. An arbitrary load-balancing endpoint is not a
-valid responder-pinned recovery source unless it guarantees that the stream and
-plural reads reach the same server.
+The production bridge is `LanternClientIdentitySource(pinnedClient)`. Pass the
+same application-owned client to `LanternClientOfflineRemote` for ordinary
+reads and writes, then explicitly run the foreground CDC session:
+
+```dart
+final cancellation = LanternCancellationToken();
+final source = LanternClientIdentitySource(pinnedClient);
+await repository.consumeIdentityChanges(
+  partitionId,
+  source: source,
+  cancellation: cancellation,
+);
+```
+
+Cancel that token when the app leaves the foreground or the account logs out;
+the repository also cancels an active session on partition wipe or disposal.
+The client must route its stream, status checks, and plural reads to one real
+responder for the session. The adapter checks the node ID around plural reads,
+but the Subscribe frames do not expose the responder ID; an ordinary
+load-balancing endpoint cannot be validated as pinned by this adapter.
+Application configuration must guarantee that routing property. The client
+acquires its configured credentials at each RPC call.
+
+This bridge requires hosted `lantern_client 0.3.0` with `subscribeIdentity`.
+The initial offline `0.2.0` package stays on its published parent constraint.

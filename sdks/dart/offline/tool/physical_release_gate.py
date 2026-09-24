@@ -30,6 +30,30 @@ REQUIRED_PLATFORM = {
     "android": "android_doze_like_pause",
     "ios": "ios_local_network_privacy_denial_retry",
 }
+REQUIRED_CDC = {
+    "identity_checkpoint_revalidation",
+    "identity_live_vertex_invalidation",
+    "identity_live_edge_invalidation",
+    "identity_cursor_persisted",
+    "identity_unknown_survives_sqlite_reopen",
+    "identity_resume_live_invalidation",
+    "identity_partition_wipe",
+    "identity_same_responder",
+    "identity_runtime_token_refresh",
+    "identity_cancellation",
+}
+SUITES = {
+    "smoke": {
+        "suffix": "",
+        "kind": "physical_offline_release_evidence",
+        "target": "integration_test/mobile_smoke_test.dart",
+    },
+    "cdc": {
+        "suffix": "-cdc",
+        "kind": "physical_offline_identity_cdc_evidence",
+        "target": "integration_test/physical_identity_cdc_test.dart",
+    },
+}
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -44,16 +68,20 @@ def source_identity(tag_sha, tested_sha):
     if git("rev-parse", f"{tag_sha}^") != tested_sha:
         raise ValueError("tag must point to the evidence-only child of the tested code commit")
     changed = set(git("diff", "--name-only", "--no-renames", tested_sha, tag_sha).splitlines())
-    required = {str(EVIDENCE_DIR / "android.json"), str(EVIDENCE_DIR / "ios.json")}
+    required = {
+        str(EVIDENCE_DIR / f"{platform}{suite['suffix']}.json")
+        for platform in ("android", "ios") for suite in SUITES.values()
+    }
     if not required <= changed or not changed <= required | {str(EVIDENCE_DIR / "README.md")}:
-        raise ValueError(f"tag changed code or lacks both physical records: {sorted(changed)}")
+        raise ValueError(f"tag changed code or lacks all physical records: {sorted(changed)}")
 
 
-def validate_record(record, ci_record, platform, tested_sha):
+def validate_record(record, ci_record, platform, tested_sha, suite="smoke"):
+    contract = SUITES[suite]
     expected_kind = f"physical-{platform}"
     if (
         record.get("schema") != 1
-        or record.get("kind") != "physical_offline_release_evidence"
+        or record.get("kind") != contract["kind"]
         or record.get("repository") != "anaregdesign/lantern"
         or record.get("testedCommit") != tested_sha
         or record.get("physicalDevice") is not True
@@ -83,7 +111,7 @@ def validate_record(record, ci_record, platform, tested_sha):
     if (
         set(application) != {"packageId", "target", "binarySha256"}
         or application["packageId"] != ci_record.get("application", {}).get("packageId")
-        or application["target"] != "integration_test/mobile_smoke_test.dart"
+        or application["target"] != contract["target"]
         or not HEX64.fullmatch(application["binarySha256"])
     ):
         raise ValueError(f"{platform} physical application identity is invalid")
@@ -108,10 +136,14 @@ def validate_record(record, ci_record, platform, tested_sha):
     if re.search(r"https?://|\b(?:\d{1,3}\.){3}\d{1,3}\b|@", json.dumps(record)):
         raise ValueError(f"{platform} physical evidence may contain an endpoint or identifier")
     scenarios = record["scenarios"]
+    required_scenarios = (
+        REQUIRED_COMMON | {REQUIRED_PLATFORM[platform]}
+        if suite == "smoke" else REQUIRED_CDC
+    )
     if (
         not isinstance(scenarios, list)
         or len(scenarios) != len(set(scenarios))
-        or set(scenarios) != REQUIRED_COMMON | {REQUIRED_PLATFORM[platform]}
+        or set(scenarios) != required_scenarios
     ):
         raise ValueError(f"{platform} physical release matrix is incomplete")
     if (
@@ -132,11 +164,9 @@ def validate_record(record, ci_record, platform, tested_sha):
 def validate(tag_sha, evidence_dir, ci_dir, run_id, run_attempt):
     records = {}
     for platform in ("android", "ios"):
-        path = evidence_dir / f"{platform}.json"
         ci_path = ci_dir / f"{platform}.json"
-        if not path.is_file() or not ci_path.is_file():
-            raise ValueError(f"missing {platform} physical or tag CI manifest")
-        records[platform] = json.loads(path.read_text())
+        if not ci_path.is_file():
+            raise ValueError(f"missing {platform} tag CI manifest")
         ci_record = json.loads(ci_path.read_text())
         if ci_record.get("commit") != tag_sha:
             raise ValueError(f"{platform} simulator manifest is not bound to the tag")
@@ -146,15 +176,19 @@ def validate(tag_sha, evidence_dir, ci_dir, run_id, run_attempt):
             raise ValueError("Android tag CI did not use its emulator")
         if platform == "ios" and ci_record.get("platform", {}).get("kind") != "ios-simulator":
             raise ValueError("iOS tag CI did not use its simulator")
-    tested = records["android"].get("testedCommit")
-    if records["ios"].get("testedCommit") != tested:
-        raise ValueError("Android and iOS tested different code commits")
+        for suite, contract in SUITES.items():
+            path = evidence_dir / f"{platform}{contract['suffix']}.json"
+            if not path.is_file():
+                raise ValueError(f"missing {platform} {suite} physical record")
+            records[platform, suite] = json.loads(path.read_text())
+    tested = records["android", "smoke"].get("testedCommit")
+    if any(record.get("testedCommit") != tested for record in records.values()):
+        raise ValueError("physical records tested different code commits")
     source_identity(tag_sha, tested)
     for platform in ("android", "ios"):
-        validate_record(
-            records[platform], json.loads((ci_dir / f"{platform}.json").read_text()),
-            platform, tested,
-        )
+        ci_record = json.loads((ci_dir / f"{platform}.json").read_text())
+        for suite in SUITES:
+            validate_record(records[platform, suite], ci_record, platform, tested, suite)
 
 
 def main():

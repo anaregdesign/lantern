@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Align the unpublished adapter and maintained example with offline core
+  `0.3.0` and the hosted parent `lantern_client 0.3.0` identity stream.
 - Migrate schema 1 to 2 transactionally, adding indexed key-only resident
   recovery and a partition change epoch while retaining cache, cursor, and
   pending Put state. Host tests use the OS SQLite library.
