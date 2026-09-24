@@ -62,8 +62,12 @@ type Entry struct {
 
 // WAL is the hook surface for a future write-ahead-log implementation.
 // Implementations must be safe for concurrent use. [Log.Append] calls
-// [WAL.Write] while holding the log mutex, so implementations should keep
-// the call cheap (a buffered write is fine; a synchronous fsync is not).
+// [WAL.Write] while holding the log mutex. The legacy Append path permits a
+// buffered write and does not provide crash durability. By contrast,
+// [Log.CommitWithPublication] requires a nil Write result to mean the entry
+// is recoverable at the WAL's configured durability boundary before the
+// callback runs; a durable WAL may need a synchronous flush for that claim.
+// [NopWAL] provides only in-process ordering, with no crash recovery.
 type WAL interface {
 	Write(Entry) error
 }
@@ -155,6 +159,14 @@ type Log struct {
 	evicted    uint64 // total entries dropped by ring-buffer eviction
 	hasEntries bool
 	closed     bool
+	// unusableErr records an indeterminate WAL failure or an interrupted
+	// publication after WAL success. The next seq may already exist in
+	// durable storage, so neither Append nor CommitWithPublication may reuse it.
+	unusableErr error
+	// legacyWALUncertain tracks an unclassified error from the older Append
+	// path. Append keeps its retry semantics, but a receipt-capable commit
+	// cannot prove a unique durable history after such an error.
+	legacyWALUncertain bool
 
 	// Dispatcher pipeline (#260). Append hands entries off to a single
 	// background goroutine that performs the per-subscriber fan-out, so
@@ -291,11 +303,16 @@ func (l *Log) RetainedEntries() []Entry {
 // subscribers. The leaderless Subscribe contract (#415) keys per-hop
 // dedup on (origin, origin_seq), so this stamping is mandatory for
 // any payload that re-enters the system via Subscribe relay.
+//
+// This legacy append path assumes a failed WAL.Write definitely aborted and
+// permits retry with the same seq. A real WAL failure may be indeterminate,
+// so Append is not a receipt-safe commit seam. New receipt-capable writes
+// must use [Log.CommitWithPublication], which fails closed on that ambiguity.
 func (l *Log) Append(op MutationOp, ts hlc.Timestamp, stampers ...SeqStamper) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.closed {
-		return Entry{}, ErrClosed
+	if err := l.writeReadyLocked(); err != nil {
+		return Entry{}, err
 	}
 	seq := l.lastSeq + 1
 	for _, s := range stampers {
@@ -305,6 +322,10 @@ func (l *Log) Append(op MutationOp, ts hlc.Timestamp, stampers ...SeqStamper) (E
 	}
 	entry := Entry{Seq: seq, HLC: ts, Op: op}
 	if err := l.wal.Write(entry); err != nil {
+		var aborted *DefiniteWALAbort
+		if !errors.As(err, &aborted) {
+			l.legacyWALUncertain = true
+		}
 		return Entry{}, err
 	}
 	l.storeLocked(entry)
@@ -440,6 +461,10 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 	if l.closed {
 		l.mu.Unlock()
 		return nil, nil, ErrClosed
+	}
+	if l.unusableErr != nil {
+		l.mu.Unlock()
+		return nil, nil, l.unusableErr
 	}
 	if l.hasEntries && fromSeq < l.firstSeq {
 		l.mu.Unlock()

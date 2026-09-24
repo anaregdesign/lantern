@@ -66,7 +66,14 @@ a different node or generation before **new execution**. Any recovery that
 cannot prove all in-horizon local receipts changes the generation. Token
 rotation does not change the epoch. A node that rejoins from a complete peer
 Snapshot adopts its peer's epoch; incomplete local recovery or total-cluster
-loss creates a new active epoch. Known receipts
+loss creates a new active epoch. An HA node starting without certified cluster
+state must reject **new** receipt-capable mutations until a complete peer
+Snapshot establishes the shared epoch and policy, or an explicit operator
+bootstrap seed establishes a fresh shared epoch. Independently generated or
+reused static seeds cannot certify continuity after total-cluster loss;
+partitioned cold starters must not select competing active epochs
+automatically. A single-node fresh start may mint a new epoch but cannot
+inherit prior continuity. Known receipts
 restored from an older backup may remain queryable, but an absent old-epoch ID
 must never execute in the new epoch. A future authenticated-principal/ACL
 design is required before tenant-scoped receipts are claimed.
@@ -97,13 +104,25 @@ admission failures commit neither graph nor receipt; a duplicate receipt
 lookup precedes new-capacity admission.
 
 The staged version must have an infallible publication step (for example, an
-immutable root swap); calling a fallible graph or index mutation after the
-WAL commits is forbidden. The envelope is written to the configured WAL
-**before** any state becomes visible. A WAL write/commit failure or staging
-failure releases every reservation and returns an error with no graph,
-result, receipt, origin seq, or subscriber-visible change. After a successful
-WAL commit, installation of the already-validated graph/search state,
-receipt set, and log entry is one infallible publication under the same gate;
+immutable root swap, or release of a comprehensive read cut after reversible
+in-place staging). In the latter case, every observer must share that cut and
+a definite WAL abort must roll back all staged graph, receipt, index, and
+origin state before releasing it. Calling a fallible graph or index mutation
+after the WAL commits is forbidden. The envelope is written to the configured
+WAL **before** any state becomes visible. A staging failure or a WAL failure
+**proven to be a definite abort** releases every reservation and returns an
+error with no graph, result, receipt, origin seq, or subscriber-visible change.
+A generic I/O error, timeout, or lost acknowledgement is indeterminate: the
+WAL may already contain the envelope. Its seq must not be reused, and the
+endpoint must fail closed for graph reads, receipt status, new writes,
+Snapshot, and Subscribe until replay proves the committed frontier, or a
+verified complete Snapshot replaces the ambiguous state and establishes its
+certified epoch with a new local generation. It must never report an
+indeterminate result as a definite abort. The
+[`WAL.Write(Entry) error`](../../core/mutationlog/mutationlog.go) signature
+alone provides neither an abort proof nor replay. After a successful WAL
+commit, publication of the already-staged graph/search state, receipt set,
+and log entry is one infallible cut under the same gate;
 reads, status, Snapshot, and Subscribe see all of it or none of it. The public
 response is sent only after
 publication. A crash between a durable WAL commit and in-memory publication
@@ -131,6 +150,17 @@ bounded pending queue; an append failure leaves the frontier retryable. A
 Snapshot cutoff must never include graph state without the matching receipt,
 or a receipt without its graph state. #1116's later CDC projection cannot
 weaken this internal envelope/cutoff contract.
+
+A receipt-only envelope still advances the origin seq. Identity-only Subscribe
+must emit a final zero-key chunk with an explicit receipt-only operation so a
+CDC consumer advances its cursor without invalidating graph data; maintained
+SDK decoders must accept that bounded marker. The existing
+[`projectMutationIdentities`](../../server/service/identity.go) has no such
+operation yet. During peer Snapshot installation, new receipt-capable
+admission and receipt status fail closed until graph, receipts, epoch, and
+cutoffs are verified together. The existing
+[`BeginSnapshotInstall`](../../server/service/publication.go) read fault is
+not, by itself, an admission interlock.
 
 Once an envelope's receipt deadline has passed, a lagging replica still
 applies and publishes its graph transition in contiguous order; it need not

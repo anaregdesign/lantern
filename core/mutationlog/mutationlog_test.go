@@ -327,7 +327,7 @@ func TestWALReceivesEntriesInOrder(t *testing.T) {
 	}
 }
 
-func TestWALErrorAbortsAppend(t *testing.T) {
+func TestWALErrorKeepsLegacyRetryButBlocksReceiptCommit(t *testing.T) {
 	want := errors.New("disk full")
 	w := &recordingWAL{fail: want}
 	l := New(Options{Capacity: 8, WAL: w})
@@ -336,6 +336,16 @@ func TestWALErrorAbortsAppend(t *testing.T) {
 	}
 	if _, ok := l.LastSeq(); ok {
 		t.Fatal("log should remain empty after WAL failure")
+	}
+	// The existing Append contract permits retry with the same Seq after a
+	// WAL error. Receipt-capable code must use CommitWithPublication instead.
+	w.fail = nil
+	e, err := l.Append(2, ts(2))
+	if err != nil || e.Seq != 1 {
+		t.Fatalf("retry = (%+v, %v), want seq 1", e, err)
+	}
+	if _, err := l.CommitWithPublication(3, ts(3), nil); !errors.Is(err, ErrLegacyWALUncertain) {
+		t.Fatalf("receipt-capable commit err = %v, want ErrLegacyWALUncertain", err)
 	}
 }
 
