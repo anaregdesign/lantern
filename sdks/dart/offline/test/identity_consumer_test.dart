@@ -179,6 +179,53 @@ void main() {
     },
   );
 
+  test(
+    'live slow-subscriber gap hides residents before checkpoint retry',
+    () async {
+      remote.vertices['resident'] = _vertex('old');
+      await repository.readVertex('p', 'resident');
+      final first = _Session('one')..vertices['resident'] = _vertex('old');
+      final second = _Session('two')..vertices['resident'] = _vertex('new');
+      source
+        ..queue(first)
+        ..queue(second);
+      final cancellation = LanternCancellationToken();
+      final consume = repository.consumeIdentityChanges(
+        'p',
+        source: source,
+        cancellation: cancellation,
+      );
+      await _waitUntil(() => first.listening);
+      first.add(OfflineIdentityCheckpoint({_originA: BigInt.zero}));
+      await _waitUntil(
+        () async =>
+            !await store.transaction((t) => t.hasUnknownResident('p', _key)),
+      );
+      // The source maps the server's slow-subscriber FailedPrecondition to this
+      // same gap error. Confirm it invalidates cache before the next checkpoint.
+      first.addError(const OfflineChangeGapException());
+      await _waitUntil(() => second.listening);
+      expect(
+        await store.transaction((t) => t.hasUnknownResident('p', _key)),
+        isTrue,
+      );
+      second.add(OfflineIdentityCheckpoint({_originA: BigInt.zero}));
+      await _waitUntil(() => second.vertexReads == 1);
+      await _waitUntil(
+        () async =>
+            !await store.transaction((t) => t.hasUnknownResident('p', _key)),
+      );
+      final snapshot = await repository.readVertex(
+        'p',
+        'resident',
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect((snapshot.value!.value as StringValue).value, 'new');
+      cancellation.cancel();
+      await expectLater(consume, throwsA(isA<OfflineCanceledException>()));
+    },
+  );
+
   test('changed responder during plural recovery remains Unknown', () async {
     remote.vertices['resident'] = _vertex('old');
     await repository.readVertex('p', 'resident');
@@ -648,6 +695,8 @@ final class _Session implements OfflineIdentitySession {
   bool closed = false;
 
   void add(OfflineIdentityEvent event) => _events.add(event);
+
+  void addError(Object error) => _events.addError(error);
 
   @override
   Stream<OfflineIdentityEvent> get events => _events.stream;

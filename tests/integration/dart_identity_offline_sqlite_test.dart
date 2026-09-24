@@ -179,17 +179,15 @@ void main() {
       }
       final scope = 'identity-cluster-${DateTime.now().microsecondsSinceEpoch}';
       final keys = [for (var i = 0; i < 3; i++) '$scope-$i'];
-      for (var i = 0; i < 3; i++) {
-        await clients[i].putVertex(
-          VertexInput(key: keys[i], value: VertexValue.string('initial-$i')),
-        );
-      }
+      // Only the first origin exists at checkpoint time. The other two join
+      // after bootstrap, exercising absent-origin -> sequence-one admission.
+      await clients[0].putVertex(
+        VertexInput(key: keys[0], value: VertexValue.string('initial-0')),
+      );
       await _waitUntil(() async {
         try {
           for (final client in clients) {
-            for (final key in keys) {
-              await client.getVertex(key);
-            }
+            await client.getVertex(keys[0]);
           }
           return true;
         } on LanternException {
@@ -221,6 +219,10 @@ void main() {
             )).isEmpty &&
             firstSource.pluralVertexReads > 0,
       );
+      final checkpointCursor = await fixture.store.transaction(
+        (transaction) => transaction.changeCursor('wire'),
+      );
+      expect(checkpointCursor.sequences.length, lessThan(3));
       for (var i = 0; i < 3; i++) {
         await clients[i].putVertex(
           VertexInput(key: keys[i], value: VertexValue.string('updated-$i')),
