@@ -246,8 +246,29 @@ server's bounded stream buffer may still gap during a slow revalidation; that
 also triggers Unknown recovery. No network subscription starts at Repository
 construction, and the application remains responsible for foreground timing.
 
-The injected source keeps this core compatible with hosted `lantern_client`
-0.2.0. A concrete adapter for the newer typed parent CDC facade belongs to a
-later parent-compatible release. An arbitrary load-balancing endpoint is not a
-valid responder-pinned recovery source unless it guarantees that the stream and
-plural reads reach the same server.
+The production bridge is `LanternClientIdentitySource(pinnedClient)`. Pass the
+same application-owned client to `LanternClientOfflineRemote` for ordinary
+reads and writes, then explicitly run the foreground CDC session:
+
+```dart
+final cancellation = LanternCancellationToken();
+final source = LanternClientIdentitySource(pinnedClient);
+await repository.consumeIdentityChanges(
+  partitionId,
+  source: source,
+  cancellation: cancellation,
+);
+```
+
+Cancel that token when the app leaves the foreground or the account logs out;
+the repository also cancels an active session on partition wipe or disposal.
+The client must route its stream, status checks, and plural reads to one real
+responder for the session. The adapter checks the node ID around plural reads,
+but the Subscribe frames do not expose the responder ID; an ordinary
+load-balancing endpoint cannot be validated as pinned by this adapter.
+Application configuration must guarantee that routing property. The client
+acquires its configured credentials at each RPC call.
+
+This bridge requires a parent SDK release with `subscribeIdentity`. It cannot
+ship under the initial offline package's hosted `lantern_client: ^0.2.0`
+constraint; update that constraint only after publishing the typed parent SDK.

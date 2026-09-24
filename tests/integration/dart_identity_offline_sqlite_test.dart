@@ -96,6 +96,58 @@ void main() {
   );
 
   test(
+    'production adapter bootstraps SQLite and catches live invalidation',
+    () async {
+      final client = _client(Uri.parse(singleEndpoint!));
+      addTearDown(client.close);
+      final key = 'identity-adapter-${DateTime.now().microsecondsSinceEpoch}';
+      await client.putVertex(
+        VertexInput(key: key, value: VertexValue.string('current')),
+      );
+      final fixture = await _SqliteFixture.open();
+      addTearDown(fixture.close);
+      await fixture.putStaleVertex(key);
+      final repository = fixture.repository(client);
+      addTearDown(repository.dispose);
+      final cancellation = LanternCancellationToken();
+      final run = repository.consumeIdentityChanges(
+        'wire',
+        source: LanternClientIdentitySource(client),
+        cancellation: cancellation,
+      );
+      final stopped = expectLater(
+        run,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      addTearDown(cancellation.cancel);
+      await _waitUntil(() async {
+        final resident = await repository.readVertex(
+          'wire',
+          key,
+          policy: OfflineReadPolicy.cacheOnly,
+        );
+        return resident.value?.value is StringValue &&
+            (resident.value!.value as StringValue).value == 'current';
+      });
+      await client.putVertex(
+        VertexInput(key: key, value: VertexValue.string('newer')),
+      );
+      await _waitUntil(
+        () async =>
+            (await repository.readVertex(
+              'wire',
+              key,
+              policy: OfflineReadPolicy.cacheOnly,
+            )).state ==
+            OfflineReadState.unknown,
+      );
+      cancellation.cancel();
+      await stopped;
+    },
+    skip: singleEndpoint == null ? 'real h2c endpoint unavailable' : false,
+  );
+
+  test(
     'evicted real-wire resume bootstraps SQLite Unknown recovery',
     () async {
       final client = _client(Uri.parse(gapEndpoint!));
@@ -148,6 +200,64 @@ void main() {
           entry.value + BigInt.one,
         );
       }
+      await _waitUntil(() async {
+        final current = await repository.readVertex(
+          'wire',
+          key,
+          policy: OfflineReadPolicy.cacheOnly,
+        );
+        return current.value?.value is StringValue &&
+            (current.value!.value as StringValue).value == 'after-3';
+      });
+      cancellation.cancel();
+      await stopped;
+    },
+    skip: gapEndpoint == null ? 'gap h2c endpoint unavailable' : false,
+  );
+
+  test(
+    'production adapter recovers an evicted SQLite cursor',
+    () async {
+      final client = _client(Uri.parse(gapEndpoint!));
+      addTearDown(client.close);
+      final key =
+          'identity-adapter-gap-${DateTime.now().microsecondsSinceEpoch}';
+      await client.putVertex(
+        VertexInput(key: key, value: VertexValue.string('before')),
+      );
+      final checkpoint =
+          await client.subscribeIdentity(bootstrap: true).first
+              as IdentityCheckpointFrame;
+      final fixture = await _SqliteFixture.open();
+      addTearDown(fixture.close);
+      await fixture.store.transaction((transaction) async {
+        await transaction.resetChangeCursor(
+          'wire',
+          OfflineChangeCursor(checkpoint.lastSequences),
+        );
+        await transaction.putCache('wire', fixture.staleRecord(key));
+      });
+      for (var index = 0; index < 4; index++) {
+        await client.putVertex(
+          VertexInput(
+            key: index == 3 ? key : '$key-$index',
+            value: VertexValue.string('after-$index'),
+          ),
+        );
+      }
+      final repository = fixture.repository(client);
+      addTearDown(repository.dispose);
+      final cancellation = LanternCancellationToken();
+      final run = repository.consumeIdentityChanges(
+        'wire',
+        source: LanternClientIdentitySource(client),
+        cancellation: cancellation,
+      );
+      final stopped = expectLater(
+        run,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      addTearDown(cancellation.cancel);
       await _waitUntil(() async {
         final current = await repository.readVertex(
           'wire',
