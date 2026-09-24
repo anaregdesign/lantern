@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 Phase 0 design; read-only capability/status RPCs exist but are disabled, and no receipt storage or receipt-enabled write is implemented
+- Status: Accepted as the #1115 Phase 0 design; an internal bounded receipt Store exists, but it is not production-wired. Read-only capability/status RPCs remain disabled and no receipt-enabled write is implemented.
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116
 
@@ -246,13 +246,13 @@ partitioned status, and total-cluster loss remain explicit unknown outcomes.
 
 The first additive wire step exposes a capability probe behind the normal
 LanternService auth interceptor. It reports `enabled=false` without an epoch
-or endpoint marker. Receipt status RPCs return `FAILED_PRECONDITION` while
-storage is absent; they do not label an unknown operation
-`NOT_YET_OBSERVED` or `NO_LONGER_PROVABLE`. This schema is
-not permission to send receipt-enabled mutations. A later vertical slice must
-activate status only together with the atomic commit, recovery, replication,
-and Snapshot guarantees above, and require configured authentication before
-advertising an enabled capability.
+or endpoint marker. The internal `core/mutationreceipt.Store` is not connected
+to a serving commit path, so receipt status RPCs return `FAILED_PRECONDITION`;
+they do not label an unknown operation `NOT_YET_OBSERVED` or
+`NO_LONGER_PROVABLE`. This schema is not permission to send receipt-enabled
+mutations. A later vertical slice must activate status only together with the
+atomic commit, recovery, replication, and Snapshot guarantees above, and
+require configured authentication before advertising an enabled capability.
 
 #1282 must establish contiguous relay publication and Snapshot cutoffs before
 receipt envelopes can claim replica-safe status. #1203 must establish mixed
