@@ -168,10 +168,22 @@ Future<void> runOfflineIdentityConsumer({
   var recoveryAttempts = 0;
   while (true) {
     _checkCancellation(cancellation);
-    final durable = await repository.store.transaction(
-      (transaction) => transaction.changeCursor(partitionId),
+    final recovery = await repository.store.transaction(
+      (transaction) async => (
+        cursor: await transaction.changeCursor(partitionId),
+        hasUnknownResidents: (await transaction.unknownResidents(
+          partitionId,
+          limit: 1,
+        )).isNotEmpty,
+      ),
     );
-    final bootstrap = forceBootstrap || durable.sequences.isEmpty;
+    final durable = recovery.cursor;
+    // A prior checkpoint may have committed before resident revalidation was
+    // interrupted. Its cursor alone cannot prove those Unknown keys fresh.
+    final bootstrap =
+        forceBootstrap ||
+        durable.sequences.isEmpty ||
+        recovery.hasUnknownResidents;
     final nextExpected = <String, BigInt>{};
     if (!bootstrap) {
       for (final entry in durable.sequences.entries) {

@@ -502,6 +502,62 @@ void main() {
     );
     expect(session.closed, isTrue);
   });
+
+  test('reopened Unknown recovery starts a new checkpoint session', () async {
+    remote.vertices['resident'] = _vertex('old');
+    await repository.readVertex('p', 'resident');
+    final first = _Session('first')..vertexGate = Completer<void>();
+    source.queue(first);
+    final firstCancellation = LanternCancellationToken();
+    final firstRun = repository.consumeIdentityChanges(
+      'p',
+      source: source,
+      cancellation: firstCancellation,
+    );
+    await _waitUntil(() => first.listening);
+    first.add(OfflineIdentityCheckpoint({_originA: BigInt.one}));
+    await _waitUntil(() => first.vertexReads == 1);
+    expect(
+      await store.transaction((t) => t.hasUnknownResident('p', _key)),
+      isTrue,
+    );
+    firstCancellation.cancel();
+    first.vertexGate!.complete();
+    await expectLater(firstRun, throwsA(isA<OfflineCanceledException>()));
+
+    final snapshot = await store.exportSnapshot();
+    await repository.dispose();
+    store = InMemoryOfflineStore.fromSnapshot(snapshot);
+    repository = OfflineLanternRepository(
+      store: store,
+      remote: remote,
+      config: testConfig(clock),
+    );
+    source = _Source();
+    final second = _Session('second')..vertices['resident'] = _vertex('new');
+    source.queue(second);
+    final secondCancellation = LanternCancellationToken();
+    final secondRun = repository.consumeIdentityChanges(
+      'p',
+      source: source,
+      cancellation: secondCancellation,
+    );
+    await _waitUntil(() => second.listening);
+    expect(source.opens.single.bootstrap, isTrue);
+    expect(source.opens.single.nextExpected, isEmpty);
+    second.add(OfflineIdentityCheckpoint({_originA: BigInt.one}));
+    await _waitUntil(() async {
+      final snapshot = await repository.readVertex(
+        'p',
+        'resident',
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      return snapshot.value?.value is StringValue &&
+          (snapshot.value!.value as StringValue).value == 'new';
+    });
+    secondCancellation.cancel();
+    await expectLater(secondRun, throwsA(isA<OfflineCanceledException>()));
+  });
 }
 
 Vertex _vertex(String value) =>
