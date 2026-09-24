@@ -528,8 +528,14 @@ asynchronously replicated cluster. Local append failures and any graph change
 that cannot be published must force existing and new CDC streams into a
 detectable fail-closed recovery state. #1282 closes the remote relay
 boundary, and #1293 closes local Put/Delete graph-first publication. The
-server identity projection is implemented by #1294; SDK facades, the mobile
-consumer, and physical-device release qualification retain separate gates.
+Pump and anti-entropy Snapshot installers also close the current CDC
+generation before replaying graph frames: those changes have no individual
+local-log entries. New streams remain gapped throughout replay, and an
+interrupted or invalid Snapshot keeps that gap until a later verified install
+advances the origin watermarks. A fresh bootstrap then revalidates resident
+identities against the repaired responder. The server identity projection is
+implemented by #1294; SDK facades, the mobile consumer, and physical-device
+release qualification retain separate gates.
 
 After `gapped`, a mobile consumer opens bootstrap and atomically marks its
 **resident confirmed cache** Unknown at that checkpoint. It retains resident

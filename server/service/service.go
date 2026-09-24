@@ -69,6 +69,10 @@ type LanternService struct {
 	// replicationCutMu keeps a Snapshot cutoff from overtaking a remote
 	// ApplyMutation or any local graph/log publication boundary.
 	replicationCutMu sync.RWMutex
+	// A peer Snapshot replay may change the graph without appending each
+	// mutation to this replica's log. Serialize installs so a successful one
+	// cannot clear another install's CDC gap while it is still applying.
+	snapshotInstallMu sync.Mutex
 	// pendingMutations and its accounting are guarded by replicationCutMu.
 	pendingMutations map[hlc.NodeID]map[uint64]*pendingMutation
 	pendingCount     int
@@ -79,8 +83,9 @@ type LanternService struct {
 	// publicationFaultCh closes on the first local or relay WAL failure. A fresh
 	// channel is installed only after all failed frontiers are repaired, so
 	// subscribers attached to the old generation cannot silently resume.
-	publicationFaultCh    chan struct{}
-	publicationFaultCount int
+	publicationFaultCh     chan struct{}
+	publicationFaultCount  int
+	snapshotInstallFaulted bool
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the

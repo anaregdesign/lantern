@@ -33,7 +33,38 @@ type pendingMutation struct {
 
 func publicationGapError() error {
 	return connect.NewError(connect.CodeFailedPrecondition,
-		errors.New("gapped: mutation publication failed; repair before subscribing or taking a snapshot"))
+		errors.New("gapped: mutation publication or Snapshot install requires repair"))
+}
+
+// BeginSnapshotInstall invalidates the current CDC generation before a peer
+// Snapshot can change graph state without individual log entries. An
+// interrupted install leaves this node gapped until a later verified install
+// advances its watermarks. Only one replay may install at a time.
+func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
+	if !s.snapshotInstallMu.TryLock() {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("Snapshot install already in progress"))
+	}
+	s.replicationCutMu.Lock()
+	if !s.snapshotInstallFaulted {
+		if s.publicationFaultCount == 0 {
+			close(s.publicationFaultCh)
+		}
+		s.publicationFaultCount++
+		s.snapshotInstallFaulted = true
+	}
+	s.replicationCutMu.Unlock()
+	return func(verified bool) {
+		if verified {
+			s.replicationCutMu.Lock()
+			s.snapshotInstallFaulted = false
+			s.publicationFaultCount--
+			if s.publicationFaultCount == 0 {
+				s.publicationFaultCh = make(chan struct{})
+			}
+			s.replicationCutMu.Unlock()
+		}
+		s.snapshotInstallMu.Unlock()
+	}, nil
 }
 
 // Caller holds replicationCutMu. One fault poisons every currently open

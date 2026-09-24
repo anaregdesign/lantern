@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/replication"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -248,6 +249,108 @@ func TestIdentityCDC_CancelReleasesSubscriber(t *testing.T) {
 	case <-metrics.ended:
 	case <-ctx.Done():
 		t.Fatal("canceled identity feed retained its subscriber")
+	}
+}
+
+func TestIdentityCDC_SnapshotInstallGapsExistingStream(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	source := newPumpNodeWithSearch(t, hlc.NodeID{0xD1, 0x07}, 2, true)
+	follower := newPumpNode(t, hlc.NodeID{0xD1, 0x08})
+	for i := 0; i < 6; i++ {
+		if _, err := source.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "snapshot/" + strconv.Itoa(i)}})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep := newReplicationRawClient(t, follower.url)
+	feed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+		Bootstrap:  true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = feed.Close() }()
+	if !feed.Receive() || feed.Msg().GetCheckpoint() == nil {
+		t.Fatalf("missing pre-Snapshot checkpoint: %v", feed.Err())
+	}
+	metrics := &tombstoneSnapshotMetrics{failed: make(chan struct{}, 1), snapshots: make(chan struct{}, 1)}
+	follower.startPumpWithMetrics(ctx, t, []string{source.url}, metrics)
+	select {
+	case <-metrics.snapshots:
+	case <-metrics.failed:
+		t.Fatal("peer Snapshot recovery failed")
+	case <-ctx.Done():
+		t.Fatal("peer Snapshot recovery did not complete")
+	}
+	if _, ok := follower.cache.GetVertex("snapshot/5"); !ok {
+		t.Fatal("peer Snapshot did not change the graph")
+	}
+	if feed.Receive() || connect.CodeOf(feed.Err()) != connect.CodeFailedPrecondition {
+		t.Fatalf("identity stream survived an unlogged Snapshot graph change: (%v,%v)", feed.Msg(), feed.Err())
+	}
+	fresh, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+		Bootstrap:  true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fresh.Close() }()
+	if !fresh.Receive() || fresh.Msg().GetCheckpoint().GetLastSeqPerOrigin()[hex.EncodeToString(source.nodeID[:])] != 6 {
+		t.Fatalf("fresh checkpoint missed verified Snapshot cutoff: (%v,%v)", fresh.Msg(), fresh.Err())
+	}
+}
+
+func TestIdentityCDC_AntiEntropySnapshotAlsoGapsExistingStream(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	source := newPumpNodeWithSearch(t, hlc.NodeID{0xD1, 0x09}, 2, true)
+	follower := newPumpNode(t, hlc.NodeID{0xD1, 0x0A})
+	for i := 0; i < 6; i++ {
+		if _, err := source.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "anti-snapshot/" + strconv.Itoa(i)}})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep := newReplicationRawClient(t, follower.url)
+	feed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+		Bootstrap:  true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = feed.Close() }()
+	if !feed.Receive() || feed.Msg().GetCheckpoint() == nil {
+		t.Fatalf("missing pre-Snapshot checkpoint: %v", feed.Err())
+	}
+	anti := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+		NodeID: follower.nodeID, Peers: []string{source.url}, Interval: 20 * time.Millisecond,
+		SubscribeTimeout: time.Second, HTTPClient: h2cClient(),
+	}, follower.svc, follower.svc, follower.cache)
+	antiCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- anti.Run(antiCtx) }()
+	t.Cleanup(func() {
+		stop()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Log("anti-entropy did not stop within 2s")
+		}
+	})
+	for follower.svc.LocalSeq(source.nodeID) < 6 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("anti-entropy Snapshot did not advance the source cutoff")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if _, ok := follower.cache.GetVertex("anti-snapshot/5"); !ok {
+		t.Fatal("anti-entropy Snapshot did not change the graph")
+	}
+	if feed.Receive() || connect.CodeOf(feed.Err()) != connect.CodeFailedPrecondition {
+		t.Fatalf("identity stream survived anti-entropy Snapshot: (%v,%v)", feed.Msg(), feed.Err())
 	}
 }
 

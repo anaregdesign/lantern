@@ -415,6 +415,12 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 		return err
 	}
 	defer func() { _ = stream.Close() }()
+	var finishInstall func(bool)
+	defer func() {
+		if finishInstall != nil {
+			finishInstall(false)
+		}
+	}()
 	var recovery searchIndexRecovery
 	if candidate, ok := a.snap.(searchIndexRecovery); ok {
 		recovery = candidate
@@ -426,6 +432,10 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			if err := replay.acceptHeader(e.Header); err != nil {
+				return err
+			}
+			finishInstall, err = beginSnapshotInstall(a.apply)
+			if err != nil {
 				return err
 			}
 		case *pb.SnapshotResponse_VertexCausalBarrier:
@@ -536,6 +546,10 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 		if err := marks.ApplySnapshotWatermarks(replay.header.GetCutoffSeqPerOrigin(), snapshotHLC(replay.header.GetCutoffHlc())); err != nil {
 			return err
 		}
+	}
+	if finishInstall != nil {
+		finishInstall(true)
+		finishInstall = nil
 	}
 	resume := resumeAfterSnapshot(replay.header)
 	a.resumeMu.Lock()
