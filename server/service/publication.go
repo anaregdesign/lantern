@@ -33,7 +33,7 @@ type pendingMutation struct {
 
 func publicationGapError() error {
 	return connect.NewError(connect.CodeFailedPrecondition,
-		errors.New("gapped: mutation publication or Snapshot install requires repair"))
+		errors.New("gapped: mutation publication or Snapshot install requires repair before reading, subscribing, or taking a snapshot"))
 }
 
 // BeginSnapshotInstall invalidates the current CDC generation before a peer
@@ -65,6 +65,11 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 		}
 		s.snapshotInstallMu.Unlock()
 	}, nil
+}
+
+func publicationChangedDuringReadError() error {
+	return connect.NewError(connect.CodeUnavailable,
+		errors.New("graph publication changed during read; retry"))
 }
 
 // Caller holds replicationCutMu. One fault poisons every currently open

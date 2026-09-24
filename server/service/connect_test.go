@@ -5,8 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -118,5 +122,159 @@ func TestConnectAdapter_ReplicationDisabled(t *testing.T) {
 	}
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Errorf("PeerStatus code = %v, want Unavailable", got)
+	}
+}
+
+func TestUnaryGraphReadOptimistic_InvalidatesOverlappingPublication(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{})
+	defer func() { _ = log.Close() }()
+	svc := NewLanternService(newFakeBackend()).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := unaryGraphReadOptimistic(context.Background(), connect.NewRequest(&pb.GetVerticesRequest{}), svc,
+			func(context.Context, *pb.GetVerticesRequest) (*pb.GetVerticesResponse, error) {
+				close(entered)
+				<-release
+				return &pb.GetVerticesResponse{}, nil
+			})
+		readDone <- err
+	}()
+	<-entered
+	writerDone := make(chan struct{})
+	go func() {
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		close(writerDone)
+	}()
+	select {
+	case <-writerDone:
+		// An optimistic read does not hold the write gate while it computes.
+	case <-time.After(2 * time.Second):
+		t.Fatal("publication was blocked by the long read")
+	}
+	close(release)
+	select {
+	case err := <-readDone:
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("overlapping read = %v, want retryable Unavailable", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("long read did not finish")
+	}
+}
+
+type blockingVertexReadBackend struct {
+	Backend
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingVertexReadBackend) GetVertex(key string) (*pb.Vertex, bool) {
+	select {
+	case <-b.entered:
+	default:
+		close(b.entered)
+		<-b.release
+	}
+	return b.Backend.GetVertex(key)
+}
+
+func TestConnectAdapter_GetVerticesBatchDoesNotBlockPublication(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{})
+	defer func() { _ = log.Close() }()
+	backend := &blockingVertexReadBackend{
+		Backend: newFakeBackend(), entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-backend.release:
+		default:
+			close(backend.release)
+		}
+	}()
+	svc := NewLanternService(backend).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
+	handler := NewLanternServiceConnectHandler(svc)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := handler.GetVertices(context.Background(), connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"a", "b"}}))
+		readDone <- err
+	}()
+	<-backend.entered
+	writerDone := make(chan struct{})
+	go func() {
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		close(writerDone)
+	}()
+	select {
+	case <-writerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("plural read blocked publication")
+	}
+	close(backend.release)
+	select {
+	case err := <-readDone:
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("overlapping batch read = %v, want retryable Unavailable", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("plural read did not finish")
+	}
+}
+
+// BenchmarkConnectAdapter_GetEdgesPublicationCut isolates the read-side
+// publication gate cost from the network and Connect framing overhead.
+func BenchmarkConnectAdapter_GetEdgesPublicationCut(b *testing.B) {
+	for _, replicated := range []bool{false, true} {
+		name := "single-node"
+		if replicated {
+			name = "replicated"
+		}
+		for _, parallel := range []bool{false, true} {
+			mode := "serial"
+			if parallel {
+				mode = "parallel"
+			}
+			b.Run(name+"/"+mode, func(b *testing.B) {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+				cache.PutEdgeWithExpiration("bench/tail", "bench/head", 1, time.Now().Add(time.Hour))
+				svc := NewLanternService(cache)
+				if replicated {
+					log := mutationlog.New(mutationlog.Options{})
+					b.Cleanup(func() { _ = log.Close() })
+					svc.WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
+				}
+				handler := NewLanternServiceConnectHandler(svc)
+				req := connect.NewRequest(&pb.GetEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "bench/tail", Head: "bench/head"}}})
+				ctx := context.Background()
+				read := func() {
+					if _, err := handler.GetEdges(ctx, req); err != nil {
+						b.Error(err)
+					}
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				if parallel {
+					b.RunParallel(func(pb *testing.PB) {
+						for pb.Next() {
+							read()
+						}
+					})
+				} else {
+					for i := 0; i < b.N; i++ {
+						read()
+					}
+				}
+			})
+		}
 	}
 }

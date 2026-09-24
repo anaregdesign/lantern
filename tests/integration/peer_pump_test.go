@@ -108,6 +108,21 @@ type oneShotLocalWAL struct {
 	failures atomic.Int32
 }
 
+type blockedFailureWAL struct {
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *blockedFailureWAL) Write(mutationlog.Entry) error {
+	if w.armed.CompareAndSwap(true, false) {
+		close(w.entered)
+		<-w.release
+		return errors.New("injected blocked WAL failure")
+	}
+	return nil
+}
+
 func (w *oneShotLocalWAL) Write(mutationlog.Entry) error {
 	if w.armed.CompareAndSwap(true, false) {
 		w.failures.Add(1)
@@ -147,6 +162,93 @@ func (w *retryRelayWAL) Write(mutationlog.Entry) error {
 		<-w.allowRetry
 	}
 	return nil
+}
+
+// assertGraphReadsGapped exercises every ordinary graph-data read RPC over
+// Connect/h2c. GetReplicationStatus deliberately remains available for
+// diagnosis while the graph publication cut is faulted.
+func assertGraphReadsGapped(t *testing.T, ctx context.Context, n *pumpNode) {
+	t.Helper()
+	checks := []struct {
+		name string
+		read func() error
+	}{
+		{"Illuminate", func() error {
+			_, err := n.raw.Illuminate(ctx, connect.NewRequest(&pb.IlluminateRequest{Seed: "relay-warmup", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}}}))
+			return err
+		}},
+		{"GetVertex", func() error {
+			_, err := n.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "relay-warmup"}))
+			return err
+		}},
+		{"GetVertices", func() error {
+			_, err := n.raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"relay-warmup"}}))
+			return err
+		}},
+		{"ScanVertices", func() error {
+			_, err := n.raw.ScanVertices(ctx, connect.NewRequest(&pb.ScanVerticesRequest{Prefix: "relay"}))
+			return err
+		}},
+		{"ScanVertexKeys", func() error {
+			_, err := n.raw.ScanVertexKeys(ctx, connect.NewRequest(&pb.ScanVertexKeysRequest{Prefix: "relay"}))
+			return err
+		}},
+		{"SearchVertices", func() error {
+			_, err := n.raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "ready"}))
+			return err
+		}},
+		{"CountVerticesByPrefix", func() error {
+			_, err := n.raw.CountVerticesByPrefix(ctx, connect.NewRequest(&pb.CountVerticesByPrefixRequest{Prefix: "relay"}))
+			return err
+		}},
+		{"TopVerticesByDegree", func() error {
+			_, err := n.raw.TopVerticesByDegree(ctx, connect.NewRequest(&pb.TopVerticesByDegreeRequest{Prefix: "relay"}))
+			return err
+		}},
+		{"GetEdge", func() error {
+			_, err := n.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "fault-tail", Head: "fault-head"}))
+			return err
+		}},
+		{"GetEdges", func() error {
+			_, err := n.raw.GetEdges(ctx, connect.NewRequest(&pb.GetEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "fault-tail", Head: "fault-head"}}}))
+			return err
+		}},
+		{"ScanEdges", func() error {
+			_, err := n.raw.ScanEdges(ctx, connect.NewRequest(&pb.ScanEdgesRequest{TailPrefix: "fault"}))
+			return err
+		}},
+		{"GetServerStatus", func() error {
+			_, err := n.raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+			return err
+		}},
+		{"DeleteVerticesByPrefix dry run", func() error {
+			_, err := n.raw.DeleteVerticesByPrefix(ctx, connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{Prefix: "relay", DryRun: true}))
+			return err
+		}},
+		{"DeleteEdgesByPrefix dry run", func() error {
+			_, err := n.raw.DeleteEdgesByPrefix(ctx, connect.NewRequest(&pb.DeleteEdgesByPrefixRequest{TailPrefix: "fault", DryRun: true}))
+			return err
+		}},
+	}
+	for _, check := range checks {
+		if err := check.read(); err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+			t.Errorf("%s during publication fault = %v, want gapped FailedPrecondition", check.name, err)
+		}
+	}
+	stream, err := n.raw.BackupSnapshot(ctx, connect.NewRequest(&pb.BackupSnapshotRequest{}))
+	if err == nil {
+		if stream.Receive() {
+			t.Error("BackupSnapshot exposed a graph record during publication fault")
+		}
+		err = stream.Err()
+		_ = stream.Close()
+	}
+	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+		t.Errorf("BackupSnapshot during publication fault = %v, want gapped FailedPrecondition", err)
+	}
+	if _, err := n.raw.GetReplicationStatus(ctx, connect.NewRequest(&pb.GetReplicationStatusRequest{})); err != nil {
+		t.Errorf("GetReplicationStatus must remain available during publication fault: %v", err)
+	}
 }
 
 // startPump attaches a Pump to the node aimed at the supplied peer
@@ -602,6 +704,7 @@ func TestPeerPump_RelayAppendFaultGapsCDC(t *testing.T) {
 	if got := b.log.Len(); got != 1 {
 		t.Fatalf("failed publication added %d relay log entries, want only warmup", got)
 	}
+	assertGraphReadsGapped(t, ctx, b)
 
 	faultCtx, faultCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer faultCancel()
@@ -658,6 +761,9 @@ func TestPeerPump_RelayAppendFaultGapsCDC(t *testing.T) {
 		t.Fatalf("repaired Snapshot header = (%+v,%v), want origin cutoff 2", healthySnapshot.Msg(), healthySnapshot.Err())
 	}
 	_ = healthySnapshot.Close()
+	if _, err := b.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "fault-tail", Head: "fault-head"})); err != nil {
+		t.Fatalf("graph read after relay repair: %v", err)
+	}
 }
 
 // A local graph-first write may have changed read-visible state when the WAL
@@ -878,6 +984,9 @@ func TestLocalWritePublication_WALFaultGapsCDCAndRepairs(t *testing.T) {
 			if wal.failures.Load() != 1 || node.svc.LocalSeq(nodeID) != beforeOrigin || node.log.Len() != int(beforeLocal) {
 				t.Fatalf("failed publication: WAL failures=%d origin seq=%d log len=%d", wal.failures.Load(), node.svc.LocalSeq(nodeID), node.log.Len())
 			}
+			if tc.name == "DeleteEdge" {
+				assertGraphReadsGapped(t, ctx, node)
+			}
 			if oldFeed.Receive() || connect.CodeOf(oldFeed.Err()) != connect.CodeFailedPrecondition || !strings.Contains(oldFeed.Err().Error(), "gapped") {
 				t.Fatalf("old Subscribe after fault = (%v,%v), want gapped", oldFeed.Msg(), oldFeed.Err())
 			}
@@ -921,6 +1030,11 @@ func TestLocalWritePublication_WALFaultGapsCDCAndRepairs(t *testing.T) {
 				t.Fatalf("pending seq = %d, want %d", pending.GetSeq(), beforeOrigin+1)
 			}
 			tc.verify(t, node, pending)
+			if tc.name == "DeleteEdge" {
+				if _, err := node.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "delete/a", Head: "delete/b"})); connect.CodeOf(err) != connect.CodeNotFound {
+					t.Fatalf("graph read after local repair = %v, want NotFound", err)
+				}
+			}
 			if !feed.Receive() || feed.Msg().GetMutation().GetSeq() != beforeOrigin+2 {
 				t.Fatalf("next mutation = (%v,%v), want seq %d", feed.Msg(), feed.Err(), beforeOrigin+2)
 			}
@@ -933,6 +1047,79 @@ func TestLocalWritePublication_WALFaultGapsCDCAndRepairs(t *testing.T) {
 				t.Fatalf("repaired Snapshot header = (%v,%v)", healthySnapshot.Msg(), healthySnapshot.Err())
 			}
 		})
+	}
+}
+
+func TestGraphReadPublicationCut_BlockedWALThenFault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping h2c publication cut test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	wal := &blockedFailureWAL{entered: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(wal.release)
+		}
+	}()
+	n := newPumpNodeWithWAL(t, hlc.NodeID{0xD1}, 32, true, wal)
+	if _, err := n.raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: "cut/a", Head: "cut/b", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	beforeSeq := n.svc.LocalSeq(n.nodeID)
+	beforeLen := n.log.Len()
+	wal.armed.Store(true)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := n.raw.DeleteEdge(ctx, connect.NewRequest(&pb.DeleteEdgeRequest{Tail: "cut/a", Head: "cut/b"}))
+		writeDone <- err
+	}()
+	select {
+	case <-wal.entered:
+	case <-ctx.Done():
+		t.Fatal("DeleteEdge never reached the blocked WAL")
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := n.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "cut/a", Head: "cut/b"}))
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		t.Fatalf("read crossed an in-flight publication cut: %v", err)
+	case <-time.After(80 * time.Millisecond):
+	}
+	close(wal.release)
+	released = true
+	select {
+	case err := <-writeDone:
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("failed DeleteEdge = %v, want Unavailable", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("failed DeleteEdge did not return")
+	}
+	select {
+	case err := <-readDone:
+		if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+			t.Fatalf("read after failed publication = %v, want gapped FailedPrecondition", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("blocked GetEdge did not return after WAL failure")
+	}
+	if got := n.svc.LocalSeq(n.nodeID); got != beforeSeq || n.log.Len() != beforeLen {
+		t.Fatalf("failed publication changed origin/log cut: seq=%d log=%d, want %d/%d", got, n.log.Len(), beforeSeq, beforeLen)
+	}
+	if _, err := n.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "repair", Value: &pb.Vertex_String_{String_: "done"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+	}})); err != nil {
+		t.Fatalf("repairing write: %v", err)
+	}
+	if _, err := n.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "cut/a", Head: "cut/b"})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("read after repair = %v, want NotFound", err)
 	}
 }
 
