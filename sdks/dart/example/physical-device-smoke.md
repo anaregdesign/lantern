@@ -300,6 +300,10 @@ does not replace the complete first-publication matrix in #1162.
 
 ## Offline core publication matrix
 
+For the repeatable clean-checkout, temporary HTTPS fixture, per-device test,
+and teardown sequence, use the
+[offline release resume runbook](offline-release-resume.md).
+
 Before an `sdks/dart/offline/vX.Y.Z` tag, test a clean code commit on both
 physical platforms using the current Put-only app and a platform-trusted HTTPS
 endpoint. Record `android.json` and `ios.json` under
