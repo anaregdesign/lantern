@@ -16,10 +16,15 @@ import (
 const neighborParallelThreshold = 8
 
 type GraphCache[S comparable, T any] struct {
-	mu         sync.RWMutex
-	defaultTTL time.Duration
-	vertices   *cache.Cache[S, T]
-	edges      *edgeCache[S]
+	mu sync.RWMutex
+	// publicationGate is opt-in for staged mutations. The aggregate lock
+	// already covers scans, GC, snapshots, and ordinary writes; point reads
+	// and the existing-edge Add fast path bypass it and use this gate instead.
+	// It is assigned only during construction and never changes afterward.
+	publicationGate *sync.RWMutex
+	defaultTTL      time.Duration
+	vertices        *cache.Cache[S, T]
+	edges           *edgeCache[S]
 	// applicationClock is sampled only while the final aggregate write lock is
 	// held by outcome-bearing Put batches. Nil selects time.Now. Tests replace
 	// it to pin expiry-boundary behavior without sleeping.
@@ -205,6 +210,16 @@ func NewGraphCache[S comparable, T any](defaultTTL time.Duration) *GraphCache[S,
 	return c
 }
 
+// newGraphCacheWithStaging enables the visibility gate needed by prepared
+// mutations. Existing caches retain their lock-free point-read path. A
+// prepared mutation holds both the aggregate lock and this gate while it is
+// validated and installed, so no reader or Add fast path sees a partial cut.
+func newGraphCacheWithStaging[S comparable, T any](defaultTTL time.Duration) *GraphCache[S, T] {
+	c := NewGraphCache[S, T](defaultTTL)
+	c.publicationGate = new(sync.RWMutex)
+	return c
+}
+
 // EnablePrefixIndex turns on the optional prefix index, projecting each
 // key S through extract to obtain the string used by ScanByPrefix /
 // CountByPrefix / DeleteByPrefix. It must be called before any vertex is
@@ -349,6 +364,10 @@ func (c *GraphCache[S, T]) ensureVertexLocked(key S, expiration time.Time) {
 // either the pre- or post-write state, which is the existing point-read
 // contract.
 func (c *GraphCache[S, T]) GetVertex(key S) (T, bool) {
+	if c.publicationGate != nil {
+		c.publicationGate.RLock()
+		defer c.publicationGate.RUnlock()
+	}
 	return c.vertices.Get(key)
 }
 
@@ -382,6 +401,10 @@ func (c *GraphCache[S, T]) edgeEndpointsLive(tail, head S) bool {
 // cache under its own lock, after the edge read, so GetWeight stays free of
 // GraphCache.mu.
 func (c *GraphCache[S, T]) GetWeight(tail, head S) (float32, bool) {
+	if c.publicationGate != nil {
+		c.publicationGate.RLock()
+		defer c.publicationGate.RUnlock()
+	}
 	w, ok := c.edges.get(tail, head)
 	if !ok || !c.edgeEndpointsLive(tail, head) {
 		return 0, false
@@ -400,6 +423,10 @@ func (c *GraphCache[S, T]) GetWeight(tail, head S) (float32, bool) {
 // still live, so a dangling edge to a deleted or expired-but-not-flushed vertex
 // is reported as absent (#750).
 func (c *GraphCache[S, T]) GetEdgeDetail(tail, head S) (float32, time.Time, bool) {
+	if c.publicationGate != nil {
+		c.publicationGate.RLock()
+		defer c.publicationGate.RUnlock()
+	}
 	w, exp, ok := c.edges.getDetail(tail, head)
 	if !ok || !c.edgeEndpointsLive(tail, head) {
 		return 0, time.Time{}, false
