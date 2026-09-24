@@ -298,6 +298,68 @@ process-kill/relaunch, pending TTL, durable logout wipe, and local user-partitio
 isolation. The evidence records its transport and local build limitations and
 does not replace the complete first-publication matrix in #1162.
 
+## Identity CDC physical qualification
+
+`integration_test/physical_identity_cdc_test.dart` is an opt-in native Android/iOS
+test of the production `LanternClientIdentitySource` and platform SQLite. Run it
+from a clean checkout with an authenticated endpoint that routes Subscribe,
+GetReplicationStatus, GetVertices, and GetEdges to one real responder. The
+operator must establish that route; the stream frame cannot prove it. Use a
+platform-trusted HTTPS endpoint and a runtime token BFF that issues a distinct
+valid token on the test's post-checkpoint refresh. The responder must accept
+both issued tokens during the run. For release evidence:
+
+```bash
+flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
+  -d <physical-android-id> --reporter=expanded --timeout=3m \
+  --dart-define=LANTERN_ENDPOINT=https://<pinned-responder> \
+  --dart-define=LANTERN_TOKEN_ENDPOINT=https://<token-bff>/token \
+  --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true
+
+flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
+  -d <physical-ios-id> --reporter=expanded --timeout=3m \
+  --dart-define=LANTERN_ENDPOINT=https://<pinned-responder> \
+  --dart-define=LANTERN_TOKEN_ENDPOINT=https://<token-bff>/token \
+  --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true
+```
+
+For a trusted-LAN development fixture only, both URLs may use HTTP with
+`--dart-define=LANTERN_ALLOW_INSECURE=true`; record that limitation and do not
+claim platform-trusted TLS. On iOS, use the checked-in `flutter drive`
+integration driver with `--publish-port` if the device is classified as
+wirelessly tethered. The test requires `IDENTITY_CDC_BODY_STARTED`,
+`IDENTITY_CDC_PASS`, and `All tests passed!`. It verifies checkpoint recovery
+of stale Vertex and Edge residents, exact live invalidation, durable cursor and
+Unknown state after SQLite reopen, foreground resume, responder stability,
+runtime token acquisition and post-checkpoint refresh, and partition wipe
+cancellation.
+
+For a cabled Android development run when the LAN route is unstable, forward
+the fixture ports over USB and use device loopback. Configure the local BFF to
+rotate between two test tokens accepted by the server. This proves native
+SQLite and CDC behavior, but does not qualify the release network/TLS contract:
+
+```bash
+adb -s <physical-android-id> reverse tcp:6380 tcp:6380
+adb -s <physical-android-id> reverse tcp:6381 tcp:6381
+flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
+  -d <physical-android-id> --reporter=expanded --timeout=3m \
+  --dart-define=LANTERN_ENDPOINT=http://127.0.0.1:6380 \
+  --dart-define=LANTERN_TOKEN_ENDPOINT=http://127.0.0.1:6381/token \
+  --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true \
+  --dart-define=LANTERN_ALLOW_INSECURE=true
+adb -s <physical-android-id> reverse --remove tcp:6380
+adb -s <physical-android-id> reverse --remove tcp:6381
+```
+
+Record each physical run against the exact clean code SHA, Flutter revision,
+device model/OS, installed binary SHA-256, authenticated network topology, and
+sanitized markers. Keep endpoints, tokens, device identifiers, and graph keys
+out of evidence. This dedicated target has its own binary; the current offline
+release gate still binds its evidence to `mobile_smoke_test.dart`. Do not claim
+the CDC scenario in that gate until its evidence schema explicitly accepts the
+additional target and binary hash.
+
 ## Offline core publication matrix
 
 For the repeatable clean-checkout, temporary HTTPS fixture, per-device test,
