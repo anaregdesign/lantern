@@ -7,20 +7,15 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
-// originStateTracker records the (last_seq, last_hlc) the local node
-// has applied for each known origin NodeID. It is the in-memory
-// backing store for the PeerStatus RPC (#186) and the dedup gate for
-// remote-applied mutations under the Reading B contract (#415).
+// originStateTracker records the contiguous committed (last_seq, last_hlc)
+// prefix for each origin NodeID. It backs PeerStatus and Snapshot cutoffs.
 //
 // Update sites:
 //
-//   - ApplyMutation calls Record(origin, seq, hlc) after backend apply.
-//     The bool return decides whether the mutation is published to the
-//     local log; HLC/ContribID makes duplicate graph replay idempotent.
-//   - logMutation, after a successful local append, calls Record with
-//     the local origin so PeerStatus always reflects the local node's
-//     own progress too. The bool return is ignored: local seqs are
-//     strictly monotone by construction, so the call always advances.
+//   - ApplyMutation calls Record after graph apply and relay-log append.
+//   - logMutation calls Record after the local log append.
+//   - ApplySnapshotWatermarks calls AdvanceSnapshot after completing replay;
+//     a verified snapshot is the only way to skip a missing log prefix.
 //
 // Concurrency: a single RWMutex protects the map. Updates are O(1);
 // the snapshot returned by States() is a copy so callers can iterate
@@ -39,13 +34,10 @@ func newOriginStateTracker() *originStateTracker {
 	return &originStateTracker{m: make(map[hlc.NodeID]originRow)}
 }
 
-// Record advances the per-origin watermark to (seq, ts) iff seq is
-// strictly greater than the previously-recorded seq for origin. It
-// returns true when the watermark advanced (the caller may proceed to
-// apply and log the mutation) and false when this (origin, seq) was
-// already recorded (the caller must not publish the same mutation again).
-// The check-and-set is performed under a single Lock so concurrent
-// ApplyMutation invocations cannot both publish the same origin seq.
+// Record advances only to the next contiguous seq. It returns false for
+// duplicates and gaps, preventing a high observed seq from hiding an
+// unpublished prefix. The caller must hold the service commit gate across
+// graph/log work; this tracker lock only protects map access.
 //
 // A zero origin (all-zero NodeID) is silently dropped and returns
 // false: the wire protocol forbids zero NodeIDs and accepting them
@@ -58,7 +50,24 @@ func (t *originStateTracker) Record(origin hlc.NodeID, seq uint64, ts hlc.Timest
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	prev, ok := t.m[origin]
-	if ok && seq <= prev.seq {
+	if seq == 0 || (ok && seq != prev.seq+1) || (!ok && seq != 1) {
+		return false
+	}
+	t.m[origin] = originRow{seq: seq, hlc: ts}
+	return true
+}
+
+// AdvanceSnapshot accepts a verified snapshot's per-origin cutoff. Snapshot
+// replay has already materialized every effect through this seq, so this is
+// the one intentional jump over log entries absent from this replica.
+func (t *originStateTracker) AdvanceSnapshot(origin hlc.NodeID, seq uint64, ts hlc.Timestamp) bool {
+	var zero hlc.NodeID
+	if origin == zero || seq == 0 {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if seq <= t.m[origin].seq {
 		return false
 	}
 	t.m[origin] = originRow{seq: seq, hlc: ts}
@@ -94,9 +103,8 @@ func (t *originStateTracker) States() []OriginState {
 	return out
 }
 
-// LocalSeq returns the highest recorded seq for origin, or 0 when
-// the origin has never been seen. Safe to call concurrently with
-// Record.
+// LocalSeq returns the contiguous committed cutoff for origin, or 0 when
+// the origin has never been seen. Safe to call concurrently with Record.
 func (t *originStateTracker) LocalSeq(origin hlc.NodeID) uint64 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

@@ -3,9 +3,7 @@ package service
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -22,13 +20,11 @@ import (
 // as an RPC: external clients use the regular write RPCs which append to
 // the local log via logMutation.
 //
-// Under the Reading B contract (#415), a successfully-applied remote
-// mutation is ALSO appended to the local mutation log so external
-// Subscribe consumers on any replica observe every committed cluster
-// mutation. Graph replay is idempotent by HLC/ContribID; after a successful
-// backend call, the per-origin watermark decides whether this hop appends
-// to the local log. The graph apply, watermark, and publication share a
-// Snapshot cut gate so a header never claims an unapplied mutation.
+// Under the Reading B contract (#415), a committed remote mutation is
+// appended to the local mutation log for external Subscribe consumers.
+// Mutations from one origin commit in seq order; future seqs remain outside
+// the graph until the missing prefix arrives. The graph apply, log append,
+// and contiguous watermark advance share the Snapshot cut gate.
 //
 // Idempotence rules per oneof case:
 //
@@ -43,48 +39,33 @@ import (
 //     the same MutationOp_AddEdges receive distinct ContribIDs while
 //     replays of the same (mutation seq, edge index) pair dedup.
 //
-//   - Delete* (vertex/edge/by-prefix): performed via the existing
-//     destructive batch methods and a D4-bounded HLC tombstone when enabled.
-//     Equal-HLC replay keeps the earlier expiration.
+//   - Delete* (vertex/edge): performed via exact victim identities and a
+//     D4-bounded HLC tombstone when enabled. Predicate-shaped legacy relay
+//     records are rejected before graph apply.
 //
-// Returns ctx.Err() when ctx is cancelled; otherwise nil. Nil-or-empty
-// mutations are dropped silently so callers (pump, snapshot replay) can
-// forward whatever the wire produces without additional null checks.
+// Returns ctx.Err() when ctx is cancelled. Nil-or-empty mutations are
+// dropped silently; malformed sequenced entries fail closed.
 func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) error {
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
-	if m == nil || m.GetOp() == nil {
+	if m == nil || (m.GetSeq() == 0 && len(m.GetOrigin()) == 0 && m.GetHlc() == nil && m.GetOp() == nil) {
 		return nil
+	}
+	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
+	return s.publishRemoteMutation(ctx, m)
+}
 
+// applyMutationGraph runs exactly one sequenced mutation against the graph.
+// Caller holds replicationCutMu and publishes only after this succeeds.
+func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 	ts := hlcFromProto(m.GetHlc())
 	origin := m.GetOrigin()
 	seq := m.GetSeq()
-
-	// Reading B watermark check (#415, B-3). After the backend call,
-	// Record CAS-advances the per-origin (last_seq, last_hlc) watermark
-	// when seq is strictly greater than what we have already seen. The
-	// bool return drives two later decisions:
-	//
-	//   - log Append: only on advance, so external Subscribe streams
-	//     do not see the same (origin, seq) replayed when the same
-	//     mutation arrived through two different peer hops in a
-	//     fan-out triangle.
-	//   - onApplied hook: only on advance, so peer-status counters
-	//     reflect distinct cluster mutations rather than redelivery
-	//     volume.
-	//
-	// The cache apply itself runs unconditionally: it is HLC LWW
-	// (Put*) or ContribID-deduped (Add*), so out-of-order or
-	// duplicate deliveries are absorbed without divergence. This is
-	// the convergence invariant that
-	// TestApplyMutation_Convergence stresses.
-	var nid hlc.NodeID
-	advanced := false
-	copy(nid[:], origin)
 
 	// Tombstone expiration is computed once per apply so a batch of
 	// per-edge contributions inside a single MutationOp_AddEdges shares
@@ -109,7 +90,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	case *pb.MutationOp_PutVertex:
 		v := op.PutVertex.GetVertex()
 		if v == nil {
-			return nil
+			return "", nil
 		}
 		applied := s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, prototime.Expiration(v.GetExpiration()), ts)
 		if !applied && useTomb && s.onTombstoneClampReject != nil {
@@ -154,23 +135,23 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(entries))
 		for _, entry := range entries {
 			if entry == nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex entry"))
+				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex entry"))
 			}
 			switch outcome := entry.GetOutcome().(type) {
 			case *pb.ReplicatedPutVertex_Live:
 				v := outcome.Live
 				if v == nil {
-					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex live payload"))
+					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex live payload"))
 				}
 				items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: v.GetKey(), Value: v, Expiration: prototime.Expiration(v.GetExpiration())})
 			case *pb.ReplicatedPutVertex_CausalBarrier:
 				barrier := outcome.CausalBarrier
 				if barrier == nil {
-					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex causal barrier"))
+					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex causal barrier"))
 				}
 				items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: barrier.GetKey(), CausalBarrier: true})
 			default:
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutVertex entry has no outcome"))
+				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutVertex entry has no outcome"))
 			}
 		}
 		rejected := s.cache.PutVerticesWithExpirationHLC(items, ts)
@@ -197,23 +178,10 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 		opName = "DeleteVertices"
 
-	case *pb.MutationOp_DeleteVerticesByPrefix:
-		// Legacy logs may contain predicate-shaped deletes. Current origins log
-		// their exact committed victim set as DeleteVertices so a peer cannot
-		// widen a limited or causal-budgeted prefix mutation.
-		if useTomb {
-			if _, err := s.cache.DeleteByPrefixHLC(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0, ts, tombExp); err != nil {
-				return ctxToConnect(err)
-			}
-		} else {
-			s.cache.DeleteByPrefix(ctx, op.DeleteVerticesByPrefix.GetPrefix(), 0)
-		}
-		opName = "DeleteVerticesByPrefix"
-
 	case *pb.MutationOp_AddEdge:
 		e := op.AddEdge.GetEdge()
 		if e == nil {
-			return nil
+			return "", nil
 		}
 		// Prefer a client-supplied ContribID carried on the wire (#588) so a
 		// retried idempotent Add dedups identically on every replica; fall
@@ -275,7 +243,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	case *pb.MutationOp_PutEdge:
 		e := op.PutEdge.GetEdge()
 		if e == nil {
-			return nil
+			return "", nil
 		}
 		applied := s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
 			prototime.Expiration(e.GetExpiration()), ts)
@@ -313,23 +281,23 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		items := make([]graphcache.EdgeItem[string], 0, len(entries))
 		for _, entry := range entries {
 			if entry == nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge entry"))
+				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge entry"))
 			}
 			switch outcome := entry.GetOutcome().(type) {
 			case *pb.ReplicatedPutEdge_Live:
 				e := outcome.Live
 				if e == nil {
-					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge live payload"))
+					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge live payload"))
 				}
 				items = append(items, graphcache.EdgeItem[string]{Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(), Expiration: prototime.Expiration(e.GetExpiration())})
 			case *pb.ReplicatedPutEdge_CausalBarrier:
 				barrier := outcome.CausalBarrier
 				if barrier == nil {
-					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge causal barrier"))
+					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge causal barrier"))
 				}
 				items = append(items, graphcache.EdgeItem[string]{Tail: barrier.GetTail(), Head: barrier.GetHead(), CausalBarrier: true})
 			default:
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutEdge entry has no outcome"))
+				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutEdge entry has no outcome"))
 			}
 		}
 		rejected := s.cache.PutEdgesWithExpirationHLC(items, ts)
@@ -362,64 +330,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 		opName = "DeleteEdges"
 
-	case *pb.MutationOp_DeleteEdgesByPrefix:
-		// Legacy logs may contain predicate-shaped deletes. Current origins log
-		// exact DeleteEdges identities; retain this arm only for replaying old
-		// entries.
-		p := op.DeleteEdgesByPrefix
-		if useTomb {
-			if _, err := s.cache.DeleteEdgesByPrefixHLC(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0, ts, tombExp); err != nil {
-				return ctxToConnect(err)
-			}
-		} else {
-			s.cache.DeleteEdgesByPrefix(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0)
-		}
-		opName = "DeleteEdgesByPrefix"
 	}
 
-	// Snapshot must never publish this origin/seq cutoff before the graph
-	// mutation is committed. The shared replicationCutMu excludes Snapshot's
-	// cutoff+graph capture while this apply and publication are in flight.
-	if opName != "" && s.origins != nil && len(origin) > 0 && seq > 0 {
-		advanced = s.origins.Record(nid, seq, ts)
-	}
-
-	if opName != "" && s.onReplicationApply != nil {
-		s.onReplicationApply(opName)
-	}
-
-	// Reading B (#415, B-3). After a successful apply of an entry we
-	// have not seen before, also append the mutation to the local log
-	// so external Subscribe consumers on this replica observe it. The
-	// advanced check above ensures the same (origin, seq) is appended
-	// at most once even when it reaches us through multiple peer hops.
-	//
-	// The append uses the remote HLC unchanged so Entry.HLC.NodeID
-	// equals the originating writer's NodeID — that is the field
-	// downstream actors (the peer pump, external CDC consumers) read
-	// to attribute each entry to its origin.
-	//
-	// Append errors after a successful apply are logged but not
-	// surfaced: the apply already committed and reverting it would
-	// leak inconsistency. The next remote receipt of the same
-	// mutation will short-circuit at the watermark check.
-	if advanced && s.log != nil {
-		if _, err := s.log.Append(m, ts); err != nil {
-			l := s.logger
-			if l == nil {
-				l = slog.Default()
-			}
-			l.Warn("mutation log append on remote apply failed",
-				slog.Any("err", err),
-				slog.String("origin", hex.EncodeToString(nid[:])),
-				slog.Uint64("seq", seq))
-		}
-	}
-
-	if advanced && s.onApplied != nil {
-		s.onApplied(hex.EncodeToString(nid[:]))
-	}
-	return nil
+	return opName, nil
 }
 
 // hlcFromProto converts the wire HLCTimestamp into the in-process value

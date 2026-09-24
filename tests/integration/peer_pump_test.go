@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,8 +48,16 @@ func newPumpNode(t *testing.T, nodeID hlc.NodeID) *pumpNode {
 }
 
 func newPumpNodeWithSearch(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool) *pumpNode {
+	return newPumpNodeWithWAL(t, nodeID, logCapacity, positions, nil)
+}
+
+func newPumpNodeWithWAL(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool, wal mutationlog.WAL) *pumpNode {
+	return newPumpNodeWithWALAndMetrics(t, nodeID, logCapacity, positions, wal, nil)
+}
+
+func newPumpNodeWithWALAndMetrics(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool, wal mutationlog.WAL, metrics service.SubscribeMetrics) *pumpNode {
 	t.Helper()
-	log := mutationlog.New(mutationlog.Options{Capacity: logCapacity, SubscriberBuffer: 1024})
+	log := mutationlog.New(mutationlog.Options{Capacity: logCapacity, SubscriberBuffer: 1024, WAL: wal})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
 	limits := productionSearchLimits(true, positions)
@@ -59,7 +68,8 @@ func newPumpNodeWithSearch(t *testing.T, nodeID hlc.NodeID, logCapacity int, pos
 		WithReplication(log, clock, nil)
 	rep := service.NewLanternReplicationService(log, cache, clock).
 		WithOriginStates(svc).
-		WithSearchConfig(svc)
+		WithSearchConfig(svc).
+		WithMetrics(metrics)
 
 	// Connect-on-h2c httptest.Server — same pattern as
 	// newConnectTestServer but the URL form is what the pump
@@ -77,6 +87,53 @@ func newPumpNodeWithSearch(t *testing.T, nodeID hlc.NodeID, logCapacity int, pos
 		raw:    graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
 		nodeID: nodeID,
 	}
+}
+
+type retryRelayWAL struct {
+	writes       atomic.Int32
+	failed       chan struct{}
+	retryStarted chan struct{}
+	allowRetry   chan struct{}
+}
+
+type stickyRelayWAL struct {
+	armed    atomic.Bool
+	healed   atomic.Bool
+	failures atomic.Int32
+	faulted  chan struct{}
+}
+
+func (w *stickyRelayWAL) Write(mutationlog.Entry) error {
+	if w.armed.Load() && !w.healed.Load() {
+		if w.failures.Add(1) == 1 {
+			close(w.faulted)
+		}
+		return errors.New("injected persistent relay WAL failure")
+	}
+	return nil
+}
+
+type signalSubscribeMetrics struct{ started chan struct{} }
+
+func (m *signalSubscribeMetrics) OnSubscribeStarted() {
+	select {
+	case m.started <- struct{}{}:
+	default:
+	}
+}
+func (*signalSubscribeMetrics) OnSubscribeEnded()         {}
+func (*signalSubscribeMetrics) OnSubscribeDropped(string) {}
+
+func (w *retryRelayWAL) Write(mutationlog.Entry) error {
+	switch w.writes.Add(1) {
+	case 1:
+		close(w.failed)
+		return errors.New("injected relay WAL failure")
+	case 2:
+		close(w.retryStarted)
+		<-w.allowRetry
+	}
+	return nil
 }
 
 // startPump attaches a Pump to the node aimed at the supplied peer
@@ -269,8 +326,8 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 
 	// Reading B (#415): every node's mutation log retains all four
 	// cluster-wide writes (A's PutVertex + AddEdge, B's PutVertex,
-	// C's PutVertex). Per-origin watermark CAS (ApplyMutation) +
-	// origin-anchored mu.Seq (logMutation stamps it; Subscribe relay
+	// C's PutVertex). Per-origin contiguous commit (ApplyMutation) +
+	// origin-anchored mu.Seq (logMutation allocates it; Subscribe relay
 	// preserves it across hops) guarantee each (origin, seq) lands
 	// at most once on every replica, so the monotonic LastSeq is
 	// exactly the count of distinct cluster mutations.
@@ -285,6 +342,309 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 		t.Errorf("c.log.LastSeq=%d ok=%v want %d", last, ok, wantClusterWrites)
 	}
 	waitForSearchConvergence(t, ctx, "from", nil, a.raw, b.raw, c.raw)
+}
+
+// TestPeerPump_ReverseOriginSeqRelay exercises the Connect/h2c Subscribe path
+// across A -> B -> C. A's log deliberately delivers one origin in reverse
+// seq order. B must keep the future entries out of its graph, Snapshot, and
+// relay log until seq 1 arrives; C must then observe the contiguous tail.
+func TestPeerPump_ReverseOriginSeqRelay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping three-peer pump test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	a := newPumpNode(t, hlc.NodeID{0xA1})
+	b := newPumpNode(t, hlc.NodeID{0xB1})
+	c := newPumpNode(t, hlc.NodeID{0xC1})
+	appendSource := func(seq uint64) {
+		t.Helper()
+		stamp := hlc.Timestamp{WallNs: int64(seq), NodeID: a.nodeID}
+		mutation := &pb.Mutation{
+			Origin: a.nodeID[:], Seq: seq,
+			Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, NodeId: a.nodeID[:]},
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: fmt.Sprintf("reverse-wire-%d", seq)},
+			}}},
+		}
+		if _, err := a.log.Append(mutation, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, seq := range []uint64{4, 3, 2} {
+		appendSource(seq)
+	}
+	b.startPump(ctx, t, []string{a.url})
+	c.startPump(ctx, t, []string{b.url})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rows := b.pump.Snapshot()
+		if len(rows) == 1 && rows[0].AppliedSeq == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rows := b.pump.Snapshot()
+	if len(rows) != 1 || rows[0].AppliedSeq != 2 {
+		t.Fatalf("B did not receive reverse source prefix over h2c: %+v", rows)
+	}
+	if got := b.svc.LocalSeq(a.nodeID); got != 0 {
+		t.Fatalf("B advertised missing origin prefix as seq %d", got)
+	}
+	if got := b.log.Len(); got != 0 {
+		t.Fatalf("B relayed %d future entries before seq 1", got)
+	}
+	for _, node := range []*pumpNode{b, c} {
+		if _, ok := node.cache.GetVertex("reverse-wire-4"); ok {
+			t.Fatalf("node %x exposed future mutation before gap closed", node.nodeID)
+		}
+	}
+	stream, err := newReplicationRawClient(t, b.url).Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header *pb.SnapshotHeader
+	for stream.Receive() {
+		switch entry := stream.Msg().GetEntry().(type) {
+		case *pb.SnapshotResponse_Header:
+			header = entry.Header
+		case *pb.SnapshotResponse_Vertex:
+			if entry.Vertex.GetVertex().GetKey() == "reverse-wire-4" {
+				t.Fatal("Snapshot contained an unpublished future mutation")
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Close()
+	if header == nil || header.GetCutoffSeqPerOrigin()[hex.EncodeToString(a.nodeID[:])] != 0 {
+		t.Fatalf("Snapshot crossed pending origin gap: %+v", header)
+	}
+
+	appendSource(1)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && (b.svc.LocalSeq(a.nodeID) < 4 || c.svc.LocalSeq(a.nodeID) < 4) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, node := range []*pumpNode{b, c} {
+		if got := node.svc.LocalSeq(a.nodeID); got != 4 {
+			t.Fatalf("node %x origin cursor = %d, want 4", node.nodeID, got)
+		}
+		if got := node.log.Len(); got != 4 {
+			t.Fatalf("node %x relay log length = %d, want 4", node.nodeID, got)
+		}
+		for seq := uint64(1); seq <= 4; seq++ {
+			if _, ok := node.cache.GetVertex(fmt.Sprintf("reverse-wire-%d", seq)); !ok {
+				t.Fatalf("node %x missing graph seq %d", node.nodeID, seq)
+			}
+		}
+	}
+	for _, node := range []*pumpNode{b, c} {
+		feed, err := newReplicationRawClient(t, node.url).Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for seq := uint64(1); seq <= 4; seq++ {
+			if !feed.Receive() || feed.Msg().GetMutation().GetSeq() != seq {
+				t.Fatalf("node %x Subscribe origin seq %d: msg=%+v err=%v", node.nodeID, seq, feed.Msg(), feed.Err())
+			}
+		}
+		_ = feed.Close()
+	}
+}
+
+// TestPeerPump_RelayAppendFailureReconnects confirms a failed relay append
+// closes the h2c Subscribe session and the pump's next session re-delivers
+// the same origin seq. The graph-applied frontier is not applied twice.
+func TestPeerPump_RelayAppendFailureReconnects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping three-peer pump test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	a := newPumpNode(t, hlc.NodeID{0xA2})
+	wal := &retryRelayWAL{
+		failed: make(chan struct{}), retryStarted: make(chan struct{}), allowRetry: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		select {
+		case <-wal.allowRetry:
+		default:
+			close(wal.allowRetry)
+		}
+	})
+	b := newPumpNodeWithWAL(t, hlc.NodeID{0xB2}, 1024, true, wal)
+	c := newPumpNode(t, hlc.NodeID{0xC2})
+	b.startPump(ctx, t, []string{a.url})
+	c.startPump(ctx, t, []string{b.url})
+	if _, err := a.sdk.AddEdge(ctx, "retry-a", "retry-b", 2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	for _, signal := range []<-chan struct{}{wal.failed, wal.retryStarted} {
+		select {
+		case <-signal:
+		case <-ctx.Done():
+			t.Fatalf("pump did not reconnect after failed relay append: %v", ctx.Err())
+		}
+	}
+	if got := b.svc.LocalSeq(a.nodeID); got != 0 {
+		t.Fatalf("B advanced origin cutoff across failed append: %d", got)
+	}
+	if weight, ok := b.cache.GetWeight("retry-a", "retry-b"); !ok || weight != 2 {
+		t.Fatalf("B graph after first apply = (%v,%v), want (2,true)", weight, ok)
+	}
+	if _, ok := c.cache.GetWeight("retry-a", "retry-b"); ok {
+		t.Fatal("C observed mutation before B published relay log")
+	}
+	close(wal.allowRetry)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && (b.svc.LocalSeq(a.nodeID) < 1 || c.svc.LocalSeq(a.nodeID) < 1) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, node := range []*pumpNode{b, c} {
+		if got := node.svc.LocalSeq(a.nodeID); got != 1 {
+			t.Fatalf("node %x origin cursor = %d, want 1", node.nodeID, got)
+		}
+		// C may receive the mutation through Snapshot after B gaps its
+		// existing Subscribe stream. Bootstrap state has a cutoff but does
+		// not synthesize historical local log entries.
+		if got := node.log.Len(); node == b && got != 1 {
+			t.Fatalf("B relay log length = %d, want 1", got)
+		}
+		if weight, ok := node.cache.GetWeight("retry-a", "retry-b"); !ok || weight != 2 {
+			t.Fatalf("node %x AddEdge replayed twice: (%v,%v)", node.nodeID, weight, ok)
+		}
+	}
+	if got := wal.writes.Load(); got != 2 {
+		t.Fatalf("B WAL writes = %d, want initial failure and one reconnect retry", got)
+	}
+}
+
+// TestPeerPump_RelayAppendFaultGapsCDC verifies that a graph-visible remote
+// mutation with a failed relay WAL append never looks like an uninterrupted
+// Subscribe/Snapshot history. The old stream stays gapped after repair.
+func TestPeerPump_RelayAppendFaultGapsCDC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping h2c peer-pump test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	a := newPumpNode(t, hlc.NodeID{0xA3})
+	wal := &stickyRelayWAL{faulted: make(chan struct{})}
+	metrics := &signalSubscribeMetrics{started: make(chan struct{}, 1)}
+	b := newPumpNodeWithWALAndMetrics(t, hlc.NodeID{0xB3}, 1024, true, wal, metrics)
+	b.startPump(ctx, t, []string{a.url})
+	if _, err := a.sdk.PutVertex(ctx, "relay-warmup", "ready", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && b.svc.LocalSeq(a.nodeID) < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := b.svc.LocalSeq(a.nodeID); got != 1 {
+		t.Fatalf("warmup origin seq = %d, want 1", got)
+	}
+
+	rep := newReplicationRawClient(t, b.url)
+	oldFeed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = oldFeed.Close() }()
+	if !oldFeed.Receive() || oldFeed.Msg().GetMutation().GetSeq() != 1 {
+		t.Fatalf("old Subscribe warmup = (%+v,%v), want origin seq 1", oldFeed.Msg(), oldFeed.Err())
+	}
+	oldStreamEnded := make(chan error, 1)
+	go func() {
+		if oldFeed.Receive() {
+			oldStreamEnded <- fmt.Errorf("old Subscribe unexpectedly received %+v", oldFeed.Msg())
+			return
+		}
+		oldStreamEnded <- oldFeed.Err()
+	}()
+	select {
+	case <-metrics.started:
+	case <-ctx.Done():
+		t.Fatal("old Subscribe did not start")
+	}
+	wal.armed.Store(true)
+	if _, err := a.sdk.AddEdge(ctx, "fault-tail", "fault-head", 2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case streamErr := <-oldStreamEnded:
+		if connect.CodeOf(streamErr) != connect.CodeFailedPrecondition || !strings.Contains(streamErr.Error(), "gapped") {
+			t.Fatalf("old Subscribe error = %v, want gapped FailedPrecondition", streamErr)
+		}
+	case <-ctx.Done():
+		t.Fatal("old Subscribe did not close on relay WAL failure")
+	}
+	if weight, ok := b.cache.GetWeight("fault-tail", "fault-head"); !ok || weight != 2 {
+		t.Fatalf("graph-visible failed publication = (%v,%v), want (2,true)", weight, ok)
+	}
+	if got := b.svc.LocalSeq(a.nodeID); got != 1 {
+		t.Fatalf("failed publication advanced origin cursor to %d", got)
+	}
+	if got := b.log.Len(); got != 1 {
+		t.Fatalf("failed publication added %d relay log entries, want only warmup", got)
+	}
+
+	faultCtx, faultCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer faultCancel()
+	newFeed, err := rep.Subscribe(faultCtx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 2}))
+	if err != nil {
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("new Subscribe error = %v, want FailedPrecondition", err)
+		}
+	} else {
+		if newFeed.Receive() || connect.CodeOf(newFeed.Err()) != connect.CodeFailedPrecondition {
+			t.Fatalf("new Subscribe during fault = (%+v,%v), want gapped", newFeed.Msg(), newFeed.Err())
+		}
+		_ = newFeed.Close()
+	}
+	snapshot, err := rep.Snapshot(faultCtx, connect.NewRequest(&pb.SnapshotRequest{}))
+	if err != nil {
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("Snapshot during fault error = %v, want FailedPrecondition", err)
+		}
+	} else {
+		if snapshot.Receive() || connect.CodeOf(snapshot.Err()) != connect.CodeFailedPrecondition {
+			t.Fatalf("Snapshot during fault = (%+v,%v), want gapped", snapshot.Msg(), snapshot.Err())
+		}
+		_ = snapshot.Close()
+	}
+
+	wal.healed.Store(true)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && b.svc.LocalSeq(a.nodeID) < 2 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := b.svc.LocalSeq(a.nodeID); got != 2 {
+		t.Fatalf("repaired origin cursor = %d, want 2", got)
+	}
+	if got := b.log.Len(); got != 2 {
+		t.Fatalf("repaired relay log length = %d, want 2", got)
+	}
+	if wal.failures.Load() == 0 {
+		t.Fatal("WAL failure was not exercised")
+	}
+	healthyFeed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 2}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !healthyFeed.Receive() || healthyFeed.Msg().GetMutation().GetSeq() != 2 {
+		t.Fatalf("repaired Subscribe = (%+v,%v), want origin seq 2", healthyFeed.Msg(), healthyFeed.Err())
+	}
+	_ = healthyFeed.Close()
+	healthySnapshot, err := rep.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !healthySnapshot.Receive() || healthySnapshot.Msg().GetHeader().GetCutoffSeqPerOrigin()[hex.EncodeToString(a.nodeID[:])] != 2 {
+		t.Fatalf("repaired Snapshot header = (%+v,%v), want origin cutoff 2", healthySnapshot.Msg(), healthySnapshot.Err())
+	}
+	_ = healthySnapshot.Close()
 }
 
 // TestPeerPump_SearchPartitionHealConvergence starts a follower only after a
