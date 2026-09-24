@@ -146,6 +146,28 @@ func TestMixedEdgeResetAddRandomizedConvergence(t *testing.T) {
 	}
 }
 
+func TestStaleCausalAddDoesNotReviveEndpointBehindPutFloor(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	live := time.Now().Add(time.Hour)
+	put := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{1}}
+	staleAdd := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{1}}
+	if !c.PutEdgeWithExpirationHLC("tail", "head", 5, live, put) {
+		t.Fatal("Put did not establish an edge floor")
+	}
+	if err := c.PutVertexWithExpiration("tail", "", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("test setup left tail live")
+	}
+	if c.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, ContribID{1}, staleAdd) {
+		t.Fatal("Add older than the Put floor was accepted")
+	}
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("fenced Add revived an absent endpoint vertex")
+	}
+}
+
 func TestZeroSumCausalAddsSurviveGCAndReplay(t *testing.T) {
 	c := NewGraphCache[string, string](time.Hour)
 	live := time.Now().Add(time.Hour)

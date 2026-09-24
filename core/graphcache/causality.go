@@ -254,8 +254,11 @@ func (c *GraphCache[S, T]) edgeAddWriteAllowedLocked(tail, head S, ts hlc.Timest
 	if barrier, ok := c.edgeCausalBarriers[EdgeKey[S]{Tail: tail, Head: head}]; ok && !barrier.Less(ts) {
 		return false
 	}
-	// The bucket's Put floor is checked under weight.mu by the Add method,
-	// avoiding a second bucket lookup on the hot path.
+	// Check before addEdgeContribHLCLocked revives endpoint vertices. The
+	// weight repeats this check under its own lock for direct callers.
+	if floor, ok := c.edges.lastPutHLC(tail, head); ok && floor != (hlc.Timestamp{}) && !floor.Less(ts) {
+		return false
+	}
 	return true
 }
 
