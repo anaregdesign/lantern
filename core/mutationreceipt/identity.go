@@ -1,10 +1,12 @@
 // Package mutationreceipt provides bounded, in-memory bookkeeping for the
 // mutation receipts specified by ADR 0010. It does not publish mutations,
-// write a WAL, or provide an RPC. Its mutable map/heap implementation is an
-// isolated bookkeeping prototype, not an atomic post-WAL publication path.
-// Receipt-capable writes must remain disabled until the server can prepare a
-// complete graph/receipt/log root and publish that root with one infallible
-// state transition after WAL commit.
+// write a WAL, or provide an RPC. Its reversible stage remains hidden under
+// the Store lock before WAL; Commit only unlocks after a successful external
+// WAL commit. Receipt-capable writes must remain disabled until the server
+// coordinates graph, search, receipts, log, and Snapshot under one gate and
+// provides crash recovery for committed WAL envelopes. An ambiguous WAL error
+// still requires the server to fail-stop/quarantine serving even if local
+// staged rows are rolled back: Abort cannot prove whether WAL committed.
 package mutationreceipt
 
 import (

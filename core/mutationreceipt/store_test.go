@@ -1,6 +1,7 @@
 package mutationreceipt
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"testing"
@@ -32,6 +33,21 @@ func testIntent(t testing.TB, seed byte, issued time.Time, group GroupID, index,
 	return Intent{ID: id, Group: group, Index: index, Count: count, Kind: PutVertex, Digest: IntentDigest([]byte{seed})}
 }
 
+func numberedIntent(t testing.TB, serial uint32, issued time.Time) Intent {
+	t.Helper()
+	var random [24]byte
+	random[0] = 1
+	binary.BigEndian.PutUint32(random[1:5], serial)
+	id, err := NewID(Epoch{1}, issued, random)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group GroupID
+	group[0] = 1
+	binary.BigEndian.PutUint32(group[1:5], serial)
+	return Intent{ID: id, Group: group, Count: 1, Kind: PutVertex, Digest: IntentDigest(random[:5])}
+}
+
 func commitTestBatch(t testing.TB, s *Store, now time.Time, intents []Intent, results [][]byte) {
 	t.Helper()
 	tx, err := s.Begin(now)
@@ -46,7 +62,10 @@ func commitTestBatch(t testing.TB, s *Store, now time.Time, intents []Intent, re
 	if err := tx.Reserve(results); err != nil {
 		t.Fatal(err)
 	}
-	tx.ApplyInMemory()
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
 }
 
 func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {
@@ -299,6 +318,9 @@ func TestStoreAbortDoesNotPublish(t *testing.T) {
 	if err := tx.Reserve([][]byte{[]byte("would-have-committed")}); err != nil {
 		t.Fatal(err)
 	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
 	tx.Abort()
 	tx.Abort()
 	if status, _, err := s.Lookup(item.ID, testStart); err != nil || status != NotYetObserved || s.Stats().Entries != 0 {
@@ -350,6 +372,142 @@ func TestStoreRestoredClockHighWaterRejectsBackwardExpiry(t *testing.T) {
 	}
 }
 
+func TestStorePreWALStageHiddenAndFaultRollbackTouchesOnlyNewRows(t *testing.T) {
+	const resident = 1000
+	s := testStore(t, resident+3, 200000)
+	for i := uint32(1); i <= resident; i++ {
+		commitTestBatch(t, s, testStart, []Intent{numberedIntent(t, i, testStart)}, [][]byte{nil})
+	}
+	before := s.Stats()
+	staged := []Intent{
+		numberedIntent(t, resident+1, testStart.Add(time.Minute)),
+		numberedIntent(t, resident+2, testStart.Add(time.Minute)),
+		numberedIntent(t, resident+3, testStart.Add(time.Minute)),
+	}
+	staged[1].Kind = AddEdge
+	staged[1].HasContrib = true
+	staged[1].ContribID = ContribID{8}
+	tx, err := s.Begin(testStart.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify(staged[:1]); err != nil || class != Fresh {
+		t.Fatalf("Classify first staged item = %v, %v", class, err)
+	}
+	// A logical call is a single envelope, so stage the remaining two in
+	// distinct transactions below; first prove rollback of one touched row.
+	if err := tx.Reserve([][]byte{[]byte("unpublished")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	if s.mu.TryLock() {
+		s.mu.Unlock()
+		t.Fatal("receipt Store lock was released before WAL decision")
+	}
+	lookupDone := make(chan Status, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		status, _, _ := s.Lookup(staged[0].ID, testStart.Add(time.Minute))
+		lookupDone <- status
+	}()
+	<-started
+	select {
+	case status := <-lookupDone:
+		t.Fatalf("reader saw staged status before WAL decision: %v", status)
+	case <-time.After(10 * time.Millisecond):
+	}
+	writeWAL := func() error { return errors.New("simulated definite WAL rejection") }
+	if err := writeWAL(); err == nil {
+		tx.Commit()
+		t.Fatal("WAL fault injection unexpectedly committed")
+	} else {
+		tx.Abort()
+	}
+	select {
+	case status := <-lookupDone:
+		if status != NotYetObserved {
+			t.Fatalf("rollback leaked staged receipt: %v", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reader remained blocked after Abort")
+	}
+	// A later valid batch with all three touched rows exercises indexed
+	// rollback, including a ContribID reverse binding.
+	group := GroupID{9}
+	for i := range staged {
+		staged[i].Group = group
+		staged[i].Index = uint32(i)
+		staged[i].Count = uint32(len(staged))
+	}
+	tx, _ = s.Begin(testStart.Add(time.Minute))
+	if class, _, err := tx.Classify(staged); err != nil || class != Fresh {
+		t.Fatalf("Classify batch = %v, %v", class, err)
+	}
+	if err := tx.Reserve([][]byte{[]byte("one"), []byte("two"), []byte("three")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Abort()
+	after := s.Stats()
+	if after.Entries != before.Entries || after.Bytes != before.Bytes ||
+		after.OldestDeadlineMillis != before.OldestDeadlineMillis {
+		t.Fatalf("WAL-fault rollback changed resident state: before %+v; after %+v", before, after)
+	}
+	s.mu.Lock()
+	if len(s.deadlines.positions) != resident || len(s.contributions) != 0 {
+		t.Fatalf("rollback leaked indexed deadline or contribution: deadlines=%d contributions=%d",
+			len(s.deadlines.positions), len(s.contributions))
+	}
+	s.mu.Unlock()
+	for _, item := range staged {
+		if status, _, err := s.Lookup(item.ID, testStart.Add(time.Minute)); err != nil || status != NotYetObserved {
+			t.Fatalf("staged item survived rollback: %v, %v", status, err)
+		}
+	}
+	if status, _, err := s.Lookup(numberedIntent(t, 1, testStart).ID, testStart.Add(time.Minute)); err != nil || status != Confirmed {
+		t.Fatalf("unrelated committed receipt changed: %v, %v", status, err)
+	}
+	// The Add reverse binding was released by Abort and may be used by a
+	// fresh operation, without scanning or rebuilding unrelated rows.
+	rebind := numberedIntent(t, resident+4, testStart.Add(time.Minute))
+	rebind.Kind, rebind.HasContrib, rebind.ContribID = AddEdge, true, staged[1].ContribID
+	commitTestBatch(t, s, testStart.Add(time.Minute), []Intent{rebind}, [][]byte{nil})
+}
+
+func TestStoreCommitPublishesCompletePreWALStage(t *testing.T) {
+	s := testStore(t, 2, 1000)
+	items := []Intent{
+		testIntent(t, 1, testStart, GroupID{9}, 0, 2),
+		testIntent(t, 2, testStart, GroupID{9}, 1, 2),
+	}
+	tx, _ := s.Begin(testStart)
+	defer tx.Abort()
+	if class, _, err := tx.Classify(items); err != nil || class != Fresh {
+		t.Fatalf("Classify = %v, %v", class, err)
+	}
+	if err := tx.Reserve([][]byte{[]byte("applied"), []byte("no-op")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	// In the serving integration, a successful WAL write belongs here.
+	tx.Commit()
+	tx.Abort()
+	for i, item := range items {
+		status, receipt, err := s.Lookup(item.ID, testStart)
+		if err != nil || status != Confirmed || string(receipt.Result) != []string{"applied", "no-op"}[i] {
+			t.Fatalf("committed item %d = %v, %+v, %v", i, status, receipt, err)
+		}
+	}
+}
+
 func BenchmarkStoreDuplicateLookup(b *testing.B) {
 	s := testStore(b, 1, 1000)
 	item := testIntent(b, 1, testStart, GroupID{1}, 0, 1)
@@ -366,5 +524,35 @@ func BenchmarkStoreDuplicateLookup(b *testing.B) {
 		if err != nil || class != Duplicate || len(receipts) != 1 {
 			b.Fatal(fmt.Errorf("duplicate = %v, %v, %v", class, receipts, err))
 		}
+	}
+}
+
+func BenchmarkStoreStageAbortAcrossResidentSet(b *testing.B) {
+	for _, resident := range []int{0, 10000} {
+		b.Run(fmt.Sprintf("resident=%d", resident), func(b *testing.B) {
+			s := testStore(b, resident+1, uint64(resident+1)*receiptFixedBytes)
+			for i := uint32(1); i <= uint32(resident); i++ {
+				commitTestBatch(b, s, testStart, []Intent{numberedIntent(b, i, testStart)}, [][]byte{nil})
+			}
+			item := numberedIntent(b, uint32(resident+1), testStart.Add(time.Minute))
+			now := testStart.Add(time.Minute)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				tx, err := s.Begin(now)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, _, err := tx.Classify([]Intent{item}); err != nil {
+					b.Fatal(err)
+				}
+				if err := tx.Reserve([][]byte{nil}); err != nil {
+					b.Fatal(err)
+				}
+				if err := tx.Stage(); err != nil {
+					b.Fatal(err)
+				}
+				tx.Abort()
+			}
+		})
 	}
 }

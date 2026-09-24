@@ -1,8 +1,6 @@
 package mutationreceipt
 
 import (
-	"bytes"
-	"container/heap"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -119,9 +117,10 @@ type Stats struct {
 }
 
 // Store holds only receipt bookkeeping. It does not make graph mutations,
-// log entries, or Snapshot cuts atomic. In particular, ApplyInMemory writes
-// into mutable maps and a heap, may allocate, and cannot safely run after a
-// WAL commit. Do not attach this Store to a serving mutation path.
+// log entries, or Snapshot cuts atomic. Stage may allocate before WAL while
+// its writes are hidden by the lock; Abort reverses those writes, and Commit
+// only unlocks. Do not attach this Store to a serving mutation path until its
+// outer server publication and recovery boundary is implemented.
 type Store struct {
 	mu              sync.Mutex
 	epoch           Epoch
@@ -132,7 +131,7 @@ type Store struct {
 	highWaterMS     int64
 	receipts        map[ID]Receipt
 	contributions   map[ContribID]ID
-	deadlines       deadlineHeap
+	deadlines       deadlineIndex
 	bytes           uint64
 	admissionReject uint64
 	unknownLookups  uint64
@@ -170,6 +169,7 @@ func New(config Config) (*Store, error) {
 		highWaterMS:   highWaterMS,
 		receipts:      make(map[ID]Receipt),
 		contributions: make(map[ContribID]ID),
+		deadlines:     newDeadlineIndex(),
 	}, nil
 }
 
@@ -178,9 +178,10 @@ func (s *Store) Epoch() Epoch { return s.epoch }
 func (s *Store) PolicyFingerprint() [sha256.Size]byte { return s.fingerprint }
 
 // Begin takes the receipt lock for one in-memory bookkeeping attempt. The
-// caller must call Abort on every error or ApplyInMemory after Reserve. The
-// observed clock high-water advances even when the attempt aborts; a future
-// durable integration must preserve this metadata across restart.
+// caller must defer Abort and call Commit only after Classify, Reserve, Stage,
+// and a successful external WAL commit. The observed clock high-water
+// advances even when the attempt aborts; a future durable integration must
+// preserve this metadata across restart or rotate the active epoch.
 func (s *Store) Begin(now time.Time) (*Tx, error) {
 	s.mu.Lock()
 	effective, err := s.advanceLocked(now)
@@ -229,9 +230,7 @@ func (s *Store) Stats() Stats {
 		LocalAdmissionRejects:   s.admissionReject,
 		NoLongerProvableLookups: s.unknownLookups,
 	}
-	if len(s.deadlines) > 0 {
-		stats.OldestDeadlineMillis = s.deadlines[0].deadlineMS
-	}
+	stats.OldestDeadlineMillis = s.deadlines.oldestMillis()
 	return stats
 }
 
@@ -251,8 +250,8 @@ func tooFarFuture(issued, now int64) bool {
 }
 
 func (s *Store) expireLocked(nowMS int64) {
-	for len(s.deadlines) > 0 && s.deadlines[0].deadlineMS <= nowMS {
-		expired := heap.Pop(&s.deadlines).(deadlineEntry)
+	for s.deadlines.Len() > 0 && s.deadlines.oldestMillis() <= nowMS {
+		expired := s.deadlines.popOldest()
 		r, ok := s.receipts[expired.id]
 		if !ok {
 			panic("mutationreceipt: deadline heap missing receipt")
@@ -265,38 +264,15 @@ func (s *Store) expireLocked(nowMS int64) {
 	}
 }
 
-type deadlineEntry struct {
-	id         ID
-	deadlineMS int64
-}
-
-type deadlineHeap []deadlineEntry
-
-func (h deadlineHeap) Len() int { return len(h) }
-func (h deadlineHeap) Less(i, j int) bool {
-	if h[i].deadlineMS != h[j].deadlineMS {
-		return h[i].deadlineMS < h[j].deadlineMS
-	}
-	return bytes.Compare(h[i].id[:], h[j].id[:]) < 0
-}
-func (h deadlineHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *deadlineHeap) Push(v any)   { *h = append(*h, v.(deadlineEntry)) }
-func (h *deadlineHeap) Pop() any {
-	old := *h
-	v := old[len(old)-1]
-	old[len(old)-1] = deadlineEntry{}
-	*h = old[:len(old)-1]
-	return v
-}
-
-// Tx serializes classification, capacity reservation, and in-memory apply.
-// It intentionally holds Store.mu until ApplyInMemory or Abort. This only
+// Tx serializes classification, capacity reservation, hidden staging, and
+// rollback. It intentionally holds Store.mu until Commit or Abort. This only
 // protects Store's own data; it cannot form an atomic graph/log publication.
 type Tx struct {
 	store       *Store
 	effectiveMS int64
 	intents     []Intent
 	staged      []Receipt
+	applied     int
 	mode        txMode
 	closed      bool
 }
@@ -307,6 +283,7 @@ const (
 	txUnclassified txMode = iota
 	txFresh
 	txDuplicate
+	txReserved
 	txStaged
 )
 
@@ -398,8 +375,8 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 }
 
 // Reserve copies all original results and proves that the entire new batch
-// fits without evicting any live receipt. It does not publish a result or
-// preallocate a complete immutable root for a post-WAL swap.
+// fits without evicting any live receipt. It does not publish a result; Stage
+// must run before the external WAL commit while this transaction holds mu.
 func (tx *Tx) Reserve(results [][]byte) error {
 	if tx.closed || tx.mode != txFresh {
 		return ErrTransactionState
@@ -437,34 +414,65 @@ func (tx *Tx) Reserve(results [][]byte) error {
 			DeadlineMillis: issued + s.retentionMS,
 		}
 	}
-	tx.mode = txStaged
+	tx.mode = txReserved
 	return nil
 }
 
-// ApplyInMemory inserts staged receipts into mutable maps and a heap. It may
-// allocate or panic partway through and is unsuitable after WAL commit. It
-// exists only for isolated bookkeeping conformance tests; a future serving
-// integration must replace it with an allocation-free prepared-root swap.
-func (tx *Tx) ApplyInMemory() {
-	if tx.closed || tx.mode != txStaged {
-		panic(ErrTransactionState)
+// Stage inserts all new receipts into the private, locked state before an
+// external WAL commit. It may allocate; no Store reader can see the rows while
+// the transaction holds mu. A failed WAL call must be followed by Abort.
+func (tx *Tx) Stage() error {
+	if tx.closed || tx.mode != txReserved {
+		return ErrTransactionState
 	}
 	s := tx.store
+	tx.mode = txStaged
 	for _, r := range tx.staged {
+		// Ledger updates happen before the potentially allocating index/map
+		// changes. A deferred Abort can unwind this item even if Stage panics.
+		s.bytes += r.cost()
+		tx.applied++
+		s.deadlines.insert(deadlineEntry{id: r.ID, deadlineMS: r.DeadlineMillis})
 		s.receipts[r.ID] = r
 		if r.HasContrib {
 			s.contributions[r.ContribID] = r.ID
 		}
-		heap.Push(&s.deadlines, deadlineEntry{id: r.ID, deadlineMS: r.DeadlineMillis})
-		s.bytes += r.cost()
+	}
+	return nil
+}
+
+// Commit has no Store mutation or allocation: releasing mu makes all staged
+// rows visible at once to Store readers. Call only after the external WAL
+// commits. The caller must separately coordinate graph/log visibility under
+// its outer cut gate, and replay committed WAL records before serving after
+// a crash. Commit cannot prove those external obligations itself.
+func (tx *Tx) Commit() {
+	if tx.closed || tx.mode != txStaged || tx.applied != len(tx.staged) {
+		panic(ErrTransactionState)
 	}
 	tx.close()
 }
 
-// Abort drops a prepared result. No receipt was published. It is safe to
-// defer and is idempotent after ApplyInMemory.
+// Abort removes every staged receipt and reverse binding, and restores the
+// deadline index and byte ledger in O(touched log n). It leaves expiry of
+// already-dead receipts and monotonic clock observation intact. After an
+// ambiguous WAL error, this rollback does not prove non-commit; the caller
+// must fail-stop/quarantine until recovery establishes the committed cut. It
+// is safe to defer and is idempotent after Commit.
 func (tx *Tx) Abort() {
 	if tx != nil && !tx.closed {
+		if tx.mode == txStaged {
+			s := tx.store
+			for i := tx.applied - 1; i >= 0; i-- {
+				r := tx.staged[i]
+				s.deadlines.remove(r.ID)
+				delete(s.receipts, r.ID)
+				if r.HasContrib {
+					delete(s.contributions, r.ContribID)
+				}
+				s.bytes -= r.cost()
+			}
+		}
 		tx.close()
 	}
 }
