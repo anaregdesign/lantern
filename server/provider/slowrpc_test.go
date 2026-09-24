@@ -132,6 +132,8 @@ func TestSlowRPCInterceptor_IlluminateFamilyFields(t *testing.T) {
 	var buf bytes.Buffer
 	s := NewSlowRPCInterceptor(time.Nanosecond, newJSONLogger(&buf, slog.LevelWarn))
 	next := connect.UnaryFunc(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		// Cross a measurable clock tick before asserting the slow-path log.
+		time.Sleep(time.Millisecond)
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("bad reduction"))
 	})
 	req := connect.NewRequest(&pb.IlluminateRequest{Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{
