@@ -110,10 +110,10 @@ func (c *GraphCache[S, T]) putEdgeLockedAt(tail, head S, w float32, expiration, 
 	return true
 }
 
-// putEdgeHLCLocked applies replicated LWW Put semantics after endpoint
-// creation. Endpoint vertices are created even when the edge write loses inside
-// edgeCache's HLC register, matching PutEdgeWithExpirationHLC's public
-// contract. Caller must hold c.mu.
+// putEdgeHLCLocked applies a live replicated LWW Put after the caller checks
+// the complete causal floor. That preflight must reject losing writes before
+// this helper creates endpoint vertices; the weight-level HLC check remains a
+// defensive guard. Caller must hold c.mu.
 func (c *GraphCache[S, T]) putEdgeHLCLocked(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) bool {
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)

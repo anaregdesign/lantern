@@ -336,6 +336,83 @@ func TestPutOutcomesUseFinalApplicationTime(t *testing.T) {
 	})
 }
 
+func TestPutEdgesWithExpirationHLCRejectedBatchDoesNotReviveEndpoints(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	live := time.Now().Add(time.Hour)
+	expired := time.Now().Add(-time.Hour)
+	newer := hlc.Timestamp{WallNs: 20}
+	older := hlc.Timestamp{WallNs: 10}
+	if outcome, err := c.PutEdgesWithExpirationHLCOutcomesChecked(
+		[]EdgeItem[string]{{Tail: "tail", Head: "head", Weight: 2, Expiration: live}}, newer,
+	); err != nil || len(outcome) != 1 || outcome[0] != PutOutcomeAppliedAndLive {
+		t.Fatalf("seed Edge Put = %v, %v", outcome, err)
+	}
+	c.DeleteVertices([]string{"tail"}) // Preserve the newer Edge LWW floor.
+	items := []EdgeItem[string]{
+		{Tail: "tail", Head: "head", Weight: 9, Expiration: live},
+		{Tail: "fresh", Head: "new", Weight: 3, Expiration: live},
+		{Tail: "tail", Head: "head", Weight: 10, Expiration: live},
+		{Tail: "expired", Head: "edge", Weight: 4, Expiration: expired},
+	}
+	outcomes, err := c.PutEdgesWithExpirationHLCOutcomesChecked(items, older)
+	if err != nil || !slices.Equal(outcomes, []PutOutcome{
+		PutOutcomeSuperseded, PutOutcomeAppliedAndLive,
+		PutOutcomeSuperseded, PutOutcomeExpired,
+	}) {
+		t.Fatalf("mixed Edge Put outcomes = %v, %v", outcomes, err)
+	}
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("superseded duplicate Edge Puts revived their endpoint")
+	}
+	if _, ok := c.GetVertex("fresh"); !ok {
+		t.Fatal("accepted live Edge Put did not create its endpoint")
+	}
+	if _, ok := c.GetVertex("expired"); ok {
+		t.Fatal("accepted-expired Edge Put created an endpoint")
+	}
+	if weight, ok := c.GetWeight("fresh", "new"); !ok || weight != 3 {
+		t.Fatalf("accepted Edge weight = %v/%v, want 3/true", weight, ok)
+	}
+
+	// The same early floor check must preserve a tombstone and a permanent
+	// accepted-expired Put barrier without creating endpoint vertices.
+	if _, err := c.DeleteEdgesHLCChecked([]EdgeKey[string]{{Tail: "tomb", Head: "stone"}}, newer, live); err != nil {
+		t.Fatal(err)
+	}
+	barrier, err := c.PutEdgesWithExpirationHLCOutcomesChecked(
+		[]EdgeItem[string]{{Tail: "barrier", Head: "edge", Expiration: expired}}, newer,
+	)
+	if err != nil || !slices.Equal(barrier, []PutOutcome{PutOutcomeExpired}) {
+		t.Fatalf("barrier Edge Put = %v, %v", barrier, err)
+	}
+	for _, key := range []EdgeKey[string]{{Tail: "tomb", Head: "stone"}, {Tail: "barrier", Head: "edge"}} {
+		got, err := c.PutEdgesWithExpirationHLCOutcomesChecked(
+			[]EdgeItem[string]{{Tail: key.Tail, Head: key.Head, Expiration: live}}, older,
+		)
+		if err != nil || !slices.Equal(got, []PutOutcome{PutOutcomeSuperseded}) {
+			t.Fatalf("rejected %v Edge Put = %v, %v", key, got, err)
+		}
+		if _, ok := c.GetVertex(key.Tail); ok {
+			t.Fatalf("rejected %v Edge Put created endpoint", key)
+		}
+	}
+}
+
+func BenchmarkPutEdgesWithExpirationHLCAcceptedLive(b *testing.B) {
+	c := NewGraphCache[string, string](time.Hour)
+	item := []EdgeItem[string]{{Tail: "hot/tail", Head: "hot/head", Weight: 1, Expiration: time.Now().Add(time.Hour)}}
+	if _, err := c.PutEdgesWithExpirationHLCOutcomesChecked(item, hlc.Timestamp{WallNs: 1}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.PutEdgesWithExpirationHLCOutcomesChecked(item, hlc.Timestamp{WallNs: int64(i + 2)}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestDeleteOutcomesPreserveBatchOrder(t *testing.T) {
 	c := NewGraphCache[string, string](time.Minute)
 	expiration := time.Now().Add(time.Hour)

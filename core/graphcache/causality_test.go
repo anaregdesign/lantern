@@ -366,6 +366,38 @@ func TestAcceptedExpiredEdgeBarrierSurvivesNewerAdd(t *testing.T) {
 	}
 }
 
+func TestPutEdgeWithExpirationHLCRejectedPutDoesNotReviveEndpoint(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	expiration := time.Now().Add(time.Hour)
+	newer := hlc.Timestamp{WallNs: 20}
+	older := hlc.Timestamp{WallNs: 10}
+	if !c.PutEdgeWithExpirationHLC("tail", "head", 2, expiration, newer) {
+		t.Fatal("seed Edge Put was rejected")
+	}
+	c.DeleteVertices([]string{"tail"}) // Leave the edge bucket and its LWW floor.
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("tail remained after DeleteVertices")
+	}
+	if c.PutEdgeWithExpirationHLC("tail", "head", 9, expiration, older) {
+		t.Fatal("older Edge Put should be superseded")
+	}
+	if _, ok := c.GetVertex("tail"); ok {
+		t.Fatal("superseded Edge Put revived the endpoint")
+	}
+	if _, ok := c.GetWeight("tail", "head"); ok {
+		t.Fatal("superseded Edge Put made the hidden Edge visible")
+	}
+	if !c.PutEdgeWithExpirationHLC("tail", "head", 3, expiration, newer) {
+		t.Fatal("equal-HLC Edge Put should remain accepted")
+	}
+	if _, ok := c.GetVertex("tail"); !ok {
+		t.Fatal("accepted Edge Put did not revive the endpoint")
+	}
+	if weight, ok := c.GetWeight("tail", "head"); !ok || weight != 3 {
+		t.Fatalf("equal-HLC Edge Put weight = %v/%v, want 3/true", weight, ok)
+	}
+}
+
 func TestExactDeleteWithoutTombstoneReclaimsCausalBarrier(t *testing.T) {
 	ts := hlc.Timestamp{WallNs: 20}
 	expired := time.Now().Add(-time.Hour)

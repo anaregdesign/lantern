@@ -940,13 +940,12 @@ func (c *GraphCache[S, T]) PutVerticesWithExpirationIfAbsentHLC(items []VertexIt
 	return writtenIdx, skipped
 }
 
-// PutEdgesWithExpiration used by the LOCAL write path when replication is
-// enabled. Like PutVerticesWithExpirationHLC it stamps every edge with the
+// PutEdgesWithExpirationHLC is used by the LOCAL write path when replication
+// is enabled. Like PutVerticesWithExpirationHLC it stamps every edge with the
 // originating mutation's ts so PutEdge resolves as an LWW-Register on
 // (tail, head) across replicas rather than diverging when two origins write
-// the same edge concurrently. Endpoint vertices are auto-created regardless of
-// the per-edge LWW outcome (matching PutEdgeWithExpirationHLC) so traversal
-// always sees the endpoints.
+// the same edge concurrently. Accepted live Puts auto-create endpoint
+// vertices; causally rejected Puts leave them untouched.
 //
 // Returns the number of items REJECTED by the tombstone fence or by the
 // per-edge LWW watermark inside the storage layer — exactly the set the
@@ -986,11 +985,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 	if strict && ts != (hlc.Timestamp{}) && c.causalLimits.MaxEdgeEntries > 0 {
 		keys := make([]EdgeKey[S], 0, len(items))
 		for _, it := range items {
-			if edgeItemLiveAt(it, now) {
-				if c.edgeWriteAllowedLocked(it.Tail, it.Head, ts) {
-					keys = append(keys, EdgeKey[S]{Tail: it.Tail, Head: it.Head})
-				}
-			} else if c.edgePutWriteAllowedLocked(it.Tail, it.Head, ts) {
+			if c.edgePutWriteAllowedLocked(it.Tail, it.Head, ts) {
 				keys = append(keys, EdgeKey[S]{Tail: it.Tail, Head: it.Head})
 			}
 		}
@@ -1000,13 +995,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 	}
 	for i, it := range items {
 		live := edgeItemLiveAt(it, now)
-		allowed := false
-		if live {
-			allowed = c.edgeWriteAllowedLocked(it.Tail, it.Head, ts)
-		} else {
-			allowed = c.edgePutWriteAllowedLocked(it.Tail, it.Head, ts)
-		}
-		if !allowed {
+		if !c.edgePutWriteAllowedLocked(it.Tail, it.Head, ts) {
 			rejected++
 			if outcomes != nil {
 				outcomes[i] = PutOutcomeSuperseded

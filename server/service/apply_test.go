@@ -46,6 +46,49 @@ func TestApplyMutation_UnknownReceiptArmFailsClosed(t *testing.T) {
 	}
 }
 
+func TestApplyMutation_SupersededEdgePutDoesNotReviveEndpoint(t *testing.T) {
+	expiration := timestamppb.New(time.Now().Add(time.Hour))
+	for _, tc := range []struct {
+		name string
+		op   *pb.MutationOp
+	}{
+		{"PutEdge", &pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+			Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 9, Expiration: expiration},
+		}}}},
+		{"PutEdges", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{
+			Edges: []*pb.Edge{{Tail: "tail", Head: "head", Weight: 9, Expiration: expiration}},
+		}}}},
+		{"ReplicatedPutEdges", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{
+			ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: []*pb.ReplicatedPutEdge{{
+				Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "tail", Head: "head", Weight: 9, Expiration: expiration}},
+			}}},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			newer := hlc.Timestamp{WallNs: 20}
+			if !cache.PutEdgeWithExpirationHLC("tail", "head", 2, expiration.AsTime(), newer) {
+				t.Fatal("seed Edge Put was rejected")
+			}
+			cache.DeleteVertices([]string{"tail"})
+			log := mutationlog.New(mutationlog.Options{Capacity: 8})
+			t.Cleanup(func() { _ = log.Close() })
+			origin := hlc.NodeID{0x77}
+			svc := NewLanternService(cache).WithReplication(log, hlc.New(hlc.NodeID{0x78}, hlc.Options{}), nil)
+			m := &pb.Mutation{Seq: 1, Origin: origin[:], Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: 10}, Op: tc.op}
+			if err := svc.ApplyMutation(context.Background(), m); err != nil {
+				t.Fatalf("ApplyMutation = %v", err)
+			}
+			if _, ok := cache.GetVertex("tail"); ok {
+				t.Fatal("superseded remote Edge Put revived endpoint")
+			}
+			if got := svc.LocalSeq(origin); got != 1 || log.Len() != 1 {
+				t.Fatalf("remote origin/log frontier = %d/%d, want 1/1", got, log.Len())
+			}
+		})
+	}
+}
+
 func TestApplyMutation_DeleteRetainsOriginDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
