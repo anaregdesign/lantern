@@ -188,17 +188,19 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // resumeReceiptWALCandidate validates a complete genesis WAL before making
 // any state externally visible. The caller must own path exclusively through
 // both replay passes; this function closes the resumed writer before return.
-// A graph-only Delete has no persisted tombstone deadline (prefix Delete also
-// lacks its exact victim set), so recovery cannot reconstruct it. Graph writes
-// after the first receipt Delete are refused too: a now-expired tombstone
-// could have rejected one originally but admit it during replay. Receipt Edge
-// Deletes carry their accepted projection and absolute deadline and can form
-// a suffix when that projection remains reproducible.
+// A graph-only exact Delete now carries its original tombstone deadline, but
+// lacks the accepted graph projection needed to prove that replay reconstructs
+// the original effect. Predicate-shaped prefix Delete also lacks its exact
+// victim set. Both remain rejected. Graph writes after the first receipt
+// Delete are refused too: a now-expired tombstone could have rejected one
+// originally but admit it during replay. Receipt Edge Deletes carry their
+// accepted projection and absolute deadline and can form a suffix when that
+// projection remains reproducible.
 //
 // The recovered Log and FileWAL are closed before return. This read-only
 // candidate does not authorize receipt admission, an absent-ID answer, or
 // publication-fault clearing. A future full mixed-WAL format must record
-// accepted graph effects and exact Delete deadlines before lifting these
+// accepted graph effects for graph-only Deletes before lifting these
 // restrictions.
 func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
 	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
