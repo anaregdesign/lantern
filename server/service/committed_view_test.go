@@ -11,6 +11,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -140,5 +141,48 @@ func TestLanternService_CommittedViewFailsClosed(t *testing.T) {
 	callbackErr := errors.New("capture failed")
 	if err := svc.withCommittedView(func() error { return callbackErr }); !errors.Is(err, callbackErr) {
 		t.Fatalf("capture error = %v, want original error", err)
+	}
+}
+
+func TestLanternService_ExclusiveCommittedViewBlocksReceiptLookup(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	viewDone := make(chan error, 1)
+	go func() {
+		viewDone <- f.service.withExclusiveCommittedView(func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	waitReceiptTest(t, "exclusive view", entered)
+	call := receiptDeleteCall(t, f.epoch, graphcache.EdgeKey[string]{Tail: "tail", Head: "head"})
+	lookupDone := make(chan error, 1)
+	go func() {
+		status, _, err := f.coordinator.Lookup(call.Items[0].ID, time.Now().Add(time.Minute))
+		if err == nil && status != mutationreceipt.NotYetObserved {
+			err = errors.New("Lookup returned unexpected status")
+		}
+		lookupDone <- err
+	}()
+	select {
+	case err := <-lookupDone:
+		t.Fatalf("Lookup crossed exclusive cut: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := waitReceiptTest(t, "exclusive view exit", viewDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReceiptTest(t, "receipt Lookup", lookupDone); err != nil {
+		t.Fatal(err)
 	}
 }

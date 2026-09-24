@@ -338,9 +338,16 @@ wire-field validation rejects unknown fields, ambiguous duplicates, and
 malformed encodings without comparing bytes from a particular protobuf
 runtime; field and map-entry order remain semantically irrelevant. The v1 codec
 pins the reachable graph schema and rejects unreviewed proto changes. No production
-producer, backup scheduler, or restore installer uses this codec yet. The future
-producer must capture all sections
-under one publication cut, and the installer must validate and install them
+producer, backup scheduler, or restore installer uses this codec yet. The
+private [whole-state capture](../../server/service/receipt_snapshot_capture.go)
+now copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local
+log seq, and an HLC frontier under one exclusive service publication cut. It
+clones mutable Vertex protobuf values before releasing that cut and rejects a
+publication fault or incomplete Store export. It does not write an archive,
+enable the Snapshot RPC, or certify a durable recovery frontier: `Clock.Now()`
+advances only in-memory HLC state, and aborted `Store.Begin` or a `Store.Lookup`
+may advance high-water without a WAL entry. A future producer must use this
+coherent source cut; the installer must validate and install all sections
 together before serving. Total-cluster restore still rotates the active epoch
 unless a complete durable WAL proves the exact current frontier.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
