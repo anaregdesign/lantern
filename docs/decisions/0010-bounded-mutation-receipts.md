@@ -306,6 +306,20 @@ before applying a frame; a future receipt receiver must request and require
 The follow-up producer must tie the latch to receipt admission and then stage,
 validate, and atomically install graph, receipts, epoch, policy, clock, and
 cutoffs before allowing status or resumed Subscribe.
+The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
+is a separate format from `.lbk`. It requires a `RECEIPT_V1` graph Snapshot
+header, receipt Store snapshot and policy, clock high-water, and origin HLC
+cutoffs; bounded records and a counted SHA-256 footer reject incomplete or
+damaged containers. The digest detects corruption, not malicious tampering or
+an inconsistent source cut. The codec checks graph frame order and counts,
+not graph payload semantics or cross-section consistency. Its current
+deterministic `proto.Marshal` byte-equality check is not stable across
+protobuf runtime versions; before production use, replace it with a stable
+wire-field validator. No production producer, backup scheduler, or restore
+installer uses this codec yet. The future producer must capture all sections
+under one publication cut, and the installer must validate and install them
+together before serving. Total-cluster restore still rotates the active epoch
+unless a complete durable WAL proves the exact current frontier.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
