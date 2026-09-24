@@ -361,7 +361,10 @@ func TestIncrementalSearch_NewInputInvalidatesBufferedUpdate(t *testing.T) {
 	is.Search("new")
 	select {
 	case got := <-is.Updates():
-		t.Fatalf("new input left buffered stale update: %+v", got)
+		if got.Query == "old" {
+			t.Fatalf("new input left buffered stale update: %+v", got)
+		}
+		// Zero debounce may already have delivered the valid new result.
 	default:
 	}
 }
