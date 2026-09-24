@@ -81,6 +81,12 @@ is required for either reads or writes.
 | D6 | Cluster membership v1 | **Static `LANTERN_PEERS` env var.** v2 adds DNS-based discovery (#190). | Smallest surface that ships. Any DNS-routable platform (k8s headless Service, Compose service name, Nomad, plain DNS A-records) can populate it trivially. |
 | D7 | Supported deployment topologies | **Full HA:** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Single-instance (no HA):** any platform without stable per-instance addressing — Docker Compose single service, or any container runtime that hides/recycles instance addresses. **Not supported:** running multiple address-hidden instances as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Platforms that intentionally hide instance addresses and recycle instances fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
 
+The future bounded mutation-receipt extension is specified in
+[ADR 0009](decisions/0009-bounded-mutation-receipts.md). It requires an atomic
+graph/result/receipt/log boundary and the contiguous publication work in
+#1282; neither receipt RPCs nor that atomic boundary exists yet. D1 remains
+the current crash-persistence rule.
+
 ## 4. CRDT semantics per RPC
 
 Every write RPC is classified as one of three CRDT shapes. The classification
