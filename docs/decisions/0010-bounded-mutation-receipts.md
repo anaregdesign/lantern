@@ -351,19 +351,28 @@ receipts, and origin cutoffs were captured under one publication cut. Its
 wire-field validation rejects unknown fields, ambiguous duplicates, and
 malformed encodings without comparing bytes from a particular protobuf
 runtime; field and map-entry order remain semantically irrelevant. The v1 codec
-pins the reachable graph schema and rejects unreviewed proto changes. No production
-producer, backup scheduler, or restore installer uses this codec yet. The
+pins the reachable graph schema and rejects unreviewed proto changes. The
 private [whole-state capture](../../server/service/receipt_snapshot_capture.go)
 now copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local
 log seq, and an HLC frontier under one exclusive service publication cut. It
 clones mutable Vertex protobuf values before releasing that cut and rejects a
-publication fault or incomplete Store export. It does not write an archive,
-enable the Snapshot RPC, or certify a durable recovery frontier: `Clock.Now()`
-advances only in-memory HLC state, and aborted `Store.Begin` or a `Store.Lookup`
-may advance high-water without a WAL entry. A future producer must use this
-coherent source cut; the installer must validate and install all sections
-together before serving. Total-cluster restore still rotates the active epoch
-unless a complete durable WAL proves the exact current frontier.
+publication fault or incomplete Store export. The private
+[archive producer](../../server/backup/receipt_archive_producer.go) calls this
+read-only source once, encodes only that detached capture, and decodes the
+complete archive before returning bytes. It is not wired into the backup
+scheduler or a public Snapshot/BackupSnapshot RPC and does not certify a
+durable recovery frontier. The service binds the first private coordinator's
+Store pointer, rejecting a different Store even with matching policy; a
+misconfigured first binding therefore fails closed on later construction.
+Direct Core Store access remains outside the service publication gate.
+`Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
+or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
+recovery still needs an
+atomic installer, proof that the WAL covers the captured frontier or an epoch
+rollover, and accepted-effect evidence for graph-only Deletes. The installer
+must validate and install all sections together before serving. Total-cluster
+restore still rotates the active epoch unless a complete durable WAL proves
+the exact current frontier.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 

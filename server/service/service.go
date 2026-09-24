@@ -17,6 +17,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
@@ -93,6 +94,10 @@ type LanternService struct {
 	// An indeterminate internal receipt WAL commit has no append-only repair
 	// path. Keep admission stopped until a future certified restore.
 	receiptCommitFaulted bool
+	// receiptStore binds the private receipt coordinator and archive source to
+	// one Store instance. Protected by replicationCutMu; a second Store with
+	// the same policy still cannot substitute an incomplete receipt image.
+	receiptStore *mutationreceipt.Store
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the

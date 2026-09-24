@@ -80,6 +80,77 @@ func waitReceiptTest[T any](t *testing.T, label string, ch <-chan T) T {
 	}
 }
 
+func TestEdgeDeleteReceiptCoordinatorBindsOneStore(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	if _, err := newEdgeDeleteReceiptCoordinator(f.service, f.coordinator.store); err != nil {
+		t.Fatalf("same Store could not rebuild coordinator: %v", err)
+	}
+	other, err := mutationreceipt.New(mutationreceipt.Config{
+		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newEdgeDeleteReceiptCoordinator(f.service, other); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("same-policy different Store = %v, want FailedPrecondition", err)
+	}
+	if f.service.receiptStore != f.coordinator.store {
+		t.Fatal("rejected Store replaced the active coordinator Store")
+	}
+}
+
+func TestEdgeDeleteReceiptCoordinatorConcurrentFirstStoreBind(t *testing.T) {
+	policy := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x47}, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+	}
+	stores := [2]*mutationreceipt.Store{}
+	for i := range stores {
+		var err error
+		stores[i], err = mutationreceipt.New(policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(hlc.NodeID{0x48}, hlc.Options{}), nil).WithTombstoneTTL(time.Hour)
+	start := make(chan struct{})
+	type result struct {
+		index int
+		err   error
+	}
+	results := make(chan result, len(stores))
+	for i, store := range stores {
+		go func() {
+			<-start
+			_, err := newEdgeDeleteReceiptCoordinator(svc, store)
+			results <- result{index: i, err: err}
+		}()
+	}
+	close(start)
+	first, second := waitReceiptTest(t, "first Store bind", results), waitReceiptTest(t, "second Store bind", results)
+	if first.err != nil {
+		first, second = second, first
+	}
+	if first.err != nil || connect.CodeOf(second.err) != connect.CodeFailedPrecondition ||
+		svc.receiptStore != stores[first.index] {
+		t.Fatalf("concurrent Store bind = %+v, %+v, bound=%p", first, second, svc.receiptStore)
+	}
+	// A wrong first Store blocks later construction with the intended Store;
+	// the service cannot silently switch to an incomplete receipt image.
+	if _, err := newEdgeDeleteReceiptCoordinator(svc, stores[second.index]); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("losing Store was accepted after first bind: %v", err)
+	}
+	source, err := NewReceiptWholeStateSource(svc, stores[first.index])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source(context.Background(), policy); err != nil {
+		t.Fatalf("bound Store could no longer capture: %v", err)
+	}
+}
+
 type receiptDeleteSubscribeSender struct{ frames chan *pb.SubscribeResponse }
 
 func (s *receiptDeleteSubscribeSender) Send(frame *pb.SubscribeResponse) error {
