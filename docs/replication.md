@@ -442,9 +442,11 @@ message SnapshotResponse {
     SnapshotHeader header = 1;   // first frame: origin/local cutoffs + cutoff_hlc
     SnapshotVertex vertex = 2;   // body: live vertex with stored HLC
     SnapshotEdge   edge   = 3;   // body: edge with per-contribution payloads
-    SnapshotFooter footer = 4;   // last frame: all four streamed counts
+    SnapshotFooter footer = 4;   // last frame: all six streamed counts
     SnapshotVertexCausalBarrier vertex_causal_barrier = 5;
     SnapshotEdgeCausalBarrier edge_causal_barrier = 6;
+    SnapshotVertexTombstone vertex_tombstone = 7;
+    SnapshotEdgeTombstone edge_tombstone = 8;
   }
 }
 
@@ -463,6 +465,21 @@ message SnapshotFooter {
   uint64 edge_count = 2;
   uint64 vertex_causal_barrier_count = 3;
   uint64 edge_causal_barrier_count = 4;
+  uint64 vertex_tombstone_count = 5;
+  uint64 edge_tombstone_count = 6;
+}
+
+message SnapshotVertexTombstone {
+  string key = 1;
+  HLCTimestamp hlc = 2;
+  google.protobuf.Timestamp expiration = 3; // original absolute D4 deadline
+}
+
+message SnapshotEdgeTombstone {
+  string tail = 1;
+  string head = 2;
+  HLCTimestamp hlc = 3;
+  google.protobuf.Timestamp expiration = 4; // original absolute D4 deadline
 }
 
 message SnapshotEdge {
@@ -494,9 +511,10 @@ Framing contract:
   per-origin map remains the portable CDC/failover watermark.
   An empty map means the primary has not yet applied any origin
   (cold cluster); the consumer should pass an empty Subscribe cursor.
-- The **footer** is always the last frame. It reports four separate actually
-  streamed counts: live vertices, live edges, vertex causal barriers, and edge
-  causal barriers. Pump and anti-entropy consumers reject count mismatches,
+- The **footer** is always the last frame. It reports six separate actually
+  streamed counts: live vertices, live edges, vertex causal barriers, edge
+  causal barriers, vertex Delete tombstones, and edge Delete tombstones. Pump
+  and anti-entropy consumers reject count mismatches,
   duplicate/missing header/footer frames, or any out-of-order body frame before
   advancing resume watermarks.
 - Every live vertex frame is self-describing and non-nil. In particular,
@@ -514,6 +532,14 @@ Framing contract:
   dedicated causal-barrier seams that create no vertex, endpoint, edge bucket,
   or Search document. Sending barriers first preserves an older retained floor
   when the same identity also has a newer live value.
+- Active D4 Delete tombstones follow causal barriers and precede live entries.
+  Their frames carry the original absolute expiration, so bootstrap and a
+  repeated Snapshot do not start a new D4 window. Expired frames in transit
+  count toward the footer but install no floor. Missing/invalid HLC or
+  expiration, a truncated stream, and reordered frames fail closed before
+  resume watermarks advance. Replay follows the existing remote-apply rule:
+  it may exceed a locally configured causal budget rather than diverging from
+  a peer that already committed the Delete.
 - The snapshot deliberately preserves **per-contribution decomposition**:
   each `SnapshotEdge` carries its full list of live `SnapshotEdgeContribution`
   rows rather than a pre-summed weight. A zero-`ContribID` row represents the
@@ -537,25 +563,28 @@ Implementation notes:
   `Backend` and `*hlc.Clock` the write path uses; both are wired in
   `server/cmd/wire.go`. Production uses `GraphCache.SnapshotReplication()`:
   one sampled wall instant and one continuous graph write lock cover barrier
-  migration plus materialisation of the barrier and live slices. Before it
-  copies state, the method moves every Put floor whose payload is no longer
-  visible (expired vertex, or expired/zero-weight/dangling edge bucket) into
-  the retained barrier maps. Capturing barriers and live state in separate
-  lock passes is forbidden: TTL/GC could move a floor between the passes and
-  make the snapshot omit both representations. The completed owned slices are
-  then streamed frame-by-frame, canonicalizing implicit nil-valued endpoint
+  migration plus materialisation of the barrier, active Delete tombstone, and
+  live slices. The service also holds its Snapshot cut gate while it copies
+  the origin/local-log cutoffs and this graph image: remote ApplyMutation and
+  local log-before-graph AddEdges cannot publish a cutoff ahead of the graph.
+  It releases the gate before sending any frame. Before copying state, the
+  method moves Put floors with non-visible payloads (expired vertices and
+  expired, zero-weight, or dangling edge buckets) into the retained barrier
+  maps. Capturing barriers and live state in separate lock passes is forbidden:
+  TTL/GC could move a floor between the passes and make the snapshot omit both
+  representations. The completed owned slices are then streamed frame-by-frame,
+  canonicalizing implicit nil-valued endpoint
   vertices at the service boundary and honouring `stream.Context()`
   cancellation between sends.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,
   one-peer-at-a-time operation, so the O(N+E) overhead is acceptable.
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
   path is exercised at scale (tracked alongside #190).
-- Tombstones are NOT carried as standalone frames. Delete tombstones remain
-  bounded by D4 and the receiver re-derives them from the Subscribe tail
-  beginning at the per-origin cutoff + 1. Put causal barriers — whether born
-  expired or migrated when a live payload becomes non-visible — are different:
-  they are unbounded LWW floors and are carried by the marker frames above so
-  snapshot/bootstrap cannot reopen a resurrection window.
+- Delete tombstones committed before the Snapshot cutoff cannot be re-derived
+  from the Subscribe tail. Explicit tombstone frames preserve their exact D4
+  deadline across bootstrap. Put causal barriers — whether born expired or
+  migrated when a live payload becomes non-visible — remain distinct unbounded
+  LWW floors, carried by separate marker frames.
 
 Retention and memory:
 

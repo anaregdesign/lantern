@@ -2,7 +2,11 @@ package integration_test
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +21,7 @@ import (
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // pumpNode is a tiny harness that stands up LanternService +
@@ -521,6 +526,228 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	exactAll := &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL}
 	if got := waitForSearchConvergence(t, ctx, "snapshot barrier", exactAll, primary.raw, follower.raw); len(got) != 0 {
 		t.Fatalf("causal barrier identities became searchable: %+v", got)
+	}
+}
+
+// TestPeerPump_SnapshotCarriesDeleteTombstones covers a three-peer partition:
+// A deletes identities while B holds older writes, then C bootstraps from A
+// after A's log has gapped. The pre-cutoff Deletes cannot arrive in C's tail;
+// when B reconnects later its older Put/Add must still be fenced for D4.
+func TestPeerPump_SnapshotCarriesDeleteTombstones(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping three-peer snapshot recovery test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	primary := newPumpNodeWithSearch(t, hlc.NodeID{0xD1}, 4, true)
+	stale := newPumpNode(t, hlc.NodeID{0xD2})
+	const victim, tail, head = "deleted-v", "deleted-tail", "deleted-head"
+	if _, err := stale.sdk.PutVertex(ctx, victim, "old", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stale.sdk.PutEdge(ctx, tail, head, 1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stale.sdk.AddEdge(ctx, tail, head, 2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	staleSeq, _ := stale.log.LastSeq()
+	primary.clock.Update(stale.clock.Now())
+	if _, err := primary.sdk.DeleteVertex(ctx, victim); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := primary.sdk.DeleteEdge(ctx, tail, head); err != nil {
+		t.Fatal(err)
+	}
+	// Evict both Deletes so C can only learn their floors from Snapshot.
+	for i := 0; i < 16; i++ {
+		if _, err := primary.sdk.PutVertex(ctx, fmt.Sprintf("delete-gap-%d", i), "live", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Verify the actual Connect Snapshot advertises both exact source
+	// deadlines and counts. These Deletes precede its cutoff, so the tail
+	// cannot repair an omitted frame.
+	deadlines := primary.cache.CausalMetadataStats()
+	stream, err := newReplicationRawClient(t, primary.url).Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vertexFrames, edgeFrames uint64
+	var footer *pb.SnapshotFooter
+	for stream.Receive() {
+		switch e := stream.Msg().GetEntry().(type) {
+		case *pb.SnapshotResponse_VertexTombstone:
+			vertexFrames++
+			if e.VertexTombstone.GetKey() != victim ||
+				!e.VertexTombstone.GetExpiration().AsTime().Equal(deadlines.OldestVertexRetentionDeadline) {
+				t.Fatalf("vertex tombstone wire frame = %+v, deadline=%v", e.VertexTombstone, deadlines.OldestVertexRetentionDeadline)
+			}
+		case *pb.SnapshotResponse_EdgeTombstone:
+			edgeFrames++
+			if e.EdgeTombstone.GetTail() != tail || e.EdgeTombstone.GetHead() != head ||
+				!e.EdgeTombstone.GetExpiration().AsTime().Equal(deadlines.OldestEdgeRetentionDeadline) {
+				t.Fatalf("edge tombstone wire frame = %+v, deadline=%v", e.EdgeTombstone, deadlines.OldestEdgeRetentionDeadline)
+			}
+		case *pb.SnapshotResponse_Footer:
+			footer = e.Footer
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Close()
+	if vertexFrames != 1 || edgeFrames != 1 || footer == nil ||
+		footer.GetVertexTombstoneCount() != vertexFrames || footer.GetEdgeTombstoneCount() != edgeFrames {
+		t.Fatalf("tombstone frames=%d/%d footer=%+v", vertexFrames, edgeFrames, footer)
+	}
+	boot := newPumpNode(t, hlc.NodeID{0xD3})
+	metrics := &observedSearchConfigMetrics{
+		gate: readiness.NewGate(100, true, nil), observations: make(chan bool, 1),
+	}
+	boot.startPumpWithMetrics(ctx, t, []string{primary.url}, metrics)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && metrics.snapshots.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := metrics.snapshots.Load(); got != 1 {
+		t.Fatalf("gap repair snapshots=%d, want 1", got)
+	}
+	// A second real Connect pump now delivers B's stale origin stream.
+	boot.startPump(ctx, t, []string{stale.url})
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && boot.svc.LocalSeq(stale.nodeID) < staleSeq {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := boot.svc.LocalSeq(stale.nodeID); got != staleSeq {
+		t.Fatalf("stale peer applied seq=%d, want %d", got, staleSeq)
+	}
+	if _, ok := boot.cache.GetVertex(victim); ok {
+		t.Fatal("pre-cutoff DeleteVertex lost: stale PutVertex resurrected on bootstrap peer")
+	}
+	if _, _, ok := boot.cache.GetEdgeDetail(tail, head); ok {
+		t.Fatal("pre-cutoff DeleteEdge lost: stale PutEdge/AddEdge resurrected on bootstrap peer")
+	}
+}
+
+type scriptedTombstoneSnapshotPeer struct {
+	graphv1connect.UnimplementedLanternReplicationServiceHandler
+	frames         []*pb.SnapshotResponse
+	subscribeCalls atomic.Int32
+}
+
+func (p *scriptedTombstoneSnapshotPeer) Subscribe(ctx context.Context, _ *connect.Request[pb.SubscribeRequest], _ *connect.ServerStream[pb.SubscribeResponse]) error {
+	if p.subscribeCalls.Add(1) == 1 {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped"))
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *scriptedTombstoneSnapshotPeer) Snapshot(_ context.Context, _ *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	for _, frame := range p.frames {
+		if err := stream.Send(frame); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type tombstoneSnapshotMetrics struct {
+	failed    chan struct{}
+	snapshots chan struct{}
+}
+
+func (*tombstoneSnapshotMetrics) OnPumpConnect(string)        {}
+func (*tombstoneSnapshotMetrics) OnPumpApply(string)          {}
+func (*tombstoneSnapshotMetrics) OnPumpDropSelfEcho(string)   {}
+func (*tombstoneSnapshotMetrics) OnSearchConfig(string, bool) {}
+func (m *tombstoneSnapshotMetrics) OnPumpDisconnect(_ string, reason string) {
+	if reason == "snapshot_failed" {
+		select {
+		case m.failed <- struct{}{}:
+		default:
+		}
+	}
+}
+func (m *tombstoneSnapshotMetrics) OnPumpSnapshotReplayed(string, uint64, uint64, time.Duration) {
+	select {
+	case m.snapshots <- struct{}{}:
+	default:
+	}
+}
+
+// TestPeerPump_SnapshotTombstoneFraming_E2E sends malformed and expired
+// Snapshot frames through the actual Connect/h2c handler. Invalid framing
+// fails before resume; an expired but otherwise valid marker is counted and
+// cannot create a fresh D4 window on the receiver.
+func TestPeerPump_SnapshotTombstoneFraming_E2E(t *testing.T) {
+	stamp := &pb.HLCTimestamp{WallNs: 20, NodeId: append([]byte{0xF1}, make([]byte, 15)...)}
+	cutoffOrigin := hlc.NodeID{0xF1}
+	for _, tc := range []struct {
+		name       string
+		marker     *pb.SnapshotVertexTombstone
+		footer     *pb.SnapshotFooter
+		wantFailed bool
+	}{
+		{"valid expired", &pb.SnapshotVertexTombstone{Key: "expired-v", Hlc: stamp, Expiration: timestamppb.New(time.Now().Add(-time.Minute))}, &pb.SnapshotFooter{VertexTombstoneCount: 1}, false},
+		{"missing HLC", &pb.SnapshotVertexTombstone{Key: "expired-v", Expiration: timestamppb.New(time.Now().Add(time.Hour))}, &pb.SnapshotFooter{VertexTombstoneCount: 1}, true},
+		{"zero NodeID", &pb.SnapshotVertexTombstone{Key: "expired-v", Hlc: &pb.HLCTimestamp{WallNs: 20, NodeId: make([]byte, 16)}, Expiration: timestamppb.New(time.Now().Add(time.Hour))}, &pb.SnapshotFooter{VertexTombstoneCount: 1}, true},
+		{"missing expiration", &pb.SnapshotVertexTombstone{Key: "expired-v", Hlc: stamp}, &pb.SnapshotFooter{VertexTombstoneCount: 1}, true},
+		{"truncated marker count", &pb.SnapshotVertexTombstone{Key: "expired-v", Hlc: stamp, Expiration: timestamppb.New(time.Now().Add(time.Hour))}, &pb.SnapshotFooter{VertexTombstoneCount: 2}, true},
+		{"missing footer", &pb.SnapshotVertexTombstone{Key: "expired-v", Hlc: stamp, Expiration: timestamppb.New(time.Now().Add(time.Hour))}, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := []*pb.SnapshotResponse{
+				{Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
+					CutoffSeqPerOrigin: map[string]uint64{hex.EncodeToString(cutoffOrigin[:]): 7},
+					CutoffHlc:          stamp,
+				}}},
+				{Entry: &pb.SnapshotResponse_VertexTombstone{VertexTombstone: tc.marker}},
+			}
+			if tc.footer != nil {
+				frames = append(frames, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Footer{Footer: tc.footer}})
+			}
+			peer := &scriptedTombstoneSnapshotPeer{frames: frames}
+			mux := http.NewServeMux()
+			mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+			srv := httptest.NewUnstartedServer(mux)
+			protocols := new(http.Protocols)
+			protocols.SetHTTP1(true)
+			protocols.SetUnencryptedHTTP2(true)
+			srv.Config.Protocols = protocols
+			srv.Start()
+			t.Cleanup(srv.Close)
+			boot := newPumpNode(t, hlc.NodeID{0xF2})
+			metrics := &tombstoneSnapshotMetrics{failed: make(chan struct{}, 1), snapshots: make(chan struct{}, 1)}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			t.Cleanup(cancel)
+			pump := replication.NewPump(replication.Config{NodeID: boot.nodeID, Peers: []string{srv.URL}, HTTPClient: h2cClient(), BackoffMin: time.Second, BackoffMax: time.Second, Metrics: metrics}, boot.svc, boot.cache)
+			go func() { _ = pump.Run(ctx) }()
+			var event <-chan struct{} = metrics.snapshots
+			if tc.wantFailed {
+				event = metrics.failed
+			}
+			select {
+			case <-event:
+			case <-ctx.Done():
+				t.Fatalf("Snapshot result did not arrive: %v", ctx.Err())
+			}
+			wantCutoff := uint64(7)
+			if tc.wantFailed {
+				wantCutoff = 0
+			}
+			if got := boot.svc.LocalSeq(cutoffOrigin); got != wantCutoff {
+				t.Fatalf("Snapshot watermark after replay = %d, want %d", got, wantCutoff)
+			}
+			if !tc.wantFailed {
+				older := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0xF0}}
+				if !boot.cache.PutVertexWithExpirationHLC("expired-v", &pb.Vertex{Key: "expired-v"}, time.Now().Add(time.Hour), older) {
+					t.Fatal("expired tombstone frame extended the Delete floor")
+				}
+			}
+		})
 	}
 }
 

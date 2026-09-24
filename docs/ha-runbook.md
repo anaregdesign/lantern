@@ -535,6 +535,10 @@ live additive bucket coexists with a retained Put barrier, the edge frame uses
 the maximum of the bucket's Put HLC and the barrier floor, and barrier frames
 arrive first. That max-floor rule fences delayed older Puts, but it does not
 make subsequent arbitrary-order Put/Add or Delete/Add delivery convergent.
+Active Delete tombstones also cross Snapshot with their original absolute D4
+deadline, before live graph frames. A newly bootstrapped peer therefore rejects
+pre-cutoff older Put/Add mutations that arrive from another peer during D4;
+Snapshot replay does not renew the Delete window.
 
 **Known convergence boundaries** are therefore (a) a partition that exceeds
 the D4 tombstone horizon, and (b) the mixed edge operation families above. For

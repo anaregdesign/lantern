@@ -14,11 +14,9 @@ import (
 //
 // Update sites:
 //
-//   - ApplyMutation, at the TOP of the function, calls Record(origin,
-//     seq, hlc) as an atomic claim. The bool return tells the caller
-//     whether the watermark advanced — if it did not, the (origin, seq)
-//     pair was already applied via another peer hop, so the apply is
-//     skipped to avoid duplicate cache writes and a duplicate log entry.
+//   - ApplyMutation calls Record(origin, seq, hlc) after backend apply.
+//     The bool return decides whether the mutation is published to the
+//     local log; HLC/ContribID makes duplicate graph replay idempotent.
 //   - logMutation, after a successful local append, calls Record with
 //     the local origin so PeerStatus always reflects the local node's
 //     own progress too. The bool return is ignored: local seqs are
@@ -45,10 +43,9 @@ func newOriginStateTracker() *originStateTracker {
 // strictly greater than the previously-recorded seq for origin. It
 // returns true when the watermark advanced (the caller may proceed to
 // apply and log the mutation) and false when this (origin, seq) was
-// already recorded (the caller MUST treat the mutation as a duplicate
-// and skip it). The check-and-set is performed under a single Lock so
-// concurrent ApplyMutation invocations cannot both observe a stale
-// watermark and double-apply.
+// already recorded (the caller must not publish the same mutation again).
+// The check-and-set is performed under a single Lock so concurrent
+// ApplyMutation invocations cannot both publish the same origin seq.
 //
 // A zero origin (all-zero NodeID) is silently dropped and returns
 // false: the wire protocol forbids zero NodeIDs and accepting them

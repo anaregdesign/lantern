@@ -282,6 +282,54 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	}
 }
 
+// TestAntiEntropy_GappedSnapshotRestoresDeleteFloors covers the second
+// Snapshot consumer. Anti-entropy repairs a truncated log through real h2c,
+// then the newly repaired peer must reject a delayed older Put/Add.
+func TestAntiEntropy_GappedSnapshotRestoresDeleteFloors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping anti-entropy gap recovery test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	source := newAntiEntropyNodeWithCapacity(t, hlc.NodeID{0xE1}, 4)
+	follower := newAntiEntropyNode(t, hlc.NodeID{0xE2})
+	if _, err := source.sdk.DeleteVertex(ctx, "ae-deleted-v"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.sdk.DeleteEdge(ctx, "ae-tail", "ae-head"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 16; i++ {
+		if _, err := source.sdk.PutVertex(ctx, fmt.Sprintf("ae-filler-%d", i), "v", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantSeq, _ := source.log.LastSeq()
+	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+		NodeID: follower.nodeID, Peers: []string{source.url},
+		Interval: 20 * time.Millisecond, SubscribeTimeout: time.Second,
+		HTTPClient: h2cClient(), SearchConfigFingerprint: follower.svc.SearchConfigFingerprint(),
+	}, follower.svc, follower.svc, follower.cache)
+	aeCtx, stopAE := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { _ = ae.Run(aeCtx); close(done) }()
+	t.Cleanup(func() { stopAE(); <-done })
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && follower.svc.LocalSeq(source.nodeID) < wantSeq {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := follower.svc.LocalSeq(source.nodeID); got != wantSeq {
+		t.Fatalf("anti-entropy snapshot watermark=%d, want %d", got, wantSeq)
+	}
+	older := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0xE0}}
+	live := time.Now().Add(time.Hour)
+	if follower.cache.PutVertexWithExpirationHLC("ae-deleted-v", &pb.Vertex{Key: "ae-deleted-v"}, live, older) ||
+		follower.cache.PutEdgeWithExpirationHLC("ae-tail", "ae-head", 1, live, older) ||
+		follower.cache.AddEdgeWithExpirationContribHLC("ae-tail", "ae-head", 1, live, graphcache.ContribID{1}, older) {
+		t.Fatal("anti-entropy Snapshot lost a pre-cutoff Delete floor")
+	}
+}
+
 // TestAntiEntropy_DynamicPeerSource follows the production DNS-discovery
 // contract over real h2c: membership changes are picked up on later cycles, a
 // transient resolver failure does not stop the driver, and a removed peer is

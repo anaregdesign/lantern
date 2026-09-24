@@ -437,7 +437,11 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 			if barrier == nil {
 				return snapshotProtocolError("nil vertex causal barrier")
 			}
-			a.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), snapshotHLC(barrier.GetHlc()))
+			ts, err := snapshotFloorHLC(barrier.GetHlc())
+			if err != nil || barrier.GetKey() == "" {
+				return snapshotProtocolError("invalid vertex causal barrier")
+			}
+			a.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), ts)
 			replay.counts.vertexBarrier++
 		case *pb.SnapshotResponse_EdgeCausalBarrier:
 			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
@@ -447,8 +451,40 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 			if barrier == nil {
 				return snapshotProtocolError("nil edge causal barrier")
 			}
-			a.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), snapshotHLC(barrier.GetHlc()))
+			ts, err := snapshotFloorHLC(barrier.GetHlc())
+			if err != nil || barrier.GetTail() == "" || barrier.GetHead() == "" {
+				return snapshotProtocolError("invalid edge causal barrier")
+			}
+			a.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), ts)
 			replay.counts.edgeBarrier++
+		case *pb.SnapshotResponse_VertexTombstone:
+			if err := replay.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone); err != nil {
+				return err
+			}
+			marker := e.VertexTombstone
+			if marker == nil || marker.GetKey() == "" {
+				return snapshotProtocolError("nil or empty vertex tombstone")
+			}
+			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
+			if err != nil {
+				return err
+			}
+			a.snap.ApplySnapshotVertexTombstoneHLC(marker.GetKey(), ts, exp)
+			replay.counts.vertexTombstone++
+		case *pb.SnapshotResponse_EdgeTombstone:
+			if err := replay.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone); err != nil {
+				return err
+			}
+			marker := e.EdgeTombstone
+			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" {
+				return snapshotProtocolError("nil or empty edge tombstone")
+			}
+			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
+			if err != nil {
+				return err
+			}
+			a.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
+			replay.counts.edgeTombstone++
 		case *pb.SnapshotResponse_Vertex:
 			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
 				return err
