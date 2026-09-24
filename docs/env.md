@@ -32,6 +32,7 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_DELETE_BY_PREFIX_DEFAULT_LIMIT` | uint32 | `10000` | Deletion cap used when DeleteVerticesByPrefix leaves limit unset. |
 | `LANTERN_DELETE_BY_PREFIX_MAX_LIMIT` | uint32 | `100000` | Ceiling DeleteVerticesByPrefix's limit is clamped to. |
 | `LANTERN_DRAIN_DELAY_SECONDS` | int | `0` | Zero-drop rolling-update window: keep serving this long after readiness flips NOT_SERVING (0 = disabled). |
+| `LANTERN_GC_EDGE_BUDGET` | int | `0` | Maximum tail buckets swept per GC tick (0 = full sweep); high-degree tails can still be expensive. |
 | `LANTERN_GC_INTERVAL_SECONDS` | int | `60` | Graph-cache GC tick interval in seconds (expired vertex/edge sweep). |
 | `LANTERN_ILLUMINATE_MAX_K` | int | `1024` | Upper bound on the Illuminate k parameter. |
 | `LANTERN_ILLUMINATE_MAX_STEP` | int | `16` | Upper bound on the Illuminate BFS step parameter. |

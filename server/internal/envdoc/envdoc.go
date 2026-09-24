@@ -43,6 +43,7 @@ var descriptions = map[string]string{
 
 	"LANTERN_DEFAULT_TTL_SECONDS": "Reported in GetServerStatus and startup logs only; RPC writes without an expiration are permanent (decay is opt-in per write, #523).",
 	"LANTERN_GC_INTERVAL_SECONDS": "Graph-cache GC tick interval in seconds (expired vertex/edge sweep).",
+	"LANTERN_GC_EDGE_BUDGET":      "Maximum tail buckets swept per GC tick (0 = full sweep); high-degree tails can still be expensive.",
 
 	"LANTERN_SHUTDOWN_TIMEOUT_SECONDS": "Graceful-shutdown drain budget for in-flight requests before a hard close.",
 	"LANTERN_DRAIN_DELAY_SECONDS":      "Zero-drop rolling-update window: keep serving this long after readiness flips NOT_SERVING (0 = disabled).",

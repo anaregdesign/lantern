@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 // This file pins Lantern's defining product semantic — data decays — as an
@@ -113,4 +116,72 @@ func TestTTL_ExternallyObservableDecay(t *testing.T) {
 			return err
 		})
 	})
+}
+
+func TestTTL_BudgetedGCDoesNotDelayWireHidingAndEventuallyReclaimsDangling(t *testing.T) {
+	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour, GCEdgeBudget: 1}, provider.SearchConfig{})
+	svc := service.NewLanternService(cache)
+	validation := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+	srv := newConnectTestServer(t, svc, nil, validation.ConnectInterceptor())
+	l := newConnectClientFor(t, srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, key := range []string{"a", "b", "c"} {
+		if _, err := l.PutVertex(ctx, key, key, time.Hour); err != nil {
+			t.Fatalf("PutVertex(%s): %v", key, err)
+		}
+	}
+	if _, err := l.PutVertex(ctx, "short_head", "head", expiryTTL); err != nil {
+		t.Fatalf("PutVertex(short_head): %v", err)
+	}
+	for _, tail := range []string{"a", "b", "c"} {
+		if _, err := l.AddEdge(ctx, tail, "short_head", 1, time.Hour); err != nil {
+			t.Fatalf("AddEdge(%s): %v", tail, err)
+		}
+		if _, err := l.GetEdge(ctx, tail, "short_head"); err != nil {
+			t.Fatalf("live GetEdge(%s): %v", tail, err)
+		}
+	}
+	eventuallyNotFound(t, "short_head", func() error {
+		_, err := l.GetVertex(ctx, "short_head")
+		return err
+	})
+	// No GC has run yet, so all three buckets remain physically present, but
+	// the wire contract already hides every edge with the expired endpoint.
+	if got := cache.EdgeCount(); got != 3 {
+		t.Fatalf("physical edges before GC = %d, want 3", got)
+	}
+	for _, tail := range []string{"a", "b", "c"} {
+		if _, err := l.GetEdge(ctx, tail, "short_head"); !errors.Is(err, client.ErrNotFound) {
+			t.Fatalf("GetEdge(%s) after endpoint expiry = %v, want NotFound", tail, err)
+		}
+	}
+
+	statsCh := make(chan graphcache.GCSweepStats, 8)
+	cache.SetGCHooks(nil, func(time.Duration) {
+		select {
+		case statsCh <- cache.LastGCSweepStats():
+		default:
+		}
+	})
+	watchCtx, stop := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() { cache.Watch(watchCtx, 10*time.Millisecond); close(watchDone) }()
+	defer func() { stop(); <-watchDone }()
+	var removed int
+	for removed < 3 {
+		select {
+		case stats := <-statsCh:
+			if stats.ScannedTails > 1 {
+				t.Fatalf("one tick scanned %d tails under budget 1", stats.ScannedTails)
+			}
+			removed += stats.DanglingRemoved
+		case <-ctx.Done():
+			t.Fatal("budgeted GC did not reclaim dangling edges before deadline")
+		}
+	}
+	if got := cache.EdgeCount(); got != 0 {
+		t.Fatalf("physical edges after bounded GC = %d, want 0", got)
+	}
 }

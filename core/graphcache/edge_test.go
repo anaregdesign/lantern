@@ -709,7 +709,7 @@ func Test_edgeCache_edgeCount(t *testing.T) {
 		if !ok {
 			t.Fatal("dict.lookup(d) miss")
 		}
-		zero, dangling := c.flushFunc(func(tail, _ vertexID) bool { return tail != dID }, nil)
+		zero, dangling, _ := c.flushFunc(func(tail, _ vertexID) bool { return tail != dID }, nil)
 		if zero != 0 || dangling != 1 {
 			t.Fatalf("flushFunc = (%d, %d), want (0, 1)", zero, dangling)
 		}

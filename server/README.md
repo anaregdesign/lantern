@@ -99,6 +99,7 @@ failure (#847). The most common knobs:
 | `LANTERN_PORT` | `6380` | Primary Lantern RPC listen port (Connect / gRPC / gRPC-Web multiplexed on h2c). |
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Surfaced in `GetServerStatus`/startup logs only; **not** applied to RPC writes (omitted TTL/expiration ⇒ permanent; decay is opt-in per write, #523). |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | GraphCache GC tick. |
+| `LANTERN_GC_EDGE_BUDGET` | `0` | Maximum tail buckets swept per tick; `0` keeps the full sweep. A high-degree tail can still dominate a bounded tick. Monitor tail backlog and reclamation lag when enabling. |
 | `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | Per-RPC message size caps (Connect / gRPC / gRPC-Web). |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Per-connection stream cap (0 = unlimited). |
 | `LANTERN_RATE_LIMIT_RPS` / `LANTERN_RATE_LIMIT_BURST` | `0` | Process-wide token-bucket rate limit (0 disables). |
@@ -150,6 +151,7 @@ runtime, process, and `grpc_server_*` collectors):
 | `lantern_vertex_causal_metadata_entries` / `_entries_high_water` / `_estimated_bytes` / `_over_limit` | gauge | — | Unlabelled vertex aliases consumed by the scalar-only release-sweep metric gate. |
 | `lantern_ttl_expirations_total` | counter | `kind` | Reaped per GC tick (`vertex`, `edge`, `dangling_edge`). |
 | `lantern_gc_duration_seconds` | histogram | — | GC tick wall-clock. |
+| `lantern_gc_edge_backlog_tails` | gauge | — | Tails not yet visited in the current budgeted sweep cycle; `0` when the full sweep is selected or a cycle completes. |
 | `lantern_build_info` | gauge | `version`, `commit`, `go_version` | Always 1. |
 | `lantern_mutation_log_entries_total` | counter | — | Successful WAL appends. |
 | `lantern_mutation_log_capacity` | gauge | — | Configured ring slots. |

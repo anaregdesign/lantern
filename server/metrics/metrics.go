@@ -80,6 +80,7 @@ type DomainMetrics struct {
 	edges               prometheus.Gauge
 	expirations         *prometheus.CounterVec
 	gcDuration          prometheus.Histogram
+	gcEdgeBacklog       prometheus.Gauge
 	buildInfo           *prometheus.GaugeVec
 	mutationLogEntries  prometheus.Counter
 	mutationLogCapacity prometheus.Gauge
@@ -433,6 +434,10 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Help:    "Wall-clock duration of a single GraphCache GC tick.",
 			Buckets: prometheus.ExponentialBuckets(0.0001, 4, 8), // 0.1ms .. ~1.6s
 		}),
+		gcEdgeBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_gc_edge_backlog_tails",
+			Help: "Tail buckets remaining in the current budgeted GC sweep plan; zero when disabled or a cycle just completed.",
+		}),
 		buildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_build_info",
 			Help: "Build metadata for the running Lantern server. Always 1; inspect labels for version/commit/go_version.",
@@ -734,7 +739,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		sampleInterval: opts.SampleInterval,
 	}
 
-	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.buildInfo,
+	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.gcEdgeBacklog, m.buildInfo,
 		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped,
 		m.pubsubQueueDepth, m.pubsubDropped, m.pubsubDispatchDuration,
 		m.replicationApplied, m.replicationDropped, m.replicationLag,
@@ -894,6 +899,11 @@ func (m *DomainMetrics) OnExpire(kind string, n int) {
 // OnGCDuration records the wall-clock duration of a single GC tick.
 func (m *DomainMetrics) OnGCDuration(d time.Duration) {
 	m.gcDuration.Observe(d.Seconds())
+}
+
+// SetGCEdgeBacklog records the unswept tails in the current budgeted cycle.
+func (m *DomainMetrics) SetGCEdgeBacklog(tails int) {
+	m.gcEdgeBacklog.Set(float64(tails))
 }
 
 // OnMutationLogAppend increments the counter of successful mutation-log
