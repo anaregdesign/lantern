@@ -8,11 +8,10 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
-// stagedEdgeDelete is an internal, deliberately incomplete part of a future
-// WAL-first Delete envelope. Its caller must hold c.mu and publicationGate for
-// the entire prepare/apply/rollback interval. The deadline index is handled
-// by a separate change: applyLocked does not update it, and must never be
-// published until that index is staged under the same gate.
+// stagedEdgeDelete is an internal part of a future WAL-first Delete envelope.
+// Its caller must hold c.mu and publicationGate for the entire
+// prepare/apply/rollback interval. No publication or WAL callback is exposed
+// until the enclosing receipt/log cut is implemented.
 type stagedEdgeDelete[S comparable, T any] struct {
 	cache    *GraphCache[S, T]
 	plans    []*stagedEdgeDeletePlan[S]
@@ -51,16 +50,168 @@ type stagedEdgeDeleteUndo[S comparable] struct {
 	dictRefs     map[vertexID]stagedDictRef[S]
 	dictFree     []vertexID
 
-	tombstoneMap map[EdgeKey[S]]tombstoneEntry
-	tombstones   map[EdgeKey[S]]stagedValue[tombstoneEntry]
-	barrierMap   map[EdgeKey[S]]hlc.Timestamp
-	barriers     map[EdgeKey[S]]stagedValue[hlc.Timestamp]
-	usageMap     map[EdgeKey[S]]uint64
-	usage        map[EdgeKey[S]]stagedValue[uint64]
-	usageBytes   uint64
-	usagePeak    int
-	highWater    int
-	bytesHigh    uint64
+	tombstoneMap   map[EdgeKey[S]]tombstoneEntry
+	tombstones     map[EdgeKey[S]]stagedValue[tombstoneEntry]
+	barrierMap     map[EdgeKey[S]]hlc.Timestamp
+	barriers       map[EdgeKey[S]]stagedValue[hlc.Timestamp]
+	usageMap       map[EdgeKey[S]]uint64
+	usage          map[EdgeKey[S]]stagedValue[uint64]
+	usageBytes     uint64
+	usagePeak      int
+	highWater      int
+	bytesHigh      uint64
+	deadlines      stagedIndexedDeadlineUndo[EdgeKey[S]]
+	deadlineBytes  uint64
+	oldestDeadline time.Time
+}
+
+// stagedIndexedDeadlineUndo records only heap paths touched by this batch.
+// The indexed heap has one entry per key, so an upsert/remove performs at
+// most O(log retained tombstones) swaps without rebuilding unrelated entries.
+type stagedIndexedDeadlineUndo[K comparable] struct {
+	entries   []causalDeadlineEntry[K]
+	positions map[K]int
+	peak      int
+	cells     map[int]causalDeadlineEntry[K]
+	keys      map[K]stagedValue[int]
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) capture(h *indexedCausalDeadlineHeap[K]) {
+	u.entries = h.entries
+	u.positions = h.positions
+	u.peak = h.peak
+	u.cells = make(map[int]causalDeadlineEntry[K])
+	u.keys = make(map[K]stagedValue[int])
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) touchCell(index int) {
+	if index >= len(u.entries) {
+		return
+	}
+	if _, seen := u.cells[index]; !seen {
+		u.cells[index] = u.entries[index]
+	}
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) touchKey(key K) {
+	if _, seen := u.keys[key]; !seen {
+		pos, ok := u.positions[key]
+		u.keys[key] = stagedValue[int]{pos, ok}
+	}
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) swap(h *indexedCausalDeadlineHeap[K], i, j int) {
+	u.touchCell(i)
+	u.touchCell(j)
+	u.touchKey(h.entries[i].key)
+	u.touchKey(h.entries[j].key)
+	h.entries[i], h.entries[j] = h.entries[j], h.entries[i]
+	h.positions[h.entries[i].key] = i
+	h.positions[h.entries[j].key] = j
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) up(h *indexedCausalDeadlineHeap[K], index int) {
+	for index > 0 {
+		parent := (index - 1) / 2
+		if !h.Less(index, parent) {
+			return
+		}
+		u.swap(h, parent, index)
+		index = parent
+	}
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) down(h *indexedCausalDeadlineHeap[K], index int) bool {
+	start := index
+	for {
+		left := 2*index + 1
+		if left >= h.Len() {
+			break
+		}
+		child := left
+		if right := left + 1; right < h.Len() && h.Less(right, left) {
+			child = right
+		}
+		if !h.Less(child, index) {
+			break
+		}
+		u.swap(h, index, child)
+		index = child
+	}
+	return index != start
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) fix(h *indexedCausalDeadlineHeap[K], index int) {
+	if !u.down(h, index) {
+		u.up(h, index)
+	}
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) upsert(h *indexedCausalDeadlineHeap[K], key K, deadline time.Time) bool {
+	if index, ok := h.positions[key]; ok {
+		if !h.entries[index].deadline.Equal(deadline) {
+			u.touchCell(index)
+			h.entries[index].deadline = deadline
+			u.fix(h, index)
+		}
+		return false
+	}
+	if h.positions == nil {
+		h.positions = make(map[K]int)
+	}
+	u.touchKey(key)
+	h.positions[key] = len(h.entries)
+	h.entries = append(h.entries, causalDeadlineEntry[K]{key: key, deadline: deadline})
+	if len(h.entries) > h.peak {
+		h.peak = len(h.entries)
+	}
+	u.up(h, len(h.entries)-1)
+	return true
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) remove(h *indexedCausalDeadlineHeap[K], key K) bool {
+	index, ok := h.positions[key]
+	if !ok {
+		return false
+	}
+	last := len(h.entries) - 1
+	if index != last {
+		u.swap(h, index, last)
+	}
+	u.touchCell(last)
+	u.touchKey(key)
+	delete(h.positions, key)
+	var zero causalDeadlineEntry[K]
+	h.entries[last] = zero
+	if last == 0 {
+		h.entries = nil
+		h.positions = nil
+		h.peak = 0
+	} else {
+		h.entries = h.entries[:last]
+		if index < last {
+			u.fix(h, index)
+		}
+	}
+	return true
+}
+
+func (u *stagedIndexedDeadlineUndo[K]) restore(h *indexedCausalDeadlineHeap[K]) {
+	for index, old := range u.cells {
+		u.entries[index] = old
+	}
+	h.entries = u.entries
+	if u.positions != nil {
+		for key, old := range u.keys {
+			if old.set {
+				u.positions[key] = old.value
+			} else {
+				delete(u.positions, key)
+			}
+		}
+	}
+	h.positions = u.positions
+	h.peak = u.peak
 }
 
 // prepareStagedEdgeDeleteLocked computes exact original outcomes and captures
@@ -175,6 +326,9 @@ func (s *stagedEdgeDelete[S, T]) captureUndoLocked() {
 	u.usagePeak = c.edgeCausalUsagePeak
 	u.highWater = c.edgeCausalHighWater
 	u.bytesHigh = c.edgeCausalBytesHighWater
+	u.deadlines.capture(&c.edgeTombstoneDeadlines)
+	u.deadlineBytes = c.edgeTombstoneDeadlineBytes
+	u.oldestDeadline = c.oldestEdgeTombstoneDeadline
 
 	d := c.dict
 	if d != nil {
@@ -215,9 +369,9 @@ func (s *stagedEdgeDelete[S, T]) captureUndoLocked() {
 	}
 }
 
-// applyLocked changes graph, head index, dictionary, tombstone record, and
-// causal usage under the two exclusive gates. It intentionally leaves the
-// deadline index untouched; only rollbackLocked is currently supported.
+// applyLocked changes graph, head index, dictionary, tombstone, deadline
+// index, and causal usage under the two exclusive gates. Only rollbackLocked
+// is currently supported; a future envelope will own the publication step.
 func (s *stagedEdgeDelete[S, T]) applyLocked() {
 	if s.applied {
 		panic("graphcache: staged Delete applied twice")
@@ -237,18 +391,20 @@ func (s *stagedEdgeDelete[S, T]) applyLocked() {
 			if c.edgeTombstones == nil {
 				c.edgeTombstones = make(map[EdgeKey[S]]tombstoneEntry)
 			}
+			stamped := true
+			deadline := expiration
 			if old, ok := c.edgeTombstones[key]; ok {
 				if ts.Less(old.ts) {
 					// edgeDeleteWriteAllowedLocked ignores an expired floor,
 					// while setEdgeTombstoneLocked preserves its larger HLC.
-					c.edgeTombstones[key] = old
+					stamped = false
 				} else if ts == old.ts && !old.expiration.IsZero() && old.expiration.Before(expiration) {
-					c.edgeTombstones[key] = old
-				} else {
-					c.edgeTombstones[key] = tombstoneEntry{ts: ts, expiration: expiration}
+					deadline = old.expiration
 				}
-			} else {
-				c.edgeTombstones[key] = tombstoneEntry{ts: ts, expiration: expiration}
+			}
+			if stamped {
+				c.edgeTombstones[key] = tombstoneEntry{ts: ts, expiration: deadline}
+				s.stageDeadlineLocked(key, deadline)
 			}
 		}
 		if plan.before != nil {
@@ -291,6 +447,19 @@ func (s *stagedEdgeDelete[S, T]) applyLocked() {
 		}
 	}
 	complete = true
+}
+
+func (s *stagedEdgeDelete[S, T]) stageDeadlineLocked(key EdgeKey[S], deadline time.Time) {
+	c := s.cache
+	if deadline.IsZero() {
+		if s.undo.deadlines.remove(&c.edgeTombstoneDeadlines, key) {
+			c.edgeTombstoneDeadlineBytes -= causalEdgeDeadlineEntryBaseBytes + causalKeyPayloadBytes(key.Tail) + causalKeyPayloadBytes(key.Head)
+		}
+	} else if s.undo.deadlines.upsert(&c.edgeTombstoneDeadlines, key, deadline) {
+		c.edgeTombstoneDeadlineBytes += causalEdgeDeadlineEntryBaseBytes + causalKeyPayloadBytes(key.Tail) + causalKeyPayloadBytes(key.Head)
+		c.updateEdgeCausalBytesHighWaterLocked()
+	}
+	c.refreshOldestEdgeTombstoneDeadlineLocked()
 }
 
 // rollbackLocked restores the exact logical state captured before applyLocked.
@@ -346,6 +515,9 @@ func (s *stagedEdgeDelete[S, T]) rollbackLocked() {
 	c.edgeCausalUsagePeak = u.usagePeak
 	c.edgeCausalHighWater = u.highWater
 	c.edgeCausalBytesHighWater = u.bytesHigh
+	u.deadlines.restore(&c.edgeTombstoneDeadlines)
+	c.edgeTombstoneDeadlineBytes = u.deadlineBytes
+	c.oldestEdgeTombstoneDeadline = u.oldestDeadline
 
 	if c.dict != nil {
 		d := c.dict
