@@ -106,4 +106,35 @@ func TestCausalMetadataCapacity_WireGate(t *testing.T) {
 	if edgeStatus.GetLimit() != 1 || edgeStatus.GetEntries() != 1 || edgeStatus.GetRejectedTotal() != 1 || edgeStatus.GetOverLimit() {
 		t.Fatalf("wire edge causal status = %v, want limit=entries=rejected=1 and over_limit=false", edgeStatus)
 	}
+	firstDeadline := edgeStatus.GetOldestRetentionDeadline()
+	if firstDeadline == nil {
+		t.Fatal("edge Delete did not expose a retention deadline")
+	}
+	for i := 0; i < 32; i++ {
+		if existed, err := sdk.DeleteEdge(ctx, "tail", "head"); err != nil || existed {
+			t.Fatalf("renewed absent edge Delete %d = (%v, %v), want false, nil", i, existed, err)
+		}
+	}
+	status, err = sdk.GetServerStatus(ctx)
+	if err != nil {
+		t.Fatalf("GetServerStatus after repeated edge Delete: %v", err)
+	}
+	renewed := status.GetCausalMetadata().GetEdges()
+	if renewed.GetEntries() != 1 || renewed.GetEstimatedBytes() != edgeStatus.GetEstimatedBytes() ||
+		renewed.GetEstimatedBytesHighWater() != edgeStatus.GetEstimatedBytesHighWater() {
+		t.Fatalf("repeated Delete grew edge causal identity: before=%v after=%v", edgeStatus, renewed)
+	}
+	if deadline := renewed.GetOldestRetentionDeadline(); deadline == nil || !deadline.AsTime().After(firstDeadline.AsTime()) {
+		t.Fatalf("renewed edge deadline = %v, want later than %v", deadline, firstDeadline)
+	}
+	if outcome, err := sdk.PutEdge(ctx, "tail", "head", 1, time.Minute); err != nil || outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("Put after renewed Deletes = (%v, %v), want APPLIED_AND_LIVE, nil", outcome, err)
+	}
+	status, err = sdk.GetServerStatus(ctx)
+	if err != nil {
+		t.Fatalf("GetServerStatus after edge Put: %v", err)
+	}
+	if got := status.GetCausalMetadata().GetEdges().GetOldestRetentionDeadline(); got != nil {
+		t.Fatalf("live Put retained edge Delete deadline %v", got)
+	}
 }
