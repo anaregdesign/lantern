@@ -55,6 +55,22 @@ class ReleaseTest(unittest.TestCase):
                 release.preflight(VERSION, self.candidate)
             self.assertEqual(fetch.call_count, 1)
 
+    def test_offline_first_publish_fails_closed(self):
+        with patch.object(release, "fetch", return_value=None) as fetch:
+            with self.assertRaisesRegex(ValueError, "package returned 404"):
+                release.preflight(VERSION, self.candidate, "lantern_client_offline")
+            fetch.assert_called_once_with("https://pub.dev/api/packages/lantern_client_offline")
+
+    def test_offline_existing_version_requires_exact_archive(self):
+        metadata = dict(self.metadata)
+        metadata["pubspec"] = {"name": "lantern_client_offline", "version": VERSION}
+        metadata["archive_url"] = f"https://pub.dev/api/archives/lantern_client_offline-{VERSION}.tar.gz"
+        with patch.object(release, "fetch", side_effect=[
+            json.dumps({"name": "lantern_client_offline"}).encode(),
+            json.dumps(metadata).encode(), self.body,
+        ]):
+            self.assertFalse(release.preflight(VERSION, self.candidate, "lantern_client_offline"))
+
     def test_missing_version_never_verifies(self):
         with patch.object(release, "fetch", return_value=None), patch.object(release.time, "sleep"):
             with self.assertRaisesRegex(ValueError, "did not become visible"):

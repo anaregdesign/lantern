@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only pub.dev state and archive checks for the parent SDK release."""
+"""Read-only pub.dev state and archive checks for Lantern Dart releases."""
 
 import argparse
 import hashlib
@@ -34,14 +34,14 @@ def fetch(url, limit=MAX_ARCHIVE_BYTES):
             raise
 
 
-def version_metadata(version):
-    body = fetch(f"{API}/versions/{version}")
+def version_metadata(version, package=PACKAGE):
+    body = fetch(f"https://pub.dev/api/packages/{package}/versions/{version}")
     if body is None:
         return None
     metadata = json.loads(body)
     if (
         metadata.get("version") != version
-        or metadata.get("pubspec", {}).get("name") != PACKAGE
+        or metadata.get("pubspec", {}).get("name") != package
         or metadata.get("pubspec", {}).get("version") != version
     ):
         raise ValueError("pub.dev metadata does not match the requested package/version")
@@ -91,8 +91,8 @@ def candidate_files(candidate, expected_sha256):
     return archive_files(body)
 
 
-def compare_published(version, metadata, candidate):
-    archive_url = f"https://pub.dev/api/archives/{PACKAGE}-{version}.tar.gz"
+def compare_published(version, metadata, candidate, package=PACKAGE):
+    archive_url = f"https://pub.dev/api/archives/{package}-{version}.tar.gz"
     if metadata.get("archive_url") != archive_url:
         raise ValueError("pub.dev returned an unexpected archive URL")
     checksum = metadata.get("archive_sha256", "")
@@ -115,24 +115,24 @@ def compare_published(version, metadata, candidate):
         )
 
 
-def preflight(version, candidate):
-    package = fetch(API)
-    if package is None:
+def preflight(version, candidate, package=PACKAGE):
+    package_body = fetch(f"https://pub.dev/api/packages/{package}")
+    if package_body is None:
         raise ValueError("pub.dev package returned 404; automated publication is blocked")
-    if json.loads(package).get("name") != PACKAGE:
+    if json.loads(package_body).get("name") != package:
         raise ValueError("pub.dev returned an unexpected package")
-    metadata = version_metadata(version)
+    metadata = version_metadata(version, package)
     if metadata is None:
         return True
-    compare_published(version, metadata, candidate)
+    compare_published(version, metadata, candidate, package)
     return False
 
 
-def verify(version, candidate, attempts=30, delay=10):
+def verify(version, candidate, attempts=30, delay=10, package=PACKAGE):
     for attempt in range(attempts):
-        metadata = version_metadata(version)
+        metadata = version_metadata(version, package)
         if metadata is not None:
-            compare_published(version, metadata, candidate)
+            compare_published(version, metadata, candidate, package)
             return
         if attempt + 1 < attempts:
             time.sleep(delay)
@@ -143,6 +143,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("preflight", "verify"))
     parser.add_argument("--version", required=True)
+    parser.add_argument("--package", choices=(PACKAGE, "lantern_client_offline"), default=PACKAGE)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--sha256", required=True)
     parser.add_argument("--output", type=Path)
@@ -151,13 +152,13 @@ def main():
         parser.error("version must have exact X.Y.Z form")
     candidate = candidate_files(args.candidate, args.sha256)
     if args.phase == "preflight":
-        required = preflight(args.version, candidate)
+        required = preflight(args.version, candidate, args.package)
         if args.output:
             with args.output.open("a") as output:
                 output.write(f"publish_required={str(required).lower()}\n")
     else:
-        verify(args.version, candidate)
-    print(f"pub.dev {args.phase} passed for {PACKAGE} {args.version}")
+        verify(args.version, candidate, package=args.package)
+    print(f"pub.dev {args.phase} passed for {args.package} {args.version}")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,12 @@ Experimental, storage-neutral offline Repository support for
 versioned cache/outbox codec, a deterministic non-production in-memory reference
 store, latency-compensated Put writes, and explicit foreground replay.
 
+The independent release is tracked under
+[#1162](https://github.com/anaregdesign/lantern/issues/1162). For `0.2.0`,
+qualification requires an exact-code physical Android/iOS matrix and a one-time
+interactive OAuth publication. The core depends on hosted `lantern_client`
+0.2.0; the maintained Flutter example uses local overrides for development.
+
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
 application supplies a partitioned transactional `OfflineStore`, owns at-rest

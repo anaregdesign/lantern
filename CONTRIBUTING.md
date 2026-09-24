@@ -135,14 +135,13 @@ committed-response-loss replay. Android and iOS jobs upload content-free JSON
 manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
-record required before an offline release. Its path dependency and
-`publish_to: none` remain
-intentional until the separate release Issue accepts hosted dependency conversion
-after ADR 0002's physical-device graduation gate; the parent `lantern_client`
-publish archive must continue to exclude `offline/` and `offline_sqlite/`. The maintained Flutter app
-under `sdks/dart/example/` is a repository integration fixture because it consumes
-that child by path, so only its standalone online example is included in the parent
-archive. CI uses Dart Pub's own archive builder, unpacks the resulting tarball
+record required before an offline release. The offline core has a hosted
+`lantern_client: ^0.2.0` dependency and an independent candidate archive gate;
+the parent `lantern_client` publish archive continues to exclude `offline/` and
+`offline_sqlite/`. The maintained Flutter app under `sdks/dart/example/` is a
+repository integration fixture with local development overrides, so only its
+standalone online example is included in the parent archive. CI uses Dart Pub's
+own archive builder, unpacks the resulting tarball
 outside the checkout, resolves every included `pubspec.yaml` with an isolated
 cache, then runs analysis, tests, and `pana` against the unpacked artifact.
 
@@ -391,14 +390,66 @@ number rather than force-moving the tag.
   `contents: write` and no OIDC create/update the GitHub Release; its title is exactly
   the tag. A missing package, failed publication, or differing/missing published
   archive blocks the Release.
-- `sdks/dart/offline/vX.Y.Z` is reserved for the storage-neutral
+- `sdks/dart/offline/vX.Y.Z` independently publishes the storage-neutral
   `lantern_client_offline` core owned by #1162. It does not include SQLite,
   encryption, secure storage, or another production adapter; #1163 owns the
-  separately versioned SQLite package. Until #1162 converts the parent
-  dependency to a hosted constraint and installs its bootstrap/OIDC workflow,
-  keep `publish_to: none` and do not create an offline tag or Release.
+  separately versioned SQLite package. The offline tag must match its
+  `pubspec.yaml` version and `CHANGELOG.md` heading. It triggers the full
+  minimum/current Dart, real-wire, archive, Android emulator, and iOS simulator
+  Gate in `dart-sdk.yml`. A separate offline preflight builds an isolated
+  archive from the exact tag, checks its hosted parent dependency and contents,
+  resolves it outside the checkout, and checks pub.dev state. Once the package
+  exists on pub.dev, later versions use the separate offline OIDC publish job;
+  read-only archive equality gates the exact-title GitHub Release. The parent
+  tag's release jobs never run for an offline tag.
 
-**Dart publishing status.** The one-time manual first publish completed with `0.1.0`,
+**Offline first-publication runbook (#1162).** The initial candidate is
+`sdks/dart/offline/v0.2.0`; its parent `lantern_client` 0.2.0 is already on
+pub.dev. First test a clean code commit on physical Android **and** iOS and
+record the full tested SHA in the sanitized evidence: platform-trusted TLS
+acceptance and rejection,
+token rotation, radio loss/offline/foreground recovery, Android Doze-like pause,
+and iOS local-network privacy. Include revision, OS/app version, scenarios, and
+pass/fail only; never publish tokens, addresses, device IDs, or user data.
+Emulator/simulator CI and the historical #1114 record do not replace this
+matrix. Commit only `sdks/dart/example/evidence/offline-release/android.json`
+and `ios.json` (and optionally its README) as the **immediate child** of the
+tested code commit. Tag that evidence-only commit; the release preflight checks
+its parent SHA and rejects any code difference, then compares both physical
+records with the Android/iOS simulator manifests from the tag's full Gate.
+This two-commit sequence avoids the impossible self-reference of a checked-in
+manifest naming its own commit. Verify the clean checkout, then create and push
+the immutable `sdks/dart/offline/v0.2.0` tag.
+The first tag run must fail closed at read-only preflight because pub.dev has
+no `lantern_client_offline` package; it must create no GitHub Release.
+
+For the one-time bootstrap, extract `sdks/dart/offline` from **that exact tag**
+into a fresh directory so the parent package's `.pubignore` cannot hide the
+nested package. Run `dart pub get --enforce-lockfile`, `dart pub publish --dry-run`,
+and the first `dart pub publish` there using interactive OAuth. Do not put a pub
+token in GitHub Secrets, CI, or the repository. On the new package's pub.dev
+Admin page, enable GitHub Actions automated publishing for
+`anaregdesign/lantern` with tag pattern `sdks/dart/offline/v{{version}}` and
+require the existing `pub.dev` GitHub environment. Rerun the **same tag push**
+workflow: preflight must compare the published archive with the exact candidate,
+skip OIDC publication, and only then create the Release titled exactly
+`sdks/dart/offline/v0.2.0`. Later versions publish by tag-triggered OIDC only.
+
+```bash
+offline_tag=sdks/dart/offline/v0.2.0
+offline_source=$(mktemp -d)
+git archive "$offline_tag:sdks/dart/offline" | tar -x -C "$offline_source"
+(cd "$offline_source" && dart pub get --enforce-lockfile && \
+  dart pub publish --dry-run && dart pub publish)
+```
+
+If manual publication or OIDC fails, leave the tag and Issue open and create no
+Release. Never replace or move a published tag/version; prepare a corrected new
+version if a published archive is wrong. The release operator should inspect
+the pub.dev audit log and GitHub Release after each successful run.
+
+**Dart publishing status.** The parent `lantern_client` 0.2.0 is published and
+its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
 manual `dart pub publish`. Immediately before tagging, check

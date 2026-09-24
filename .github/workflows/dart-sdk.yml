@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags:
       - "sdks/dart/v*.*.*"
+      - "sdks/dart/offline/v*.*.*"
     paths:
       - "sdks/dart/**"
       - "proto/**"
@@ -381,17 +382,30 @@ jobs:
             exit 1
           fi
 
-      - name: Prove experimental publish remains blocked
+      - name: Test offline archive contract
+        working-directory: .
+        run: python3 -B -m unittest discover -s sdks/dart/offline/tool -p release_contract_test.py
+
+      - name: Build and verify isolated offline publish archive
+        working-directory: .
         shell: bash
         run: |
           set -euo pipefail
-          log="$RUNNER_TEMP/dart-offline-publish.log"
-          if dart pub publish --dry-run >"$log" 2>&1; then
-            cat "$log"
-            echo "::error::experimental offline package unexpectedly passed publish validation"
-            exit 1
-          fi
-          grep -F 'path source' "$log"
+          artifact_root="$RUNNER_TEMP/lantern-offline-artifact"
+          source_dir="$artifact_root/source"
+          archive="$artifact_root/lantern_client_offline.tar.gz"
+          package_dir="$artifact_root/unpacked/package"
+          isolated_pub_cache="$artifact_root/pub-cache"
+          mkdir -p "$source_dir" "$package_dir" "$isolated_pub_cache"
+          git archive HEAD:sdks/dart/offline | tar -x -C "$source_dir"
+          (cd "$source_dir" && dart pub get --enforce-lockfile && dart pub publish --dry-run)
+          dart pub publish -C "$source_dir" --to-archive="$archive"
+          version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
+          python3 sdks/dart/offline/tool/release_contract.py \
+            --archive "$archive" --version "$version" --parent-version 0.2.0
+          tar -xzf "$archive" -C "$package_dir"
+          (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
+            PUB_CACHE="$isolated_pub_cache" dart analyze lib)
 
       - name: Stop Lantern real-wire server
         if: always()
@@ -1200,6 +1214,215 @@ jobs:
             echo '```yaml'
             echo 'dependencies:'
             echo "  lantern_client: ^$VERSION"
+            echo '```'
+          } > "$notes_file"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" \
+              --notes-file "$notes_file" --verify-tag
+          else
+            gh release create "$TAG" --title "$TAG" \
+              --notes-file "$notes_file" --verify-tag
+          fi
+
+  offline-release-preflight:
+    name: Verify offline release candidate
+    needs: [gate]
+    if: startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      archive_sha256: ${{ steps.candidate.outputs.archive_sha256 }}
+      archive_artifact_id: ${{ steps.archive.outputs.artifact-id }}
+      publish_required: ${{ steps.state.outputs.publish_required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up current supported Dart without OIDC
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: 3.12.2
+
+      - name: Test archive and pub.dev verification safeguards
+        run: |
+          python3 -B -m unittest discover -s sdks/dart/scripts -p release_test.py
+          python3 -B -m unittest discover -s sdks/dart/offline/tool -p '*_test.py'
+
+      - name: Download exact-tag Android simulator manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: lantern-android-revision-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-offline-tag-ci
+
+      - name: Download exact-tag iOS simulator manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: lantern-ios-revision-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-offline-tag-ci
+
+      - name: Require exact-code physical Android and iOS release matrix
+        run: >-
+          python3 sdks/dart/offline/tool/physical_release_gate.py
+          --tag-sha "$GITHUB_SHA" --ci-dir "$RUNNER_TEMP/lantern-offline-tag-ci"
+
+      - name: Verify exact tag and build dependency-closed offline candidate
+        id: candidate
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"
+          version=${TAG#sdks/dart/offline/v}
+          test "$(awk '$1 == "name:" { print $2; exit }' sdks/dart/offline/pubspec.yaml)" = lantern_client_offline
+          test "$(awk '$1 == "version:" { print $2; exit }' sdks/dart/offline/pubspec.yaml)" = "$version"
+          grep -Fx "## $version" sdks/dart/offline/CHANGELOG.md
+
+          artifact_root="$RUNNER_TEMP/lantern-client-offline-release"
+          source_dir="$artifact_root/source"
+          archive="$artifact_root/lantern_client_offline.tar.gz"
+          package_dir="$artifact_root/unpacked/package"
+          isolated_pub_cache="$artifact_root/pub-cache"
+          mkdir -p "$source_dir" "$package_dir" "$isolated_pub_cache"
+          git archive "$GITHUB_SHA:sdks/dart/offline" | tar -x -C "$source_dir"
+          (cd "$source_dir" && dart pub get --enforce-lockfile)
+          dart pub publish -C "$source_dir" --to-archive="$archive"
+          python3 sdks/dart/offline/tool/release_contract.py \
+            --archive "$archive" --version "$version" --parent-version 0.2.0
+          tar -xzf "$archive" -C "$package_dir"
+          (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
+            PUB_CACHE="$isolated_pub_cache" dart analyze lib)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pub.dev state and any existing offline archive
+        id: state
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+          ARCHIVE_SHA256: ${{ steps.candidate.outputs.archive_sha256 }}
+        run: |
+          python3 sdks/dart/scripts/release.py preflight \
+            --package lantern_client_offline --version "$VERSION" \
+            --candidate "$RUNNER_TEMP/lantern-client-offline-release/lantern_client_offline.tar.gz" \
+            --sha256 "$ARCHIVE_SHA256" --output "$GITHUB_OUTPUT"
+
+      - name: Preserve the verified offline candidate archive
+        id: archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-client-offline-release-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lantern-client-offline-release/lantern_client_offline.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-offline:
+    name: Publish lantern_client_offline
+    needs: [offline-release-preflight]
+    if: needs.offline-release-preflight.outputs.publish_required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pub.dev
+      url: https://pub.dev/packages/lantern_client_offline
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download the verified offline candidate archive
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.offline-release-preflight.outputs.archive_artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/lantern-client-offline-release
+
+      # This job executes no repository scripts and has no Release authority.
+      - name: Set up current supported Dart and pub.dev OIDC
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: 3.12.2
+
+      - name: Publish verified offline archive with pub.dev OIDC
+        env:
+          ARCHIVE_SHA256: ${{ needs.offline-release-preflight.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lantern-client-offline-release/lantern_client_offline.tar.gz"
+          echo "$ARCHIVE_SHA256  $archive" | sha256sum --check --strict
+          dart pub publish --force --from-archive="$archive"
+
+  verify-offline-published:
+    name: Verify published offline archive
+    needs: [offline-release-preflight, publish-offline]
+    if: >-
+      ${{ !cancelled() && needs.offline-release-preflight.result == 'success' &&
+          (needs.publish-offline.result == 'success' ||
+           (needs.publish-offline.result == 'skipped' && needs.offline-release-preflight.outputs.publish_required == 'false')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the verified offline candidate archive
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.offline-release-preflight.outputs.archive_artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/lantern-client-offline-release
+
+      - name: Verify pub.dev visibility and exact offline package archive contents
+        env:
+          VERSION: ${{ needs.offline-release-preflight.outputs.version }}
+          ARCHIVE_SHA256: ${{ needs.offline-release-preflight.outputs.archive_sha256 }}
+        run: |
+          python3 sdks/dart/scripts/release.py verify \
+            --package lantern_client_offline --version "$VERSION" \
+            --candidate "$RUNNER_TEMP/lantern-client-offline-release/lantern_client_offline.tar.gz" \
+            --sha256 "$ARCHIVE_SHA256"
+
+  release-offline:
+    name: Create offline SDK GitHub Release
+    needs: [offline-release-preflight, verify-offline-published]
+    if: >-
+      ${{ !cancelled() && needs.offline-release-preflight.result == 'success' &&
+          needs.verify-offline-published.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # No checkout or Dart setup: this job has only Release authority.
+      - name: Create exact-title offline GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.offline-release-preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$TAG" = "sdks/dart/offline/v$VERSION"
+          notes_file=$(mktemp)
+          {
+            echo "## Lantern storage-neutral offline SDK"
+            echo
+            echo "Install with:"
+            echo
+            echo '```yaml'
+            echo 'dependencies:'
+            echo "  lantern_client_offline: ^$VERSION"
             echo '```'
           } > "$notes_file"
           if gh release view "$TAG" >/dev/null 2>&1; then

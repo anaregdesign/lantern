@@ -266,6 +266,54 @@ func TestDartPublishingContractGate(t *testing.T) {
 				`gh release edit "$TAG" --title "$TAG"`,
 			},
 		},
+		"offline-release-preflight": {
+			needs:       []string{"gate"},
+			permissions: map[string]string{"contents": "read"},
+			condition:   "startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')",
+			contracts: []string{
+				`[[ "$TAG" =~ ^sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
+				`test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"`,
+				`grep -Fx "## $version" sdks/dart/offline/CHANGELOG.md`,
+				"python3 sdks/dart/offline/tool/physical_release_gate.py",
+				`--tag-sha "$GITHUB_SHA"`,
+				`git archive "$GITHUB_SHA:sdks/dart/offline"`,
+				"dart pub get --enforce-lockfile",
+				`dart pub publish -C "$source_dir" --to-archive="$archive"`,
+				"python3 sdks/dart/offline/tool/release_contract.py",
+				`PUB_CACHE="$isolated_pub_cache" dart pub get --no-example`,
+				"python3 sdks/dart/scripts/release.py preflight",
+				"--package lantern_client_offline",
+			},
+		},
+		"publish-offline": {
+			needs:       []string{"offline-release-preflight"},
+			permissions: map[string]string{"contents": "read", "id-token": "write"},
+			condition:   "needs.offline-release-preflight.outputs.publish_required == 'true'",
+			contracts: []string{
+				`echo "$ARCHIVE_SHA256  $archive" | sha256sum --check --strict`,
+				`dart pub publish --force --from-archive="$archive"`,
+			},
+		},
+		"verify-offline-published": {
+			needs:       []string{"offline-release-preflight", "publish-offline"},
+			permissions: map[string]string{"contents": "read"},
+			condition:   "${{ !cancelled() && needs.offline-release-preflight.result == 'success' && (needs.publish-offline.result == 'success' || (needs.publish-offline.result == 'skipped' && needs.offline-release-preflight.outputs.publish_required == 'false')) }}",
+			contracts: []string{
+				"python3 sdks/dart/scripts/release.py verify",
+				"--package lantern_client_offline",
+				`--sha256 "$ARCHIVE_SHA256"`,
+			},
+		},
+		"release-offline": {
+			needs:       []string{"offline-release-preflight", "verify-offline-published"},
+			permissions: map[string]string{"contents": "write"},
+			condition:   "${{ !cancelled() && needs.offline-release-preflight.result == 'success' && needs.verify-offline-published.result == 'success' }}",
+			contracts: []string{
+				`test "$TAG" = "sdks/dart/offline/v$VERSION"`,
+				`gh release create "$TAG" --title "$TAG"`,
+				`gh release edit "$TAG" --title "$TAG"`,
+			},
+		},
 	}
 	for name, want := range expected {
 		t.Run(name, func(t *testing.T) {
@@ -292,17 +340,23 @@ func TestDartPublishingContractGate(t *testing.T) {
 					t.Error("release-chain step may not continue on error")
 				}
 				if strings.HasPrefix(step.Uses, "actions/checkout@") {
-					if name == "publish" || name == "release" {
+					if name == "publish" || name == "release" || name == "publish-offline" || name == "release-offline" {
 						t.Error("privileged jobs may not check out repository code")
 					}
 					if step.With["ref"] != "${{ github.sha }}" || step.With["persist-credentials"] != "false" {
 						t.Error("release checks must use the exact workflow SHA without persisted credentials")
 					}
 				}
-				if strings.HasPrefix(step.Uses, "actions/download-artifact@") && step.With["artifact-ids"] != "${{ needs.release-preflight.outputs.archive_artifact_id }}" {
-					t.Error("release-chain jobs must consume the immutable preflight artifact ID")
+				if strings.HasPrefix(step.Uses, "actions/download-artifact@") && step.With["artifact-ids"] != "" {
+					wantArtifact := "${{ needs.release-preflight.outputs.archive_artifact_id }}"
+					if strings.Contains(name, "offline") {
+						wantArtifact = "${{ needs.offline-release-preflight.outputs.archive_artifact_id }}"
+					}
+					if step.With["artifact-ids"] != wantArtifact {
+						t.Error("release-chain jobs must consume the immutable matching preflight artifact ID")
+					}
 				}
-				if name == "release" && strings.Contains(step.Uses, "setup-dart") {
+				if (name == "release" || name == "release-offline") && strings.Contains(step.Uses, "setup-dart") {
 					t.Error("Release writer may not set up pub.dev credentials")
 				}
 			}
@@ -314,14 +368,14 @@ func TestDartPublishingContractGate(t *testing.T) {
 		})
 	}
 	for name, job := range definition.Jobs {
-		if job.Permissions["id-token"] == "write" && name != "publish" {
+		if job.Permissions["id-token"] == "write" && name != "publish" && name != "publish-offline" {
 			t.Errorf("unexpected OIDC authority in job %s", name)
 		}
-		if job.Permissions["contents"] == "write" && name != "release" {
+		if job.Permissions["contents"] == "write" && name != "release" && name != "release-offline" {
 			t.Errorf("unexpected Release authority in job %s", name)
 		}
 		for _, step := range job.Steps {
-			if strings.Contains(step.Run, "gh release ") && name != "release" {
+			if strings.Contains(step.Run, "gh release ") && name != "release" && name != "release-offline" {
 				t.Errorf("job %s mutates/releases outside the verified Release writer", name)
 			}
 		}
@@ -335,6 +389,12 @@ func TestDartPublishingContractGate(t *testing.T) {
 		if definition.Jobs["release-preflight"].Outputs[key] != value {
 			t.Errorf("preflight output %s no longer carries verified candidate/state", key)
 		}
+		if definition.Jobs["offline-release-preflight"].Outputs[key] != value {
+			t.Errorf("offline preflight output %s no longer carries verified candidate/state", key)
+		}
+	}
+	if !strings.Contains(string(workflow), `"sdks/dart/offline/v*.*.*"`) {
+		t.Error("offline tags no longer trigger the exact-tag Dart Gate")
 	}
 	if !strings.Contains(string(workflow), "python3 -B -m unittest discover -s scripts -p release_test.py") {
 		t.Error("Dart CI must run the pub.dev failure-path and archive regression tests")
