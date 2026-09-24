@@ -343,8 +343,9 @@ func waitForEdge(t *testing.T, cache *graphcache.GraphCache[string, *pb.Vertex],
 }
 
 // waitForWireEdge is the real Connect/h2c sibling used by gap-recovery tests
-// whose contract is externally observable through GetEdge. NotFound is the
-// expected convergence state; any other RPC error is terminal.
+// whose contract is externally observable through GetEdge. NotFound and a
+// publication gap during an in-flight Snapshot install are transient; a gap
+// still present at the deadline is terminal.
 func waitForWireEdge(t *testing.T, ctx context.Context, raw graphv1connect.LanternServiceClient, tail, head string, want float32, timeout time.Duration) (float32, bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -355,7 +356,8 @@ func waitForWireEdge(t *testing.T, ctx context.Context, raw graphv1connect.Lante
 			if weight == want {
 				return weight, true
 			}
-		} else if connect.CodeOf(err) != connect.CodeNotFound {
+		} else if code := connect.CodeOf(err); code != connect.CodeNotFound &&
+			(code != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped:")) {
 			t.Fatalf("GetEdge %s->%s: %v", tail, head, err)
 		}
 		time.Sleep(10 * time.Millisecond)
