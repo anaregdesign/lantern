@@ -352,6 +352,13 @@ void main() {
       [_chunk()],
       [
         replication.SubscribeResponse(
+          checkpoint: replication.IdentityCheckpoint(
+            lastSeqPerOrigin: [MapEntry(_origin.toUpperCase(), Int64.ONE)],
+          ),
+        ),
+      ],
+      [
+        replication.SubscribeResponse(
           checkpoint: replication.IdentityCheckpoint(),
         ),
         replication.SubscribeResponse(

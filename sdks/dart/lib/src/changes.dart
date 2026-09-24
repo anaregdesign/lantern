@@ -321,7 +321,9 @@ IdentityCheckpointFrame _decodeIdentityCheckpoint(
 ) {
   final sequences = <String, BigInt>{};
   for (final entry in raw.lastSeqPerOrigin.entries) {
-    _validateIdentityOrigin(entry.key);
+    if (!_isValidIdentityOrigin(entry.key)) {
+      throw _internalSdkException('identity checkpoint has invalid origin');
+    }
     sequences[entry.key] = _uint64FromFixnum(entry.value);
   }
   return IdentityCheckpointFrame._(sequences);
@@ -395,13 +397,16 @@ IdentityChunkFrame _decodeIdentityChunk(
 }
 
 void _validateIdentityOrigin(String value) {
-  if (!_identityOriginPattern.hasMatch(value) ||
-      value == '00000000000000000000000000000000') {
+  if (!_isValidIdentityOrigin(value)) {
     throw _invalidArgumentException(
       'identity origin must be a nonzero lowercase 16-byte hex ID',
     );
   }
 }
+
+bool _isValidIdentityOrigin(String value) =>
+    _identityOriginPattern.hasMatch(value) &&
+    value != '00000000000000000000000000000000';
 
 String _identityOriginFromBytes(List<int> value) {
   if (value.length != 16 || value.every((byte) => byte == 0)) {
