@@ -58,9 +58,10 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   Future<Map<String, Object?>> _partition(String id) => _databaseCall(() async {
     _ensureOpen();
     _validatePartition(id);
-    await sql.rawInsert('INSERT OR IGNORE INTO partitions VALUES (?,0,0,0,0)', [
-      id,
-    ]);
+    await sql.rawInsert(
+      'INSERT OR IGNORE INTO partitions(partition_id,generation,next_ordinal,version,auth_paused,change_epoch) VALUES (?,0,0,0,0,0)',
+      [id],
+    );
     return (await sql.query(
       'partitions',
       where: 'partition_id=?',
@@ -133,6 +134,12 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   ) => _run(() async {
     _ensureOpen();
     _validatePartition(partitionId);
+    if ((await sql.rawQuery(
+      'SELECT 1 FROM recovery WHERE partition_id=? AND entity_key=? LIMIT 1',
+      [partitionId, key.canonical],
+    )).isNotEmpty) {
+      return null;
+    }
     final rows = await sql.query(
       'cache',
       where: 'partition_id=? AND entity_key=?',
@@ -792,7 +799,13 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     final generation = _checkedIncrement(
       (await _partition(partitionId))['generation']! as int,
     );
-    for (final table in ['cache', 'outbox', 'operations', 'cdc_origins']) {
+    for (final table in [
+      'cache',
+      'recovery',
+      'outbox',
+      'operations',
+      'cdc_origins',
+    ]) {
       await sql.delete(
         table,
         where: 'partition_id=?',
@@ -801,7 +814,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     }
     await sql.update(
       'partitions',
-      {'generation': generation, 'auth_paused': 0},
+      {'generation': generation, 'auth_paused': 0, 'change_epoch': 0},
       where: 'partition_id=?',
       whereArgs: [partitionId],
     );
@@ -820,6 +833,43 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       [?partition],
     )).single;
     return (row['n']! as int) > count || (row['b']! as int) > bytes;
+  }
+
+  Future<void> _trimRecovery(String partitionId) async {
+    // Reset already removed the corresponding confirmed rows, so dropping an
+    // excess marker makes that identity nonresident without exposing stale
+    // data. This bounds repeated interrupted checkpoints.
+    while (true) {
+      final local = await _over(
+        'recovery',
+        partitionId,
+        limits.maxCacheRecordsPerPartition,
+        limits.maxCacheBytesPerPartition,
+      );
+      if (!local &&
+          !await _over(
+            'recovery',
+            null,
+            limits.maxCacheRecords,
+            limits.maxCacheBytes,
+          )) {
+        return;
+      }
+      final rows = await sql.query(
+        'recovery',
+        columns: ['entity_key'],
+        where: 'partition_id=?',
+        whereArgs: [partitionId],
+        orderBy: 'entity_key',
+        limit: 1,
+      );
+      if (rows.isEmpty) throw const OfflineCapacityException();
+      await sql.delete(
+        'recovery',
+        where: 'partition_id=? AND entity_key=?',
+        whereArgs: [partitionId, rows.single['entity_key']],
+      );
+    }
   }
 
   Future<void> _evictCache(String id, String key) async {
@@ -908,6 +958,68 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       });
 
   @override
+  Future<int> changeEpoch(String partitionId) =>
+      _run(() async => (await _partition(partitionId))['change_epoch']! as int);
+
+  @override
+  Future<bool> hasUnknownResident(String partitionId, OfflineEntityKey key) =>
+      _run(() async {
+        _ensureOpen();
+        _validatePartition(partitionId);
+        final rows = await sql.query(
+          'recovery',
+          columns: ['entity_key'],
+          where: 'partition_id=? AND entity_key=?',
+          whereArgs: [partitionId, key.canonical],
+          limit: 1,
+        );
+        return rows.isNotEmpty;
+      });
+
+  @override
+  Future<List<OfflineEntityKey>> unknownResidents(
+    String partitionId, {
+    required int limit,
+  }) => _run(() async {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    if (limit < 1 || limit > offlineMaxResidentRevalidationBatch) {
+      throw const OfflineArgumentException();
+    }
+    final rows = await sql.query(
+      'recovery',
+      columns: ['entity_key'],
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+      orderBy: 'entity_key',
+      limit: limit,
+    );
+    return List<OfflineEntityKey>.unmodifiable(
+      rows.map(
+        (row) => OfflineEntityKey.fromCanonical(row['entity_key']! as String),
+      ),
+    );
+  });
+
+  @override
+  Future<bool> completeUnknownResident(
+    String partitionId,
+    OfflineEntityKey key, {
+    required int expectedEpoch,
+  }) => _atomic(() async {
+    final metadata = await _partition(partitionId);
+    if (metadata['change_epoch'] != expectedEpoch) return false;
+    final deleted = await sql.delete(
+      'recovery',
+      where: 'partition_id=? AND entity_key=?',
+      whereArgs: [partitionId, key.canonical],
+    );
+    if (deleted == 0) return false;
+    changed.add(partitionId);
+    return true;
+  });
+
+  @override
   Future<void> applyChangeChunk(
     String partitionId,
     OfflineChangeChunk chunk,
@@ -964,6 +1076,15 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       _progressColumns(partitionId, chunk.origin, next),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    final epoch = _checkedIncrement(
+      (await _partition(partitionId))['change_epoch']! as int,
+    );
+    await sql.update(
+      'partitions',
+      {'change_epoch': epoch},
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
     changed.add(partitionId);
   });
 
@@ -983,11 +1104,18 @@ final class _SqlTransaction implements OfflineStoreTransaction {
         offlineMaxChangeOriginsPerStore) {
       throw const OfflineCapacityException();
     }
+    await sql.rawInsert(
+      'INSERT OR IGNORE INTO recovery(partition_id,entity_key,reserved_bytes) '
+      'SELECT partition_id,entity_key,length(CAST(entity_key AS BLOB))+32 '
+      'FROM cache WHERE partition_id=?',
+      [partitionId],
+    );
     await sql.delete(
       'cache',
       where: 'partition_id=?',
       whereArgs: [partitionId],
     );
+    await _trimRecovery(partitionId);
     await sql.delete(
       'cdc_origins',
       where: 'partition_id=?',
@@ -1003,6 +1131,15 @@ final class _SqlTransaction implements OfflineStoreTransaction {
         ),
       );
     }
+    final epoch = _checkedIncrement(
+      (await _partition(partitionId))['change_epoch']! as int,
+    );
+    await sql.update(
+      'partitions',
+      {'change_epoch': epoch},
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
     changed.add(partitionId);
   });
 
@@ -1090,6 +1227,13 @@ final class _SqlTransaction implements OfflineStoreTransaction {
         limits.maxCacheBytesPerPartition,
       ),
       (
+        'recovery',
+        limits.maxCacheRecords,
+        limits.maxCacheBytes,
+        limits.maxCacheRecordsPerPartition,
+        limits.maxCacheBytesPerPartition,
+      ),
+      (
         'outbox',
         limits.maxOutboxRecords,
         limits.maxOutboxBytes,
@@ -1127,6 +1271,8 @@ final class _SqlTransaction implements OfflineStoreTransaction {
         generation < 0 ||
         ordinal < 0 ||
         version < 0 ||
+        metadata['change_epoch'] is! int ||
+        (metadata['change_epoch']! as int) < 0 ||
         (metadata['auth_paused'] != 0 && metadata['auth_paused'] != 1)) {
       throw const OfflineCodecException();
     }
@@ -1141,6 +1287,14 @@ final class _SqlTransaction implements OfflineStoreTransaction {
           )) {
         throw const OfflineCodecException();
       }
+    });
+    await _eachRow('recovery', 'entity_key', id, (row) async {
+      final encoded = row['entity_key'];
+      if (encoded is! String ||
+          row['reserved_bytes'] != utf8.encode(encoded).length + 32) {
+        throw const OfflineCodecException();
+      }
+      OfflineEntityKey.fromCanonical(encoded);
     });
     await _eachRow('operations', 'operation_id', id, (row) async {
       final operation = _operation(row);

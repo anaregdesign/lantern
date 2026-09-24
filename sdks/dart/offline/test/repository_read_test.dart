@@ -358,6 +358,733 @@ void main() {
     );
   });
 
+  for (final delayedStore in [false, true]) {
+    test('CDC partial chunk rejects late Vertex Get and error fallback '
+        '(async: $delayedStore)', () async {
+      final store = delayedStore
+          ? DelayedOfflineStore(InMemoryOfflineStore())
+          : InMemoryOfflineStore();
+      final remote = _ControlledReadRemote();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: testConfig(MutableClock(initial)),
+      );
+      addTearDown(repository.dispose);
+      const key = OfflineEntityKey.vertex('late');
+      final old = Vertex(
+        key: 'late',
+        value: VertexValue.string('old'),
+        expiration: null,
+      );
+      await store.transaction((transaction) async {
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: key,
+            entity: old,
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+      });
+      remote.responses['late'] = OfflineRemotePresent<Vertex>(old);
+      final reading = repository.readVertex(
+        'p',
+        'late',
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      await remote.waitUntilStarted('late');
+      await store.transaction(
+        (transaction) => transaction.applyChangeChunk(
+          'p',
+          OfflineChangeChunk(
+            origin: '00000000000000000000000000000001',
+            sequence: BigInt.one,
+            chunkIndex: 0,
+            isLast: false,
+            keys: const [key],
+          ),
+        ),
+      );
+      remote.complete('late');
+      expect((await reading).state, OfflineReadState.unknown);
+      expect(await store.transaction((t) => t.getCache('p', key)), isNull);
+
+      await store.transaction((transaction) async {
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: key,
+            entity: old,
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+      });
+      remote.failures['fallback'] = failure(OfflineRemoteErrorKind.unavailable);
+      await store.transaction((transaction) async {
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: const OfflineEntityKey.vertex('fallback'),
+            entity: Vertex(
+              key: 'fallback',
+              value: VertexValue.string('old'),
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+      });
+      final fallback = repository.readVertex(
+        'p',
+        'fallback',
+        policy: OfflineReadPolicy.serverFirst,
+      );
+      await remote.waitUntilStarted('fallback');
+      await store.transaction(
+        (transaction) => transaction.applyChangeChunk(
+          'p',
+          OfflineChangeChunk(
+            origin: '00000000000000000000000000000001',
+            sequence: BigInt.one,
+            chunkIndex: 1,
+            isLast: true,
+            keys: const [OfflineEntityKey.vertex('fallback')],
+          ),
+        ),
+      );
+      remote.complete('fallback');
+      expect((await fallback).state, OfflineReadState.unknown);
+    });
+  }
+
+  test(
+    'checkpoint reset keeps late Get Unknown and resident key durable',
+    () async {
+      final store = InMemoryOfflineStore();
+      final remote = _ControlledReadRemote();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: testConfig(MutableClock(initial)),
+      );
+      addTearDown(repository.dispose);
+      const key = OfflineEntityKey.vertex('resident');
+      await store.transaction(
+        (transaction) async => transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: key,
+            entity: Vertex(
+              key: 'resident',
+              value: VertexValue.string('old'),
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        ),
+      );
+      final reading = repository.readVertex(
+        'p',
+        'resident',
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      await remote.waitUntilStarted('resident');
+      await store.transaction(
+        (transaction) =>
+            transaction.resetChangeCursor('p', OfflineChangeCursor(const {})),
+      );
+      remote.complete('resident');
+      expect((await reading).state, OfflineReadState.unknown);
+      expect(await store.transaction((t) => t.getCache('p', key)), isNull);
+      final reopened = InMemoryOfflineStore.fromSnapshot(
+        await store.exportSnapshot(),
+      );
+      expect(
+        await reopened.transaction((t) => t.unknownResidents('p', limit: 1)),
+        [key],
+      );
+    },
+  );
+
+  test(
+    'checkpoint Unknown blocks ordinary expired, missing, and oversized Get',
+    () async {
+      final store = InMemoryOfflineStore();
+      final remote = _CountingReadRemote()
+        ..vertices['expired'] = Vertex(
+          key: 'expired',
+          value: VertexValue.string('old'),
+          expiration: initial.subtract(const Duration(seconds: 1)),
+        )
+        ..edges[const EdgeRef('tail', 'head')] = Edge(
+          tail: 'tail',
+          head: 'head',
+          weight: 1,
+          expiration: initial.subtract(const Duration(seconds: 1)),
+        );
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: testConfig(MutableClock(initial)),
+      );
+      addTearDown(repository.dispose);
+      await store.transaction((transaction) async {
+        for (final key in ['expired', 'missing']) {
+          await transaction.putCache(
+            'p',
+            OfflineCacheRecord.value(
+              partitionId: 'p',
+              generation: await transaction.generation('p'),
+              key: OfflineEntityKey.vertex(key),
+              entity: Vertex(
+                key: key,
+                value: VertexValue.string('old'),
+                expiration: null,
+              ),
+              validatedAt: initial,
+              lastAccessAt: initial,
+            ),
+          );
+        }
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: const OfflineEntityKey.edge('tail', 'head'),
+            entity: Edge(
+              tail: 'tail',
+              head: 'head',
+              weight: 1,
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+        await transaction.resetChangeCursor('p', OfflineChangeCursor(const {}));
+      });
+      for (final key in ['expired', 'missing']) {
+        expect(
+          (await repository.readVertex(
+            'p',
+            key,
+            policy: OfflineReadPolicy.serverOnly,
+          )).state,
+          OfflineReadState.unknown,
+        );
+      }
+      expect(
+        (await repository.readEdge(
+          'p',
+          const EdgeRef('tail', 'head'),
+          policy: OfflineReadPolicy.serverOnly,
+        )).state,
+        OfflineReadState.unknown,
+      );
+      expect(remote.vertexGets, 0);
+      expect(remote.edgeGets, 0);
+      expect(
+        await store.transaction((t) => t.unknownResidents('p', limit: 3)),
+        hasLength(3),
+      );
+      await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(
+          key: 'expired',
+          value: VertexValue.string('pending'),
+        ),
+      );
+      final overlay = await repository.readVertex(
+        'p',
+        'expired',
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      expect(overlay.hasPendingWrites, isTrue);
+      expect((overlay.value!.value as StringValue).value, 'pending');
+      expect(remote.vertexGets, 0);
+
+      final smallStore = InMemoryOfflineStore(
+        limits: const OfflineStoreLimits(
+          maxCacheBytes: 1024,
+          maxCacheBytesPerPartition: 1024,
+        ),
+      );
+      final largeRemote = _CountingReadRemote()
+        ..vertices['large'] = Vertex(
+          key: 'large',
+          value: VertexValue.string('x' * 4096),
+          expiration: null,
+        );
+      final largeRepository = OfflineLanternRepository(
+        store: smallStore,
+        remote: largeRemote,
+        config: testConfig(MutableClock(initial)),
+      );
+      addTearDown(largeRepository.dispose);
+      await smallStore.transaction((transaction) async {
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: const OfflineEntityKey.vertex('large'),
+            entity: Vertex(
+              key: 'large',
+              value: VertexValue.string('small'),
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+        await transaction.resetChangeCursor('p', OfflineChangeCursor(const {}));
+      });
+      expect(
+        await smallStore.transaction(
+          (t) =>
+              t.hasUnknownResident('p', const OfflineEntityKey.vertex('large')),
+        ),
+        isTrue,
+      );
+      expect(
+        (await largeRepository.readVertex(
+          'p',
+          'large',
+          policy: OfflineReadPolicy.serverOnly,
+        )).state,
+        OfflineReadState.unknown,
+      );
+      expect(largeRemote.vertexGets, 0);
+    },
+  );
+
+  test(
+    'resident recovery uses bounded plural reads and durable progress',
+    () async {
+      final store = InMemoryOfflineStore();
+      final batchRemote = _BatchRecoveryRemote()
+        ..vertices['v1'] = Vertex(
+          key: 'v1',
+          value: VertexValue.string('new'),
+          expiration: null,
+        )
+        ..edges[const OfflineEntityKey.edge('tail', 'head').canonical] = Edge(
+          tail: 'tail',
+          head: 'head',
+          weight: 2,
+          expiration: null,
+        );
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: testConfig(MutableClock(initial)),
+      );
+      addTearDown(repository.dispose);
+      await store.transaction((transaction) async {
+        for (final key in ['v1', 'v2']) {
+          await transaction.putCache(
+            'p',
+            OfflineCacheRecord.value(
+              partitionId: 'p',
+              generation: await transaction.generation('p'),
+              key: OfflineEntityKey.vertex(key),
+              entity: Vertex(
+                key: key,
+                value: VertexValue.string('old'),
+                expiration: null,
+              ),
+              validatedAt: initial,
+              lastAccessAt: initial,
+            ),
+          );
+        }
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: const OfflineEntityKey.edge('tail', 'head'),
+            entity: Edge(
+              tail: 'tail',
+              head: 'head',
+              weight: 1,
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+        await transaction.resetChangeCursor('p', OfflineChangeCursor(const {}));
+      });
+      await store.transaction((transaction) async {
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: const OfflineEntityKey.vertex('v2'),
+            entity: Vertex(
+              key: 'v2',
+              value: VertexValue.string('hidden-stale'),
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+      });
+      expect(
+        await store.transaction(
+          (t) => t.getCache('p', const OfflineEntityKey.vertex('v2')),
+        ),
+        isNull,
+      );
+      expect(
+        await repository.revalidateResidentBatch(
+          'p',
+          recoveryRemote: batchRemote,
+          limit: 2,
+        ),
+        2,
+      );
+      expect(
+        await store.transaction((t) => t.unknownResidents('p', limit: 2)),
+        hasLength(1),
+      );
+      expect(
+        await repository.revalidateResidentBatch(
+          'p',
+          recoveryRemote: batchRemote,
+          limit: 2,
+        ),
+        1,
+      );
+      expect(
+        await store.transaction((t) => t.unknownResidents('p', limit: 2)),
+        isEmpty,
+      );
+      expect(batchRemote.maximumBatch, lessThanOrEqualTo(2));
+      expect(batchRemote.vertexCalls, 2);
+      expect(batchRemote.edgeCalls, 1);
+      expect(
+        (await repository.readVertex(
+          'p',
+          'v1',
+          policy: OfflineReadPolicy.cacheOnly,
+        )).state,
+        OfflineReadState.fresh,
+      );
+      expect(
+        (await repository.readVertex(
+          'p',
+          'v2',
+          policy: OfflineReadPolicy.cacheOnly,
+        )).state,
+        OfflineReadState.missing,
+      );
+      expect(
+        (await repository.readEdge(
+          'p',
+          const EdgeRef('tail', 'head'),
+          policy: OfflineReadPolicy.cacheOnly,
+        )).value!.weight,
+        2,
+      );
+      final reopened = InMemoryOfflineStore.fromSnapshot(
+        await store.exportSnapshot(),
+      );
+      expect(
+        await reopened.transaction((t) => t.unknownResidents('p', limit: 2)),
+        isEmpty,
+      );
+    },
+  );
+
+  test('CDC arriving during plural recovery leaves resident Unknown', () async {
+    final store = InMemoryOfflineStore();
+    final batchRemote = _BatchRecoveryRemote()..hold();
+    final repository = OfflineLanternRepository(
+      store: store,
+      remote: FakeOfflineRemote(),
+      config: testConfig(MutableClock(initial)),
+    );
+    addTearDown(repository.dispose);
+    await store.transaction((transaction) async {
+      await transaction.putCache(
+        'p',
+        OfflineCacheRecord.value(
+          partitionId: 'p',
+          generation: await transaction.generation('p'),
+          key: const OfflineEntityKey.vertex('r'),
+          entity: Vertex(
+            key: 'r',
+            value: VertexValue.string('old'),
+            expiration: null,
+          ),
+          validatedAt: initial,
+          lastAccessAt: initial,
+        ),
+      );
+      await transaction.resetChangeCursor('p', OfflineChangeCursor(const {}));
+    });
+    final recovering = repository.revalidateResidentBatch(
+      'p',
+      recoveryRemote: batchRemote,
+      limit: 1,
+    );
+    await batchRemote.started.future;
+    await store.transaction(
+      (transaction) => transaction.applyChangeChunk(
+        'p',
+        OfflineChangeChunk(
+          origin: '00000000000000000000000000000001',
+          sequence: BigInt.one,
+          chunkIndex: 0,
+          isLast: true,
+          keys: const [OfflineEntityKey.vertex('r')],
+        ),
+      ),
+    );
+    batchRemote.release();
+    expect(await recovering, 0);
+    expect(await store.transaction((t) => t.unknownResidents('p', limit: 1)), [
+      const OfflineEntityKey.vertex('r'),
+    ]);
+  });
+
+  test(
+    'plural recovery uses each response time and checks TTL at commit',
+    () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final batchRemote = _BatchRecoveryRemote()..holdEdges();
+      batchRemote.vertices['freshness'] = Vertex(
+        key: 'freshness',
+        value: VertexValue.string('server'),
+        expiration: null,
+      );
+      batchRemote.vertices['expiring'] = Vertex(
+        key: 'expiring',
+        value: VertexValue.string('server'),
+        expiration: initial.add(const Duration(seconds: 1)),
+      );
+      batchRemote.edges[const OfflineEntityKey.edge('tail', 'head').canonical] =
+          Edge(tail: 'tail', head: 'head', weight: 2, expiration: null);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: FakeOfflineRemote(),
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxCacheAge: const Duration(seconds: 1),
+          missingTtl: const Duration(seconds: 1),
+        ),
+      );
+      addTearDown(repository.dispose);
+      await store.transaction((transaction) async {
+        for (final key in ['freshness', 'negative', 'expiring']) {
+          await transaction.putCache(
+            'p',
+            OfflineCacheRecord.value(
+              partitionId: 'p',
+              generation: await transaction.generation('p'),
+              key: OfflineEntityKey.vertex(key),
+              entity: Vertex(
+                key: key,
+                value: VertexValue.string('old'),
+                expiration: null,
+              ),
+              validatedAt: initial,
+              lastAccessAt: initial,
+            ),
+          );
+        }
+        await transaction.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: await transaction.generation('p'),
+            key: const OfflineEntityKey.edge('tail', 'head'),
+            entity: Edge(
+              tail: 'tail',
+              head: 'head',
+              weight: 1,
+              expiration: null,
+            ),
+            validatedAt: initial,
+            lastAccessAt: initial,
+          ),
+        );
+        await transaction.resetChangeCursor('p', OfflineChangeCursor(const {}));
+      });
+      final recovering = repository.revalidateResidentBatch(
+        'p',
+        recoveryRemote: batchRemote,
+        limit: 4,
+      );
+      await batchRemote.edgeStarted.future;
+      clock.advance(const Duration(seconds: 2));
+      batchRemote.releaseEdges();
+      expect(await recovering, 3);
+      expect(
+        await store.transaction(
+          (t) => t.getCache('p', const OfflineEntityKey.vertex('freshness')),
+        ),
+        isNotNull,
+      );
+      expect(
+        await store.transaction(
+          (t) async => (await t.getCache(
+            'p',
+            const OfflineEntityKey.vertex('freshness'),
+          ))?.validatedAt,
+        ),
+        initial,
+      );
+      expect(
+        (await repository.readVertex(
+          'p',
+          'freshness',
+          policy: OfflineReadPolicy.cacheOnly,
+          allowStale: true,
+        )).state,
+        OfflineReadState.stale,
+      );
+      expect(
+        await store.transaction(
+          (t) => t.hasUnknownResident(
+            'p',
+            const OfflineEntityKey.vertex('negative'),
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        await store.transaction(
+          (t) => t.getCache('p', const OfflineEntityKey.vertex('negative')),
+        ),
+        isNull,
+      );
+      expect(
+        await store.transaction(
+          (t) => t.hasUnknownResident(
+            'p',
+            const OfflineEntityKey.vertex('expiring'),
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        await store.transaction(
+          (t) => t.getCache('p', const OfflineEntityKey.vertex('expiring')),
+        ),
+        isNull,
+      );
+      expect(
+        await store.transaction(
+          (t) async => (await t.getCache(
+            'p',
+            const OfflineEntityKey.edge('tail', 'head'),
+          ))?.validatedAt,
+        ),
+        initial.add(const Duration(seconds: 2)),
+      );
+    },
+  );
+
+  test(
+    'late expired Vertex and present Edge reads reject CDC changes',
+    () async {
+      final vertexStore = InMemoryOfflineStore();
+      final vertexRemote = _ControlledReadRemote()
+        ..responses['expired'] = OfflineRemotePresent<Vertex>(
+          Vertex(
+            key: 'expired',
+            value: VertexValue.string('old'),
+            expiration: initial.subtract(const Duration(seconds: 1)),
+          ),
+        );
+      final vertexRepository = OfflineLanternRepository(
+        store: vertexStore,
+        remote: vertexRemote,
+        config: testConfig(MutableClock(initial)),
+      );
+      addTearDown(vertexRepository.dispose);
+      final vertexReading = vertexRepository.readVertex(
+        'p',
+        'expired',
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      await vertexRemote.waitUntilStarted('expired');
+      await vertexStore.transaction(
+        (transaction) => transaction.applyChangeChunk(
+          'p',
+          OfflineChangeChunk(
+            origin: '00000000000000000000000000000001',
+            sequence: BigInt.one,
+            chunkIndex: 0,
+            isLast: true,
+            keys: const [OfflineEntityKey.vertex('expired')],
+          ),
+        ),
+      );
+      vertexRemote.complete('expired');
+      expect((await vertexReading).state, OfflineReadState.unknown);
+
+      final edgeStore = InMemoryOfflineStore();
+      final edgeRemote = _ControlledEdgeReadRemote(
+        Edge(tail: 'tail', head: 'head', weight: 9, expiration: null),
+      );
+      final edgeRepository = OfflineLanternRepository(
+        store: edgeStore,
+        remote: edgeRemote,
+        config: testConfig(MutableClock(initial)),
+      );
+      addTearDown(edgeRepository.dispose);
+      final edgeReading = edgeRepository.readEdge(
+        'p',
+        const EdgeRef('tail', 'head'),
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      await edgeRemote.started.future;
+      await edgeStore.transaction(
+        (transaction) => transaction.applyChangeChunk(
+          'p',
+          OfflineChangeChunk(
+            origin: '00000000000000000000000000000001',
+            sequence: BigInt.one,
+            chunkIndex: 0,
+            isLast: true,
+            keys: const [OfflineEntityKey.edge('tail', 'head')],
+          ),
+        ),
+      );
+      edgeRemote.release();
+      expect((await edgeReading).state, OfflineReadState.unknown);
+      expect(
+        await edgeStore.transaction(
+          (t) => t.getCache('p', const OfflineEntityKey.edge('tail', 'head')),
+        ),
+        isNull,
+      );
+    },
+  );
+
   test('single-flight identities cannot collide on delimiters', () async {
     final clock = MutableClock(initial);
     final remote = FakeOfflineRemote()
@@ -1089,6 +1816,8 @@ final class _ControlledReadRemote extends FakeOfflineRemote {
   final Map<String, Completer<void>> _startedSignals =
       <String, Completer<void>>{};
   final List<String> started = <String>[];
+  final Map<String, OfflineRemoteRead<Vertex>> responses = {};
+  final Map<String, OfflineRemoteFailure> failures = {};
   var _active = 0;
   var maximumActive = 0;
 
@@ -1109,7 +1838,108 @@ final class _ControlledReadRemote extends FakeOfflineRemote {
     _startedSignals.putIfAbsent(key, Completer<void>.new).complete();
     await _gates.putIfAbsent(key, Completer<void>.new).future;
     _active -= 1;
-    return const OfflineRemoteMissing<Vertex>();
+    final error = failures.remove(key);
+    if (error != null) throw error;
+    return responses.remove(key) ?? const OfflineRemoteMissing<Vertex>();
+  }
+}
+
+final class _CountingReadRemote extends FakeOfflineRemote {
+  int vertexGets = 0;
+  int edgeGets = 0;
+
+  @override
+  Future<OfflineRemoteRead<Vertex>> getVertex(
+    String key, {
+    LanternCancellationToken? cancellation,
+  }) {
+    vertexGets++;
+    return super.getVertex(key, cancellation: cancellation);
+  }
+
+  @override
+  Future<OfflineRemoteRead<Edge>> getEdge(
+    EdgeRef edge, {
+    LanternCancellationToken? cancellation,
+  }) {
+    edgeGets++;
+    return super.getEdge(edge, cancellation: cancellation);
+  }
+}
+
+final class _BatchRecoveryRemote implements OfflineRecoveryRemote {
+  final Map<String, Vertex> vertices = {};
+  final Map<String, Edge> edges = {};
+  final Completer<void> started = Completer<void>();
+  final Completer<void> edgeStarted = Completer<void>();
+  Completer<void> _gate = Completer<void>()..complete();
+  Completer<void> _edgeGate = Completer<void>()..complete();
+  int vertexCalls = 0;
+  int edgeCalls = 0;
+  int maximumBatch = 0;
+
+  void hold() => _gate = Completer<void>();
+  void release() => _gate.complete();
+  void holdEdges() => _edgeGate = Completer<void>();
+  void releaseEdges() => _edgeGate.complete();
+
+  @override
+  Future<List<OfflineRemoteRead<Vertex>>> getVertices(
+    List<String> keys, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    vertexCalls++;
+    if (keys.length > maximumBatch) maximumBatch = keys.length;
+    if (!started.isCompleted) started.complete();
+    await _gate.future;
+    return [
+      for (final key in keys)
+        if (vertices[key] case final value?)
+          OfflineRemotePresent<Vertex>(value)
+        else
+          const OfflineRemoteMissing<Vertex>(),
+    ];
+  }
+
+  @override
+  Future<List<OfflineRemoteRead<Edge>>> getEdges(
+    List<EdgeRef> keys, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    edgeCalls++;
+    if (keys.length > maximumBatch) maximumBatch = keys.length;
+    if (!started.isCompleted) started.complete();
+    if (!edgeStarted.isCompleted) edgeStarted.complete();
+    await _edgeGate.future;
+    await _gate.future;
+    return [
+      for (final edge in keys)
+        if (edges[OfflineEntityKey.edge(edge.tail, edge.head).canonical]
+            case final value?)
+          OfflineRemotePresent<Edge>(value)
+        else
+          const OfflineRemoteMissing<Edge>(),
+    ];
+  }
+}
+
+final class _ControlledEdgeReadRemote extends FakeOfflineRemote {
+  _ControlledEdgeReadRemote(this.value);
+
+  final Edge value;
+  final Completer<void> started = Completer<void>();
+  final Completer<void> _gate = Completer<void>();
+
+  void release() => _gate.complete();
+
+  @override
+  Future<OfflineRemoteRead<Edge>> getEdge(
+    EdgeRef edge, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    started.complete();
+    await _gate.future;
+    return OfflineRemotePresent<Edge>(value);
   }
 }
 
@@ -1254,7 +2084,7 @@ final class _GapInjectingStore implements OfflineStore {
     final wasArmed = _armed;
     final result = await _delegate.transaction(action);
     if (wasArmed) _callsAfterArm += 1;
-    if (wasArmed && _callsAfterArm == 2 && !_injected) {
+    if (wasArmed && _callsAfterArm == 3 && !_injected) {
       _injected = true;
       unawaited(
         _delegate.transaction((transaction) async {

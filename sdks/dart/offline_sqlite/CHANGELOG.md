@@ -1,3 +1,9 @@
+## Unreleased
+
+- Migrate schema 1 to 2 transactionally, adding indexed key-only resident
+  recovery and a partition change epoch while retaining cache, cursor, and
+  pending Put state. Host tests use the OS SQLite library.
+
 ## 0.1.0
 
 - Add the opt-in `sqflite` adapter using Android/iOS platform SQLite.

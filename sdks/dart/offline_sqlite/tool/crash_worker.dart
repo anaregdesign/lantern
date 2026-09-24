@@ -26,6 +26,7 @@ Future<void> main(List<String> arguments) async {
           'confirmation',
           'cursor-chunk',
           'cursor-final',
+          'checkpoint-reset',
           'wipe',
         ].contains(scenario) ||
         !['before', 'after'].contains(boundary)) {
@@ -94,7 +95,7 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       _require(
         boundary == 'before'
             ? tables.isEmpty && version == 0
-            : tables.isNotEmpty && version == 1,
+            : tables.isNotEmpty && version == 2,
       );
     } finally {
       await raw.close();
@@ -178,6 +179,11 @@ Future<void> _mutate(
       await transaction.applyChangeChunk(_partition, _chunk(0));
     case 'cursor-final':
       await transaction.applyChangeChunk(_partition, _chunk(1));
+    case 'checkpoint-reset':
+      await transaction.resetChangeCursor(
+        _partition,
+        OfflineChangeCursor({_origin: BigInt.from(9)}),
+      );
     case 'wipe':
       await transaction.wipePartition(_partition);
     default:
@@ -307,6 +313,14 @@ Future<String> _snapshot(OfflineStore store) => store.transaction((
         partition,
       )).map(OfflineCodec.encodeOperationRecord).toList(),
       'cursor': (await transaction.changeCursor(partition)).toJson(),
+      'changeEpoch': await transaction.changeEpoch(partition),
+      'unknownResidents': [
+        for (final key in await transaction.unknownResidents(
+          partition,
+          limit: 128,
+        ))
+          key.canonical,
+      ],
     });
   }
   return jsonEncode(partitions);

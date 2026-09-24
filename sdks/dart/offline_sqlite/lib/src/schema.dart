@@ -1,7 +1,11 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 1;
+const _schemaVersion = 2;
 const _applicationId = 0x4c4e544f;
+const _legacyPartitions = '''CREATE TABLE partitions (
+    partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+    next_ordinal INTEGER NOT NULL, version INTEGER NOT NULL,
+    auth_paused INTEGER NOT NULL CHECK(auth_paused IN (0,1))) WITHOUT ROWID''';
 const _fifo = 'ordinal, item_index, record_id';
 const _afterFifo =
     '(ordinal>? OR (ordinal=? AND item_index>?) OR '
@@ -27,11 +31,17 @@ const _tables = <String>[
   '''CREATE TABLE partitions (
     partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
     next_ordinal INTEGER NOT NULL, version INTEGER NOT NULL,
-    auth_paused INTEGER NOT NULL CHECK(auth_paused IN (0,1))) WITHOUT ROWID''',
+    auth_paused INTEGER NOT NULL CHECK(auth_paused IN (0,1)),
+    change_epoch INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID''',
   '''CREATE TABLE cache (
     partition_id TEXT NOT NULL, entity_key TEXT NOT NULL,
     generation INTEGER NOT NULL, accessed_at INTEGER NOT NULL, vertex_key BLOB,
     reserved_bytes INTEGER NOT NULL, payload BLOB NOT NULL,
+    PRIMARY KEY(partition_id, entity_key),
+    FOREIGN KEY(partition_id) REFERENCES partitions(partition_id)) WITHOUT ROWID''',
+  '''CREATE TABLE recovery (
+    partition_id TEXT NOT NULL, entity_key TEXT NOT NULL,
+    reserved_bytes INTEGER NOT NULL,
     PRIMARY KEY(partition_id, entity_key),
     FOREIGN KEY(partition_id) REFERENCES partitions(partition_id)) WITHOUT ROWID''',
   '''CREATE TABLE outbox (
@@ -93,9 +103,47 @@ Future<void> _createSchema(Database db, int version) async {
   }
   await db.insert('store_metadata', {
     'key': 'format',
-    'value': 'lantern-offline-1',
+    'value': 'lantern-offline-2',
   });
   await db.execute('PRAGMA application_id = $_applicationId');
+}
+
+Future<void> _upgradeSchema(Database db, int oldVersion, int newVersion) async {
+  if (oldVersion != 1 ||
+      newVersion != _schemaVersion ||
+      (await db.rawQuery('PRAGMA application_id')).single.values.single !=
+          _applicationId) {
+    throw const OfflineSchemaException();
+  }
+  final marker = await db.query('store_metadata');
+  if (marker.length != 1 ||
+      marker.single['key'] != 'format' ||
+      marker.single['value'] != 'lantern-offline-1') {
+    throw const OfflineSchemaException();
+  }
+  await _checkDefinitions(db, <String, String>{
+    for (final statement in _tables)
+      if (!statement.startsWith('CREATE TABLE recovery'))
+        RegExp(r'CREATE TABLE (\w+)')
+            .firstMatch(statement)!
+            .group(1)!: statement.startsWith('CREATE TABLE partitions')
+            ? _legacyPartitions
+            : statement,
+    for (final entry in _indexes.entries)
+      entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
+  });
+  await db.execute(
+    'ALTER TABLE partitions ADD COLUMN change_epoch INTEGER NOT NULL DEFAULT 0',
+  );
+  await db.execute(
+    _tables.firstWhere((table) => table.startsWith('CREATE TABLE recovery')),
+  );
+  await db.update(
+    'store_metadata',
+    {'value': 'lantern-offline-2'},
+    where: 'key=?',
+    whereArgs: ['format'],
+  );
 }
 
 Future<void> _checkSchema(Database db) async {
@@ -130,7 +178,7 @@ Future<void> _checkSchema(Database db) async {
         version != _schemaVersion ||
         marker.length != 1 ||
         marker.single['key'] != 'format' ||
-        marker.single['value'] != 'lantern-offline-1') {
+        marker.single['value'] != 'lantern-offline-2') {
       throw const OfflineSchemaException();
     }
     final definitions = <String, String>{
@@ -140,25 +188,7 @@ Future<void> _checkSchema(Database db) async {
       for (final entry in _indexes.entries)
         entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
     };
-    final objects = await db.rawQuery(
-      "SELECT name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name != 'android_metadata'",
-    );
-    String normalize(String sql) => sql.replaceAllMapped(
-      RegExp(r"'[^']*(?:''[^']*)*'|\s+"),
-      (match) => match[0]!.startsWith("'") ? match[0]! : '',
-    );
-    if (objects.length != definitions.length) {
-      throw const OfflineSchemaException();
-    }
-    for (final object in objects) {
-      final expected = definitions[object['name']];
-      final actual = object['sql'];
-      if (expected == null ||
-          actual is! String ||
-          normalize(actual) != normalize(expected)) {
-        throw const OfflineSchemaException();
-      }
-    }
+    await _checkDefinitions(db, definitions);
     final integrity = await db.rawQuery('PRAGMA quick_check(1)');
     if (integrity.length != 1 ||
         integrity.single.values.single != 'ok' ||
@@ -171,5 +201,30 @@ Future<void> _checkSchema(Database db) async {
     Error.throwWithStackTrace(_safeDatabaseError(error), stack);
   } catch (_) {
     throw const OfflineSchemaException();
+  }
+}
+
+Future<void> _checkDefinitions(
+  Database db,
+  Map<String, String> definitions,
+) async {
+  final objects = await db.rawQuery(
+    "SELECT name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name != 'android_metadata'",
+  );
+  String normalize(String sql) => sql.replaceAllMapped(
+    RegExp(r"'[^']*(?:''[^']*)*'|\s+"),
+    (match) => match[0]!.startsWith("'") ? match[0]! : '',
+  );
+  if (objects.length != definitions.length) {
+    throw const OfflineSchemaException();
+  }
+  for (final object in objects) {
+    final expected = definitions[object['name']];
+    final actual = object['sql'];
+    if (expected == null ||
+        actual is! String ||
+        normalize(actual) != normalize(expected)) {
+      throw const OfflineSchemaException();
+    }
   }
 }

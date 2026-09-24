@@ -11,6 +11,7 @@ const _scenarios = [
   'confirmation',
   'cursor-chunk',
   'cursor-final',
+  'checkpoint-reset',
   'wipe',
 ];
 const _timeout = Duration(seconds: 30);

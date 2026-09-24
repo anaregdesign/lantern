@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Retain bounded key-only Unknown residents and a durable change epoch across
+  checkpoint reset and fresh-process snapshot restore (schema v7). Reject late
+  remote Get results and error fallbacks after CDC invalidation; revalidate
+  resident keys through bounded plural reads without starting a CDC stream.
+
 ## 0.2.0
 
 - Allow asynchronous `OfflineStoreTransaction` methods through `FutureOr`, and

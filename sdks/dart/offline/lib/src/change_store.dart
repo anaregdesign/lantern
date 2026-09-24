@@ -12,6 +12,9 @@ const offlineMaxChangeOriginsPerStore = 4096;
 /// Maximum identities and prefixes in one projected CDC chunk.
 const offlineMaxChangeInvalidations = 1024;
 
+/// Maximum resident identities returned by one recovery scan or read batch.
+const offlineMaxResidentRevalidationBatch = 128;
+
 final _maxSequence = (BigInt.one << 64) - BigInt.one;
 final _originPattern = RegExp(r'^[0-9a-f]{32}$');
 

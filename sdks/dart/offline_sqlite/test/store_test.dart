@@ -528,6 +528,79 @@ void main() {
     await check.close();
   });
 
+  test('schema 1 migrates cache and CDC metadata without losing data', () async {
+    final store = await open();
+    await _cache(store, 'retained', 'value');
+    const origin = '00000000000000000000000000000001';
+    await store.transaction(
+      (transaction) => transaction.applyChangeChunk(
+        'p',
+        OfflineChangeChunk(
+          origin: origin,
+          sequence: BigInt.one,
+          chunkIndex: 0,
+          isLast: true,
+        ),
+      ),
+    );
+    final path = store.path;
+    await store.close();
+    final old = await factory.openDatabase(path);
+    await old.execute('DROP TABLE recovery');
+    await old.execute('ALTER TABLE partitions DROP COLUMN change_epoch');
+    await old.update(
+      'store_metadata',
+      {'value': 'lantern-offline-1'},
+      where: 'key=?',
+      whereArgs: ['format'],
+    );
+    await old.setVersion(1);
+    await old.execute('DROP INDEX cache_lru');
+    await old.close();
+
+    await expectLater(open(path: path), throwsA(isA<OfflineSchemaException>()));
+    final rejected = await factory.openDatabase(path);
+    expect(await rejected.getVersion(), 1);
+    expect(
+      (await rejected.rawQuery(
+        'PRAGMA table_info(partitions)',
+      )).any((row) => row['name'] == 'change_epoch'),
+      isFalse,
+    );
+    await rejected.execute(
+      'CREATE INDEX cache_lru ON cache(accessed_at, partition_id, entity_key)',
+    );
+    await rejected.close();
+
+    final migrated = await open(path: path);
+    expect(await migrated.transaction((t) => t.changeEpoch('p')), 0);
+    expect(
+      (await migrated.transaction(
+        (t) => t.changeCursor('p'),
+      )).sequences[origin],
+      BigInt.one,
+    );
+    expect(
+      await migrated.transaction(
+        (t) => t.getCache('p', const OfflineEntityKey.vertex('retained')),
+      ),
+      isNotNull,
+    );
+    await migrated.transaction(
+      (t) =>
+          t.resetChangeCursor('p', OfflineChangeCursor({origin: BigInt.one})),
+    );
+    expect(
+      await migrated.transaction((t) => t.unknownResidents('p', limit: 1)),
+      [const OfflineEntityKey.vertex('retained')],
+    );
+    final reopened = await reopen(migrated);
+    expect(
+      await reopened.transaction((t) => t.unknownResidents('p', limit: 1)),
+      [const OfflineEntityKey.vertex('retained')],
+    );
+  });
+
   test('corrupt record is rejected before it can reach replay', () async {
     final store = await open();
     await _cache(store, 'retained', 'value');
