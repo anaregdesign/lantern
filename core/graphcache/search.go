@@ -192,8 +192,9 @@ func (c *GraphCache[S, T]) rebuildIncompleteSearchLocked() {
 // locks in this order matches vertex writers (mu, then searchCommitMu), and
 // keeping the barrier after mu is released prevents a future index-pointer
 // replacement from retiring the captured index before the query finishes.
-// This pins readers only; writers that prepare documents outside mu also
-// need index-identity revalidation before pointer replacement is enabled.
+// Batch/HLC writers that prepare documents outside mu independently validate
+// index identity before applying them. Actual pointer replacement is not yet
+// enabled by a production write path.
 func (c *GraphCache[S, T]) lockSearchView() (*search.InvertedIndex[S, search.Document], func(S) string, *radix) {
 	c.mu.RLock()
 	if c.searchIndex == nil {

@@ -39,10 +39,23 @@ func (c *GraphCache[S, T]) AddEdgeWithExpirationContribHLC(tail, head S, w float
 func (c *GraphCache[S, T]) PutVertexWithExpirationHLC(key S, value T, expiration time.Time, ts hlc.Timestamp) bool {
 	var prepared search.PreparedDocument
 	var prepErr error
-	if c.searchIndex != nil {
-		prepared, _, prepErr = c.searchIndex.Prepare(c.searchExtract(key, value))
+	for {
+		// Analysis runs outside the aggregate lock. Capture the exact index
+		// under that lock and retry if a replacement was published meanwhile;
+		// a PreparedDocument is valid only for the index that produced it.
+		c.mu.RLock()
+		index, extract := c.searchIndex, c.searchExtract
+		c.mu.RUnlock()
+		prepared, prepErr = search.PreparedDocument{}, nil
+		if index != nil {
+			prepared, _, prepErr = index.Prepare(extract(key, value))
+		}
+		c.mu.Lock()
+		if c.searchIndex == index {
+			break
+		}
+		c.mu.Unlock()
 	}
-	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.searchIndex != nil {
 		c.searchCommitMu.Lock()

@@ -8,9 +8,10 @@ import "time"
 // arrives here as a one-element slice). Each underlying structure (dict, prefix
 // radix, search index) is updated under a single one of its own locks for the
 // whole batch, so a namespace-wide or TTL-flush delete pays one acquisition per
-// structure instead of one per key (#738). Some callers hold GraphCache.mu when
-// the hook fires and some do not, so this helper must not assume the aggregate
-// lock is held — it touches only the inner-locked structures, never c.mu.
+// structure instead of one per key (#738). Every production vertex mutation
+// and GC path currently holds GraphCache.mu when this synchronous hook fires;
+// the hook itself must not acquire that lock. This matters if the search index
+// pointer is ever replaced while another goroutine is preparing documents.
 func (c *GraphCache[S, T]) onVerticesEvicted(keys []S) {
 	if len(keys) == 0 {
 		return

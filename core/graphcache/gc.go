@@ -319,8 +319,14 @@ func (c *GraphCache[S, T]) Watch(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			start := time.Now()
 			vExpired := c.flushVertices()
-			if vExpired > 0 && c.searchIndex != nil && c.searchIndex.Health() != search.IndexHealthy {
-				_ = c.RebuildSearchIndex()
+			if vExpired > 0 {
+				c.mu.RLock()
+				index := c.searchIndex
+				incomplete := index != nil && index.Health() != search.IndexHealthy
+				c.mu.RUnlock()
+				if incomplete {
+					_ = c.RebuildSearchIndex()
+				}
 			}
 			eExpired, dRemoved := c.flush()
 			d := time.Since(start)
