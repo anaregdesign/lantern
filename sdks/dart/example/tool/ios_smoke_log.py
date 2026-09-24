@@ -134,14 +134,16 @@ def sanitize(path):
 def priority(path):
     if path.name == "classification.txt":
         return 0
-    if path.parent.name == "phases" and path.name in MARKERS.values():
+    if path.parent.name == "phases" and path.name in (*MARKERS.values(), "tests_failed"):
         return 1
     return {
         "flutter.log": 2,
-        "process-tree-before-stop.txt": 3,
-        "simulator.log": 4,
-        "app-container.txt": 5,
-        "installed-apps.txt": 6,
+        "driver.log": 3,
+        "app.log": 4,
+        "process-tree-before-stop.txt": 5,
+        "simulator.log": 6,
+        "app-container.txt": 7,
+        "installed-apps.txt": 8,
     }.get(path.name, 7)
 
 

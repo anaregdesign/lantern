@@ -50,6 +50,97 @@ echo 'All tests passed!'
     expect(await _classification(sandbox), 'success');
   });
 
+  test(
+    'attached iOS smoke uses the driver result and redacts its VM URL',
+    () async {
+      await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun);
+
+      final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(await _classification(sandbox), 'success');
+      expect(result.stdout.toString(), contains('All tests passed.'));
+      expect(result.stdout.toString(), isNot(contains('private-vm-code')));
+      final logs = await _diagnosticText(sandbox);
+      expect(logs, contains('MOBILE_SMOKE_PASS'));
+      expect(logs, contains('<redacted-url>'));
+      expect(logs, isNot(contains('private-vm-code')));
+      await _expectPhases(sandbox, _allPhases);
+    },
+  );
+
+  test('attached iOS smoke preserves an assertion failure', () async {
+    await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun, driverExit: 1);
+
+    final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+    expect(result.exitCode, isNonZero);
+    expect(await _classification(sandbox), 'test_failure');
+    expect(
+      await File(
+        '${sandbox.path}/diagnostics/initial/driver.log',
+      ).readAsString(),
+      contains('Expected: true Actual: false'),
+    );
+  });
+
+  test('attached iOS smoke bounds a closed-pipe live launch', () async {
+    await _writeAttachedFakes(
+      sandbox,
+      fakeFlutter,
+      fakeXcrun,
+      closedPipeLaunch: true,
+    );
+    final stopwatch = Stopwatch()..start();
+
+    final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+    stopwatch.stop();
+    expect(result.exitCode, isNonZero);
+    expect(await _classification(sandbox), 'launch_stall');
+    expect(stopwatch.elapsed, lessThan(const Duration(seconds: 12)));
+  });
+
+  test('attached iOS smoke does not retry an exited Runner', () async {
+    await _writeAttachedFakes(
+      sandbox,
+      fakeFlutter,
+      fakeXcrun,
+      runnerExited: true,
+    );
+
+    final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+    expect(result.exitCode, isNonZero);
+    expect(await _classification(sandbox), 'launch_failure');
+  });
+
+  test('attached iOS smoke does not retry an app-side test failure', () async {
+    await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun, appFailed: true);
+
+    final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+    expect(result.exitCode, isNonZero);
+    expect(await _classification(sandbox), 'test_failure');
+  });
+
+  test(
+    'attached iOS smoke retries when VM attachment is unavailable',
+    () async {
+      await _writeAttachedFakes(
+        sandbox,
+        fakeFlutter,
+        fakeXcrun,
+        omitVmUrl: true,
+      );
+
+      final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+
+      expect(result.exitCode, isNonZero);
+      expect(await _classification(sandbox), 'attach_stall');
+    },
+  );
+
   test('bounds a post-build launch stall and redacts diagnostics', () async {
     final githubOutput = File('${sandbox.path}/github-output');
     await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
@@ -803,6 +894,123 @@ Future<ProcessResult> _runAttempt(
     ...extraEnvironment,
   },
 );
+
+Future<ProcessResult> _runAttachedAttempt(
+  Directory sandbox,
+  File flutter,
+  File xcrun,
+) => Process.run(
+  'bash',
+  [
+    _scriptPath,
+    'run-attached-attempt',
+    'SOURCE-DEVICE',
+    'initial',
+    '${sandbox.path}/diagnostics',
+  ],
+  workingDirectory: Directory.current.path,
+  environment: {
+    ...Platform.environment,
+    'IOS_SMOKE_FLUTTER_BIN': flutter.path,
+    'IOS_SMOKE_XCRUN_BIN': xcrun.path,
+    'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '1',
+    'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '4',
+    'IOS_SMOKE_BUILD_TIMEOUT_SECONDS': '2',
+    'IOS_SMOKE_ATTACH_TIMEOUT_SECONDS': '2',
+    'IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS': '1',
+  },
+);
+
+Future<void> _writeAttachedFakes(
+  Directory sandbox,
+  File flutter,
+  File xcrun, {
+  int driverExit = 0,
+  bool closedPipeLaunch = false,
+  bool appFailed = false,
+  bool omitVmUrl = false,
+  bool runnerExited = false,
+}) async {
+  final appLog = File('${sandbox.path}/app-log.json');
+  await appLog.writeAsString(
+    jsonEncode([
+      if (!omitVmUrl)
+        {
+          'eventMessage':
+              'flutter: The Dart VM service is listening on '
+              'http://127.0.0.1:1234/private-vm-code/',
+        },
+      if (!runnerExited) ...[
+        {'eventMessage': 'flutter: MOBILE_SMOKE_BODY_STARTED'},
+        {'eventMessage': 'flutter: MOBILE_SMOKE_PASS vertices=13'},
+        {
+          'eventMessage': appFailed
+              ? 'flutter: 00:00 +0 -1: Some tests failed.'
+              : 'flutter: 00:00 +1: All tests passed!',
+        },
+      ],
+    ]),
+  );
+  await _writeExecutable(
+    flutter,
+    r'''#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  build)
+    [[ " $* " == *'--dart-define=LANTERN_IOS_DIRECT_LAUNCH=true'* ]]
+    echo 'Running Xcode build...'
+    echo 'Xcode build done. 1.0s'
+    ;;
+  drive)
+    echo 'VMServiceFlutterDriver: Connected to Flutter application.'
+    if [[ _DRIVER_EXIT_ == 0 ]]; then
+      echo 'All tests passed.'
+    else
+      echo 'Failure Details:'
+      echo 'Expected: true Actual: false'
+    fi
+    exit _DRIVER_EXIT_
+    ;;
+  *) exit 2 ;;
+esac
+'''
+        .replaceAll('_DRIVER_EXIT_', '$driverExit'),
+  );
+  await _writeExecutable(
+    xcrun,
+    r'''#!/usr/bin/env bash
+set -euo pipefail
+case "${2:-}" in
+  terminate|install) exit 0 ;;
+  launch)
+    if [[ '_CLOSED_PIPE_LAUNCH_' == true ]]; then
+      exec >/dev/null 2>&1
+      sleep 30
+    fi
+    if [[ '_RUNNER_EXITED_' == true ]]; then
+      sleep 0.01 &
+      exited_pid=$!
+      wait "$exited_pid"
+      echo "com.anaregdesign.lanternExample: $exited_pid"
+    else
+      echo "com.anaregdesign.lanternExample: $PPID"
+    fi
+    ;;
+  spawn)
+    if [[ "${4:-}" == log ]]; then
+      cat '_APP_LOG_'
+    fi
+    ;;
+  *)
+    echo 'Authorization: Bearer fake-private-token http://private.example.test/path'
+    ;;
+esac
+'''
+        .replaceAll('_CLOSED_PIPE_LAUNCH_', '$closedPipeLaunch')
+        .replaceAll('_RUNNER_EXITED_', '$runnerExited')
+        .replaceAll('_APP_LOG_', appLog.path),
+  );
+}
 
 Future<String> _classification(Directory sandbox) async => (await File(
   '${sandbox.path}/diagnostics/initial/classification.txt',

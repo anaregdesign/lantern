@@ -759,7 +759,7 @@ jobs:
           echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
           cat "$RUNNER_TEMP/ios-simulator-boot.log"
 
-      - name: Run classified iOS native smoke
+      - name: Run attached iOS native smoke
         id: ios_smoke_initial
         if: success()
         continue-on-error: true
@@ -769,14 +769,16 @@ jobs:
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
         run: >-
-          bash tool/ios_smoke_ci.sh run-attempt "$DEVICE_ID" initial
+          bash tool/ios_smoke_ci.sh run-attached-attempt "$DEVICE_ID" initial
           "$RUNNER_TEMP/ios-smoke-diagnostics"
 
-      # Only a silent post-build/pre-body launch stall is infrastructure.
+      # Retry only a native launch or VM attachment stall on a clean device.
       # Assertion, RPC, build, and post-body failures never enter this path.
       - name: Create independently clean retry simulator
         id: ios_fresh_device
-        if: steps.ios_smoke_initial.outputs.classification == 'launch_stall'
+        if: >-
+          contains(fromJSON('["launch_stall","attach_stall"]'),
+          steps.ios_smoke_initial.outputs.classification)
         timeout-minutes: 3
         working-directory: sdks/dart/example
         run: |
@@ -789,10 +791,11 @@ jobs:
           test "$retry_device" != "$DEVICE_ID"
           echo "RETRY_DEVICE_ID=$retry_device" >> "$GITHUB_ENV"
 
-      - name: Retry classified iOS native smoke on fresh simulator
+      - name: Retry attached iOS native smoke on fresh simulator
         id: ios_smoke_retry
         if: >-
-          steps.ios_smoke_initial.outputs.classification == 'launch_stall' &&
+          contains(fromJSON('["launch_stall","attach_stall"]'),
+          steps.ios_smoke_initial.outputs.classification) &&
           steps.ios_fresh_device.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 10
@@ -801,7 +804,7 @@ jobs:
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
         run: >-
-          bash tool/ios_smoke_ci.sh run-attempt "$RETRY_DEVICE_ID" retry
+          bash tool/ios_smoke_ci.sh run-attached-attempt "$RETRY_DEVICE_ID" retry
           "$RUNNER_TEMP/ios-smoke-diagnostics"
 
       - name: Finalize bounded iOS launch diagnostics
@@ -834,7 +837,8 @@ jobs:
             echo "SMOKE_DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
             exit 0
           fi
-          if [[ "$INITIAL_CLASSIFICATION" == launch_stall && \
+          if [[ ( "$INITIAL_CLASSIFICATION" == launch_stall || \
+                  "$INITIAL_CLASSIFICATION" == attach_stall ) && \
                 "$FRESH_DEVICE_OUTCOME" == success && \
                 "$RETRY_CLASSIFICATION" == success ]]; then
             echo "SMOKE_DEVICE_ID=$RETRY_DEVICE_ID" >> "$GITHUB_ENV"
