@@ -322,8 +322,9 @@ is a separate format from `.lbk`. It requires a `RECEIPT_V1` graph Snapshot
 header, receipt Store snapshot and policy, clock high-water, and origin HLC
 cutoffs; bounded records and a counted SHA-256 footer reject incomplete or
 damaged containers. The digest detects corruption, not malicious tampering or
-an inconsistent source cut. The codec checks graph frame order and counts,
-not graph payload semantics or cross-section consistency. Its current
+an inconsistent source cut. The codec checks graph frame order, counts,
+payload semantics, and causal relationships, but not whether graph,
+receipts, and origin cutoffs were captured under one publication cut. Its current
 deterministic `proto.Marshal` byte-equality check is not stable across
 protobuf runtime versions; before production use, replace it with a stable
 wire-field validator. No production producer, backup scheduler, or restore
@@ -336,16 +337,18 @@ publication fault; it reports pump health, not a receipt or graph cut.
 
 This coordinator blocks service-gated reads, its own receipt Lookup, PeerStatus,
 Snapshot, BackupSnapshot capture, and Subscribe until log publication. Its
-callback releases the Store, GraphCache, and origin tracker locks before the
-log ring is updated. Direct `Store.Lookup` and GraphCache reads bypass the
-service gate and may briefly observe receipt or graph state ahead of that ring.
-`LanternService.LocalSeq` shares a receipt-specific origin cut through ring
-publication without blocking legacy relay WAL retries. The held-WAL test proves
-those readers cannot see *tentative* state while WAL.Write is pending; it does
-not prove a single cut for direct readers during callback publication.
-Production wiring must gate the remaining direct readers or strengthen the
-publication primitive before claiming the every-observer atomicity required
-above.
+`CommitWithPostRingPublication` callback releases the Store, GraphCache, and
+origin tracker locks only after the matching log ring entry and sequence are
+installed, but before dispatcher handoff can block. Direct Core readers that
+unblock at this point see committed state; log readers wait on `Log.mu` and
+then see the same entry. `LanternService.LocalSeq` also shares a
+receipt-specific origin cut through publication without blocking legacy relay
+WAL retries. Tests cover the WAL-held tentative interval and the post-ring
+callback interval. This establishes healthy in-process publication ordering,
+not a durable or every-failure guarantee: raw GraphCache reads and Store stats
+have no error result and cannot report an indeterminate WAL fault. Authoritative
+receipt status and graph reads must use the server's error-bearing committed
+view until a checked Core read API or equivalent fail-stop gate exists.
 
 No production provider uses the staged cache or coordinator. A durable WAL
 encoder/replayer, atomic remote receipt apply, a PeerStatus capability gate,
