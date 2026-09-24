@@ -63,6 +63,10 @@ func (c *GraphCache[S, T]) addEdgeContribHLCLocked(tail, head S, w float32, expi
 // `now` supplies the liveness clock and effective returns the post-apply live
 // weight sum (#897).
 func (c *GraphCache[S, T]) tryAddExistingEdgeContrib(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32, ok bool) {
+	if c.publicationGate != nil {
+		c.publicationGate.RLock()
+		defer c.publicationGate.RUnlock()
+	}
 	if c.dict == nil {
 		return false, 0, false
 	}
