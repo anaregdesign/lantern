@@ -457,7 +457,11 @@ func validateArchiveEdge(edge *pb.SnapshotEdge, tombstone hlc.Timestamp) error {
 				return wholeStateArchiveError("duplicate live edge Put contribution")
 			}
 			seenPut = true
-			if contribution.GetHlc() != nil {
+			if contribution.GetHlc() == nil {
+				if putFloor != (hlc.Timestamp{}) {
+					return wholeStateArchiveError("live edge Put contribution lacks its floor HLC")
+				}
+			} else {
 				stamp, ok := archiveHLC(contribution.GetHlc())
 				if !ok || stamp != putFloor {
 					return wholeStateArchiveError("live edge Put contribution HLC mismatch")

@@ -280,6 +280,12 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 			edge.Contributions[0].Hlc = proto.Clone(edge.Hlc).(*pb.HLCTimestamp)
 			edge.Contributions[0].Hlc.WallNs++
 		}},
+		{"Put contribution lacks floor HLC", "live edge Put contribution lacks its floor HLC", func(a *wholeStateArchive) {
+			edge := a.Graph[3].GetEdge()
+			edge.Hlc = proto.Clone(edge.Contributions[0].GetHlc()).(*pb.HLCTimestamp)
+			edge.Contributions[0].ContribId = nil
+			edge.Contributions[0].Hlc = nil
+		}},
 		{"invalid contribution expiration", "invalid live edge contribution", func(a *wholeStateArchive) {
 			a.Graph[3].GetEdge().Contributions[0].Expiration = badTimestamp()
 		}},
