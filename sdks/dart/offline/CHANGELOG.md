@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Allow asynchronous `OfflineStoreTransaction` methods through `FutureOr`, and
   await the public port throughout Repository and reusable conformance code.
@@ -49,8 +49,10 @@
   retries, cancel same-batch sibling token acquisition through a partition auth
   epoch, bound and evict process-local partition runtimes, and quiesce active,
   deferred, and watched partition work before wipe or repository disposal.
+- Prepare the independent pub.dev package with a hosted `lantern_client`
+  constraint and a storage-neutral publish archive.
 
-## 0.1.0
+## 0.1.0 (unpublished development baseline)
 
 - Initial experimental storage-neutral offline Repository core.
 - Add strict canonical v1 cache/outbox codecs and fresh-process conformance

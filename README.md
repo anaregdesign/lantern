@@ -477,7 +477,7 @@ token providers, deadlines, cancellation, bounded retry, typed failures, and
 auth-exempt gRPC Health-v1 probing). See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
 
-[`lantern_client_offline`](sdks/dart/offline/) is an experimental, unpublished,
+[`lantern_client_offline`](sdks/dart/offline/) is an experimental,
 opt-in pure-Dart Repository layer for Firebase-like cached snapshots, locally
 committed Put overlays, and explicit foreground replay. It injects the
 transactional store, never persists credentials, and never serves past Lantern

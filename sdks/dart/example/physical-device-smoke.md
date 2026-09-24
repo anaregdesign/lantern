@@ -297,3 +297,36 @@ exact tested commit and binary hashes. Both Android and iOS passed actual
 process-kill/relaunch, pending TTL, durable logout wipe, and local user-partition
 isolation. The evidence records its transport and local build limitations and
 does not replace the complete first-publication matrix in #1162.
+
+## Offline core publication matrix
+
+Before an `sdks/dart/offline/vX.Y.Z` tag, test a clean code commit on both
+physical platforms using the current Put-only app and a platform-trusted HTTPS
+endpoint. Record `android.json` and `ios.json` under
+`evidence/offline-release/` only after the runs pass. Each file must set
+`kind: physical_offline_release_evidence`, `schema: 1`, `contentFree: true`,
+`physicalDevice: true`, `cleanCheckout: true`, `repository:
+anaregdesign/lantern`, `testedCommit` to the full tested code SHA,
+`recordedAt` to a UTC timestamp, and `result: passed` with empty `limitations`.
+Include the exact Flutter/Dart versions and Flutter framework revision, the
+platform package ID and installed binary SHA-256, device model/OS without an
+identifier, and `network` with `transport: Connect/HTTPS`, authenticated and
+platform-trusted TLS both true, plus a sanitized topology description. Use
+`application.target: integration_test/mobile_smoke_test.dart`.
+
+The `scenarios` array must contain the ten native smoke scenarios listed in
+the example above, plus `platform_trusted_tls`, `untrusted_tls_rejection`,
+`token_rotation`, and `radio_offline_foreground_recovery`. Android also needs
+`android_doze_like_pause`; iOS also needs
+`ios_local_network_privacy_denial_retry`. The record must describe actual
+observed passes, not planned work. Keep endpoints, IP addresses, certificates,
+tokens, device identifiers, and raw traces out of the files.
+
+Commit **only** these evidence files (and an optional README in the same
+directory) as the immediate child of the tested code commit. Tag that child.
+The release gate requires its parent to equal both `testedCommit` fields and
+rejects every other changed path. It also compares toolchain/package identity
+to the tag's Android/iOS simulator manifests from the current workflow attempt.
+This proves the tagged code is
+the exact code tested on devices while allowing the evidence to be checked in
+without a self-referential Git SHA.

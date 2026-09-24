@@ -46,7 +46,8 @@ not make Add part of the durable offline contract.
 ### Reference-core implementation
 
 The accepted contract now has an experimental pure-Dart reference core at
-`sdks/dart/offline` (`lantern_client_offline`, `publish_to: none`). It supplies
+`sdks/dart/offline` (`lantern_client_offline`, independently releasable after
+the #1162 physical-device gate). It supplies
 the fail-closed cache-v1/outbox-v2 JSON codecs and deterministic fixtures,
 immutable public ports/types, a non-production `InMemoryOfflineStore`,
 confirmed-cache policy engine, latency-compensated Put overlays, and explicit

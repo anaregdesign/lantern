@@ -11,8 +11,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  lantern_client_offline:
-    path: ../offline
+  lantern_client_offline: ^0.2.0
   path: 1.9.1
   sqflite: 2.4.4
   sqflite_common: 2.5.11
@@ -20,7 +19,13 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  lantern_client:
-    path: ..
+  lantern_client: ^0.2.0
   lints: 6.1.0
   sqflite_common_ffi: ^2.4.0
+
+# Exercise the sibling core in this unpublished adapter before its first pub release.
+dependency_overrides:
+  lantern_client:
+    path: ..
+  lantern_client_offline:
+    path: ../offline
