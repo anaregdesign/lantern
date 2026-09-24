@@ -389,6 +389,37 @@ class SearchIndexHealth extends $pb.ProtobufEnum {
   const SearchIndexHealth._(super.value, super.name);
 }
 
+/// MutationReceiptState is a read-only observation on the serving replica.
+/// NOT_YET_OBSERVED is never proof that the mutation was not executed elsewhere.
+class MutationReceiptState extends $pb.ProtobufEnum {
+  static const MutationReceiptState MUTATION_RECEIPT_STATE_UNSPECIFIED =
+      MutationReceiptState._(
+          0, _omitEnumNames ? '' : 'MUTATION_RECEIPT_STATE_UNSPECIFIED');
+  static const MutationReceiptState MUTATION_RECEIPT_STATE_CONFIRMED =
+      MutationReceiptState._(
+          1, _omitEnumNames ? '' : 'MUTATION_RECEIPT_STATE_CONFIRMED');
+  static const MutationReceiptState MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED =
+      MutationReceiptState._(
+          2, _omitEnumNames ? '' : 'MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED');
+  static const MutationReceiptState MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE =
+      MutationReceiptState._(
+          3, _omitEnumNames ? '' : 'MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE');
+
+  static const $core.List<MutationReceiptState> values = <MutationReceiptState>[
+    MUTATION_RECEIPT_STATE_UNSPECIFIED,
+    MUTATION_RECEIPT_STATE_CONFIRMED,
+    MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED,
+    MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE,
+  ];
+
+  static final $core.List<MutationReceiptState?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static MutationReceiptState? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const MutationReceiptState._(super.value, super.name);
+}
+
 /// Direction selects which incident edges count toward a vertex's degree.
 class TopVerticesByDegreeRequest_Direction extends $pb.ProtobufEnum {
   /// DIRECTION_UNSPECIFIED defaults to out-degree server-side.
