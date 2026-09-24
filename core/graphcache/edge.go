@@ -335,6 +335,13 @@ func (w *weight) snapshot() (sum float32, latest time.Time, nonZero bool) {
 func (w *weight) snapshotAt(now time.Time) (sum float32, latest time.Time, nonZero bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.snapshotLockedAt(now)
+}
+
+// snapshotLockedAt is the shared body for a point read and a multi-edge read
+// that has locked all of its buckets before sampling one observation time.
+// Caller must hold w.mu.
+func (w *weight) snapshotLockedAt(now time.Time) (sum float32, latest time.Time, nonZero bool) {
 	w.flushLockedAt(now)
 	for _, v := range w.values {
 		if v.expiration.After(latest) {

@@ -3,13 +3,16 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -401,6 +404,111 @@ func TestLantern_GetEdges_BatchPartialMiss(t *testing.T) {
 	if len(missing) != 1 || missing[0] != (client.EdgeRef{Tail: "x", Head: "y"}) {
 		t.Errorf("missing = %v, want [{x y}]", missing)
 	}
+}
+
+// A plural GetEdges RPC must report one graph cut, including when an Add
+// takes the existing-edge fast path outside GraphCache's aggregate lock.
+func TestRawConnect_GetEdgesAtomicReadCut(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	srv := newConnectTestServer(t, service.NewLanternService(cache), nil)
+	c := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	keys := make([]*pb.EdgeKey, 0, 130)
+	for i := 0; i < 64; i++ {
+		keys = append(keys, &pb.EdgeKey{Tail: "tail", Head: "a"}, &pb.EdgeKey{Tail: "tail", Head: "b"})
+	}
+	keys = append(keys, &pb.EdgeKey{Tail: "absent", Head: "head"}, &pb.EdgeKey{Tail: "absent", Head: "head"})
+	read := func() *pb.GetEdgesResponse {
+		t.Helper()
+		resp, err := c.GetEdges(ctx, connect.NewRequest(&pb.GetEdgesRequest{Edges: keys}))
+		if err != nil {
+			t.Fatalf("GetEdges: %v", err)
+		}
+		if len(resp.Msg.GetEdges()) != 128 || len(resp.Msg.GetMissing()) != 2 {
+			t.Fatalf("GetEdges found/missing = %d/%d, want 128/2", len(resp.Msg.GetEdges()), len(resp.Msg.GetMissing()))
+		}
+		return resp.Msg
+	}
+	put := func(weight float32) {
+		cache.PutEdgesWithExpiration([]graphcache.EdgeItem[string]{
+			{Tail: "tail", Head: "a", Weight: weight},
+			{Tail: "tail", Head: "b", Weight: weight},
+		})
+	}
+	put(1)
+
+	t.Run("atomic plural Put versus plural read", func(t *testing.T) {
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		var writes atomic.Int64
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				put(2)
+				put(1)
+				writes.Add(1)
+				runtime.Gosched()
+			}
+		}()
+		defer func() { close(stop); <-done }()
+		for i := 0; i < 30; i++ {
+			edges := read().GetEdges()
+			want := edges[0].GetWeight()
+			if want != 1 && want != 2 {
+				t.Fatalf("unexpected weight %v", want)
+			}
+			for j, edge := range edges {
+				if edge.GetWeight() != want || edge.GetTail() != "tail" {
+					t.Fatalf("mixed plural read %d at item %d: weight %v, want %v", i, j, edge.GetWeight(), want)
+				}
+			}
+		}
+		if writes.Load() == 0 {
+			t.Fatal("concurrent Put writer made no progress")
+		}
+	})
+
+	t.Run("existing-edge Add fast path versus duplicate reads", func(t *testing.T) {
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		var writes atomic.Int64
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				cache.AddEdgeWithExpiration("tail", "a", 1, time.Time{})
+				writes.Add(1)
+				runtime.Gosched()
+			}
+		}()
+		defer func() { close(stop); <-done }()
+		for i := 0; i < 30; i++ {
+			edges := read().GetEdges()
+			wantA, wantB := edges[0].GetWeight(), edges[1].GetWeight()
+			for j, edge := range edges {
+				want := wantA
+				if j%2 == 1 {
+					want = wantB
+				}
+				if edge.GetWeight() != want {
+					t.Fatalf("duplicate edge changed within one read %d at item %d: weight %v, want %v", i, j, edge.GetWeight(), want)
+				}
+			}
+		}
+		if writes.Load() == 0 {
+			t.Fatal("concurrent Add writer made no progress")
+		}
+	})
 }
 
 func TestLantern_ErrorSentinels(t *testing.T) {
