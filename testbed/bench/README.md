@@ -127,6 +127,8 @@ requirement and cannot by themselves justify WAL.
 
 The environment variables `GC_VERTICES`, `GC_DEGREE`, `GC_TICKS`,
 `GC_INTERVAL_MS`, `GC_REPETITIONS`, `GC_SHAPES`, `GC_BUDGETS`, and the
+optional `GC_RESOURCE_TRACE=1` (per-run host CPU/maximum-RSS via
+`/usr/bin/time`), plus the
 corresponding `BACKUP_VERTICES`, `BACKUP_DEGREE`, `BACKUP_INTERVAL_MS`,
 `BACKUP_READ_RPS`, `BACKUP_WRITE_RPS` override script defaults for a
 predeclared run or smoke check. If target-scale setup exceeds host resources,

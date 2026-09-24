@@ -20,6 +20,7 @@ interval_ms="${GC_INTERVAL_MS:-1000}"
 repetitions="${GC_REPETITIONS:-3}"
 budgets="${GC_BUDGETS:-0 5000}"
 shapes="${GC_SHAPES:-uniform hub}"
+resource_trace="${GC_RESOURCE_TRACE:-0}"
 mkdir -p "$output_dir"
 
 {
@@ -31,6 +32,7 @@ mkdir -p "$output_dir"
   printf 'goarch=%s\n' "$(go env GOARCH)"
   printf 'vertices=%s\ndegree=%s\nticks=%s\ninterval_ms=%s\n' "$vertices" "$degree" "$ticks" "$interval_ms"
   printf 'repetitions=%s\nbudgets=%s\nshapes=%s\n' "$repetitions" "$budgets" "$shapes"
+  printf 'resource_trace=%s\n' "$resource_trace"
   for property in machdep.cpu.brand_string hw.ncpu hw.memsize; do
     if value="$(sysctl -n "$property" 2>/dev/null)"; then
       printf '%s=%s\n' "$property" "$value"
@@ -48,18 +50,35 @@ for shape in $shapes; do
     for ((run = 1; run <= repetitions; run++)); do
       output="$output_dir/gc_${shape}_b${budget}_r${run}.json"
       printf 'GC %s budget=%s repetition=%s/%s -> %s\n' "$shape" "$budget" "$run" "$repetitions" "$output"
-      (
-        cd core
-        LANTERN_GC_STRESS_OUT="$output" \
-        LANTERN_GC_STRESS_SHA="$sha" \
-        LANTERN_GC_STRESS_VERTICES="$vertices" \
-        LANTERN_GC_STRESS_DEGREE="$degree" \
-        LANTERN_GC_STRESS_TICKS="$ticks" \
-        LANTERN_GC_STRESS_INTERVAL_MS="$interval_ms" \
-        LANTERN_GC_STRESS_BUDGET="$budget" \
-        LANTERN_GC_STRESS_SHAPE="$shape" \
-        go test ./graphcache -run '^TestGraphCache_GCStress$' -count=1 -timeout=30m -v
-      ) | tee "$output_dir/gc_${shape}_b${budget}_r${run}.log"
+      stress_env=(
+        "LANTERN_GC_STRESS_OUT=$output"
+        "LANTERN_GC_STRESS_SHA=$sha"
+        "LANTERN_GC_STRESS_VERTICES=$vertices"
+        "LANTERN_GC_STRESS_DEGREE=$degree"
+        "LANTERN_GC_STRESS_TICKS=$ticks"
+        "LANTERN_GC_STRESS_INTERVAL_MS=$interval_ms"
+        "LANTERN_GC_STRESS_BUDGET=$budget"
+        "LANTERN_GC_STRESS_SHAPE=$shape"
+      )
+      if [[ "$resource_trace" == 1 ]]; then
+        if [[ "$(uname -s)" == Darwin ]]; then
+          time_args=(-l)
+        else
+          time_args=(-v)
+        fi
+        (
+          cd core
+          /usr/bin/time "${time_args[@]}" /usr/bin/env "${stress_env[@]}" \
+            go test ./graphcache -run '^TestGraphCache_GCStress$' -count=1 -timeout=30m -v
+        ) 2> "$output_dir/gc_${shape}_b${budget}_r${run}.resource.txt" \
+          | tee "$output_dir/gc_${shape}_b${budget}_r${run}.log"
+      else
+        (
+          cd core
+          /usr/bin/env "${stress_env[@]}" \
+            go test ./graphcache -run '^TestGraphCache_GCStress$' -count=1 -timeout=30m -v
+        ) | tee "$output_dir/gc_${shape}_b${budget}_r${run}.log"
+      fi
     done
   done
 done
