@@ -131,6 +131,7 @@ func TestStagedEdgeDeleteSparseRollback(t *testing.T) {
 	newer := hlc.Timestamp{WallNs: 30}
 	if !c.PutEdgeWithExpirationHLC("tail", "head-1", 1, expiration, old) ||
 		!c.PutEdgeWithExpirationHLC("tail", "head-2", 2, expiration, old) ||
+		!c.PutEdgeWithExpirationHLC("tail", "protected", 5, expiration, newer) ||
 		!c.AddEdgeWithExpirationContribHLC("tail", "newer", 3, expiration, ContribID{0: 1}, newer) {
 		t.Fatal("seed failed")
 	}
@@ -150,7 +151,7 @@ func TestStagedEdgeDeleteSparseRollback(t *testing.T) {
 	keys := []EdgeKey[string]{
 		{"tail", "head-1"}, {"tail", "head-1"},
 		{"tail", "head-2"}, {"tail", "newer"}, {"tail", "newer"},
-		{"self", "self"}, {"barrier", "head-3"}, {"missing", "edge"},
+		{"self", "self"}, {"tail", "protected"}, {"barrier", "head-3"}, {"missing", "edge"},
 		{"missing", "edge"},
 	}
 	got := stageAndRollbackForTest(t, c, keys, deleteAt, expiration, func(stage *stagedEdgeDelete[string, string]) {
@@ -181,8 +182,11 @@ func TestStagedEdgeDeleteSparseRollback(t *testing.T) {
 		if newer == nil || len(newer.values) != 1 || newer.values[0].value != 3 || newer.values[0].hlc != (hlc.Timestamp{WallNs: 30}) {
 			t.Fatalf("newer Add was not retained: %+v", newer)
 		}
+		if protected := c.edges.bucket("tail", "protected"); protected == nil || protected.lastHLC != (hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("newer Put was changed by an older Delete")
+		}
 	})
-	want := []bool{true, false, true, true, true, true, false, false, false}
+	want := []bool{true, false, true, true, true, true, false, false, false, false}
 	if !slices.Equal(got, want) {
 		t.Fatalf("staged outcomes = %v, want %v", got, want)
 	}
