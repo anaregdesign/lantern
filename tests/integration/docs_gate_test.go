@@ -501,8 +501,9 @@ func TestDartWorkflowGate(t *testing.T) {
 		"timeout-minutes: 45",
 		"- name: Build production iOS example for release\n        if: startsWith(github.ref, 'refs/tags/sdks/dart/v')",
 		"flutter build ios --debug --no-codesign --no-pub",
+		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360",
 		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
-		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480",
+		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720",
 		`contains(fromJSON('["launch_stall","attach_stall"]'),`,
 		`test "$retry_device" != "$DEVICE_ID"`,
 		"if: always()",
@@ -522,9 +523,10 @@ func TestDartWorkflowGate(t *testing.T) {
 		t.Error("iOS launch retry still erases and reuses the wedged simulator")
 	}
 	for _, contract := range []string{
+		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360",
 		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
-		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480",
-		"timeout-minutes: 10",
+		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720",
+		"timeout-minutes: 14",
 	} {
 		if got := strings.Count(ios, contract); got != 2 {
 			t.Errorf("both iOS attempts must retain %q; got %d occurrences", contract, got)
@@ -586,10 +588,11 @@ func TestDartWorkflowGate(t *testing.T) {
 		"both decisions independently",
 		"separate production/device iOS",
 		"Only `launch_stall` or `attach_stall` may retry",
-		"full attempt to 480 seconds",
-		"test-app build and native launch to 180 seconds each",
+		"full attempt 720 seconds",
+		"cold test-app build 360 seconds",
+		"native launch 180 seconds",
 		"flutter drive --use-existing-app",
-		"outer step remains 10 minutes",
+		"outer step remains 14 minutes",
 		"newly\ncreated simulator",
 		"diagnostics are always uploaded",
 	} {

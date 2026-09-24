@@ -661,7 +661,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
     runs-on: macos-15
-    # Two bounded 10-minute attempts plus fresh-device creation must leave
+    # Two bounded 14-minute attempts plus fresh-device creation must leave
     # enough margin for setup/build, diagnostics upload, and mandatory cleanup.
     timeout-minutes: 45
     steps:
@@ -747,11 +747,14 @@ jobs:
         id: ios_smoke_initial
         if: success()
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: 14
         working-directory: sdks/dart/example
         env:
+          # Without the separate production build, this integration target
+          # performs the first native compile on a cold macOS runner.
+          IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
-          IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
+          IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720
         run: >-
           bash tool/ios_smoke_ci.sh run-attached-attempt "$DEVICE_ID" initial
           "$RUNNER_TEMP/ios-smoke-diagnostics"
@@ -782,11 +785,12 @@ jobs:
           steps.ios_smoke_initial.outputs.classification) &&
           steps.ios_fresh_device.outcome == 'success'
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: 14
         working-directory: sdks/dart/example
         env:
+          IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
-          IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 480
+          IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720
         run: >-
           bash tool/ios_smoke_ci.sh run-attached-attempt "$RETRY_DEVICE_ID" retry
           "$RUNNER_TEMP/ios-smoke-diagnostics"

@@ -156,12 +156,14 @@ development-only; its native library is not an application runtime dependency.
 This package stays `publish_to: none` until its independent release is qualified.
 
 The iOS job classifies the native smoke instead of treating every outer timeout
-as retryable infrastructure. Its helper bounds the full attempt to 480 seconds,
-the test-app build and native launch to 180 seconds each, and the install to 90
-seconds. After `simctl` returns the Runner PID, it reads that process's
+as retryable infrastructure. On CI, it gives the full attempt 720 seconds. It
+gives the cold test-app build 360 seconds, the native launch 180 seconds, and
+the install 90 seconds. The longer build budget is necessary when the
+separate production build is skipped and the integration target compiles first.
+After `simctl` returns the Runner PID, it reads that process's
 retrospective Simulator log for the VM Service URL, test-body marker, and
 terminal result, then runs `flutter drive --use-existing-app` to verify the
-actual assertions. The outer step remains 10 minutes, leaving time for bounded
+actual assertions. The outer step remains 14 minutes, leaving time for bounded
 diagnostics. Only `launch_stall` or `attach_stall` may retry, once, on a newly
 created simulator with the same runtime/device type and a different UDID. An
 exited Runner, build failure, assertion or RPC failure, and post-body stall fail
