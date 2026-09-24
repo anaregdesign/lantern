@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/protoschema"
 )
 
 func archiveWireHeaderFrame(header []byte) []byte {
@@ -25,7 +26,7 @@ func archiveWireHeaderFrame(header []byte) []byte {
 
 func TestArchiveGraphWireSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.SnapshotResponse{}).ProtoReflect().Descriptor()
-	if got := archiveMessageSchemaFingerprint(current); got != archiveGraphSchemaFingerprintV1 {
+	if got := protoschema.Fingerprint(current); got != archiveGraphSchemaFingerprintV1 {
 		t.Fatalf("archive v1 graph schema changed to %s; review the archive contract", got)
 	}
 	for _, tc := range []struct {
@@ -56,7 +57,7 @@ func TestArchiveGraphWireSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := archiveMessageSchemaFingerprint(changed.Messages().ByName("SnapshotResponse")); got == archiveGraphSchemaFingerprintV1 {
+			if got := protoschema.Fingerprint(changed.Messages().ByName("SnapshotResponse")); got == archiveGraphSchemaFingerprintV1 {
 				t.Fatal("new nested graph field did not invalidate archive v1 schema")
 			}
 		})

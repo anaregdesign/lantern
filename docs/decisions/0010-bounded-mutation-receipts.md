@@ -279,7 +279,10 @@ replay/restore visitor must additionally validate the frame HLC against the
 decoded graph or receipt HLC before applying state. This remains unwired and
 does not yet constitute a complete replay or durable serving configuration;
 production activation also needs a WAL schema migration policy across future
-protobuf changes.
+protobuf changes. The private graph kind now pins the reachable `Mutation`
+schema and rejects an unreviewed field change under union v1. A production
+migration must still retain a decoder for prior WAL versions before any schema
+change is allowed on a receipt-enabled node.
 The private [read-only mixed-WAL audit](../../server/service/receipt_wal_recovery.go)
 checks a complete, genesis-based FileWAL for frame/payload HLC agreement,
 contiguous per-origin sequences, one configured epoch/policy, and a bounded
