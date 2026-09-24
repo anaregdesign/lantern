@@ -281,6 +281,14 @@ func replayOpenedFileWAL(f *os.File, decode func([]byte) (MutationOp, error), vi
 }
 
 func scanFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, error) {
+	return scanFileWALFrames(f, decode, visit, nil)
+}
+
+// scanFileWALFrames shares FileWAL's framing, checksum, and sequence checks
+// with the read-only cut inspector. frame runs before decode so a decoder
+// cannot mutate the raw bytes being hashed. A later decode failure still
+// invalidates the entire scan and discards the calculated digest.
+func scanFileWALFrames(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error, frame func(Entry, []byte, []byte) error) (uint64, error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return 0, err
 	}
@@ -327,6 +335,11 @@ func scanFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func
 				Logical: binary.BigEndian.Uint32(body[16:20]),
 				NodeID:  nodeID,
 			},
+		}
+		if frame != nil {
+			if err := frame(entry, header[:], body); err != nil {
+				return lastSeq, err
+			}
 		}
 		if decode != nil {
 			entry.Op, err = decode(body[fileWALBodyHeader:])
