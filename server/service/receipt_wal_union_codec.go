@@ -18,8 +18,8 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/protoschema"
 )
 
-// This private, unwired codec covers both concrete service Log payloads:
-// graph-only *pb.Mutation and the receipt-bearing Edge Delete envelope. The
+// This private, unwired codec covers graph-only Mutations, accepted-effect
+// sidecars, and receipt-bearing Edge Delete envelopes. The
 // FileWAL frame owns its checksum, replica-local sequence and HLC. The union
 // header is versioned independently of the inner LRED receipt format. No
 // production provider or write path selects this codec yet.
@@ -29,6 +29,7 @@ const (
 	receiptWALUnionGraph             = byte(1)
 	receiptWALUnionEdgeDelete        = byte(2)
 	receiptWALUnionGraphDeleteEffect = byte(3)
+	receiptWALUnionGraphPutEffect    = byte(4)
 	receiptWALGraphHeaderSize        = 12 // protobuf length, repeated-slot count, nil count
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
 	// The existing LRED receipt body has a stricter independent 8 MiB cap.
@@ -53,8 +54,8 @@ func receiptWALUnionError(format string, args ...any) error {
 }
 
 // encodeReceiptWALUnion matches FileWAL's payload encoder signature. It
-// rejects every payload type except the two concrete types used by the
-// service, rather than silently projecting a receipt envelope to graph-only.
+// rejects unknown payloads rather than silently projecting a private
+// envelope to graph-only.
 func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	var kind byte
 	var body []byte
@@ -72,6 +73,9 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	case *graphDeleteEffectEnvelope:
 		kind = receiptWALUnionGraphDeleteEffect
 		body, err = encodeGraphDeleteEffectWAL(value)
+	case *graphPutEffectEnvelope:
+		kind = receiptWALUnionGraphPutEffect
+		body, err = encodeGraphPutEffectWAL(value)
 	default:
 		return nil, receiptWALUnionError("unexpected operation type %T", op)
 	}
@@ -121,6 +125,8 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 		return value, nil
 	case receiptWALUnionGraphDeleteEffect:
 		return decodeGraphDeleteEffectWAL(body)
+	case receiptWALUnionGraphPutEffect:
+		return decodeGraphPutEffectWAL(body)
 	default:
 		return nil, receiptWALUnionError("unknown operation kind %d", raw[8])
 	}
@@ -159,6 +165,18 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
 			return receiptWALUnionError("FileWAL HLC differs from graph Delete effect HLC")
+		}
+		return nil
+	case *graphPutEffectEnvelope:
+		if err := validateGraphPutEffectEnvelope(value); err != nil {
+			return err
+		}
+		m := value.Mutation
+		var node hlc.NodeID
+		copy(node[:], m.GetHlc().GetNodeId())
+		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
+		if !entry.HLC.Equal(payloadHLC) {
+			return receiptWALUnionError("FileWAL HLC differs from graph Put effect HLC")
 		}
 		return nil
 	case *edgeDeleteReceiptEnvelope:
