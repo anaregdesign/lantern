@@ -259,13 +259,7 @@ OfflineIdentityEvent _convertFrame(IdentityFrame frame) => switch (frame) {
     OfflineIdentityChunk(
       origin: origin,
       sequence: sequence,
-      operation: switch (operation) {
-        IdentityOperation.putVertex => OfflineIdentityOperation.putVertex,
-        IdentityOperation.deleteVertex => OfflineIdentityOperation.deleteVertex,
-        IdentityOperation.addEdge => OfflineIdentityOperation.addEdge,
-        IdentityOperation.putEdge => OfflineIdentityOperation.putEdge,
-        IdentityOperation.deleteEdge => OfflineIdentityOperation.deleteEdge,
-      },
+      operation: _mapIdentityOperation(operation),
       chunkIndex: chunkIndex,
       isLast: isLast,
       firstItemIndex: firstItemIndex,
@@ -276,6 +270,27 @@ OfflineIdentityEvent _convertFrame(IdentityFrame frame) => switch (frame) {
       ],
     ),
 };
+
+OfflineIdentityOperation _mapIdentityOperation(IdentityOperation operation) {
+  if (operation == IdentityOperation.putVertex) {
+    return OfflineIdentityOperation.putVertex;
+  }
+  if (operation == IdentityOperation.deleteVertex) {
+    return OfflineIdentityOperation.deleteVertex;
+  }
+  if (operation == IdentityOperation.addEdge) {
+    return OfflineIdentityOperation.addEdge;
+  }
+  if (operation == IdentityOperation.putEdge) {
+    return OfflineIdentityOperation.putEdge;
+  }
+  if (operation == IdentityOperation.deleteEdge) {
+    return OfflineIdentityOperation.deleteEdge;
+  }
+  // The hosted parent 0.3.0 predates receipt-only markers. Treat any newer
+  // operation as a cursor gap until both packages add a typed mapping.
+  throw const OfflineChangeGapException();
+}
 
 Exception _mapIdentityFailure(
   Object error,
