@@ -253,6 +253,15 @@ currently appears as an empty DeleteEdges mutation and zero-key final identity
 chunk. The wire has no explicit receipt-only operation or receipt metadata,
 and downstream replay cannot restore receipts from that projection. This is
 an internal ordering test, not a supported receipt CDC contract.
+The private [Edge Delete WAL codec](../../server/service/receipt_edge_delete_codec.go)
+can encode that envelope as a bounded, versioned, deterministic payload and
+decode it with strict structural and cross-field checks. It reconstructs the
+graph-only `Mutation` from indexed accepted keys. The enclosing FileWAL frame
+owns the checksum and replica-local log seq; its HLC must match the envelope
+HLC, while its local seq is independent of the origin-local seq. Tombstone
+expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
+clock metadata. The codec is not wired to a serving WAL or replay path and
+does not certify receipt recovery, replication, or status continuity.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
