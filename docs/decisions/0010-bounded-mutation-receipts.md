@@ -1,4 +1,4 @@
-# 0009: Bounded mutation receipts for ambiguous responses
+# 0010: Bounded mutation receipts for ambiguous responses
 
 - Status: Accepted as the #1115 Phase 0 design; no receipt RPC or storage is implemented
 - Date: 2026-09-24
@@ -56,7 +56,12 @@ The deployment epoch is a random cluster identity, not a user identity or a
 hash of a bearer token. All HA members must have the same epoch and receipt
 policy fingerprint before serving receipt-capable traffic. A fresh offline
 client that has never learned the epoch cannot safely enqueue a
-receipt-required mutation. Token rotation does not change the epoch. A node
+receipt-required mutation. An authenticated capability probe must expose the
+current epoch, retention policy, and endpoint continuity marker before the
+first send. Each receipt-capable mutation echoes that marker; the server
+rejects a different node or generation before execution. Any recovery that
+cannot prove all in-horizon local receipts changes the generation. Token
+rotation does not change the epoch. A node
 that rejoins from a complete peer Snapshot adopts its peer's epoch; incomplete
 local recovery or total-cluster loss creates a new active epoch. Known receipts
 restored from an older backup may remain queryable, but an absent old-epoch ID
@@ -191,6 +196,8 @@ original endpoint**, within the fresh-admission window, and only if a
 pre-send endpoint continuity marker (node identity plus receipt generation)
 proves the endpoint still has complete receipt state. A different instance,
 changed generation, or uncertain continuity permits status polling only. The
+same rule applies when a load balancer cannot pin a request to that instance:
+the SDK must not perform a blind mutation retry. The
 origin serializes duplicate lookup and new admission under its commit gate, so
 an original in-flight call and same-endpoint retry cannot both execute.
 
