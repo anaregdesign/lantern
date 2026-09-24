@@ -130,11 +130,22 @@ type Store struct {
 	fingerprint     [sha256.Size]byte
 	highWaterMS     int64
 	receipts        map[ID]Receipt
+	groups          map[GroupID]*groupReceiptRows
 	contributions   map[ContribID]ID
 	deadlines       deadlineIndex
 	bytes           uint64
 	admissionReject uint64
 	unknownLookups  uint64
+}
+
+// groupReceiptRows binds every currently retained item position to one
+// logical call. Expired positions may disappear independently, but a live
+// GroupID cannot be reused for a different call or item at that position.
+// Its lookup keys duplicate receipt fields already charged to the logical
+// byte ledger; MaxEntries bounds this map's overhead, like deadlineIndex.
+type groupReceiptRows struct {
+	count uint32
+	items map[uint32]ID
 }
 
 func New(config Config) (*Store, error) {
@@ -168,6 +179,7 @@ func New(config Config) (*Store, error) {
 		fingerprint:   fingerprint,
 		highWaterMS:   highWaterMS,
 		receipts:      make(map[ID]Receipt),
+		groups:        make(map[GroupID]*groupReceiptRows),
 		contributions: make(map[ContribID]ID),
 		deadlines:     newDeadlineIndex(),
 	}, nil
@@ -268,6 +280,14 @@ func (s *Store) expireLocked(nowMS int64) {
 		}
 		delete(s.receipts, expired.id)
 		s.bytes -= r.cost()
+		if group := s.groups[r.Group]; group != nil {
+			if boundID, bound := group.items[r.Index]; bound && boundID == r.ID {
+				delete(group.items, r.Index)
+				if len(group.items) == 0 {
+					delete(s.groups, r.Group)
+				}
+			}
+		}
 		if r.HasContrib {
 			delete(s.contributions, r.ContribID)
 		}
@@ -283,6 +303,7 @@ type Tx struct {
 	intents     []Intent
 	staged      []Receipt
 	applied     int
+	groupAdded  bool
 	mode        txMode
 	closed      bool
 }
@@ -364,6 +385,16 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 			stale = true
 		}
 	}
+	if rows := tx.store.groups[group]; rows != nil {
+		if rows.count != uint32(len(intents)) {
+			return 0, nil, ErrIntentConflict
+		}
+		for i, item := range intents {
+			if priorID, exists := rows.items[uint32(i)]; exists && priorID != item.ID {
+				return 0, nil, ErrIntentConflict
+			}
+		}
+	}
 	if known == len(intents) {
 		tx.mode = txDuplicate
 		return Duplicate, existing, nil
@@ -373,6 +404,9 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 	}
 	if known != 0 {
 		return 0, nil, ErrPartialEnvelope
+	}
+	if _, used := tx.store.groups[group]; used {
+		return 0, nil, ErrIntentConflict
 	}
 	for contrib, id := range seenContrib {
 		if old, bound := tx.store.contributions[contrib]; bound && old != id {
@@ -437,6 +471,9 @@ func (tx *Tx) Stage() error {
 	}
 	s := tx.store
 	tx.mode = txStaged
+	group := tx.intents[0].Group
+	s.groups[group] = &groupReceiptRows{count: tx.intents[0].Count, items: make(map[uint32]ID, len(tx.staged))}
+	tx.groupAdded = true
 	for _, r := range tx.staged {
 		// Ledger updates happen before the potentially allocating index/map
 		// changes. A deferred Abort can unwind this item even if Stage panics.
@@ -444,6 +481,7 @@ func (tx *Tx) Stage() error {
 		tx.applied++
 		s.deadlines.insert(deadlineEntry{id: r.ID, deadlineMS: r.DeadlineMillis})
 		s.receipts[r.ID] = r
+		s.groups[group].items[r.Index] = r.ID
 		if r.HasContrib {
 			s.contributions[r.ContribID] = r.ID
 		}
@@ -473,6 +511,9 @@ func (tx *Tx) Abort() {
 	if tx != nil && !tx.closed {
 		if tx.mode == txStaged {
 			s := tx.store
+			if tx.groupAdded {
+				delete(s.groups, tx.intents[0].Group)
+			}
 			for i := tx.applied - 1; i >= 0; i-- {
 				r := tx.staged[i]
 				s.deadlines.remove(r.ID)

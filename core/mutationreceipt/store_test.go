@@ -565,6 +565,52 @@ func TestStoreCommitPublishesCompletePreWALStage(t *testing.T) {
 	}
 }
 
+func TestStoreLiveGroupIDCannotBeReused(t *testing.T) {
+	s := testStore(t, 3, 1000)
+	original := testIntent(t, 1, testStart, GroupID{7}, 0, 1)
+	commitTestBatch(t, s, testStart, []Intent{original}, [][]byte{[]byte("original")})
+	reused := testIntent(t, 2, testStart.Add(time.Minute), original.Group, 0, 1)
+	tx, err := s.Begin(testStart.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = tx.Classify([]Intent{reused})
+	tx.Abort()
+	if !errors.Is(err, ErrIntentConflict) {
+		t.Fatalf("reused live logical-call ID = %v", err)
+	}
+	if status, receipt, err := s.Lookup(original.ID, testStart.Add(time.Minute)); err != nil || status != Confirmed || string(receipt.Result) != "original" {
+		t.Fatalf("original after conflicting group = %v, %+v, %v", status, receipt, err)
+	}
+	// A definite abort must not reserve the group, and expiry of its last
+	// receipt must release the bounded reverse index.
+	aborted := testIntent(t, 3, testStart.Add(time.Minute), GroupID{8}, 0, 1)
+	tx, err = s.Begin(testStart.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tx.Classify([]Intent{aborted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Reserve([][]byte{nil}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Abort()
+	if _, bound := s.groups[aborted.Group]; bound {
+		t.Fatal("aborted logical-call ID remains bound")
+	}
+	commitTestBatch(t, s, testStart.Add(time.Minute), []Intent{aborted}, [][]byte{nil})
+	if status, _, err := s.Lookup(original.ID, testStart.Add(time.Hour)); err != nil || status != NoLongerProvable {
+		t.Fatalf("expired original = %v, %v", status, err)
+	}
+	if _, bound := s.groups[original.Group]; bound {
+		t.Fatal("expired logical-call ID remains bound")
+	}
+}
+
 func BenchmarkStoreDuplicateLookup(b *testing.B) {
 	s := testStore(b, 1, 1000)
 	item := testIntent(b, 1, testStart, GroupID{1}, 0, 1)
