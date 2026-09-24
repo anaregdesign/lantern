@@ -68,6 +68,12 @@ func newEdgeDeleteReceiptCoordinator(s *LanternService, store *mutationreceipt.S
 	if !ok {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt Edge Delete requires a staged GraphCache"))
 	}
+	s.replicationCutMu.Lock()
+	defer s.replicationCutMu.Unlock()
+	if s.receiptStore != nil && s.receiptStore != store {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt Edge Delete Store differs from the service-bound Store"))
+	}
+	s.receiptStore = store
 	return &edgeDeleteReceiptCoordinator{service: s, cache: cache, store: store}, nil
 }
 

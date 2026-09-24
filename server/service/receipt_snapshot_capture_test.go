@@ -21,7 +21,7 @@ func receiptCapturePolicy(epoch mutationreceipt.Epoch) mutationreceipt.Config {
 	return mutationreceipt.Config{Epoch: epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20}
 }
 
-func receiptCaptureGraphEdge(capture receiptWholeStateCapture, tail, head string) bool {
+func receiptCaptureGraphEdge(capture ReceiptWholeStateCapture, tail, head string) bool {
 	for _, frame := range capture.Graph {
 		if edge := frame.GetEdge(); edge != nil && edge.GetTail() == tail && edge.GetHead() == head {
 			return true
@@ -30,7 +30,7 @@ func receiptCaptureGraphEdge(capture receiptWholeStateCapture, tail, head string
 	return false
 }
 
-func receiptCaptureEdgeTombstone(capture receiptWholeStateCapture, tail, head string) bool {
+func receiptCaptureEdgeTombstone(capture ReceiptWholeStateCapture, tail, head string) bool {
 	for _, frame := range capture.Graph {
 		if edge := frame.GetEdgeTombstone(); edge != nil && edge.GetTail() == tail && edge.GetHead() == head {
 			return true
@@ -39,7 +39,7 @@ func receiptCaptureEdgeTombstone(capture receiptWholeStateCapture, tail, head st
 	return false
 }
 
-func assertReceiptCaptureCut(t *testing.T, capture receiptWholeStateCapture, receiptCount int, localSeq uint64, edgeLive, tombstone bool) {
+func assertReceiptCaptureCut(t *testing.T, capture ReceiptWholeStateCapture, receiptCount int, localSeq uint64, edgeLive, tombstone bool) {
 	t.Helper()
 	if len(capture.Graph) < 2 || capture.Graph[0].GetHeader() == nil || capture.Graph[len(capture.Graph)-1].GetFooter() == nil {
 		t.Fatalf("capture has no complete graph frame stream: %+v", capture.Graph)
@@ -104,7 +104,11 @@ func TestReceiptWholeStateCaptureBlocksHeldWALAndCopiesReceipts(t *testing.T) {
 	}))
 	f.cache.AddEdgeWithExpiration("tail", "head", 1, time.Now().Add(time.Hour))
 	policy := receiptCapturePolicy(f.epoch)
-	before, err := f.coordinator.captureReceiptWholeState(context.Background(), policy)
+	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := source(context.Background(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +121,14 @@ func TestReceiptWholeStateCaptureBlocksHeldWALAndCopiesReceipts(t *testing.T) {
 	}()
 	waitReceiptTest(t, "WAL stage", entered)
 	type result struct {
-		capture receiptWholeStateCapture
+		capture ReceiptWholeStateCapture
 		err     error
 	}
 	captureStarted := make(chan struct{})
 	captureDone := make(chan result, 1)
 	go func() {
 		close(captureStarted)
-		got, err := f.coordinator.captureReceiptWholeState(context.Background(), policy)
+		got, err := source(context.Background(), policy)
 		captureDone <- result{got, err}
 	}()
 	<-captureStarted
@@ -147,7 +151,7 @@ func TestReceiptWholeStateCaptureBlocksHeldWALAndCopiesReceipts(t *testing.T) {
 	}
 	// The returned receipt result is owned by the capture, not the Store.
 	after.capture.Receipts.Receipts[0].Result[0] = 0
-	again, err := f.coordinator.captureReceiptWholeState(context.Background(), policy)
+	again, err := source(context.Background(), policy)
 	if err != nil || again.Receipts.Receipts[0].Result[0] != 1 {
 		t.Fatalf("capture result aliased Store: %+v, %v", again.Receipts, err)
 	}
@@ -230,7 +234,7 @@ func TestReceiptWholeStateCaptureFailsClosed(t *testing.T) {
 				tc.mutate(&f, &policy)
 			}
 			capture, err := f.coordinator.captureReceiptWholeState(context.Background(), policy)
-			if err == nil || !reflect.DeepEqual(capture, receiptWholeStateCapture{}) {
+			if err == nil || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
 				t.Fatalf("invalid capture returned partial state: %+v, %v", capture, err)
 			}
 			if tc.want != nil && !errors.Is(err, tc.want) {
@@ -251,7 +255,7 @@ func TestReceiptWholeStateCaptureRejectsSnapshotInstall(t *testing.T) {
 	}
 	defer finish(false)
 	capture, err := f.coordinator.captureReceiptWholeState(context.Background(), receiptCapturePolicy(f.epoch))
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !reflect.DeepEqual(capture, receiptWholeStateCapture{}) {
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
 		t.Fatalf("incomplete install capture = %+v, %v", capture, err)
 	}
 }
