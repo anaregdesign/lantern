@@ -150,6 +150,10 @@ func (s *LanternService) publishRemoteMutation(ctx context.Context, m *pb.Mutati
 	if m.GetSeq() <= committed {
 		return nil
 	}
+	if s.pendingLocalMutation != nil && origin == s.clock.NodeID() {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("replication: local origin %x has an unpublished mutation at seq %d", origin, s.pendingLocalMutation.mutation.GetSeq()))
+	}
 	if m.GetSeq()-committed > maxPendingSeqGap {
 		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("replication: origin %x seq gap exceeds %d", origin, maxPendingSeqGap))
 	}

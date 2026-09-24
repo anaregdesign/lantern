@@ -74,6 +74,9 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	}
 	first.Vertices[0] = &pb.Vertex{Key: "caller-mutated", Value: &pb.Vertex_String_{String_: "caller-mutated"}}
 	wal.failed.Store(false)
+	if err := svc.ApplyMutation(ctx, cloneQueuedMutation(svc.pendingLocalMutation.mutation)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("remote self-echo crossed local publication fault: %v", err)
+	}
 	response, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{IfAbsent: true, Vertices: []*pb.Vertex{{
 		Key: "first", Value: &pb.Vertex_String_{String_: "replacement"}, Expiration: futureTs(time.Minute),
 	}}})
