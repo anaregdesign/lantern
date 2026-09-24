@@ -1,10 +1,13 @@
 # Offline core physical release runbook
 
-This is the repeatable device procedure for the first
-`lantern_client_offline` publication in [#1162](https://github.com/anaregdesign/lantern/issues/1162).
+This is the repeatable device procedure for `lantern_client_offline` releases.
+The first `0.2.0` publication in
+[#1162](https://github.com/anaregdesign/lantern/issues/1162) is complete. The
+`0.3.0` identity CDC release also requires the dedicated CDC test and its own
+evidence record on each physical platform.
 The existing [physical-device smoke guide](physical-device-smoke.md) defines the
 evidence schema and historical observations. Earlier h2c or simulator results
-do not qualify the release. Keep the Issue open and do not tag or publish until
+do not qualify the release. Do not tag or publish until
 both physical platforms pass this matrix on one exact clean code commit.
 
 ## Freeze one code candidate
@@ -85,6 +88,10 @@ flutter test --no-pub integration_test/physical_api_matrix_test.dart \
 flutter test --no-pub integration_test/physical_ui_matrix_test.dart \
   -d <physical-device-id> --reporter=expanded --timeout=3m \
   --dart-define-from-file=<private-defines.json>
+flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
+  -d <physical-device-id> --reporter=expanded --timeout=3m \
+  --dart-define-from-file=<private-defines.json> \
+  --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true
 ```
 
 The mobile smoke must observe all ten online/offline/SQLite scenarios in the
@@ -101,7 +108,8 @@ fallback documented in the physical-device smoke guide.
 Immediately after each mobile smoke, hash the app artifact built and executed
 for `mobile_smoke_test.dart` **before** another integration-test target rebuilds
 or replaces it. Keep the path and hash in private notes until the evidence
-record is written.
+record is written. Do the same for the dedicated CDC target; its installed
+binary and on-device result marker must be verified independently.
 
 Run `integration_test/untrusted_tls_test.dart` against a **separate**, reachable
 self-signed or hostname-mismatched TLS listener. Require
@@ -120,14 +128,16 @@ observations for every required scenario, not expected outcomes.
 
 ## Record and release
 
-Use the mobile-smoke Android APK and iOS Runner executable hashes, and state
-which files were hashed. Add content-free
-`evidence/offline-release/android.json` and `ios.json` with the same
-`testedCommit`, exact toolchain/package identity,
-observed scenarios, and no limitations. Commit **only** those two records (and
-an optional adjacent README) as the immediate child of the tested code commit.
-The `sdks/dart/offline/v0.2.0` tag points to that evidence-only child. Its
-preflight compares these records with same-attempt Android/iOS CI manifests and
-rejects changed code. Follow the one-time interactive OAuth bootstrap and
-same-tag rerun in [CONTRIBUTING.md](../../../CONTRIBUTING.md). Do not create a
-tag or publish while any physical observation is missing.
+Use the Android APK and iOS Runner executable hashes for each target, and state
+which files were hashed. Add four content-free records under
+`evidence/offline-release/`: `android.json`, `ios.json`, `android-cdc.json`, and
+`ios-cdc.json`. All four must name the same `testedCommit`, exact
+toolchain/package identity, observed scenarios, and no limitations. Commit
+**only** those records (and an optional adjacent README) as the immediate
+child of the tested code commit. The `sdks/dart/offline/v0.3.0` tag points to
+that evidence-only child. Its preflight compares all four records with
+same-attempt Android/iOS CI manifests and rejects changed code. Once the
+hosted parent `lantern_client 0.3.0` resolves and every gate passes, the
+offline tag uses pub.dev OIDC publishing as described in
+[CONTRIBUTING.md](../../../CONTRIBUTING.md). Do not create a tag or publish
+while any physical observation is missing.
