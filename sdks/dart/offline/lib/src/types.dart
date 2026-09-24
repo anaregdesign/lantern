@@ -101,6 +101,51 @@ final class OfflineEntityKey {
       tail = edgeTail,
       head = edgeHead;
 
+  /// Restores the canonical collision-free identity without graph payloads.
+  factory OfflineEntityKey.fromCanonical(String encoded) {
+    try {
+      final bytes = utf8.encode(encoded);
+      var offset = 2;
+      if (bytes.length < 4 ||
+          bytes[1] != 58 ||
+          (bytes[0] != 118 && bytes[0] != 101)) {
+        throw const OfflineCodecException();
+      }
+      String part() {
+        final start = offset;
+        while (offset < bytes.length &&
+            bytes[offset] >= 48 &&
+            bytes[offset] <= 57) {
+          offset++;
+        }
+        if (start == offset ||
+            offset >= bytes.length ||
+            bytes[offset] != 58 ||
+            (offset - start > 1 && bytes[start] == 48)) {
+          throw const OfflineCodecException();
+        }
+        final length = int.parse(ascii.decode(bytes.sublist(start, offset)));
+        offset++;
+        if (length > bytes.length - offset) throw const OfflineCodecException();
+        final value = utf8.decode(bytes.sublist(offset, offset + length));
+        offset += length;
+        return value;
+      }
+
+      final result = bytes[0] == 118
+          ? OfflineEntityKey.vertex(part())
+          : OfflineEntityKey.edge(part(), part());
+      if (offset != bytes.length || result.canonical != encoded) {
+        throw const OfflineCodecException();
+      }
+      return result;
+    } on OfflineException {
+      rethrow;
+    } on Object {
+      throw const OfflineCodecException();
+    }
+  }
+
   /// Entity family.
   final OfflineEntityKind kind;
 

@@ -165,12 +165,13 @@ outbox/operation capacity rejection. Configure the adapter's test limits below
 the default probe bounds or raise `maxCapacityProbeRecords` and
 `maxNotificationControllerProbe` explicitly. `exportSnapshot` and
 `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v6
+only for deterministic fresh-process conformance tests; snapshot schema v7
 persists operation aggregates, exact dead-letter transition time, durable
-auth pause, and per-origin CDC chunk progress. Schemas v1–v5 restore with empty
-CDC state. Restore transactionally reconstructs active v1 metadata, recovers
+auth pause, per-origin CDC chunk progress, the change epoch, and key-only
+Unknown residents. Schema v6 restores with an empty resident queue and epoch
+zero; schemas v1–v5 restore with empty CDC state. Restore transactionally reconstructs active v1 metadata, recovers
 auth pause from v1-v4 durable metadata, quarantines legacy Add records only
-from v1-v3, reopens only that exact terminal quarantine in v5/v6, migrates v1-v3
+from v1-v3, reopens only that exact terminal quarantine in v5–v7, migrates v1-v3
 outbox retention metadata conservatively, and fails
 closed when cache, outbox, operation, ordinal, generation, lease, or state
 relationships contradict each other. A child Dart VM restores canonical bytes,
@@ -215,7 +216,12 @@ the same application session. The core retains no platform dependencies.
 
 Transaction operations return `FutureOr<T>` so adapters can use asynchronous
 database APIs. Await every operation inside the transaction callback. The
-`changeCursor`, `applyChangeChunk`, and `resetChangeCursor` methods atomically
-persist identity-only invalidation and per-origin progress; they are the storage
-prerequisite for #1116, not an automatic CDC subscription. Adapter tests should
-also run `runChangeStoreConformanceSuite` against their real reopen boundary.
+`changeCursor`, `applyChangeChunk`, and `resetChangeCursor` atomically persist
+identity-only invalidation and per-origin progress. Accepted partial and final
+chunks advance a durable partition change epoch. A checkpoint reset removes
+confirmed values but retains bounded resident identities as Unknown until
+`revalidateResidentBatch` finishes plural Get calls and their epoch-checked
+cache commits. Late ordinary Get results and server-first failure fallbacks
+cannot restore a record invalidated during the read. This is the local recovery
+prerequisite for #1116; the package does not start a CDC subscription. Adapter
+tests run `runChangeStoreConformanceSuite` across a real reopen boundary.

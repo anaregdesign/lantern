@@ -196,12 +196,39 @@ abstract interface class OfflineStoreTransaction {
   /// Reads the last fully applied sequence per CDC origin.
   FutureOr<OfflineChangeCursor> changeCursor(String partitionId);
 
+  /// Durable partition-wide invalidation epoch for remote read barriers.
+  ///
+  /// Every accepted CDC chunk, including a partial chunk, and every checkpoint
+  /// reset advances this value in the same transaction as cache invalidation.
+  FutureOr<int> changeEpoch(String partitionId);
+
+  /// Returns up to [limit] Unknown resident identities in stable key order.
+  ///
+  /// Repeated calls start at the first unfinished identity; resolving a key
+  /// removes it durably. No graph values are loaded or returned.
+  FutureOr<List<OfflineEntityKey>> unknownResidents(
+    String partitionId, {
+    required int limit,
+  });
+
+  /// Completes one resident revalidation only if [expectedEpoch] is current.
+  ///
+  /// The caller must have committed a fresh or missing [getCache] result, or
+  /// confirmed that the entity has expired. A rejected completion leaves the
+  /// key Unknown, so a concurrent CDC chunk cannot be bypassed.
+  FutureOr<bool> completeUnknownResident(
+    String partitionId,
+    OfflineEntityKey key, {
+    required int expectedEpoch,
+  });
+
   /// Atomically invalidates confirmed cache entries and records chunk progress.
   /// The last-applied cursor advances only when the final chunk commits.
   FutureOr<void> applyChangeChunk(String partitionId, OfflineChangeChunk chunk);
 
-  /// Clears confirmed cache and CDC progress, then installs [checkpoint].
-  /// Durable outbox records and their pending writes are preserved.
+  /// Hides confirmed cache, retains bounded resident identities as Unknown,
+  /// clears CDC progress, and installs [checkpoint]. Durable outbox records and
+  /// their pending writes are preserved.
   FutureOr<void> resetChangeCursor(
     String partitionId,
     OfflineChangeCursor checkpoint,

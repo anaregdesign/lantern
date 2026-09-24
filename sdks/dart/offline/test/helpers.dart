@@ -185,6 +185,27 @@ final class _DelayedTransaction implements OfflineStoreTransaction {
   final OfflineStoreTransaction inner;
 
   @override
+  Future<int> changeEpoch(String partitionId) async =>
+      await inner.changeEpoch(partitionId);
+
+  @override
+  Future<List<OfflineEntityKey>> unknownResidents(
+    String partitionId, {
+    required int limit,
+  }) async => await inner.unknownResidents(partitionId, limit: limit);
+
+  @override
+  Future<bool> completeUnknownResident(
+    String partitionId,
+    OfflineEntityKey key, {
+    required int expectedEpoch,
+  }) async => await inner.completeUnknownResident(
+    partitionId,
+    key,
+    expectedEpoch: expectedEpoch,
+  );
+
+  @override
   Future<int> generation(String partitionId) async {
     await Future<void>.delayed(Duration.zero);
     return await inner.generation(partitionId);

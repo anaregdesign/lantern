@@ -46,6 +46,12 @@ Future<void> runChangeStoreConformanceSuite(
   );
   Future<OfflineChangeCursor> cursor() =>
       store.transaction((transaction) => transaction.changeCursor(partition));
+  Future<int> epoch() =>
+      store.transaction((transaction) => transaction.changeEpoch(partition));
+  Future<List<OfflineEntityKey>> unknown({int limit = 128}) =>
+      store.transaction(
+        (transaction) => transaction.unknownResidents(partition, limit: limit),
+      );
   final first = OfflineChangeChunk(
     origin: origin,
     sequence: sequence,
@@ -73,6 +79,7 @@ Future<void> runChangeStoreConformanceSuite(
   }
   _require(await cached('first'), 'change_rollback_cache');
   _require((await cursor()).sequences.isEmpty, 'change_rollback_cursor');
+  _require(await epoch() == 0, 'change_rollback_epoch');
   await _expectGap(
     () => store.transaction(
       (transaction) => transaction.applyChangeChunk(partition, last),
@@ -82,6 +89,7 @@ Future<void> runChangeStoreConformanceSuite(
     (transaction) => transaction.applyChangeChunk(partition, first),
   );
   _require(!await cached('first'), 'change_partial_invalidation');
+  _require(await epoch() == 1, 'change_partial_epoch');
   _require(
     (await cursor()).sequences[origin] == BigInt.zero,
     'change_partial_no_advance',
@@ -92,10 +100,12 @@ Future<void> runChangeStoreConformanceSuite(
     (transaction) => transaction.applyChangeChunk(partition, first),
   );
   _require(await cached('first'), 'change_duplicate_chunk_no_reinvalidate');
+  _require(await epoch() == 1, 'change_duplicate_epoch');
   await store.transaction(
     (transaction) => transaction.applyChangeChunk(partition, last),
   );
   _require(!await cached('literal%_match'), 'change_literal_prefix');
+  _require(await epoch() == 2, 'change_final_epoch');
   _require(await cached('literalXXmatch'), 'change_prefix_no_wildcard');
   _require(
     (await cursor()).sequences[origin] == sequence,
@@ -118,6 +128,7 @@ Future<void> runChangeStoreConformanceSuite(
     ),
   );
   _require((await cursor()).sequences.length == 2, 'change_vector_origins');
+  _require(await epoch() == 3, 'change_empty_final_epoch');
   final retained = await store.transaction((transaction) async {
     final record = await transaction.enqueue(
       OfflineOutboxRecord(
@@ -164,6 +175,60 @@ Future<void> runChangeStoreConformanceSuite(
   _require(!await cached('first'), 'change_checkpoint_unknown');
   _require(!await cached('literalXXmatch'), 'change_checkpoint_all_resident');
   _require((await cursor()).sequences.length == 1, 'change_checkpoint_vector');
+  final resetEpoch = await epoch();
+  _require(resetEpoch == 4, 'change_checkpoint_epoch');
+  _require((await unknown(limit: 1)).length == 1, 'change_resident_bounded');
+  _require((await unknown()).length == 2, 'change_resident_retained');
+  store = await reopen(store);
+  _require((await unknown()).length == 2, 'change_resident_reopen');
+  _require(await epoch() == resetEpoch, 'change_epoch_reopen');
+  await cache('first');
+  _require(!await cached('first'), 'change_unknown_hides_unresolved_cache');
+  _require(
+    !await store.transaction(
+      (transaction) => transaction.completeUnknownResident(
+        partition,
+        const OfflineEntityKey.vertex('first'),
+        expectedEpoch: resetEpoch - 1,
+      ),
+    ),
+    'change_stale_resident_completion',
+  );
+  await store.transaction(
+    (transaction) => transaction.applyChangeChunk(
+      partition,
+      OfflineChangeChunk(
+        origin: otherOrigin,
+        sequence: BigInt.two,
+        chunkIndex: 0,
+        isLast: true,
+        keys: const [OfflineEntityKey.vertex('first')],
+      ),
+    ),
+  );
+  _require(
+    !await store.transaction(
+      (transaction) => transaction.completeUnknownResident(
+        partition,
+        const OfflineEntityKey.vertex('first'),
+        expectedEpoch: resetEpoch,
+      ),
+    ),
+    'change_late_chunk_blocks_completion',
+  );
+  await cache('first');
+  _require(
+    await store.transaction(
+      (transaction) => transaction.completeUnknownResident(
+        partition,
+        const OfflineEntityKey.vertex('first'),
+        expectedEpoch: resetEpoch + 1,
+      ),
+    ),
+    'change_resident_completion',
+  );
+  _require(await cached('first'), 'change_revalidated_cache_visible');
+  _require((await unknown()).length == 1, 'change_progress_bounded');
   final pending = await store.transaction(
     (transaction) => transaction.getOutbox(partition, 'pending-record'),
   );
@@ -176,6 +241,8 @@ Future<void> runChangeStoreConformanceSuite(
   );
   store = await reopen(store);
   _require((await cursor()).sequences.isEmpty, 'change_wipe_cursor');
+  _require((await unknown()).isEmpty, 'change_wipe_residents');
+  _require(await epoch() == 0, 'change_wipe_epoch');
 }
 
 Future<void> _expectGap(Future<void> Function() action) async {

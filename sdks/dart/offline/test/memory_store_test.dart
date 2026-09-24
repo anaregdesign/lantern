@@ -1670,7 +1670,9 @@ void main() {
       partition
         ..remove('operations')
         ..remove('replayPausedForAuth')
-        ..remove('changeProgress');
+        ..remove('changeProgress')
+        ..remove('changeEpoch')
+        ..remove('unknownResidents');
       final outbox = partition['outbox']! as List<Object?>;
       final encoded =
           jsonDecode(outbox.single! as String) as Map<String, Object?>;
@@ -2020,7 +2022,9 @@ void main() {
       (value! as Map<String, Object?>)
         ..remove('operations')
         ..remove('replayPausedForAuth')
-        ..remove('changeProgress');
+        ..remove('changeProgress')
+        ..remove('changeEpoch')
+        ..remove('unknownResidents');
     }
     final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(v2));
     final operation = await restored.transaction(
@@ -2094,7 +2098,9 @@ void main() {
         (value! as Map<String, Object?>)
           ..remove('operations')
           ..remove('replayPausedForAuth')
-          ..remove('changeProgress');
+          ..remove('changeProgress')
+          ..remove('changeEpoch')
+          ..remove('unknownResidents');
       }
       final encoded = jsonEncode(legacy);
 
@@ -2178,6 +2184,8 @@ void main() {
             (legacy['partitions']! as List<Object?>).single!
                 as Map<String, Object?>;
         partition.remove('changeProgress');
+        partition.remove('changeEpoch');
+        partition.remove('unknownResidents');
         if (schema < 5) partition.remove('replayPausedForAuth');
         if (schema == 1) partition.remove('operations');
 
@@ -2780,6 +2788,27 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
 
   final _BrokenContractStore store;
   final OfflineStoreTransaction inner;
+
+  @override
+  FutureOr<int> changeEpoch(String partitionId) =>
+      inner.changeEpoch(partitionId);
+
+  @override
+  FutureOr<List<OfflineEntityKey>> unknownResidents(
+    String partitionId, {
+    required int limit,
+  }) => inner.unknownResidents(partitionId, limit: limit);
+
+  @override
+  FutureOr<bool> completeUnknownResident(
+    String partitionId,
+    OfflineEntityKey key, {
+    required int expectedEpoch,
+  }) => inner.completeUnknownResident(
+    partitionId,
+    key,
+    expectedEpoch: expectedEpoch,
+  );
 
   @override
   Future<List<OfflineOutboxRecord>> claim(

@@ -3024,6 +3024,27 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   final OfflineStoreTransaction inner;
 
   @override
+  FutureOr<int> changeEpoch(String partitionId) =>
+      inner.changeEpoch(partitionId);
+
+  @override
+  FutureOr<List<OfflineEntityKey>> unknownResidents(
+    String partitionId, {
+    required int limit,
+  }) => inner.unknownResidents(partitionId, limit: limit);
+
+  @override
+  FutureOr<bool> completeUnknownResident(
+    String partitionId,
+    OfflineEntityKey key, {
+    required int expectedEpoch,
+  }) => inner.completeUnknownResident(
+    partitionId,
+    key,
+    expectedEpoch: expectedEpoch,
+  );
+
+  @override
   Future<List<OfflineOutboxRecord>> dueOutbox(
     String partitionId, {
     String? operationId,

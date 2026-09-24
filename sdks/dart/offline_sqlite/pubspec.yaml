@@ -23,6 +23,13 @@ dev_dependencies:
   lints: 6.1.0
   sqflite_common_ffi: ^2.4.0
 
+# Host-test FFI uses the OS SQLite library, matching the mobile adapter's
+# platform engine and avoiding a test-time binary download.
+hooks:
+  user_defines:
+    sqlite3:
+      source: system
+
 # Exercise the sibling core in this unpublished adapter before its first pub release.
 dependency_overrides:
   lantern_client:

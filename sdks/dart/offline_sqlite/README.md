@@ -51,10 +51,10 @@ rotating an account's credentials, as required by the offline core contract.
 - The initial offline write surface remains unconditional Put only. Reopening
   preserves absolute expiration and retry deadlines; replay never extends TTL.
 - Unknown schemas, noncanonical records, damaged indexes, and inconsistent
-  cache/outbox/operation state fail closed. Schema 1 is the first database
-  format: there is no previous production SQL schema to migrate. Future schema
-  versions require an explicit transactional migration and interruption tests;
-  opening an unsupported version never resets the database.
+  cache/outbox/operation state fail closed. Schema 2 adds a key-only recovery
+  table and a partition change epoch. Schema 1 migrates transactionally to 2
+  without dropping cache, cursor, or pending writes. An unsupported version
+  never resets the database.
 
 Use one store owner per database in the application. Separate connections in
 the same isolate share a transaction lane and post-commit notifications.
@@ -67,13 +67,17 @@ Database paths are application-owned and should have a single canonical spelling
 `changeCursor`, `applyChangeChunk`, and `resetChangeCursor` implement the storage
 prerequisite for identity-only CDC in #1116. Origin sequences retain the complete
 uint64 range as decimal text. Cache invalidation and chunk progress commit
-together; only the final chunk advances the origin's last-applied sequence.
-Checkpoint reset clears confirmed cache and pending chunk progress while
-preserving outbox work. Partition wipe also removes its CDC state.
+together; every accepted chunk also advances the durable change epoch, while
+only the final chunk advances the origin's last-applied sequence. Checkpoint
+reset preserves bounded resident identities as key-only Unknown work and
+removes confirmed values, while keeping pending outbox work. Bounded scans and
+epoch-checked completion survive reopen. Partition wipe removes CDC and
+recovery state.
 
-This adapter does not start a CDC subscription. The identity-only server stream,
-gap/bootstrap orchestration, and read-versus-invalidation coordination remain
-the separate #1116 capability. Cursor storage alone never establishes freshness.
+This adapter does not start a CDC subscription. The identity-only server stream
+and gap/bootstrap orchestration remain separate #1116 work. Ordinary Get and
+resident plural revalidation now use the same change-epoch barrier. Cursor
+storage alone never establishes freshness.
 
 ## Verification
 

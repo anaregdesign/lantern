@@ -151,6 +151,120 @@ void main() {
       expect(await restarted.listPending('wire'), isEmpty);
     },
   );
+
+  test(
+    'resident-only recovery revalidates plural Vertex and Edge over h2c',
+    () async {
+      final endpointValue =
+          Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
+      if (endpointValue == null || endpointValue.isEmpty) {
+        markTestSkipped('set LANTERN_DART_REAL_WIRE_ENDPOINT');
+        return;
+      }
+      final endpoint = Uri.parse(endpointValue);
+      final client = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+      );
+      addTearDown(client.close);
+      await client.ping();
+      final prefix = 'recovery:${DateTime.now().microsecondsSinceEpoch}:';
+      final present = '${prefix}present';
+      final absent = '${prefix}absent';
+      final tail = '${prefix}tail';
+      final head = '${prefix}head';
+      await client.putVertex(
+        VertexInput(key: present, value: VertexValue.string('from-server')),
+      );
+      await client.putEdge(EdgeInput(tail: tail, head: head, weight: 1.5));
+
+      final directory = await Directory.systemTemp.createTemp(
+        'sqlite-recovery-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final store = await SqliteOfflineStore.open(
+        path: '${directory.path}/offline.db',
+        databaseFactory: databaseFactoryFfi,
+      );
+      addTearDown(store.close);
+      final now = DateTime.now().toUtc();
+      await store.transaction((transaction) async {
+        for (final key in [present, absent]) {
+          await transaction.putCache(
+            'wire',
+            OfflineCacheRecord.value(
+              partitionId: 'wire',
+              generation: await transaction.generation('wire'),
+              key: OfflineEntityKey.vertex(key),
+              entity: Vertex(
+                key: key,
+                value: VertexValue.string('stale'),
+                expiration: null,
+              ),
+              validatedAt: now,
+              lastAccessAt: now,
+            ),
+          );
+        }
+        await transaction.putCache(
+          'wire',
+          OfflineCacheRecord.value(
+            partitionId: 'wire',
+            generation: await transaction.generation('wire'),
+            key: OfflineEntityKey.edge(tail, head),
+            entity: Edge(tail: tail, head: head, weight: 0.5, expiration: null),
+            validatedAt: now,
+            lastAccessAt: now,
+          ),
+        );
+        await transaction.resetChangeCursor(
+          'wire',
+          OfflineChangeCursor(const {}),
+        );
+      });
+      final online = LanternClientOfflineRemote(client);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: online,
+        config: OfflineConfig(clock: () => now),
+      );
+      addTearDown(repository.dispose);
+      expect(
+        await repository.revalidateResidentBatch(
+          'wire',
+          recoveryRemote: online,
+          limit: 3,
+        ),
+        3,
+      );
+      expect(
+        await store.transaction((t) => t.unknownResidents('wire', limit: 3)),
+        isEmpty,
+      );
+      final fresh = await repository.readVertex(
+        'wire',
+        present,
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect((fresh.value!.value as StringValue).value, 'from-server');
+      expect(
+        (await repository.readVertex(
+          'wire',
+          absent,
+          policy: OfflineReadPolicy.cacheOnly,
+        )).state,
+        OfflineReadState.missing,
+      );
+      expect(
+        (await repository.readEdge(
+          'wire',
+          EdgeRef(tail, head),
+          policy: OfflineReadPolicy.cacheOnly,
+        )).value!.weight,
+        Float32Value(1.5).value,
+      );
+    },
+  );
 }
 
 final class _ResponseDroppingProxy {

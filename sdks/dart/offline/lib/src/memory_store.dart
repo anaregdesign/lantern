@@ -16,7 +16,7 @@ import 'types.dart';
 /// not be used as a production persistence adapter.
 final class InMemoryOfflineStore implements OfflineStore {
   /// Current canonical reference-store snapshot schema.
-  static const int snapshotSchemaVersion = 6;
+  static const int snapshotSchemaVersion = 7;
 
   /// Creates an empty reference store with explicit capacity bounds.
   InMemoryOfflineStore({this.limits = const OfflineStoreLimits()}) {
@@ -202,6 +202,45 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
   }
 
   @override
+  int changeEpoch(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    return _state.partition(partitionId).changeEpoch;
+  }
+
+  @override
+  List<OfflineEntityKey> unknownResidents(
+    String partitionId, {
+    required int limit,
+  }) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    if (limit < 1 || limit > offlineMaxResidentRevalidationBatch) {
+      throw const OfflineArgumentException();
+    }
+    return List<OfflineEntityKey>.unmodifiable(
+      _state.partition(partitionId).unknownResidents.values.take(limit),
+    );
+  }
+
+  @override
+  bool completeUnknownResident(
+    String partitionId,
+    OfflineEntityKey key, {
+    required int expectedEpoch,
+  }) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final partition = _state.partition(partitionId);
+    if (expectedEpoch != partition.changeEpoch ||
+        partition.unknownResidents.remove(key.canonical) == null) {
+      return false;
+    }
+    _changedPartitions.add(partitionId);
+    return true;
+  }
+
+  @override
   void applyChangeChunk(String partitionId, OfflineChangeChunk chunk) {
     _ensureOpen();
     _validatePartition(partitionId);
@@ -227,6 +266,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
       );
     }
     partition.changeProgress[chunk.origin] = advanced;
+    partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
   }
 
@@ -241,13 +281,18 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
         offlineMaxChangeOriginsPerStore) {
       throw const OfflineCapacityException();
     }
+    for (final record in partition.cache.values) {
+      partition.unknownResidents[record.key.canonical] = record.key;
+    }
     partition.cache.clear();
+    _trimUnknownResidents(_state, partitionId, _limits);
     partition.changeProgress
       ..clear()
       ..addAll({
         for (final entry in checkpoint.sequences.entries)
           entry.key: OfflineChangeProgress(completedSequence: entry.value),
       });
+    partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
   }
 
@@ -255,7 +300,9 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
   OfflineCacheRecord? getCache(String partitionId, OfflineEntityKey key) {
     _ensureOpen();
     _validatePartition(partitionId);
-    final record = _state.partition(partitionId).cache[key.canonical];
+    final partition = _state.partition(partitionId);
+    if (partition.unknownResidents.containsKey(key.canonical)) return null;
+    final record = partition.cache[key.canonical];
     return record == null ? null : _copyCacheRecord(record);
   }
 
@@ -1102,6 +1149,8 @@ final class _MemoryPartition {
   _MemoryPartition({this.generation = 0});
 
   final Map<String, OfflineCacheRecord> cache = <String, OfflineCacheRecord>{};
+  final SplayTreeMap<String, OfflineEntityKey> unknownResidents =
+      SplayTreeMap<String, OfflineEntityKey>();
   final Map<String, OfflineOutboxRecord> outbox =
       <String, OfflineOutboxRecord>{};
   final Map<String, OfflineOperationRecord> operations =
@@ -1140,6 +1189,7 @@ final class _MemoryPartition {
   final Map<String, _OperationRetentionCursor> operationRetentionById =
       <String, _OperationRetentionCursor>{};
   int generation;
+  int changeEpoch = 0;
   int version = 0;
   int nextOrdinal = 0;
   bool replayPausedForAuth = false;
@@ -1339,6 +1389,8 @@ final class _MemoryPartition {
   _MemoryPartition copy() {
     final result = _MemoryPartition(generation: generation)
       ..changeProgress.addAll(changeProgress)
+      ..unknownResidents.addAll(unknownResidents)
+      ..changeEpoch = changeEpoch
       ..version = version
       ..nextOrdinal = nextOrdinal
       ..replayPausedForAuth = replayPausedForAuth;
@@ -1524,6 +1576,39 @@ int _cacheStateBytes(_MemoryState state) => state.partitions.values.fold(
   0,
   (total, partition) => total + _cacheRecordsBytes(partition.cache.values),
 );
+
+int _unknownResidentBytes(_MemoryPartition partition) => partition
+    .unknownResidents
+    .keys
+    .fold(0, (total, key) => total + utf8.encode(key).length + 32);
+
+int _unknownResidentCount(_MemoryState state) => state.partitions.values.fold(
+  0,
+  (total, partition) => total + partition.unknownResidents.length,
+);
+
+int _unknownStateBytes(_MemoryState state) => state.partitions.values.fold(
+  0,
+  (total, partition) => total + _unknownResidentBytes(partition),
+);
+
+void _trimUnknownResidents(
+  _MemoryState state,
+  String partitionId,
+  OfflineStoreLimits limits,
+) {
+  final partition = state.partition(partitionId);
+  // A discarded marker is no longer resident and cannot expose a stale value:
+  // reset already removed every confirmed cache record. Bound accumulated
+  // recovery state across repeated interrupted checkpoints.
+  while (partition.unknownResidents.isNotEmpty &&
+      (partition.unknownResidents.length > limits.maxCacheRecordsPerPartition ||
+          _unknownResidentBytes(partition) > limits.maxCacheBytesPerPartition ||
+          _unknownResidentCount(state) > limits.maxCacheRecords ||
+          _unknownStateBytes(state) > limits.maxCacheBytes)) {
+    partition.unknownResidents.remove(partition.unknownResidents.firstKey()!);
+  }
+}
 
 int _outboxBytes(_MemoryPartition partition, OfflineStoreLimits limits) =>
     partition.outbox.values.fold(
@@ -1732,6 +1817,7 @@ String _encodeMemoryState(_MemoryState state) {
           return <String, Object?>{
             'partitionId': partitionId,
             'generation': partition.generation,
+            'changeEpoch': partition.changeEpoch,
             'version': partition.version,
             'nextOrdinal': partition.nextOrdinal,
             'replayPausedForAuth': partition.replayPausedForAuth,
@@ -1740,6 +1826,7 @@ String _encodeMemoryState(_MemoryState state) {
                   in (partition.changeProgress.keys.toList()..sort()))
                 origin: partition.changeProgress[origin]!.toJson(),
             },
+            'unknownResidents': partition.unknownResidents.keys.toList(),
             'cache': cacheKeys
                 .map(
                   (key) =>
@@ -1771,6 +1858,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         schema != 3 &&
         schema != 4 &&
         schema != 5 &&
+        schema != 6 &&
         schema != InMemoryOfflineStore.snapshotSchemaVersion) {
       throw const OfflineSchemaException();
     }
@@ -1796,10 +1884,12 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
             ? <String>{
                 'partitionId',
                 'generation',
+                if (schema >= 7) 'changeEpoch',
                 'version',
                 'nextOrdinal',
                 'replayPausedForAuth',
                 if (schema >= 6) 'changeProgress',
+                if (schema >= 7) 'unknownResidents',
                 'cache',
                 'outbox',
                 'operations',
@@ -1820,6 +1910,9 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       }
       final generation = _snapshotNonNegativeInt(encoded['generation']);
       final partition = _MemoryPartition(generation: generation)
+        ..changeEpoch = schema >= 7
+            ? _snapshotNonNegativeInt(encoded['changeEpoch'])
+            : 0
         ..version = _snapshotNonNegativeInt(encoded['version'])
         ..nextOrdinal = _snapshotNonNegativeInt(encoded['nextOrdinal'])
         ..replayPausedForAuth = schema >= 5
@@ -1838,6 +1931,17 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
           partition.changeProgress[origin] = OfflineChangeProgress.fromJson(
             progress[origin],
           );
+        }
+      }
+      if (schema >= 7) {
+        for (final encodedKey in _snapshotStrings(
+          encoded['unknownResidents'],
+        )) {
+          final key = OfflineEntityKey.fromCanonical(encodedKey);
+          if (partition.unknownResidents.containsKey(encodedKey)) {
+            throw const OfflineCodecException();
+          }
+          partition.unknownResidents[encodedKey] = key;
         }
       }
       final cache = _snapshotStrings(encoded['cache']);
@@ -2415,6 +2519,8 @@ String _allocateV1UnknownRecordId(
 void _validateSnapshotCapacity(_MemoryState state, OfflineStoreLimits limits) {
   if (_cacheRecordCount(state) > limits.maxCacheRecords ||
       _cacheStateBytes(state) > limits.maxCacheBytes ||
+      _unknownResidentCount(state) > limits.maxCacheRecords ||
+      _unknownStateBytes(state) > limits.maxCacheBytes ||
       _outboxRecordCount(state) > limits.maxOutboxRecords ||
       _outboxStateBytes(state, limits) > limits.maxOutboxBytes ||
       _operationRecordCount(state) > limits.maxOperationRecords ||
@@ -2425,6 +2531,9 @@ void _validateSnapshotCapacity(_MemoryState state, OfflineStoreLimits limits) {
     if (partition.cache.length > limits.maxCacheRecordsPerPartition ||
         _cacheRecordsBytes(partition.cache.values) >
             limits.maxCacheBytesPerPartition ||
+        partition.unknownResidents.length >
+            limits.maxCacheRecordsPerPartition ||
+        _unknownResidentBytes(partition) > limits.maxCacheBytesPerPartition ||
         partition.outbox.length > limits.maxOutboxRecordsPerPartition ||
         _outboxBytes(partition, limits) > limits.maxOutboxBytesPerPartition ||
         partition.operations.length > limits.maxOperationRecordsPerPartition ||

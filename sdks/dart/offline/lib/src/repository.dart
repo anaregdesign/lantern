@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 
+import 'change_store.dart';
 import 'errors.dart';
 import 'remote.dart';
 import 'store.dart';
@@ -136,6 +137,199 @@ final class OfflineLanternRepository {
         ),
       ),
     );
+  }
+
+  /// Revalidates at most [limit] durable Unknown resident identities.
+  ///
+  /// One plural request per entity family is issued through [recoveryRemote].
+  /// Each result and removal of its Unknown marker commit together only while
+  /// the checkpoint/change epoch is unchanged. On failure, unfinished keys
+  /// remain durable for the next foreground recovery pass.
+  Future<int> revalidateResidentBatch(
+    String partitionId, {
+    required OfflineRecoveryRemote recoveryRemote,
+    int limit = offlineMaxResidentRevalidationBatch,
+    LanternCancellationToken? cancellation,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    if (limit < 1 || limit > offlineMaxResidentRevalidationBatch) {
+      throw const OfflineArgumentException();
+    }
+    return _runPartitionWork(
+      partitionId,
+      cancellation,
+      (ownedCancellation) => _revalidateResidentBatch(
+        partitionId,
+        recoveryRemote,
+        limit,
+        ownedCancellation,
+      ),
+    );
+  }
+
+  Future<int> _revalidateResidentBatch(
+    String partitionId,
+    OfflineRecoveryRemote recoveryRemote,
+    int limit,
+    LanternCancellationToken cancellation,
+  ) async {
+    final batch = await store.transaction(
+      (transaction) async => (
+        stamp: _ReadStamp(
+          await transaction.generation(partitionId),
+          await transaction.changeEpoch(partitionId),
+        ),
+        keys: await transaction.unknownResidents(partitionId, limit: limit),
+      ),
+    );
+    if (batch.keys.isEmpty) return 0;
+    final vertexKeys = [
+      for (final key in batch.keys)
+        if (key.kind == OfflineEntityKind.vertex) key.vertexKey!,
+    ];
+    final edgeKeys = [
+      for (final key in batch.keys)
+        if (key.kind == OfflineEntityKind.edge) EdgeRef(key.tail!, key.head!),
+    ];
+    _throwIfCanceled(cancellation);
+    final vertices = vertexKeys.isEmpty
+        ? <OfflineRemoteRead<Vertex>>[]
+        : await _withReadPermit(
+            partitionId,
+            cancellation,
+            () => recoveryRemote.getVertices(
+              vertexKeys,
+              cancellation: cancellation,
+            ),
+          );
+    _throwIfCanceled(cancellation);
+    final edges = edgeKeys.isEmpty
+        ? <OfflineRemoteRead<Edge>>[]
+        : await _withReadPermit(
+            partitionId,
+            cancellation,
+            () => recoveryRemote.getEdges(edgeKeys, cancellation: cancellation),
+          );
+    _throwIfCanceled(cancellation);
+    if (vertices.length != vertexKeys.length ||
+        edges.length != edgeKeys.length) {
+      throw const OfflineCodecException();
+    }
+    final vertexResults = <String, OfflineRemoteRead<Vertex>>{};
+    for (var i = 0; i < vertexKeys.length; i++) {
+      final key = vertexKeys[i];
+      final result = vertices[i];
+      if (result is OfflineRemotePresent<Vertex> && result.value.key != key) {
+        throw const OfflineCodecException();
+      }
+      vertexResults[key] = result;
+    }
+    final edgeResults = <String, OfflineRemoteRead<Edge>>{};
+    for (var i = 0; i < edgeKeys.length; i++) {
+      final key = OfflineEntityKey.edge(edgeKeys[i].tail, edgeKeys[i].head);
+      final result = edges[i];
+      if (result is OfflineRemotePresent<Edge> &&
+          (result.value.tail != key.tail || result.value.head != key.head)) {
+        throw const OfflineCodecException();
+      }
+      edgeResults[key.canonical] = result;
+    }
+    var completed = 0;
+    for (final key in batch.keys) {
+      _throwIfCanceled(cancellation);
+      final now = config.clock().toUtc();
+      OfflineCacheRecord? record;
+      if (key.kind == OfflineEntityKind.vertex) {
+        final result = vertexResults[key.vertexKey!]!;
+        if (result is OfflineRemotePresent<Vertex>) {
+          if (_live(result.value.expiration, now)) {
+            record = OfflineCacheRecord.value(
+              partitionId: partitionId,
+              generation: batch.stamp.generation,
+              key: key,
+              entity: result.value,
+              validatedAt: now,
+              lastAccessAt: now,
+            );
+          }
+        } else {
+          record = OfflineCacheRecord.missing(
+            partitionId: partitionId,
+            generation: batch.stamp.generation,
+            key: key,
+            validatedAt: now,
+            lastAccessAt: now,
+            missingUntil: _durableDeadline(now, config.missingTtl),
+          );
+        }
+      } else {
+        final result = edgeResults[key.canonical]!;
+        if (result is OfflineRemotePresent<Edge>) {
+          if (_live(result.value.expiration, now)) {
+            record = OfflineCacheRecord.value(
+              partitionId: partitionId,
+              generation: batch.stamp.generation,
+              key: key,
+              entity: result.value,
+              validatedAt: now,
+              lastAccessAt: now,
+            );
+          }
+        } else {
+          record = OfflineCacheRecord.missing(
+            partitionId: partitionId,
+            generation: batch.stamp.generation,
+            key: key,
+            validatedAt: now,
+            lastAccessAt: now,
+            missingUntil: _durableDeadline(now, config.missingTtl),
+          );
+        }
+      }
+      try {
+        final applied = await store.transaction((transaction) async {
+          if (await transaction.generation(partitionId) !=
+              batch.stamp.generation) {
+            return false;
+          }
+          if (!await transaction.completeUnknownResident(
+            partitionId,
+            key,
+            expectedEpoch: batch.stamp.epoch,
+          )) {
+            return false;
+          }
+          // A normal Get may have written a hidden cache row while this key
+          // remained Unknown. Replace it only with this checked batch result.
+          await transaction.deleteCache(partitionId, key);
+          if (record != null) await transaction.putCache(partitionId, record);
+          return true;
+        });
+        if (applied) completed++;
+      } on OfflineCapacityException {
+        // No cache capacity means this identity is no longer resident. The
+        // transaction above rolled back both the record and marker removal.
+        if (await store.transaction((transaction) async {
+          if (await transaction.generation(partitionId) !=
+              batch.stamp.generation) {
+            return false;
+          }
+          if (!await transaction.completeUnknownResident(
+            partitionId,
+            key,
+            expectedEpoch: batch.stamp.epoch,
+          )) {
+            return false;
+          }
+          await transaction.deleteCache(partitionId, key);
+          return true;
+        })) {
+          completed++;
+        }
+      }
+    }
+    return completed;
   }
 
   /// Streams the current vertex snapshot and future coarse partition changes.
@@ -1207,16 +1401,14 @@ final class OfflineLanternRepository {
     required LanternCancellationToken? cancellation,
   }) async {
     await _expireOrAgeOut(partitionId, entityKey: OfflineEntityKey.vertex(key));
+    final stamp = await _readStamp(partitionId);
     final local = await _localVertex(partitionId, key);
     if (_usesLocalFirst(policy) && _eligible(local, allowStale: allowStale)) {
-      return local;
+      return _guardRead(partitionId, stamp, local);
     }
     if (policy == OfflineReadPolicy.cacheOnly) {
-      return _withoutIneligible(local);
+      return _guardRead(partitionId, stamp, _withoutIneligible(local));
     }
-    final generation = await store.transaction(
-      (transaction) async => await transaction.generation(partitionId),
-    );
     try {
       _throwIfCanceled(cancellation);
       final read = await _withReadPermit(
@@ -1232,7 +1424,7 @@ final class OfflineLanternRepository {
             final applied = await _removeCache(
               partitionId,
               OfflineEntityKey.vertex(key),
-              generation: generation,
+              stamp: stamp,
             );
             if (!applied) {
               _recordDiagnostic(
@@ -1242,35 +1434,44 @@ final class OfflineLanternRepository {
               );
               return _unknown<Vertex>();
             }
-            return OfflineSnapshot<Vertex>(
-              state: OfflineReadState.expired,
-              source: OfflineReadSource.server,
-              expiredAt: value.expiration,
+            return _guardRead(
+              partitionId,
+              stamp,
+              OfflineSnapshot<Vertex>(
+                state: OfflineReadState.expired,
+                source: OfflineReadSource.server,
+                expiredAt: value.expiration,
+              ),
             );
           }
           final stored = await _storeCache(
             partitionId,
             OfflineCacheRecord.value(
               partitionId: partitionId,
-              generation: generation,
+              generation: stamp.generation,
               key: OfflineEntityKey.vertex(key),
               entity: value,
               validatedAt: now,
               lastAccessAt: now,
             ),
+            expectedEpoch: stamp.epoch,
           );
           if (stored == _CacheStoreOutcome.staleGeneration) {
             return _unknown<Vertex>();
           }
           if (stored == _CacheStoreOutcome.capacityRejected) {
-            return _localVertex(
+            return _guardRead(
               partitionId,
-              key,
-              fallback: OfflineSnapshot<Vertex>(
-                state: OfflineReadState.fresh,
-                source: OfflineReadSource.server,
-                value: value,
-                validatedAt: now,
+              stamp,
+              await _localVertex(
+                partitionId,
+                key,
+                fallback: OfflineSnapshot<Vertex>(
+                  state: OfflineReadState.fresh,
+                  source: OfflineReadSource.server,
+                  value: value,
+                  validatedAt: now,
+                ),
               ),
             );
           }
@@ -1279,35 +1480,40 @@ final class OfflineLanternRepository {
             partitionId,
             OfflineCacheRecord.missing(
               partitionId: partitionId,
-              generation: generation,
+              generation: stamp.generation,
               key: OfflineEntityKey.vertex(key),
               validatedAt: now,
               lastAccessAt: now,
               missingUntil: _durableDeadline(now, config.missingTtl),
             ),
+            expectedEpoch: stamp.epoch,
           );
           if (stored == _CacheStoreOutcome.staleGeneration) {
             return _unknown<Vertex>();
           }
           if (stored == _CacheStoreOutcome.capacityRejected) {
-            return _localVertex(
+            return _guardRead(
               partitionId,
-              key,
-              fallback: OfflineSnapshot<Vertex>(
-                state: OfflineReadState.missing,
-                source: OfflineReadSource.server,
-                validatedAt: now,
+              stamp,
+              await _localVertex(
+                partitionId,
+                key,
+                fallback: OfflineSnapshot<Vertex>(
+                  state: OfflineReadState.missing,
+                  source: OfflineReadSource.server,
+                  validatedAt: now,
+                ),
               ),
             );
           }
       }
-      final currentGeneration = await store.transaction(
-        (transaction) async => await transaction.generation(partitionId),
-      );
-      if (currentGeneration != generation) return _unknown<Vertex>();
-      return _withSource(
-        await _localVertex(partitionId, key),
-        OfflineReadSource.server,
+      return _guardRead(
+        partitionId,
+        stamp,
+        _withSource(
+          await _localVertex(partitionId, key),
+          OfflineReadSource.server,
+        ),
       );
     } on OfflineRemoteFailure catch (error) {
       if (error.kind == OfflineRemoteErrorKind.canceled) {
@@ -1315,7 +1521,7 @@ final class OfflineLanternRepository {
       }
       if (policy == OfflineReadPolicy.serverFirst &&
           _eligible(local, allowStale: allowStale)) {
-        return local;
+        return _guardRead(partitionId, stamp, local);
       }
       return OfflineSnapshot<Vertex>(
         state: OfflineReadState.unknown,
@@ -1338,16 +1544,14 @@ final class OfflineLanternRepository {
       partitionId,
       entityKey: OfflineEntityKey.edge(edge.tail, edge.head),
     );
+    final stamp = await _readStamp(partitionId);
     final local = await _localEdge(partitionId, edge);
     if (_usesLocalFirst(policy) && _eligible(local, allowStale: allowStale)) {
-      return local;
+      return _guardRead(partitionId, stamp, local);
     }
     if (policy == OfflineReadPolicy.cacheOnly) {
-      return _withoutIneligible(local);
+      return _guardRead(partitionId, stamp, _withoutIneligible(local));
     }
-    final generation = await store.transaction(
-      (transaction) async => await transaction.generation(partitionId),
-    );
     try {
       _throwIfCanceled(cancellation);
       final read = await _withReadPermit(
@@ -1360,15 +1564,12 @@ final class OfflineLanternRepository {
       switch (read) {
         case OfflineRemotePresent<Edge>(:final value):
           if (!_live(value.expiration, now)) {
-            await _removeCache(
+            final applied = await _removeCache(
               partitionId,
               OfflineEntityKey.edge(edge.tail, edge.head),
-              generation: generation,
+              stamp: stamp,
             );
-            final currentGeneration = await store.transaction(
-              (transaction) async => await transaction.generation(partitionId),
-            );
-            if (currentGeneration != generation) {
+            if (!applied) {
               _recordDiagnostic(
                 const OfflineDiagnosticEvent(
                   kind: OfflineDiagnosticKind.staleOutcomeRejected,
@@ -1376,35 +1577,44 @@ final class OfflineLanternRepository {
               );
               return _unknown<Edge>();
             }
-            return OfflineSnapshot<Edge>(
-              state: OfflineReadState.expired,
-              source: OfflineReadSource.server,
-              expiredAt: value.expiration,
+            return _guardRead(
+              partitionId,
+              stamp,
+              OfflineSnapshot<Edge>(
+                state: OfflineReadState.expired,
+                source: OfflineReadSource.server,
+                expiredAt: value.expiration,
+              ),
             );
           }
           final stored = await _storeCache(
             partitionId,
             OfflineCacheRecord.value(
               partitionId: partitionId,
-              generation: generation,
+              generation: stamp.generation,
               key: OfflineEntityKey.edge(edge.tail, edge.head),
               entity: value,
               validatedAt: now,
               lastAccessAt: now,
             ),
+            expectedEpoch: stamp.epoch,
           );
           if (stored == _CacheStoreOutcome.staleGeneration) {
             return _unknown<Edge>();
           }
           if (stored == _CacheStoreOutcome.capacityRejected) {
-            return _localEdge(
+            return _guardRead(
               partitionId,
-              edge,
-              fallback: OfflineSnapshot<Edge>(
-                state: OfflineReadState.fresh,
-                source: OfflineReadSource.server,
-                value: value,
-                validatedAt: now,
+              stamp,
+              await _localEdge(
+                partitionId,
+                edge,
+                fallback: OfflineSnapshot<Edge>(
+                  state: OfflineReadState.fresh,
+                  source: OfflineReadSource.server,
+                  value: value,
+                  validatedAt: now,
+                ),
               ),
             );
           }
@@ -1413,35 +1623,40 @@ final class OfflineLanternRepository {
             partitionId,
             OfflineCacheRecord.missing(
               partitionId: partitionId,
-              generation: generation,
+              generation: stamp.generation,
               key: OfflineEntityKey.edge(edge.tail, edge.head),
               validatedAt: now,
               lastAccessAt: now,
               missingUntil: _durableDeadline(now, config.missingTtl),
             ),
+            expectedEpoch: stamp.epoch,
           );
           if (stored == _CacheStoreOutcome.staleGeneration) {
             return _unknown<Edge>();
           }
           if (stored == _CacheStoreOutcome.capacityRejected) {
-            return _localEdge(
+            return _guardRead(
               partitionId,
-              edge,
-              fallback: OfflineSnapshot<Edge>(
-                state: OfflineReadState.missing,
-                source: OfflineReadSource.server,
-                validatedAt: now,
+              stamp,
+              await _localEdge(
+                partitionId,
+                edge,
+                fallback: OfflineSnapshot<Edge>(
+                  state: OfflineReadState.missing,
+                  source: OfflineReadSource.server,
+                  validatedAt: now,
+                ),
               ),
             );
           }
       }
-      final currentGeneration = await store.transaction(
-        (transaction) async => await transaction.generation(partitionId),
-      );
-      if (currentGeneration != generation) return _unknown<Edge>();
-      return _withSource(
-        await _localEdge(partitionId, edge),
-        OfflineReadSource.server,
+      return _guardRead(
+        partitionId,
+        stamp,
+        _withSource(
+          await _localEdge(partitionId, edge),
+          OfflineReadSource.server,
+        ),
       );
     } on OfflineRemoteFailure catch (error) {
       if (error.kind == OfflineRemoteErrorKind.canceled) {
@@ -1449,7 +1664,7 @@ final class OfflineLanternRepository {
       }
       if (policy == OfflineReadPolicy.serverFirst &&
           _eligible(local, allowStale: allowStale)) {
-        return local;
+        return _guardRead(partitionId, stamp, local);
       }
       return OfflineSnapshot<Edge>(
         state: OfflineReadState.unknown,
@@ -2654,13 +2869,43 @@ final class OfflineLanternRepository {
     }
   }
 
+  Future<_ReadStamp> _readStamp(String partitionId) => store.transaction(
+    (transaction) async => _ReadStamp(
+      await transaction.generation(partitionId),
+      await transaction.changeEpoch(partitionId),
+    ),
+  );
+
+  Future<bool> _readStampCurrent(String partitionId, _ReadStamp stamp) =>
+      store.transaction(
+        (transaction) async =>
+            await transaction.generation(partitionId) == stamp.generation &&
+            await transaction.changeEpoch(partitionId) == stamp.epoch,
+      );
+
+  Future<OfflineSnapshot<T>> _guardRead<T>(
+    String partitionId,
+    _ReadStamp stamp,
+    OfflineSnapshot<T> result,
+  ) async {
+    if (await _readStampCurrent(partitionId, stamp)) return result;
+    _recordDiagnostic(
+      const OfflineDiagnosticEvent(
+        kind: OfflineDiagnosticKind.staleOutcomeRejected,
+      ),
+    );
+    return _unknown<T>();
+  }
+
   Future<_CacheStoreOutcome> _storeCache(
     String partitionId,
-    OfflineCacheRecord record,
-  ) async {
+    OfflineCacheRecord record, {
+    required int expectedEpoch,
+  }) async {
     try {
       final stored = await store.transaction((transaction) async {
-        if ((await transaction.generation(partitionId)) != record.generation) {
+        if ((await transaction.generation(partitionId)) != record.generation ||
+            (await transaction.changeEpoch(partitionId)) != expectedEpoch) {
           return false;
         }
         await transaction.putCache(partitionId, record);
@@ -2688,9 +2933,12 @@ final class OfflineLanternRepository {
   Future<bool> _removeCache(
     String partitionId,
     OfflineEntityKey key, {
-    required int generation,
+    required _ReadStamp stamp,
   }) => store.transaction((transaction) async {
-    if ((await transaction.generation(partitionId)) != generation) return false;
+    if ((await transaction.generation(partitionId)) != stamp.generation ||
+        (await transaction.changeEpoch(partitionId)) != stamp.epoch) {
+      return false;
+    }
     await transaction.deleteCache(partitionId, key);
     return true;
   });
@@ -3815,6 +4063,13 @@ final class _LeaseRenewal {
 }
 
 enum _CacheStoreOutcome { stored, staleGeneration, capacityRejected }
+
+final class _ReadStamp {
+  const _ReadStamp(this.generation, this.epoch);
+
+  final int generation;
+  final int epoch;
+}
 
 enum _ClaimSendState { sendable, pausedForAuth, stale }
 
