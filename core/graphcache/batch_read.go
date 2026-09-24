@@ -30,8 +30,9 @@ type edgeReadBucket[S comparable] struct {
 // use the same order, while the Add fast path holds at most one weight lock.
 // No dictionary or edge-map lock is acquired after the first weight lock, and
 // every bucket is unlocked before GraphCache.mu is released. A future staged
-// publication gate can therefore exclude this whole read by taking c.mu.Lock,
-// without changing the lock-free singular point-read path.
+// publication gate can therefore exclude this whole read, including the
+// service's singular GetEdge facade, by taking c.mu.Lock. The standalone core
+// GetEdgeDetail point read remains lock-free.
 func (c *GraphCache[S, T]) GetEdgeDetails(keys []EdgeKey[S]) []EdgeDetail {
 	results := make([]EdgeDetail, len(keys))
 	if len(keys) == 0 {

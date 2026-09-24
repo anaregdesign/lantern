@@ -45,6 +45,35 @@ func TestGetEdgeDetailsRequestAlignmentAndVisibility(t *testing.T) {
 	}
 }
 
+func TestGetEdgeDetailsSingleKeyHonorsGraphCut(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.AddEdgeWithExpiration("tail", "head", 3, time.Time{})
+	c.mu.Lock()
+
+	started := make(chan struct{})
+	read := make(chan EdgeDetail, 1)
+	go func() {
+		close(started)
+		read <- c.GetEdgeDetails([]EdgeKey[string]{{Tail: "tail", Head: "head"}})[0]
+	}()
+	<-started
+	select {
+	case detail := <-read:
+		c.mu.Unlock()
+		t.Fatalf("single-key read bypassed the aggregate graph lock: %+v", detail)
+	case <-time.After(50 * time.Millisecond):
+	}
+	c.mu.Unlock()
+	select {
+	case detail := <-read:
+		if !detail.Found || detail.Weight != 3 {
+			t.Fatalf("single-key detail = %+v, want live weight 3", detail)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("single-key read did not finish after the graph lock was released")
+	}
+}
+
 func TestGetEdgeDetailsConcurrentBatchAndFastAdd(t *testing.T) {
 	c := NewGraphCache[string, string](time.Hour)
 	c.AddEdgeWithExpiration("tail", "a", 1, time.Time{})
@@ -174,6 +203,52 @@ func BenchmarkGetEdgeDetails(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				_ = c.GetEdgeDetails(keys)
 			}
+		})
+	}
+}
+
+// Compare the standalone point read with the one-key batch used by the
+// singular RPC while an unrelated edge writer holds GraphCache.mu.
+func BenchmarkGetEdgeDetailVsSingleBatchContended(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		batch bool
+	}{
+		{name: "point"},
+		{name: "single-batch", batch: true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			c.AddEdgeWithExpiration("read", "edge", 1, time.Time{})
+			c.AddEdgeWithExpiration("write", "edge", 1, time.Time{})
+			keys := []EdgeKey[string]{{Tail: "read", Head: "edge"}}
+			stop := make(chan struct{})
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					c.PutEdgeWithExpiration("write", "edge", 1, time.Time{})
+				}
+			}()
+			b.ReportAllocs()
+			b.ResetTimer()
+			if tc.batch {
+				for i := 0; i < b.N; i++ {
+					_ = c.GetEdgeDetails(keys)
+				}
+			} else {
+				for i := 0; i < b.N; i++ {
+					_, _, _ = c.GetEdgeDetail("read", "edge")
+				}
+			}
+			b.StopTimer()
+			close(stop)
+			<-done
 		})
 	}
 }
