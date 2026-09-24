@@ -14,11 +14,11 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
-// FileWAL is an opt-in, synchronous WAL for one new, exclusively owned file.
+// FileWAL is an opt-in, synchronous WAL for one exclusively owned file.
 // Its v1 format is an eight-byte magic followed by frames containing a
 // big-endian body length, CRC32C over that length and body, local seq, HLC,
 // and caller-encoded payload. Frames are capped at 32 MiB. There is no
-// compaction or append-resume API.
+// compaction or whole-file capacity policy.
 // It provides durable bytes, not application recovery: a restored server must
 // replay the complete mutation envelope into graph, receipts, origin state,
 // and the in-memory Log before serving. Production does not wire FileWAL yet.
@@ -28,6 +28,7 @@ type FileWAL struct {
 	file     fileWALWriter
 	encode   func(MutationOp) ([]byte, error)
 	lastSeq  uint64
+	offset   int64
 	unusable bool
 	closed   bool
 }
@@ -96,7 +97,58 @@ func CreateFileWAL(path string, encode func(MutationOp) ([]byte, error)) (*FileW
 		return nil, fmt.Errorf("mutationlog: close FileWAL directory: %w", dirCloseErr)
 	}
 	closeOnError = false
-	return &FileWAL{file: f, encode: encode}, nil
+	return &FileWAL{file: f, encode: encode, offset: int64(len(fileWALMagic))}, nil
+}
+
+// ResumeFileWAL opens an existing, exclusively owned file for append only
+// after validating every frame and decoding every payload, then successfully
+// restoring every entry through visit. It never truncates or repairs a torn
+// tail, corrupt frame, sequence gap, or unsupported payload. On any failure it
+// closes the file without returning a writer; a failing visit may have partly
+// restored application state, which the caller must discard.
+//
+// The caller must guarantee exclusive ownership of path across processes for
+// the entire validation, restore, and append lifetime. There is no OS lock.
+// decode must be deterministic across validation and restore passes. A nil
+// visit is not permitted: byte validation alone cannot prove that graph,
+// receipts, origin state, and the in-memory Log were restored to the same cut.
+// A successful visit remains the caller's application-continuity claim; this
+// raw WAL API does not verify that claim or initialize an in-memory Log at the
+// recovered sequence. Production must not enable it without that integration.
+func ResumeFileWAL(path string, encode func(MutationOp) ([]byte, error), decode func([]byte) (MutationOp, error), visit func(Entry) error) (*FileWAL, error) {
+	if encode == nil || decode == nil || visit == nil {
+		return nil, errors.New("mutationlog: FileWAL encoder, decoder, and visitor are required")
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
+	if err != nil {
+		return nil, err
+	}
+	closeOnError := true
+	defer func() {
+		if closeOnError {
+			_ = f.Close()
+		}
+	}()
+	initial, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !initial.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: not a regular file", ErrFileWALCorrupt)
+	}
+	lastSeq, offset, err := replayOpenedFileWAL(f, decode, visit)
+	if err != nil {
+		return nil, err
+	}
+	final, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if initial.Size() != offset || final.Size() != offset {
+		return nil, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
+	}
+	closeOnError = false
+	return &FileWAL{file: f, encode: encode, lastSeq: lastSeq, offset: offset}, nil
 }
 
 // Write implements WAL. A nil return means the full frame and file have been
@@ -124,6 +176,9 @@ func (w *FileWAL) Write(entry Entry) error {
 		return &DefiniteWALAbort{Cause: ErrFileWALTooLarge}
 	}
 	frame := encodeFileWALFrame(entry, payload)
+	if w.offset < 0 || int64(len(frame)) > math.MaxInt64-w.offset {
+		return &DefiniteWALAbort{Cause: fmt.Errorf("%w: file offset overflow", ErrFileWALTooLarge)}
+	}
 	// Keep the guard set even if a writer or Sync implementation panics after
 	// a partial or complete durable record. A fresh recovered Log is required.
 	w.unusable = true
@@ -138,6 +193,7 @@ func (w *FileWAL) Write(entry Entry) error {
 		return fmt.Errorf("mutationlog: sync FileWAL frame: %w", err)
 	}
 	w.lastSeq = entry.Seq
+	w.offset += int64(len(frame))
 	w.unusable = false
 	return nil
 }
@@ -158,8 +214,8 @@ func encodeFileWALFrame(entry Entry, payload []byte) []byte {
 	return frame
 }
 
-// Close releases the file. It does not grant permission to reopen and append:
-// startup must first restore every application component from a verified cut.
+// Close releases the file. Reopening for append requires ResumeFileWAL to
+// validate and restore every application component from a verified cut.
 func (w *FileWAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -176,7 +232,7 @@ func (w *FileWAL) Close() error {
 // exposing a valid prefix before a later record proves corrupt.
 // It never truncates a torn tail or guesses whether an unacknowledged write
 // committed. decode and visit must be non-nil; decode must be deterministic.
-// The caller must own the file exclusively for both passes and must discard
+// The caller must own the file exclusively for all passes and must discard
 // any partly restored application state if visit returns an error. Successful
 // byte replay alone does not establish graph/receipt/epoch continuity.
 func ReplayFileWAL(path string, decode func([]byte) (MutationOp, error), visit func(Entry) error) error {
@@ -188,14 +244,40 @@ func ReplayFileWAL(path string, decode func([]byte) (MutationOp, error), visit f
 		return err
 	}
 	defer f.Close()
+	_, _, err = replayOpenedFileWAL(f, decode, visit)
+	return err
+}
+
+func replayOpenedFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, int64, error) {
 	if _, err := scanFileWAL(f, nil, nil); err != nil {
-		return err
+		return 0, 0, err
+	}
+	validatedOffset, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, 0, err
 	}
 	if _, err := scanFileWAL(f, decode, nil); err != nil {
-		return err
+		return 0, 0, err
 	}
-	_, err = scanFileWAL(f, decode, visit)
-	return err
+	decodedOffset, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, 0, err
+	}
+	if decodedOffset != validatedOffset {
+		return 0, 0, fmt.Errorf("%w: file size changed during decode", ErrFileWALCorrupt)
+	}
+	lastSeq, err := scanFileWAL(f, decode, visit)
+	if err != nil {
+		return 0, 0, err
+	}
+	restoredOffset, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, 0, err
+	}
+	if restoredOffset != validatedOffset {
+		return 0, 0, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
+	}
+	return lastSeq, restoredOffset, nil
 }
 
 func scanFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, error) {
