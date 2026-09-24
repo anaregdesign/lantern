@@ -17,20 +17,23 @@ func (c *GraphCache[S, T]) addEdgeLocked(tail, head S, w float32, expiration tim
 }
 
 // addEdgeContribLocked applies additive edge semantics with optional
-// contribution dedup. The defensive created-without-applied branch preserves
-// side-index correctness if edgeCache's current "new bucket always applies"
-// invariant ever changes. It returns the dedup result plus the post-apply live
-// weight sum (#897; on a dedup no-op, the current live sum). `now` supplies the
-// liveness clock. Caller must hold c.mu.
+// contribution dedup. An existing contribution must be checked before
+// auto-creating endpoints: one may have expired while its edge contribution
+// remains live, and a duplicate Add must not revive it. The defensive
+// created-without-applied branch preserves side-index correctness if
+// edgeCache's current "new bucket always applies" invariant ever changes.
+// It returns the dedup result plus the post-apply live weight sum (#897; on a
+// dedup no-op, the current live sum). `now` supplies the liveness clock.
+// Caller must hold c.mu.
 func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32) {
 	return c.addEdgeContribHLCLocked(tail, head, w, expiration, contribID, hlc.Timestamp{}, now)
 }
 
 func (c *GraphCache[S, T]) addEdgeContribHLCLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time) (applied bool, effective float32) {
-	c.ensureVertexLocked(tail, expiration)
-	c.ensureVertexLocked(head, expiration)
 	created, tailID, headID, applied, effective := c.edges.addWithExpirationContribHLCAt(tail, head, w, expiration, contribID, ts, now)
 	if applied || created {
+		c.ensureVertexLocked(tail, expiration)
+		c.ensureVertexLocked(head, expiration)
 		c.onEdgeAddedLocked(created, tailID, headID, head)
 	}
 	return applied, effective
