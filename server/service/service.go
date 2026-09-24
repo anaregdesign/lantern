@@ -66,6 +66,10 @@ type LanternService struct {
 	traversalWorkBudget     graphcache.PPRWorkBudget
 	traversalMaxResults     int
 	capacity                CapacityLimits
+	// replicationCutMu keeps a Snapshot cutoff from overtaking a remote
+	// ApplyMutation or the local AddEdges log-before-graph commit. Other local
+	// writes apply graph-first, so a torn cut can only replay them from tail.
+	replicationCutMu sync.RWMutex
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the
@@ -328,6 +332,15 @@ func (s *LanternService) WithReplication(log *mutationlog.Log, clock *hlc.Clock,
 	}
 	s.onAppend = onAppend
 	return s
+}
+
+// withReplicationSnapshotCut holds the service commit boundary only while
+// Snapshot copies its origin/log cutoffs and graph image, never while it sends
+// frames to a potentially slow client.
+func (s *LanternService) withReplicationSnapshotCut(capture func()) {
+	s.replicationCutMu.RLock()
+	defer s.replicationCutMu.RUnlock()
+	capture()
 }
 
 // WithLogger replaces the slog handle used for replication-side warnings
@@ -1292,6 +1305,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	var effective []float32
 	if s.clock != nil {
 		ts := s.clock.Now()
+		s.replicationCutMu.Lock()
 		// Log FIRST so the per-origin seq this mutation commits under is
 		// known, then synthesize a (origin, seq, idx) ContribID for every
 		// edge the client left unkeyed BEFORE applying it locally. This
@@ -1309,6 +1323,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 			}
 		}
 		effective, deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+		s.replicationCutMu.Unlock()
 		s.metrics.OnEdgeContribDeduped(deduped)
 	} else {
 		effective, deduped = s.cache.AddEdgesWithExpirationContrib(items)

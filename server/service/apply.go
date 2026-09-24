@@ -25,10 +25,10 @@ import (
 // Under the Reading B contract (#415), a successfully-applied remote
 // mutation is ALSO appended to the local mutation log so external
 // Subscribe consumers on any replica observe every committed cluster
-// mutation. Replication loops are prevented by an atomic per-origin
-// watermark check at the top of the function: a (origin, seq) pair
-// that another peer hop already covered is short-circuited before any
-// cache or log mutation happens.
+// mutation. Graph replay is idempotent by HLC/ContribID; after a successful
+// backend call, the per-origin watermark decides whether this hop appends
+// to the local log. The graph apply, watermark, and publication share a
+// Snapshot cut gate so a header never claims an unapplied mutation.
 //
 // Idempotence rules per oneof case:
 //
@@ -44,9 +44,8 @@ import (
 //     replays of the same (mutation seq, edge index) pair dedup.
 //
 //   - Delete* (vertex/edge/by-prefix): performed via the existing
-//     destructive batch methods. Tombstone + TTL clamp semantics are
-//     deferred to #183; for now repeated deletes are naturally no-ops
-//     because the second pass finds nothing to remove.
+//     destructive batch methods and a D4-bounded HLC tombstone when enabled.
+//     Equal-HLC replay keeps the earlier expiration.
 //
 // Returns ctx.Err() when ctx is cancelled; otherwise nil. Nil-or-empty
 // mutations are dropped silently so callers (pump, snapshot replay) can
@@ -58,14 +57,16 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m == nil || m.GetOp() == nil {
 		return nil
 	}
+	s.replicationCutMu.Lock()
+	defer s.replicationCutMu.Unlock()
 
 	ts := hlcFromProto(m.GetHlc())
 	origin := m.GetOrigin()
 	seq := m.GetSeq()
 
-	// Reading B watermark check (#415, B-3). Record CAS-advances the
-	// per-origin (last_seq, last_hlc) watermark when seq is strictly
-	// greater than what we have already seen for this origin. The
+	// Reading B watermark check (#415, B-3). After the backend call,
+	// Record CAS-advances the per-origin (last_seq, last_hlc) watermark
+	// when seq is strictly greater than what we have already seen. The
 	// bool return drives two later decisions:
 	//
 	//   - log Append: only on advance, so external Subscribe streams
@@ -83,10 +84,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	// TestApplyMutation_Convergence stresses.
 	var nid hlc.NodeID
 	advanced := false
-	if s.origins != nil && len(origin) > 0 && seq > 0 {
-		copy(nid[:], origin)
-		advanced = s.origins.Record(nid, seq, ts)
-	}
+	copy(nid[:], origin)
 
 	// Tombstone expiration is computed once per apply so a batch of
 	// per-edge contributions inside a single MutationOp_AddEdges shares
@@ -377,6 +375,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			s.cache.DeleteEdgesByPrefix(ctx, p.GetTailPrefix(), p.GetHeadPrefix(), 0)
 		}
 		opName = "DeleteEdgesByPrefix"
+	}
+
+	// Snapshot must never publish this origin/seq cutoff before the graph
+	// mutation is committed. The shared replicationCutMu excludes Snapshot's
+	// cutoff+graph capture while this apply and publication are in flight.
+	if opName != "" && s.origins != nil && len(origin) > 0 && seq > 0 {
+		advanced = s.origins.Record(nid, seq, ts)
 	}
 
 	if opName != "" && s.onReplicationApply != nil {

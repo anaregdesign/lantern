@@ -564,13 +564,16 @@ Implementation notes:
   `server/cmd/wire.go`. Production uses `GraphCache.SnapshotReplication()`:
   one sampled wall instant and one continuous graph write lock cover barrier
   migration plus materialisation of the barrier, active Delete tombstone, and
-  live slices. Before copying state, the method moves Put floors with
-  non-visible payloads (expired vertices and expired, zero-weight, or dangling
-  edge buckets) into the retained barrier maps. Capturing barriers and live
-  state in separate lock passes is forbidden: TTL/GC could move a floor between
-  the passes and make the snapshot omit both representations. The completed
-  owned slices are
-  then streamed frame-by-frame, canonicalizing implicit nil-valued endpoint
+  live slices. The service also holds its Snapshot cut gate while it copies
+  the origin/local-log cutoffs and this graph image: remote ApplyMutation and
+  local log-before-graph AddEdges cannot publish a cutoff ahead of the graph.
+  It releases the gate before sending any frame. Before copying state, the
+  method moves Put floors with non-visible payloads (expired vertices and
+  expired, zero-weight, or dangling edge buckets) into the retained barrier
+  maps. Capturing barriers and live state in separate lock passes is forbidden:
+  TTL/GC could move a floor between the passes and make the snapshot omit both
+  representations. The completed owned slices are then streamed frame-by-frame,
+  canonicalizing implicit nil-valued endpoint
   vertices at the service boundary and honouring `stream.Context()`
   cancellation between sends.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,

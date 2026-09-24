@@ -26,7 +26,7 @@ export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 ///
 ///   wall_ns: physical wall-clock component, nanoseconds since Unix epoch.
 ///   logical: per-tick logical counter, incremented on collision.
-///   node_id: 16-byte origin node identifier (matches core/hlc.NodeID).
+///   node_id: non-zero 16-byte origin node identifier (matches core/hlc.NodeID).
 ///
 /// The triple (wall_ns, logical, node_id) gives a strict total order; see
 /// docs/replication.md §5 and core/hlc/hlc.go.
@@ -1119,8 +1119,8 @@ class SubscribeResponse extends $pb.GeneratedMessage {
   Mutation ensureMutation() => $_ensure(0);
 }
 
-/// SnapshotRequest opens a server-streaming snapshot of the entire live
-/// graph state at a single causal cutoff. The request body is intentionally
+/// SnapshotRequest opens a server-streaming snapshot of the live graph and
+/// retained causal floors at a single cutoff. The request body is intentionally
 /// empty in this phase (#184); future revisions may add prefix / shard
 /// filters without breaking the wire contract.
 class SnapshotRequest extends $pb.GeneratedMessage {
@@ -1275,6 +1275,8 @@ class SnapshotFooter extends $pb.GeneratedMessage {
     $fixnum.Int64? edgeCount,
     $fixnum.Int64? vertexCausalBarrierCount,
     $fixnum.Int64? edgeCausalBarrierCount,
+    $fixnum.Int64? vertexTombstoneCount,
+    $fixnum.Int64? edgeTombstoneCount,
   }) {
     final result = create();
     if (vertexCount != null) result.vertexCount = vertexCount;
@@ -1283,6 +1285,10 @@ class SnapshotFooter extends $pb.GeneratedMessage {
       result.vertexCausalBarrierCount = vertexCausalBarrierCount;
     if (edgeCausalBarrierCount != null)
       result.edgeCausalBarrierCount = edgeCausalBarrierCount;
+    if (vertexTombstoneCount != null)
+      result.vertexTombstoneCount = vertexTombstoneCount;
+    if (edgeTombstoneCount != null)
+      result.edgeTombstoneCount = edgeTombstoneCount;
     return result;
   }
 
@@ -1310,6 +1316,12 @@ class SnapshotFooter extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..a<$fixnum.Int64>(
         4, _omitFieldNames ? '' : 'edgeCausalBarrierCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        5, _omitFieldNames ? '' : 'vertexTombstoneCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        6, _omitFieldNames ? '' : 'edgeTombstoneCount', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
@@ -1367,6 +1379,24 @@ class SnapshotFooter extends $pb.GeneratedMessage {
   $core.bool hasEdgeCausalBarrierCount() => $_has(3);
   @$pb.TagNumber(4)
   void clearEdgeCausalBarrierCount() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get vertexTombstoneCount => $_getI64(4);
+  @$pb.TagNumber(5)
+  set vertexTombstoneCount($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasVertexTombstoneCount() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearVertexTombstoneCount() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get edgeTombstoneCount => $_getI64(5);
+  @$pb.TagNumber(6)
+  set edgeTombstoneCount($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasEdgeTombstoneCount() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearEdgeTombstoneCount() => $_clearField(6);
 }
 
 /// SnapshotVertex is the snapshot-time representation of a single live
@@ -1794,6 +1824,191 @@ class SnapshotEdgeCausalBarrier extends $pb.GeneratedMessage {
   HLCTimestamp ensureHlc() => $_ensure(2);
 }
 
+/// SnapshotVertexTombstone and SnapshotEdgeTombstone carry active Delete
+/// floors. Unlike causal Put barriers these have an absolute D4 deadline;
+/// receivers must preserve it rather than starting a fresh TTL at bootstrap.
+class SnapshotVertexTombstone extends $pb.GeneratedMessage {
+  factory SnapshotVertexTombstone({
+    $core.String? key,
+    HLCTimestamp? hlc,
+    $2.Timestamp? expiration,
+  }) {
+    final result = create();
+    if (key != null) result.key = key;
+    if (hlc != null) result.hlc = hlc;
+    if (expiration != null) result.expiration = expiration;
+    return result;
+  }
+
+  SnapshotVertexTombstone._();
+
+  factory SnapshotVertexTombstone.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotVertexTombstone.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotVertexTombstone',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'key')
+    ..aOM<HLCTimestamp>(2, _omitFieldNames ? '' : 'hlc',
+        subBuilder: HLCTimestamp.create)
+    ..aOM<$2.Timestamp>(3, _omitFieldNames ? '' : 'expiration',
+        subBuilder: $2.Timestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotVertexTombstone clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotVertexTombstone copyWith(
+          void Function(SnapshotVertexTombstone) updates) =>
+      super.copyWith((message) => updates(message as SnapshotVertexTombstone))
+          as SnapshotVertexTombstone;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotVertexTombstone create() => SnapshotVertexTombstone._();
+  @$core.override
+  SnapshotVertexTombstone createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotVertexTombstone getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotVertexTombstone>(create);
+  static SnapshotVertexTombstone? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get key => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set key($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasKey() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearKey() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  HLCTimestamp get hlc => $_getN(1);
+  @$pb.TagNumber(2)
+  set hlc(HLCTimestamp value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHlc() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHlc() => $_clearField(2);
+  @$pb.TagNumber(2)
+  HLCTimestamp ensureHlc() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $2.Timestamp get expiration => $_getN(2);
+  @$pb.TagNumber(3)
+  set expiration($2.Timestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasExpiration() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearExpiration() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $2.Timestamp ensureExpiration() => $_ensure(2);
+}
+
+class SnapshotEdgeTombstone extends $pb.GeneratedMessage {
+  factory SnapshotEdgeTombstone({
+    $core.String? tail,
+    $core.String? head,
+    HLCTimestamp? hlc,
+    $2.Timestamp? expiration,
+  }) {
+    final result = create();
+    if (tail != null) result.tail = tail;
+    if (head != null) result.head = head;
+    if (hlc != null) result.hlc = hlc;
+    if (expiration != null) result.expiration = expiration;
+    return result;
+  }
+
+  SnapshotEdgeTombstone._();
+
+  factory SnapshotEdgeTombstone.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotEdgeTombstone.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotEdgeTombstone',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'tail')
+    ..aOS(2, _omitFieldNames ? '' : 'head')
+    ..aOM<HLCTimestamp>(3, _omitFieldNames ? '' : 'hlc',
+        subBuilder: HLCTimestamp.create)
+    ..aOM<$2.Timestamp>(4, _omitFieldNames ? '' : 'expiration',
+        subBuilder: $2.Timestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeTombstone clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeTombstone copyWith(
+          void Function(SnapshotEdgeTombstone) updates) =>
+      super.copyWith((message) => updates(message as SnapshotEdgeTombstone))
+          as SnapshotEdgeTombstone;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeTombstone create() => SnapshotEdgeTombstone._();
+  @$core.override
+  SnapshotEdgeTombstone createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeTombstone getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotEdgeTombstone>(create);
+  static SnapshotEdgeTombstone? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get tail => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set tail($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTail() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTail() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get head => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set head($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHead() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHead() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  HLCTimestamp get hlc => $_getN(2);
+  @$pb.TagNumber(3)
+  set hlc(HLCTimestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasHlc() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearHlc() => $_clearField(3);
+  @$pb.TagNumber(3)
+  HLCTimestamp ensureHlc() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $2.Timestamp get expiration => $_getN(3);
+  @$pb.TagNumber(4)
+  set expiration($2.Timestamp value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasExpiration() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearExpiration() => $_clearField(4);
+  @$pb.TagNumber(4)
+  $2.Timestamp ensureExpiration() => $_ensure(3);
+}
+
 enum SnapshotResponse_Entry {
   header,
   vertex,
@@ -1801,15 +2016,18 @@ enum SnapshotResponse_Entry {
   footer,
   vertexCausalBarrier,
   edgeCausalBarrier,
+  vertexTombstone,
+  edgeTombstone,
   notSet
 }
 
 /// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 /// order is always: exactly one SnapshotHeader, then zero or more
 /// SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
-/// frames, zero or more SnapshotVertex frames, zero or more SnapshotEdge
-/// frames, then exactly one SnapshotFooter. Receivers MUST treat any other
-/// order as a protocol violation.
+/// frames, zero or more SnapshotVertexTombstone frames, zero or more
+/// SnapshotEdgeTombstone frames, zero or more SnapshotVertex frames, zero or
+/// more SnapshotEdge frames, then exactly one SnapshotFooter. Receivers MUST
+/// treat any other order as a protocol violation.
 class SnapshotResponse extends $pb.GeneratedMessage {
   factory SnapshotResponse({
     SnapshotHeader? header,
@@ -1818,6 +2036,8 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     SnapshotFooter? footer,
     SnapshotVertexCausalBarrier? vertexCausalBarrier,
     SnapshotEdgeCausalBarrier? edgeCausalBarrier,
+    SnapshotVertexTombstone? vertexTombstone,
+    SnapshotEdgeTombstone? edgeTombstone,
   }) {
     final result = create();
     if (header != null) result.header = header;
@@ -1827,6 +2047,8 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     if (vertexCausalBarrier != null)
       result.vertexCausalBarrier = vertexCausalBarrier;
     if (edgeCausalBarrier != null) result.edgeCausalBarrier = edgeCausalBarrier;
+    if (vertexTombstone != null) result.vertexTombstone = vertexTombstone;
+    if (edgeTombstone != null) result.edgeTombstone = edgeTombstone;
     return result;
   }
 
@@ -1847,13 +2069,15 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     4: SnapshotResponse_Entry.footer,
     5: SnapshotResponse_Entry.vertexCausalBarrier,
     6: SnapshotResponse_Entry.edgeCausalBarrier,
+    7: SnapshotResponse_Entry.vertexTombstone,
+    8: SnapshotResponse_Entry.edgeTombstone,
     0: SnapshotResponse_Entry.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SnapshotResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8])
     ..aOM<SnapshotHeader>(1, _omitFieldNames ? '' : 'header',
         subBuilder: SnapshotHeader.create)
     ..aOM<SnapshotVertex>(2, _omitFieldNames ? '' : 'vertex',
@@ -1868,6 +2092,10 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     ..aOM<SnapshotEdgeCausalBarrier>(
         6, _omitFieldNames ? '' : 'edgeCausalBarrier',
         subBuilder: SnapshotEdgeCausalBarrier.create)
+    ..aOM<SnapshotVertexTombstone>(7, _omitFieldNames ? '' : 'vertexTombstone',
+        subBuilder: SnapshotVertexTombstone.create)
+    ..aOM<SnapshotEdgeTombstone>(8, _omitFieldNames ? '' : 'edgeTombstone',
+        subBuilder: SnapshotEdgeTombstone.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1895,6 +2123,8 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   @$pb.TagNumber(4)
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
+  @$pb.TagNumber(7)
+  @$pb.TagNumber(8)
   SnapshotResponse_Entry whichEntry() =>
       _SnapshotResponse_EntryByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
@@ -1903,6 +2133,8 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   @$pb.TagNumber(4)
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
+  @$pb.TagNumber(7)
+  @$pb.TagNumber(8)
   void clearEntry() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -1972,6 +2204,28 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   void clearEdgeCausalBarrier() => $_clearField(6);
   @$pb.TagNumber(6)
   SnapshotEdgeCausalBarrier ensureEdgeCausalBarrier() => $_ensure(5);
+
+  @$pb.TagNumber(7)
+  SnapshotVertexTombstone get vertexTombstone => $_getN(6);
+  @$pb.TagNumber(7)
+  set vertexTombstone(SnapshotVertexTombstone value) => $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasVertexTombstone() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearVertexTombstone() => $_clearField(7);
+  @$pb.TagNumber(7)
+  SnapshotVertexTombstone ensureVertexTombstone() => $_ensure(6);
+
+  @$pb.TagNumber(8)
+  SnapshotEdgeTombstone get edgeTombstone => $_getN(7);
+  @$pb.TagNumber(8)
+  set edgeTombstone(SnapshotEdgeTombstone value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasEdgeTombstone() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearEdgeTombstone() => $_clearField(8);
+  @$pb.TagNumber(8)
+  SnapshotEdgeTombstone ensureEdgeTombstone() => $_ensure(7);
 }
 
 /// PeerStatusRequest is intentionally empty — the responder always

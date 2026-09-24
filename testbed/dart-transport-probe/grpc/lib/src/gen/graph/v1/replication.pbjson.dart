@@ -480,6 +480,20 @@ const SnapshotFooter$json = {
       '5': 4,
       '10': 'edgeCausalBarrierCount'
     },
+    {
+      '1': 'vertex_tombstone_count',
+      '3': 5,
+      '4': 1,
+      '5': 4,
+      '10': 'vertexTombstoneCount'
+    },
+    {
+      '1': 'edge_tombstone_count',
+      '3': 6,
+      '4': 1,
+      '5': 4,
+      '10': 'edgeTombstoneCount'
+    },
   ],
 };
 
@@ -488,7 +502,9 @@ final $typed_data.Uint8List snapshotFooterDescriptor = $convert.base64Decode(
     'Cg5TbmFwc2hvdEZvb3RlchIhCgx2ZXJ0ZXhfY291bnQYASABKARSC3ZlcnRleENvdW50Eh0KCm'
     'VkZ2VfY291bnQYAiABKARSCWVkZ2VDb3VudBI9Cht2ZXJ0ZXhfY2F1c2FsX2JhcnJpZXJfY291'
     'bnQYAyABKARSGHZlcnRleENhdXNhbEJhcnJpZXJDb3VudBI5ChllZGdlX2NhdXNhbF9iYXJyaW'
-    'VyX2NvdW50GAQgASgEUhZlZGdlQ2F1c2FsQmFycmllckNvdW50');
+    'VyX2NvdW50GAQgASgEUhZlZGdlQ2F1c2FsQmFycmllckNvdW50EjQKFnZlcnRleF90b21ic3Rv'
+    'bmVfY291bnQYBSABKARSFHZlcnRleFRvbWJzdG9uZUNvdW50EjAKFGVkZ2VfdG9tYnN0b25lX2'
+    'NvdW50GAYgASgEUhJlZGdlVG9tYnN0b25lQ291bnQ=');
 
 @$core.Deprecated('Use snapshotVertexDescriptor instead')
 const SnapshotVertex$json = {
@@ -617,6 +633,67 @@ final $typed_data.Uint8List snapshotEdgeCausalBarrierDescriptor = $convert.base6
     'ChlTbmFwc2hvdEVkZ2VDYXVzYWxCYXJyaWVyEhIKBHRhaWwYASABKAlSBHRhaWwSEgoEaGVhZB'
     'gCIAEoCVIEaGVhZBIoCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSA2hsYw==');
 
+@$core.Deprecated('Use snapshotVertexTombstoneDescriptor instead')
+const SnapshotVertexTombstone$json = {
+  '1': 'SnapshotVertexTombstone',
+  '2': [
+    {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+    {
+      '1': 'hlc',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.HLCTimestamp',
+      '10': 'hlc'
+    },
+    {
+      '1': 'expiration',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'expiration'
+    },
+  ],
+};
+
+/// Descriptor for `SnapshotVertexTombstone`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotVertexTombstoneDescriptor = $convert.base64Decode(
+    'ChdTbmFwc2hvdFZlcnRleFRvbWJzdG9uZRIQCgNrZXkYASABKAlSA2tleRIoCgNobGMYAiABKA'
+    'syFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSA2hsYxI6CgpleHBpcmF0aW9uGAMgASgLMhouZ29v'
+    'Z2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKZXhwaXJhdGlvbg==');
+
+@$core.Deprecated('Use snapshotEdgeTombstoneDescriptor instead')
+const SnapshotEdgeTombstone$json = {
+  '1': 'SnapshotEdgeTombstone',
+  '2': [
+    {'1': 'tail', '3': 1, '4': 1, '5': 9, '10': 'tail'},
+    {'1': 'head', '3': 2, '4': 1, '5': 9, '10': 'head'},
+    {
+      '1': 'hlc',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.HLCTimestamp',
+      '10': 'hlc'
+    },
+    {
+      '1': 'expiration',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'expiration'
+    },
+  ],
+};
+
+/// Descriptor for `SnapshotEdgeTombstone`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotEdgeTombstoneDescriptor = $convert.base64Decode(
+    'ChVTbmFwc2hvdEVkZ2VUb21ic3RvbmUSEgoEdGFpbBgBIAEoCVIEdGFpbBISCgRoZWFkGAIgAS'
+    'gJUgRoZWFkEigKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcFIDaGxjEjoKCmV4'
+    'cGlyYXRpb24YBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpleHBpcmF0aW9u');
+
 @$core.Deprecated('Use snapshotResponseDescriptor instead')
 const SnapshotResponse$json = {
   '1': 'SnapshotResponse',
@@ -675,6 +752,24 @@ const SnapshotResponse$json = {
       '9': 0,
       '10': 'edgeCausalBarrier'
     },
+    {
+      '1': 'vertex_tombstone',
+      '3': 7,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotVertexTombstone',
+      '9': 0,
+      '10': 'vertexTombstone'
+    },
+    {
+      '1': 'edge_tombstone',
+      '3': 8,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotEdgeTombstone',
+      '9': 0,
+      '10': 'edgeTombstone'
+    },
   ],
   '8': [
     {'1': 'entry'},
@@ -690,7 +785,10 @@ final $typed_data.Uint8List snapshotResponseDescriptor = $convert.base64Decode(
     'ChV2ZXJ0ZXhfY2F1c2FsX2JhcnJpZXIYBSABKAsyJS5ncmFwaC52MS5TbmFwc2hvdFZlcnRleE'
     'NhdXNhbEJhcnJpZXJIAFITdmVydGV4Q2F1c2FsQmFycmllchJVChNlZGdlX2NhdXNhbF9iYXJy'
     'aWVyGAYgASgLMiMuZ3JhcGgudjEuU25hcHNob3RFZGdlQ2F1c2FsQmFycmllckgAUhFlZGdlQ2'
-    'F1c2FsQmFycmllckIHCgVlbnRyeQ==');
+    'F1c2FsQmFycmllchJOChB2ZXJ0ZXhfdG9tYnN0b25lGAcgASgLMiEuZ3JhcGgudjEuU25hcHNo'
+    'b3RWZXJ0ZXhUb21ic3RvbmVIAFIPdmVydGV4VG9tYnN0b25lEkgKDmVkZ2VfdG9tYnN0b25lGA'
+    'ggASgLMh8uZ3JhcGgudjEuU25hcHNob3RFZGdlVG9tYnN0b25lSABSDWVkZ2VUb21ic3RvbmVC'
+    'BwoFZW50cnk=');
 
 @$core.Deprecated('Use peerStatusRequestDescriptor instead')
 const PeerStatusRequest$json = {

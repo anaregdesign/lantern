@@ -7,11 +7,47 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+type blockedDeleteSnapshotBackend struct {
+	Backend
+	cache   *graphcache.GraphCache[string, *pb.Vertex]
+	entered chan struct{}
+	release chan struct{}
+}
+
+type blockedAddSnapshotBackend struct {
+	Backend
+	cache   *graphcache.GraphCache[string, *pb.Vertex]
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockedAddSnapshotBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]float32, int) {
+	close(b.entered)
+	<-b.release
+	return b.cache.AddEdgesWithExpirationContribHLC(items, ts)
+}
+
+func (b *blockedAddSnapshotBackend) SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex] {
+	return b.cache.SnapshotReplication()
+}
+
+func (b *blockedDeleteSnapshotBackend) DeleteVertexHLC(key string, ts hlc.Timestamp, expiration time.Time) bool {
+	close(b.entered)
+	<-b.release
+	return b.cache.DeleteVertexHLC(key, ts, expiration)
+}
+
+func (b *blockedDeleteSnapshotBackend) SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex] {
+	return b.cache.SnapshotReplication()
+}
 
 type replicationSnapshotRecorder struct {
 	frames []*pb.SnapshotResponse
@@ -75,6 +111,137 @@ func TestLanternReplicationService_SnapshotCanonicalizesImplicitVertices(t *test
 	}
 	if edges != 1 {
 		t.Fatalf("Snapshot edge frames = %d, want 1", edges)
+	}
+}
+
+func TestLanternReplicationService_SnapshotCutWaitsForRemoteDeleteCommit(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	backend := &blockedDeleteSnapshotBackend{Backend: cache, cache: cache, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-backend.release:
+		default:
+			close(backend.release)
+		}
+	})
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0x02}, hlc.Options{})
+	svc := NewLanternService(backend).WithReplication(log, clock, nil).WithTombstoneTTL(time.Hour)
+	replication := NewLanternReplicationService(log, backend, clock).WithOriginStates(svc)
+	origin := hlc.NodeID{0x01}
+	mutation := &pb.Mutation{
+		Origin: origin[:], Seq: 1,
+		Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]},
+		Op:  &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "victim"}}},
+	}
+	applyDone := make(chan error, 1)
+	go func() { applyDone <- svc.ApplyMutation(context.Background(), mutation) }()
+	select {
+	case <-backend.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote Delete did not reach the backend")
+	}
+
+	recorder := &replicationSnapshotRecorder{}
+	snapshotDone := make(chan error, 1)
+	go func() { snapshotDone <- replication.Snapshot(context.Background(), &pb.SnapshotRequest{}, recorder) }()
+	var snapshotErr error
+	snapshotCompleted := false
+	select {
+	case snapshotErr = <-snapshotDone:
+		snapshotCompleted = true
+		// A premature Snapshot is inspected below after unblocking ApplyMutation.
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(backend.release)
+	if err := <-applyDone; err != nil {
+		t.Fatalf("ApplyMutation: %v", err)
+	}
+	if !snapshotCompleted {
+		snapshotErr = <-snapshotDone
+	}
+	if snapshotErr != nil {
+		t.Fatalf("Snapshot: %v", snapshotErr)
+	}
+	var cutoff, tombstones uint64
+	for _, frame := range recorder.frames {
+		switch e := frame.GetEntry().(type) {
+		case *pb.SnapshotResponse_Header:
+			cutoff = e.Header.GetCutoffSeqPerOrigin()[fmt.Sprintf("%x", origin[:])]
+		case *pb.SnapshotResponse_VertexTombstone:
+			if e.VertexTombstone.GetKey() == "victim" {
+				tombstones++
+			}
+		}
+	}
+	if cutoff != 1 || tombstones != 1 {
+		t.Fatalf("Snapshot cut included Delete seq=%d but carried %d tombstones", cutoff, tombstones)
+	}
+}
+
+func TestLanternReplicationService_SnapshotCutWaitsForLocalAddCommit(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	backend := &blockedAddSnapshotBackend{Backend: cache, cache: cache, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-backend.release:
+		default:
+			close(backend.release)
+		}
+	})
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x03}
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(backend).WithReplication(log, clock, nil)
+	replication := NewLanternReplicationService(log, backend, clock).WithOriginStates(svc)
+	addDone := make(chan error, 1)
+	go func() {
+		_, err := svc.AddEdges(context.Background(), &pb.AddEdgesRequest{Edges: []*pb.Edge{{
+			Tail: "tail", Head: "head", Weight: 1,
+			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		}}})
+		addDone <- err
+	}()
+	select {
+	case <-backend.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("local Add did not reach the backend")
+	}
+	recorder := &replicationSnapshotRecorder{}
+	snapshotDone := make(chan error, 1)
+	go func() { snapshotDone <- replication.Snapshot(context.Background(), &pb.SnapshotRequest{}, recorder) }()
+	var snapshotErr error
+	snapshotCompleted := false
+	select {
+	case snapshotErr = <-snapshotDone:
+		snapshotCompleted = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(backend.release)
+	if err := <-addDone; err != nil {
+		t.Fatalf("AddEdges: %v", err)
+	}
+	if !snapshotCompleted {
+		snapshotErr = <-snapshotDone
+	}
+	if snapshotErr != nil {
+		t.Fatalf("Snapshot: %v", snapshotErr)
+	}
+	var cutoff, edges uint64
+	for _, frame := range recorder.frames {
+		switch e := frame.GetEntry().(type) {
+		case *pb.SnapshotResponse_Header:
+			cutoff = e.Header.GetCutoffSeqPerOrigin()[fmt.Sprintf("%x", origin[:])]
+		case *pb.SnapshotResponse_Edge:
+			if e.Edge.GetTail() == "tail" && e.Edge.GetHead() == "head" {
+				edges++
+			}
+		}
+	}
+	if cutoff != 1 || edges != 1 {
+		t.Fatalf("Snapshot cut included Add seq=%d but carried %d edges", cutoff, edges)
 	}
 }
 
