@@ -1,6 +1,6 @@
 module github.com/anaregdesign/lantern/sdks/go
 
-go 1.26.8
+go 1.27.0
 
 require (
 	connectrpc.com/connect v1.21.0

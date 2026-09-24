@@ -304,7 +304,7 @@ new sub-config, update the **Providers** note in `AGENTS.md`.
 
 Update **all** of these in one PR, then re-run the local quality gate:
 
-1. Every `go.mod` (all workspace modules).
+1. Every `go.mod` (all workspace modules) and `go.work`.
 2. Every `Dockerfile` (`FROM golang:<version>-alpine`).
 3. Every `go-version:` in `.github/workflows/*.yml`.
 4. The Go-version mentions in `README.md` (no instruction file pins a version — they
