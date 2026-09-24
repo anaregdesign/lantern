@@ -1,9 +1,8 @@
 // Package client: subscribe.go owns the SDK's replication Subscribe
 // helper. Unlike the unary RPCs that ride graphv1connect's primary
 // LanternServiceClient, Subscribe is a server-stream off the
-// LanternReplicationService surface, so it builds its own per-call
-// Connect client against the same baseURL the *Lantern was
-// constructed with.
+// LanternReplicationService surface. NewLantern constructs both clients
+// with the same transport and Connect options, including auth.
 package client
 
 import (
@@ -17,7 +16,6 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 )
 
 // ChangeOriginSize is the fixed byte width of every replication origin.
@@ -91,8 +89,7 @@ func (l *Lantern) Subscribe(ctx context.Context, cursor ChangeCursor) iter.Seq2[
 		for id, seq := range cursor {
 			wire[id.String()] = seq
 		}
-		rc := graphv1connect.NewLanternReplicationServiceClient(l.httpClient, l.baseURL)
-		stream, err := rc.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromSeqPerOrigin: wire}))
+		stream, err := l.replicationClient.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromSeqPerOrigin: wire}))
 		if err != nil {
 			yield(nil, wrapConnectErr(err))
 			return

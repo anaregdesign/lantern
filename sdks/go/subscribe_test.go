@@ -131,3 +131,21 @@ func TestSubscribeRejectsMissingMutation(t *testing.T) {
 		t.Fatalf("missing mutation: want ErrInvalidChangeEvent, got %v", gotErr)
 	}
 }
+
+func TestBootstrapIdentityRejectsFullMutationFrame(t *testing.T) {
+	handler := &subscribeTestHandler{responses: []*pb.SubscribeResponse{{
+		Event: &pb.SubscribeResponse_Mutation{Mutation: &pb.Mutation{Seq: 1}},
+	}}}
+	client := newSubscribeTestClient(t, handler)
+	var gotErr error
+	for _, err := range client.BootstrapIdentity(context.Background()) {
+		gotErr = err
+		break
+	}
+	if !errors.Is(gotErr, ErrInvalidIdentityEvent) || !errors.Is(gotErr, ErrIdentityGap) {
+		t.Fatalf("full Mutation on identity stream = %v", gotErr)
+	}
+	if handler.request == nil || !handler.request.GetBootstrap() || handler.request.GetProjection() != pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY {
+		t.Fatalf("identity request = %+v", handler.request)
+	}
+}

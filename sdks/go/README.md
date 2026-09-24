@@ -216,6 +216,11 @@ A few SDK-only types remain and are intentional, not redundant:
   Subscribe's fixed 16-byte mutation origins. `ChangeEvent` remains a true
   alias of the generated `pb.Mutation`; the SDK therefore stays `pb`-only
   without creating a parallel mutation model or importing `core/hlc`.
+- **`IdentityCheckpoint` / `IdentityChunk`** — the opt-in CDC projection has
+  no graph payload. Its SDK-local shapes convert wire origins and Edge keys
+  into comparable values and separate the bootstrap checkpoint from mutation
+  chunks. They cannot accidentally expose a Vertex value, Edge weight, or
+  contribution ID to a cache invalidation consumer.
 
 See [issue #106](https://github.com/anaregdesign/lantern/issues/106) for the
 design discussion.
@@ -230,7 +235,7 @@ design discussion.
 | Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanVertexKeys`, `ScanVertexKeysAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix`, `DeleteEdgesByPrefix` |
 | Search | `SearchVertices`, `SearchVerticesPage` | `SearchVerticesIter` |
 | Graph  | `Illuminate` | — |
-| Replication | `Subscribe` (server-stream iter.Seq2) | — |
+| Replication | `Subscribe`, `BootstrapIdentity`, `SubscribeIdentity` (server-stream iter.Seq2) | — |
 | Status | `Ping`, `GetServerStatus`, `GetReplicationStatus` | — |
 | Backup | — | `Backup` / `Restore` |
 
@@ -239,6 +244,25 @@ expected per origin and yields `*ChangeEvent` mutations directly. Use
 `ChangeOriginFromBytes(event.GetOrigin())` to obtain the comparable cursor key;
 `ChangeOrigin.String()` returns the canonical 32-character hex form used on
 the wire and in diagnostics.
+
+`BootstrapIdentity(ctx)` starts the payload-free CDC projection and yields an
+`*IdentityCheckpoint` first, followed by bounded `*IdentityChunk` events.
+`SubscribeIdentity(ctx, cursor)` resumes with a nonempty per-origin vector of
+**next** sequences. Type-switch on `IdentityChange` to handle the two event
+shapes. A checkpoint is the responder's atomic publication cut, not a
+cluster-wide freshness guarantee. Mark resident cache entries Unknown and
+revalidate them in bounded batches while consuming the live tail. Persist
+invalidated identities and the cursor atomically. `IdentityChunk.NextCursor`
+rejects a non-final chunk; call it only after all chunks of that mutation have
+been applied durably. Replayed final chunks are idempotent. `ErrIdentityGap`
+means the stream cannot prove contiguous progress, so bootstrap and revalidate
+again. Neither HLC ordering nor a quiet stream proves cache freshness.
+
+Both identity methods are long-lived streams. Cancel their context or break
+iteration to release the server subscriber. SDK retries are disabled for these
+methods; callers own the durable cursor across reconnects and endpoint
+failover. Lantern currently has one deployment-wide graph security domain:
+identity prefixes are not tenant access controls.
 
 `AddEdge` is **additive** (multiple calls add weight, each contribution
 carries its own TTL); `PutEdge` is **idempotent replace** (single weight,

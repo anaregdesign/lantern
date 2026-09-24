@@ -252,6 +252,8 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"Backup":               retryNever, // whole-graph stream dump — excluded in v1
 	"Restore":              retryNever, // stream restore — excluded in v1
 	"Subscribe":            retryNever, // server-streaming replication feed
+	"BootstrapIdentity":    retryNever, // recovery stream must not retry invisibly
+	"SubscribeIdentity":    retryNever, // caller owns its durable vector cursor
 	"NewIncrementalSearch": retryNever, // session constructor; per-query retries ride unary
 	"SearchVerticesIter":   retryNever, // local iterator; each page owns its unary retry
 }

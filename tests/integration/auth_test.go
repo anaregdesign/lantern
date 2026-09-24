@@ -31,7 +31,7 @@ func newAuthedServer(t *testing.T) (*connectTestServer, *graphcache.GraphCache[s
 	copy(nid[:], "auth-node-000000")
 	clock := hlc.New(nid, hlc.Options{})
 	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
-	rep := service.NewLanternReplicationService(log, cache, clock)
+	rep := service.NewLanternReplicationService(log, cache, clock).WithOriginStates(svc)
 	auth := provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{"stale-rotated-out", testToken}})
 	srv := newConnectTestServer(t, svc, rep, auth)
 	return srv, cache, svc
@@ -78,6 +78,40 @@ func TestAuth_SDKRoundTrip(t *testing.T) {
 		}
 		if _, err := l.GetVertex(ctx, "authed"); err != nil {
 			t.Fatalf("authed get: %v", err)
+		}
+		var fullSeen bool
+		for event, err := range l.Subscribe(ctx, nil) {
+			if err != nil {
+				t.Fatalf("authed full Subscribe: %v", err)
+			}
+			fullSeen = event != nil
+			break
+		}
+		if !fullSeen {
+			t.Fatal("authed full Subscribe returned no Mutation")
+		}
+		var checkpointSeen bool
+		for event, err := range l.BootstrapIdentity(ctx) {
+			if err != nil {
+				t.Fatalf("authed identity Subscribe: %v", err)
+			}
+			_, checkpointSeen = event.(*client.IdentityCheckpoint)
+			break
+		}
+		if !checkpointSeen {
+			t.Fatal("authed identity Subscribe returned no checkpoint")
+		}
+	})
+
+	t.Run("tokenless identity stream rejected", func(t *testing.T) {
+		l := newConnectClientFor(t, srv.url)
+		var streamErr error
+		for _, err := range l.BootstrapIdentity(ctx) {
+			streamErr = err
+			break
+		}
+		if !errors.Is(streamErr, client.ErrUnauthenticated) || connect.CodeOf(streamErr) != connect.CodeUnauthenticated {
+			t.Fatalf("tokenless identity Subscribe = %v", streamErr)
 		}
 	})
 
