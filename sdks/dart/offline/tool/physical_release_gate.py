@@ -43,7 +43,7 @@ def source_identity(tag_sha, tested_sha):
         raise ValueError("release and tested commit must be full Git SHAs")
     if git("rev-parse", f"{tag_sha}^") != tested_sha:
         raise ValueError("tag must point to the evidence-only child of the tested code commit")
-    changed = set(git("diff", "--name-only", tested_sha, tag_sha).splitlines())
+    changed = set(git("diff", "--name-only", "--no-renames", tested_sha, tag_sha).splitlines())
     required = {str(EVIDENCE_DIR / "android.json"), str(EVIDENCE_DIR / "ios.json")}
     if not required <= changed or not changed <= required | {str(EVIDENCE_DIR / "README.md")}:
         raise ValueError(f"tag changed code or lacks both physical records: {sorted(changed)}")
@@ -129,7 +129,7 @@ def validate_record(record, ci_record, platform, tested_sha):
         raise ValueError(f"{platform} tag CI manifest is invalid")
 
 
-def validate(tag_sha, evidence_dir, ci_dir):
+def validate(tag_sha, evidence_dir, ci_dir, run_id, run_attempt):
     records = {}
     for platform in ("android", "ios"):
         path = evidence_dir / f"{platform}.json"
@@ -140,6 +140,8 @@ def validate(tag_sha, evidence_dir, ci_dir):
         ci_record = json.loads(ci_path.read_text())
         if ci_record.get("commit") != tag_sha:
             raise ValueError(f"{platform} simulator manifest is not bound to the tag")
+        if ci_record.get("workflow") != {"runId": run_id, "attempt": run_attempt}:
+            raise ValueError(f"{platform} simulator manifest is from another CI attempt")
         if platform == "android" and ci_record.get("platform", {}).get("kind") != "android-emulator":
             raise ValueError("Android tag CI did not use its emulator")
         if platform == "ios" and ci_record.get("platform", {}).get("kind") != "ios-simulator":
@@ -158,10 +160,12 @@ def validate(tag_sha, evidence_dir, ci_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag-sha", required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--run-attempt", required=True)
     parser.add_argument("--evidence-dir", type=Path, default=EVIDENCE_DIR)
     parser.add_argument("--ci-dir", type=Path, required=True)
     args = parser.parse_args()
-    validate(args.tag_sha, args.evidence_dir, args.ci_dir)
+    validate(args.tag_sha, args.evidence_dir, args.ci_dir, args.run_id, args.run_attempt)
     print(f"offline physical release matrix passed for tag {args.tag_sha}")
 
 

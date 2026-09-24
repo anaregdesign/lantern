@@ -50,6 +50,7 @@ class ReleaseContractTest(unittest.TestCase):
         for pubspec in (
             PUBSPEC.replace(b"^0.2.0", b"\n    path: .."),
             PUBSPEC.replace(b"dev_dependencies:", b"  sqflite: ^2.4.4\ndev_dependencies:"),
+            PUBSPEC.replace(b"dev_dependencies:", b"  sqflite2: ^2.4.4\ndev_dependencies:"),
         ):
             with self.subTest(pubspec=pubspec), self.assertRaises(ValueError):
                 self.check(self.files | {"pubspec.yaml": pubspec})

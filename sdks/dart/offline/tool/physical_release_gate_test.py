@@ -23,6 +23,7 @@ def fixtures(platform):
         "repository": "anaregdesign/lantern", "contentFree": True,
         "physicalDevice": False, "result": "passed", "commit": TAG,
         "ref": "refs/tags/sdks/dart/offline/v0.2.0",
+        "workflow": {"runId": "123", "attempt": "1"},
         "toolchain": {"flutter": "3.44.6", "flutterRevision": REVISION, "dart": "3.12.2"},
         "application": {"packageId": package},
         "platform": {"kind": "android-emulator" if platform == "android" else "ios-simulator"},
@@ -57,13 +58,18 @@ class PhysicalReleaseGateTest(unittest.TestCase):
                 (evidence / f"{platform}.json").write_text(json.dumps(record))
                 (ci_dir / f"{platform}.json").write_text(json.dumps(ci))
             with patch.object(gate, "source_identity") as source_identity:
-                gate.validate(TAG, evidence, ci_dir)
+                gate.validate(TAG, evidence, ci_dir, "123", "1")
                 source_identity.assert_called_once_with(TAG, TESTED)
             ci = json.loads((ci_dir / "ios.json").read_text())
             ci["commit"] = "f" * 40
             (ci_dir / "ios.json").write_text(json.dumps(ci))
             with self.assertRaisesRegex(ValueError, "not bound to the tag"):
-                gate.validate(TAG, evidence, ci_dir)
+                gate.validate(TAG, evidence, ci_dir, "123", "1")
+            ci["commit"] = TAG
+            ci["workflow"]["attempt"] = "0"
+            (ci_dir / "ios.json").write_text(json.dumps(ci))
+            with self.assertRaisesRegex(ValueError, "another CI attempt"):
+                gate.validate(TAG, evidence, ci_dir, "123", "1")
 
     def test_complete_android_and_ios_records_pass(self):
         for platform in ("android", "ios"):

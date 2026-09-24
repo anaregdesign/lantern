@@ -269,7 +269,7 @@ jobs:
         if: needs.changes.outputs.full == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: lantern-client-pana
+          name: lantern-client-pana-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lantern-client-pana.json
           if-no-files-found: error
 
@@ -366,7 +366,7 @@ jobs:
       - name: Upload sanitized offline performance evidence
         uses: actions/upload-artifact@v7
         with:
-          name: lantern-offline-performance
+          name: lantern-offline-performance-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lantern-offline-performance.json
           if-no-files-found: error
 
@@ -498,7 +498,7 @@ jobs:
       - name: Upload sanitized SQLite host baseline
         uses: actions/upload-artifact@v7
         with:
-          name: lantern-sqlite-host-baseline-${{ github.sha }}
+          name: lantern-sqlite-host-baseline-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lantern-sqlite-baseline.json
           if-no-files-found: error
 
@@ -660,7 +660,7 @@ jobs:
       - name: Upload sanitized Android revision evidence
         uses: actions/upload-artifact@v7
         with:
-          name: lantern-android-revision-${{ github.sha }}
+          name: lantern-android-revision-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lantern-mobile-evidence/android.json
           if-no-files-found: error
 
@@ -942,7 +942,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: lantern-ios-revision-${{ github.sha }}
+          name: lantern-ios-revision-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lantern-mobile-evidence/ios.json
           if-no-files-found: error
 
@@ -1257,19 +1257,21 @@ jobs:
       - name: Download exact-tag Android simulator manifest
         uses: actions/download-artifact@v8
         with:
-          name: lantern-android-revision-${{ github.sha }}
+          name: lantern-android-revision-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lantern-offline-tag-ci
 
       - name: Download exact-tag iOS simulator manifest
         uses: actions/download-artifact@v8
         with:
-          name: lantern-ios-revision-${{ github.sha }}
+          name: lantern-ios-revision-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lantern-offline-tag-ci
 
       - name: Require exact-code physical Android and iOS release matrix
         run: >-
           python3 sdks/dart/offline/tool/physical_release_gate.py
-          --tag-sha "$GITHUB_SHA" --ci-dir "$RUNNER_TEMP/lantern-offline-tag-ci"
+          --tag-sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
+          --run-attempt "$GITHUB_RUN_ATTEMPT"
+          --ci-dir "$RUNNER_TEMP/lantern-offline-tag-ci"
 
       - name: Verify exact tag and build dependency-closed offline candidate
         id: candidate

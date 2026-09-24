@@ -418,7 +418,9 @@ tested code commit. Tag that evidence-only commit; the release preflight checks
 its parent SHA and rejects any code difference, then compares both physical
 records with the Android/iOS simulator manifests from the tag's full Gate.
 This two-commit sequence avoids the impossible self-reference of a checked-in
-manifest naming its own commit. Verify the clean checkout, then create and push
+manifest naming its own commit. Simulator artifacts include the run attempt so
+a rerun after manual publication cannot reuse stale or conflicting artifacts.
+Verify the clean checkout, then create and push
 the immutable `sdks/dart/offline/v0.2.0` tag.
 The first tag run must fail closed at read-only preflight because pub.dev has
 no `lantern_client_offline` package; it must create no GitHub Release.
@@ -430,8 +432,12 @@ and the first `dart pub publish` there using interactive OAuth. Do not put a pub
 token in GitHub Secrets, CI, or the repository. On the new package's pub.dev
 Admin page, enable GitHub Actions automated publishing for
 `anaregdesign/lantern` with tag pattern `sdks/dart/offline/v{{version}}` and
-require the existing `pub.dev` GitHub environment. Rerun the **same tag push**
-workflow: preflight must compare the published archive with the exact candidate,
+require the existing `pub.dev` GitHub environment. That environment currently
+selects only parent `sdks/dart/v*.*.*` tags; add a separate selected-tag rule
+for `sdks/dart/offline/v*.*.*` before later offline OIDC publication. Use
+**Re-run all jobs** on the same tag push workflow, so the physical gate can
+compare against Android/iOS simulator artifacts from the current attempt:
+preflight must compare the published archive with the exact candidate,
 skip OIDC publication, and only then create the Release titled exactly
 `sdks/dart/offline/v0.2.0`. Later versions publish by tag-triggered OIDC only.
 

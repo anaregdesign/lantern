@@ -25,7 +25,7 @@ def runtime_dependencies(pubspec):
         if match := re.match(r"^([a-z_]+):(?:\s.*)?$", line):
             section = match.group(1)
         elif section == "dependencies" and (match := re.match(
-            r"^  ([a-z_]+):\s*(\S.*)?$", line
+            r"^  ([^\s:]+):\s*(\S.*)?$", line
         )):
             dependencies[match.group(1)] = match.group(2) or ""
     return dependencies

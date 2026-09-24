@@ -326,6 +326,7 @@ Commit **only** these evidence files (and an optional README in the same
 directory) as the immediate child of the tested code commit. Tag that child.
 The release gate requires its parent to equal both `testedCommit` fields and
 rejects every other changed path. It also compares toolchain/package identity
-to the tag's Android/iOS simulator manifests. This proves the tagged code is
+to the tag's Android/iOS simulator manifests from the current workflow attempt.
+This proves the tagged code is
 the exact code tested on devices while allowing the evidence to be checked in
 without a self-referential Git SHA.
