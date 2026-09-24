@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -32,7 +33,7 @@ type pendingMutation struct {
 
 func publicationGapError() error {
 	return connect.NewError(connect.CodeFailedPrecondition,
-		errors.New("gapped: relay publication failed; repair before subscribing or taking a snapshot"))
+		errors.New("gapped: mutation publication failed; repair before subscribing or taking a snapshot"))
 }
 
 // Caller holds replicationCutMu. One fault poisons every currently open
@@ -49,12 +50,78 @@ func (s *LanternService) markPublicationFault(pending *pendingMutation) {
 	s.publicationFaultCount++
 }
 
+// clearPublicationFault must run under replicationCutMu after the original
+// mutation has been durably appended (or a verified remote snapshot has
+// superseded it). The old generation stays closed after a repair.
+func (s *LanternService) clearPublicationFault(pending *pendingMutation) {
+	if !pending.faulted {
+		return
+	}
+	s.publicationFaultCount--
+	if s.publicationFaultCount == 0 {
+		s.publicationFaultCh = make(chan struct{})
+	}
+}
+
+// prepareLocalMutationLocked repairs an earlier graph-applied write before a
+// new local write can touch the graph or claim its origin seq. The retained
+// mutation is appended as-is; in particular, a conditional Put or a bounded
+// prefix Delete is never re-evaluated while repairing its publication.
+func (s *LanternService) prepareLocalMutationLocked() error {
+	if pending := s.pendingLocalMutation; pending != nil {
+		if err := s.appendPreparedLocalMutationLocked(pending.mutation); err != nil {
+			return connect.NewError(connect.CodeUnavailable,
+				fmt.Errorf("local mutation publication repair: %w", err))
+		}
+		s.pendingLocalMutation = nil
+		s.clearPublicationFault(pending)
+	}
+	if s.log == nil || s.clock == nil {
+		return nil
+	}
+	origin := s.clock.NodeID()
+	if origin == (hlc.NodeID{}) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("mutation log origin NodeID is zero"))
+	}
+	if s.origins == nil {
+		return connect.NewError(connect.CodeInternal, errors.New("mutation origin state is unavailable"))
+	}
+	if s.origins.LocalSeq(origin) == ^uint64(0) {
+		return connect.NewError(connect.CodeResourceExhausted,
+			fmt.Errorf("mutation origin %x sequence exhausted", origin))
+	}
+	return nil
+}
+
+// publishLocalGraphMutationLocked runs after a successful local graph apply
+// while the caller still holds replicationCutMu. A failed WAL append leaves
+// one owned, exact mutation for append-only repair and poisons CDC until then.
+func (s *LanternService) publishLocalGraphMutationLocked(op *pb.MutationOp, ts hlc.Timestamp) error {
+	if op == nil || s.log == nil || s.clock == nil {
+		return nil
+	}
+	mutation := s.newLocalMutationLocked(op, ts)
+	if err := s.appendPreparedLocalMutationLocked(mutation); err != nil {
+		pending := &pendingMutation{mutation: cloneQueuedMutation(mutation), size: proto.Size(mutation), applied: true}
+		s.pendingLocalMutation = pending
+		s.markPublicationFault(pending)
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("local mutation log append failed", slog.Any("err", err))
+		return connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("local mutation log append (graph effect is ambiguous): %w", err))
+	}
+	return nil
+}
+
 // publishRemoteMutation runs under replicationCutMu. The watermark is a
 // contiguous prefix for each origin, never a maximum observed seq. A future
 // mutation owns a copied buffer and has no visible effect until every earlier
 // seq commits. Snapshot refuses to serve while a remote graph effect has not
-// reached the relay log. Local graph-before-log Put/Delete publication remains
-// a separate #1116 Phase 2 blocker.
+// reached the relay log. Local graph-first writes use the same gate and fault
+// generation through publishLocalGraphMutationLocked.
 func (s *LanternService) publishRemoteMutation(ctx context.Context, m *pb.Mutation) error {
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_DeleteVerticesByPrefix, *pb.MutationOp_DeleteEdgesByPrefix:
@@ -220,12 +287,7 @@ func (s *LanternService) dropPending(origin hlc.NodeID, seq uint64) {
 		delete(queue, seq)
 		s.pendingCount--
 		s.pendingBytes -= pending.size
-		if pending.faulted {
-			s.publicationFaultCount--
-			if s.publicationFaultCount == 0 {
-				s.publicationFaultCh = make(chan struct{})
-			}
-		}
+		s.clearPublicationFault(pending)
 	}
 	if len(queue) == 0 {
 		delete(s.pendingMutations, origin)

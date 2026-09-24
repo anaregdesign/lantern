@@ -67,14 +67,16 @@ type LanternService struct {
 	traversalMaxResults     int
 	capacity                CapacityLimits
 	// replicationCutMu keeps a Snapshot cutoff from overtaking a remote
-	// ApplyMutation or the local AddEdges log-before-graph commit. Other local
-	// writes apply graph-first, so a torn cut can only replay them from tail.
+	// ApplyMutation or any local graph/log publication boundary.
 	replicationCutMu sync.RWMutex
 	// pendingMutations and its accounting are guarded by replicationCutMu.
 	pendingMutations map[hlc.NodeID]map[uint64]*pendingMutation
 	pendingCount     int
 	pendingBytes     int
-	// publicationFaultCh closes on the first relay WAL failure. A fresh
+	// One failed local graph-first mutation is kept for append-only repair
+	// before any later local write can claim its origin seq.
+	pendingLocalMutation *pendingMutation
+	// publicationFaultCh closes on the first local or relay WAL failure. A fresh
 	// channel is installed only after all failed frontiers are repaired, so
 	// subscribers attached to the old generation cannot silently resume.
 	publicationFaultCh    chan struct{}
@@ -366,7 +368,7 @@ func (s *LanternService) publicationStatus() (<-chan struct{}, bool) {
 	return s.publicationFaultCh, s.publicationFaultCount != 0
 }
 
-// WithLogger replaces the slog handle used for replication-side warnings
+// WithLogger replaces the slog handle used for local publication warnings
 // (e.g. WAL write failures). Defaults to slog.Default() when unset.
 func (s *LanternService) WithLogger(l *slog.Logger) *LanternService {
 	s.logger = l
@@ -520,7 +522,7 @@ func (s *LanternService) tombstoneExpiration() time.Time {
 }
 
 // OriginStates returns a snapshot of the per-origin (last_seq, hlc)
-// watermark map maintained by logMutation and ApplyMutation. Used by
+// watermark map maintained by local publication and ApplyMutation. Used by
 // the PeerStatus RPC (#186). Returns nil when replication is unwired
 // (the tracker is nil in test paths that construct LanternService
 // directly without going through NewLanternService).
@@ -568,6 +570,14 @@ func (s *LanternService) ApplySnapshotWatermarks(cutoffs map[string]uint64, ts h
 	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
+	if s.pendingLocalMutation != nil {
+		local := s.clock.NodeID()
+		for _, item := range validated {
+			if item.origin == local && item.seq >= s.pendingLocalMutation.mutation.GetSeq() {
+				return fmt.Errorf("snapshot cutoff for local origin %x would skip unpublished seq %d", local, s.pendingLocalMutation.mutation.GetSeq())
+			}
+		}
+	}
 	for _, item := range validated {
 		s.origins.AdvanceSnapshot(item.origin, item.seq, ts)
 		for seq := range s.pendingMutations[item.origin] {
@@ -618,63 +628,28 @@ func (s *LanternService) CompleteSearchIndexRecovery() error {
 	return nil
 }
 
-// logMutation appends op to the mutation log after a local commit. The HLC
-// is stamped here so the seq->hlc ordering on the log is monotone with
-// commit order. Failures are logged but not surfaced to clients — the
-// local write has already succeeded and replication is best-effort within
-// the bounded ring buffer.
-//
-// Callers MUST construct op as a fully populated MutationOp (one oneof
-// case set). Returns immediately when the log is not wired (test path).
-func (s *LanternService) logMutation(op *pb.MutationOp) {
-	if s.log == nil || s.clock == nil {
-		return
-	}
-	s.logMutationAt(op, s.clock.Now())
-}
-
-// logMutationAt is logMutation with the commit HLC supplied by the caller
-// instead of sampled here. Local write paths that ALSO stamp the cache with
-// an HLC watermark (so the origin's own writes participate in LWW on equal
-// footing with the values its peers later apply from this same log entry)
-// sample s.clock.Now() ONCE and hand that identical ts to both the cache
-// write and this call. Sharing the instant closes the window in which the
-// cache-side watermark and the logged mutation HLC could differ — a gap that
-// let a concurrent write slip between the two and resolve LWW one way on the
-// origin and the other way on its peers. Returns immediately when the log is
-// not wired (test path); callers may pass a zero ts in that case.
-func (s *LanternService) logMutationAt(op *pb.MutationOp, ts hlc.Timestamp) uint64 {
-	s.replicationCutMu.Lock()
-	defer s.replicationCutMu.Unlock()
-	seq, err := s.appendLocalMutationAtLocked(op, ts)
-	if err != nil {
-		l := s.logger
-		if l == nil {
-			l = slog.Default()
-		}
-		l.Warn("mutation log append failed", slog.Any("err", err))
-	}
-	return seq
-}
-
 // appendLocalMutationAtLocked assigns an origin-local seq independently of
-// the relay log's Entry.Seq. Caller holds replicationCutMu. A failed append
-// leaves the origin seq unconsumed so the next attempt can reuse it.
+// the relay log's Entry.Seq. Caller holds replicationCutMu. Log-first AddEdges
+// uses this path; graph-first writes use publishLocalGraphMutationLocked.
 func (s *LanternService) appendLocalMutationAtLocked(op *pb.MutationOp, ts hlc.Timestamp) (uint64, error) {
 	if s.log == nil || s.clock == nil {
 		return 0, nil
 	}
+	if err := s.prepareLocalMutationLocked(); err != nil {
+		return 0, err
+	}
+	mutation := s.newLocalMutationLocked(op, ts)
+	if err := s.appendPreparedLocalMutationLocked(mutation); err != nil {
+		return 0, err
+	}
+	return mutation.GetSeq(), nil
+}
+
+// Caller holds replicationCutMu and has completed prepareLocalMutationLocked.
+func (s *LanternService) newLocalMutationLocked(op *pb.MutationOp, ts hlc.Timestamp) *pb.Mutation {
 	origin := s.clock.NodeID()
-	if origin == (hlc.NodeID{}) {
-		return 0, connect.NewError(connect.CodeFailedPrecondition, errors.New("mutation log origin NodeID is zero"))
-	}
-	committed := s.origins.LocalSeq(origin)
-	if committed == ^uint64(0) {
-		return 0, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("mutation origin %x sequence exhausted", origin))
-	}
-	seq := committed + 1
-	mu := &pb.Mutation{
-		Seq: seq,
+	return &pb.Mutation{
+		Seq: s.origins.LocalSeq(origin) + 1,
 		Hlc: &pb.HLCTimestamp{
 			WallNs:  ts.WallNs,
 			Logical: ts.Logical,
@@ -686,19 +661,24 @@ func (s *LanternService) appendLocalMutationAtLocked(op *pb.MutationOp, ts hlc.T
 		// this node's mixed local-and-relay stream. Holding the service
 		// gate prevents concurrent local writes from claiming the same seq.
 	}
-	_, err := s.log.Append(mu, ts)
+}
+
+// appendPreparedLocalMutationLocked never reapplies graph effects. Its owned
+// Mutation is reused verbatim after a graph-first WAL failure.
+func (s *LanternService) appendPreparedLocalMutationLocked(mutation *pb.Mutation) error {
+	origin := s.clock.NodeID()
+	ts := hlcFromProto(mutation.GetHlc())
+	_, err := s.log.Append(mutation, ts)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if s.origins != nil {
-		if !s.origins.Record(origin, seq, ts) {
-			return 0, connect.NewError(connect.CodeInternal, fmt.Errorf("mutation origin %x failed to record appended seq %d", origin, seq))
-		}
+	if !s.origins.Record(origin, mutation.GetSeq(), ts) {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("mutation origin %x failed to record appended seq %d", origin, mutation.GetSeq()))
 	}
 	if s.onAppend != nil {
 		s.onAppend()
 	}
-	return seq, nil
+	return nil
 }
 
 // Illuminate returns a subgraph rooted at the seed, optionally reduced via
@@ -1072,6 +1052,11 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// like Redis SETNX with async replicas).
 	if request.GetIfAbsent() {
 		if s.clock != nil {
+			s.replicationCutMu.Lock()
+			defer s.replicationCutMu.Unlock()
+			if err := s.prepareLocalMutationLocked(); err != nil {
+				return nil, err
+			}
 			ts := s.clock.Now()
 			_, outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items, ts)
 			if err != nil {
@@ -1085,7 +1070,9 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			// mutation. Splitting by outcome reorders duplicate keys and can make
 			// a peer commit a different final state than the origin.
 			if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
-				s.logMutationAt(mutation, ts)
+				if err := s.publishLocalGraphMutationLocked(mutation, ts); err != nil {
+					return nil, err
+				}
 			}
 			return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 		}
@@ -1115,6 +1102,11 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// inputs are excluded from replication; otherwise HA replicas could retain
 	// an old live value after the origin reports the replacement as expired.
 	if s.clock != nil {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.prepareLocalMutationLocked(); err != nil {
+			return nil, err
+		}
 		ts := s.clock.Now()
 		outcomes, err := s.cache.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
 		if err != nil {
@@ -1125,7 +1117,9 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			return nil, err
 		}
 		if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
-			s.logMutationAt(mutation, ts)
+			if err := s.publishLocalGraphMutationLocked(mutation, ts); err != nil {
+				return nil, err
+			}
 		}
 		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 	} else {
@@ -1228,23 +1222,33 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	}
 	s.metrics.OnBatch("DeleteVertices", len(in.GetKeys()))
 	var n int
-	if s.clock != nil && s.tombstoneTTL > 0 {
-		// Replicated path: sample the commit HLC ONCE and stamp BOTH the
-		// tombstone and the logged mutation with it. Sampling clock.Now()
-		// separately for each (as the cache call and logMutation used to)
-		// left a window where a concurrent Put with an HLC between the two
-		// would lose to the delete on peers but beat the tombstone on the
-		// origin — divergence. Local expiration is best-effort wall clock.
-		ts := s.clock.Now()
-		var err error
-		n, err = s.cache.DeleteVerticesHLCChecked(in.GetKeys(), ts, s.tombstoneExpiration())
-		if err != nil {
-			return nil, writeError(err)
+	if s.clock != nil {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.prepareLocalMutationLocked(); err != nil {
+			return nil, err
 		}
-		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts)
+		ts := s.clock.Now()
+		if s.tombstoneTTL > 0 {
+			// Replicated path: sample the commit HLC ONCE and stamp BOTH the
+			// tombstone and the logged mutation with it. Sampling clock.Now()
+			// separately for each (as the cache call and logMutation used to)
+			// left a window where a concurrent Put with an HLC between the two
+			// would lose to the delete on peers but beat the tombstone on the
+			// origin — divergence. Local expiration is best-effort wall clock.
+			var err error
+			n, err = s.cache.DeleteVerticesHLCChecked(in.GetKeys(), ts, s.tombstoneExpiration())
+			if err != nil {
+				return nil, writeError(err)
+			}
+		} else {
+			n = s.cache.DeleteVertices(in.GetKeys())
+		}
+		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts); err != nil {
+			return nil, err
+		}
 	} else {
 		n = s.cache.DeleteVertices(in.GetKeys())
-		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}})
 	}
 	return &pb.DeleteVerticesResponse{Deleted: int32(n)}, nil
 }
@@ -1358,8 +1362,12 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	var deduped int
 	var effective []float32
 	if s.clock != nil {
-		ts := s.clock.Now()
 		s.replicationCutMu.Lock()
+		if err := s.prepareLocalMutationLocked(); err != nil {
+			s.replicationCutMu.Unlock()
+			return nil, err
+		}
+		ts := s.clock.Now()
 		// Log FIRST so the per-origin seq this mutation commits under is
 		// known, then synthesize a (origin, seq, idx) ContribID for every
 		// edge the client left unkeyed BEFORE applying it locally. This
@@ -1442,6 +1450,11 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	// (docs/replication.md "Higher HLC wins"). The non-replicated path (clock
 	// nil) keeps the cheaper watermark-free method.
 	if s.clock != nil {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.prepareLocalMutationLocked(); err != nil {
+			return nil, err
+		}
 		ts := s.clock.Now()
 		outcomes, err := s.cache.PutEdgesWithExpirationHLCOutcomesChecked(items, ts)
 		if err != nil {
@@ -1452,7 +1465,9 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			return nil, err
 		}
 		if mutation := replicatedPutEdgesMutation(in, outcomes); mutation != nil {
-			s.logMutationAt(mutation, ts)
+			if err := s.publishLocalGraphMutationLocked(mutation, ts); err != nil {
+				return nil, err
+			}
 		}
 		return &pb.PutEdgesResponse{Outcomes: wireOutcomes}, nil
 	} else {
@@ -1486,19 +1501,29 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		keys = append(keys, graphcache.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 	}
 	var n int
-	if s.clock != nil && s.tombstoneTTL > 0 {
-		// Share one commit HLC between the tombstone and the logged
-		// mutation (see DeleteVertices for the divergence this closes).
-		ts := s.clock.Now()
-		var err error
-		n, err = s.cache.DeleteEdgesHLCChecked(keys, ts, s.tombstoneExpiration())
-		if err != nil {
-			return nil, writeError(err)
+	if s.clock != nil {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.prepareLocalMutationLocked(); err != nil {
+			return nil, err
 		}
-		s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts)
+		ts := s.clock.Now()
+		if s.tombstoneTTL > 0 {
+			// Share one commit HLC between the tombstone and the logged
+			// mutation (see DeleteVertices for the divergence this closes).
+			var err error
+			n, err = s.cache.DeleteEdgesHLCChecked(keys, ts, s.tombstoneExpiration())
+			if err != nil {
+				return nil, writeError(err)
+			}
+		} else {
+			n = s.cache.DeleteEdges(keys)
+		}
+		if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts); err != nil {
+			return nil, err
+		}
 	} else {
 		n = s.cache.DeleteEdges(keys)
-		s.logMutation(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}})
 	}
 	return &pb.DeleteEdgesResponse{Deleted: int32(n)}, nil
 }

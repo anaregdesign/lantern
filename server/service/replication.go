@@ -71,9 +71,9 @@ type snapshotCutProvider interface {
 	withReplicationSnapshotCut(capture func()) error
 }
 
-// publicationStatusProvider exposes a relay-log fault generation. It is
-// implemented by the production LanternService; narrow test providers can
-// omit it when they do not publish remote mutations.
+// publicationStatusProvider exposes a local/relay log fault generation. It
+// is implemented by the production LanternService; narrow test providers
+// can omit it when they do not publish mutations.
 type publicationStatusProvider interface {
 	publicationStatus() (<-chan struct{}, bool)
 }
@@ -174,8 +174,8 @@ func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintPr
 //     are delivered from the oldest retained entry — this lets a
 //     consumer that has never seen origin X (e.g. X joined the
 //     cluster while the consumer was offline) catch up naturally.
-//     mu.Seq carries the originating writer's seq (stamped at
-//     logMutation / preserved across relay), NOT the forwarding
+//     mu.Seq carries the originating writer's seq (stamped at local
+//     publication / preserved across relay), NOT the forwarding
 //     replica's local log seq.
 //  3. ErrGapped from the log layer (the ring was truncated below the
 //     requested local position) surfaces as
