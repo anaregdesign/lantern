@@ -253,6 +253,8 @@ create_retry_device() {
 
 usage() {
   echo "usage: $0 run-attempt <device> <label> <diagnostics-root>" >&2
+  echo "       $0 run-attached-attempt <device> <label> <diagnostics-root>" >&2
+  echo "       $0 capture-diagnostics <device> <destination>" >&2
   echo "       $0 create-retry-device <source-device> <output-file> <diagnostics-root>" >&2
   echo "       $0 finalize-diagnostics <diagnostics-root>" >&2
   exit 64
@@ -262,6 +264,14 @@ case "${1:-}" in
   run-attempt)
     [[ $# -eq 4 ]] || usage
     run_attempt "$2" "$3" "$4"
+    ;;
+  run-attached-attempt)
+    [[ $# -eq 4 ]] || usage
+    python3 "$script_dir/ios_smoke_attach.py" "$2" "$3" "$4"
+    ;;
+  capture-diagnostics)
+    [[ $# -eq 3 ]] || usage
+    capture_diagnostics "$2" "$3"
     ;;
   create-retry-device)
     [[ $# -eq 4 ]] || usage

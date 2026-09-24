@@ -11,7 +11,23 @@ import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  // A directly launched iOS test can receive the platform's semantics request
+  // after testWidgets records its leak-check baseline. Wait for that request
+  // only in the direct-launch CI path, before the first test begins.
+  if (Platform.isIOS &&
+      const bool.fromEnvironment('LANTERN_IOS_DIRECT_LAUNCH')) {
+    setUpAll(() async {
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (!binding.platformDispatcher.semanticsEnabled ||
+          binding.debugOutstandingSemanticsHandles == 0) {
+        if (DateTime.now().isAfter(deadline)) {
+          fail('iOS platform semantics did not initialize before the test');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    });
+  }
 
   testWidgets('native mobile real-wire smoke', (tester) async {
     // This explicit phase marker lets CI distinguish an app-launch stall from
