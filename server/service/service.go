@@ -379,9 +379,9 @@ func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
 	return nil
 }
 
-// withReplicationSubscribeCut pins the same publication boundary while an
-// identity consumer registers its log tail and captures/validates the origin
-// vector. The fault channel belongs to that cut's generation, so a transient
+// withReplicationSubscribeCut pins the same publication boundary while a
+// consumer registers its log tail (and, for identity CDC, captures its origin
+// vector). The fault channel belongs to that cut's generation, so a transient
 // publication failure still gaps the stream even if repair finishes quickly.
 func (s *LanternService) withReplicationSubscribeCut(capture func(<-chan struct{})) error {
 	s.replicationCutMu.RLock()

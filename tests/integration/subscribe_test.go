@@ -15,10 +15,138 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+type subscribeCutMetrics struct{ started chan struct{} }
+
+func (m *subscribeCutMetrics) OnSubscribeStarted()       { close(m.started) }
+func (m *subscribeCutMetrics) OnSubscribeEnded()         {}
+func (m *subscribeCutMetrics) OnSubscribeDropped(string) {}
+
+// The local append callback runs after the log dispatch and origin advance,
+// but before the enclosing graph publication cut ends. Neither the full CDC
+// stream nor PeerStatus may expose that staged frontier over h2c.
+func TestSubscribeAndPeerStatus_RealWireWaitForPublicationCut(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0xA5}, hlc.Options{})
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	appendEntered := make(chan struct{})
+	appendRelease := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-appendRelease:
+		default:
+			close(appendRelease)
+		}
+	})
+	svc := service.NewLanternService(cache).WithReplication(log, clock, func() {
+		close(appendEntered)
+		<-appendRelease
+	})
+	metrics := &subscribeCutMetrics{started: make(chan struct{})}
+	rep := service.NewLanternReplicationService(log, cache, clock).WithOriginStates(svc).WithMetrics(metrics)
+	srv := newConnectTestServer(t, svc, rep)
+	subCli := newReplicationRawClient(t, srv.url)
+	streamDone := make(chan struct {
+		mutation *pb.Mutation
+		err      error
+	}, 1)
+	go func() {
+		stream, err := subCli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+		if err == nil {
+			defer func() { _ = stream.Close() }()
+			if stream.Receive() {
+				streamDone <- struct {
+					mutation *pb.Mutation
+					err      error
+				}{stream.Msg().GetMutation(), nil}
+				return
+			}
+			err = stream.Err()
+		}
+		streamDone <- struct {
+			mutation *pb.Mutation
+			err      error
+		}{nil, err}
+	}()
+	select {
+	case <-metrics.started:
+	case <-ctx.Done():
+		t.Fatal("Subscribe did not register")
+	}
+
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+			Key: "staged", Value: &pb.Vertex_String_{String_: "committed"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+		}}))
+		writeDone <- err
+	}()
+	select {
+	case <-appendEntered:
+	case <-ctx.Done():
+		t.Fatal("PutVertex did not reach post-append stage")
+	}
+	statusDone := make(chan struct {
+		response *pb.PeerStatusResponse
+		err      error
+	}, 1)
+	go func() {
+		response, err := subCli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+		if err != nil {
+			statusDone <- struct {
+				response *pb.PeerStatusResponse
+				err      error
+			}{nil, err}
+			return
+		}
+		statusDone <- struct {
+			response *pb.PeerStatusResponse
+			err      error
+		}{response.Msg, nil}
+	}()
+	select {
+	case result := <-streamDone:
+		t.Fatalf("Subscribe crossed held publication: mutation=%v err=%v", result.mutation, result.err)
+	case result := <-statusDone:
+		t.Fatalf("PeerStatus crossed held publication: response=%v err=%v", result.response, result.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(appendRelease)
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("PutVertex: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("PutVertex did not finish")
+	}
+	select {
+	case result := <-streamDone:
+		if result.err != nil || result.mutation.GetSeq() != 1 {
+			t.Fatalf("Subscribe after publication: mutation=%v err=%v", result.mutation, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Subscribe did not deliver after publication")
+	}
+	select {
+	case result := <-statusDone:
+		if result.err != nil || len(result.response.GetOrigins()) != 1 || result.response.GetOrigins()[0].GetLastSeq() != 1 {
+			t.Fatalf("PeerStatus after publication: response=%v err=%v", result.response, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("PeerStatus did not finish after publication")
+	}
+}
 
 // TestSubscribe_E2E_100Writes wires a real LanternService +
 // LanternReplicationService through the Connect-on-h2c httptest
