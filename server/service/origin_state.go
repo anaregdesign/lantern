@@ -50,11 +50,84 @@ func (t *originStateTracker) Record(origin hlc.NodeID, seq uint64, ts hlc.Timest
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	prev, ok := t.m[origin]
-	if seq == 0 || (ok && seq != prev.seq+1) || (!ok && seq != 1) {
+	if !nextContiguousOriginSeq(seq, prev, ok) {
 		return false
 	}
 	t.m[origin] = originRow{seq: seq, hlc: ts}
 	return true
+}
+
+func nextContiguousOriginSeq(seq uint64, prev originRow, exists bool) bool {
+	return seq != 0 && ((!exists && seq == 1) || (exists && seq == prev.seq+1))
+}
+
+// originRowStage is a one-row, single-owner pre-WAL stage. It retains the
+// tracker write lock from stageNext through Commit or Abort, keeping States,
+// LocalSeq, and concurrent updates from observing the tentative row. The
+// caller must also hold its service-wide publication gate for graph/log and
+// Snapshot readers; this tracker lock alone is not a cross-component commit.
+// A stage must be finished exactly once on the owning goroutine. Abort may be
+// deferred as a panic guard because it is a no-op after Commit.
+type originRowStage struct {
+	tracker  *originStateTracker
+	origin   hlc.NodeID
+	previous originRow
+	existed  bool
+	finished bool
+}
+
+// stageNext tentatively installs only the next contiguous local or remote
+// origin row. All map growth and validation occur before the caller's WAL
+// write. A rejected zero origin, duplicate, gap, or zero seq leaves the
+// tracker unlocked and unchanged. Snapshot jumps remain AdvanceSnapshot's
+// responsibility and cannot be staged here.
+func (t *originStateTracker) stageNext(origin hlc.NodeID, seq uint64, ts hlc.Timestamp) (*originRowStage, bool) {
+	var zero hlc.NodeID
+	if origin == zero {
+		return nil, false
+	}
+	t.mu.Lock()
+	release := true
+	defer func() {
+		if release {
+			t.mu.Unlock()
+		}
+	}()
+	prev, exists := t.m[origin]
+	if !nextContiguousOriginSeq(seq, prev, exists) {
+		return nil, false
+	}
+	stage := &originRowStage{tracker: t, origin: origin, previous: prev, existed: exists}
+	t.m[origin] = originRow{seq: seq, hlc: ts}
+	release = false
+	return stage, true
+}
+
+// Commit makes the already installed row visible by releasing the tracker
+// lock. It performs no map mutation or allocation after a successful WAL
+// write. The caller's service-wide publication gate must remain held until
+// its graph, receipt, and log state are also fully published.
+func (s *originRowStage) Commit() {
+	if s == nil || s.finished {
+		return
+	}
+	s.finished = true
+	s.tracker.mu.Unlock()
+}
+
+// Abort restores the exact previous row or absence before releasing the
+// tracker lock. It is idempotent so callers can defer it across WAL panics.
+func (s *originRowStage) Abort() {
+	if s == nil || s.finished {
+		return
+	}
+	if s.existed {
+		s.tracker.m[s.origin] = s.previous
+	} else {
+		delete(s.tracker.m, s.origin)
+	}
+	s.finished = true
+	s.tracker.mu.Unlock()
 }
 
 // AdvanceSnapshot accepts a verified snapshot's per-origin cutoff. Snapshot
