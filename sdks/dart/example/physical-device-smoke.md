@@ -355,10 +355,8 @@ adb -s <physical-android-id> reverse --remove tcp:6381
 Record each physical run against the exact clean code SHA, Flutter revision,
 device model/OS, installed binary SHA-256, authenticated network topology, and
 sanitized markers. Keep endpoints, tokens, device identifiers, and graph keys
-out of evidence. This dedicated target has its own binary; the current offline
-release gate still binds its evidence to `mobile_smoke_test.dart`. Do not claim
-the CDC scenario in that gate until its evidence schema explicitly accepts the
-additional target and binary hash.
+out of evidence. This dedicated target has its own binary and evidence record;
+the offline release gate checks it separately from `mobile_smoke_test.dart`.
 
 ## Offline core publication matrix
 
@@ -367,30 +365,39 @@ and teardown sequence, use the
 [offline release resume runbook](offline-release-resume.md).
 
 Before an `sdks/dart/offline/vX.Y.Z` tag, test a clean code commit on both
-physical platforms using the current Put-only app and a platform-trusted HTTPS
-endpoint. Record `android.json` and `ios.json` under
-`evidence/offline-release/` only after the runs pass. Each file must set
-`kind: physical_offline_release_evidence`, `schema: 1`, `contentFree: true`,
+physical platforms using a platform-trusted HTTPS endpoint. Record the
+`mobile_smoke_test.dart` runs as `android.json` and `ios.json`, and the
+`physical_identity_cdc_test.dart` runs as `android-cdc.json` and
+`ios-cdc.json`, under `evidence/offline-release/`. The smoke records use
+`kind: physical_offline_release_evidence`; the CDC records use
+`kind: physical_offline_identity_cdc_evidence`. Each file must set `schema: 1`,
+`contentFree: true`,
 `physicalDevice: true`, `cleanCheckout: true`, `repository:
 anaregdesign/lantern`, `testedCommit` to the full tested code SHA,
 `recordedAt` to a UTC timestamp, and `result: passed` with empty `limitations`.
 Include the exact Flutter/Dart versions and Flutter framework revision, the
-platform package ID and installed binary SHA-256, device model/OS without an
-identifier, and `network` with `transport: Connect/HTTPS`, authenticated and
-platform-trusted TLS both true, plus a sanitized topology description. Use
-`application.target: integration_test/mobile_smoke_test.dart`.
+platform package ID and each target's own installed binary SHA-256, device
+model/OS without an identifier, and `network` with `transport: Connect/HTTPS`,
+authenticated and platform-trusted TLS both true, plus a sanitized topology
+description. Set `application.target` to the corresponding integration test.
 
-The `scenarios` array must contain the ten native smoke scenarios listed in
+The smoke `scenarios` array must contain the ten native smoke scenarios listed in
 the example above, plus `platform_trusted_tls`, `untrusted_tls_rejection`,
 `token_rotation`, and `radio_offline_foreground_recovery`. Android also needs
 `android_doze_like_pause`; iOS also needs
-`ios_local_network_privacy_denial_retry`. The record must describe actual
-observed passes, not planned work. Keep endpoints, IP addresses, certificates,
-tokens, device identifiers, and raw traces out of the files.
+`ios_local_network_privacy_denial_retry`. The CDC array must contain
+`identity_checkpoint_revalidation`, `identity_live_vertex_invalidation`,
+`identity_live_edge_invalidation`, `identity_cursor_persisted`,
+`identity_unknown_survives_sqlite_reopen`,
+`identity_resume_live_invalidation`, `identity_partition_wipe`,
+`identity_same_responder`, `identity_runtime_token_refresh`, and
+`identity_cancellation`. Each record must describe actual observed passes,
+not planned work. Keep endpoints, IP addresses, certificates, tokens, device
+identifiers, and raw traces out of the files.
 
 Commit **only** these evidence files (and an optional README in the same
 directory) as the immediate child of the tested code commit. Tag that child.
-The release gate requires its parent to equal both `testedCommit` fields and
+The release gate requires its parent to equal all four `testedCommit` fields and
 rejects every other changed path. It also compares toolchain/package identity
 to the tag's Android/iOS simulator manifests from the current workflow attempt.
 This proves the tagged code is

@@ -135,7 +135,7 @@ packages:
       path: "../offline"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.0"
   lantern_client_offline_sqlite:
     dependency: "direct main"
     description:

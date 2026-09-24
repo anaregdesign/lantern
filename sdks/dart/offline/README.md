@@ -5,11 +5,13 @@ Experimental, storage-neutral offline Repository support for
 versioned cache/outbox codec, a deterministic non-production in-memory reference
 store, latency-compensated Put writes, and explicit foreground replay.
 
-The independent release is tracked under
-[#1162](https://github.com/anaregdesign/lantern/issues/1162). For `0.2.0`,
-qualification requires an exact-code physical Android/iOS matrix and a one-time
-interactive OAuth publication. The core depends on hosted `lantern_client`
-0.2.0; the maintained Flutter example uses local overrides for development.
+The initial independent `0.2.0` release under
+[#1162](https://github.com/anaregdesign/lantern/issues/1162) used an exact-code
+physical Android/iOS matrix and a one-time interactive OAuth publication.
+The `0.3.0` bridge release is tracked under
+[#1314](https://github.com/anaregdesign/lantern/issues/1314). It depends on
+hosted `lantern_client 0.3.0`; the maintained Flutter example uses local
+overrides for development.
 
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
@@ -269,6 +271,5 @@ load-balancing endpoint cannot be validated as pinned by this adapter.
 Application configuration must guarantee that routing property. The client
 acquires its configured credentials at each RPC call.
 
-This bridge requires a parent SDK release with `subscribeIdentity`. It cannot
-ship under the initial offline package's hosted `lantern_client: ^0.2.0`
-constraint; update that constraint only after publishing the typed parent SDK.
+This bridge requires hosted `lantern_client 0.3.0` with `subscribeIdentity`.
+The initial offline `0.2.0` package stays on its published parent constraint.
