@@ -122,7 +122,7 @@ type GraphCache[S comparable, T any] struct {
 	vertexTombstones              map[S]tombstoneEntry
 	edgeTombstones                map[EdgeKey[S]]tombstoneEntry
 	vertexTombstoneDeadlines      causalDeadlineHeap[S]
-	edgeTombstoneDeadlines        causalDeadlineHeap[EdgeKey[S]]
+	edgeTombstoneDeadlines        indexedCausalDeadlineHeap[EdgeKey[S]]
 	vertexTombstoneDeadlineBytes  uint64
 	edgeTombstoneDeadlineBytes    uint64
 	oldestVertexTombstoneDeadline time.Time
