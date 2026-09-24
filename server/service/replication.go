@@ -125,6 +125,10 @@ type LanternReplicationService struct {
 	logger  *slog.Logger
 	origins OriginStatesProvider
 	search  SearchConfigFingerprintProvider
+	// Set before serving any receipt-capable write. It is deliberately a
+	// lifetime latch: a graph-only Snapshot may never certify receipt state,
+	// including after receipt log entries have been evicted.
+	receiptSnapshotRequired bool
 }
 
 // NewLanternReplicationService constructs the service. log MUST be the same
@@ -177,6 +181,16 @@ func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintPr
 	return s
 }
 
+// WithReceiptSnapshotRequired latches the service into receipt-continuity
+// mode. The receipt-bearing Snapshot producer is not implemented yet, so
+// Snapshot fails closed rather than falling back to a graph-only image.
+// Production does not enable receipt writes or this mode in the current
+// release. The future receipt provider must set this before serving writes.
+func (s *LanternReplicationService) WithReceiptSnapshotRequired() *LanternReplicationService {
+	s.receiptSnapshotRequired = true
+	return s
+}
+
 // Subscribe streams every mutation log entry whose (origin, seq)
 // satisfies the per-origin resume cursor in req.FromSeqPerOrigin to
 // the supplied Sender, honouring ctx cancellation throughout.
@@ -218,6 +232,15 @@ func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintPr
 func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.SubscribeRequest, stream Sender[pb.SubscribeResponse]) error {
 	if s.log == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
+	}
+	// Check before opening the ring. A receipt entry may already have been
+	// evicted, so a per-entry opt-in check alone cannot guard an old peer from
+	// treating a gap as permission to install a graph-only Snapshot.
+	if s.receiptSnapshotRequired &&
+		(req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_UNSPECIFIED ||
+			req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION) &&
+		!req.GetAcceptReceiptEnvelopes() {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("full Subscribe consumer must accept receipt envelopes"))
 	}
 	switch req.GetProjection() {
 	case pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY:
@@ -376,9 +399,19 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Replication bootstrap is bounded (one peer per call, infrequent), so
 // the O(N+E) memory overhead is acceptable. True streaming is a follow-up
 // once the snapshot path is wired end-to-end.
-func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.SnapshotRequest, stream Sender[pb.SnapshotResponse]) error {
+func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.SnapshotRequest, stream Sender[pb.SnapshotResponse]) error {
 	if s.backend == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
+	}
+	if s.receiptSnapshotRequired {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is required but not implemented"))
+	}
+	switch req.GetRequiredFormat() {
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1:
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is not implemented"))
+	default:
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
 	}
 
 	var cutoffPerOrigin map[string]uint64
@@ -430,6 +463,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 				CutoffSeqPerOrigin: cutoffPerOrigin,
 				CutoffHlc:          hlcToProto(cutoffHLC),
 				CutoffLocalSeq:     cutoffLocalSeq,
+				Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 			},
 		},
 	}
@@ -621,6 +655,11 @@ func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerSt
 		rows = s.origins.OriginStates()
 	}
 	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}
+	if s.receiptSnapshotRequired {
+		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1
+	} else {
+		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+	}
 	if s.search != nil {
 		out.SearchConfigFingerprint = s.search.SearchConfigFingerprint()
 	}

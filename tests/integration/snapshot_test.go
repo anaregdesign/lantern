@@ -33,6 +33,10 @@ type snapshotPeer struct {
 }
 
 func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
+	return newSnapshotPeerWithMode(t, nodeID, 1024, false)
+}
+
+func newSnapshotPeerWithMode(t *testing.T, nodeID hlc.NodeID, logCapacity int, receiptSnapshotRequired bool) *snapshotPeer {
 	t.Helper()
 	vi := provider.NewValidationInterceptor(provider.ValidationLimits{
 		MaxKeyLen:         256,
@@ -41,7 +45,7 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 		IlluminateMaxK:    256,
 	})
 
-	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
+	log := mutationlog.New(mutationlog.Options{Capacity: logCapacity, SubscriberBuffer: 1024})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(nodeID, hlc.Options{})
 	limits := productionSearchLimits(true, true)
@@ -52,6 +56,9 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 	rep := service.NewLanternReplicationService(log, cache, clock).
 		WithOriginStates(svc).
 		WithSearchConfig(svc)
+	if receiptSnapshotRequired {
+		rep.WithReceiptSnapshotRequired()
+	}
 	srv := newConnectTestServer(t, svc, rep, vi.ConnectInterceptor())
 
 	return &snapshotPeer{
@@ -61,6 +68,92 @@ func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
 		sdk:   newConnectClientFor(t, srv.url),
 		raw:   graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
 		repl:  newReplicationRawClient(t, srv.url),
+	}
+}
+
+// TestSnapshotFormatNegotiation_RealConnectWire pins both sides of the
+// receipt-continuity boundary. A graph-only responder advertises and serves
+// only its graph format; a future receipt-enabled responder cannot let an old
+// peer recover an evicted receipt through a graph-only Snapshot.
+func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	graphPeer := newSnapshotPeer(t, hlc.NodeID{0x31})
+	status, err := graphPeer.repl.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+	if err != nil || status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
+		t.Fatalf("graph-only PeerStatus = (%v, %v)", status, err)
+	}
+	graphStream, err := graphPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = graphStream.Close() }()
+	if !graphStream.Receive() || graphStream.Msg().GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
+		t.Fatalf("graph Snapshot header = (%v, %v)", graphStream.Msg(), graphStream.Err())
+	}
+	for _, required := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1, pb.SnapshotFormat(99)} {
+		stream, err := graphPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{RequiredFormat: required}))
+		if err == nil {
+			defer func() { _ = stream.Close() }()
+			if stream.Receive() {
+				t.Fatalf("unsupported format %v sent a frame", required)
+			}
+			err = stream.Err()
+		}
+		want := connect.CodeFailedPrecondition
+		if required == pb.SnapshotFormat(99) {
+			want = connect.CodeInvalidArgument
+		}
+		if connect.CodeOf(err) != want {
+			t.Fatalf("unsupported format %v = %v, want %v", required, err, want)
+		}
+	}
+
+	// Production receipt writes are still disabled. Inject one receipt-bearing
+	// wire mutation into the test log, then evict it with two ordinary writes.
+	// The static mode gate must reject legacy clients before inspecting the
+	// now graph-only retained ring.
+	receiptPeer := newSnapshotPeerWithMode(t, hlc.NodeID{0x32}, 2, true)
+	receiptWire, stamp := receiptEdgeDeleteTailFixture(t, hlc.NodeID{0x33}, 1, []bool{false})
+	if _, err := receiptPeer.log.Append(receiptWire, stamp); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		if _, err := receiptPeer.sdk.PutVertex(ctx, "receipt-mode-"+itoa(i), i, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retained := receiptPeer.log.RetainedEntries()
+	if len(retained) != 2 || retained[0].Seq != 2 || retained[1].Seq != 3 {
+		t.Fatalf("receipt fixture was not evicted: %+v", retained)
+	}
+	status, err = receiptPeer.repl.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+	if err != nil || status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		t.Fatalf("receipt-mode PeerStatus = (%v, %v)", status, err)
+	}
+	legacyTail, err := receiptPeer.repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
+	if err == nil {
+		defer func() { _ = legacyTail.Close() }()
+		if legacyTail.Receive() {
+			t.Fatal("legacy full Subscribe emitted an entry in receipt mode")
+		}
+		err = legacyTail.Err()
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("legacy full Subscribe = %v, want InvalidArgument", err)
+	}
+	legacySnapshot, err := receiptPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	if err == nil {
+		defer func() { _ = legacySnapshot.Close() }()
+		if legacySnapshot.Receive() {
+			t.Fatal("legacy Snapshot emitted a graph-only frame in receipt mode")
+		}
+		err = legacySnapshot.Err()
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("legacy Snapshot = %v, want FailedPrecondition", err)
 	}
 }
 

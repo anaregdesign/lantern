@@ -252,6 +252,11 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		return
 	}
 	msg := resp.Msg
+	if !graphOnlySnapshotFormat(msg.GetRequiredSnapshotFormat()) {
+		log.Error("anti-entropy: peer requires receipt-bearing Snapshot unsupported by this receiver")
+		a.cfg.Metrics.OnAntiEntropyError(addr, "snapshot_format_mismatch")
+		return
+	}
 	if a.cfg.SearchConfigFingerprint != "" {
 		remote := msg.GetSearchConfigFingerprint()
 		matched := remote != "" && remote == a.cfg.SearchConfigFingerprint
@@ -410,7 +415,9 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 // returns, the next anti-entropy tick will re-probe PeerStatus and
 // resume normal catch-up.
 func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient) error {
-	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}))
 	if err != nil {
 		return err
 	}
@@ -422,10 +429,6 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 		}
 	}()
 	var recovery searchIndexRecovery
-	if candidate, ok := a.snap.(searchIndexRecovery); ok {
-		recovery = candidate
-		recovery.BeginSearchIndexRecovery()
-	}
 	var replay snapshotReplayState
 	for stream.Receive() {
 		resp := stream.Msg()
@@ -437,6 +440,10 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1
 			finishInstall, err = beginSnapshotInstall(a.apply)
 			if err != nil {
 				return err
+			}
+			if candidate, ok := a.snap.(searchIndexRecovery); ok {
+				recovery = candidate
+				recovery.BeginSearchIndexRecovery()
 			}
 		case *pb.SnapshotResponse_VertexCausalBarrier:
 			if err := replay.acceptBody("vertex causal barrier", snapshotPhaseVertexBarrier); err != nil {

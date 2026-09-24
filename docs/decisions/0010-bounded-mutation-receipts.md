@@ -295,6 +295,17 @@ error and fall back to a graph-only Snapshot. Production enablement therefore
 requires authenticated PeerStatus capability/version negotiation and a
 receipt-aware Snapshot install gate that refuses a graph-only downgrade,
 including a real-wire test with an evicted receipt entry.
+The staged `SnapshotFormat` request/header and `PeerStatus.required_snapshot_format`
+fields establish this downgrade boundary without producing a receipt image.
+`WithReceiptSnapshotRequired` is a lifetime service latch: when set, a legacy
+full Subscribe is rejected before the ring is inspected, and every Snapshot
+request fails closed until the receipt-bearing producer exists. Current Pump
+and anti-entropy request graph-only format and reject a receipt format header
+before applying a frame; a future receipt receiver must request and require
+`RECEIPT_V1`. No production provider sets the latch or enables receipt writes.
+The follow-up producer must tie the latch to receipt admission and then stage,
+validate, and atomically install graph, receipts, epoch, policy, clock, and
+cutoffs before allowing status or resumed Subscribe.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 

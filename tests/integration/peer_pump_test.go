@@ -1475,6 +1475,12 @@ type scriptedTombstoneSnapshotPeer struct {
 	subscribeCalls atomic.Int32
 }
 
+func (*scriptedTombstoneSnapshotPeer) PeerStatus(context.Context, *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
+	return connect.NewResponse(&pb.PeerStatusResponse{
+		RequiredSnapshotFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}), nil
+}
+
 func (p *scriptedTombstoneSnapshotPeer) Subscribe(ctx context.Context, _ *connect.Request[pb.SubscribeRequest], _ *connect.ServerStream[pb.SubscribeResponse]) error {
 	if p.subscribeCalls.Add(1) == 1 {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped"))

@@ -20,8 +20,15 @@ import (
 
 type receiptIncompatiblePeer struct {
 	graphv1connect.UnimplementedLanternReplicationServiceHandler
-	subscribes atomic.Int32
-	snapshots  atomic.Int32
+	subscribes     atomic.Int32
+	snapshots      atomic.Int32
+	requiredFormat pb.SnapshotFormat
+}
+
+func (p *receiptIncompatiblePeer) PeerStatus(context.Context, *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
+	return connect.NewResponse(&pb.PeerStatusResponse{
+		RequiredSnapshotFormat: p.requiredFormat,
+	}), nil
 }
 
 func (p *receiptIncompatiblePeer) Subscribe(_ context.Context, req *connect.Request[pb.SubscribeRequest], _ *connect.ServerStream[pb.SubscribeResponse]) error {
@@ -58,6 +65,83 @@ func TestPumpReceiptIncompatibilityDoesNotSnapshot(t *testing.T) {
 	}
 	if got := peer.snapshots.Load(); got != 0 {
 		t.Fatalf("graph-only Snapshot calls = %d, want 0", got)
+	}
+}
+
+func TestPumpRejectsReceiptSnapshotRequirementBeforeSubscribe(t *testing.T) {
+	peer := &receiptIncompatiblePeer{requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1}
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+	srv := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protocols
+	srv.Start()
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	pump := NewPump(Config{HTTPClient: defaultH2CClient()}, nil, nil)
+	if err := pump.session(ctx, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("receipt Snapshot requirement = %v, want FailedPrecondition", err)
+	}
+	if got := peer.subscribes.Load(); got != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0", got)
+	}
+	if got := peer.snapshots.Load(); got != 0 {
+		t.Fatalf("graph-only Snapshot calls = %d, want 0", got)
+	}
+}
+
+type incompatibleSnapshotHeaderPeer struct {
+	graphv1connect.UnimplementedLanternReplicationServiceHandler
+	format pb.SnapshotFormat
+}
+
+func (p *incompatibleSnapshotHeaderPeer) Snapshot(_ context.Context, _ *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	return stream.Send(&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Header{
+		Header: &pb.SnapshotHeader{Format: p.format},
+	}})
+}
+
+type recoveryRecordingApplier struct {
+	recordingApplier
+	begins int
+}
+
+func (r *recoveryRecordingApplier) BeginSearchIndexRecovery()          { r.begins++ }
+func (r *recoveryRecordingApplier) CompleteSearchIndexRecovery() error { return nil }
+
+func TestSnapshotFormatMismatchKeepsSearchIndexReady(t *testing.T) {
+	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1, pb.SnapshotFormat(99)} {
+		t.Run(format.String(), func(t *testing.T) {
+			peer := &incompatibleSnapshotHeaderPeer{format: format}
+			mux := http.NewServeMux()
+			mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+			srv := httptest.NewUnstartedServer(mux)
+			protocols := new(http.Protocols)
+			protocols.SetUnencryptedHTTP2(true)
+			srv.Config.Protocols = protocols
+			srv.Start()
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			cli := graphv1connect.NewLanternReplicationServiceClient(defaultH2CClient(), srv.URL)
+			snap := &recoveryRecordingApplier{}
+			pump := NewPump(Config{HTTPClient: defaultH2CClient()}, nil, snap)
+			if _, err := pump.snapshot(ctx, cli, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("pump Snapshot mismatch = %v", err)
+			}
+			if snap.begins != 0 {
+				t.Fatalf("pump marked search index incomplete %d times", snap.begins)
+			}
+			anti := NewAntiEntropy(AntiEntropyConfig{HTTPClient: defaultH2CClient()}, nil, nil, snap)
+			if err := anti.snapshotFrom(ctx, srv.URL, cli); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("anti-entropy Snapshot mismatch = %v", err)
+			}
+			if snap.begins != 0 {
+				t.Fatalf("anti-entropy marked search index incomplete %d times", snap.begins)
+			}
+		})
 	}
 }
 
@@ -381,6 +465,33 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.run(&snapshotReplayState{}); err == nil {
 				t.Fatal("protocol violation was accepted")
+			}
+		})
+	}
+}
+
+func TestSnapshotReplayStateFormatBeforeBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header pb.SnapshotFormat
+		want   connect.Code
+	}{
+		{"legacy graph header", pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, connect.Code(0)},
+		{"versioned graph header", pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, connect.Code(0)},
+		{"graph receiver rejects receipt header", pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1, connect.CodeFailedPrecondition},
+		{"unknown header", pb.SnapshotFormat(99), connect.CodeFailedPrecondition},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := snapshotReplayState{}
+			err := state.acceptHeader(&pb.SnapshotHeader{Format: tc.header})
+			if tc.want == 0 {
+				if err != nil || !state.gotHeader {
+					t.Fatalf("matching header = (%v, got=%v)", err, state.gotHeader)
+				}
+				return
+			}
+			if connect.CodeOf(err) != tc.want || state.gotHeader {
+				t.Fatalf("mismatched header = (%v, got=%v), want %v and no install", err, state.gotHeader, tc.want)
 			}
 		})
 	}
