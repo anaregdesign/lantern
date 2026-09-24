@@ -158,7 +158,10 @@ void main() {
       );
       addTearDown(client.close);
 
-      final frames = await client.subscribeIdentity(bootstrap: true).toList();
+      final frames = await client
+          .subscribeIdentity(bootstrap: true)
+          .take(2)
+          .toList();
       expect(request!.bootstrap, isTrue);
       expect(
         request!.projection,
@@ -203,15 +206,15 @@ void main() {
           .build();
       final client = _client(transport);
       addTearDown(client.close);
-      final frames = await client
+      final frame = await client
           .subscribeIdentity(
             cursor: IdentityNextCursor({_origin: BigInt.from(9)}),
             options: LanternCallOptions(timeout: const Duration(seconds: 3)),
           )
-          .toList();
+          .first;
       expect(request!.bootstrap, isFalse);
       expect(request!.fromSeqPerOrigin[_origin], Int64(9));
-      expect((frames.single as IdentityChunkFrame).vertexKeys, ['v']);
+      expect((frame as IdentityChunkFrame).vertexKeys, ['v']);
       expect(
         () => client.subscribeIdentity(
           bootstrap: true,
@@ -238,10 +241,10 @@ void main() {
       final client = _client(transport);
       addTearDown(client.close);
 
-      final frames = await client
+      final frame = await client
           .subscribeIdentity(cursor: IdentityNextCursor({_origin: _maxUint64}))
-          .toList();
-      expect((frames.single as IdentityChunkFrame).sequence, _maxUint64);
+          .first;
+      expect((frame as IdentityChunkFrame).sequence, _maxUint64);
     },
   );
 
@@ -296,6 +299,17 @@ void main() {
       _chunk(
         operation: replication.IdentityOperation.IDENTITY_OPERATION_ADD_EDGE,
       ),
+      _chunk(vertexKeys: const ['']),
+      _chunk(
+        operation: replication.IdentityOperation.IDENTITY_OPERATION_ADD_EDGE,
+        vertexKeys: const [],
+        edgeKeys: [graph.EdgeKey(tail: '', head: 'head')],
+      ),
+      _chunk(
+        operation: replication.IdentityOperation.IDENTITY_OPERATION_ADD_EDGE,
+        vertexKeys: const [],
+        edgeKeys: [graph.EdgeKey(tail: 'tail', head: '')],
+      ),
     ]) {
       final transport = FakeTransportBuilder()
           .server<replication.SubscribeRequest, replication.SubscribeResponse>(
@@ -338,6 +352,59 @@ void main() {
       );
       await client.close();
     }
+  });
+
+  test(
+    'unexpected clean EOF requires recovery after checkpoint or chunk',
+    () async {
+      for (final bootstrap in [false, true]) {
+        final frames = bootstrap
+            ? [
+                replication.SubscribeResponse(
+                  checkpoint: replication.IdentityCheckpoint(),
+                ),
+              ]
+            : [_chunk()];
+        final transport = FakeTransportBuilder()
+            .server<
+              replication.SubscribeRequest,
+              replication.SubscribeResponse
+            >(
+              replication_spec.LanternReplicationService.subscribe,
+              (_, _) => Stream.fromIterable(frames),
+            )
+            .build();
+        final client = _client(transport);
+        await expectLater(
+          client.subscribeIdentity(bootstrap: bootstrap).toList(),
+          throwsA(isA<LanternFailedPreconditionException>()),
+        );
+        await client.close();
+      }
+    },
+  );
+
+  test('explicit cancellation does not turn clean EOF into recovery', () async {
+    final listening = Completer<void>();
+    final source = StreamController<replication.SubscribeResponse>(
+      onListen: listening.complete,
+    );
+    final cancellation = LanternCancellationToken();
+    final client = _client(_DirectIdentityStreamTransport(source.stream));
+    addTearDown(client.close);
+    final errors = <Object>[];
+    final done = Completer<void>();
+    client
+        .subscribeIdentity(
+          bootstrap: true,
+          options: LanternCallOptions(cancellation: cancellation),
+        )
+        .listen((_) {}, onError: errors.add, onDone: done.complete);
+    await listening.future.timeout(const Duration(seconds: 2));
+    cancellation.cancel();
+    await source.close();
+    await done.future.timeout(const Duration(seconds: 2));
+    expect(errors, isEmpty);
   });
 
   test('stream maps auth failure and cancellation without retry', () async {

@@ -152,6 +152,8 @@ extension LanternChanges on LanternClient {
   /// at their first retained mutation. A `failedPrecondition` gap requires a
   /// fresh bootstrap and resident-key revalidation. No retry, endpoint
   /// discovery, OS scheduling, or tenant filtering is performed here.
+  /// Unexpected clean EOF also requires bootstrap and resident-key
+  /// revalidation, and is reported as `failedPrecondition`.
   ///
   /// This long-lived stream ignores the client's default unary timeout. An
   /// explicit [LanternCallOptions.timeout] or deadline still applies. Cancel
@@ -200,13 +202,18 @@ extension LanternChanges on LanternClient {
         disableDefaultTimeout: true,
       ),
     );
-    return _decodeIdentityFrames(stream, bootstrap: bootstrap);
+    return _decodeIdentityFrames(
+      stream,
+      bootstrap: bootstrap,
+      cancellation: options?.cancellation,
+    );
   }
 }
 
 Stream<IdentityFrame> _decodeIdentityFrames(
   Stream<$replication.SubscribeResponse> source, {
   required bool bootstrap,
+  LanternCancellationToken? cancellation,
 }) {
   StreamSubscription<$replication.SubscribeResponse>? upstream;
   late final StreamController<IdentityFrame> controller;
@@ -260,7 +267,10 @@ Stream<IdentityFrame> _decodeIdentityFrames(
         onError: (Object error, StackTrace stack) => fail(error, stack),
         onDone: () {
           if (stopped) return;
-          if (bootstrap && !checkpointSeen) {
+          if (cancellation?.isCanceled ?? false) {
+            stopped = true;
+            unawaited(controller.close());
+          } else if (bootstrap && !checkpointSeen) {
             fail(
               _internalSdkException(
                 'identity bootstrap ended without checkpoint',
@@ -268,8 +278,20 @@ Stream<IdentityFrame> _decodeIdentityFrames(
               StackTrace.current,
             );
           } else {
-            stopped = true;
-            unawaited(controller.close());
+            fail(
+              LanternFailedPreconditionException._(
+                _ErrorData(
+                  transportCode: connect.Code.failedPrecondition.value,
+                  transportCodeName: connect.Code.failedPrecondition.name,
+                  message:
+                      'identity stream ended unexpectedly; bootstrap and revalidate resident keys',
+                  headers: {},
+                  trailers: {},
+                  metadata: {},
+                ),
+              ),
+              StackTrace.current,
+            );
           }
         },
       );
@@ -327,6 +349,10 @@ IdentityChunkFrame _decodeIdentityChunk(
   }
   if (raw.chunkIndex == 0 && raw.firstItemIndex != 0) {
     throw _internalSdkException('identity chunk starts at invalid item index');
+  }
+  if (raw.vertexKeys.any((key) => key.isEmpty) ||
+      raw.edgeKeys.any((edge) => edge.tail.isEmpty || edge.head.isEmpty)) {
+    throw _internalSdkException('identity chunk has an empty graph identity');
   }
   final operation = switch (raw.operation.value) {
     1 => IdentityOperation.putVertex,
