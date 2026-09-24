@@ -21,6 +21,29 @@ matching `gc_*.resource.txt` process statistics, the
 [`SHA256SUMS`](results/SHA256SUMS). No vertex key/value or graph payload
 is present.
 
+The measured SHA was a **local commit before this branch was rebased** onto
+main, and was never pushed as a remote ref. The rebase incorporated the
+unrelated Go SDK timing-test fix #1286 and changed the branch commit IDs.
+The exact measured code is identified by its Git object IDs below: each
+entry was equal between `50900a6` and this PR's post-rebase branch. The
+`core` tree includes the GC implementation, fixture, and module dependency
+files. The reporter, stress script, workspace file, and root module file
+were also byte-identical. The raw artifacts retain the actual measured
+commit ID rather than a rewritten one.
+
+| Measurement-relevant path | Object ID at measured commit and post-rebase branch |
+| --- | --- |
+| `core` tree | `734b0174c3c648acac3767aaae5cff73616b9c37` |
+| `testbed/bench/gc_stress.sh` blob | `3bec953b9742b0f7fbb09c6a997d1ae4b6bce785` |
+| `testbed/bench/report` tree | `3f7a0bbd115e92550a213abdb9a37ac88dfc54b7` |
+| `go.work` blob | `078640dc844372aaebac8f41aafe3e554d1de04a` |
+| root `go.mod` blob | `0436a6b3f31ed24438573cde32a251554291fb17` |
+
+From the PR checkout, `git rev-parse HEAD:core
+HEAD:testbed/bench/gc_stress.sh HEAD:testbed/bench/report HEAD:go.work
+HEAD:go.mod` verifies the current side of this equality. #1286 changed
+`sdks/go/search_incremental_test.go`; it is outside this measured workload.
+
 For the 10,000-tail/one-second configuration, uniform has 3,200,000 edges;
 hub has 3,199,969 edges with one 100,000-head tail. Each run records 100
 unrounded, timestamped `GraphCache.Watch` ticks, five expiry groups, two
