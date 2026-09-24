@@ -287,3 +287,13 @@ real-server replay. The smoke optionally obtains its synthetic test token at
 runtime from `LANTERN_TOKEN_ENDPOINT`; plaintext fixture endpoints require
 explicit `LANTERN_ALLOW_INSECURE=true`. Private-LAN h2c evidence must say so and
 must not be described as platform-trusted HTTPS or full release qualification.
+
+
+## 2026-09-24 SQLite qualification
+
+Current SQLite-specific physical evidence is recorded under
+[`evidence/2026-09-24-sqlite/`](evidence/2026-09-24-sqlite/README.md), bound to the
+exact tested commit and binary hashes. Both Android and iOS passed actual
+process-kill/relaunch, pending TTL, durable logout wipe, and local user-partition
+isolation. The evidence records its transport and local build limitations and
+does not replace the complete first-publication matrix in #1162.

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'claim_probe.dart';
+
 const _scenarios = [
   'schema',
   'enqueue',
@@ -36,11 +38,14 @@ Future<void> main() async {
         verified++;
       }
     }
+    stage = 'cross_process_claim';
+    final claims = await runClaimProbe();
     stdout.writeln(
       jsonEncode({
         'scenarios': _scenarios.length,
         'sigkill': verified,
         'fresh_process_verified': verified,
+        'cross_process_claim': claims,
       }),
     );
   } catch (_) {

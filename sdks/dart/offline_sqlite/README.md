@@ -98,7 +98,17 @@ real Lantern server after a proxy drops committed responses. The crash probe
 kills a separate process at transaction boundaries; it is distinct from a Dart
 exception or an in-memory snapshot test.
 
+The same crash gate also starts independent claimers in separate VMs, verifies
+one claim winner and durable lease renewal, kills the owner, and checks expiry
+recovery and stale-owner rejection. Disk-full coverage preserves the complete
+canonical pending outbox and operation records across failure and reopen.
+
 The maintained Flutter example's native smoke exercises OS SQLite on Android
 and iOS, including reopen, TTL, replay, and logout isolation. Simulator and host
 results do not replace the exact-revision physical-device evidence required by
 #1163. Publication remains a separate future step after #1162.
+
+The [2026-09-24 physical records](../example/evidence/2026-09-24-sqlite/README.md)
+verify process-kill restart, original TTL, logout wipe and local user isolation
+on both Android and iOS. They explicitly retain the tested commit and do not
+claim the complete transport/privacy/publication matrix.

@@ -544,6 +544,32 @@ void main() {
     () async {
       var store = await open();
       await _cache(store, 'retained', 'accepted');
+      final pendingAt = DateTime.utc(2026, 9, 24);
+      await store.transaction((transaction) async {
+        final assigned = await transaction.enqueue(
+          _outboxRecord(
+            'disk-full-pending',
+            now: pendingAt,
+            expiration: pendingAt.add(const Duration(hours: 1)),
+          ),
+        );
+        await transaction.putOperation(_operation(assigned, now: pendingAt));
+      });
+      Future<(List<String>, List<String>)> pendingSnapshot(
+        SqliteOfflineStore current,
+      ) => current.transaction(
+        (transaction) async => (
+          (await transaction.outbox(
+            'p',
+          )).map(OfflineCodec.encodeOutboxRecord).toList(),
+          (await transaction.operations(
+            'p',
+          )).map(OfflineCodec.encodeOperationRecord).toList(),
+        ),
+      );
+      final pendingBefore = await pendingSnapshot(store);
+      expect(pendingBefore.$1, hasLength(1));
+      expect(pendingBefore.$2, hasLength(1));
       final path = store.path;
       await store.close();
       store = await open(path: path, databaseFactory: _FullFactory(factory));
@@ -559,6 +585,9 @@ void main() {
       );
       await store.close();
       store = await open(path: path);
+      final pendingAfter = await pendingSnapshot(store);
+      expect(pendingAfter.$1, pendingBefore.$1);
+      expect(pendingAfter.$2, pendingBefore.$2);
       final retained = await store.transaction(
         (t) => t.getCache('p', const OfflineEntityKey.vertex('retained')),
       );
@@ -640,6 +669,7 @@ OfflineOutboxRecord _outboxRecord(
   bool dead = false,
   bool expired = false,
   bool paused = false,
+  DateTime? expiration,
   int generation = 0,
 }) => OfflineOutboxRecord(
   recordId: id,
@@ -652,7 +682,7 @@ OfflineOutboxRecord _outboxRecord(
       value: VertexValue.nil(),
       expiration: expired
           ? now.subtract(Duration(seconds: dead ? 10 : 1))
-          : null,
+          : expiration,
     ),
   ),
   enqueuedAt: now.subtract(const Duration(seconds: 20)),
