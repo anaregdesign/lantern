@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -22,10 +24,12 @@ func (s *replicationSnapshotRecorder) Send(frame *pb.SnapshotResponse) error {
 
 type replicationSnapshotCounter struct {
 	frames int
+	bytes  int
 }
 
-func (s *replicationSnapshotCounter) Send(*pb.SnapshotResponse) error {
+func (s *replicationSnapshotCounter) Send(frame *pb.SnapshotResponse) error {
 	s.frames++
+	s.bytes += proto.Size(frame)
 	return nil
 }
 
@@ -98,5 +102,40 @@ func BenchmarkLanternReplicationService_SnapshotPutEdges(b *testing.B) {
 		if counter.frames == 0 {
 			b.Fatal("Snapshot emitted no frames")
 		}
+		b.ReportMetric(float64(counter.bytes), "wire-bytes/op")
+	}
+}
+
+// BenchmarkLanternReplicationService_SnapshotWithTombstones keeps the same
+// 2,000-live-edge working set as SnapshotPutEdges and adds 2,000 retained
+// Delete vertices plus 2,000 Delete edges. The paired benchmarks expose the
+// extra materialization/encoding cost and exact protobuf payload size.
+func BenchmarkLanternReplicationService_SnapshotWithTombstones(b *testing.B) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	items := make([]graphcache.EdgeItem[string], 2000)
+	deletedVertices := make([]string, 2000)
+	deletedEdges := make([]graphcache.EdgeKey[string], 2000)
+	for i := range items {
+		items[i] = graphcache.EdgeItem[string]{Tail: fmt.Sprintf("m-%d", i), Head: "m-h", Weight: 1}
+		deletedVertices[i] = fmt.Sprintf("deleted-v-%d", i)
+		deletedEdges[i] = graphcache.EdgeKey[string]{Tail: fmt.Sprintf("deleted-tail-%d", i), Head: "deleted-head"}
+	}
+	ts := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0x01}}
+	cache.PutEdgesWithExpirationHLC(items, ts)
+	deadline := time.Now().Add(time.Hour)
+	cache.DeleteVerticesHLC(deletedVertices, ts, deadline)
+	cache.DeleteEdgesHLC(deletedEdges, ts, deadline)
+	replication := NewLanternReplicationService(nil, cache, hlc.New(hlc.NodeID{0x02}, hlc.Options{}))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		counter := &replicationSnapshotCounter{}
+		if err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{}, counter); err != nil {
+			b.Fatal(err)
+		}
+		if counter.frames != 10003 { // header/footer + 2001 vertices + 2000 edges + 2000 barriers + 4000 tombstones
+			b.Fatalf("Snapshot emitted %d frames", counter.frames)
+		}
+		b.ReportMetric(float64(counter.bytes), "wire-bytes/op")
 	}
 }

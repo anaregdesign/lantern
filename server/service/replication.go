@@ -25,12 +25,12 @@ type Sender[T any] interface {
 	Send(*T) error
 }
 
-// causalBarrierSnapshotter is optional so lightweight test backends do not
+// replicationSnapshotter is optional so lightweight test backends do not
 // need to model replication-only retained state. The production GraphCache
-// satisfies it. Barriers are streamed before live entries, allowing a receiver
-// to retain the older floor and then apply a newer live value for the same
-// identity without losing either fact.
-type causalBarrierSnapshotter interface {
+// satisfies it. Barriers and active Delete tombstones stream before live
+// entries, allowing a receiver to retain the older floor and then apply a
+// newer live value for the same identity without losing either fact.
+type replicationSnapshotter interface {
 	SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex]
 }
 
@@ -260,9 +260,9 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 //     seq); cutoff_hlc is clock.Now(). An empty map is sent when the
 //     local server has not yet applied any origin (cold cluster) or
 //     when no origin state provider is wired (test path).
-//  2. Materialise vertices and edges through the Backend snapshot API
-//     (taken under the GraphCache write lock). Stream each as its own
-//     SnapshotResponse frame, honouring stream.Context() cancellation
+//  2. Materialise causal floors, vertices, and edges through the Backend
+//     snapshot API (taken under the GraphCache write lock). Stream each as
+//     its own SnapshotResponse frame, honouring stream.Context() cancellation
 //     between sends.
 //  3. Send a SnapshotFooter with the actually-streamed counts as the very
 //     last frame so receivers can detect truncation.
@@ -308,10 +308,12 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 	}
 
 	var barriers graphcache.CausalBarrierSnapshot[string]
+	var tombstones graphcache.TombstoneSnapshot[string]
 	var graph graphcache.GraphSnapshot[string, *pb.Vertex]
-	if snapshotter, ok := s.backend.(causalBarrierSnapshotter); ok {
+	if snapshotter, ok := s.backend.(replicationSnapshotter); ok {
 		snapshot := snapshotter.SnapshotReplication()
 		barriers = snapshot.Barriers
+		tombstones = snapshot.Tombstones
 		graph = snapshot.Graph
 	} else {
 		// Compatibility seam for narrow fake backends. Production GraphCache
@@ -359,6 +361,37 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 			return err
 		}
 		edgeBarrierCount++
+	}
+
+	var vertexTombstoneCount uint64
+	for _, tombstone := range tombstones.Vertices {
+		if err := ctx.Err(); err != nil {
+			return ctxToConnect(err)
+		}
+		if err := stream.Send(&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{
+			VertexTombstone: &pb.SnapshotVertexTombstone{
+				Key: tombstone.Key, Hlc: hlcToProto(tombstone.HLC),
+				Expiration: timestamppb.New(tombstone.Expiration),
+			},
+		}}); err != nil {
+			return err
+		}
+		vertexTombstoneCount++
+	}
+	var edgeTombstoneCount uint64
+	for _, tombstone := range tombstones.Edges {
+		if err := ctx.Err(); err != nil {
+			return ctxToConnect(err)
+		}
+		if err := stream.Send(&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeTombstone{
+			EdgeTombstone: &pb.SnapshotEdgeTombstone{
+				Tail: tombstone.Tail, Head: tombstone.Head,
+				Hlc: hlcToProto(tombstone.HLC), Expiration: timestamppb.New(tombstone.Expiration),
+			},
+		}}); err != nil {
+			return err
+		}
+		edgeTombstoneCount++
 	}
 
 	var vertexCount uint64
@@ -418,6 +451,8 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, _ *pb.Snapshot
 				EdgeCount:                edgeCount,
 				VertexCausalBarrierCount: vertexBarrierCount,
 				EdgeCausalBarrierCount:   edgeBarrierCount,
+				VertexTombstoneCount:     vertexTombstoneCount,
+				EdgeTombstoneCount:       edgeTombstoneCount,
 			},
 		},
 	}

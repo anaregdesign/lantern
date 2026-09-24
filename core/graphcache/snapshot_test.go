@@ -3,11 +3,13 @@ package graphcache
 import (
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/search"
 )
 
 // vertexByKey indexes a vertex snapshot by key for order-independent
@@ -35,6 +37,12 @@ func replayReplicationSnapshot(dst *GraphCache[string, string], snapshot Replica
 	}
 	for _, barrier := range snapshot.Barriers.Edges {
 		dst.ApplyEdgeCausalBarrierHLC(barrier.Tail, barrier.Head, barrier.HLC)
+	}
+	for _, tombstone := range snapshot.Tombstones.Vertices {
+		dst.ApplySnapshotVertexTombstoneHLC(tombstone.Key, tombstone.HLC, tombstone.Expiration)
+	}
+	for _, tombstone := range snapshot.Tombstones.Edges {
+		dst.ApplySnapshotEdgeTombstoneHLC(tombstone.Tail, tombstone.Head, tombstone.HLC, tombstone.Expiration)
 	}
 	for _, vertex := range snapshot.Graph.Vertices {
 		dst.PutVertexWithExpirationHLC(vertex.Key, vertex.Value, vertex.Expiration, vertex.HLC)
@@ -179,6 +187,83 @@ func TestGraphCache_SnapshotReplicationRetainsCausalFloors(t *testing.T) {
 	newer := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0x20}}
 	older := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0x10}}
 	live := time.Now().Add(time.Hour)
+
+	t.Run("Delete floors preserve exact D4 deadline", func(t *testing.T) {
+		source := NewGraphCache[string, string](time.Hour)
+		deadline := time.Now().Add(200 * time.Millisecond)
+		if _, err := source.DeleteVerticesHLCChecked([]string{"deleted-v"}, newer, deadline); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := source.DeleteEdgesHLCChecked([]EdgeKey[string]{{Tail: "tail", Head: "head"}}, newer, deadline); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := source.SnapshotReplication()
+		if len(snapshot.Tombstones.Vertices) != 1 || len(snapshot.Tombstones.Edges) != 1 ||
+			!snapshot.Tombstones.Vertices[0].Expiration.Equal(deadline) || !snapshot.Tombstones.Edges[0].Expiration.Equal(deadline) {
+			t.Fatalf("active Delete floors omitted or altered: %+v", snapshot.Tombstones)
+		}
+		follower := NewGraphCache[string, string](time.Hour)
+		replayReplicationSnapshot(follower, snapshot)
+		replayReplicationSnapshot(follower, snapshot)
+		if got := follower.vertexTombstones["deleted-v"].expiration; !got.Equal(deadline) {
+			t.Fatalf("vertex deadline extended to %v, want %v", got, deadline)
+		}
+		if got := follower.edgeTombstones[EdgeKey[string]{Tail: "tail", Head: "head"}].expiration; !got.Equal(deadline) {
+			t.Fatalf("edge deadline extended to %v, want %v", got, deadline)
+		}
+		if follower.PutVertexWithExpirationHLC("deleted-v", "older", live, older) ||
+			follower.PutEdgeWithExpirationHLC("tail", "head", 1, live, older) ||
+			follower.AddEdgeWithExpirationContribHLC("tail", "head", 1, live, ContribID{1}, older) {
+			t.Fatal("older write crossed an active Delete floor")
+		}
+		time.Sleep(time.Until(deadline) + 10*time.Millisecond)
+		if late := source.SnapshotReplication(); len(late.Tombstones.Vertices) != 0 || len(late.Tombstones.Edges) != 0 {
+			t.Fatalf("expired Delete floors streamed: %+v", late.Tombstones)
+		}
+		// Replaying a delayed frame after its source deadline cannot revive it.
+		replayReplicationSnapshot(follower, snapshot)
+		if !follower.PutVertexWithExpirationHLC("deleted-v", "old-after-D4", live, older) {
+			t.Fatal("expired snapshot frame renewed vertex Delete floor")
+		}
+	})
+
+	t.Run("remote snapshot may exceed local causal admission budget", func(t *testing.T) {
+		source := NewGraphCache[string, string](time.Hour)
+		deadline := time.Now().Add(time.Hour)
+		source.DeleteVerticesHLC([]string{"v1", "v2"}, newer, deadline)
+		source.DeleteEdgesHLC([]EdgeKey[string]{{Tail: "a", Head: "b"}, {Tail: "a", Head: "c"}}, newer, deadline)
+		follower := NewGraphCache[string, string](time.Hour)
+		follower.SetCausalMetadataLimits(CausalMetadataLimits{MaxVertexEntries: 1, MaxEdgeEntries: 1})
+		replayReplicationSnapshot(follower, source.SnapshotReplication())
+		stats := follower.CausalMetadataStats()
+		if stats.VertexEntries != 2 || stats.EdgeEntries != 2 || !stats.VertexOverLimit || !stats.EdgeOverLimit {
+			t.Fatalf("remote snapshot did not preserve committed floors: %+v", stats)
+		}
+	})
+
+	t.Run("Delete marker does not complete search recovery early", func(t *testing.T) {
+		source := NewGraphCache[string, string](time.Hour)
+		source.DeleteVerticesHLC([]string{"v"}, newer, time.Now().Add(time.Hour))
+		follower := NewGraphCache[string, string](time.Hour)
+		follower.EnableSearchIndex(
+			func(_ string, value string) search.Document { return search.Text(value) },
+			strings.Compare,
+		)
+		if err := follower.PutVertexWithExpiration("v", "staleterm", live); err != nil {
+			t.Fatal(err)
+		}
+		follower.BeginSearchIndexRecovery()
+		replayReplicationSnapshot(follower, source.SnapshotReplication())
+		if got := follower.searchIndex.Health(); got != search.IndexIncomplete {
+			t.Fatalf("search became %v before Snapshot footer and full rebuild", got)
+		}
+		if err := follower.CompleteSearchIndexRecovery(); err != nil {
+			t.Fatal(err)
+		}
+		if got := follower.SearchVertices("staleterm", 10, ""); len(got) != 0 {
+			t.Fatalf("retired vertex remained indexed: %v", got)
+		}
+	})
 
 	t.Run("expired but unflushed live Put becomes terminal barrier", func(t *testing.T) {
 		c := NewGraphCache[string, string](time.Hour)

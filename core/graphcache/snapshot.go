@@ -76,13 +76,35 @@ type CausalBarrierSnapshot[S comparable] struct {
 	Edges    []SnapshotEdgeCausalBarrier[S]
 }
 
+// SnapshotVertexTombstone and SnapshotEdgeTombstone are active Delete floors.
+// Expiration is the source's absolute D4 deadline, not a fresh receiver TTL.
+type SnapshotVertexTombstone[S comparable] struct {
+	Key        S
+	HLC        hlc.Timestamp
+	Expiration time.Time
+}
+
+type SnapshotEdgeTombstone[S comparable] struct {
+	Tail       S
+	Head       S
+	HLC        hlc.Timestamp
+	Expiration time.Time
+}
+
+type TombstoneSnapshot[S comparable] struct {
+	Vertices []SnapshotVertexTombstone[S]
+	Edges    []SnapshotEdgeTombstone[S]
+}
+
 // ReplicationSnapshot is one causal point-in-time image for replication
-// bootstrap. Barriers and live state must be captured together: a separate
-// barrier pass followed by a live pass can lose an LWW floor when TTL GC moves
-// an expired live Put into the retained barrier store between the two calls.
+// bootstrap. Barriers, active Delete tombstones, and live state must be
+// captured together: a separate barrier pass followed by a live pass can lose
+// an LWW floor when TTL GC moves an expired live Put into the retained barrier
+// store between the two calls.
 type ReplicationSnapshot[S comparable, T any] struct {
-	Barriers CausalBarrierSnapshot[S]
-	Graph    GraphSnapshot[S, T]
+	Barriers   CausalBarrierSnapshot[S]
+	Tombstones TombstoneSnapshot[S]
+	Graph      GraphSnapshot[S, T]
 }
 
 // SnapshotCausalBarriers returns an owned copy of every retained
@@ -123,12 +145,33 @@ func (c *GraphCache[S, T]) SnapshotReplication() ReplicationSnapshot[S, T] {
 	c.migrateExpiredVertexHLCToBarriersLocked(now)
 	c.migrateExpiredEdgeHLCToBarriersLocked(now)
 	return ReplicationSnapshot[S, T]{
-		Barriers: c.snapshotReplicationCausalBarriersRLocked(),
+		Barriers:   c.snapshotReplicationCausalBarriersRLocked(),
+		Tombstones: c.snapshotTombstonesRLocked(now),
 		Graph: GraphSnapshot[S, T]{
 			Vertices: c.snapshotVerticesRLocked(now),
 			Edges:    c.snapshotEdgesRLocked(now),
 		},
 	}
+}
+
+func (c *GraphCache[S, T]) snapshotTombstonesRLocked(now time.Time) TombstoneSnapshot[S] {
+	out := TombstoneSnapshot[S]{
+		Vertices: make([]SnapshotVertexTombstone[S], 0, len(c.vertexTombstones)),
+		Edges:    make([]SnapshotEdgeTombstone[S], 0, len(c.edgeTombstones)),
+	}
+	for key, tombstone := range c.vertexTombstones {
+		if tombstone.expiration.IsZero() || !now.Before(tombstone.expiration) {
+			continue
+		}
+		out.Vertices = append(out.Vertices, SnapshotVertexTombstone[S]{Key: key, HLC: tombstone.ts, Expiration: tombstone.expiration})
+	}
+	for key, tombstone := range c.edgeTombstones {
+		if tombstone.expiration.IsZero() || !now.Before(tombstone.expiration) {
+			continue
+		}
+		out.Edges = append(out.Edges, SnapshotEdgeTombstone[S]{Tail: key.Tail, Head: key.Head, HLC: tombstone.ts, Expiration: tombstone.expiration})
+	}
+	return out
 }
 
 // snapshotReplicationCausalBarriersRLocked extends the retained barrier maps

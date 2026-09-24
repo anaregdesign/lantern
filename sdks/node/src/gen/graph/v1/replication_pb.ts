@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file graph/v1/replication.proto.
  */
 export const file_graph_v1_replication: GenFile = /*@__PURE__*/
-  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqwGCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIABJCChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0aWNlc0gAEjwKFHJlcGxpY2F0ZWRfcHV0X2VkZ2VzGA4gASgLMhwuZ3JhcGgudjEuUmVwbGljYXRlZFB1dEVkZ2VzSABCBAoCb3AiIgoTVmVydGV4Q2F1c2FsQmFycmllchILCgNrZXkYASABKAkiewoTUmVwbGljYXRlZFB1dFZlcnRleBIgCgRsaXZlGAEgASgLMhAuZ3JhcGgudjEuVmVydGV4SAASNwoOY2F1c2FsX2JhcnJpZXIYAiABKAsyHS5ncmFwaC52MS5WZXJ0ZXhDYXVzYWxCYXJyaWVySABCCQoHb3V0Y29tZSJHChVSZXBsaWNhdGVkUHV0VmVydGljZXMSLgoHZW50cmllcxgBIAMoCzIdLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0ZXgiLwoRRWRnZUNhdXNhbEJhcnJpZXISDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJInUKEVJlcGxpY2F0ZWRQdXRFZGdlEh4KBGxpdmUYASABKAsyDi5ncmFwaC52MS5FZGdlSAASNQoOY2F1c2FsX2JhcnJpZXIYAiABKAsyGy5ncmFwaC52MS5FZGdlQ2F1c2FsQmFycmllckgAQgkKB291dGNvbWUiQgoSUmVwbGljYXRlZFB1dEVkZ2VzEiwKB2VudHJpZXMYASADKAsyGy5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZSJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AisgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5EhYKDmZyb21fbG9jYWxfc2VxGAIgASgEGjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IuIBCg5TbmFwc2hvdEhlYWRlchJPChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIqCgpjdXRvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEhgKEGN1dG9mZl9sb2NhbF9zZXEYAyABKAQaOQoXQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgEOgI4ASKCAQoOU25hcHNob3RGb290ZXISFAoMdmVydGV4X2NvdW50GAEgASgEEhIKCmVkZ2VfY291bnQYAiABKAQSIwobdmVydGV4X2NhdXNhbF9iYXJyaWVyX2NvdW50GAMgASgEEiEKGWVkZ2VfY2F1c2FsX2JhcnJpZXJfY291bnQYBCABKAQiVwoOU25hcHNob3RWZXJ0ZXgSIAoGdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydGV4EiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJPChtTbmFwc2hvdFZlcnRleENhdXNhbEJhcnJpZXISCwoDa2V5GAEgASgJEiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJuChhTbmFwc2hvdEVkZ2VDb250cmlidXRpb24SDgoGd2VpZ2h0GAEgASgCEi4KCmV4cGlyYXRpb24YAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmNvbnRyaWJfaWQYAyABKAwiigEKDFNuYXBzaG90RWRnZRIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSIwoDaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEjkKDWNvbnRyaWJ1dGlvbnMYBCADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb24iXAoZU25hcHNob3RFZGdlQ2F1c2FsQmFycmllchIMCgR0YWlsGAEgASgJEgwKBGhlYWQYAiABKAkSIwoDaGxjGAMgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wItMCChBTbmFwc2hvdFJlc3BvbnNlEioKBmhlYWRlchgBIAEoCzIYLmdyYXBoLnYxLlNuYXBzaG90SGVhZGVySAASKgoGdmVydGV4GAIgASgLMhguZ3JhcGgudjEuU25hcHNob3RWZXJ0ZXhIABImCgRlZGdlGAMgASgLMhYuZ3JhcGgudjEuU25hcHNob3RFZGdlSAASKgoGZm9vdGVyGAQgASgLMhguZ3JhcGgudjEuU25hcHNob3RGb290ZXJIABJGChV2ZXJ0ZXhfY2F1c2FsX2JhcnJpZXIYBSABKAsyJS5ncmFwaC52MS5TbmFwc2hvdFZlcnRleENhdXNhbEJhcnJpZXJIABJCChNlZGdlX2NhdXNhbF9iYXJyaWVyGAYgASgLMiMuZ3JhcGgudjEuU25hcHNob3RFZGdlQ2F1c2FsQmFycmllckgAQgcKBWVudHJ5IhMKEVBlZXJTdGF0dXNSZXF1ZXN0IlkKC09yaWdpblN0YXRlEg4KBm9yaWdpbhgBIAEoDBIQCghsYXN0X3NlcRgCIAEoBBIoCghsYXN0X2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcCJ0ChJQZWVyU3RhdHVzUmVzcG9uc2USEwoLc2VsZl9vcmlnaW4YASABKAwSJgoHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlEiEKGXNlYXJjaF9jb25maWdfZmluZ2VycHJpbnQYAyABKAky8QEKGUxhbnRlcm5SZXBsaWNhdGlvblNlcnZpY2USRgoJU3Vic2NyaWJlEhouZ3JhcGgudjEuU3Vic2NyaWJlUmVxdWVzdBobLmdyYXBoLnYxLlN1YnNjcmliZVJlc3BvbnNlMAESQwoIU25hcHNob3QSGS5ncmFwaC52MS5TbmFwc2hvdFJlcXVlc3QaGi5ncmFwaC52MS5TbmFwc2hvdFJlc3BvbnNlMAESRwoKUGVlclN0YXR1cxIbLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXF1ZXN0GhwuZ3JhcGgudjEuUGVlclN0YXR1c1Jlc3BvbnNlQmEKDGNvbS5ncmFwaC52MUIQUmVwbGljYXRpb25Qcm90b1ABogIDR1hYqgIIR3JhcGguVjHKAghHcmFwaFxWMeICFEdyYXBoXFYxXEdQQk1ldGFkYXRh6gIJR3JhcGg6OlYxYgZwcm90bzM", [file_google_protobuf_timestamp, file_graph_v1_graph]);
+  fileDesc("ChpncmFwaC92MS9yZXBsaWNhdGlvbi5wcm90bxIIZ3JhcGgudjEiQQoMSExDVGltZXN0YW1wEg8KB3dhbGxfbnMYASABKAMSDwoHbG9naWNhbBgCIAEoDRIPCgdub2RlX2lkGAMgASgMIqwGCgpNdXRhdGlvbk9wEjAKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0SAASNAoMcHV0X3ZlcnRpY2VzGAIgASgLMhwuZ3JhcGgudjEuUHV0VmVydGljZXNSZXF1ZXN0SAASNgoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIABI6Cg9kZWxldGVfdmVydGljZXMYBCABKAsyHy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3RIABJMChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIABIsCghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SAASLgoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SAASLAoIcHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAEi4KCXB1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAEjIKC2RlbGV0ZV9lZGdlGAogASgLMhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3RIABI0CgxkZWxldGVfZWRnZXMYCyABKAsyHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3RIABJGChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgLMiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIABJCChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0aWNlc0gAEjwKFHJlcGxpY2F0ZWRfcHV0X2VkZ2VzGA4gASgLMhwuZ3JhcGgudjEuUmVwbGljYXRlZFB1dEVkZ2VzSABCBAoCb3AiIgoTVmVydGV4Q2F1c2FsQmFycmllchILCgNrZXkYASABKAkiewoTUmVwbGljYXRlZFB1dFZlcnRleBIgCgRsaXZlGAEgASgLMhAuZ3JhcGgudjEuVmVydGV4SAASNwoOY2F1c2FsX2JhcnJpZXIYAiABKAsyHS5ncmFwaC52MS5WZXJ0ZXhDYXVzYWxCYXJyaWVySABCCQoHb3V0Y29tZSJHChVSZXBsaWNhdGVkUHV0VmVydGljZXMSLgoHZW50cmllcxgBIAMoCzIdLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0ZXgiLwoRRWRnZUNhdXNhbEJhcnJpZXISDAoEdGFpbBgBIAEoCRIMCgRoZWFkGAIgASgJInUKEVJlcGxpY2F0ZWRQdXRFZGdlEh4KBGxpdmUYASABKAsyDi5ncmFwaC52MS5FZGdlSAASNQoOY2F1c2FsX2JhcnJpZXIYAiABKAsyGy5ncmFwaC52MS5FZGdlQ2F1c2FsQmFycmllckgAQgkKB291dGNvbWUiQgoSUmVwbGljYXRlZFB1dEVkZ2VzEiwKB2VudHJpZXMYASADKAsyGy5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZSJuCghNdXRhdGlvbhILCgNzZXEYASABKAQSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEg4KBm9yaWdpbhgDIAEoDBIgCgJvcBgEIAEoCzIULmdyYXBoLnYxLk11dGF0aW9uT3AisgEKEFN1YnNjcmliZVJlcXVlc3QSTQoTZnJvbV9zZXFfcGVyX29yaWdpbhgBIAMoCzIwLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QuRnJvbVNlcVBlck9yaWdpbkVudHJ5EhYKDmZyb21fbG9jYWxfc2VxGAIgASgEGjcKFUZyb21TZXFQZXJPcmlnaW5FbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAQ6AjgBIjkKEVN1YnNjcmliZVJlc3BvbnNlEiQKCG11dGF0aW9uGAEgASgLMhIuZ3JhcGgudjEuTXV0YXRpb24iEQoPU25hcHNob3RSZXF1ZXN0IuIBCg5TbmFwc2hvdEhlYWRlchJPChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIqCgpjdXRvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wEhgKEGN1dG9mZl9sb2NhbF9zZXEYAyABKAQaOQoXQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgEOgI4ASLAAQoOU25hcHNob3RGb290ZXISFAoMdmVydGV4X2NvdW50GAEgASgEEhIKCmVkZ2VfY291bnQYAiABKAQSIwobdmVydGV4X2NhdXNhbF9iYXJyaWVyX2NvdW50GAMgASgEEiEKGWVkZ2VfY2F1c2FsX2JhcnJpZXJfY291bnQYBCABKAQSHgoWdmVydGV4X3RvbWJzdG9uZV9jb3VudBgFIAEoBBIcChRlZGdlX3RvbWJzdG9uZV9jb3VudBgGIAEoBCJXCg5TbmFwc2hvdFZlcnRleBIgCgZ2ZXJ0ZXgYASABKAsyEC5ncmFwaC52MS5WZXJ0ZXgSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIk8KG1NuYXBzaG90VmVydGV4Q2F1c2FsQmFycmllchILCgNrZXkYASABKAkSIwoDaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wIm4KGFNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbhIOCgZ3ZWlnaHQYASABKAISLgoKZXhwaXJhdGlvbhgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEgoKY29udHJpYl9pZBgDIAEoDCKKAQoMU25hcHNob3RFZGdlEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXASOQoNY29udHJpYnV0aW9ucxgEIAMoCzIiLmdyYXBoLnYxLlNuYXBzaG90RWRnZUNvbnRyaWJ1dGlvbiJcChlTbmFwc2hvdEVkZ2VDYXVzYWxCYXJyaWVyEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXAiewoXU25hcHNob3RWZXJ0ZXhUb21ic3RvbmUSCwoDa2V5GAEgASgJEiMKA2hsYxgCIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcBIuCgpleHBpcmF0aW9uGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKIAQoVU25hcHNob3RFZGdlVG9tYnN0b25lEgwKBHRhaWwYASABKAkSDAoEaGVhZBgCIAEoCRIjCgNobGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXASLgoKZXhwaXJhdGlvbhgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAizQMKEFNuYXBzaG90UmVzcG9uc2USKgoGaGVhZGVyGAEgASgLMhguZ3JhcGgudjEuU25hcHNob3RIZWFkZXJIABIqCgZ2ZXJ0ZXgYAiABKAsyGC5ncmFwaC52MS5TbmFwc2hvdFZlcnRleEgAEiYKBGVkZ2UYAyABKAsyFi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VIABIqCgZmb290ZXIYBCABKAsyGC5ncmFwaC52MS5TbmFwc2hvdEZvb3RlckgAEkYKFXZlcnRleF9jYXVzYWxfYmFycmllchgFIAEoCzIlLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4Q2F1c2FsQmFycmllckgAEkIKE2VkZ2VfY2F1c2FsX2JhcnJpZXIYBiABKAsyIy5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDYXVzYWxCYXJyaWVySAASPQoQdmVydGV4X3RvbWJzdG9uZRgHIAEoCzIhLmdyYXBoLnYxLlNuYXBzaG90VmVydGV4VG9tYnN0b25lSAASOQoOZWRnZV90b21ic3RvbmUYCCABKAsyHy5ncmFwaC52MS5TbmFwc2hvdEVkZ2VUb21ic3RvbmVIAEIHCgVlbnRyeSITChFQZWVyU3RhdHVzUmVxdWVzdCJZCgtPcmlnaW5TdGF0ZRIOCgZvcmlnaW4YASABKAwSEAoIbGFzdF9zZXEYAiABKAQSKAoIbGFzdF9obGMYAyABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXAidAoSUGVlclN0YXR1c1Jlc3BvbnNlEhMKC3NlbGZfb3JpZ2luGAEgASgMEiYKB29yaWdpbnMYAiADKAsyFS5ncmFwaC52MS5PcmlnaW5TdGF0ZRIhChlzZWFyY2hfY29uZmlnX2ZpbmdlcnByaW50GAMgASgJMvEBChlMYW50ZXJuUmVwbGljYXRpb25TZXJ2aWNlEkYKCVN1YnNjcmliZRIaLmdyYXBoLnYxLlN1YnNjcmliZVJlcXVlc3QaGy5ncmFwaC52MS5TdWJzY3JpYmVSZXNwb25zZTABEkMKCFNuYXBzaG90EhkuZ3JhcGgudjEuU25hcHNob3RSZXF1ZXN0GhouZ3JhcGgudjEuU25hcHNob3RSZXNwb25zZTABEkcKClBlZXJTdGF0dXMSGy5ncmFwaC52MS5QZWVyU3RhdHVzUmVxdWVzdBocLmdyYXBoLnYxLlBlZXJTdGF0dXNSZXNwb25zZUJhCgxjb20uZ3JhcGgudjFCEFJlcGxpY2F0aW9uUHJvdG9QAaICA0dYWKoCCEdyYXBoLlYxygIIR3JhcGhcVjHiAhRHcmFwaFxWMVxHUEJNZXRhZGF0YeoCCUdyYXBoOjpWMWIGcHJvdG8z", [file_google_protobuf_timestamp, file_graph_v1_graph]);
 
 /**
  * HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
@@ -22,7 +22,7 @@ export const file_graph_v1_replication: GenFile = /*@__PURE__*/
  *
  *   wall_ns: physical wall-clock component, nanoseconds since Unix epoch.
  *   logical: per-tick logical counter, incremented on collision.
- *   node_id: 16-byte origin node identifier (matches core/hlc.NodeID).
+ *   node_id: non-zero 16-byte origin node identifier (matches core/hlc.NodeID).
  *
  * The triple (wall_ns, logical, node_id) gives a strict total order; see
  * docs/replication.md §5 and core/hlc/hlc.go.
@@ -426,8 +426,8 @@ export const SubscribeResponseSchema: GenMessage<SubscribeResponse> = /*@__PURE_
   messageDesc(file_graph_v1_replication, 10);
 
 /**
- * SnapshotRequest opens a server-streaming snapshot of the entire live
- * graph state at a single causal cutoff. The request body is intentionally
+ * SnapshotRequest opens a server-streaming snapshot of the live graph and
+ * retained causal floors at a single cutoff. The request body is intentionally
  * empty in this phase (#184); future revisions may add prefix / shard
  * filters without breaking the wire contract.
  *
@@ -520,6 +520,16 @@ export type SnapshotFooter = Message<"graph.v1.SnapshotFooter"> & {
    * @generated from field: uint64 edge_causal_barrier_count = 4;
    */
   edgeCausalBarrierCount: bigint;
+
+  /**
+   * @generated from field: uint64 vertex_tombstone_count = 5;
+   */
+  vertexTombstoneCount: bigint;
+
+  /**
+   * @generated from field: uint64 edge_tombstone_count = 6;
+   */
+  edgeTombstoneCount: bigint;
 };
 
 /**
@@ -694,12 +704,76 @@ export const SnapshotEdgeCausalBarrierSchema: GenMessage<SnapshotEdgeCausalBarri
   messageDesc(file_graph_v1_replication, 18);
 
 /**
+ * SnapshotVertexTombstone and SnapshotEdgeTombstone carry active Delete
+ * floors. Unlike causal Put barriers these have an absolute D4 deadline;
+ * receivers must preserve it rather than starting a fresh TTL at bootstrap.
+ *
+ * @generated from message graph.v1.SnapshotVertexTombstone
+ */
+export type SnapshotVertexTombstone = Message<"graph.v1.SnapshotVertexTombstone"> & {
+  /**
+   * @generated from field: string key = 1;
+   */
+  key: string;
+
+  /**
+   * @generated from field: graph.v1.HLCTimestamp hlc = 2;
+   */
+  hlc?: HLCTimestamp | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp expiration = 3;
+   */
+  expiration?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message graph.v1.SnapshotVertexTombstone.
+ * Use `create(SnapshotVertexTombstoneSchema)` to create a new message.
+ */
+export const SnapshotVertexTombstoneSchema: GenMessage<SnapshotVertexTombstone> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 19);
+
+/**
+ * @generated from message graph.v1.SnapshotEdgeTombstone
+ */
+export type SnapshotEdgeTombstone = Message<"graph.v1.SnapshotEdgeTombstone"> & {
+  /**
+   * @generated from field: string tail = 1;
+   */
+  tail: string;
+
+  /**
+   * @generated from field: string head = 2;
+   */
+  head: string;
+
+  /**
+   * @generated from field: graph.v1.HLCTimestamp hlc = 3;
+   */
+  hlc?: HLCTimestamp | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp expiration = 4;
+   */
+  expiration?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message graph.v1.SnapshotEdgeTombstone.
+ * Use `create(SnapshotEdgeTombstoneSchema)` to create a new message.
+ */
+export const SnapshotEdgeTombstoneSchema: GenMessage<SnapshotEdgeTombstone> = /*@__PURE__*/
+  messageDesc(file_graph_v1_replication, 20);
+
+/**
  * SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
  * order is always: exactly one SnapshotHeader, then zero or more
  * SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
- * frames, zero or more SnapshotVertex frames, zero or more SnapshotEdge
- * frames, then exactly one SnapshotFooter. Receivers MUST treat any other
- * order as a protocol violation.
+ * frames, zero or more SnapshotVertexTombstone frames, zero or more
+ * SnapshotEdgeTombstone frames, zero or more SnapshotVertex frames, zero or
+ * more SnapshotEdge frames, then exactly one SnapshotFooter. Receivers MUST
+ * treat any other order as a protocol violation.
  *
  * @generated from message graph.v1.SnapshotResponse
  */
@@ -743,6 +817,18 @@ export type SnapshotResponse = Message<"graph.v1.SnapshotResponse"> & {
      */
     value: SnapshotEdgeCausalBarrier;
     case: "edgeCausalBarrier";
+  } | {
+    /**
+     * @generated from field: graph.v1.SnapshotVertexTombstone vertex_tombstone = 7;
+     */
+    value: SnapshotVertexTombstone;
+    case: "vertexTombstone";
+  } | {
+    /**
+     * @generated from field: graph.v1.SnapshotEdgeTombstone edge_tombstone = 8;
+     */
+    value: SnapshotEdgeTombstone;
+    case: "edgeTombstone";
   } | { case: undefined; value?: undefined };
 };
 
@@ -751,7 +837,7 @@ export type SnapshotResponse = Message<"graph.v1.SnapshotResponse"> & {
  * Use `create(SnapshotResponseSchema)` to create a new message.
  */
 export const SnapshotResponseSchema: GenMessage<SnapshotResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 19);
+  messageDesc(file_graph_v1_replication, 21);
 
 /**
  * PeerStatusRequest is intentionally empty — the responder always
@@ -768,7 +854,7 @@ export type PeerStatusRequest = Message<"graph.v1.PeerStatusRequest"> & {
  * Use `create(PeerStatusRequestSchema)` to create a new message.
  */
 export const PeerStatusRequestSchema: GenMessage<PeerStatusRequest> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 20);
+  messageDesc(file_graph_v1_replication, 22);
 
 /**
  * OriginState is the responder's last-applied position for a single
@@ -801,7 +887,7 @@ export type OriginState = Message<"graph.v1.OriginState"> & {
  * Use `create(OriginStateSchema)` to create a new message.
  */
 export const OriginStateSchema: GenMessage<OriginState> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 21);
+  messageDesc(file_graph_v1_replication, 23);
 
 /**
  * PeerStatusResponse carries the responder's per-origin convergence
@@ -839,7 +925,7 @@ export type PeerStatusResponse = Message<"graph.v1.PeerStatusResponse"> & {
  * Use `create(PeerStatusResponseSchema)` to create a new message.
  */
 export const PeerStatusResponseSchema: GenMessage<PeerStatusResponse> = /*@__PURE__*/
-  messageDesc(file_graph_v1_replication, 22);
+  messageDesc(file_graph_v1_replication, 24);
 
 /**
  * LanternReplicationService carries the peer-to-peer (and CDC) replication

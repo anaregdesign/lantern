@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -54,6 +56,9 @@ func (r *recordingApplier) ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.T
 	r.edgeBarrier = append(r.edgeBarrier, recordedEdge{tail: tail, head: head, ts: ts})
 	return true
 }
+
+func (r *recordingApplier) ApplySnapshotVertexTombstoneHLC(string, hlc.Timestamp, time.Time)       {}
+func (r *recordingApplier) ApplySnapshotEdgeTombstoneHLC(string, string, hlc.Timestamp, time.Time) {}
 
 func TestApplySnapshotCausalBarriers(t *testing.T) {
 	r := &recordingApplier{}
@@ -191,11 +196,15 @@ func TestResumeAfterSnapshot(t *testing.T) {
 
 func TestSnapshotReplayStateFailClosed(t *testing.T) {
 	header := &pb.SnapshotHeader{}
-	footer := func(v, e, vb, eb uint64) *pb.SnapshotFooter {
-		return &pb.SnapshotFooter{
+	footer := func(v, e, vb, eb uint64, tombstones ...uint64) *pb.SnapshotFooter {
+		f := &pb.SnapshotFooter{
 			VertexCount: v, EdgeCount: e,
 			VertexCausalBarrierCount: vb, EdgeCausalBarrierCount: eb,
 		}
+		if len(tombstones) == 2 {
+			f.VertexTombstoneCount, f.EdgeTombstoneCount = tombstones[0], tombstones[1]
+		}
+		return f
 	}
 
 	t.Run("complete ordered stream", func(t *testing.T) {
@@ -209,6 +218,8 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 		}{
 			{"vertex causal barrier", snapshotPhaseVertexBarrier},
 			{"edge causal barrier", snapshotPhaseEdgeBarrier},
+			{"vertex tombstone", snapshotPhaseVertexTombstone},
+			{"edge tombstone", snapshotPhaseEdgeTombstone},
 			{"vertex", snapshotPhaseVertex},
 			{"edge", snapshotPhaseEdge},
 		} {
@@ -216,8 +227,8 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		state.counts = snapshotReplayCounts{vertices: 1, edges: 2, vertexBarrier: 3, edgeBarrier: 4}
-		if err := state.acceptFooter(footer(1, 2, 3, 4)); err != nil {
+		state.counts = snapshotReplayCounts{vertices: 1, edges: 2, vertexBarrier: 3, edgeBarrier: 4, vertexTombstone: 5, edgeTombstone: 6}
+		if err := state.acceptFooter(footer(1, 2, 3, 4, 5, 6)); err != nil {
 			t.Fatal(err)
 		}
 		if err := state.validateComplete(); err != nil {
@@ -248,6 +259,16 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 			_ = s.acceptBody("vertex", snapshotPhaseVertex)
 			return s.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier)
 		}},
+		{"tombstone after live vertex", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptBody("vertex", snapshotPhaseVertex)
+			return s.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone)
+		}},
+		{"edge tombstone before vertex tombstone", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone)
+			return s.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone)
+		}},
 		{"vertex after live edge", func(s *snapshotReplayState) error {
 			_ = s.acceptHeader(header)
 			_ = s.acceptBody("edge", snapshotPhaseEdge)
@@ -259,10 +280,44 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 			_ = s.acceptFooter(footer(0, 0, 0, 0))
 			return s.validateComplete()
 		}},
+		{"truncated tombstone count", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone)
+			s.counts.vertexTombstone = 1
+			_ = s.acceptFooter(footer(0, 0, 0, 0, 2, 0))
+			return s.validateComplete()
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.run(&snapshotReplayState{}); err == nil {
 				t.Fatal("protocol violation was accepted")
+			}
+		})
+	}
+}
+
+func TestSnapshotTombstoneFields(t *testing.T) {
+	stamp := &pb.HLCTimestamp{WallNs: 10, NodeId: append([]byte{1}, make([]byte, 15)...)}
+	deadline := time.Now().Add(time.Minute).UTC().Round(0)
+	gotTS, gotDeadline, err := snapshotTombstoneFields(stamp, timestamppb.New(deadline))
+	if err != nil || gotTS.WallNs != 10 || !gotDeadline.Equal(deadline) {
+		t.Fatalf("valid tombstone = (%+v,%v,%v)", gotTS, gotDeadline, err)
+	}
+	for _, tc := range []struct {
+		name       string
+		stamp      *pb.HLCTimestamp
+		expiration *timestamppb.Timestamp
+	}{
+		{"missing HLC", nil, timestamppb.New(deadline)},
+		{"zero HLC", &pb.HLCTimestamp{NodeId: make([]byte, 16)}, timestamppb.New(deadline)},
+		{"short NodeID", &pb.HLCTimestamp{WallNs: 10, NodeId: []byte{1}}, timestamppb.New(deadline)},
+		{"zero NodeID", &pb.HLCTimestamp{WallNs: 10, NodeId: make([]byte, 16)}, timestamppb.New(deadline)},
+		{"missing expiration", stamp, nil},
+		{"invalid expiration", stamp, &timestamppb.Timestamp{Seconds: 253402300800}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := snapshotTombstoneFields(tc.stamp, tc.expiration); err == nil {
+				t.Fatal("malformed tombstone frame accepted")
 			}
 		})
 	}

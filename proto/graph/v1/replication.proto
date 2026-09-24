@@ -10,7 +10,7 @@ import "graph/v1/graph.proto";
 //
 //   wall_ns: physical wall-clock component, nanoseconds since Unix epoch.
 //   logical: per-tick logical counter, incremented on collision.
-//   node_id: 16-byte origin node identifier (matches core/hlc.NodeID).
+//   node_id: non-zero 16-byte origin node identifier (matches core/hlc.NodeID).
 //
 // The triple (wall_ns, logical, node_id) gives a strict total order; see
 // docs/replication.md §5 and core/hlc/hlc.go.
@@ -148,8 +148,8 @@ message SubscribeResponse {
   Mutation mutation = 1;
 }
 
-// SnapshotRequest opens a server-streaming snapshot of the entire live
-// graph state at a single causal cutoff. The request body is intentionally
+// SnapshotRequest opens a server-streaming snapshot of the live graph and
+// retained causal floors at a single cutoff. The request body is intentionally
 // empty in this phase (#184); future revisions may add prefix / shard
 // filters without breaking the wire contract.
 message SnapshotRequest {}
@@ -189,6 +189,8 @@ message SnapshotFooter {
   uint64 edge_count = 2;
   uint64 vertex_causal_barrier_count = 3;
   uint64 edge_causal_barrier_count = 4;
+  uint64 vertex_tombstone_count = 5;
+  uint64 edge_tombstone_count = 6;
 }
 
 // SnapshotVertex is the snapshot-time representation of a single live
@@ -248,12 +250,29 @@ message SnapshotEdgeCausalBarrier {
   HLCTimestamp hlc = 3;
 }
 
+// SnapshotVertexTombstone and SnapshotEdgeTombstone carry active Delete
+// floors. Unlike causal Put barriers these have an absolute D4 deadline;
+// receivers must preserve it rather than starting a fresh TTL at bootstrap.
+message SnapshotVertexTombstone {
+  string key = 1;
+  HLCTimestamp hlc = 2;
+  google.protobuf.Timestamp expiration = 3;
+}
+
+message SnapshotEdgeTombstone {
+  string tail = 1;
+  string head = 2;
+  HLCTimestamp hlc = 3;
+  google.protobuf.Timestamp expiration = 4;
+}
+
 // SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 // order is always: exactly one SnapshotHeader, then zero or more
 // SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
-// frames, zero or more SnapshotVertex frames, zero or more SnapshotEdge
-// frames, then exactly one SnapshotFooter. Receivers MUST treat any other
-// order as a protocol violation.
+// frames, zero or more SnapshotVertexTombstone frames, zero or more
+// SnapshotEdgeTombstone frames, zero or more SnapshotVertex frames, zero or
+// more SnapshotEdge frames, then exactly one SnapshotFooter. Receivers MUST
+// treat any other order as a protocol violation.
 message SnapshotResponse {
   oneof entry {
     SnapshotHeader header = 1;
@@ -262,6 +281,8 @@ message SnapshotResponse {
     SnapshotFooter footer = 4;
     SnapshotVertexCausalBarrier vertex_causal_barrier = 5;
     SnapshotEdgeCausalBarrier edge_causal_barrier = 6;
+    SnapshotVertexTombstone vertex_tombstone = 7;
+    SnapshotEdgeTombstone edge_tombstone = 8;
   }
 }
 

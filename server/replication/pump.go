@@ -9,7 +9,8 @@
 //  2. If the server replies codes.FailedPrecondition (reason "gapped" —
 //     the canonical bootstrap signal from #180), opens
 //     LanternReplicationService.Snapshot, replays the Header→Vertex→Edge
-//     frames into the local cache, then resumes against the same responder at
+//     frames (including causal barriers and active Delete tombstones) into the
+//     local cache, then resumes against the same responder at
 //     both header origin cutoffs + 1 and header.cutoff_local_seq + 1.
 //  3. Applies every received Mutation via the local MutationApplier
 //     (LanternService.ApplyMutation). Reading B appends a newly-observed remote
@@ -46,6 +47,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // MutationApplier is the narrow surface the pump uses to replay a
@@ -66,6 +68,8 @@ type SnapshotApplier interface {
 	PutEdgeWithExpirationHLC(tail, head string, w float32, exp time.Time, ts hlc.Timestamp) bool
 	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
+	ApplySnapshotVertexTombstoneHLC(key string, ts hlc.Timestamp, expiration time.Time)
+	ApplySnapshotEdgeTombstoneHLC(tail, head string, ts hlc.Timestamp, expiration time.Time)
 }
 
 type searchIndexRecovery interface {
@@ -82,16 +86,20 @@ type snapshotFramePhase uint8
 const (
 	snapshotPhaseVertexBarrier snapshotFramePhase = iota + 1
 	snapshotPhaseEdgeBarrier
+	snapshotPhaseVertexTombstone
+	snapshotPhaseEdgeTombstone
 	snapshotPhaseVertex
 	snapshotPhaseEdge
 	snapshotPhaseFooter
 )
 
 type snapshotReplayCounts struct {
-	vertices      uint64
-	edges         uint64
-	vertexBarrier uint64
-	edgeBarrier   uint64
+	vertices        uint64
+	edges           uint64
+	vertexBarrier   uint64
+	edgeBarrier     uint64
+	vertexTombstone uint64
+	edgeTombstone   uint64
 }
 
 // snapshotReplayState is shared by pump and anti-entropy Snapshot consumers.
@@ -149,10 +157,12 @@ func (s *snapshotReplayState) acceptFooter(footer *pb.SnapshotFooter) error {
 	s.sawFooter = true
 	s.phase = snapshotPhaseFooter
 	s.want = snapshotReplayCounts{
-		vertices:      footer.GetVertexCount(),
-		edges:         footer.GetEdgeCount(),
-		vertexBarrier: footer.GetVertexCausalBarrierCount(),
-		edgeBarrier:   footer.GetEdgeCausalBarrierCount(),
+		vertices:        footer.GetVertexCount(),
+		edges:           footer.GetEdgeCount(),
+		vertexBarrier:   footer.GetVertexCausalBarrierCount(),
+		edgeBarrier:     footer.GetEdgeCausalBarrierCount(),
+		vertexTombstone: footer.GetVertexTombstoneCount(),
+		edgeTombstone:   footer.GetEdgeTombstoneCount(),
 	}
 	return nil
 }
@@ -166,12 +176,34 @@ func (s *snapshotReplayState) validateComplete() error {
 	}
 	if s.counts != s.want {
 		return snapshotProtocolError(
-			"footer count mismatch: applied vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d; footer vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d",
-			s.counts.vertices, s.counts.edges, s.counts.vertexBarrier, s.counts.edgeBarrier,
-			s.want.vertices, s.want.edges, s.want.vertexBarrier, s.want.edgeBarrier,
+			"footer count mismatch: applied vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d vertex_tombstones=%d edge_tombstones=%d; footer vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d vertex_tombstones=%d edge_tombstones=%d",
+			s.counts.vertices, s.counts.edges, s.counts.vertexBarrier, s.counts.edgeBarrier, s.counts.vertexTombstone, s.counts.edgeTombstone,
+			s.want.vertices, s.want.edges, s.want.vertexBarrier, s.want.edgeBarrier, s.want.vertexTombstone, s.want.edgeTombstone,
 		)
 	}
 	return nil
+}
+
+func snapshotFloorHLC(stamp *pb.HLCTimestamp) (hlc.Timestamp, error) {
+	if stamp == nil || stamp.GetWallNs() <= 0 || len(stamp.GetNodeId()) != len(hlc.NodeID{}) {
+		return hlc.Timestamp{}, snapshotProtocolError("invalid causal floor HLC")
+	}
+	ts := snapshotHLC(stamp)
+	if ts.NodeID == (hlc.NodeID{}) {
+		return hlc.Timestamp{}, snapshotProtocolError("zero causal floor NodeID")
+	}
+	return ts, nil
+}
+
+func snapshotTombstoneFields(stamp *pb.HLCTimestamp, expiration *timestamppb.Timestamp) (hlc.Timestamp, time.Time, error) {
+	ts, err := snapshotFloorHLC(stamp)
+	if err != nil {
+		return hlc.Timestamp{}, time.Time{}, err
+	}
+	if expiration == nil || expiration.CheckValid() != nil {
+		return hlc.Timestamp{}, time.Time{}, snapshotProtocolError("invalid Delete tombstone expiration")
+	}
+	return ts, expiration.AsTime(), nil
 }
 
 // applySnapshotEdge re-applies one snapshot edge contribution into the local
@@ -569,8 +601,8 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 	return nil
 }
 
-// snapshot opens a Snapshot stream and replays every Header / Vertex
-// / Edge frame into the local cache via the SnapshotApplier seams.
+// snapshot opens a Snapshot stream and replays every causal floor and live
+// graph frame into the local cache via the SnapshotApplier seams.
 // Returns nil on a clean (header + payload + footer) stream, or any
 // receive / apply error.
 //
@@ -605,7 +637,11 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			if barrier == nil {
 				return nil, snapshotProtocolError("nil vertex causal barrier")
 			}
-			p.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), snapshotHLC(barrier.GetHlc()))
+			ts, err := snapshotFloorHLC(barrier.GetHlc())
+			if err != nil || barrier.GetKey() == "" {
+				return nil, snapshotProtocolError("invalid vertex causal barrier")
+			}
+			p.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), ts)
 			replay.counts.vertexBarrier++
 		case *pb.SnapshotResponse_EdgeCausalBarrier:
 			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
@@ -615,8 +651,40 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 			if barrier == nil {
 				return nil, snapshotProtocolError("nil edge causal barrier")
 			}
-			p.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), snapshotHLC(barrier.GetHlc()))
+			ts, err := snapshotFloorHLC(barrier.GetHlc())
+			if err != nil || barrier.GetTail() == "" || barrier.GetHead() == "" {
+				return nil, snapshotProtocolError("invalid edge causal barrier")
+			}
+			p.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), ts)
 			replay.counts.edgeBarrier++
+		case *pb.SnapshotResponse_VertexTombstone:
+			if err := replay.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone); err != nil {
+				return nil, err
+			}
+			marker := e.VertexTombstone
+			if marker == nil || marker.GetKey() == "" {
+				return nil, snapshotProtocolError("nil or empty vertex tombstone")
+			}
+			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
+			if err != nil {
+				return nil, err
+			}
+			p.snap.ApplySnapshotVertexTombstoneHLC(marker.GetKey(), ts, exp)
+			replay.counts.vertexTombstone++
+		case *pb.SnapshotResponse_EdgeTombstone:
+			if err := replay.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone); err != nil {
+				return nil, err
+			}
+			marker := e.EdgeTombstone
+			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" {
+				return nil, snapshotProtocolError("nil or empty edge tombstone")
+			}
+			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
+			if err != nil {
+				return nil, err
+			}
+			p.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
+			replay.counts.edgeTombstone++
 		case *pb.SnapshotResponse_Vertex:
 			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
 				return nil, err

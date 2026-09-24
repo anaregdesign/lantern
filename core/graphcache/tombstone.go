@@ -9,10 +9,11 @@ import (
 
 // tombstoneEntry records a deletion's causal HLC and the wall-clock instant
 // at which the tombstone itself expires and can be reaped. The HLC is the
-// one stamped by the originating Delete RPC; the expiration is computed
-// locally at apply time as now+TombstoneTTL and is therefore best-effort:
-// peers reaping at slightly different times do not affect convergence
-// because LWW is decided on the stored HLC, not on local expiration.
+// one stamped by the originating Delete RPC. Local and Subscribe-applied
+// Deletes compute expiration as now+TombstoneTTL; Snapshot replay preserves
+// the responder's absolute expiration instead of renewing that window.
+// Peers may still reap at slightly different times because Subscribe has no
+// deadline field. LWW is decided on the stored HLC while each floor is live.
 //
 // Tombstones are intentionally kept outside the vertex / edge maps so
 // reads never accidentally surface a deleted key as "present". The
@@ -61,9 +62,8 @@ func (c *GraphCache[S, T]) edgeTombstoneLocked(tail, head S) (hlc.Timestamp, boo
 }
 
 // setVertexTombstoneLocked stamps a tombstone keyed on key. A newer
-// (>=) incoming HLC supersedes any existing tombstone; an older HLC is
-// ignored so a late replay never shortens the effective resurrection
-// window.
+// incoming HLC supersedes any older tombstone. Equal-HLC replay keeps the
+// earlier absolute expiration so repeated Snapshot cannot renew D4.
 func (c *GraphCache[S, T]) setVertexTombstoneLocked(key S, ts hlc.Timestamp, expiration time.Time) {
 	// The zero HLC sentinel carries no resurrection floor. It is used by
 	// backup/legacy restore paths and must never allocate retained metadata or
@@ -74,8 +74,13 @@ func (c *GraphCache[S, T]) setVertexTombstoneLocked(key S, ts hlc.Timestamp, exp
 	if c.vertexTombstones == nil {
 		c.vertexTombstones = make(map[S]tombstoneEntry)
 	}
-	if existing, ok := c.vertexTombstones[key]; ok && ts.Less(existing.ts) {
-		return
+	if existing, ok := c.vertexTombstones[key]; ok {
+		if ts.Less(existing.ts) {
+			return
+		}
+		if ts == existing.ts && !existing.expiration.IsZero() && existing.expiration.Before(expiration) {
+			expiration = existing.expiration
+		}
 	}
 	c.vertexTombstones[key] = tombstoneEntry{ts: ts, expiration: expiration}
 	c.trackVertexTombstoneDeadlineLocked(key, expiration)
@@ -91,12 +96,38 @@ func (c *GraphCache[S, T]) setEdgeTombstoneLocked(tail, head S, ts hlc.Timestamp
 		c.edgeTombstones = make(map[EdgeKey[S]]tombstoneEntry)
 	}
 	k := EdgeKey[S]{Tail: tail, Head: head}
-	if existing, ok := c.edgeTombstones[k]; ok && ts.Less(existing.ts) {
-		return
+	if existing, ok := c.edgeTombstones[k]; ok {
+		if ts.Less(existing.ts) {
+			return
+		}
+		if ts == existing.ts && !existing.expiration.IsZero() && existing.expiration.Before(expiration) {
+			expiration = existing.expiration
+		}
 	}
 	c.edgeTombstones[k] = tombstoneEntry{ts: ts, expiration: expiration}
 	c.trackEdgeTombstoneDeadlineLocked(k, expiration)
 	c.ensureEdgeCausalUsageLocked(k)
+}
+
+// ApplySnapshotVertexTombstoneHLC restores a Delete floor with its original
+// D4 deadline. Expired frames still count toward Snapshot framing, but must
+// not recreate a floor or extend its retention on the receiver. Like
+// Subscribe-applied Deletes, it is exempt from local causal admission limits.
+func (c *GraphCache[S, T]) ApplySnapshotVertexTombstoneHLC(key S, ts hlc.Timestamp, expiration time.Time) {
+	if !time.Now().Before(expiration) {
+		return
+	}
+	_, _ = c.deleteVerticesHLC([]S{key}, ts, expiration, false, true)
+}
+
+// ApplySnapshotEdgeTombstoneHLC is the edge counterpart. Like other remote
+// replication apply paths, snapshot replay is exempt from local admission
+// limits so replicas cannot silently diverge under different local budgets.
+func (c *GraphCache[S, T]) ApplySnapshotEdgeTombstoneHLC(tail, head S, ts hlc.Timestamp, expiration time.Time) {
+	if !time.Now().Before(expiration) {
+		return
+	}
+	c.DeleteEdgesHLC([]EdgeKey[S]{{Tail: tail, Head: head}}, ts, expiration)
 }
 
 func (c *GraphCache[S, T]) vertexDeleteWriteAllowedLocked(key S, ts hlc.Timestamp) bool {
@@ -160,7 +191,7 @@ func (c *GraphCache[S, T]) DeleteVertexHLC(key S, ts hlc.Timestamp, expiration t
 // this is intentional so a Delete-before-Add race is still resolved by
 // LWW once the (out-of-order) Add arrives.
 func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time) int {
-	n, _ := c.deleteVerticesHLC(keys, ts, expiration, false)
+	n, _ := c.deleteVerticesHLC(keys, ts, expiration, false, false)
 	return n
 }
 
@@ -168,10 +199,10 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 // DeleteVerticesHLC. A causal-metadata budget overflow leaves graph and
 // causal state unchanged.
 func (c *GraphCache[S, T]) DeleteVerticesHLCChecked(keys []S, ts hlc.Timestamp, expiration time.Time) (int, error) {
-	return c.deleteVerticesHLC(keys, ts, expiration, true)
+	return c.deleteVerticesHLC(keys, ts, expiration, true, false)
 }
 
-func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time, strict bool) (int, error) {
+func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time, strict, deferSearchRecovery bool) (int, error) {
 	if len(keys) == 0 {
 		return 0, nil
 	}
@@ -206,7 +237,9 @@ func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 			c.clearVertexHLCLocked(k)
 		}
 	}
-	c.rebuildIncompleteSearchLocked()
+	if !deferSearchRecovery {
+		c.rebuildIncompleteSearchLocked()
+	}
 	return n, nil
 }
 
