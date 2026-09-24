@@ -479,8 +479,9 @@ log. Its explicit `IDENTITY_ONLY` projection does not change the zero/default
 full-`Mutation` stream used by peer replication. The request distinguishes
 ordinary vector-cursor resume from bootstrap. The response carries exactly one
 of a bootstrap checkpoint, a full mutation, or an identity chunk. This is the
-server wire projection implemented by #1294. SDK facades, the offline live
-consumer, and physical-device release qualification remain separate work.
+server wire projection implemented by #1294 and typed Dart facade by #1303.
+Go/Node facades, the offline live consumer, and physical-device release
+qualification remain separate work.
 
 A checkpoint contains the responder's **contiguous published** last sequence
 for each origin. On bootstrap the server holds the publication cut gate while
@@ -534,8 +535,9 @@ local-log entries. New streams remain gapped throughout replay, and an
 interrupted or invalid Snapshot keeps that gap until a later verified install
 advances the origin watermarks. A fresh bootstrap then revalidates resident
 identities against the repaired responder. The server identity projection is
-implemented by #1294; SDK facades, the mobile consumer, and physical-device
-release qualification retain separate gates.
+implemented by #1294 and the typed Dart facade by #1303; Go/Node facades,
+the mobile consumer, and physical-device release qualification retain separate
+gates.
 
 After `gapped`, a mobile consumer opens bootstrap and atomically marks its
 **resident confirmed cache** Unknown at that checkpoint. It retains resident

@@ -243,8 +243,32 @@ only for local development. Supply a short-lived `tokenProvider` for
 application calls. `ping()` uses the auth-exempt gRPC Health-v1 Connect+JSON
 endpoint and throws
 `LanternHealthStatusException` when the server is not serving. Generated
-request/response types, the raw Connect client, and replication service remain
-under `lib/src/gen`.
+request/response types and the raw Connect client remain under `lib/src/gen`.
+
+`subscribeIdentity(bootstrap: true)` exposes an identity-only CDC checkpoint
+followed by exact Vertex/Edge key chunks. Each chunk has an origin-local
+sequence, operation category, HLC, index, and final marker; no graph value,
+weight, or contribution ID is exposed. Persist invalidation before advancing
+the origin cursor on the final chunk. The checkpoint stores the **last**
+committed sequence, while `IdentityNextCursor.fromLastApplied` converts a
+durable last-applied vector into the **next** sequence expected by a resumed
+stream. `failedPrecondition` means the retained tail has a gap and requires a
+new checkpoint plus resident-key revalidation. The stream is scoped to one
+deployment-wide graph; it does not provide tenant filtering or automatic
+offline persistence. The default unary timeout is disabled for this long-lived
+stream, but an explicit `LanternCallOptions(timeout: ...)` still applies.
+
+```dart
+final tail = client.subscribeIdentity(bootstrap: true);
+await for (final frame in tail) {
+  switch (frame) {
+    case IdentityCheckpointFrame(:final lastSequences):
+      // Durably mark resident keys Unknown and save lastSequences.
+    case IdentityChunkFrame(:final vertexKeys, :final edgeKeys, :final isLast):
+      // Durably invalidate these exact identities; advance on isLast.
+  }
+}
+```
 
 ```dart
 await client.ping();

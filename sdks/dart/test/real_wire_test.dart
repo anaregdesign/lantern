@@ -938,6 +938,98 @@ void main() {
       );
     },
   );
+
+  test('identity CDC bootstraps and resumes over real Connect/h2c', () async {
+    final firstKey = '$prefix-cdc-first';
+    final secondKey = '$prefix-cdc-second';
+    final bootstrap = StreamIterator<IdentityFrame>(
+      client.subscribeIdentity(bootstrap: true),
+    );
+    try {
+      expect(
+        await bootstrap.moveNext().timeout(const Duration(seconds: 10)),
+        isTrue,
+      );
+      final checkpoint = bootstrap.current as IdentityCheckpointFrame;
+      expect(checkpoint.lastSequences, isA<Map<String, BigInt>>());
+      await client.putVertex(
+        VertexInput(
+          key: firstKey,
+          value: VertexValue.string('identity-stream-must-not-carry-this'),
+        ),
+      );
+      expect(
+        await bootstrap.moveNext().timeout(const Duration(seconds: 10)),
+        isTrue,
+      );
+      final first = bootstrap.current as IdentityChunkFrame;
+      expect(first.operation, IdentityOperation.putVertex);
+      expect(first.vertexKeys, [firstKey]);
+      expect(first.edgeKeys, isEmpty);
+      expect(first.isLast, isTrue);
+      final lastApplied = {
+        ...checkpoint.lastSequences,
+        first.origin: first.sequence,
+      };
+      final resumed = client
+          .subscribeIdentity(
+            cursor: IdentityNextCursor.fromLastApplied(lastApplied),
+          )
+          .first
+          .timeout(const Duration(seconds: 10));
+      await client.putVertex(
+        VertexInput(key: secondKey, value: VertexValue.string('second')),
+      );
+      final second = (await resumed) as IdentityChunkFrame;
+      expect(second.vertexKeys, [secondKey]);
+      expect(second.sequence, first.sequence + BigInt.one);
+    } finally {
+      await bootstrap.cancel();
+    }
+  });
+
+  final identityGapEndpoint =
+      io.Platform.environment['LANTERN_DART_IDENTITY_GAP_ENDPOINT'];
+  test(
+    'identity CDC rejects an evicted per-origin resume over real Connect/h2c',
+    () async {
+      final gap = LanternClient.connect(
+        Uri.parse(identityGapEndpoint!),
+        allowInsecure: identityGapEndpoint.startsWith('http://'),
+      );
+      addTearDown(gap.close);
+      final bootstrap = StreamIterator<IdentityFrame>(
+        gap.subscribeIdentity(bootstrap: true),
+      );
+      expect(
+        await bootstrap.moveNext().timeout(const Duration(seconds: 10)),
+        isTrue,
+      );
+      final checkpoint = bootstrap.current as IdentityCheckpointFrame;
+      await bootstrap.cancel();
+      for (var index = 0; index < 3; index++) {
+        await gap.putVertex(
+          VertexInput(
+            key: '$prefix-cdc-gap-$index',
+            value: VertexValue.string('value-$index'),
+          ),
+        );
+      }
+      await expectLater(
+        gap
+            .subscribeIdentity(
+              cursor: IdentityNextCursor.fromLastApplied(
+                checkpoint.lastSequences,
+              ),
+            )
+            .first,
+        throwsA(isA<LanternFailedPreconditionException>()),
+      );
+    },
+    skip: identityGapEndpoint == null || identityGapEndpoint.isEmpty
+        ? 'LANTERN_DART_IDENTITY_GAP_ENDPOINT is not configured'
+        : false,
+  );
 }
 
 const _realWireRetry = RetryPolicy(

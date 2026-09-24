@@ -417,4 +417,45 @@ void main() {
       await source.close();
     },
   );
+
+  test('pausing a stream propagates backpressure to the source', () async {
+    final listening = Completer<void>();
+    final paused = Completer<void>();
+    final resumed = Completer<void>();
+    final source = StreamController<int>(
+      onListen: () => listening.complete(),
+      onPause: () => paused.complete(),
+      onResume: () => resumed.complete(),
+    );
+    final ready = Completer<void>();
+    final invoker = LanternInvoker(transport: FakeTransportBuilder().build());
+    final delivered = <int>[];
+    final subscription = invoker
+        .invokeStream<int>(
+          call:
+              ({
+                required headers,
+                required signal,
+                required onHeader,
+                required onTrailer,
+              }) {
+                ready.complete();
+                return source.stream;
+              },
+        )
+        .listen(delivered.add);
+    await ready.future;
+    await listening.future;
+    subscription.pause();
+    await paused.future.timeout(const Duration(seconds: 2));
+    source.add(42);
+    await Future<void>.delayed(Duration.zero);
+    expect(delivered, isEmpty);
+    subscription.resume();
+    await resumed.future.timeout(const Duration(seconds: 2));
+    await Future<void>.delayed(Duration.zero);
+    expect(delivered, [42]);
+    await subscription.cancel();
+    await source.close();
+  });
 }

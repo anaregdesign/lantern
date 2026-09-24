@@ -232,13 +232,18 @@ extension _RetryClient on LanternClient {
         retry: options?.retry ?? true,
       );
     }
-    final timeout = options?.timeout ?? _defaultTimeout;
+    final timeout =
+        options?.timeout ??
+        (options?.disableDefaultTimeout ?? false ? null : _defaultTimeout);
     if (timeout == null) {
-      return options?.cancellation == null && (options?.retry ?? true)
+      return options?.cancellation == null &&
+              (options?.retry ?? true) &&
+              !(options?.disableDefaultTimeout ?? false)
           ? null
           : LanternCallOptions(
               cancellation: options?.cancellation,
               retry: options?.retry ?? true,
+              disableDefaultTimeout: options?.disableDefaultTimeout ?? false,
             );
     }
     return LanternCallOptions(

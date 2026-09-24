@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add a typed, value-free identity-only CDC stream with atomic bootstrap
+  checkpoints and portable per-origin NEXT-sequence cursors. Stream pause,
+  cancellation, and Connect errors now propagate through the transport;
+  long-lived streams can omit the default unary timeout.
+
 ## 0.2.0
 
 - Return bounded, server-clock-authoritative per-item `PutOutcome` values from

@@ -139,7 +139,7 @@ jobs:
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-positions.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
           env LANTERN_PORT=6383 LANTERN_METRICS_ADDR=:9093 LANTERN_SEARCH_MAX_QUERY_BYTES=4 \
-            LANTERN_SEARCH_MAX_QUERY_TERMS=4 \
+            LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
           for attempt in $(seq 1 60); do
@@ -189,6 +189,7 @@ jobs:
           LANTERN_DART_SEARCH_DISABLED_ENDPOINT: http://127.0.0.1:6381
           LANTERN_DART_SEARCH_POSITIONS_DISABLED_ENDPOINT: http://127.0.0.1:6382
           LANTERN_DART_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
+          LANTERN_DART_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
         run: dart test test/real_wire_test.dart
 
       - name: Build API documentation
