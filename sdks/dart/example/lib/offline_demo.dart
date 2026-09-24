@@ -115,6 +115,7 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
   }
 
   void _resume() {
+    if (!_paused) return;
     if (!(widget.identityAllowed?.call() ?? true)) return;
     _paused = false;
     _cancellation = LanternCancellationToken();

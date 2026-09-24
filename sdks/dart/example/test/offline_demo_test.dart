@@ -247,6 +247,41 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('inactive to resumed keeps the foreground CDC session owned', (
+    tester,
+  ) async {
+    final source = _TrackingIdentitySource();
+    final repository = OfflineLanternRepository(
+      store: InMemoryOfflineStore(),
+      remote: _FakeRemote(),
+    );
+    addTearDown(repository.dispose);
+    await _pumpOfflineDemo(
+      tester,
+      repository,
+      partition: partition,
+      vertexKey: vertexKey,
+      edgeTail: edgeTail,
+      edgeHead: edgeHead,
+      identitySource: source,
+    );
+    await _pumpUntil(tester, () => source.sessions.length == 1);
+    expect(source.sessions.single.listening, isTrue);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(source.sessions, hasLength(1));
+    expect(source.tokens.single.isCanceled, isFalse);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    expect(source.tokens.single.isCanceled, isTrue);
+    await _waitReal(tester, () => source.sessions.single.closed);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'foreground CDC starts once, resumes, and stays off after logout',
     (tester) async {
