@@ -27,6 +27,11 @@ final class OfflineDemoSession {
   final OfflineLanternRepository repository;
   final String partitionId;
   Future<void>? _closing;
+  Future<void>? _logout;
+  bool _loggedOut = false;
+
+  /// Whether logout has blocked new foreground sessions for this owner.
+  bool get isLoggedOut => _loggedOut;
 
   static Future<OfflineDemoSession> open({
     required LanternClient client,
@@ -49,7 +54,12 @@ final class OfflineDemoSession {
   }
 
   /// Await before replacing an authenticated session or discarding credentials.
-  Future<void> wipeOnLogout() => repository.wipePartition(partitionId);
+  Future<void> wipeOnLogout() {
+    // Flip the gate synchronously: a lifecycle resume must not open a CDC
+    // session while the asynchronous wipe is quiescing the old one.
+    _loggedOut = true;
+    return _logout ??= repository.wipePartition(partitionId);
+  }
 
   /// Quiesce repository work before closing the native database connection.
   Future<void> close() => _closing ??= _close();

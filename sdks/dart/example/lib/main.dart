@@ -51,12 +51,16 @@ final class DemoConfiguration {
     required this.tokenEndpoint,
     required this.allowInsecure,
     this.offlineScope,
+    this.offlineCdcPinnedResponder = false,
   });
 
   final Uri endpoint;
   final Uri? tokenEndpoint;
   final bool allowInsecure;
   final String? offlineScope;
+
+  /// Enables foreground CDC only when [endpoint] is pinned to one responder.
+  final bool offlineCdcPinnedResponder;
 
   /// Authentication must bind durable state to an explicit application account.
   String get offlinePartitionId {
@@ -82,6 +86,9 @@ final class DemoConfiguration {
           : Uri.parse(rawTokenEndpoint),
       allowInsecure: const bool.fromEnvironment('LANTERN_ALLOW_INSECURE'),
       offlineScope: rawOfflineScope.isEmpty ? null : rawOfflineScope,
+      offlineCdcPinnedResponder: const bool.fromEnvironment(
+        'LANTERN_OFFLINE_CDC_PINNED_RESPONDER',
+      ),
     );
   }
 }
@@ -238,8 +245,9 @@ final class _ClientOwnerState extends State<_ClientOwner> {
       }
       return _DiscoveryScreen(
         client: _client,
-        offlineRepository: session.repository,
-        offlinePartitionId: session.partitionId,
+        offlineSession: session,
+        offlineCdcPinnedResponder:
+            widget.configuration.offlineCdcPinnedResponder,
       );
     },
   );
@@ -259,13 +267,13 @@ enum _UiPhase {
 final class _DiscoveryScreen extends StatefulWidget {
   const _DiscoveryScreen({
     required this.client,
-    required this.offlineRepository,
-    required this.offlinePartitionId,
+    required this.offlineSession,
+    required this.offlineCdcPinnedResponder,
   });
 
   final LanternClient client;
-  final OfflineLanternRepository offlineRepository;
-  final String offlinePartitionId;
+  final OfflineDemoSession offlineSession;
+  final bool offlineCdcPinnedResponder;
 
   @override
   State<_DiscoveryScreen> createState() => _DiscoveryScreenState();
@@ -656,8 +664,12 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                 onPressed: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => OfflineDemoScreen(
-                      repository: widget.offlineRepository,
-                      partitionId: widget.offlinePartitionId,
+                      repository: widget.offlineSession.repository,
+                      partitionId: widget.offlineSession.partitionId,
+                      identitySource: widget.offlineCdcPinnedResponder
+                          ? LanternClientIdentitySource(widget.client)
+                          : null,
+                      identityAllowed: () => !widget.offlineSession.isLoggedOut,
                     ),
                   ),
                 ),

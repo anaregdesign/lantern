@@ -10,6 +10,8 @@ class OfflineDemoScreen extends StatefulWidget {
     super.key,
     required this.repository,
     required this.partitionId,
+    this.identitySource,
+    this.identityAllowed,
     this.vertexKey = 'flutter-offline:profile',
     this.edgeTail = 'flutter-offline:profile',
     this.edgeHead = 'flutter-offline:counter',
@@ -17,6 +19,13 @@ class OfflineDemoScreen extends StatefulWidget {
 
   final OfflineLanternRepository repository;
   final String partitionId;
+
+  /// Optional, explicitly responder-pinned foreground CDC source.
+  final OfflineIdentitySource? identitySource;
+
+  /// Application-owned logout gate checked before every CDC start.
+  final bool Function()? identityAllowed;
+
   final String vertexKey;
   final String edgeTail;
   final String edgeHead;
@@ -32,6 +41,8 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
   StreamSubscription<OfflineSnapshot<Edge>>? _edgeSubscription;
   final List<StreamSubscription<OfflineWriteStatus>> _writeSubscriptions = [];
   LanternCancellationToken _cancellation = LanternCancellationToken();
+  LanternCancellationToken? _identityCancellation;
+  Future<void>? _identityWork;
   OfflineSnapshot<Vertex>? _vertex;
   OfflineSnapshot<Edge>? _edge;
   OfflineWriteStatus? _writeStatus;
@@ -45,6 +56,7 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
     super.initState();
     _value = TextEditingController(text: 'Ada');
     _startWatches();
+    _startIdentity();
     _lifecycle = AppLifecycleListener(
       onHide: _pause,
       onPause: _pause,
@@ -103,10 +115,57 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
   }
 
   void _resume() {
+    if (!(widget.identityAllowed?.call() ?? true)) return;
     _paused = false;
     _cancellation = LanternCancellationToken();
     _startWatches();
+    _startIdentity();
     unawaited(_probeAndReplay());
+  }
+
+  void _startIdentity() {
+    final source = widget.identitySource;
+    final cancellation = _cancellation;
+    if (source == null ||
+        _paused ||
+        cancellation.isCanceled ||
+        !(widget.identityAllowed?.call() ?? true) ||
+        identical(_identityCancellation, cancellation)) {
+      return;
+    }
+    final previous = _identityWork;
+    _identityCancellation = cancellation;
+    _identityWork = () async {
+      try {
+        // The previous stream must release the partition before resume opens
+        // another one. No timer or background retry is scheduled.
+        if (previous != null) await previous;
+        if (!mounted ||
+            _paused ||
+            !identical(_cancellation, cancellation) ||
+            cancellation.isCanceled ||
+            !(widget.identityAllowed?.call() ?? true)) {
+          return;
+        }
+        await widget.repository.consumeIdentityChanges(
+          widget.partitionId,
+          source: source,
+          cancellation: cancellation,
+        );
+      } catch (error, stackTrace) {
+        if (mounted &&
+            !_paused &&
+            identical(_cancellation, cancellation) &&
+            (widget.identityAllowed?.call() ?? true) &&
+            !_isCancellation(error)) {
+          _showFailure(error, stackTrace);
+        }
+      } finally {
+        if (identical(_identityCancellation, cancellation)) {
+          _identityCancellation = null;
+        }
+      }
+    }();
   }
 
   Future<void> _saveVertex() async {
