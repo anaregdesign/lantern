@@ -96,7 +96,7 @@ go test ./...                    # root module
 (cd server  && go vet ./... && go test ./...)
 (cd sdks/dart && dart format --output=none --set-exit-if-changed \
   lib/lantern_client.dart lib/src/*.dart test \
-  && dart pub get --enforce-lockfile && dart analyze && dart test \
+  && dart pub get --enforce-lockfile && dart analyze lib test && dart test \
   && dart doc --output "$(mktemp -d)" --validate-links \
   && dart pub publish --dry-run)
 (cd sdks/dart/offline && dart format --output=none --set-exit-if-changed \

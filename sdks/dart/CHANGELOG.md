@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Add a typed, value-free identity-only CDC stream with atomic bootstrap
   checkpoints and portable per-origin NEXT-sequence cursors. Stream pause,

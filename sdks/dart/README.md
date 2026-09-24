@@ -312,7 +312,7 @@ cd sdks/dart
 dart pub get --enforce-lockfile
 dart format --output=none --set-exit-if-changed \
   lib/lantern_client.dart lib/src/*.dart test
-dart analyze
+dart analyze lib test
 dart test
 dart doc --validate-links
 dart pub publish --dry-run
