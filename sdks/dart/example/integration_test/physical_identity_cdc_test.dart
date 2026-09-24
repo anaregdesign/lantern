@@ -10,9 +10,14 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
+import 'support/physical_result_marker.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final result = _PhysicalResultMarker();
+  final result = PhysicalResultMarker(
+    'lantern-identity-cdc-result.json',
+    kind: 'physical_identity_cdc_on_device_result',
+  );
 
   _recordPhysicalTest(
     'physical pinned identity CDC recovers native SQLite residents',
@@ -379,7 +384,7 @@ void main() {
 
 void _recordPhysicalTest(
   String description,
-  _PhysicalResultMarker result,
+  PhysicalResultMarker result,
   Future<void> Function() body,
 ) {
   test(description, () async {
@@ -409,7 +414,7 @@ void _recordPhysicalTest(
         await result.recordOutcome(
           'failed',
           result.phase,
-          failureType: _safeFailureType(error),
+          failureType: safePhysicalFailureType(error),
         );
       } catch (_) {
         // Preserve the test failure when the diagnostic file cannot be written.
@@ -417,66 +422,6 @@ void _recordPhysicalTest(
       rethrow;
     }
   });
-}
-
-String _safeFailureType(Object error) => switch (error) {
-  TestFailure() || AssertionError() => 'assertion',
-  TimeoutException() => 'timeout',
-  SocketException() || HandshakeException() => 'network',
-  OfflineRemoteFailure() || connect.ConnectException() => 'remote',
-  FileSystemException() => 'filesystem',
-  FormatException() || TypeError() => 'format',
-  StateError() => 'state',
-  _ => 'other',
-};
-
-class _PhysicalResultMarker {
-  _PhysicalResultMarker()
-    : _startedAt = DateTime.now().toUtc(),
-      _file = File(
-        '${Directory.systemTemp.path}/lantern-identity-cdc-result.json',
-      );
-
-  final DateTime _startedAt;
-  final File _file;
-  String phase = 'setup';
-  String? cleanupFailureType;
-
-  void addTrackedTearDown(FutureOr<dynamic> Function() cleanup) {
-    addTearDown(() async {
-      try {
-        await cleanup();
-      } catch (error) {
-        cleanupFailureType ??= _safeFailureType(error);
-        rethrow;
-      }
-    });
-  }
-
-  Future<void> recordPhase(String nextPhase) =>
-      recordOutcome('running', nextPhase);
-
-  Future<void> recordOutcome(
-    String status,
-    String nextPhase, {
-    String? failureType,
-  }) async {
-    phase = nextPhase;
-    final fields = <String, Object>{
-      'schema': 1,
-      'kind': 'physical_identity_cdc_on_device_result',
-      'contentFree': true,
-      'status': status,
-      'phase': phase,
-      'startedAt': _startedAt.toIso8601String(),
-      'updatedAt': DateTime.now().toUtc().toIso8601String(),
-    };
-    if (failureType != null) fields['failureType'] = failureType;
-    final encoded = jsonEncode(fields);
-    final temporaryFile = File('${_file.path}.tmp');
-    await temporaryFile.writeAsString(encoded, flush: true);
-    await temporaryFile.rename(_file.path);
-  }
 }
 
 Future<void> _waitUntil(FutureOr<bool> Function() ready) async {

@@ -86,6 +86,14 @@ with `xcrun devicectl device install app`, and launch it with CoreDevice. Keep
 only a sanitized content-free RPC category/status summary as real-wire evidence;
 do not attach the raw server trace.
 
+The `mobile_smoke_test.dart` target also writes a content-free result to its
+app data container at `tmp/lantern-mobile-smoke-result.json`. Use the
+CoreDevice `device info files` and `device copy from` commands shown in the
+identity CDC section below, substituting that file name. A fresh `passed`
+marker with `phase: complete` means the test body and its registered cleanup
+finished; a missing, stale, `running`, or `failed` marker does not qualify the
+run. Match the installed binary and trusted HTTPS route to the evidence record.
+
 ## Required matrix
 
 | Scenario | Physical Android | Physical iOS |

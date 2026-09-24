@@ -10,6 +10,8 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
+import 'support/physical_result_marker.dart';
+
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   // A directly launched iOS test can receive the platform's semantics request
@@ -30,6 +32,29 @@ void main() {
   }
 
   testWidgets('native mobile real-wire smoke', (tester) async {
+    final result = PhysicalResultMarker(
+      'lantern-mobile-smoke-result.json',
+      kind: 'physical_mobile_smoke_on_device_result',
+    );
+    await result.recordPhase('setup');
+    var bodyPassed = false;
+    // Registered first so this runs after all tracked cleanup callbacks.
+    addTearDown(() async {
+      if (!bodyPassed) {
+        await result.recordOutcome('failed', result.phase, failureType: 'body');
+        return;
+      }
+      final cleanupFailureType = result.cleanupFailureType;
+      if (cleanupFailureType != null) {
+        await result.recordOutcome(
+          'failed',
+          'cleanup',
+          failureType: cleanupFailureType,
+        );
+      } else {
+        await result.recordOutcome('passed', 'complete');
+      }
+    });
     // This explicit phase marker lets CI distinguish an app-launch stall from
     // an assertion or RPC failure after the integration test body has begun.
     // ignore: avoid_print
@@ -40,7 +65,7 @@ void main() {
     const tokenEndpoint = String.fromEnvironment('LANTERN_TOKEN_ENDPOINT');
     final tokenHttp = HttpClient()
       ..connectionTimeout = const Duration(seconds: 5);
-    addTearDown(() => tokenHttp.close(force: true));
+    result.addTrackedTearDown(() => tokenHttp.close(force: true));
     final client = LanternClient.connect(
       endpoint,
       tokenProvider: tokenEndpoint.isEmpty
@@ -74,7 +99,7 @@ void main() {
       retryPolicy: const RetryPolicy(),
       idempotentAdds: true,
     );
-    addTearDown(client.close);
+    result.addTrackedTearDown(client.close);
     await client.ping();
 
     final prefix = 'mobile-smoke:${DateTime.now().microsecondsSinceEpoch}:';
@@ -141,7 +166,7 @@ void main() {
     final databaseDirectory = await databaseRoot.createTemp(
       'lantern-native-smoke-',
     );
-    addTearDown(() => databaseDirectory.delete(recursive: true));
+    result.addTrackedTearDown(() => databaseDirectory.delete(recursive: true));
     final databasePath = '${databaseDirectory.path}/offline.db';
     var store = await SqliteOfflineStore.open(path: databasePath);
     var offlineNow = DateTime.now().toUtc();
@@ -150,7 +175,7 @@ void main() {
       remote: LanternClientOfflineRemote(client),
       config: OfflineConfig(clock: () => offlineNow),
     );
-    addTearDown(() async {
+    result.addTrackedTearDown(() async {
       await offline.dispose();
       await store.close();
     });
@@ -290,7 +315,7 @@ void main() {
       remote: LanternClientOfflineRemote(client),
       config: OfflineConfig(clock: () => skewedNow),
     );
-    addTearDown(() async {
+    result.addTrackedTearDown(() async {
       await skewed.dispose();
       await skewedStore.close();
     });
@@ -397,5 +422,7 @@ void main() {
       'watch_cleanup=true wipe_zero_send=true sqlite_reopen=true '
       'ttl_preserved=true logout_wipe_persisted=true partition_isolation=true',
     );
+    await result.recordPhase('cleanup');
+    bodyPassed = true;
   });
 }
