@@ -432,6 +432,76 @@ Handler implementation notes (issue #180):
   `lantern_subscribe_dropped_total{reason}` (counter; `reason ∈ {gapped,
   send_failed}`) are pre-rendered in `server/metrics/metrics.go`.
 
+#### Identity-only CDC contract (#1116; proposed)
+
+External cache invalidation will use this same `Subscribe` RPC and mutation
+log. Its explicit `IDENTITY_ONLY` projection does not change the zero/default
+full-`Mutation` stream used by peer replication. The request distinguishes
+ordinary vector-cursor resume from bootstrap. The response carries exactly one
+of a bootstrap checkpoint, a full mutation, or an identity chunk. This is the
+wire design for #1116, not a claim that the projection is implemented yet.
+
+A checkpoint contains the responder's **contiguous published** last sequence
+for each origin. On bootstrap the server holds the publication cut gate while
+it registers a live log subscriber at `last_local_seq + 1` and captures that
+vector. It then releases the gate and sends the checkpoint as the first frame;
+the registered tail buffers later mutations. Reading `OriginStates()` before
+or after an independent `Log.Subscribe` would leave a skip window. The
+subscriber buffer is finite; overflow ends the stream as `gapped`. A bootstrap
+checkpoint reports this responder's state, not a cluster-wide consensus
+barrier or a proof that another replica has caught up.
+
+Normal resume supplies the next sequence for each origin. The server must
+validate the vector against its contiguous frontier and retained ring window
+while opening the log subscription under the same publication cut. If the
+request needs an evicted entry from any origin, it returns `gapped`; it must
+not silently begin at the oldest retained entry. A cursor ahead of a lagging
+responder is allowed: that origin emits nothing until the responder reaches
+the requested sequence. Origins absent from the vector begin at sequence 1.
+The responder-local log sequence may optimize same-endpoint replay but is
+never a portable cursor. A client durably advances an origin only after every
+chunk of its mutation commits and verifies contiguous mutation sequence at
+the consumer boundary. An empty identity set still requires a final marker so
+it cannot create an invisible cursor hole.
+
+An identity chunk carries `(origin, origin_seq, HLC, operation category,
+chunk_index, is_last)` plus exact Vertex keys or collision-free Edge
+`(tail, head)` pairs. It has no graph value, Edge weight, contribution ID,
+credential, or auth metadata. The projector maps origin-authoritative Put,
+Add, and exact Delete mutations to their exact committed identities. Capped
+prefix Delete is already logged as an exact victim list; projecting the old
+prefix predicate would invalidate keys outside the capped commit. Legacy
+predicate-shaped log entries fail closed because their committed victim set
+cannot be reconstructed safely after the fact. Projected chunks obey both
+1,024-identity and 1 MiB serialized-frame caps, with a bounded chunk index;
+an unrepresentable mutation closes the stream with a typed error rather than
+truncating its invalidation set. An invalidation may conservatively include an
+identity whose LWW write lost; it may never omit an identity that changed.
+
+The stream is deployment-scoped. Current bearer auth protects one graph and
+does not define tenant principals or ACLs. Prefix filtering, if later added,
+is a performance optimization and not an authorization boundary. A client
+must not infer linearizable global freshness from CDC in a leaderless,
+asynchronously replicated cluster. Local append failures and any graph change
+that cannot be published must force existing and new CDC streams into a
+detectable fail-closed recovery state; #1282 addresses the remote relay
+boundary, while the local graph-before-log write paths also need treatment
+before this projection can ship.
+
+After `gapped`, a mobile consumer opens bootstrap and atomically marks its
+**resident confirmed cache** Unknown at that checkpoint. It retains resident
+identities in durable, bounded key-only recovery state, revalidates them in
+bounded `GetVertices`/`GetEdges` batches against the checkpoint responder,
+buffers the already-registered live tail, then applies buffered invalidations
+and advances cursors transactionally. It does not request the full-value
+replication `Snapshot`. If interrupted, it remains Unknown and resumes from
+durable recovery progress. A Get started before invalidation must not restore
+or return a stale confirmed value after the invalidation's commit; the offline
+store and repository coordinate a read-versus-change epoch at that boundary.
+The stream emits explicit mutations only. Absolute TTL is enforced locally;
+no synthetic expiry event is implied, and finite freshness still bounds
+staleness from expiring additive contributions.
+
 ### 8.3 Snapshot (server streaming)
 
 ```proto

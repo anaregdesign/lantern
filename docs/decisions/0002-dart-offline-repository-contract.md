@@ -520,6 +520,59 @@ gap recovery, and coordination with in-flight reads remain in that Issue.
 Storage invalidation does not by itself establish freshness or implement
 server-enforced tenant filtering. TTL remains absolute and local.
 
+### Identity-only CDC consumer design (#1116; not yet implemented)
+
+The consumer uses the same authenticated `Subscribe` stream as peer
+replication, explicitly requesting identity-only events. Its durable cursor
+is the last **fully applied contiguous** sequence per origin; HLC is event
+metadata, not the resume coordinate. The consumer verifies continuity before
+passing a chunk into `applyChangeChunk`, because that storage operation
+intentionally accepts sequence jumps for other possible projections. Every
+mutation, including one with no identity to invalidate, has a final chunk to
+advance the cursor without a hidden hole. A new origin starts at sequence 1.
+
+The server bootstrap handshake registers a bounded live tail atomically with
+its checkpoint. The client installs the checkpoint and enters recovery before
+serving any confirmed cache read. Whole-graph replication `Snapshot` is
+forbidden for this path: it sends values and scales with the server graph,
+not with the mobile cache's resident set. A gap or slow-subscriber overflow
+takes this fail-closed recovery path. A local publication fault pauses recovery
+until the server is healthy; an identity too large for one bounded frame is a
+terminal configuration error, because bootstrap cannot make it smaller. A
+disconnected client retains finite-age cache semantics; the
+absence of an identity event is never proof of freshness.
+
+The current `resetChangeCursor` deletes confirmed cache rows and therefore
+loses their identities. The live consumer requires an adapter migration to
+retain **key-only**, crash-safe resident recovery state. One viable shape is
+a partition recovery epoch plus per-record validation epoch: reset advances
+the partition epoch, hides all older confirmed records as Unknown in one
+transaction, and keeps their indexed identities for bounded page scans.
+Revalidated keys receive the current epoch; eviction may discard an old key
+because it is then no longer resident. Recovery is complete only when no
+older-epoch resident keys remain. The reference and SQLite adapters must
+offer the same bounded scan and reopen semantics without loading the full
+resident key set in memory or deleting pending Put overlays.
+
+Every applied identity chunk, including a partial chunk, also advances a
+partition change epoch atomically with invalidation. A remote Get captures
+this epoch before transport; its cache-store transaction accepts the result
+only if the partition generation **and** change epoch still match. A rejected
+late result returns Unknown to the caller, not merely a discarded cache write.
+A partition-wide epoch may cause extra revalidation when an unrelated key
+changes, but it is bounded, simple, and safe for literal vertex-prefix and
+exact Edge invalidations. The final cursor can advance only after the last
+chunk commits. A CDC-specific remote port exposes bounded plural Get calls so
+resident recovery does not issue one network request per key. All returned
+values still obey their absolute Lantern expiration and the configured finite
+freshness age; CDC synthesizes no TTL-expiration events.
+
+This capability is deployment-scoped. The current bearer token authenticates
+access to one graph; application `partitionId` does not grant server-side
+tenant isolation. Applications needing multiple security domains must use
+separate deployments or an authorized gateway. The #1116 stream and consumer
+remain independent of the first Put-only `lantern_client_offline` release.
+
 The adapter owns SQL transactions, indexes, canonical records, admission bounds,
 leases, and commit validation. The application owns account-to-path binding,
 OS file protection, backup policy, and any additional encrypted database
