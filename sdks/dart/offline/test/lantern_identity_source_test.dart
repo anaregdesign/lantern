@@ -209,6 +209,42 @@ void main() {
     expect(statusCalls, 3);
   });
 
+  test('remote canceled plural read is a gap with an active caller', () async {
+    final transport = FakeTransportBuilder()
+        .unary<
+          graph.GetReplicationStatusRequest,
+          graph.GetReplicationStatusResponse
+        >(
+          LanternService.getReplicationStatus,
+          (_, _) => graph.GetReplicationStatusResponse(nodeId: _responder),
+        )
+        .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+          LanternService.getVertices,
+          (_, _) => throw connect.ConnectException(
+            connect.Code.canceled,
+            'responder canceled read',
+          ),
+        )
+        .build();
+    final client = LanternClient.connect(
+      Uri.parse('https://one-responder.test'),
+      transport: transport,
+    );
+    addTearDown(client.close);
+    final cancellation = LanternCancellationToken();
+    final session = await LanternClientIdentitySource(client).open(
+      bootstrap: false,
+      nextExpected: {_responder: BigInt.one},
+      cancellation: cancellation,
+    );
+    addTearDown(session.close);
+    await expectLater(
+      session.getVertices(['resident']),
+      throwsA(isA<OfflineChangeGapException>()),
+    );
+    expect(cancellation.isCanceled, isFalse);
+  });
+
   test('stream retention gap and malformed frame map to gap', () async {
     for (final response in <replication.SubscribeResponse?>[
       null,
@@ -250,6 +286,44 @@ void main() {
       await session.close();
       await client.close();
     }
+  });
+
+  test('remote canceled stream is a gap with an active caller', () async {
+    final transport = FakeTransportBuilder()
+        .unary<
+          graph.GetReplicationStatusRequest,
+          graph.GetReplicationStatusResponse
+        >(
+          LanternService.getReplicationStatus,
+          (_, _) => graph.GetReplicationStatusResponse(nodeId: _responder),
+        )
+        .server<replication.SubscribeRequest, replication.SubscribeResponse>(
+          LanternReplicationService.subscribe,
+          (_, _) => Stream<replication.SubscribeResponse>.error(
+            connect.ConnectException(
+              connect.Code.canceled,
+              'responder canceled stream',
+            ),
+          ),
+        )
+        .build();
+    final client = LanternClient.connect(
+      Uri.parse('https://one-responder.test'),
+      transport: transport,
+    );
+    addTearDown(client.close);
+    final cancellation = LanternCancellationToken();
+    final session = await LanternClientIdentitySource(client).open(
+      bootstrap: false,
+      nextExpected: {_responder: BigInt.one},
+      cancellation: cancellation,
+    );
+    addTearDown(session.close);
+    await expectLater(
+      session.events.toList(),
+      throwsA(isA<OfflineChangeGapException>()),
+    );
+    expect(cancellation.isCanceled, isFalse);
   });
 
   test(

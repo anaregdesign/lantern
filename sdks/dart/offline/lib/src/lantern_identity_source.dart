@@ -68,7 +68,7 @@ Future<String> _readResponder(
       options: LanternCallOptions(cancellation: cancellation, retry: false),
     )).nodeId;
   } catch (error) {
-    throw mapLanternClientFailure(error);
+    throw _mapIdentityFailure(error, cancellation);
   }
   if (cancellation.isCanceled) throw const OfflineCanceledException();
   if (!_responderPattern.hasMatch(responder) ||
@@ -142,7 +142,7 @@ final class _LanternIdentitySession implements OfflineIdentitySession {
                   }
                 },
                 onError: (Object error, StackTrace stack) {
-                  _fail(controller, _mapIdentityFailure(error), stack);
+                  _fail(controller, _mapIdentityFailure(error, _cancel), stack);
                 },
                 onDone: () {
                   if (_closed) return;
@@ -158,7 +158,7 @@ final class _LanternIdentitySession implements OfflineIdentitySession {
                 },
               );
         } catch (error, stack) {
-          _fail(controller, _mapIdentityFailure(error), stack);
+          _fail(controller, _mapIdentityFailure(error, _cancel), stack);
         }
       },
       onPause: () => _upstream?.pause(),
@@ -216,6 +216,9 @@ final class _LanternIdentitySession implements OfflineIdentitySession {
       await _checkResponder();
       _ensureActive();
       return result;
+    } on OfflineCanceledException {
+      if (!_cancel.isCanceled) throw const OfflineChangeGapException();
+      rethrow;
     } finally {
       remove?.call();
     }
@@ -274,7 +277,15 @@ OfflineIdentityEvent _convertFrame(IdentityFrame frame) => switch (frame) {
     ),
 };
 
-Exception _mapIdentityFailure(Object error) {
+Exception _mapIdentityFailure(
+  Object error,
+  LanternCancellationToken cancellation,
+) {
+  // A remote Canceled response also ends continuity. Only this session's own
+  // cancellation may leave confirmed residents untouched.
+  if (error is LanternCanceledException && !cancellation.isCanceled) {
+    return const OfflineChangeGapException();
+  }
   if (error is LanternFailedPreconditionException ||
       error is LanternInternalException ||
       error is OfflineCodecException ||
