@@ -1,15 +1,22 @@
 package integration_test
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anaregdesign/lantern/cli/parser"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"gopkg.in/yaml.v3"
 )
@@ -99,6 +106,51 @@ func TestTraversalDocumentationGate(t *testing.T) {
 		t.Run(example, func(t *testing.T) {
 			parseTraversalDocumentationCommand(t, example)
 		})
+	}
+}
+
+// TestPythonArchiveHTTPJSONFixture runs the archived README's standalone
+// example against the real Connect handler. The former gRPC Python SDK stays
+// unmaintained; this protects only the documented interim HTTP+JSON path.
+func TestPythonArchiveHTTPJSONFixture(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatalf("python3 is required for the archived HTTP+JSON documentation fixture: %v", err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	readme, err := os.ReadFile(filepath.Join(repoRoot, "sdks", "python.archived", "README.md"))
+	if err != nil {
+		t.Fatalf("read archived Python README: %v", err)
+	}
+	jsonExamples := regexp.MustCompile("(?s)```json\\n(.*?)\\n```").FindAllSubmatch(readme, -1)
+	expected := []proto.Message{&pb.PutVertexRequest{}, &pb.IlluminateRequest{}}
+	if len(jsonExamples) != len(expected) {
+		t.Fatalf("archived Python README has %d JSON examples, want %d", len(jsonExamples), len(expected))
+	}
+	for i, message := range expected {
+		if err := protojson.Unmarshal(jsonExamples[i][1], message); err != nil {
+			t.Fatalf("archived Python JSON example %d disagrees with the proto schema: %v", i+1, err)
+		}
+	}
+	if request := expected[1].(*pb.IlluminateRequest); request.GetBfs() == nil || request.GetBfs().GetStep() == 0 || request.GetBfs().GetFanOut() == 0 {
+		t.Fatal("archived Python Illuminate example must select a valid typed BFS family")
+	}
+	fixture := filepath.Join(repoRoot, "sdks", "python.archived", "examples", "connect_json_smoke.py")
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	srv := newConnectTestServer(t, service.NewLanternService(cache), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, fixture, "--endpoint", srv.url)
+	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("archived Python HTTP+JSON fixture: %v\n%s", err, output)
+	}
+	if got := strings.TrimSpace(string(output)); got != "CONNECT_JSON_SMOKE_PASS" {
+		t.Fatalf("archived Python HTTP+JSON fixture output = %q", got)
 	}
 }
 
