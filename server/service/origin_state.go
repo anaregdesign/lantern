@@ -13,7 +13,7 @@ import (
 // Update sites:
 //
 //   - ApplyMutation calls Record after graph apply and relay-log append.
-//   - logMutation calls Record after the local log append.
+//   - local publication calls Record after the local log append.
 //   - ApplySnapshotWatermarks calls AdvanceSnapshot after completing replay;
 //     a verified snapshot is the only way to skip a missing log prefix.
 //

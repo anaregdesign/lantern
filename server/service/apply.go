@@ -18,7 +18,7 @@ import (
 // and the snapshot bootstrap (#183) to replay a Mutation produced on a
 // remote node against the local cache. It is intentionally NOT exposed
 // as an RPC: external clients use the regular write RPCs which append to
-// the local log via logMutation.
+// the local log via the publication helpers.
 //
 // Under the Reading B contract (#415), a committed remote mutation is
 // appended to the local mutation log for external Subscribe consumers.

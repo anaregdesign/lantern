@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +23,128 @@ func (w *failOncePublicationWAL) Write(mutationlog.Entry) error {
 		return errors.New("injected WAL failure")
 	}
 	return nil
+}
+
+type heldPublicationWAL struct{ failed atomic.Bool }
+
+func (w *heldPublicationWAL) Write(mutationlog.Entry) error {
+	if w.failed.Load() {
+		return errors.New("injected persistent WAL failure")
+	}
+	return nil
+}
+
+func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testing.T) {
+	ctx := context.Background()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	wal := &heldPublicationWAL{}
+	wal.failed.Store(true)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, WAL: wal})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := bytes16("local")
+	svc := NewLanternService(cache).
+		WithTombstoneTTL(time.Hour).
+		WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	first := &pb.PutVerticesRequest{IfAbsent: true, Vertices: []*pb.Vertex{{
+		Key: "first", Value: &pb.Vertex_String_{String_: "original"}, Expiration: futureTs(time.Minute),
+	}}}
+	if _, err := svc.PutVertices(ctx, first); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("first PutVertices error = %v, want Unavailable", err)
+	}
+	if value, ok := cache.GetVertex("first"); !ok || value.GetString_() != "original" {
+		t.Fatalf("first graph effect = (%v,%v), want original", value, ok)
+	}
+	if svc.pendingLocalMutation == nil || svc.pendingLocalMutation.mutation.GetSeq() != 1 {
+		t.Fatalf("pending local mutation = %v, want seq 1", svc.pendingLocalMutation)
+	}
+	if got := svc.LocalSeq(origin); got != 0 {
+		t.Fatalf("fault advanced origin seq to %d", got)
+	}
+	if got := log.Len(); got != 0 {
+		t.Fatalf("fault published %d entries", got)
+	}
+	if err := svc.ApplySnapshotWatermarks(map[string]uint64{hex.EncodeToString(origin[:]): 1}, hlc.Timestamp{}); err == nil {
+		t.Fatal("snapshot watermark skipped an unpublished local mutation")
+	}
+	if _, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"first"}}); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("write while repair fails = %v, want Unavailable", err)
+	}
+	if _, ok := cache.GetVertex("first"); !ok {
+		t.Fatal("later Delete changed graph before repair")
+	}
+	first.Vertices[0] = &pb.Vertex{Key: "caller-mutated", Value: &pb.Vertex_String_{String_: "caller-mutated"}}
+	wal.failed.Store(false)
+	if err := svc.ApplyMutation(ctx, cloneQueuedMutation(svc.pendingLocalMutation.mutation)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("remote self-echo crossed local publication fault: %v", err)
+	}
+	response, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{IfAbsent: true, Vertices: []*pb.Vertex{{
+		Key: "first", Value: &pb.Vertex_String_{String_: "replacement"}, Expiration: futureTs(time.Minute),
+	}}})
+	if err != nil {
+		t.Fatalf("repairing conditional Put: %v", err)
+	}
+	if got := response.GetOutcomes(); len(got) != 1 || got[0] != pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET {
+		t.Fatalf("retry outcomes = %v, want CONDITION_NOT_MET", got)
+	}
+	if value, ok := cache.GetVertex("first"); !ok || value.GetString_() != "original" {
+		t.Fatalf("repair reapplied conditional Put: (%v,%v)", value, ok)
+	}
+	if svc.pendingLocalMutation != nil || svc.publicationFaultCount != 0 {
+		t.Fatal("repair left local publication fault set")
+	}
+	if got := svc.LocalSeq(origin); got != 1 {
+		t.Fatalf("repaired origin seq = %d, want 1", got)
+	}
+	entries, cancel, err := log.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cancel() }()
+	mutation := (<-entries).Op.(*pb.Mutation)
+	live := mutation.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetLive()
+	if mutation.GetSeq() != 1 || live.GetKey() != "first" || live.GetString_() != "original" {
+		t.Fatalf("repaired original mutation = %v", mutation)
+	}
+}
+
+func TestPublishLocalMutation_BornExpiredPutKeepsBarrier(t *testing.T) {
+	ctx := context.Background()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	wal := &failOncePublicationWAL{}
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, WAL: wal})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := bytes16("local")
+	svc := NewLanternService(cache).
+		WithTombstoneTTL(time.Hour).
+		WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	_, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+		Key: "expired", Expiration: futureTs(-time.Second),
+	}}})
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("born-expired Put error = %v, want Unavailable", err)
+	}
+	if _, ok := cache.GetVertex("expired"); ok {
+		t.Fatal("born-expired Put became live")
+	}
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "next"}}}); err != nil {
+		t.Fatalf("repair and next Put: %v", err)
+	}
+	if got := svc.LocalSeq(origin); got != 2 {
+		t.Fatalf("origin seq = %d, want 2", got)
+	}
+	entries, cancel, err := log.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cancel() }()
+	first := (<-entries).Op.(*pb.Mutation)
+	if first.GetSeq() != 1 || first.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetCausalBarrier().GetKey() != "expired" {
+		t.Fatalf("repaired born-expired mutation = %v", first)
+	}
+	second := (<-entries).Op.(*pb.Mutation)
+	if second.GetSeq() != 2 || second.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetLive().GetKey() != "next" {
+		t.Fatalf("next mutation = %v", second)
+	}
 }
 
 func TestPublishRemoteMutation_FailedAppendRetriesWithoutDoubleApply(t *testing.T) {

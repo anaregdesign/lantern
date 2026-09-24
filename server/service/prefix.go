@@ -177,6 +177,11 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 	}
 	deleted := 0
 	if s.clock != nil {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.prepareLocalMutationLocked(); err != nil {
+			return nil, err
+		}
 		ts := s.clock.Now()
 		var keys []string
 		if s.tombstoneTTL > 0 {
@@ -193,9 +198,11 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		}
 		deleted = len(keys)
 		if len(keys) > 0 {
-			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+			if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
 				DeleteVertices: &pb.DeleteVerticesRequest{Keys: keys},
-			}}, ts)
+			}}, ts); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		deleted = s.cache.DeleteByPrefix(ctx, in.GetPrefix(), int(limit))
@@ -245,6 +252,11 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 
 	var deleted int
 	if s.clock != nil {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.prepareLocalMutationLocked(); err != nil {
+			return nil, err
+		}
 		// Share one commit HLC between the edge tombstones and the logged
 		// mutation so a peer replaying this delete stamps the same watermark
 		// the origin did (see DeleteEdges for the divergence this closes).
@@ -268,9 +280,11 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 			for i, key := range keys {
 				edges[i] = &pb.EdgeKey{Tail: key.Tail, Head: key.Head}
 			}
-			s.logMutationAt(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+			if err := s.publishLocalGraphMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
 				DeleteEdges: &pb.DeleteEdgesRequest{Edges: edges},
-			}}, ts)
+			}}, ts); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		deleted = s.cache.DeleteEdgesByPrefix(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit))

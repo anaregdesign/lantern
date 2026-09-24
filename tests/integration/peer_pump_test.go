@@ -103,6 +103,19 @@ type stickyRelayWAL struct {
 	faulted  chan struct{}
 }
 
+type oneShotLocalWAL struct {
+	armed    atomic.Bool
+	failures atomic.Int32
+}
+
+func (w *oneShotLocalWAL) Write(mutationlog.Entry) error {
+	if w.armed.CompareAndSwap(true, false) {
+		w.failures.Add(1)
+		return errors.New("injected local WAL failure")
+	}
+	return nil
+}
+
 func (w *stickyRelayWAL) Write(mutationlog.Entry) error {
 	if w.armed.Load() && !w.healed.Load() {
 		if w.failures.Add(1) == 1 {
@@ -645,6 +658,282 @@ func TestPeerPump_RelayAppendFaultGapsCDC(t *testing.T) {
 		t.Fatalf("repaired Snapshot header = (%+v,%v), want origin cutoff 2", healthySnapshot.Msg(), healthySnapshot.Err())
 	}
 	_ = healthySnapshot.Close()
+}
+
+// A local graph-first write may have changed read-visible state when the WAL
+// rejects its append. Across the real Connect/h2c service and replication
+// handlers, every such path must gap the old feed, hold its origin seq, and
+// repair the exact original mutation before a later local write proceeds.
+func TestLocalWritePublication_WALFaultGapsCDCAndRepairs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping h2c publication fault test in short mode")
+	}
+	type scenario struct {
+		name   string
+		seed   func(context.Context, *pumpNode) error
+		write  func(context.Context, *pumpNode) error
+		verify func(*testing.T, *pumpNode, *pb.Mutation)
+	}
+	putVertex := func(ctx context.Context, n *pumpNode, key string) error {
+		_, err := n.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+			Key: key, Value: &pb.Vertex_String_{String_: key}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+		}}))
+		return err
+	}
+	putEdge := func(ctx context.Context, n *pumpNode, tail, head string) error {
+		_, err := n.raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: tail, Head: head, Weight: 3, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+		}}))
+		return err
+	}
+	cases := []scenario{
+		{
+			name: "conditional PutVertex",
+			write: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{IfAbsent: true, Vertex: &pb.Vertex{
+					Key: "conditional", Value: &pb.Vertex_String_{String_: "original"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+				}}))
+				return err
+			},
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				live := m.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetLive()
+				if live.GetKey() != "conditional" || live.GetString_() != "original" {
+					t.Fatalf("conditional Put payload = %v", m.GetOp())
+				}
+				if v, ok := n.cache.GetVertex("conditional"); !ok || v.GetString_() != "original" {
+					t.Fatalf("conditional graph effect = (%v,%v)", v, ok)
+				}
+			},
+		},
+		{
+			name: "born-expired PutVertex",
+			write: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+					Key: "born-expired", Expiration: timestamppb.New(time.Now().Add(-time.Second)),
+				}}))
+				return err
+			},
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				if got := m.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetCausalBarrier().GetKey(); got != "born-expired" {
+					t.Fatalf("born-expired barrier key = %q", got)
+				}
+				if _, ok := n.cache.GetVertex("born-expired"); ok {
+					t.Fatal("born-expired vertex is live")
+				}
+			},
+		},
+		{
+			name:  "PutEdge",
+			write: func(ctx context.Context, n *pumpNode) error { return putEdge(ctx, n, "put/a", "put/b") },
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				live := m.GetOp().GetReplicatedPutEdges().GetEntries()[0].GetLive()
+				if live.GetTail() != "put/a" || live.GetHead() != "put/b" || live.GetWeight() != 3 {
+					t.Fatalf("PutEdge payload = %v", m.GetOp())
+				}
+				if weight, ok := n.cache.GetWeight("put/a", "put/b"); !ok || weight != 3 {
+					t.Fatalf("PutEdge graph effect = (%v,%v)", weight, ok)
+				}
+			},
+		},
+		{
+			name: "born-expired PutEdge",
+			write: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+					Tail: "expired/a", Head: "expired/b", Weight: 3, Expiration: timestamppb.New(time.Now().Add(-time.Second)),
+				}}))
+				return err
+			},
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				barrier := m.GetOp().GetReplicatedPutEdges().GetEntries()[0].GetCausalBarrier()
+				if barrier.GetTail() != "expired/a" || barrier.GetHead() != "expired/b" {
+					t.Fatalf("born-expired edge barrier = %v", m.GetOp())
+				}
+				if _, ok := n.cache.GetWeight("expired/a", "expired/b"); ok {
+					t.Fatal("born-expired edge is live")
+				}
+			},
+		},
+		{
+			name: "DeleteVertex",
+			seed: func(ctx context.Context, n *pumpNode) error { return putVertex(ctx, n, "delete-vertex") },
+			write: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.raw.DeleteVertex(ctx, connect.NewRequest(&pb.DeleteVertexRequest{Key: "delete-vertex"}))
+				return err
+			},
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				if keys := m.GetOp().GetDeleteVertices().GetKeys(); len(keys) != 1 || keys[0] != "delete-vertex" {
+					t.Fatalf("DeleteVertex exact keys = %v", keys)
+				}
+				if _, ok := n.cache.GetVertex("delete-vertex"); ok {
+					t.Fatal("DeleteVertex graph effect missing")
+				}
+			},
+		},
+		{
+			name: "DeleteEdge",
+			seed: func(ctx context.Context, n *pumpNode) error { return putEdge(ctx, n, "delete/a", "delete/b") },
+			write: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.raw.DeleteEdge(ctx, connect.NewRequest(&pb.DeleteEdgeRequest{Tail: "delete/a", Head: "delete/b"}))
+				return err
+			},
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				edges := m.GetOp().GetDeleteEdges().GetEdges()
+				if len(edges) != 1 || edges[0].GetTail() != "delete/a" || edges[0].GetHead() != "delete/b" {
+					t.Fatalf("DeleteEdge exact edges = %v", edges)
+				}
+				if _, ok := n.cache.GetWeight("delete/a", "delete/b"); ok {
+					t.Fatal("DeleteEdge graph effect missing")
+				}
+			},
+		},
+		{
+			name: "capped DeleteVerticesByPrefix",
+			seed: func(ctx context.Context, n *pumpNode) error {
+				if err := putVertex(ctx, n, "cap/one"); err != nil {
+					return err
+				}
+				return putVertex(ctx, n, "cap/two")
+			},
+			write: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.raw.DeleteVerticesByPrefix(ctx, connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{Prefix: "cap/", Limit: 1}))
+				return err
+			},
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				keys := m.GetOp().GetDeleteVertices().GetKeys()
+				if len(keys) != 1 || (keys[0] != "cap/one" && keys[0] != "cap/two") {
+					t.Fatalf("capped vertex victims = %v", keys)
+				}
+				if _, ok := n.cache.GetVertex(keys[0]); ok {
+					t.Fatal("exact vertex victim is still live")
+				}
+				other := "cap/one"
+				if keys[0] == other {
+					other = "cap/two"
+				}
+				if _, ok := n.cache.GetVertex(other); !ok {
+					t.Fatal("capped vertex survivor was deleted")
+				}
+			},
+		},
+		{
+			name: "capped DeleteEdgesByPrefix",
+			seed: func(ctx context.Context, n *pumpNode) error {
+				if err := putEdge(ctx, n, "edge/one", "target"); err != nil {
+					return err
+				}
+				return putEdge(ctx, n, "edge/two", "target")
+			},
+			write: func(ctx context.Context, n *pumpNode) error {
+				_, err := n.raw.DeleteEdgesByPrefix(ctx, connect.NewRequest(&pb.DeleteEdgesByPrefixRequest{TailPrefix: "edge/", Limit: 1}))
+				return err
+			},
+			verify: func(t *testing.T, n *pumpNode, m *pb.Mutation) {
+				edges := m.GetOp().GetDeleteEdges().GetEdges()
+				if len(edges) != 1 || (edges[0].GetTail() != "edge/one" && edges[0].GetTail() != "edge/two") || edges[0].GetHead() != "target" {
+					t.Fatalf("capped edge victims = %v", edges)
+				}
+				if _, ok := n.cache.GetWeight(edges[0].GetTail(), "target"); ok {
+					t.Fatal("exact edge victim is still live")
+				}
+				other := "edge/one"
+				if edges[0].GetTail() == other {
+					other = "edge/two"
+				}
+				if _, ok := n.cache.GetWeight(other, "target"); !ok {
+					t.Fatal("capped edge survivor was deleted")
+				}
+			},
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer cancel()
+			wal := &oneShotLocalWAL{}
+			nodeID := hlc.NodeID{0xC3, byte(i + 1)}
+			node := newPumpNodeWithWAL(t, nodeID, 32, true, wal)
+			if err := putVertex(ctx, node, "stream/warmup"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.seed != nil {
+				if err := tc.seed(ctx, node); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeOrigin := node.svc.LocalSeq(nodeID)
+			beforeLocal, _ := node.log.LastSeq()
+			rep := newReplicationRawClient(t, node.url)
+			oldFeed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: beforeLocal}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = oldFeed.Close() }()
+			if !oldFeed.Receive() || oldFeed.Msg().GetMutation().GetSeq() != beforeOrigin {
+				t.Fatalf("old Subscribe warmup = (%v,%v)", oldFeed.Msg(), oldFeed.Err())
+			}
+			wal.armed.Store(true)
+			if code := connect.CodeOf(tc.write(ctx, node)); code != connect.CodeUnavailable {
+				t.Fatalf("failed local write code = %v, want Unavailable", code)
+			}
+			if wal.failures.Load() != 1 || node.svc.LocalSeq(nodeID) != beforeOrigin || node.log.Len() != int(beforeLocal) {
+				t.Fatalf("failed publication: WAL failures=%d origin seq=%d log len=%d", wal.failures.Load(), node.svc.LocalSeq(nodeID), node.log.Len())
+			}
+			if oldFeed.Receive() || connect.CodeOf(oldFeed.Err()) != connect.CodeFailedPrecondition || !strings.Contains(oldFeed.Err().Error(), "gapped") {
+				t.Fatalf("old Subscribe after fault = (%v,%v), want gapped", oldFeed.Msg(), oldFeed.Err())
+			}
+			newFeed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: beforeLocal + 1}))
+			if err == nil {
+				if newFeed.Receive() || connect.CodeOf(newFeed.Err()) != connect.CodeFailedPrecondition {
+					t.Fatalf("new Subscribe during fault = (%v,%v)", newFeed.Msg(), newFeed.Err())
+				}
+				_ = newFeed.Close()
+			} else if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("new Subscribe error = %v", err)
+			}
+			snapshot, err := rep.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+			if err == nil {
+				if snapshot.Receive() || connect.CodeOf(snapshot.Err()) != connect.CodeFailedPrecondition {
+					t.Fatalf("Snapshot during fault = (%v,%v)", snapshot.Msg(), snapshot.Err())
+				}
+				_ = snapshot.Close()
+			} else if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("Snapshot during fault error = %v", err)
+			}
+			if err := putVertex(ctx, node, "repair/marker"); err != nil {
+				t.Fatalf("repairing next PutVertex: %v", err)
+			}
+			if got := node.svc.LocalSeq(nodeID); got != beforeOrigin+2 {
+				t.Fatalf("repaired origin seq = %d, want %d", got, beforeOrigin+2)
+			}
+			if got := node.log.Len(); got != int(beforeLocal)+2 {
+				t.Fatalf("repaired local log len = %d, want %d", got, beforeLocal+2)
+			}
+			feed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: beforeLocal + 1}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = feed.Close() }()
+			if !feed.Receive() {
+				t.Fatalf("repaired pending mutation missing: %v", feed.Err())
+			}
+			pending := feed.Msg().GetMutation()
+			if pending.GetSeq() != beforeOrigin+1 {
+				t.Fatalf("pending seq = %d, want %d", pending.GetSeq(), beforeOrigin+1)
+			}
+			tc.verify(t, node, pending)
+			if !feed.Receive() || feed.Msg().GetMutation().GetSeq() != beforeOrigin+2 {
+				t.Fatalf("next mutation = (%v,%v), want seq %d", feed.Msg(), feed.Err(), beforeOrigin+2)
+			}
+			healthySnapshot, err := rep.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = healthySnapshot.Close() }()
+			if !healthySnapshot.Receive() || healthySnapshot.Msg().GetHeader().GetCutoffSeqPerOrigin()[hex.EncodeToString(nodeID[:])] != beforeOrigin+2 {
+				t.Fatalf("repaired Snapshot header = (%v,%v)", healthySnapshot.Msg(), healthySnapshot.Err())
+			}
+		})
+	}
 }
 
 // TestPeerPump_SearchPartitionHealConvergence starts a follower only after a

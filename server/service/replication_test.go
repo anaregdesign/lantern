@@ -29,6 +29,23 @@ type blockedAddSnapshotBackend struct {
 	release chan struct{}
 }
 
+type blockedLocalPutSnapshotBackend struct {
+	Backend
+	cache   *graphcache.GraphCache[string, *pb.Vertex]
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockedLocalPutSnapshotBackend) PutVerticesWithExpirationHLCOutcomesChecked(items []graphcache.VertexItem[string, *pb.Vertex], ts hlc.Timestamp) ([]graphcache.PutOutcome, error) {
+	close(b.entered)
+	<-b.release
+	return b.cache.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
+}
+
+func (b *blockedLocalPutSnapshotBackend) SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex] {
+	return b.cache.SnapshotReplication()
+}
+
 func (b *blockedAddSnapshotBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]float32, int) {
 	close(b.entered)
 	<-b.release
@@ -242,6 +259,66 @@ func TestLanternReplicationService_SnapshotCutWaitsForLocalAddCommit(t *testing.
 	}
 	if cutoff != 1 || edges != 1 {
 		t.Fatalf("Snapshot cut included Add seq=%d but carried %d edges", cutoff, edges)
+	}
+}
+
+func TestLanternReplicationService_SnapshotCutWaitsForLocalPutPublication(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	backend := &blockedLocalPutSnapshotBackend{Backend: cache, cache: cache, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-backend.release:
+		default:
+			close(backend.release)
+		}
+	})
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x04}
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(backend).WithReplication(log, clock, nil)
+	replication := NewLanternReplicationService(log, backend, clock).WithOriginStates(svc)
+	putDone := make(chan error, 1)
+	go func() {
+		_, err := svc.PutVertices(context.Background(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+			Key: "local-put", Value: &pb.Vertex_String_{String_: "committed"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+		}}})
+		putDone <- err
+	}()
+	select {
+	case <-backend.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("local Put did not reach the backend")
+	}
+	recorder := &replicationSnapshotRecorder{}
+	snapshotDone := make(chan error, 1)
+	go func() { snapshotDone <- replication.Snapshot(context.Background(), &pb.SnapshotRequest{}, recorder) }()
+	select {
+	case err := <-snapshotDone:
+		t.Fatalf("Snapshot crossed an in-progress local Put: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(backend.release)
+	if err := <-putDone; err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	if err := <-snapshotDone; err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	var cutoff uint64
+	var live *pb.Vertex
+	for _, frame := range recorder.frames {
+		switch entry := frame.GetEntry().(type) {
+		case *pb.SnapshotResponse_Header:
+			cutoff = entry.Header.GetCutoffSeqPerOrigin()[fmt.Sprintf("%x", origin[:])]
+		case *pb.SnapshotResponse_Vertex:
+			if entry.Vertex.GetVertex().GetKey() == "local-put" {
+				live = entry.Vertex.GetVertex()
+			}
+		}
+	}
+	if cutoff != 1 || live.GetString_() != "committed" {
+		t.Fatalf("Snapshot cut = %d and local vertex = %v, want seq 1 and committed", cutoff, live)
 	}
 }
 

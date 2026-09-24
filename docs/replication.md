@@ -263,7 +263,7 @@ the graph-applied frontier retryable without advancing the advertised cutoff.
 `Pump.PeerSnapshot.AppliedSeq` is an arrival observation that can include a
 queued future seq; it is not a contiguous committed cursor. Resume and
 Snapshot decisions use `OriginStates` and the Snapshot header cutoff instead.
-A relay-log append failure also marks the responder's CDC generation as
+A relay or local graph-first log append failure also marks the responder's CDC generation as
 `gapped`: all already-open `Subscribe` streams close with
 `FailedPrecondition`, and new `Subscribe`/`Snapshot` calls fail the same way
 until append-only retry or verified Snapshot repair clears the fault. Streams
@@ -400,7 +400,7 @@ a cyclic proto import between `graph.proto` and `replication.proto`.
 **Leaderless Subscribe contract** (#415, Reading B). Every replica's
 local mutation log retains entries from every cluster origin: a write
 that lands at replica X via `PutVertex` is appended at X's local log
-(via `logMutation`); replicas Y and Z then receive it through the peer
+(via local publication); replicas Y and Z then receive it through the peer
 pump and append it to their own local logs via
 `LanternService.ApplyMutation` (which publishes only the next contiguous
 origin seq to avoid double-Append from fan-out triangles).
@@ -425,12 +425,16 @@ Consequence:
   Subscribe relay never overwrites `mu.Seq`, and the originating writer
   allocates it independently of the mixed relay log's `Entry.Seq`.
 
-The current fail-closed publication handling covers **remote**
-`ApplyMutation` relay-log failures. Local Put/Delete still apply graph-first
-and report local log-append failure as a warning; that can leave a
-read-visible local write without a CDC record. Full external CDC completeness
-therefore remains blocked on #1116 Phase 2. The contract above describes
-successful publication, not a guarantee across that local failure mode.
+Local Put/Delete and capped prefix Delete hold the same publication cut from
+graph apply through local log append. If the WAL rejects an append after the
+graph changes, the handler returns `Unavailable` because its original result
+is ambiguous. It keeps one exact mutation, including conditional Put outcomes
+and exact prefix victims, for append-only repair before any later local write
+can claim that origin seq. A failed repair leaves the graph untouched and CDC
+`gapped`. `AddEdges` remains log-first; it repairs an earlier local gap before
+its own append. A retried client request is a new operation after repair, so
+original-result recovery still requires #1115 receipts. Identity-only CDC
+and its offline consumer remain part of #1116.
 
 The internal peer pump uses the same RPC. Ordinary sessions start with an
 empty portable cursor and rely on `ApplyMutation`'s contiguous cursor to dedup
@@ -441,7 +445,7 @@ suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
 Back-pressure and publication faults: server terminates the stream with
 `FAILED_PRECONDITION` (`gapped`) if (a) the ring has been truncated below the
 requested responder-local replay position, (b) the consumer's send buffer
-overflows, or (c) a remote mutation changed the graph but its relay-log
+overflows, or (c) a local or remote mutation changed the graph but its log
 append failed. The fault also rejects new Subscribe/Snapshot attempts until
 repair, and closes every stream from the previous generation even if repair
 completes quickly. After repair the consumer must re-bootstrap via
@@ -520,9 +524,9 @@ is a performance optimization and not an authorization boundary. A client
 must not infer linearizable global freshness from CDC in a leaderless,
 asynchronously replicated cluster. Local append failures and any graph change
 that cannot be published must force existing and new CDC streams into a
-detectable fail-closed recovery state; #1282 addresses the remote relay
-boundary, while the local graph-before-log write paths also need treatment
-before this projection can ship.
+detectable fail-closed recovery state. #1282 closes the remote relay
+boundary, and #1293 closes local Put/Delete graph-first publication. The
+identity projection and mobile consumer still require their own gates.
 
 After `gapped`, a mobile consumer opens bootstrap and atomically marks its
 **resident confirmed cache** Unknown at that checkpoint. It retains resident
@@ -672,7 +676,8 @@ Implementation notes:
   migration plus materialisation of the barrier, active Delete tombstone, and
   live slices. The service also holds its Snapshot cut gate while it copies
   the origin/local-log cutoffs and this graph image: remote ApplyMutation and
-  local log-before-graph AddEdges cannot publish a cutoff ahead of the graph.
+  local Put/Delete graph-first commits and log-before-graph AddEdges cannot
+  publish a cutoff ahead of the graph. A pending WAL fault rejects Snapshot.
   It releases the gate before sending any frame. Before copying state, the
   method moves Put floors with non-visible payloads (expired vertices and
   expired, zero-weight, or dangling edge buckets) into the retained barrier
