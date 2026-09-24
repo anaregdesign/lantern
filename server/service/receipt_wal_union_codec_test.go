@@ -59,8 +59,8 @@ func receiptWALUnionRawGraphProto(protobuf []byte, repeatedCount uint32) []byte 
 
 func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
-	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV2 {
-		t.Fatalf("WAL union v2 graph schema changed to %s; review replay and migration", got)
+	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV3 {
+		t.Fatalf("WAL union v3 graph schema changed to %s; review replay and migration", got)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -90,33 +90,26 @@ func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV2 {
-				t.Fatal("new graph mutation field did not invalidate WAL union v2 schema")
+			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV3 {
+				t.Fatal("new graph mutation field did not invalidate WAL union v3 schema")
 			}
 		})
 	}
 }
 
-func TestReceiptWALUnionCodecEveryGraphArm(t *testing.T) {
-	// These are all 14 graph-only oneof arms present before receipt transport.
-	// Empty inner requests are valid codec values; the applying service owns
-	// each request's domain validation. They still must survive WAL exactly.
+func TestReceiptWALUnionCodecNonDeleteGraphArms(t *testing.T) {
+	// A graph Delete now requires its accepted-effect envelope. Other graph
+	// arms retain the existing exact protobuf and nil-slot codec behavior.
 	arms := []struct {
 		name string
 		op   *pb.MutationOp
 	}{
 		{"put vertex", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{}}}},
 		{"put vertices", &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{}}}},
-		{"delete vertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{}}}},
-		{"delete vertices", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: &pb.DeleteVerticesRequest{}}}},
-		{"delete vertices by prefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{}}}},
 		{"add edge", &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{}}}},
 		{"add edges", &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{}}}},
 		{"put edge", &pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{}}}},
 		{"put edges", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{}}}},
-		{"delete edge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{}}}},
-		{"delete edges", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{}}}},
-		{"delete edges by prefix", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgesByPrefix{DeleteEdgesByPrefix: &pb.DeleteEdgesByPrefixRequest{}}}},
 		{"replicated put vertices", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{}}}},
 		{"replicated put edges", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{}}}},
 	}
@@ -156,7 +149,6 @@ func TestReceiptWALUnionCodecPreservesGraphNilSlots(t *testing.T) {
 		{"put vertices", &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{nil, {}, {Key: "v"}, nil}}}}},
 		{"add edges", &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{nil, {}, {Tail: "t", Head: "h"}, nil}}}}},
 		{"put edges", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{Edges: []*pb.Edge{nil, {}, {Tail: "t", Head: "h"}, nil}}}}},
-		{"delete edges", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{nil, {}, {Tail: "t", Head: "h"}, nil}}}}},
 		{"replicated put vertices", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: []*pb.ReplicatedPutVertex{nil, {}, {Outcome: &pb.ReplicatedPutVertex_CausalBarrier{CausalBarrier: &pb.VertexCausalBarrier{Key: "v"}}}, nil}}}}},
 		{"replicated put edges", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: []*pb.ReplicatedPutEdge{nil, {}, {Outcome: &pb.ReplicatedPutEdge_CausalBarrier{CausalBarrier: &pb.EdgeCausalBarrier{Tail: "t", Head: "h"}}}, nil}}}}},
 	}
@@ -197,7 +189,7 @@ func TestReceiptWALUnionCodecMixedFileWALRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{nil, {Tail: "a", Head: "b"}}}}})
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{nil, {Key: "v"}}}}})
 	graphEntry := mutationlog.Entry{Seq: 1, HLC: receiptWALUnionGraphHLC(graph), Op: graph}
 	if err := wal.Write(graphEntry); err != nil {
 		t.Fatal(err)
@@ -219,7 +211,7 @@ func TestReceiptWALUnionCodecMixedFileWALRoundTrip(t *testing.T) {
 		switch entry.Seq {
 		case 1:
 			got, ok := entry.Op.(*pb.Mutation)
-			if !ok || got.GetOp().GetDeleteEdges().Edges[0] != nil || !proto.Equal(got, graph) {
+			if !ok || got.GetOp().GetPutVertices().Vertices[0] != nil || !proto.Equal(got, graph) {
 				return errors.New("graph mutation changed")
 			}
 		case 2:
@@ -249,25 +241,28 @@ func TestReceiptWALUnionCodecDeleteDeadlineFailClosed(t *testing.T) {
 	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
 		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "t", Head: "h"}}},
 	}})
-	raw, err := encodeReceiptWALUnion(graph)
+	envelope, err := newGraphDeleteEffectEnvelope(graph, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := encodeReceiptWALUnion(envelope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	decoded, err := decodeReceiptWALUnion(raw)
-	if err != nil || !proto.Equal(decoded.(*pb.Mutation).GetTombstoneExpiration(), graph.GetTombstoneExpiration()) {
+	if err != nil || !proto.Equal(decoded.(*graphDeleteEffectEnvelope).Mutation.GetTombstoneExpiration(), graph.GetTombstoneExpiration()) {
 		t.Fatalf("Delete deadline WAL round-trip = %v, %v", decoded, err)
 	}
-	graph.TombstoneExpiration = nil
-	if _, err := encodeReceiptWALUnion(graph); !errors.Is(err, errReceiptWALUnion) {
+	envelope.Mutation.TombstoneExpiration = nil
+	if _, err := encodeReceiptWALUnion(envelope); !errors.Is(err, errReceiptWALUnion) {
 		t.Fatalf("missing Delete deadline encoded: %v", err)
 	}
-	graph.TombstoneExpiration = &timestamppb.Timestamp{Seconds: 253402300800}
-	if _, err := encodeReceiptWALUnion(graph); !errors.Is(err, errReceiptWALUnion) {
+	envelope.Mutation.TombstoneExpiration = &timestamppb.Timestamp{Seconds: 253402300800}
+	if _, err := encodeReceiptWALUnion(envelope); !errors.Is(err, errReceiptWALUnion) {
 		t.Fatalf("invalid Delete deadline encoded: %v", err)
 	}
-	// The previous union version has no certified Delete deadline contract.
-	// It must not be silently treated as the new graph schema on restart.
-	raw[4] = 1
+	// The previous union version has no certified accepted projection.
+	raw[4] = 2
 	if _, err := decodeReceiptWALUnion(raw); !errors.Is(err, errReceiptWALUnion) {
 		t.Fatalf("old WAL union version decoded: %v", err)
 	}
@@ -375,7 +370,7 @@ func TestReceiptWALUnionCodecRejectsHiddenReceiptArmAndDuplicateOneofs(t *testin
 	if _, err := decodeReceiptWALUnion(receiptWALUnionRawGraphProto(receiptProto, 0)); !errors.Is(err, errReceiptWALUnion) {
 		t.Fatalf("receipt wire arm decoded as graph-only kind: %v", err)
 	}
-	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{}}})
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v"}}}})
 	graphArm, err := proto.Marshal(graph.Op)
 	if err != nil {
 		t.Fatal(err)
@@ -440,11 +435,6 @@ func TestReceiptWALUnionCodecRejectsHiddenReceiptArmAndDuplicateOneofs(t *testin
 	reordered = protowire.AppendBytes(protowire.AppendTag(reordered, 3, protowire.BytesType), graph.Origin)
 	reordered = protowire.AppendBytes(protowire.AppendTag(reordered, 2, protowire.BytesType), hlcWire)
 	reordered = protowire.AppendVarint(protowire.AppendTag(reordered, 1, protowire.VarintType), graph.Seq)
-	deadlineWire, err := proto.Marshal(graph.TombstoneExpiration)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reordered = protowire.AppendBytes(protowire.AppendTag(reordered, 5, protowire.BytesType), deadlineWire)
 	decoded, err := decodeReceiptWALUnion(receiptWALUnionRawGraphProto(reordered, 0))
 	if err != nil || !proto.Equal(decoded.(*pb.Mutation), graph) {
 		t.Fatalf("reordered protobuf fields = %v, %v", decoded, err)
@@ -493,7 +483,7 @@ func TestReceiptWALUnionCodecRejectsNestedTypedNilOneofPayloads(t *testing.T) {
 }
 
 func TestReceiptWALUnionCodecFrameHLCMismatch(t *testing.T) {
-	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "k"}}})
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "k"}}}})
 	graphEntry := mutationlog.Entry{Seq: 1, HLC: receiptWALUnionGraphHLC(graph), Op: graph}
 	if err := validateReceiptWALUnionEntry(graphEntry); err != nil {
 		t.Fatal(err)

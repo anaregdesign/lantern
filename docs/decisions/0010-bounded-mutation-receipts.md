@@ -258,8 +258,9 @@ expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
 clock metadata. The codec is not wired to a serving WAL or replay path and
 does not certify receipt recovery, replication, or status continuity.
 The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.go)
-adds a versioned kind discriminator for the two service Log payloads: a
-graph-only `Mutation` or that receipt Edge Delete envelope. Its graph kind
+adds a versioned kind discriminator for graph-only `Mutation`, a private
+[graph Delete effect envelope](../../server/service/graph_delete_effect_wal.go),
+or the receipt Edge Delete envelope. Its ordinary graph kind
 encodes protobuf plus an ordered sidecar for nil repeated-message slots,
 which protobuf otherwise turns into empty messages on decode. The decoder
 checks the exact kind, version, lengths, sidecar indexes, supported oneof
@@ -270,19 +271,33 @@ orders and duplicate scalar values retain protobuf semantics. The decoder
 accepts valid protobuf encodings without requiring a byte-for-byte match with
 this build's deterministic encoder:
 protobuf does not promise stable deterministic bytes across library versions.
-Union version 2 pins `Mutation.tombstone_expiration`: each graph-only exact
+Union version 3 retains `Mutation.tombstone_expiration`: each graph-only exact
 Vertex or Edge Delete must retain the origin's absolute D4 deadline. Origin
 handlers use one sampled deadline for the graph effect and published mutation;
 follower apply uses that value without renewing it. An older graph Delete WAL
-record lacking the field, an invalid timestamp, or a version 1 union fails
+record lacking the field, an invalid timestamp, or an older union fails
 closed on replay. Prefix Deletes still publish exact victim batches and carry
 that same sampled deadline. The deadline is sampled before the origin HLC and
 checked against both origin HLC + D4 and receiver now + D4 + D3 maximum skew;
 an arbitrary future deadline or forged future HLC fails closed. The origin
 checks those bounds before graph mutation, including after a clock rollback.
-A genesis
-recovery audit must not infer a missing
-deadline from its current clock; accepting these new records does not by itself
+A genesis recovery audit must not infer a missing deadline from its current
+clock. The new graph Delete kind preserves the original `Mutation` for existing
+Subscribe/relay projection and stores strictly increasing accepted request
+indexes separately. `Existed=false` is insufficient: an accepted absent-key
+tombstone and a Delete rejected by newer causal state both report false.
+Prefix origins already publish only exact accepted victims, so the sidecar
+indexes refer to that exact batch, never a predicate. The decoder rejects
+old version 2 graph Deletes and version 3 ordinary-graph-kind Deletes without
+this sidecar. An expired absolute deadline remains valid historical evidence
+and is never replaced with `now + D4` during decode. The checked GraphCache
+batch APIs can return response outcomes and accepted indexes from one lock,
+but no serving producer selects the new kind: a future producer must retain
+the same sidecar across an ambiguous WAL append and publication repair,
+including for remote relay and singular Delete mutations. The detached
+recovery candidate still rejects graph Delete envelopes and all graph writes
+after receipt envelopes. A later Put/Add rejected while a tombstone was live
+can become accepted on replay after it expires; Delete evidence alone cannot
 certify a complete graph/receipt restore.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
@@ -294,7 +309,7 @@ decoded graph or receipt HLC before applying state. This remains unwired and
 does not yet constitute a complete replay or durable serving configuration;
 production activation also needs a WAL schema migration policy across future
 protobuf changes. The private graph kind now pins the reachable `Mutation`
-schema and rejects an unreviewed field change under union v1. A production
+schema and rejects an unreviewed field change under union v3. A production
 migration must still retain a decoder for prior WAL versions before any schema
 change is allowed on a receipt-enabled node.
 The private [read-only mixed-WAL audit](../../server/service/receipt_wal_recovery.go)

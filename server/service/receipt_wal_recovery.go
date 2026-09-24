@@ -63,6 +63,9 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 		case *pb.Mutation:
 			copy(origin[:], value.GetOrigin())
 			seq = value.GetSeq()
+		case *graphDeleteEffectEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			seq = value.Mutation.GetSeq()
 		case *edgeDeleteReceiptEnvelope:
 			origin, seq = value.Origin, value.OriginSeq
 			if value.Epoch != config.Epoch || value.PolicyFingerprint != base.PolicyFingerprint() {
@@ -188,19 +191,18 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // resumeReceiptWALCandidate validates a complete genesis WAL before making
 // any state externally visible. The caller must own path exclusively through
 // both replay passes; this function closes the resumed writer before return.
-// A graph-only exact Delete now carries its original tombstone deadline, but
-// lacks the accepted graph projection needed to prove that replay reconstructs
-// the original effect. Predicate-shaped prefix Delete also lacks its exact
-// victim set. Both remain rejected. Graph writes after the first receipt
-// Delete are refused too: a now-expired tombstone could have rejected one
-// originally but admit it during replay. Receipt Edge Deletes carry their
-// accepted projection and absolute deadline and can form a suffix when that
-// projection remains reproducible.
+// A graph-only exact Delete now has an absolute deadline and a private
+// accepted-index envelope, but this candidate cannot safely replay it yet:
+// a later graph Put/Add may have been rejected by a floor that has since
+// expired. Predicate-shaped prefix Delete is still unrepresentable; prefix
+// origins publish exact victim batches instead. Graph writes after the first
+// receipt Delete remain refused for the same historical-acceptance reason.
+// Receipt Edge Deletes can form a suffix when their projection is reproducible.
 //
 // The recovered Log and FileWAL are closed before return. This read-only
 // candidate does not authorize receipt admission, an absent-ID answer, or
 // publication-fault clearing. A future full mixed-WAL format must record
-// accepted graph effects for graph-only Deletes before lifting these
+// accepted graph effects for every dependent graph write before lifting these
 // restrictions.
 func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
 	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
@@ -228,6 +230,11 @@ func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now t
 			if _, err := replayService.applyMutationGraph(value); err != nil {
 				return fmt.Errorf("receipt WAL local seq %d: graph replay: %w", entry.Seq, err)
 			}
+		case *graphDeleteEffectEnvelope:
+			// The indexed sidecar preserves the origin's decision, but this
+			// candidate has no historical-time/effect replay for later graph
+			// Put/Add. Never turn a private codec seam into serving recovery.
+			return fmt.Errorf("receipt WAL local seq %d: %w: graph Delete effects are not replayable yet", entry.Seq, errReceiptWALUnion)
 		case *edgeDeleteReceiptEnvelope:
 			seenReceipt = true
 			origin, seq = value.Origin, value.OriginSeq

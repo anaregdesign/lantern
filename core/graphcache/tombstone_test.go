@@ -96,6 +96,100 @@ func TestDeleteHLCOutcomesRespectCausalAdmissionAndCapacity(t *testing.T) {
 	})
 }
 
+func TestDeleteHLCDecisionsCheckedRetainsAcceptedRequestPositions(t *testing.T) {
+	expiration := time.Now().Add(time.Hour)
+	older := hlc.Timestamp{WallNs: 10}
+	newer := hlc.Timestamp{WallNs: 20}
+
+	t.Run("vertices", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if !c.PutVertexWithExpirationHLC("protected", "value", expiration, newer) ||
+			!c.PutVertexWithExpirationHLC("live", "value", expiration, older) {
+			t.Fatal("seed vertex Put failed")
+		}
+		existed, accepted, err := c.DeleteVerticesHLCDecisionsChecked(
+			[]string{"protected", "absent", "protected", "live", "live"}, older, expiration)
+		if err != nil || !slices.Equal(existed, []bool{false, false, false, true, false}) ||
+			!slices.Equal(accepted, []int{1, 3, 4}) {
+			t.Fatalf("vertex decisions = existed %v, accepted %v, error %v", existed, accepted, err)
+		}
+		if _, ok := c.GetVertex("protected"); !ok {
+			t.Fatal("rejected Delete removed protected vertex")
+		}
+		if c.PutVertexWithExpirationHLC("absent", "stale", expiration, hlc.Timestamp{WallNs: 9}) {
+			t.Fatal("accepted absent-key Delete did not retain a tombstone")
+		}
+	})
+
+	t.Run("edges", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		if !c.PutEdgeWithExpirationHLC("a", "protected", 1, expiration, newer) ||
+			!c.PutEdgeWithExpirationHLC("a", "live", 1, expiration, older) {
+			t.Fatal("seed edge Put failed")
+		}
+		existed, accepted, err := c.DeleteEdgesHLCDecisionsChecked([]EdgeKey[string]{
+			{Tail: "a", Head: "protected"}, {Tail: "a", Head: "absent"},
+			{Tail: "a", Head: "protected"}, {Tail: "a", Head: "live"}, {Tail: "a", Head: "live"},
+		}, older, expiration)
+		if err != nil || !slices.Equal(existed, []bool{false, false, false, true, false}) ||
+			!slices.Equal(accepted, []int{1, 3, 4}) {
+			t.Fatalf("edge decisions = existed %v, accepted %v, error %v", existed, accepted, err)
+		}
+		if _, ok := c.GetWeight("a", "protected"); !ok {
+			t.Fatal("rejected Delete removed protected edge")
+		}
+		if c.PutEdgeWithExpirationHLC("a", "absent", 1, expiration, hlc.Timestamp{WallNs: 9}) {
+			t.Fatal("accepted absent-edge Delete did not retain a tombstone")
+		}
+	})
+
+	t.Run("newer edge Add survives two accepted Delete positions", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Minute)
+		key := EdgeKey[string]{Tail: "a", Head: "b"}
+		if !c.AddEdgeWithExpirationContribHLC(key.Tail, key.Head, 1, expiration, ContribID{1}, hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("seed newer Add failed")
+		}
+		existed, accepted, err := c.DeleteEdgesHLCDecisionsChecked([]EdgeKey[string]{key, key}, newer, expiration)
+		if err != nil || !slices.Equal(existed, []bool{true, true}) || !slices.Equal(accepted, []int{0, 1}) {
+			t.Fatalf("duplicate edge decisions = %v, %v, %v", existed, accepted, err)
+		}
+		if weight, ok := c.GetWeight(key.Tail, key.Head); !ok || weight != 1 {
+			t.Fatalf("newer Add changed after accepted Deletes: %g, %v", weight, ok)
+		}
+	})
+
+	t.Run("capacity errors return no decision or partial effect", func(t *testing.T) {
+		vertices := NewGraphCache[string, string](time.Minute)
+		vertices.SetCausalMetadataLimits(CausalMetadataLimits{MaxVertexEntries: 1})
+		if !vertices.PutVertexWithExpirationHLC("present", "value", expiration, older) {
+			t.Fatal("seed vertex Put failed")
+		}
+		existed, accepted, err := vertices.DeleteVerticesHLCDecisionsChecked([]string{"present", "new"}, newer, expiration)
+		var capacity *CausalMetadataCapacityError
+		if existed != nil || accepted != nil || !errors.As(err, &capacity) {
+			t.Fatalf("vertex capacity = %v, %v, %v", existed, accepted, err)
+		}
+		if _, ok := vertices.GetVertex("present"); !ok {
+			t.Fatal("capacity error partially deleted vertex")
+		}
+
+		edges := NewGraphCache[string, string](time.Minute)
+		edges.SetCausalMetadataLimits(CausalMetadataLimits{MaxEdgeEntries: 1})
+		if !edges.PutEdgeWithExpirationHLC("a", "present", 1, expiration, older) {
+			t.Fatal("seed edge Put failed")
+		}
+		existed, accepted, err = edges.DeleteEdgesHLCDecisionsChecked([]EdgeKey[string]{
+			{Tail: "a", Head: "present"}, {Tail: "a", Head: "new"},
+		}, newer, expiration)
+		if existed != nil || accepted != nil || !errors.As(err, &capacity) {
+			t.Fatalf("edge capacity = %v, %v, %v", existed, accepted, err)
+		}
+		if _, ok := edges.GetWeight("a", "present"); !ok {
+			t.Fatal("capacity error partially deleted edge")
+		}
+	})
+}
+
 // After DeleteVertexHLC at T1, a later Put with strictly-older T0 must
 // not resurrect the key. A Put with T2 > T1 (or equal) is allowed and
 // must clear the tombstone so further T1 Puts are accepted as normal LWW.

@@ -121,7 +121,7 @@ func (c *GraphCache[S, T]) ApplySnapshotVertexTombstoneHLC(key S, ts hlc.Timesta
 	if !time.Now().Before(expiration) {
 		return
 	}
-	_, _, _ = c.deleteVerticesHLC([]S{key}, ts, expiration, false, true, false)
+	_, _, _, _ = c.deleteVerticesHLC([]S{key}, ts, expiration, false, true, false)
 }
 
 // ApplySnapshotEdgeTombstoneHLC is the edge counterpart. Like other remote
@@ -199,7 +199,7 @@ func (c *GraphCache[S, T]) DeleteVertexHLC(key S, ts hlc.Timestamp, expiration t
 // this is intentional so a Delete-before-Add race is still resolved by
 // LWW once the (out-of-order) Add arrives.
 func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time) int {
-	n, _, _ := c.deleteVerticesHLC(keys, ts, expiration, false, false, false)
+	n, _, _, _ := c.deleteVerticesHLC(keys, ts, expiration, false, false, false)
 	return n
 }
 
@@ -207,23 +207,33 @@ func (c *GraphCache[S, T]) DeleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 // DeleteVerticesHLC. A causal-metadata budget overflow leaves graph and
 // causal state unchanged.
 func (c *GraphCache[S, T]) DeleteVerticesHLCChecked(keys []S, ts hlc.Timestamp, expiration time.Time) (int, error) {
-	n, _, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, false)
+	n, _, _, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, false)
 	return n, err
 }
 
 // DeleteVerticesHLCOutcomesChecked is the exact local-origin batch result.
 // A capacity error returns no outcomes and leaves graph and causal state as-is.
 func (c *GraphCache[S, T]) DeleteVerticesHLCOutcomesChecked(keys []S, ts hlc.Timestamp, expiration time.Time) ([]bool, error) {
-	_, outcomes, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, true)
+	_, outcomes, _, err := c.deleteVerticesHLC(keys, ts, expiration, true, false, true)
 	return outcomes, err
 }
 
-func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time, strict, deferSearchRecovery, withOutcomes bool) (int, []bool, error) {
+// DeleteVerticesHLCDecisionsChecked returns both the public Existed observation
+// and the causally accepted request indexes from one graph lock. An accepted
+// absent key has Existed=false but still appears in acceptedIndexes; a rejected
+// key also has Existed=false but is absent from acceptedIndexes. Duplicate
+// request positions remain distinct and ordered.
+func (c *GraphCache[S, T]) DeleteVerticesHLCDecisionsChecked(keys []S, ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error) {
+	_, existed, acceptedIndexes, err = c.deleteVerticesHLC(keys, ts, expiration, true, false, true)
+	return existed, acceptedIndexes, err
+}
+
+func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expiration time.Time, strict, deferSearchRecovery, withOutcomes bool) (int, []bool, []int, error) {
 	if len(keys) == 0 {
 		if withOutcomes {
-			return 0, []bool{}, nil
+			return 0, []bool{}, []int{}, nil
 		}
-		return 0, nil, nil
+		return 0, nil, nil, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -250,7 +260,7 @@ func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 	}
 	if strict && ts != (hlc.Timestamp{}) {
 		if err := c.checkVertexCausalCapacityLocked(accepted); err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 	}
 	var n int
@@ -277,7 +287,7 @@ func (c *GraphCache[S, T]) deleteVerticesHLC(keys []S, ts hlc.Timestamp, expirat
 	if !deferSearchRecovery {
 		c.rebuildIncompleteSearchLocked()
 	}
-	return n, outcomes, nil
+	return n, outcomes, acceptedIndexes, nil
 }
 
 // DeleteEdgeHLC removes the (tail, head) edge and stamps a tombstone.
@@ -302,30 +312,38 @@ func (c *GraphCache[S, T]) DeleteEdgeHLC(tail, head S, ts hlc.Timestamp, expirat
 
 // DeleteEdgesHLC is the batch sibling of DeleteEdgeHLC.
 func (c *GraphCache[S, T]) DeleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time) int {
-	n, _, _ := c.deleteEdgesHLC(keys, ts, expiration, false, false)
+	n, _, _, _ := c.deleteEdgesHLC(keys, ts, expiration, false, false)
 	return n
 }
 
 // DeleteEdgesHLCChecked is the locally-originated sibling of DeleteEdgesHLC.
 // It reserves every newly-retained edge identity before deleting any edge.
 func (c *GraphCache[S, T]) DeleteEdgesHLCChecked(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time) (int, error) {
-	n, _, err := c.deleteEdgesHLC(keys, ts, expiration, true, false)
+	n, _, _, err := c.deleteEdgesHLC(keys, ts, expiration, true, false)
 	return n, err
 }
 
 // DeleteEdgesHLCOutcomesChecked returns one request-index-aligned observation
 // without changing the legacy HLC/tombstone behavior or aggregate count.
 func (c *GraphCache[S, T]) DeleteEdgesHLCOutcomesChecked(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time) ([]bool, error) {
-	_, outcomes, err := c.deleteEdgesHLC(keys, ts, expiration, true, true)
+	_, outcomes, _, err := c.deleteEdgesHLC(keys, ts, expiration, true, true)
 	return outcomes, err
 }
 
-func (c *GraphCache[S, T]) deleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time, strict, withOutcomes bool) (int, []bool, error) {
+// DeleteEdgesHLCDecisionsChecked is the edge sibling of
+// DeleteVerticesHLCDecisionsChecked. Accepted indexes preserve absent and
+// duplicate request positions, independently of Existed.
+func (c *GraphCache[S, T]) DeleteEdgesHLCDecisionsChecked(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error) {
+	_, existed, acceptedIndexes, err = c.deleteEdgesHLC(keys, ts, expiration, true, true)
+	return existed, acceptedIndexes, err
+}
+
+func (c *GraphCache[S, T]) deleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time, strict, withOutcomes bool) (int, []bool, []int, error) {
 	if len(keys) == 0 {
 		if withOutcomes {
-			return 0, []bool{}, nil
+			return 0, []bool{}, []int{}, nil
 		}
-		return 0, nil, nil
+		return 0, nil, nil, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -344,7 +362,7 @@ func (c *GraphCache[S, T]) deleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, e
 	}
 	if strict && ts != (hlc.Timestamp{}) {
 		if err := c.checkEdgeCausalCapacityLocked(accepted); err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 	}
 	n := 0
@@ -368,7 +386,7 @@ func (c *GraphCache[S, T]) deleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, e
 			c.clearEdgeCausalBarrierLocked(k.Tail, k.Head)
 		}
 	}
-	return n, outcomes, nil
+	return n, outcomes, acceptedIndexes, nil
 }
 
 // DeleteByPrefixHLC is the tombstone-aware sibling of DeleteByPrefix:

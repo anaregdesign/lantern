@@ -24,25 +24,26 @@ import (
 // header is versioned independently of the inner LRED receipt format. No
 // production provider or write path selects this codec yet.
 const (
-	receiptWALUnionMagic      = "LRWU\x02\x00\x00\x00"
-	receiptWALUnionHeaderSize = 16 // magic, kind, reserved[3], body length
-	receiptWALUnionGraph      = byte(1)
-	receiptWALUnionEdgeDelete = byte(2)
-	receiptWALGraphHeaderSize = 12 // protobuf length, repeated-slot count, nil count
+	receiptWALUnionMagic             = "LRWU\x03\x00\x00\x00"
+	receiptWALUnionHeaderSize        = 16 // magic, kind, reserved[3], body length
+	receiptWALUnionGraph             = byte(1)
+	receiptWALUnionEdgeDelete        = byte(2)
+	receiptWALUnionGraphDeleteEffect = byte(3)
+	receiptWALGraphHeaderSize        = 12 // protobuf length, repeated-slot count, nil count
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
 	// The existing LRED receipt body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
-	// A new reachable Mutation field must not silently change what the v2
+	// A new reachable Mutation field must not silently change what the v3
 	// graph kind persists or replays. Review and version the WAL schema first.
-	receiptWALGraphSchemaFingerprintV2 = "7940660efd6cbc80ebf0e6804cd22e285e292d498c66c178fd175d68f4213d3d"
+	receiptWALGraphSchemaFingerprintV3 = "7940660efd6cbc80ebf0e6804cd22e285e292d498c66c178fd175d68f4213d3d"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
 
 var receiptWALGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
-	if digest != receiptWALGraphSchemaFingerprintV2 {
-		return receiptWALUnionError("WAL union v2 graph schema changed: %s", digest)
+	if digest != receiptWALGraphSchemaFingerprintV3 {
+		return receiptWALUnionError("WAL union v3 graph schema changed: %s", digest)
 	}
 	return nil
 })
@@ -60,11 +61,17 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	var err error
 	switch value := op.(type) {
 	case *pb.Mutation:
+		if isAnyGraphDelete(value) {
+			return nil, receiptWALUnionError("graph Delete requires accepted-effect envelope")
+		}
 		kind = receiptWALUnionGraph
 		body, err = encodeReceiptWALGraph(value)
 	case *edgeDeleteReceiptEnvelope:
 		kind = receiptWALUnionEdgeDelete
 		body, err = encodeReceiptEdgeDeleteWAL(value)
+	case *graphDeleteEffectEnvelope:
+		kind = receiptWALUnionGraphDeleteEffect
+		body, err = encodeGraphDeleteEffectWAL(value)
 	default:
 		return nil, receiptWALUnionError("unexpected operation type %T", op)
 	}
@@ -98,13 +105,22 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 	body := raw[receiptWALUnionHeaderSize:]
 	switch raw[8] {
 	case receiptWALUnionGraph:
-		return decodeReceiptWALGraph(body)
+		value, err := decodeReceiptWALGraph(body)
+		if err != nil {
+			return nil, err
+		}
+		if isAnyGraphDelete(value) {
+			return nil, receiptWALUnionError("graph Delete lacks accepted-effect envelope")
+		}
+		return value, nil
 	case receiptWALUnionEdgeDelete:
 		value, err := decodeReceiptEdgeDeleteWAL(body)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
 		}
 		return value, nil
+	case receiptWALUnionGraphDeleteEffect:
+		return decodeGraphDeleteEffectWAL(body)
 	default:
 		return nil, receiptWALUnionError("unknown operation kind %d", raw[8])
 	}
@@ -120,6 +136,9 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 	}
 	switch value := entry.Op.(type) {
 	case *pb.Mutation:
+		if isAnyGraphDelete(value) {
+			return receiptWALUnionError("graph Delete lacks accepted-effect envelope")
+		}
 		if err := validateReceiptWALGraph(value); err != nil {
 			return err
 		}
@@ -128,6 +147,18 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		payloadHLC := hlc.Timestamp{WallNs: value.GetHlc().GetWallNs(), Logical: value.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
 			return receiptWALUnionError("FileWAL HLC differs from graph mutation HLC")
+		}
+		return nil
+	case *graphDeleteEffectEnvelope:
+		if err := validateGraphDeleteEffectEnvelope(value); err != nil {
+			return err
+		}
+		m := value.Mutation
+		var node hlc.NodeID
+		copy(node[:], m.GetHlc().GetNodeId())
+		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
+		if !entry.HLC.Equal(payloadHLC) {
+			return receiptWALUnionError("FileWAL HLC differs from graph Delete effect HLC")
 		}
 		return nil
 	case *edgeDeleteReceiptEnvelope:
