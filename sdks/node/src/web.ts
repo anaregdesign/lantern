@@ -46,6 +46,16 @@ export function connectWeb(baseUrl: string, args: LanternArgs = {}): Lantern {
 
 export { Lantern } from "./client.js";
 export type { EdgePutResult, LanternArgs, PutOutcome, VertexPutResult } from "./client.js";
+export { IdentityNextCursor } from "./changes.js";
+export type {
+  IdentityCheckpointFrame,
+  IdentityChunkFrame,
+  IdentityEdgeKey,
+  IdentityFrame,
+  IdentityHlc,
+  IdentityOperation,
+  IdentitySubscribeOptions,
+} from "./changes.js";
 export {
   ReplicationPeer_State,
   SearchErrorReason,

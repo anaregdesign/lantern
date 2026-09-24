@@ -1958,6 +1958,34 @@ describe("searchVertices request building (#639)", () => {
 });
 
 describe("bearer token option (#850)", () => {
+  test("identity stream uses the same bearer interceptor", async () => {
+    let seen: string | null = null;
+    const c = connect(baseUrl, {
+      token: "cdc-secret",
+      transportOptions: { httpVersion: "1.1" },
+      interceptors: [
+        (next) => (req) => {
+          if (req.method.name === "Subscribe") seen = req.header.get("Authorization");
+          return next(req);
+        },
+      ],
+    });
+    try {
+      // The narrow graph stub does not serve replication; the interceptor
+      // still observes the outgoing Subscribe request before UNIMPLEMENTED.
+      let failed = false;
+      try {
+        await c.subscribeIdentity()[Symbol.asyncIterator]().next();
+      } catch {
+        failed = true;
+      }
+      expect(failed).toBe(true);
+      expect(seen).toBe("Bearer cdc-secret");
+    } finally {
+      c.close();
+    }
+  });
+
   test("token attaches Authorization on every call", async () => {
     let seen: string | null = null;
     const c = connect(baseUrl, {
