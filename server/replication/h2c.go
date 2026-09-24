@@ -6,7 +6,7 @@
 // The default speaks HTTP/2 over plaintext (h2c) so the cluster-internal
 // replication path (HA topology) works without TLS plumbing.
 // Operators that need TLS supply their own http.Client backed by an
-// http2.Transport with a real *tls.Config.
+// HTTP/2-enabled http.Transport with a real *tls.Config.
 //
 // peerBaseURL prepends the "http://" scheme to a bare "host:port"
 // peer address so Connect-Go's generated client constructor accepts
@@ -17,28 +17,15 @@
 package replication
 
 import (
-	"context"
-	"crypto/tls"
-	"net"
 	"net/http"
 	"strings"
-
-	"golang.org/x/net/http2"
 )
 
 func defaultH2CClient() *http.Client {
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
 	return &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			// AllowHTTP=true makes http2.Transport treat
-			// DialTLSContext as the plain TCP dialer (no TLS
-			// handshake). The tls.Config arg is honored by the
-			// transport but ignored by us.
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		},
+		Transport: &http.Transport{Protocols: protocols},
 	}
 }
 

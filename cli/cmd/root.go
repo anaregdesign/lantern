@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
 
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/spf13/cobra"
@@ -238,28 +237,24 @@ func dial() (*client.Lantern, error) {
 }
 
 // buildHTTPClient returns an h2c-flavoured *http.Client when TLS is
-// off, or a real TLS-backed http2.Transport when --tls / --tls-ca /
+// off, or an HTTP/2-only TLS client when --tls / --tls-ca /
 // --tls-cert is supplied.
 func buildHTTPClient() (*http.Client, error) {
 	if !flagTLS && flagTLSCA == "" && flagTLSCert == "" {
-		// Plain h2c: same pattern as sdks/go/connect_h2c.go's
-		// defaultH2CClient (kept inline so the CLI does not have to
-		// reach into an SDK internal helper).
+		// Keep this aligned with the Go SDK's default h2c transport.
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
 		return &http.Client{
-			Transport: &http2.Transport{
-				AllowHTTP: true,
-				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, network, addr)
-				},
-			},
+			Transport: &http.Transport{Protocols: protocols},
 		}, nil
 	}
 	cfg, err := buildTLSConfig()
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}, nil
+	protocols := new(http.Protocols)
+	protocols.SetHTTP2(true)
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: cfg, Protocols: protocols}}, nil
 }
 
 func buildTLSConfig() (*tls.Config, error) {

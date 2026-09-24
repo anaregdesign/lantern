@@ -2,9 +2,7 @@ package integration_test
 
 import (
 	"context"
-	"crypto/tls"
 	"math"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,7 +10,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
@@ -219,14 +216,10 @@ func newConnectClientFor(t *testing.T, baseURL string, opts ...client.Option) *c
 // that explicitly calls Close on the *client.Lantern does not affect
 // any other in-flight client in a parallel test.
 func h2cClient() *http.Client {
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
 	return &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		},
+		Transport: &http.Transport{Protocols: protocols},
 	}
 }
 

@@ -3,12 +3,9 @@ module github.com/anaregdesign/lantern/sdks/go
 go 1.26.8
 
 require (
-	connectrpc.com/connect v1.20.0
+	connectrpc.com/connect v1.21.0
 	github.com/anaregdesign/lantern/pb v0.12.0
-	golang.org/x/net v0.57.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
-
-require golang.org/x/text v0.40.0 // indirect
 
 replace github.com/anaregdesign/lantern/pb => ../../pb

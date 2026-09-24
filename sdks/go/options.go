@@ -43,8 +43,7 @@ type Option func(*options)
 // box against the Lantern primary listener.
 //
 // For TLS / mTLS supply a TLS-configured http.Client: build an
-// http2.Transport with a real *tls.Config and wrap it in
-// &http.Client{Transport: ...}.
+// http.Transport with TLSClientConfig and HTTP2 enabled in Protocols.
 func WithHTTPClient(c *http.Client) Option {
 	return func(o *options) { o.httpClient = c }
 }

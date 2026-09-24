@@ -63,7 +63,6 @@ import (
     "crypto/tls"
     "net/http"
 
-    "golang.org/x/net/http2"
     client "github.com/anaregdesign/lantern/sdks/go"
 )
 
@@ -71,7 +70,9 @@ cfg := &tls.Config{
     RootCAs:    pool,
     NextProtos: []string{"h2"},
 }
-hc := &http.Client{Transport: &http2.Transport{TLSClientConfig: cfg}}
+protocols := new(http.Protocols)
+protocols.SetHTTP2(true)
+hc := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg, Protocols: protocols}}
 c, _ := client.NewLantern("https://lantern.example.com:6380",
     client.WithHTTPClient(hc))
 ```
