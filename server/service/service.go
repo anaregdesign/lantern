@@ -377,13 +377,10 @@ func (s *LanternService) WithReplication(log *mutationlog.Log, clock *hlc.Clock,
 // Snapshot copies its origin/log cutoffs and graph image, never while it sends
 // frames to a potentially slow client.
 func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
-	if s.publicationFaultCount != 0 {
-		return publicationGapError()
-	}
-	capture()
-	return nil
+	return s.withCommittedView(func() error {
+		capture()
+		return nil
+	})
 }
 
 // withReplicationSubscribeCut pins the same publication boundary while a
@@ -391,13 +388,10 @@ func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
 // vector). The fault channel belongs to that cut's generation, so a transient
 // publication failure still gaps the stream even if repair finishes quickly.
 func (s *LanternService) withReplicationSubscribeCut(capture func(<-chan struct{})) error {
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
-	if s.publicationFaultCount != 0 {
-		return publicationGapError()
-	}
-	capture(s.publicationFaultCh)
-	return nil
+	return s.withCommittedView(func() error {
+		capture(s.publicationFaultCh)
+		return nil
+	})
 }
 
 // publicationStatus returns one fault generation. A stream keeps this

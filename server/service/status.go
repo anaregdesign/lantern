@@ -77,6 +77,18 @@ func (s *LanternService) GetServerStatus(ctx context.Context, _ *pb.GetServerSta
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	var resp *pb.GetServerStatusResponse
+	err := s.withCommittedView(func() error {
+		resp = s.serverStatusSnapshot()
+		return nil
+	})
+	return resp, err
+}
+
+// serverStatusSnapshot reads the graph, index, and causal counters under the
+// caller's committed view. Keeping the copy together prevents a direct
+// GetServerStatus caller from observing a receipt publication midpoint.
+func (s *LanternService) serverStatusSnapshot() *pb.GetServerStatusResponse {
 	now := time.Now()
 	resp := &pb.GetServerStatusResponse{
 		Version:            statusVersion(s.statusInfo.Version),
@@ -97,7 +109,7 @@ func (s *LanternService) GetServerStatus(ctx context.Context, _ *pb.GetServerSta
 		resp.StartedAt = timestamppb.New(s.startedAt)
 		resp.Uptime = durationpb.New(now.Sub(s.startedAt))
 	}
-	return resp, nil
+	return resp
 }
 
 func causalMetadataStatus(stats graphcache.CausalMetadataStats) *pb.CausalMetadataStatus {
