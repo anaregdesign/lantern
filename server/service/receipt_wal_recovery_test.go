@@ -1,10 +1,12 @@
 package service
 
 import (
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,17 +133,22 @@ func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T)
 
 func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
-	deleteGraph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{
-		DeleteEdge: &pb.DeleteEdgeRequest{Tail: "tail", Head: "present"},
+	deleteGraph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "tail", Head: "present"}}},
 	}})
 	deleteGraph.Seq = 2
 	deleteGraph.Hlc.Logical++
-	deleteEntry := mutationlog.Entry{HLC: receiptWALUnionGraphHLC(deleteGraph), Op: deleteGraph}
+	deleteEffect, err := newGraphDeleteEffectEnvelope(deleteGraph, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteEntry := mutationlog.Entry{HLC: receiptWALUnionGraphHLC(deleteGraph), Op: deleteEffect}
 	for _, tc := range []struct {
 		name    string
 		entries []mutationlog.Entry
 	}{
-		{"graph Delete deadline missing", []mutationlog.Entry{auditGraphEntry(1), deleteEntry, receiptEntry}},
+		{"graph Delete accepted effect is not replayable yet", []mutationlog.Entry{auditGraphEntry(1), deleteEntry, receiptEntry}},
+		{"graph Delete after receipt remains gated", []mutationlog.Entry{auditGraphEntry(1), receiptEntry, deleteEntry}},
 		{"graph write after receipt", []mutationlog.Entry{receiptEntry, auditGraphEntry(1)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,6 +158,50 @@ func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testin
 				t.Fatalf("candidate = %p, %v; want no partially serving state", candidate, err)
 			}
 		})
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialState(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	deleteGraph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+		DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"absent"}},
+	}})
+	deleteGraph.Seq = 2
+	deleteGraph.Hlc.Logical++
+	// FileWAL computes a valid CRC around this old v2 payload. Merely
+	// detecting corrupt bytes is insufficient: the version itself must be
+	// refused because v2 carried no accepted-index decision.
+	encodeOld := func(op mutationlog.MutationOp) ([]byte, error) {
+		m := op.(*pb.Mutation)
+		if m.GetSeq() == 1 {
+			return encodeReceiptWALUnion(m)
+		}
+		body, err := encodeReceiptWALGraph(m)
+		if err != nil {
+			return nil, err
+		}
+		raw := make([]byte, receiptWALUnionHeaderSize+len(body))
+		copy(raw[:8], "LRWU\x02\x00\x00\x00")
+		raw[8] = receiptWALUnionGraph
+		binary.BigEndian.PutUint32(raw[12:16], uint32(len(body)))
+		copy(raw[16:], body)
+		return raw, nil
+	}
+	path := filepath.Join(t.TempDir(), "old-delete.wal")
+	wal, err := mutationlog.CreateFileWAL(path, encodeOld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, m := range []*pb.Mutation{auditGraphEntry(1).Op.(*pb.Mutation), deleteGraph} {
+		if err := wal.Write(mutationlog.Entry{Seq: uint64(i + 1), HLC: receiptWALUnionGraphHLC(m), Op: m}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); candidate != nil || err == nil || !strings.Contains(err.Error(), "decode seq 2") {
+		t.Fatalf("v2 Delete recovery = %p, %v; want no candidate", candidate, err)
 	}
 }
 
