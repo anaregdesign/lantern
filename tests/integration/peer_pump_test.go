@@ -1227,7 +1227,7 @@ func TestPeerPump_DeletePrefixKeepsOriginDeadlineAcrossWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer feed.Close()
+	defer func() { _ = feed.Close() }()
 	for i := 0; i < 2; i++ {
 		if !feed.Receive() {
 			t.Fatalf("Delete mutation %d missing from h2c Subscribe: %v", i, feed.Err())
@@ -1255,6 +1255,42 @@ func TestPeerPump_DeletePrefixKeepsOriginDeadlineAcrossWire(t *testing.T) {
 		!followerTombstones.Vertices[0].Expiration.Equal(originTombstones.Vertices[0].Expiration) ||
 		!followerTombstones.Edges[0].Expiration.Equal(originTombstones.Edges[0].Expiration) {
 		t.Fatalf("follower renewed or lost Delete deadlines: origin=%+v follower=%+v", originTombstones, followerTombstones)
+	}
+}
+
+func TestPeerPump_ForgedDeleteDeadlineRejectedAcrossWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	origin := newPumpNode(t, hlc.NodeID{0xD7})
+	follower := newPumpNode(t, hlc.NodeID{0xD8})
+	forgedWall := time.Now().Add(2 * time.Hour)
+	mutation := &pb.Mutation{
+		Origin: origin.nodeID[:], Seq: 1,
+		Hlc: &pb.HLCTimestamp{WallNs: forgedWall.UnixNano(), NodeId: origin.nodeID[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{
+			DeleteVertex: &pb.DeleteVertexRequest{Key: "forged/deadline"},
+		}},
+		TombstoneExpiration: timestamppb.New(forgedWall.Add(time.Hour)),
+	}
+	if _, err := origin.log.Append(mutation, hlc.Timestamp{WallNs: forgedWall.UnixNano(), NodeID: origin.nodeID}); err != nil {
+		t.Fatal(err)
+	}
+	feed, err := newReplicationRawClient(t, origin.url).Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = feed.Close() }()
+	if !feed.Receive() {
+		t.Fatalf("forged Delete was not delivered over h2c: %v", feed.Err())
+	}
+	if err := follower.svc.ApplyMutation(ctx, feed.Msg().GetMutation()); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("forged future Delete deadline applied: %v", err)
+	}
+	if seq := follower.svc.LocalSeq(origin.nodeID); seq != 0 || follower.log.Len() != 0 {
+		t.Fatalf("forged Delete advanced follower origin/log to %d/%d", seq, follower.log.Len())
+	}
+	if tombs := follower.cache.SnapshotReplication().Tombstones; len(tombs.Vertices) != 0 {
+		t.Fatalf("forged Delete installed a tombstone: %+v", tombs.Vertices)
 	}
 }
 

@@ -364,11 +364,12 @@ func TestLanternReplicationService_SnapshotCutWaitsForRemoteDeleteCommit(t *test
 	svc := NewLanternService(backend).WithReplication(log, clock, nil).WithTombstoneTTL(time.Hour)
 	replication := NewLanternReplicationService(log, backend, clock).WithOriginStates(svc)
 	origin := hlc.NodeID{0x01}
+	deadline := time.Now().Add(time.Hour)
 	mutation := &pb.Mutation{
 		Origin: origin[:], Seq: 1,
 		Hlc:                 &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]},
 		Op:                  &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "victim"}}},
-		TombstoneExpiration: timestamppb.New(time.Now().Add(time.Hour)),
+		TombstoneExpiration: timestamppb.New(deadline),
 	}
 	applyDone := make(chan error, 1)
 	go func() { applyDone <- svc.ApplyMutation(context.Background(), mutation) }()

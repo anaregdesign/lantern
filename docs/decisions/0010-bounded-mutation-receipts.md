@@ -276,7 +276,12 @@ handlers use one sampled deadline for the graph effect and published mutation;
 follower apply uses that value without renewing it. An older graph Delete WAL
 record lacking the field, an invalid timestamp, or a version 1 union fails
 closed on replay. Prefix Deletes still publish exact victim batches and carry
-that same sampled deadline. A genesis recovery audit must not infer a missing
+that same sampled deadline. The deadline is sampled before the origin HLC and
+checked against both origin HLC + D4 and receiver now + D4 + D3 maximum skew;
+an arbitrary future deadline or forged future HLC fails closed. The origin
+checks those bounds before graph mutation, including after a clock rollback.
+A genesis
+recovery audit must not infer a missing
 deadline from its current clock; accepting these new records does not by itself
 certify a complete graph/receipt restore.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes

@@ -569,6 +569,17 @@ before declaring recovery complete.
 
 ## 7. Rolling upgrade procedure
 
+**Compatibility exception for the absolute Delete deadline wire field.**
+The `Mutation.tombstone_expiration` transition cannot use the normal rolling
+procedure below. An older follower ignores the new field and renews D4 from
+its own clock; a newer follower rejects a retained older Delete missing the
+field. Keep old and new versions out of the same replication membership,
+including during bootstrap and Subscribe catch-up. Pausing new Deletes alone
+does not remove older Delete entries from retained logs. Deploy a fresh,
+homogeneous upgraded cohort, or prepare and verify a separate migration of an
+existing cluster before changing its peer set. No mixed-version migration is
+qualified by this release.
+
 The chart uses `RollingUpdate` with `podManagementPolicy: Parallel`
 for boot, but one-at-a-time for upgrades. Manual steps for non-Helm
 deploys:
@@ -635,9 +646,10 @@ backup/restore feature
 replication.
 
 **Backwards compatibility.** v1's Subscribe/Snapshot wire format is
-versioned at the proto level; minor version bumps within v1 are
-wire-compatible. Cross-major upgrades (v1 → v2) are out of scope for
-this runbook.
+versioned at the proto level, but a parseable new field can still change
+replication semantics. Follow the compatibility exception above for the
+absolute Delete deadline. Cross-major upgrades (v1 → v2) are out of scope
+for this runbook.
 
 ---
 

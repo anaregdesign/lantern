@@ -182,12 +182,13 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
-		ts := s.clock.Now()
-		tombExp := time.Time{}
+		ts, tombExp, err := s.sampleDeleteStamp()
+		if err != nil {
+			return nil, err
+		}
 		var keys []string
 		if s.tombstoneTTL > 0 {
 			var err error
-			tombExp = s.tombstoneExpiration()
 			keys, err = s.cache.DeleteByPrefixHLCCheckedKeys(ctx, in.GetPrefix(), limit, ts, tombExp)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -262,12 +263,13 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 		// Share one commit HLC between the edge tombstones and the logged
 		// mutation so a peer replaying this delete stamps the same watermark
 		// the origin did (see DeleteEdges for the divergence this closes).
-		ts := s.clock.Now()
-		tombExp := time.Time{}
+		ts, tombExp, err := s.sampleDeleteStamp()
+		if err != nil {
+			return nil, err
+		}
 		var keys []graphcache.EdgeKey[string]
 		if s.tombstoneTTL > 0 {
 			var err error
-			tombExp = s.tombstoneExpiration()
 			keys, err = s.cache.DeleteEdgesByPrefixHLCCheckedKeys(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), ts, tombExp)
 			if err != nil {
 				if ctx.Err() != nil {

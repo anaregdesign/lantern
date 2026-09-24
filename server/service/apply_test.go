@@ -48,17 +48,21 @@ func TestApplyMutation_UnknownReceiptArmFailsClosed(t *testing.T) {
 
 func TestApplyMutation_DeleteRetainsOriginDeadline(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		op   *pb.MutationOp
-		exp  *timestamppb.Timestamp
-		want connect.Code
+		name      string
+		op        *pb.MutationOp
+		exp       *timestamppb.Timestamp
+		hlcOffset time.Duration
+		want      connect.Code
 	}{
-		{"vertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, timestamppb.New(time.Now().Add(15 * time.Minute)), connect.Code(0)},
-		{"edge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}}, timestamppb.New(time.Now().Add(15 * time.Minute)), connect.Code(0)},
-		{"expired edge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}}, timestamppb.New(time.Now().Add(-time.Minute)), connect.Code(0)},
-		{"missing deadline", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, nil, connect.CodeInvalidArgument},
-		{"invalid deadline", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, &timestamppb.Timestamp{Seconds: 253402300800}, connect.CodeInvalidArgument},
-		{"non Delete deadline", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v"}}}}, timestamppb.New(time.Now().Add(time.Hour)), connect.CodeInvalidArgument},
+		{name: "vertex", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, exp: timestamppb.New(time.Now().Add(15 * time.Minute))},
+		{name: "edge", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}}, exp: timestamppb.New(time.Now().Add(15 * time.Minute))},
+		{name: "within skew", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}}, exp: timestamppb.New(time.Now().Add(time.Hour + 200*time.Millisecond)), hlcOffset: 200 * time.Millisecond},
+		{name: "expired edge", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}}, exp: timestamppb.New(time.Now().Add(-time.Minute))},
+		{name: "missing deadline", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, want: connect.CodeInvalidArgument},
+		{name: "invalid deadline", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, exp: &timestamppb.Timestamp{Seconds: 253402300800}, want: connect.CodeInvalidArgument},
+		{name: "beyond origin D4", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, exp: timestamppb.New(time.Now().Add(2 * time.Hour)), want: connect.CodeInvalidArgument},
+		{name: "forged future HLC", op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}}, exp: timestamppb.New(time.Now().Add(2 * time.Hour)), hlcOffset: 2 * time.Hour, want: connect.CodeInvalidArgument},
+		{name: "non Delete deadline", op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v"}}}}, exp: timestamppb.New(time.Now().Add(time.Hour)), want: connect.CodeInvalidArgument},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
@@ -68,7 +72,7 @@ func TestApplyMutation_DeleteRetainsOriginDeadline(t *testing.T) {
 			svc := NewLanternService(cache).WithTombstoneTTL(time.Hour).
 				WithReplication(log, hlc.New(hlc.NodeID{0x74}, hlc.Options{}), nil)
 			m := &pb.Mutation{Seq: 1, Origin: origin[:],
-				Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: time.Now().UnixNano()},
+				Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: time.Now().Add(tc.hlcOffset).UnixNano()},
 				Op:  tc.op, TombstoneExpiration: tc.exp}
 			err := svc.ApplyMutation(context.Background(), m)
 			if tc.want == 0 && err != nil {
@@ -959,10 +963,10 @@ func TestApplyMutation_ConvergenceWithTombstones(t *testing.T) {
 			exp := timestamppb.New(time.Now().Add(time.Hour))
 
 			// A single global wall_ns counter gives every mutation a unique
-			// HLC, so the total order is fixed by wall_ns alone and is
-			// independent of delivery order. seqPerOrigin feeds the per-origin
-			// watermark and the synthesized AddEdge ContribID.
-			var wall int64
+			// HLC after the sampled D4 deadline's base wall time, so the
+			// absolute deadline remains within each Delete's HLC + TTL.
+			// seqPerOrigin feeds the per-origin watermark and ContribID.
+			wall := time.Now().UnixNano()
 			seqPerOrigin := make([]uint64, numOrigins)
 			var valSeed int64
 			tape := make([]*pb.Mutation, 0, randWrites+2*vertexPool+2*edgePool)

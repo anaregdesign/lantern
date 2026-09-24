@@ -188,8 +188,10 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 
 	origin := s.clock.NodeID()
 	seq := s.origins.LocalSeq(origin) + 1 // prepareLocalMutationLocked rejected overflow.
-	ts := s.clock.Now()
-	expiration := s.tombstoneExpiration()
+	ts, expiration, err := s.sampleDeleteStamp()
+	if err != nil {
+		return nil, err
+	}
 	graphTx, err := c.cache.BeginEdgeDelete(keys, ts, expiration)
 	if err != nil {
 		return nil, writeError(err)

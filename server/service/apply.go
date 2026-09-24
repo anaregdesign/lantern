@@ -62,7 +62,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		// would otherwise try a graph-only Snapshot as recovery.
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("receipt-bearing replication apply is not enabled"))
 	}
-	if _, err := mutationTombstoneExpiration(m, s.tombstoneTTL > 0); err != nil {
+	if _, err := s.validateIncomingTombstoneExpiration(m); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
 	s.replicationCutMu.Lock()
@@ -83,7 +83,7 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 	// Reuse the origin's absolute deadline. A delayed relay or FileWAL replay
 	// must not renew a Delete floor from its own wall clock.
 	useTomb := s.tombstoneTTL > 0
-	tombExp, err := mutationTombstoneExpiration(m, useTomb)
+	tombExp, err := s.validateIncomingTombstoneExpiration(m)
 	if err != nil {
 		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
@@ -345,9 +345,28 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 	return opName, nil
 }
 
-// mutationTombstoneExpiration enforces the D4 wire contract before a remote
-// mutation enters the pending queue and again before graph replay. The
-// absolute deadline may already be past when a delayed record arrives.
+// validateIncomingTombstoneExpiration bounds a peer's Delete deadline by both
+// the origin HLC and the receiver's clock. The origin samples the deadline
+// before its HLC stamp, so the first bound pins the original D4 duration;
+// the second stops a forged future HLC from extending retention indefinitely.
+// D3 permits up to DefaultMaxSkew between the two nodes' wall clocks.
+// A delayed deadline may already be past.
+func (s *LanternService) validateIncomingTombstoneExpiration(m *pb.Mutation) (time.Time, error) {
+	expiration, err := mutationTombstoneExpiration(m, s.tombstoneTTL > 0)
+	if err != nil || expiration.IsZero() {
+		return expiration, err
+	}
+	if m.GetHlc() == nil {
+		return time.Time{}, fmt.Errorf("Delete mutation lacks its origin HLC")
+	}
+	if err := s.tombstoneDeadlineBounds(m.GetHlc().GetWallNs(), expiration); err != nil {
+		return time.Time{}, err
+	}
+	return expiration, nil
+}
+
+// mutationTombstoneExpiration enforces the D4 wire shape. The serving apply
+// path also checks the configured retention bound before queueing or replay.
 func mutationTombstoneExpiration(m *pb.Mutation, retentionEnabled bool) (time.Time, error) {
 	if m == nil || m.GetOp() == nil {
 		return time.Time{}, fmt.Errorf("mutation has no operation")

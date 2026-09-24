@@ -85,6 +85,29 @@ func TestLanternService_DeleteOutcomesAndLengthDrift(t *testing.T) {
 	}
 }
 
+func TestLanternService_DeleteRejectsClockRollbackBeforeGraphChange(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	if err := cache.PutVertex("kept", &pb.Vertex{Key: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x79}
+	clock := hlc.New(origin, hlc.Options{Now: func() int64 {
+		return time.Now().Add(-2 * time.Hour).UnixNano()
+	}})
+	svc := NewLanternService(cache).WithReplication(log, clock, nil).WithTombstoneTTL(time.Hour)
+	if _, err := svc.DeleteVertices(context.Background(), &pb.DeleteVerticesRequest{Keys: []string{"kept"}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("clock-behind Delete = %v, want FailedPrecondition", err)
+	}
+	if _, exists := cache.GetVertex("kept"); !exists {
+		t.Fatal("clock-behind Delete changed the graph")
+	}
+	if len(cache.SnapshotReplication().Tombstones.Vertices) != 0 || log.Len() != 0 || svc.LocalSeq(origin) != 0 {
+		t.Fatal("clock-behind Delete changed tombstones, log, or origin cursor")
+	}
+}
+
 func futureTs(d time.Duration) *timestamppb.Timestamp {
 	return timestamppb.New(time.Now().Add(d))
 }

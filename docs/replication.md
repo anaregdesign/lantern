@@ -108,7 +108,14 @@ identities. Prefix Deletes publish exact victim batches with the same rule.
 Followers apply that deadline unchanged, even when delivery is delayed past
 it; a D4-enabled receiver rejects a Delete missing the deadline before it
 enters the pending replication queue. This keeps Subscribe and FileWAL replay
-from silently starting a new retention window.
+from silently starting a new retention window. The origin samples the deadline
+before its HLC stamp. A receiver rejects deadlines later than either the
+origin HLC wall time plus its configured D4 TTL or its own current wall time
+plus D4 TTL and the D3 skew allowance. Both checks are needed: the first
+prevents a late relay from stretching the origin's window, while the second
+prevents a forged future HLC from creating an unbounded tombstone. The origin
+runs the same checks before changing its graph, so a wall-clock rollback
+between deadline and HLC sampling fails closed.
 
 An unconditional Put whose absolute expiration is already past at the
 serving node is still an accepted LWW mutation. It returns `EXPIRED`, removes

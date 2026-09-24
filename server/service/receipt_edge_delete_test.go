@@ -294,11 +294,12 @@ func TestEdgeDeleteReceiptCoordinatorIndeterminateWALFailStops(t *testing.T) {
 		t.Fatalf("legacy write after indeterminate WAL = %v", err)
 	}
 	remote := hlc.NodeID{0x55}
+	deadline := time.Now().Add(time.Hour)
 	if err := f.service.ApplyMutation(context.Background(), &pb.Mutation{
 		Origin: remote[:], Seq: 1,
 		Hlc:                 hlcToProto(hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: remote}),
 		Op:                  &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "remote", Head: "blocked"}}}}},
-		TombstoneExpiration: timestamppb.New(time.Now().Add(time.Hour)),
+		TombstoneExpiration: timestamppb.New(deadline),
 	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("remote write after indeterminate WAL = %v", err)
 	}
