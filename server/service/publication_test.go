@@ -34,6 +34,44 @@ func (w *heldPublicationWAL) Write(mutationlog.Entry) error {
 	return nil
 }
 
+func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T) {
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
+	oldGeneration, faulted := svc.publicationStatus()
+	if faulted {
+		t.Fatal("fresh service started with a CDC gap")
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.BeginSnapshotInstall(); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("concurrent Snapshot install error = %v", err)
+	}
+	select {
+	case <-oldGeneration:
+	default:
+		t.Fatal("Snapshot install did not gap existing CDC generation")
+	}
+	finish(false)
+	if _, faulted := svc.publicationStatus(); !faulted {
+		t.Fatal("failed Snapshot replay cleared its CDC gap")
+	}
+	retry, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry(true)
+	newGeneration, faulted := svc.publicationStatus()
+	if faulted || newGeneration == oldGeneration {
+		t.Fatal("verified Snapshot replay did not create a healthy CDC generation")
+	}
+	select {
+	case <-newGeneration:
+		t.Fatal("verified Snapshot replay left new CDC generation closed")
+	default:
+	}
+}
+
 func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testing.T) {
 	ctx := context.Background()
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)

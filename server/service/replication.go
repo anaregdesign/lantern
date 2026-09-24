@@ -192,6 +192,16 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 	if s.log == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
+	switch req.GetProjection() {
+	case pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY:
+		return s.subscribeIdentity(ctx, req, stream)
+	case pb.SubscribeProjection_SUBSCRIBE_PROJECTION_UNSPECIFIED, pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION:
+		if req.GetBootstrap() {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("bootstrap requires identity-only projection"))
+		}
+	default:
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown Subscribe projection %d", req.GetProjection()))
+	}
 	var faultCh <-chan struct{}
 	if status, ok := s.origins.(publicationStatusProvider); ok {
 		var faulted bool
@@ -269,7 +279,7 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			// the same (origin, origin_seq) tuple appear with a
 			// different Seq value on every hop, breaking the
 			// per-origin dedup gate in ApplyMutation.
-			if err := stream.Send(&pb.SubscribeResponse{Mutation: mu}); err != nil {
+			if err := stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{Mutation: mu}}); err != nil {
 				s.metrics.OnSubscribeDropped("send_failed")
 				return err
 			}

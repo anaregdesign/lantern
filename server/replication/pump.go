@@ -81,6 +81,20 @@ type snapshotWatermarkApplier interface {
 	ApplySnapshotWatermarks(cutoffs map[string]uint64, ts hlc.Timestamp) error
 }
 
+// A peer Snapshot can change the graph without emitting each mutation into
+// this replica's log. The service closes existing CDC streams before replay
+// and admits new ones only after a complete, verified install.
+type snapshotInstallGuard interface {
+	BeginSnapshotInstall() (finish func(verified bool), err error)
+}
+
+func beginSnapshotInstall(applier MutationApplier) (func(bool), error) {
+	if guard, ok := applier.(snapshotInstallGuard); ok {
+		return guard.BeginSnapshotInstall()
+	}
+	return nil, nil
+}
+
 type snapshotFramePhase uint8
 
 const (
@@ -685,6 +699,12 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
+	var finishInstall func(bool)
+	defer func() {
+		if finishInstall != nil {
+			finishInstall(false)
+		}
+	}()
 	var recovery searchIndexRecovery
 	if candidate, ok := p.snap.(searchIndexRecovery); ok {
 		recovery = candidate
@@ -697,6 +717,10 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			if err := replay.acceptHeader(e.Header); err != nil {
+				return nil, err
+			}
+			finishInstall, err = beginSnapshotInstall(p.apply)
+			if err != nil {
 				return nil, err
 			}
 		case *pb.SnapshotResponse_VertexCausalBarrier:
@@ -807,6 +831,10 @@ func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicati
 		if err := p.marks.ApplySnapshotWatermarks(replay.header.GetCutoffSeqPerOrigin(), snapshotHLC(replay.header.GetCutoffHlc())); err != nil {
 			return nil, err
 		}
+	}
+	if finishInstall != nil {
+		finishInstall(true)
+		finishInstall = nil
 	}
 	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, replay.counts.vertices, replay.counts.edges, time.Since(start))
 	return replay.header, nil

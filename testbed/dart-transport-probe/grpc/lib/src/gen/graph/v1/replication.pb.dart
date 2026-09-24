@@ -18,8 +18,11 @@ import 'package:protobuf/well_known_types/google/protobuf/timestamp.pb.dart'
     as $2;
 
 import 'graph.pb.dart' as $1;
+import 'replication.pbenum.dart';
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
+
+export 'replication.pbenum.dart';
 
 /// HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
 /// mutations carry one of these as their causal coordinate.
@@ -974,9 +977,9 @@ class Mutation extends $pb.GeneratedMessage {
 ///     the oldest retained entry; this lets a consumer that has only
 ///     ever talked to a subset of replicas naturally pick up entries
 ///     from a newly-joined origin.
-///   - If the resulting overall earliest requested seq is below the
-///     server's first retained log seq the call fails with
-///     FAILED_PRECONDITION and the caller must snapshot + resubscribe.
+///   - A truncated responder-local log returns FAILED_PRECONDITION; the
+///     portable origin cursor cannot recover evicted entries. Identity-only
+///     consumers use an explicit checkpoint to revalidate resident keys.
 ///
 /// Keys are 32-character lowercase hexadecimal encodings of the 16-byte
 /// HLC NodeID (matching `HLCTimestamp.node_id` and `Mutation.origin`).
@@ -989,11 +992,15 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     $core.Iterable<$core.MapEntry<$core.String, $fixnum.Int64>>?
         fromSeqPerOrigin,
     $fixnum.Int64? fromLocalSeq,
+    SubscribeProjection? projection,
+    $core.bool? bootstrap,
   }) {
     final result = create();
     if (fromSeqPerOrigin != null)
       result.fromSeqPerOrigin.addEntries(fromSeqPerOrigin);
     if (fromLocalSeq != null) result.fromLocalSeq = fromLocalSeq;
+    if (projection != null) result.projection = projection;
+    if (bootstrap != null) result.bootstrap = bootstrap;
     return result;
   }
 
@@ -1019,6 +1026,9 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     ..a<$fixnum.Int64>(
         2, _omitFieldNames ? '' : 'fromLocalSeq', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aE<SubscribeProjection>(3, _omitFieldNames ? '' : 'projection',
+        enumValues: SubscribeProjection.values)
+    ..aOB(4, _omitFieldNames ? '' : 'bootstrap')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1041,7 +1051,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
   static SubscribeRequest? _defaultInstance;
 
   /// Per-origin resume cursor. Keys are 32-char lowercase hex of the
-  /// 16-byte HLC NodeID; values are the next local `seq` the consumer
+  /// 16-byte HLC NodeID; values are the next origin `seq` the consumer
   /// expects from that origin.
   @$pb.TagNumber(1)
   $pb.PbMap<$core.String, $fixnum.Int64> get fromSeqPerOrigin => $_getMap(0);
@@ -1059,15 +1069,250 @@ class SubscribeRequest extends $pb.GeneratedMessage {
   $core.bool hasFromLocalSeq() => $_has(1);
   @$pb.TagNumber(2)
   void clearFromLocalSeq() => $_clearField(2);
+
+  /// The zero value preserves the full Mutation stream used by peers.
+  @$pb.TagNumber(3)
+  SubscribeProjection get projection => $_getN(2);
+  @$pb.TagNumber(3)
+  set projection(SubscribeProjection value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasProjection() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearProjection() => $_clearField(3);
+
+  /// Identity-only cold start/recovery: atomically register the live tail and
+  /// send its contiguous per-origin checkpoint before any identity chunk.
+  /// Requires an empty cursor and from_local_seq == 0.
+  @$pb.TagNumber(4)
+  $core.bool get bootstrap => $_getBF(3);
+  @$pb.TagNumber(4)
+  set bootstrap($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasBootstrap() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearBootstrap() => $_clearField(4);
 }
 
-/// SubscribeResponse carries one replicated mutation per message.
+/// A bootstrap checkpoint is the responder's contiguous publication cut,
+/// not a cluster-wide consensus or freshness barrier.
+class IdentityCheckpoint extends $pb.GeneratedMessage {
+  factory IdentityCheckpoint({
+    $core.Iterable<$core.MapEntry<$core.String, $fixnum.Int64>>?
+        lastSeqPerOrigin,
+  }) {
+    final result = create();
+    if (lastSeqPerOrigin != null)
+      result.lastSeqPerOrigin.addEntries(lastSeqPerOrigin);
+    return result;
+  }
+
+  IdentityCheckpoint._();
+
+  factory IdentityCheckpoint.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory IdentityCheckpoint.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'IdentityCheckpoint',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..m<$core.String, $fixnum.Int64>(
+        1, _omitFieldNames ? '' : 'lastSeqPerOrigin',
+        entryClassName: 'IdentityCheckpoint.LastSeqPerOriginEntry',
+        keyFieldType: $pb.PbFieldType.OS,
+        valueFieldType: $pb.PbFieldType.OU6,
+        packageName: const $pb.PackageName('graph.v1'))
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  IdentityCheckpoint clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  IdentityCheckpoint copyWith(void Function(IdentityCheckpoint) updates) =>
+      super.copyWith((message) => updates(message as IdentityCheckpoint))
+          as IdentityCheckpoint;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static IdentityCheckpoint create() => IdentityCheckpoint._();
+  @$core.override
+  IdentityCheckpoint createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static IdentityCheckpoint getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<IdentityCheckpoint>(create);
+  static IdentityCheckpoint? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbMap<$core.String, $fixnum.Int64> get lastSeqPerOrigin => $_getMap(0);
+}
+
+/// One bounded fragment of an origin mutation's exact graph identities.
+/// Final empty chunks are valid: they close a mutation with no identities.
+/// No graph value, edge weight, contribution ID, or auth metadata is present.
+class IdentityChunk extends $pb.GeneratedMessage {
+  factory IdentityChunk({
+    $core.List<$core.int>? origin,
+    $fixnum.Int64? seq,
+    HLCTimestamp? hlc,
+    IdentityOperation? operation,
+    $core.int? chunkIndex,
+    $core.bool? isLast,
+    $core.Iterable<$core.String>? vertexKeys,
+    $core.Iterable<$1.EdgeKey>? edgeKeys,
+    $core.int? firstItemIndex,
+  }) {
+    final result = create();
+    if (origin != null) result.origin = origin;
+    if (seq != null) result.seq = seq;
+    if (hlc != null) result.hlc = hlc;
+    if (operation != null) result.operation = operation;
+    if (chunkIndex != null) result.chunkIndex = chunkIndex;
+    if (isLast != null) result.isLast = isLast;
+    if (vertexKeys != null) result.vertexKeys.addAll(vertexKeys);
+    if (edgeKeys != null) result.edgeKeys.addAll(edgeKeys);
+    if (firstItemIndex != null) result.firstItemIndex = firstItemIndex;
+    return result;
+  }
+
+  IdentityChunk._();
+
+  factory IdentityChunk.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory IdentityChunk.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'IdentityChunk',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'origin', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(2, _omitFieldNames ? '' : 'seq', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<HLCTimestamp>(3, _omitFieldNames ? '' : 'hlc',
+        subBuilder: HLCTimestamp.create)
+    ..aE<IdentityOperation>(4, _omitFieldNames ? '' : 'operation',
+        enumValues: IdentityOperation.values)
+    ..aI(5, _omitFieldNames ? '' : 'chunkIndex', fieldType: $pb.PbFieldType.OU3)
+    ..aOB(6, _omitFieldNames ? '' : 'isLast')
+    ..pPS(7, _omitFieldNames ? '' : 'vertexKeys')
+    ..pPM<$1.EdgeKey>(8, _omitFieldNames ? '' : 'edgeKeys',
+        subBuilder: $1.EdgeKey.create)
+    ..aI(9, _omitFieldNames ? '' : 'firstItemIndex',
+        fieldType: $pb.PbFieldType.OU3)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  IdentityChunk clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  IdentityChunk copyWith(void Function(IdentityChunk) updates) =>
+      super.copyWith((message) => updates(message as IdentityChunk))
+          as IdentityChunk;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static IdentityChunk create() => IdentityChunk._();
+  @$core.override
+  IdentityChunk createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static IdentityChunk getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<IdentityChunk>(create);
+  static IdentityChunk? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get origin => $_getN(0);
+  @$pb.TagNumber(1)
+  set origin($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOrigin() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOrigin() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get seq => $_getI64(1);
+  @$pb.TagNumber(2)
+  set seq($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasSeq() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearSeq() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  HLCTimestamp get hlc => $_getN(2);
+  @$pb.TagNumber(3)
+  set hlc(HLCTimestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasHlc() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearHlc() => $_clearField(3);
+  @$pb.TagNumber(3)
+  HLCTimestamp ensureHlc() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  IdentityOperation get operation => $_getN(3);
+  @$pb.TagNumber(4)
+  set operation(IdentityOperation value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasOperation() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearOperation() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.int get chunkIndex => $_getIZ(4);
+  @$pb.TagNumber(5)
+  set chunkIndex($core.int value) => $_setUnsignedInt32(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasChunkIndex() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearChunkIndex() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.bool get isLast => $_getBF(5);
+  @$pb.TagNumber(6)
+  set isLast($core.bool value) => $_setBool(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasIsLast() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearIsLast() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $pb.PbList<$core.String> get vertexKeys => $_getList(6);
+
+  @$pb.TagNumber(8)
+  $pb.PbList<$1.EdgeKey> get edgeKeys => $_getList(7);
+
+  @$pb.TagNumber(9)
+  $core.int get firstItemIndex => $_getIZ(8);
+  @$pb.TagNumber(9)
+  set firstItemIndex($core.int value) => $_setUnsignedInt32(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasFirstItemIndex() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearFirstItemIndex() => $_clearField(9);
+}
+
+enum SubscribeResponse_Event { mutation, checkpoint, identityChunk, notSet }
+
+/// Exactly one frame variant is set. Existing default full-Mutation peers
+/// receive the same field-1 payload as before.
 class SubscribeResponse extends $pb.GeneratedMessage {
   factory SubscribeResponse({
     Mutation? mutation,
+    IdentityCheckpoint? checkpoint,
+    IdentityChunk? identityChunk,
   }) {
     final result = create();
     if (mutation != null) result.mutation = mutation;
+    if (checkpoint != null) result.checkpoint = checkpoint;
+    if (identityChunk != null) result.identityChunk = identityChunk;
     return result;
   }
 
@@ -1080,12 +1325,24 @@ class SubscribeResponse extends $pb.GeneratedMessage {
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromJson(json, registry);
 
+  static const $core.Map<$core.int, SubscribeResponse_Event>
+      _SubscribeResponse_EventByTag = {
+    1: SubscribeResponse_Event.mutation,
+    2: SubscribeResponse_Event.checkpoint,
+    3: SubscribeResponse_Event.identityChunk,
+    0: SubscribeResponse_Event.notSet
+  };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SubscribeResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
+    ..oo(0, [1, 2, 3])
     ..aOM<Mutation>(1, _omitFieldNames ? '' : 'mutation',
         subBuilder: Mutation.create)
+    ..aOM<IdentityCheckpoint>(2, _omitFieldNames ? '' : 'checkpoint',
+        subBuilder: IdentityCheckpoint.create)
+    ..aOM<IdentityChunk>(3, _omitFieldNames ? '' : 'identityChunk',
+        subBuilder: IdentityChunk.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1108,6 +1365,16 @@ class SubscribeResponse extends $pb.GeneratedMessage {
   static SubscribeResponse? _defaultInstance;
 
   @$pb.TagNumber(1)
+  @$pb.TagNumber(2)
+  @$pb.TagNumber(3)
+  SubscribeResponse_Event whichEvent() =>
+      _SubscribeResponse_EventByTag[$_whichOneof(0)]!;
+  @$pb.TagNumber(1)
+  @$pb.TagNumber(2)
+  @$pb.TagNumber(3)
+  void clearEvent() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
   Mutation get mutation => $_getN(0);
   @$pb.TagNumber(1)
   set mutation(Mutation value) => $_setField(1, value);
@@ -1117,6 +1384,28 @@ class SubscribeResponse extends $pb.GeneratedMessage {
   void clearMutation() => $_clearField(1);
   @$pb.TagNumber(1)
   Mutation ensureMutation() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  IdentityCheckpoint get checkpoint => $_getN(1);
+  @$pb.TagNumber(2)
+  set checkpoint(IdentityCheckpoint value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCheckpoint() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCheckpoint() => $_clearField(2);
+  @$pb.TagNumber(2)
+  IdentityCheckpoint ensureCheckpoint() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  IdentityChunk get identityChunk => $_getN(2);
+  @$pb.TagNumber(3)
+  set identityChunk(IdentityChunk value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIdentityChunk() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIdentityChunk() => $_clearField(3);
+  @$pb.TagNumber(3)
+  IdentityChunk ensureIdentityChunk() => $_ensure(2);
 }
 
 /// SnapshotRequest opens a server-streaming snapshot of the live graph and
