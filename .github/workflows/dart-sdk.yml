@@ -29,6 +29,8 @@ on:
       - "server/**"
       - "testdata/search/**"
       - "tests/integration/dart_offline_sqlite_test.dart"
+      - "tests/integration/dart_identity_offline_sqlite_test.dart"
+      - "testbed/scripts/dart_identity_fixture.sh"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -59,6 +61,8 @@ on:
       - "server/**"
       - "testdata/search/**"
       - "tests/integration/dart_offline_sqlite_test.dart"
+      - "tests/integration/dart_identity_offline_sqlite_test.dart"
+      - "testbed/scripts/dart_identity_fixture.sh"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -510,10 +514,29 @@ jobs:
           flutter test --no-pub
           ../../../tests/integration/dart_offline_sqlite_test.dart
 
+      - name: Start identity CDC fixtures
+        working-directory: .
+        run: >-
+          testbed/scripts/dart_identity_fixture.sh start
+          "$RUNNER_TEMP/lantern-sqlite" "$RUNNER_TEMP/lantern-identity"
+
+      - name: Test SQLite identity CDC over real h2c replicas
+        env:
+          LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6397
+          LANTERN_DART_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6399
+          LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS: http://127.0.0.1:6400,http://127.0.0.1:6401,http://127.0.0.1:6402
+        run: >-
+          flutter test --no-pub
+          ../../../tests/integration/dart_identity_offline_sqlite_test.dart
+
       - name: Stop Lantern real-wire server
         if: always()
         working-directory: .
         run: |
+          testbed/scripts/dart_identity_fixture.sh stop "$RUNNER_TEMP/lantern-identity"
+          for name in gap a b c; do
+            cat "$RUNNER_TEMP/lantern-identity/lantern-identity-$name.log" 2>/dev/null || true
+          done
           cat "$RUNNER_TEMP/lantern-sqlite.log" 2>/dev/null || true
           if [[ -f "$RUNNER_TEMP/lantern-sqlite.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/lantern-sqlite.pid")" 2>/dev/null || true

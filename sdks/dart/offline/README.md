@@ -227,6 +227,27 @@ chunks advance a durable partition change epoch. A checkpoint reset removes
 confirmed values but retains bounded resident identities as Unknown until
 `revalidateResidentBatch` finishes plural Get calls and their epoch-checked
 cache commits. Late ordinary Get results and server-first failure fallbacks
-cannot restore a record invalidated during the read. This is the local recovery
-prerequisite for #1116; the package does not start a CDC subscription. Adapter
-tests run `runChangeStoreConformanceSuite` across a real reopen boundary.
+cannot restore a record invalidated during the read. Adapter tests run
+`runChangeStoreConformanceSuite` across a real reopen boundary.
+
+`consumeIdentityChanges(partitionId, source: ...)` is an explicit foreground CDC
+session. The application injects an `OfflineIdentitySource` that opens an
+identity-only Subscribe stream and performs plural reads against that same
+responder. The source must pin a real responder for the entire checkpoint and
+revalidation, propagate stream pause/resume, map retention and slow-subscriber
+gaps to `OfflineChangeGapException`, and acquire credentials at call time.
+The core owns a single session per partition and cancels it on logout or
+disposal. It resumes each origin at the durable last-applied sequence plus one,
+checks sequence, chunk, operation, and item-index continuity, and advances the
+cursor only with a final chunk. A gap hides confirmed cache as durable Unknown
+and permits one checkpoint retry per invocation. The stream is read one frame
+at a time, so recovery does not create an unbounded Dart event queue. The
+server's bounded stream buffer may still gap during a slow revalidation; that
+also triggers Unknown recovery. No network subscription starts at Repository
+construction, and the application remains responsible for foreground timing.
+
+The injected source keeps this core compatible with hosted `lantern_client`
+0.2.0. A concrete adapter for the newer typed parent CDC facade belongs to a
+later parent-compatible release. An arbitrary load-balancing endpoint is not a
+valid responder-pinned recovery source unless it guarantees that the stream and
+plural reads reach the same server.

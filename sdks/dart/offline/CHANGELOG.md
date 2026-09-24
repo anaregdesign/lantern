@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an explicit foreground identity-only CDC consumer through an injected
+  responder-pinned source. It bootstraps Unknown residents, revalidates bounded
+  plural batches, applies contiguous per-origin chunks, and fails closed on
+  gaps, changed responders, cancellation, and logout while preserving the
+  hosted 0.2.0 parent dependency.
 - Retain bounded key-only Unknown residents and a durable change epoch across
   checkpoint reset and fresh-process snapshot restore (schema v7). Reject late
   remote Get results and error fallbacks after CDC invalidation; revalidate

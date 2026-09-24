@@ -77,10 +77,11 @@ An ordinary `serverOnly` Get cannot clear a checkpoint-Unknown resident marker;
 only the explicit plural recovery batch does so, while pending Put overlays
 remain visible.
 
-This adapter does not start a CDC subscription. The identity-only server stream
-and gap/bootstrap orchestration remain separate #1116 work. Ordinary Get and
-resident plural revalidation now use the same change-epoch barrier. Cursor
-storage alone never establishes freshness.
+This adapter does not start a CDC subscription. The offline core's explicit
+foreground `consumeIdentityChanges` session accepts an application-injected
+responder-pinned identity source; this package supplies only its durable SQL
+store. Ordinary Get and resident plural revalidation use the same change-epoch
+barrier. Cursor storage alone never establishes freshness.
 
 ## Verification
 
@@ -94,6 +95,10 @@ dart run tool/crash_probe.dart
 dart run tool/performance_probe.dart
 LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6397 \
   flutter test --no-pub ../../../tests/integration/dart_offline_sqlite_test.dart
+LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6397 \
+LANTERN_DART_IDENTITY_GAP_ENDPOINT=http://127.0.0.1:6399 \
+LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS=http://127.0.0.1:6400,http://127.0.0.1:6401,http://127.0.0.1:6402 \
+  flutter test --no-pub ../../../tests/integration/dart_identity_offline_sqlite_test.dart
 ```
 
 Host tests inject `sqflite_common_ffi` as a development-only dependency and run
@@ -104,6 +109,13 @@ SQLite disk-full error, reject unknown/corrupt databases, and replay through a
 real Lantern server after a proxy drops committed responses. The crash probe
 kills a separate process at transaction boundaries; it is distinct from a Dart
 exception or an in-memory snapshot test.
+
+The identity test uses a test-only adapter over the typed parent SDK stream,
+real Connect/h2c nodes, and a reopened SQLite FFI database. It exercises
+bootstrap revalidation, live invalidation, an evicted resume gap, and durable
+cursor reuse across three replicas. CI starts its fixtures through
+`testbed/scripts/dart_identity_fixture.sh`; the production runtime graph has
+no new platform dependency.
 
 The same crash gate also starts independent claimers in separate VMs, verifies
 one claim winner and durable lease renewal, kills the owner, and checks expiry
