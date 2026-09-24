@@ -68,7 +68,7 @@ type LanternService struct {
 	capacity                CapacityLimits
 	// replicationCutMu keeps a Snapshot cutoff from overtaking a remote
 	// ApplyMutation or any local graph/log publication boundary.
-	replicationCutMu sync.RWMutex
+	replicationCutMu publicationGate
 	// A peer Snapshot replay may change the graph without appending each
 	// mutation to this replica's log. Serialize installs so a successful one
 	// cannot clear another install's CDC gap while it is still applying.
@@ -102,6 +102,21 @@ type LanternService struct {
 	// "single-instance, no peers" response.
 	replicationSnapshotter ReplicationSnapshotter
 	replicationStatusInfo  ReplicationStatusInfo
+}
+
+// publicationGate counts every completed exclusive publication interval. A
+// long graph read can capture its generation before and after expensive work
+// instead of keeping the service write gate locked for the entire query. The
+// generation changes even when a writer ultimately commits no graph change,
+// making an overlapping read fail closed rather than risking a mixed result.
+type publicationGate struct {
+	sync.RWMutex
+	generation uint64 // read under RLock, changed immediately before Unlock
+}
+
+func (g *publicationGate) Unlock() {
+	g.generation++
+	g.RWMutex.Unlock()
 }
 
 // HotPathMetrics is the narrow observability surface consumed by the
