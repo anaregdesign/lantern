@@ -51,6 +51,38 @@ LanternClient _client(
   defaultTimeout: defaultTimeout,
 );
 
+final class _DirectIdentityStreamTransport implements connect.Transport {
+  _DirectIdentityStreamTransport(this.responses);
+
+  final Stream<replication.SubscribeResponse> responses;
+
+  @override
+  Future<connect.UnaryResponse<I, O>> unary<I extends Object, O extends Object>(
+    connect.Spec<I, O> spec,
+    I input, [
+    connect.CallOptions? options,
+  ]) => throw UnimplementedError();
+
+  @override
+  Future<connect.StreamResponse<I, O>> stream<
+    I extends Object,
+    O extends Object
+  >(connect.Spec<I, O> spec, Stream<I> input, [connect.CallOptions? options]) {
+    expect(
+      spec.procedure,
+      replication_spec.LanternReplicationService.subscribe.procedure,
+    );
+    return Future.value(
+      connect.StreamResponse<I, O>(
+        spec,
+        connect.Headers(),
+        responses as Stream<O>,
+        connect.Headers(),
+      ),
+    );
+  }
+}
+
 void main() {
   test(
     'NEXT cursor is immutable and rejects malformed or exhausted values',
@@ -210,6 +242,46 @@ void main() {
           .subscribeIdentity(cursor: IdentityNextCursor({_origin: _maxUint64}))
           .toList();
       expect((frames.single as IdentityChunkFrame).sequence, _maxUint64);
+    },
+  );
+
+  test(
+    'identity facade forwards pause and resume to the wire stream',
+    () async {
+      final listening = Completer<void>();
+      final paused = Completer<void>();
+      final resumed = Completer<void>();
+      final source = StreamController<replication.SubscribeResponse>(
+        onListen: listening.complete,
+        onPause: paused.complete,
+        onResume: resumed.complete,
+      );
+      final client = _client(_DirectIdentityStreamTransport(source.stream));
+      addTearDown(client.close);
+      final delivered = <IdentityFrame>[];
+      final first = Completer<void>();
+      final second = Completer<void>();
+      final subscription = client.subscribeIdentity().listen((frame) {
+        delivered.add(frame);
+        if (delivered.length == 1) first.complete();
+        if (delivered.length == 2) second.complete();
+      });
+      await listening.future.timeout(const Duration(seconds: 2));
+      source.add(_chunk());
+      await first.future.timeout(const Duration(seconds: 2));
+
+      subscription.pause();
+      await paused.future.timeout(const Duration(seconds: 2));
+      source.add(_chunk(sequence: Int64(2)));
+      await Future<void>.delayed(Duration.zero);
+      expect(delivered, hasLength(1));
+
+      subscription.resume();
+      await resumed.future.timeout(const Duration(seconds: 2));
+      await second.future.timeout(const Duration(seconds: 2));
+      expect(delivered, everyElement(isA<IdentityChunkFrame>()));
+      await subscription.cancel();
+      await source.close();
     },
   );
 

@@ -212,6 +212,7 @@ Stream<IdentityFrame> _decodeIdentityFrames(
   late final StreamController<IdentityFrame> controller;
   var checkpointSeen = false;
   var stopped = false;
+  var paused = false;
 
   void fail(Object error, StackTrace stack) {
     if (stopped) return;
@@ -273,11 +274,19 @@ Stream<IdentityFrame> _decodeIdentityFrames(
         },
       );
       upstream = active;
+      if (paused) active.pause();
       if (stopped) unawaited(active.cancel());
     },
-    onPause: () => upstream?.pause(),
-    onResume: () => upstream?.resume(),
+    onPause: () {
+      paused = true;
+      upstream?.pause();
+    },
+    onResume: () {
+      paused = false;
+      upstream?.resume();
+    },
     onCancel: () {
+      stopped = true;
       final active = upstream;
       if (active != null) unawaited(active.cancel());
     },
