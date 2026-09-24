@@ -45,6 +45,12 @@ mkdir -p "$output_dir"
   fi
 } > "$output_dir/host.txt"
 
+if [[ "$resource_trace" == 1 ]]; then
+  # Time the stress process itself, not the Go compiler/driver. The compiled
+  # test binary is made from the same committed SHA and reused for all rows.
+  (cd core && go test -c -o "$output_dir/graphcache.test" ./graphcache)
+fi
+
 for shape in $shapes; do
   for budget in $budgets; do
     for ((run = 1; run <= repetitions; run++)); do
@@ -69,7 +75,8 @@ for shape in $shapes; do
         (
           cd core
           /usr/bin/time "${time_args[@]}" /usr/bin/env "${stress_env[@]}" \
-            go test ./graphcache -run '^TestGraphCache_GCStress$' -count=1 -timeout=30m -v
+            "$output_dir/graphcache.test" -test.run '^TestGraphCache_GCStress$' \
+            -test.v -test.timeout 30m
         ) 2> "$output_dir/gc_${shape}_b${budget}_r${run}.resource.txt" \
           | tee "$output_dir/gc_${shape}_b${budget}_r${run}.log"
       else
