@@ -106,6 +106,10 @@ go test ./...                    # root module
 (cd sdks/dart/example && dart format --output=none --set-exit-if-changed \
   lib test integration_test \
   && flutter pub get --enforce-lockfile && flutter analyze && flutter test)
+(cd sdks/dart/offline_sqlite && dart format --output=none --set-exit-if-changed \
+  lib test tool && flutter pub get --enforce-lockfile \
+  && flutter analyze && flutter test && dart run tool/crash_probe.dart \
+  && dart run tool/performance_probe.dart)
 ```
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
@@ -131,12 +135,21 @@ record required before an offline release. Its path dependency and
 `publish_to: none` remain
 intentional until the separate release Issue accepts hosted dependency conversion
 after ADR 0002's physical-device graduation gate; the parent `lantern_client`
-publish archive must continue to exclude `offline/`. The maintained Flutter app
+publish archive must continue to exclude `offline/` and `offline_sqlite/`. The maintained Flutter app
 under `sdks/dart/example/` is a repository integration fixture because it consumes
 that child by path, so only its standalone online example is included in the parent
 archive. CI uses Dart Pub's own archive builder, unpacks the resulting tarball
 outside the checkout, resolves every included `pubspec.yaml` with an isolated
 cache, then runs analysis, tests, and `pana` against the unpacked artifact.
+
+The opt-in `sdks/dart/offline_sqlite/` adapter has a mandatory Flutter host gate:
+format/analyze/test, real SQLite close/reopen conformance and disk-full checks,
+`dart run tool/crash_probe.dart` for process termination at transaction
+boundaries, and `tests/integration/dart_offline_sqlite_test.dart` over the real
+Connect endpoint. The maintained Android/iOS smoke uses platform SQLite and
+checks pending restart, original TTL, replay, and logout wipe. Host FFI is
+development-only; its native library is not an application runtime dependency.
+This package stays `publish_to: none` until its independent release is qualified.
 
 The iOS job classifies the native smoke instead of treating every outer timeout
 as retryable infrastructure. Its helper bounds the full attempt to 480 seconds

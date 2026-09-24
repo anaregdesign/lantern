@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "kind": "physical_mobile_revision_evidence",
+  "contentFree": true,
+  "physicalDevice": true,
+  "repository": "anaregdesign/lantern",
+  "commit": "50c9b00d9f8013947d8a6eccb6aa86a0b6073dfc",
+  "recordedAt": "2026-09-24T00:33:12.819672Z",
+  "cleanCheckout": true,
+  "toolchain": {
+    "flutter": "3.44.6",
+    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
+    "dart": "3.12.2"
+  },
+  "application": {
+    "packageId": "com.anaregdesign.lantern_example",
+    "target": "integration_test/sqlite_restart_probe.dart",
+    "buildMode": "profile",
+    "binarySha256": "908391175c070177f329c859971124fcf67b28d3320496a36bfeda3563a4de84"
+  },
+  "platform": {
+    "kind": "physical-android",
+    "model": "Pixel 9a",
+    "os": "Android 17 (API 37)"
+  },
+  "network": {
+    "transport": "none",
+    "topology": "network-free native SQLite probe",
+    "authenticated": false
+  },
+  "processControl": {
+    "distinctProcesses": 3,
+    "forcedStops": 2,
+    "installedOnce": true,
+    "dataClearedBetweenLaunches": false,
+    "hotRestartUsed": false,
+    "killMethod": "adb shell am force-stop (Lantern example package only)"
+  },
+  "scenarios": [
+    "sqlite_pending_put_after_process_kill",
+    "sqlite_original_ttl_after_process_kill",
+    "sqlite_logout_wipe_after_process_kill",
+    "sqlite_user_switch_isolation"
+  ],
+  "result": "passed",
+  "limitations": [
+    "No radio, Doze, platform TLS, or local-network privacy qualification in this probe."
+  ]
+}

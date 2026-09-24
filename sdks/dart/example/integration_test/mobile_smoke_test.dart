@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
+import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
+import 'package:sqflite/sqflite.dart' as sqflite;
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -17,8 +21,39 @@ void main() {
     const endpointValue = String.fromEnvironment('LANTERN_ENDPOINT');
     expect(endpointValue, isNotEmpty, reason: 'pass LANTERN_ENDPOINT');
     final endpoint = Uri.parse(endpointValue);
+    const tokenEndpoint = String.fromEnvironment('LANTERN_TOKEN_ENDPOINT');
+    final tokenHttp = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    addTearDown(() => tokenHttp.close(force: true));
     final client = LanternClient.connect(
       endpoint,
+      tokenProvider: tokenEndpoint.isEmpty
+          ? null
+          : () async {
+              final uri = Uri.parse(tokenEndpoint);
+              if (uri.scheme != 'https' &&
+                  !const bool.fromEnvironment('LANTERN_ALLOW_INSECURE')) {
+                throw StateError('smoke_token_https_required');
+              }
+              final request = await tokenHttp
+                  .getUrl(uri)
+                  .timeout(const Duration(seconds: 5));
+              final response = await request.close().timeout(
+                const Duration(seconds: 5),
+              );
+              final body = await utf8
+                  .decodeStream(response)
+                  .timeout(const Duration(seconds: 5));
+              if (response.statusCode != HttpStatus.ok) {
+                throw StateError('smoke_token_status');
+              }
+              final decoded = jsonDecode(body) as Map<String, Object?>;
+              final token = decoded['access_token'];
+              if (token is! String || token.isEmpty) {
+                throw StateError('smoke_token_missing');
+              }
+              return token;
+            },
       allowInsecure: const bool.fromEnvironment('LANTERN_ALLOW_INSECURE'),
       retryPolicy: const RetryPolicy(),
       idempotentAdds: true,
@@ -85,11 +120,24 @@ void main() {
       ),
       isA<Graph>(),
     );
-    final offline = OfflineLanternRepository(
-      store: InMemoryOfflineStore(),
-      remote: LanternClientOfflineRemote(client),
+    final databaseRoot = Directory(await sqflite.getDatabasesPath());
+    await databaseRoot.create(recursive: true);
+    final databaseDirectory = await databaseRoot.createTemp(
+      'lantern-native-smoke-',
     );
-    addTearDown(offline.dispose);
+    addTearDown(() => databaseDirectory.delete(recursive: true));
+    final databasePath = '${databaseDirectory.path}/offline.db';
+    var store = await SqliteOfflineStore.open(path: databasePath);
+    var offlineNow = DateTime.now().toUtc();
+    var offline = OfflineLanternRepository(
+      store: store,
+      remote: LanternClientOfflineRemote(client),
+      config: OfflineConfig(clock: () => offlineNow),
+    );
+    addTearDown(() async {
+      await offline.dispose();
+      await store.close();
+    });
     const partition = 'mobile-smoke-session';
     final offlineVertexKey = '${prefix}offline-vertex';
     final put = await offline.putVertex(
@@ -100,7 +148,6 @@ void main() {
         expiresIn: const Duration(minutes: 2),
       ),
     );
-    final putStatuses = put.statuses.toList();
     final offlineEdge = EdgeInput(
       tail: '${prefix}offline-tail',
       head: '${prefix}offline-head',
@@ -111,7 +158,6 @@ void main() {
       partitionId: partition,
       input: offlineEdge,
     );
-    final edgePutStatuses = edgePut.statuses.toList();
     final pendingVertex = await offline.readVertex(
       partition,
       offlineVertexKey,
@@ -125,9 +171,74 @@ void main() {
     expect(pendingVertex.hasPendingWrites, isTrue);
     expect(pendingEdge.hasPendingWrites, isTrue);
 
+    final localExpiredKey = '${prefix}expired-before-reopen';
+    final localExpired = await offline.putVertex(
+      partitionId: partition,
+      input: VertexInput(
+        key: localExpiredKey,
+        value: VertexValue.string('never-send'),
+        expiresIn: const Duration(seconds: 1),
+      ),
+    );
+    final vertexExpiration = pendingVertex.value!.expiration;
+    final edgeExpiration = pendingEdge.value!.expiration;
+    await offline.dispose();
+    await store.close();
+    offlineNow = offlineNow.add(const Duration(seconds: 30));
+    store = await SqliteOfflineStore.open(path: databasePath);
+    offline = OfflineLanternRepository(
+      store: store,
+      remote: LanternClientOfflineRemote(client),
+      config: OfflineConfig(clock: () => offlineNow),
+    );
+    final reopenedVertex = await offline.readVertex(
+      partition,
+      offlineVertexKey,
+      policy: OfflineReadPolicy.cacheOnly,
+    );
+    final reopenedEdge = await offline.readEdge(
+      partition,
+      EdgeRef(offlineEdge.tail, offlineEdge.head),
+      policy: OfflineReadPolicy.cacheOnly,
+    );
+    expect(reopenedVertex.hasPendingWrites, isTrue);
+    expect(
+      (reopenedVertex.value!.value as StringValue).value,
+      'queued-offline',
+    );
+    expect(reopenedVertex.value!.expiration, vertexExpiration);
+    expect(reopenedEdge.hasPendingWrites, isTrue);
+    expect(reopenedEdge.value!.expiration, edgeExpiration);
+    expect(
+      (await offline.readVertex(
+        partition,
+        localExpiredKey,
+        policy: OfflineReadPolicy.cacheOnly,
+      )).value,
+      isNull,
+    );
+
     expect(await offline.probeAndDrain(partition), 2);
-    expect((await putStatuses).last.state, OfflineWriteState.confirmed);
-    expect((await edgePutStatuses).last.state, OfflineWriteState.confirmed);
+    for (final operationId in [put.operationId, edgePut.operationId]) {
+      expect(
+        (await offline.getWriteStatus(
+          partition,
+          operationId,
+        ))!.items.single.state,
+        OfflineWriteState.confirmed,
+      );
+    }
+    expect(
+      (await offline.getWriteStatus(
+        partition,
+        localExpired.operationId,
+      ))!.items.single.state,
+      OfflineWriteState.expired,
+    );
+    await expectLater(
+      client.getVertex(localExpiredKey),
+      throwsA(isA<LanternNotFoundException>()),
+    );
     final cachedVertex = await offline.readVertex(
       partition,
       offlineVertexKey,
@@ -155,12 +266,18 @@ void main() {
     // must terminalize both items as expired and remove any older cache state.
     final skewedNow = DateTime.now().toUtc().subtract(const Duration(hours: 2));
     final serverExpiredAt = skewedNow.add(const Duration(hours: 1));
+    final skewedStore = await SqliteOfflineStore.open(
+      path: '${databaseDirectory.path}/skewed.db',
+    );
     final skewed = OfflineLanternRepository(
-      store: InMemoryOfflineStore(),
+      store: skewedStore,
       remote: LanternClientOfflineRemote(client),
       config: OfflineConfig(clock: () => skewedNow),
     );
-    addTearDown(skewed.dispose);
+    addTearDown(() async {
+      await skewed.dispose();
+      await skewedStore.close();
+    });
     final expiredVertexKey = '${prefix}server-expired-vertex';
     final expiredEdge = EdgeRef(
       '${prefix}server-expired-tail',
@@ -220,8 +337,39 @@ void main() {
     });
     expect((await watched.future).hasPendingWrites, isTrue);
     await watch.cancel();
+    const otherPartition = 'other-mobile-session';
+    final otherKey = '${prefix}other-session';
+    await offline.putVertex(
+      partitionId: otherPartition,
+      input: VertexInput(key: otherKey, value: VertexValue.string('retained')),
+    );
     await offline.wipePartition(partition);
+    await offline.dispose();
+    await store.close();
+    store = await SqliteOfflineStore.open(path: databasePath);
+    offline = OfflineLanternRepository(
+      store: store,
+      remote: LanternClientOfflineRemote(client),
+    );
     expect(await offline.listPending(partition), isEmpty);
+    expect(await offline.getWriteStatus(partition, put.operationId), isNull);
+    expect(
+      (await offline.readVertex(
+        partition,
+        offlineVertexKey,
+        policy: OfflineReadPolicy.cacheOnly,
+      )).value,
+      isNull,
+    );
+    expect(
+      (await offline.readVertex(
+        otherPartition,
+        otherKey,
+        policy: OfflineReadPolicy.cacheOnly,
+      )).hasPendingWrites,
+      isTrue,
+    );
+    expect(await offline.probeAndDrain(partition), 0);
     await expectLater(
       client.getVertex(wipedKey),
       throwsA(isA<LanternNotFoundException>()),
@@ -230,7 +378,8 @@ void main() {
     print(
       'MOBILE_SMOKE_PASS vertices=${inputs.length} edge=1 scan=true bfs=true '
       'offline_cache=true offline_replay=true authoritative_expiry=true '
-      'watch_cleanup=true wipe_zero_send=true',
+      'watch_cleanup=true wipe_zero_send=true sqlite_reopen=true '
+      'ttl_preserved=true logout_wipe_persisted=true partition_isolation=true',
     );
   });
 }

@@ -44,9 +44,9 @@ Future<void> runStoreConformanceSuite(
   );
 
   try {
-    await store.transaction<void>((transaction) {
+    await store.transaction<void>((transaction) async {
       escaped = transaction;
-      transaction.putCache(
+      await transaction.putCache(
         partitionId,
         OfflineCacheRecord.value(
           partitionId: partitionId,
@@ -63,16 +63,16 @@ Future<void> runStoreConformanceSuite(
     // Expected: the transaction must expose no partial state.
   }
   final rolledBack = await store.transaction(
-    (transaction) =>
-        transaction.getCache(
+    (transaction) async =>
+        (await transaction.getCache(
           partitionId,
           const OfflineEntityKey.vertex('key'),
-        ) ==
+        )) ==
         null,
   );
   _require(rolledBack, 'transaction_rollback');
   try {
-    escaped!.generation(partitionId);
+    await escaped!.generation(partitionId);
     _require(false, 'sealed_transaction');
   } on OfflineTransactionClosedException {
     // Required: an escaped transaction cannot mutate or observe later state.
@@ -81,7 +81,7 @@ Future<void> runStoreConformanceSuite(
   await _requireInvalidCommit(
     store,
     partitionId,
-    (transaction) => transaction.enqueue(
+    (transaction) async => await transaction.enqueue(
       _record(
         recordId: 'bare-record',
         operationId: 'bare-operation',
@@ -91,13 +91,14 @@ Future<void> runStoreConformanceSuite(
       ),
     ),
     'bare_enqueue_graph',
-    (transaction) => transaction.getOutbox(partitionId, 'bare-record') == null,
+    (transaction) async =>
+        (await transaction.getOutbox(partitionId, 'bare-record')) == null,
   );
 
   await _requireInvalidCommit(
     store,
     partitionId,
-    (transaction) => transaction.putCache(
+    (transaction) async => await transaction.putCache(
       partitionId,
       OfflineCacheRecord.value(
         partitionId: partitionId,
@@ -113,17 +114,17 @@ Future<void> runStoreConformanceSuite(
       ),
     ),
     'cache_vertex_identity_graph',
-    (transaction) =>
-        transaction.getCache(
+    (transaction) async =>
+        (await transaction.getCache(
           partitionId,
           const OfflineEntityKey.vertex('expected'),
-        ) ==
+        )) ==
         null,
   );
   await _requireInvalidCommit(
     store,
     partitionId,
-    (transaction) => transaction.putCache(
+    (transaction) async => await transaction.putCache(
       partitionId,
       OfflineCacheRecord.value(
         partitionId: partitionId,
@@ -140,17 +141,17 @@ Future<void> runStoreConformanceSuite(
       ),
     ),
     'cache_edge_identity_graph',
-    (transaction) =>
-        transaction.getCache(
+    (transaction) async =>
+        (await transaction.getCache(
           partitionId,
           const OfflineEntityKey.edge('tail', 'head'),
-        ) ==
+        )) ==
         null,
   );
   await _requireInvalidCommit(
     store,
     partitionId,
-    (transaction) => transaction.putCache(
+    (transaction) async => await transaction.putCache(
       partitionId,
       OfflineCacheRecord.missing(
         partitionId: partitionId,
@@ -162,11 +163,11 @@ Future<void> runStoreConformanceSuite(
       ),
     ),
     'cache_missing_order_graph',
-    (transaction) =>
-        transaction.getCache(
+    (transaction) async =>
+        (await transaction.getCache(
           partitionId,
           const OfflineEntityKey.vertex('missing-order'),
-        ) ==
+        )) ==
         null,
   );
 
@@ -182,8 +183,8 @@ Future<void> runStoreConformanceSuite(
     await _requireInvalidCommit(
       store,
       partitionId,
-      (transaction) {
-        final assigned = transaction.enqueue(
+      (transaction) async {
+        final assigned = await transaction.enqueue(
           _expiredRecord(
             recordId: recordId,
             operationId: expiredOperationId,
@@ -192,7 +193,7 @@ Future<void> runStoreConformanceSuite(
             diagnosticCode: recordDiagnostic,
           ),
         );
-        transaction.putOperation(
+        await transaction.putOperation(
           OfflineOperationRecord(
             partitionId: partitionId,
             generation: 0,
@@ -213,9 +214,10 @@ Future<void> runStoreConformanceSuite(
         );
       },
       'expired_${suffix}_graph',
-      (transaction) =>
-          transaction.getOutbox(partitionId, recordId) == null &&
-          transaction.getOperation(partitionId, expiredOperationId) == null,
+      (transaction) async =>
+          (await transaction.getOutbox(partitionId, recordId)) == null &&
+          (await transaction.getOperation(partitionId, expiredOperationId)) ==
+              null,
     );
   }
 
@@ -237,8 +239,8 @@ Future<void> runStoreConformanceSuite(
     updatedAt: now.subtract(const Duration(microseconds: 1)),
   );
 
-  final assigned = await store.transaction((transaction) {
-    final records = transaction.enqueueAll(<OfflineOutboxRecord>[
+  final assigned = await store.transaction((transaction) async {
+    final records = await transaction.enqueueAll(<OfflineOutboxRecord>[
       _record(
         recordId: 'record-0',
         operationId: operationId,
@@ -254,7 +256,7 @@ Future<void> runStoreConformanceSuite(
         now: now,
       ),
     ]);
-    transaction.putOperation(
+    await transaction.putOperation(
       OfflineOperationRecord(
         partitionId: partitionId,
         generation: 0,
@@ -282,7 +284,7 @@ Future<void> runStoreConformanceSuite(
     'atomic_plural_ordinal',
   );
   final firstPage = await store.transaction(
-    (transaction) => transaction.scanOutbox(partitionId, limit: 1),
+    (transaction) async => await transaction.scanOutbox(partitionId, limit: 1),
   );
   _require(
     firstPage.records.length == 1 &&
@@ -292,7 +294,7 @@ Future<void> runStoreConformanceSuite(
     'bounded_outbox_scan_first_page',
   );
   final secondPage = await store.transaction(
-    (transaction) => transaction.scanOutbox(
+    (transaction) async => await transaction.scanOutbox(
       partitionId,
       after: firstPage.nextCursor,
       limit: 1,
@@ -305,7 +307,7 @@ Future<void> runStoreConformanceSuite(
     'bounded_outbox_scan_cursor',
   );
   final scopedPage = await store.transaction(
-    (transaction) => transaction.scanOutbox(
+    (transaction) async => await transaction.scanOutbox(
       partitionId,
       key: const OfflineEntityKey.vertex('b'),
       limit: 1,
@@ -316,7 +318,8 @@ Future<void> runStoreConformanceSuite(
     'bounded_outbox_scan_scope',
   );
   final operationPage = await store.transaction(
-    (transaction) => transaction.scanOperations(partitionId, limit: 1),
+    (transaction) async =>
+        await transaction.scanOperations(partitionId, limit: 1),
   );
   _require(
     operationPage.operations.single.operationId == operationId &&
@@ -324,7 +327,7 @@ Future<void> runStoreConformanceSuite(
     'bounded_operation_scan',
   );
   final duePage = await store.transaction(
-    (transaction) => transaction.dueOutbox(
+    (transaction) async => await transaction.dueOutbox(
       partitionId,
       now: now.add(const Duration(hours: 1)),
       maxAge: const Duration(hours: 1),
@@ -334,7 +337,7 @@ Future<void> runStoreConformanceSuite(
   );
   _require(duePage.length == 1, 'bounded_due_outbox');
   final scopedDue = await store.transaction(
-    (transaction) => transaction.dueOutbox(
+    (transaction) async => await transaction.dueOutbox(
       partitionId,
       key: const OfflineEntityKey.vertex('b'),
       now: now.add(const Duration(hours: 1)),
@@ -347,8 +350,8 @@ Future<void> runStoreConformanceSuite(
     scopedDue.single.recordId == assigned.last.recordId,
     'indexed_due_outbox_scope',
   );
-  await store.transaction<void>((transaction) {
-    transaction.putOperation(
+  await store.transaction<void>((transaction) async {
+    await transaction.putOperation(
       OfflineOperationRecord(
         partitionId: partitionId,
         generation: 0,
@@ -368,7 +371,7 @@ Future<void> runStoreConformanceSuite(
     );
   });
   final operationNotYetDue = await store.transaction(
-    (transaction) => transaction.dueOperations(
+    (transaction) async => await transaction.dueOperations(
       partitionId,
       now: now.add(const Duration(hours: 1) - Duration(microseconds: 1)),
       retention: const Duration(hours: 1),
@@ -377,7 +380,7 @@ Future<void> runStoreConformanceSuite(
   );
   _require(operationNotYetDue.isEmpty, 'operation_retention_before_boundary');
   final dueOperation = await store.transaction(
-    (transaction) => transaction.dueOperations(
+    (transaction) async => await transaction.dueOperations(
       partitionId,
       now: now.add(const Duration(hours: 1)),
       retention: const Duration(hours: 1),
@@ -392,14 +395,14 @@ Future<void> runStoreConformanceSuite(
   await store.transaction<void>((transaction) {
     committed = transaction;
   });
-  _requireClosed(
+  await _requireClosed(
     () => committed!.generation(partitionId),
     'sealed_commit_read',
   );
 
   final bytes = Uint8List.fromList(<int>[1, 2, 3]);
-  await store.transaction<void>((transaction) {
-    transaction.putCache(
+  await store.transaction<void>((transaction) async {
+    await transaction.putCache(
       partitionId,
       OfflineCacheRecord.value(
         partitionId: partitionId,
@@ -416,22 +419,22 @@ Future<void> runStoreConformanceSuite(
     );
   });
   bytes[0] = 9;
-  final returnedBytes = await store.transaction((transaction) {
+  final returnedBytes = await store.transaction((transaction) async {
     final value =
-        transaction
-                .getCache(partitionId, const OfflineEntityKey.vertex('bytes'))!
-                .vertex!
-                .value
+        (await transaction.getCache(
+              partitionId,
+              const OfflineEntityKey.vertex('bytes'),
+            ))!.vertex!.value
             as BytesValue;
     return value.value;
   });
   returnedBytes[0] = 8;
-  final ownsBytes = await store.transaction((transaction) {
+  final ownsBytes = await store.transaction((transaction) async {
     final value =
-        transaction
-                .getCache(partitionId, const OfflineEntityKey.vertex('bytes'))!
-                .vertex!
-                .value
+        (await transaction.getCache(
+              partitionId,
+              const OfflineEntityKey.vertex('bytes'),
+            ))!.vertex!.value
             as BytesValue;
     return value.value.first == 1;
   });
@@ -441,7 +444,7 @@ Future<void> runStoreConformanceSuite(
   final touchSubscription = store.changes(partitionId).listen(touchChanges.add);
   try {
     await store.transaction<void>(
-      (transaction) => transaction.touchCache(
+      (transaction) async => await transaction.touchCache(
         partitionId,
         const OfflineEntityKey.vertex('bytes'),
         touchAt,
@@ -449,25 +452,26 @@ Future<void> runStoreConformanceSuite(
     );
     await Future<void>.delayed(Duration.zero);
     final touched = await store.transaction(
-      (transaction) =>
-          transaction
-              .getCache(partitionId, const OfflineEntityKey.vertex('bytes'))!
-              .lastAccessAt ==
+      (transaction) async =>
+          (await transaction.getCache(
+            partitionId,
+            const OfflineEntityKey.vertex('bytes'),
+          ))!.lastAccessAt ==
           touchAt,
     );
     _require(touched && touchChanges.isEmpty, 'durable_touch_without_change');
   } finally {
     await touchSubscription.cancel();
   }
-  _requireClosed(
+  await _requireClosed(
     () => committed!.deleteOutbox(partitionId, assigned.first.recordId),
     'sealed_commit_mutation',
   );
 
   for (final differentIntent in <bool>[false, true]) {
     try {
-      await store.transaction<void>((transaction) {
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+      await store.transaction<void>((transaction) async {
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           _record(
             recordId: differentIntent ? 'collision-record' : 'record-0',
             operationId: operationId,
@@ -487,8 +491,8 @@ Future<void> runStoreConformanceSuite(
   }
   for (final differentIntent in <bool>[false, true]) {
     try {
-      await store.transaction<void>((transaction) {
-        transaction.enqueueAll(<OfflineOutboxRecord>[
+      await store.transaction<void>((transaction) async {
+        await transaction.enqueueAll(<OfflineOutboxRecord>[
           _record(
             recordId: assigned.first.recordId,
             operationId: 'record-collision-$differentIntent',
@@ -507,8 +511,8 @@ Future<void> runStoreConformanceSuite(
     }
   }
   try {
-    await store.transaction<void>((transaction) {
-      transaction.enqueueAll(<OfflineOutboxRecord>[
+    await store.transaction<void>((transaction) async {
+      await transaction.enqueueAll(<OfflineOutboxRecord>[
         _record(
           recordId: 'unaggregated-first',
           operationId: 'unaggregated-operation',
@@ -517,7 +521,7 @@ Future<void> runStoreConformanceSuite(
           now: now,
         ),
       ]);
-      transaction.enqueueAll(<OfflineOutboxRecord>[
+      await transaction.enqueueAll(<OfflineOutboxRecord>[
         _record(
           recordId: 'unaggregated-second',
           operationId: 'unaggregated-operation',
@@ -535,20 +539,17 @@ Future<void> runStoreConformanceSuite(
     );
   }
   final unaggregatedRolledBack = await store.transaction(
-    (transaction) => transaction
-        .scanOutbox(
-          partitionId,
-          operationId: 'unaggregated-operation',
-          limit: 1,
-        )
-        .records
-        .isEmpty,
+    (transaction) async => (await transaction.scanOutbox(
+      partitionId,
+      operationId: 'unaggregated-operation',
+      limit: 1,
+    )).records.isEmpty,
   );
   _require(unaggregatedRolledBack, 'unaggregated_operation_rollback');
 
   try {
-    await store.transaction<void>((transaction) {
-      final incomplete = transaction.enqueueAll(<OfflineOutboxRecord>[
+    await store.transaction<void>((transaction) async {
+      final incomplete = await transaction.enqueueAll(<OfflineOutboxRecord>[
         _record(
           recordId: 'incomplete-0',
           operationId: 'incomplete-operation',
@@ -564,7 +565,7 @@ Future<void> runStoreConformanceSuite(
           now: now,
         ),
       ]);
-      transaction.putOperation(
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: partitionId,
           generation: 0,
@@ -590,20 +591,21 @@ Future<void> runStoreConformanceSuite(
     );
   }
   final incompleteRolledBack = await store.transaction(
-    (transaction) => transaction
-        .scanOutbox(partitionId, operationId: 'incomplete-operation', limit: 1)
-        .records
-        .isEmpty,
+    (transaction) async => (await transaction.scanOutbox(
+      partitionId,
+      operationId: 'incomplete-operation',
+      limit: 1,
+    )).records.isEmpty,
   );
   _require(incompleteRolledBack, 'incomplete_operation_rollback');
 
   try {
-    await store.transaction<void>((transaction) {
-      final current = transaction.getOutbox(
+    await store.transaction<void>((transaction) async {
+      final current = (await transaction.getOutbox(
         partitionId,
         assigned.first.recordId,
-      )!;
-      transaction.updateOutbox(
+      ))!;
+      await transaction.updateOutbox(
         current.copyWith(
           state: OfflineOutboxState.sending,
           leaseOwner: 'mismatched-owner',
@@ -615,9 +617,15 @@ Future<void> runStoreConformanceSuite(
   } on OfflineDurableGraphException {
     // Required: the outbox lifecycle and operation item are one graph.
   }
-  final mismatchRolledBack = await store.transaction((transaction) {
-    final record = transaction.getOutbox(partitionId, assigned.first.recordId)!;
-    final operation = transaction.getOperation(partitionId, operationId)!;
+  final mismatchRolledBack = await store.transaction((transaction) async {
+    final record = (await transaction.getOutbox(
+      partitionId,
+      assigned.first.recordId,
+    ))!;
+    final operation = (await transaction.getOperation(
+      partitionId,
+      operationId,
+    ))!;
     return record.state == OfflineOutboxState.enqueued &&
         operation.items.first.state == OfflineWriteState.locallyCommitted;
   });
@@ -626,15 +634,18 @@ Future<void> runStoreConformanceSuite(
   await _requireInvalidCommit(
     store,
     partitionId,
-    (transaction) {
-      final current = transaction.getOutbox(
+    (transaction) async {
+      final current = (await transaction.getOutbox(
         partitionId,
         assigned.first.recordId,
-      )!;
-      transaction.updateOutbox(
+      ))!;
+      await transaction.updateOutbox(
         current.copyWith(diagnosticCode: 'unauthenticated'),
       );
-      final operation = transaction.getOperation(partitionId, operationId)!;
+      final operation = (await transaction.getOperation(
+        partitionId,
+        operationId,
+      ))!;
       final items = operation.items.toList(growable: false);
       items[current.itemIndex] = OfflineWriteStatus(
         recordId: current.recordId,
@@ -644,7 +655,7 @@ Future<void> runStoreConformanceSuite(
         attemptCount: current.attemptCount,
         diagnosticCode: 'unauthenticated',
       );
-      transaction.putOperation(
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: operation.partitionId,
           generation: operation.generation,
@@ -655,13 +666,16 @@ Future<void> runStoreConformanceSuite(
       );
     },
     'auth_marker_without_pause_graph',
-    (transaction) {
-      final record = transaction.getOutbox(
+    (transaction) async {
+      final record = (await transaction.getOutbox(
         partitionId,
         assigned.first.recordId,
-      )!;
-      final operation = transaction.getOperation(partitionId, operationId)!;
-      return !transaction.replayPausedForAuth(partitionId) &&
+      ))!;
+      final operation = (await transaction.getOperation(
+        partitionId,
+        operationId,
+      ))!;
+      return !(await transaction.replayPausedForAuth(partitionId)) &&
           record.diagnosticCode == null &&
           operation.items.first.state == OfflineWriteState.locallyCommitted;
     },
@@ -670,8 +684,11 @@ Future<void> runStoreConformanceSuite(
   await _requireInvalidCommit(
     store,
     partitionId,
-    (transaction) {
-      final operation = transaction.getOperation(partitionId, operationId)!;
+    (transaction) async {
+      final operation = (await transaction.getOperation(
+        partitionId,
+        operationId,
+      ))!;
       final items = operation.items.toList(growable: false);
       final current = items.first;
       items[0] = OfflineWriteStatus(
@@ -681,7 +698,7 @@ Future<void> runStoreConformanceSuite(
         state: OfflineWriteState.pausedForAuth,
         attemptCount: current.attemptCount,
       );
-      transaction.putOperation(
+      await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: operation.partitionId,
           generation: operation.generation,
@@ -692,9 +709,12 @@ Future<void> runStoreConformanceSuite(
       );
     },
     'auth_state_without_pause_graph',
-    (transaction) {
-      final operation = transaction.getOperation(partitionId, operationId)!;
-      return !transaction.replayPausedForAuth(partitionId) &&
+    (transaction) async {
+      final operation = (await transaction.getOperation(
+        partitionId,
+        operationId,
+      ))!;
+      return !(await transaction.replayPausedForAuth(partitionId)) &&
           operation.items.first.state == OfflineWriteState.locallyCommitted &&
           operation.items.first.diagnosticCode == null;
     },
@@ -702,21 +722,22 @@ Future<void> runStoreConformanceSuite(
 
   try {
     await store.transaction<void>(
-      (transaction) => transaction.deleteOperation(partitionId, operationId),
+      (transaction) async =>
+          await transaction.deleteOperation(partitionId, operationId),
     );
     _require(false, 'delete_referenced_operation');
   } on OfflineArgumentException {
     // Required: retained outbox records must never become orphaned.
   }
   final referencePreserved = await store.transaction(
-    (transaction) =>
-        transaction.getOperation(partitionId, operationId) != null &&
-        transaction.hasOutboxForOperation(partitionId, operationId),
+    (transaction) async =>
+        (await transaction.getOperation(partitionId, operationId)) != null &&
+        (await transaction.hasOutboxForOperation(partitionId, operationId)),
   );
   _require(referencePreserved, 'referenced_operation_preserved');
 
-  await store.transaction<void>((transaction) {
-    final stale = transaction.enqueue(
+  await store.transaction<void>((transaction) async {
+    final stale = await transaction.enqueue(
       _record(
         recordId: 'stale-record',
         operationId: 'stale-operation',
@@ -725,7 +746,7 @@ Future<void> runStoreConformanceSuite(
         now: now.subtract(const Duration(days: 2)),
       ),
     );
-    transaction.putOperation(
+    await transaction.putOperation(
       OfflineOperationRecord(
         partitionId: partitionId,
         generation: 0,
@@ -744,8 +765,8 @@ Future<void> runStoreConformanceSuite(
     );
   });
 
-  await store.transaction<void>((transaction) {
-    final retry = _enqueueOperation(
+  await store.transaction<void>((transaction) async {
+    final retry = await _enqueueOperation(
       transaction,
       _record(
         recordId: 'retry-record',
@@ -756,14 +777,14 @@ Future<void> runStoreConformanceSuite(
       ),
       now,
     );
-    transaction.updateOutbox(
+    await transaction.updateOutbox(
       retry.copyWith(
         attemptCount: 1,
         nextAttemptAt: now.add(const Duration(milliseconds: 250)),
         diagnosticCode: 'unavailable',
       ),
     );
-    _putMatchingStatus(
+    await _putMatchingStatus(
       transaction,
       retry,
       OfflineWriteState.retryScheduled,
@@ -772,7 +793,7 @@ Future<void> runStoreConformanceSuite(
       now: now,
     );
 
-    final deadLetter = _enqueueOperation(
+    final deadLetter = await _enqueueOperation(
       transaction,
       _record(
         recordId: 'dead-letter-record',
@@ -784,14 +805,14 @@ Future<void> runStoreConformanceSuite(
       now,
     );
     final terminalAt = now.add(const Duration(microseconds: 1));
-    transaction.updateOutbox(
+    await transaction.updateOutbox(
       deadLetter.copyWith(
         state: OfflineOutboxState.deadLetter,
         deadLetteredAt: terminalAt,
         diagnosticCode: 'permanent',
       ),
     );
-    _putMatchingStatus(
+    await _putMatchingStatus(
       transaction,
       deadLetter,
       OfflineWriteState.deadLetter,
@@ -804,7 +825,7 @@ Future<void> runStoreConformanceSuite(
       (id: 'confirmed', state: OfflineWriteState.confirmed),
       (id: 'expired', state: OfflineWriteState.expired),
     ]) {
-      final record = _enqueueOperation(
+      final record = await _enqueueOperation(
         transaction,
         _record(
           recordId: '${transition.id}-record',
@@ -815,19 +836,19 @@ Future<void> runStoreConformanceSuite(
         ),
         now,
       );
-      _putMatchingStatus(
+      await _putMatchingStatus(
         transaction,
         record,
         transition.state,
         attemptCount: 1,
         now: terminalAt,
       );
-      transaction.deleteOutbox(partitionId, record.recordId);
+      await transaction.deleteOutbox(partitionId, record.recordId);
     }
   });
 
   final deadLetterBeforeRetention = await store.transaction(
-    (transaction) => transaction.dueOutbox(
+    (transaction) async => await transaction.dueOutbox(
       partitionId,
       operationId: 'dead-letter-operation',
       now: now.add(const Duration(hours: 1)),
@@ -841,7 +862,7 @@ Future<void> runStoreConformanceSuite(
     'dead_letter_retention_before_boundary',
   );
   final deadLetterDue = await store.transaction(
-    (transaction) => transaction.dueOutbox(
+    (transaction) async => await transaction.dueOutbox(
       partitionId,
       operationId: 'dead-letter-operation',
       now: now.add(const Duration(hours: 1, microseconds: 1)),
@@ -855,8 +876,8 @@ Future<void> runStoreConformanceSuite(
     'dead_letter_retention_at_boundary',
   );
 
-  final claimed = await store.transaction((transaction) {
-    final records = transaction.claim(
+  final claimed = await store.transaction((transaction) async {
+    final records = await transaction.claim(
       partitionId,
       owner: 'owner',
       now: now,
@@ -865,7 +886,7 @@ Future<void> runStoreConformanceSuite(
       limit: 3,
     );
     for (final record in records) {
-      _putMatchingStatus(
+      await _putMatchingStatus(
         transaction,
         record,
         OfflineWriteState.sending,
@@ -877,7 +898,7 @@ Future<void> runStoreConformanceSuite(
   });
   _require(claimed.length == 2, 'independent_key_claim');
   final renewed = await store.transaction(
-    (transaction) => transaction.renewLease(
+    (transaction) async => await transaction.renewLease(
       partitionId,
       claimed.first.recordId,
       owner: 'owner',
@@ -889,9 +910,8 @@ Future<void> runStoreConformanceSuite(
   _require(renewed, 'lease_cas');
 
   final recoveryAt = now.add(const Duration(seconds: 2));
-  final recovered = await store.transaction((transaction) {
-    final expiredLeases = transaction
-        .outbox(partitionId)
+  final recovered = await store.transaction((transaction) async {
+    final expiredLeases = (await transaction.outbox(partitionId))
         .where(
           (record) =>
               record.state == OfflineOutboxState.sending &&
@@ -900,7 +920,7 @@ Future<void> runStoreConformanceSuite(
         )
         .toList(growable: false);
     for (final record in expiredLeases) {
-      _putMatchingStatus(
+      await _putMatchingStatus(
         transaction,
         record,
         OfflineWriteState.locallyCommitted,
@@ -908,7 +928,7 @@ Future<void> runStoreConformanceSuite(
         now: recoveryAt,
       );
     }
-    final reclaimed = transaction.claim(
+    final reclaimed = await transaction.claim(
       partitionId,
       owner: 'recovered-owner',
       now: recoveryAt,
@@ -917,7 +937,7 @@ Future<void> runStoreConformanceSuite(
       limit: 4,
     );
     for (final record in reclaimed) {
-      _putMatchingStatus(
+      await _putMatchingStatus(
         transaction,
         record,
         OfflineWriteState.sending,
@@ -933,53 +953,56 @@ Future<void> runStoreConformanceSuite(
   );
 
   store = await reopen(store);
-  final restartSafe = await store.transaction((transaction) {
-    final cache = transaction.getCache(
+  final restartSafe = await store.transaction((transaction) async {
+    final cache = await transaction.getCache(
       partitionId,
       const OfflineEntityKey.vertex('bytes'),
     );
-    final operation = transaction.getOperation(partitionId, operationId);
+    final operation = await transaction.getOperation(partitionId, operationId);
     return cache != null &&
         cache.lastAccessAt == touchAt &&
         operation != null &&
-        transaction.getOutbox(partitionId, 'dead-letter-record')?.state ==
+        (await transaction.getOutbox(
+              partitionId,
+              'dead-letter-record',
+            ))?.state ==
             OfflineOutboxState.deadLetter &&
-        transaction.getOutbox(partitionId, 'confirmed-record') == null &&
-        transaction.getOutbox(partitionId, 'expired-record') == null &&
-        transaction.outbox(partitionId).length == 5;
+        (await transaction.getOutbox(partitionId, 'confirmed-record')) ==
+            null &&
+        (await transaction.getOutbox(partitionId, 'expired-record')) == null &&
+        (await transaction.outbox(partitionId)).length == 5;
   });
   _require(restartSafe, 'successful_commits_reopen_same_limits');
 
   await store.transaction<void>(
-    (transaction) => transaction.setReplayPausedForAuth(partitionId, true),
+    (transaction) async =>
+        await transaction.setReplayPausedForAuth(partitionId, true),
   );
-  final authPaused = await store.transaction((transaction) {
-    return transaction.replayPausedForAuth(partitionId) &&
-        transaction
-            .claim(
-              partitionId,
-              owner: 'paused-owner',
-              now: now.add(const Duration(seconds: 2)),
-              maxAge: const Duration(days: 1),
-              leaseDuration: const Duration(seconds: 1),
-              limit: 2,
-            )
-            .isEmpty;
+  final authPaused = await store.transaction((transaction) async {
+    return (await transaction.replayPausedForAuth(partitionId)) &&
+        (await transaction.claim(
+          partitionId,
+          owner: 'paused-owner',
+          now: now.add(const Duration(seconds: 2)),
+          maxAge: const Duration(days: 1),
+          leaseDuration: const Duration(seconds: 1),
+          limit: 2,
+        )).isEmpty;
   });
   _require(authPaused, 'durable_auth_pause');
 
   await store.transaction<void>(
-    (transaction) => transaction.wipePartition(partitionId),
+    (transaction) async => await transaction.wipePartition(partitionId),
   );
-  final wiped = await store.transaction((transaction) {
-    return transaction.generation(partitionId) == 1 &&
-        !transaction.replayPausedForAuth(partitionId) &&
-        transaction.outbox(partitionId).isEmpty &&
-        transaction.operations(partitionId).isEmpty &&
-        transaction.getCache(
+  final wiped = await store.transaction((transaction) async {
+    return (await transaction.generation(partitionId)) == 1 &&
+        !(await transaction.replayPausedForAuth(partitionId)) &&
+        (await transaction.outbox(partitionId)).isEmpty &&
+        (await transaction.operations(partitionId)).isEmpty &&
+        (await transaction.getCache(
               partitionId,
               const OfflineEntityKey.vertex('key'),
-            ) ==
+            )) ==
             null;
   });
   _require(wiped, 'partition_wipe_generation');
@@ -997,19 +1020,19 @@ Future<void> runStoreConformanceSuite(
     maxProbeRecords: maxCapacityProbeRecords,
   );
 
-  final finalState = await store.transaction((transaction) {
-    return transaction.generation('conformance-lease') == 1 &&
-        transaction.generation('conformance-notifications') == 1 &&
-        transaction.generation('conformance-capacity') == 1 &&
-        transaction.generation('conformance-cache-capacity') == 1;
+  final finalState = await store.transaction((transaction) async {
+    return (await transaction.generation('conformance-lease')) == 1 &&
+        (await transaction.generation('conformance-notifications')) == 1 &&
+        (await transaction.generation('conformance-capacity')) == 1 &&
+        (await transaction.generation('conformance-cache-capacity')) == 1;
   });
   _require(finalState, 'resource_contracts_reopen_cleanly');
 }
 
 Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   const partitionId = 'conformance-lease';
-  final enqueued = await store.transaction((transaction) {
-    return _enqueueOperation(
+  final enqueued = await store.transaction((transaction) async {
+    return await _enqueueOperation(
       transaction,
       _record(
         recordId: 'lease-record',
@@ -1024,8 +1047,8 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   });
 
   Future<List<OfflineOutboxRecord>> claim(String owner) =>
-      store.transaction((transaction) {
-        final claimed = transaction.claim(
+      store.transaction((transaction) async {
+        final claimed = await transaction.claim(
           partitionId,
           owner: owner,
           now: now,
@@ -1034,7 +1057,7 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
           limit: 1,
         );
         for (final record in claimed) {
-          _putMatchingStatus(
+          await _putMatchingStatus(
             transaction,
             record,
             OfflineWriteState.sending,
@@ -1066,7 +1089,7 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
     ),
   ]) {
     final renewed = await store.transaction(
-      (transaction) => transaction.renewLease(
+      (transaction) async => await transaction.renewLease(
         partitionId,
         winner.recordId,
         owner: negative.owner,
@@ -1079,7 +1102,7 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   }
 
   final renewed = await store.transaction(
-    (transaction) => transaction.renewLease(
+    (transaction) async => await transaction.renewLease(
       partitionId,
       winner.recordId,
       owner: owner,
@@ -1090,7 +1113,8 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   );
   _require(renewed, 'lease_renew_positive_cas');
   final renewedRecord = await store.transaction(
-    (transaction) => transaction.getOutbox(partitionId, winner.recordId),
+    (transaction) async =>
+        await transaction.getOutbox(partitionId, winner.recordId),
   );
   _require(
     renewedRecord?.leaseUntil == now.add(const Duration(milliseconds: 3250)),
@@ -1098,7 +1122,7 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   );
 
   final wrongRelease = await store.transaction(
-    (transaction) => _releaseConformanceClaim(
+    (transaction) async => await _releaseConformanceClaim(
       transaction,
       partitionId,
       winner,
@@ -1108,7 +1132,7 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   );
   _require(!wrongRelease, 'lease_release_negative_cas');
   final released = await store.transaction(
-    (transaction) => _releaseConformanceClaim(
+    (transaction) async => await _releaseConformanceClaim(
       transaction,
       partitionId,
       winner,
@@ -1118,8 +1142,8 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   );
   _require(released, 'lease_release_positive_cas');
 
-  final reclaimed = await store.transaction((transaction) {
-    final claimed = transaction.claim(
+  final reclaimed = await store.transaction((transaction) async {
+    final claimed = await transaction.claim(
       partitionId,
       owner: 'claimer-c',
       now: now.add(const Duration(milliseconds: 750)),
@@ -1128,7 +1152,7 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
       limit: 1,
     );
     for (final record in claimed) {
-      _putMatchingStatus(
+      await _putMatchingStatus(
         transaction,
         record,
         OfflineWriteState.sending,
@@ -1145,10 +1169,10 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   );
 
   await store.transaction<void>(
-    (transaction) => transaction.wipePartition(partitionId),
+    (transaction) async => await transaction.wipePartition(partitionId),
   );
   final lateRelease = await store.transaction(
-    (transaction) => _releaseConformanceClaim(
+    (transaction) async => await _releaseConformanceClaim(
       transaction,
       partitionId,
       reclaimed.single,
@@ -1159,24 +1183,24 @@ Future<void> _runLeaseCasConformance(OfflineStore store, DateTime now) async {
   _require(!lateRelease, 'late_generation_release_rejected');
 }
 
-bool _releaseConformanceClaim(
+Future<bool> _releaseConformanceClaim(
   OfflineStoreTransaction transaction,
   String partitionId,
   OfflineOutboxRecord claimed, {
   required String owner,
   required DateTime now,
-}) {
-  final current = transaction.getOutbox(partitionId, claimed.recordId);
+}) async {
+  final current = await transaction.getOutbox(partitionId, claimed.recordId);
   if (current == null ||
       current.generation != claimed.generation ||
       current.state != OfflineOutboxState.sending ||
       current.leaseOwner != owner ||
       current.leaseUntil == null ||
       !now.isBefore(current.leaseUntil!) ||
-      transaction.generation(partitionId) != claimed.generation) {
+      (await transaction.generation(partitionId)) != claimed.generation) {
     return false;
   }
-  transaction.updateOutbox(
+  await transaction.updateOutbox(
     current.copyWith(
       state: OfflineOutboxState.enqueued,
       clearLeaseOwner: true,
@@ -1184,7 +1208,7 @@ bool _releaseConformanceClaim(
       diagnosticCode: 'canceled',
     ),
   );
-  _putMatchingStatus(
+  await _putMatchingStatus(
     transaction,
     current,
     OfflineWriteState.locallyCommitted,
@@ -1204,9 +1228,9 @@ Future<void> _runNotificationConformance(
   final observedFuture = store.changes(partitionId).take(4).toList();
   await Future.wait<void>(
     List<Future<void>>.generate(3, (index) {
-      return store.transaction<void>((transaction) {
+      return store.transaction<void>((transaction) async {
         final key = 'notification-$index';
-        transaction.putCache(
+        await transaction.putCache(
           partitionId,
           OfflineCacheRecord.value(
             partitionId: partitionId,
@@ -1225,7 +1249,7 @@ Future<void> _runNotificationConformance(
     }),
   );
   await store.transaction<void>(
-    (transaction) => transaction.wipePartition(partitionId),
+    (transaction) async => await transaction.wipePartition(partitionId),
   );
   final observed = await _waitForConformance(
     observedFuture,
@@ -1276,8 +1300,8 @@ Future<void> _runNotificationConformance(
         .changes('conformance-controller-replacement')
         .listen(replacementEvent.complete);
     try {
-      await store.transaction<void>((transaction) {
-        transaction.putCache(
+      await store.transaction<void>((transaction) async {
+        await transaction.putCache(
           'conformance-controller-replacement',
           OfflineCacheRecord.missing(
             partitionId: 'conformance-controller-replacement',
@@ -1315,8 +1339,8 @@ Future<OfflineStore> _runCapacityAndRetentionConformance(
   String? rejectedRecordId;
   for (var index = 0; index < maxProbeRecords; index++) {
     try {
-      await store.transaction<void>((transaction) {
-        _enqueueOperation(
+      await store.transaction<void>((transaction) async {
+        await _enqueueOperation(
           transaction,
           _record(
             recordId: 'capacity-record-$index',
@@ -1339,11 +1363,11 @@ Future<OfflineStore> _runCapacityAndRetentionConformance(
     admitted > 0 && rejectedRecordId != null,
     'bounded_outbox_operation_capacity',
   );
-  final beforeReopen = await store.transaction((transaction) {
+  final beforeReopen = await store.transaction((transaction) async {
     return (
-      outbox: transaction.outbox(partitionId).length,
-      operations: transaction.operations(partitionId).length,
-      rejected: transaction.getOutbox(partitionId, rejectedRecordId!),
+      outbox: (await transaction.outbox(partitionId)).length,
+      operations: (await transaction.operations(partitionId)).length,
+      rejected: await transaction.getOutbox(partitionId, rejectedRecordId!),
     );
   });
   _require(
@@ -1353,10 +1377,10 @@ Future<OfflineStore> _runCapacityAndRetentionConformance(
     'capacity_rejection_atomic',
   );
   store = await reopen(store);
-  final afterReopen = await store.transaction((transaction) {
+  final afterReopen = await store.transaction((transaction) async {
     return (
-      outbox: transaction.outbox(partitionId).length,
-      operations: transaction.operations(partitionId).length,
+      outbox: (await transaction.outbox(partitionId)).length,
+      operations: (await transaction.operations(partitionId)).length,
     );
   });
   _require(
@@ -1364,7 +1388,7 @@ Future<OfflineStore> _runCapacityAndRetentionConformance(
     'capacity_accounting_reopens',
   );
   await store.transaction<void>(
-    (transaction) => transaction.wipePartition(partitionId),
+    (transaction) async => await transaction.wipePartition(partitionId),
   );
 
   const cachePartition = 'conformance-cache-capacity';
@@ -1372,8 +1396,8 @@ Future<OfflineStore> _runCapacityAndRetentionConformance(
   var lastKey = '';
   for (var index = 0; index < maxProbeRecords; index++) {
     lastKey = 'cache-$index';
-    await store.transaction<void>((transaction) {
-      transaction.putCache(
+    await store.transaction<void>((transaction) async {
+      await transaction.putCache(
         cachePartition,
         OfflineCacheRecord.value(
           partitionId: cachePartition,
@@ -1391,27 +1415,27 @@ Future<OfflineStore> _runCapacityAndRetentionConformance(
     });
     if (index > 0) {
       evicted = await store.transaction(
-        (transaction) =>
-            transaction.getCache(
+        (transaction) async =>
+            (await transaction.getCache(
               cachePartition,
               const OfflineEntityKey.vertex('cache-0'),
-            ) ==
+            )) ==
             null,
       );
       if (evicted) break;
     }
   }
   final newestRetained = await store.transaction(
-    (transaction) =>
-        transaction.getCache(
+    (transaction) async =>
+        (await transaction.getCache(
           cachePartition,
           OfflineEntityKey.vertex(lastKey),
-        ) !=
+        )) !=
         null,
   );
   _require(evicted && newestRetained, 'cache_capacity_lru_only');
   await store.transaction<void>(
-    (transaction) => transaction.wipePartition(cachePartition),
+    (transaction) async => await transaction.wipePartition(cachePartition),
   );
   return reopen(store);
 }
@@ -1460,13 +1484,13 @@ OfflineOutboxRecord _expiredRecord({
   diagnosticCode: diagnosticCode,
 );
 
-OfflineOutboxRecord _enqueueOperation(
+Future<OfflineOutboxRecord> _enqueueOperation(
   OfflineStoreTransaction transaction,
   OfflineOutboxRecord record,
   DateTime now,
-) {
-  final assigned = transaction.enqueue(record);
-  transaction.putOperation(
+) async {
+  final assigned = await transaction.enqueue(record);
+  await transaction.putOperation(
     OfflineOperationRecord(
       partitionId: assigned.partitionId,
       generation: assigned.generation,
@@ -1486,18 +1510,18 @@ OfflineOutboxRecord _enqueueOperation(
   return assigned;
 }
 
-void _putMatchingStatus(
+Future<void> _putMatchingStatus(
   OfflineStoreTransaction transaction,
   OfflineOutboxRecord outbox,
   OfflineWriteState state, {
   required int attemptCount,
   required DateTime now,
   String? diagnosticCode,
-}) {
-  final operation = transaction.getOperation(
+}) async {
+  final operation = (await transaction.getOperation(
     outbox.partitionId,
     outbox.operationId,
-  )!;
+  ))!;
   final items = operation.items.toList(growable: false);
   items[outbox.itemIndex] = OfflineWriteStatus(
     recordId: outbox.recordId,
@@ -1516,7 +1540,7 @@ void _putMatchingStatus(
     outbox.enqueuedAt,
     now,
   ].reduce((latest, value) => value.isAfter(latest) ? value : latest);
-  transaction.putOperation(
+  await transaction.putOperation(
     OfflineOperationRecord(
       partitionId: operation.partitionId,
       generation: operation.generation,
@@ -1540,9 +1564,12 @@ Future<T> _waitForConformance<T>(Future<T> future, String label) async {
   }
 }
 
-void _requireClosed(void Function() action, String label) {
+Future<void> _requireClosed(
+  FutureOr<Object?> Function() action,
+  String label,
+) async {
   try {
-    action();
+    await action();
     _require(false, label);
   } on OfflineTransactionClosedException {
     // Required.
@@ -1556,15 +1583,15 @@ final class _ConformanceRollback implements Exception {
 Future<void> _requireInvalidCommit(
   OfflineStore store,
   String partitionId,
-  void Function(OfflineStoreTransaction transaction) mutate,
+  FutureOr<void> Function(OfflineStoreTransaction transaction) mutate,
   String label,
-  bool Function(OfflineStoreTransaction transaction) unchanged,
+  FutureOr<bool> Function(OfflineStoreTransaction transaction) unchanged,
 ) async {
   final before = await store.transaction(
-    (transaction) => (
-      generation: transaction.generation(partitionId),
-      outboxCount: transaction.outbox(partitionId).length,
-      operationCount: transaction.operations(partitionId).length,
+    (transaction) async => (
+      generation: await transaction.generation(partitionId),
+      outboxCount: (await transaction.outbox(partitionId)).length,
+      operationCount: (await transaction.operations(partitionId)).length,
     ),
   );
   final changes = <OfflineStoreChange>[];
@@ -1578,11 +1605,13 @@ Future<void> _requireInvalidCommit(
     }
     await Future<void>.delayed(Duration.zero);
     final preserved = await store.transaction(
-      (transaction) =>
-          unchanged(transaction) &&
-          transaction.generation(partitionId) == before.generation &&
-          transaction.outbox(partitionId).length == before.outboxCount &&
-          transaction.operations(partitionId).length == before.operationCount,
+      (transaction) async =>
+          (await unchanged(transaction)) &&
+          (await transaction.generation(partitionId)) == before.generation &&
+          (await transaction.outbox(partitionId)).length ==
+              before.outboxCount &&
+          (await transaction.operations(partitionId)).length ==
+              before.operationCount,
     );
     _require(preserved && changes.isEmpty, '${label}_atomic');
   } finally {

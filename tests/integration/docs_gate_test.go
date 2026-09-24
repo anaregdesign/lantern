@@ -332,6 +332,7 @@ func TestDartWorkflowGate(t *testing.T) {
 	for _, contract := range []string{
 		"name: Classify changes",
 		`"sdks/dart/**"`,
+		`"tests/integration/dart_offline_sqlite_test.dart"`,
 		`"proto/**"`,
 		`"buf.yaml"`,
 		`"buf.gen.yaml"`,
@@ -386,9 +387,10 @@ func TestDartWorkflowGate(t *testing.T) {
 		"lantern-android-revision-${{ github.sha }}",
 		"lantern-ios-revision-${{ github.sha }}",
 		"name: Gate",
-		"needs: [changes, test, minimum-dart, offline-test, offline-minimum-dart, android, ios]",
+		"needs: [changes, test, minimum-dart, offline-test, offline-minimum-dart, offline-sqlite, android, ios]",
 		"require_result offline-test \"$OFFLINE_TEST_RESULT\" success",
 		"require_result offline-minimum-dart \"$OFFLINE_MINIMUM_DART_RESULT\" success",
+		"require_result offline-sqlite \"$OFFLINE_SQLITE_RESULT\" success",
 		"require_result minimum-dart \"$MINIMUM_DART_RESULT\" success",
 		"require_result android \"$ANDROID_RESULT\" success",
 		"require_result ios \"$IOS_RESULT\" success",
@@ -404,7 +406,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		t.Fatalf("read parent Dart .pubignore: %v", err)
 	}
 	pubignoreText := "\n" + string(pubignore) + "\n"
-	for _, excluded := range []string{"example/*", "offline/"} {
+	for _, excluded := range []string{"example/*", "offline/", "offline_sqlite/"} {
 		if !strings.Contains(pubignoreText, "\n"+excluded+"\n") {
 			t.Errorf("parent Dart publish archive no longer excludes %q", excluded)
 		}

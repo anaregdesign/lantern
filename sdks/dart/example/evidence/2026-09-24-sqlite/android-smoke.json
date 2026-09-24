@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "kind": "physical_mobile_revision_evidence",
+  "contentFree": true,
+  "physicalDevice": true,
+  "repository": "anaregdesign/lantern",
+  "commit": "50c9b00d9f8013947d8a6eccb6aa86a0b6073dfc",
+  "recordedAt": "2026-09-24T00:34:15.220723Z",
+  "cleanCheckout": true,
+  "toolchain": {
+    "flutter": "3.44.6",
+    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
+    "dart": "3.12.2"
+  },
+  "application": {
+    "packageId": "com.anaregdesign.lantern_example",
+    "target": "integration_test/mobile_smoke_test.dart",
+    "buildMode": "debug",
+    "binarySha256": "c41a017d07dec0aa927d90754ff828b1de6728a99dcceda1adb743008f90b7fe"
+  },
+  "platform": {
+    "kind": "physical-android",
+    "model": "Pixel 9a",
+    "os": "Android 17 (API 37)"
+  },
+  "network": {
+    "transport": "Connect/h2c",
+    "topology": "USB adb reverse to task-owned local server and token BFF",
+    "authenticated": true,
+    "debugInsecureOptIn": true
+  },
+  "scenarios": [
+    "online_exact_values",
+    "offline_put_replay",
+    "authoritative_server_expiry",
+    "watch_cleanup",
+    "wipe_before_send",
+    "sqlite_pending_close_reopen",
+    "sqlite_original_ttl_preserved",
+    "sqlite_expired_before_replay",
+    "sqlite_logout_wipe_reopen",
+    "sqlite_partition_isolation"
+  ],
+  "result": "passed",
+  "limitations": [
+    "Private LAN attempt could not reach host; successful run used USB forwarding without changing device network settings.",
+    "Trusted TLS, radio/Doze, and local-network privacy qualification were not rerun."
+  ]
+}

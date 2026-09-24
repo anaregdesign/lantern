@@ -7,12 +7,14 @@ against the parent package by path, so CI catches example/API drift.
 ## Runtime configuration
 
 No credential is stored in source or passed through `--dart-define`. Configure
-only locations and the explicit local-development transport switch:
+only locations, a non-secret account scope, and the explicit local-development
+transport switch:
 
 ```bash
 flutter run \
   --dart-define=LANTERN_ENDPOINT=https://lantern.example.com \
-  --dart-define=LANTERN_TOKEN_ENDPOINT=https://bff.example.com/mobile-token
+  --dart-define=LANTERN_TOKEN_ENDPOINT=https://bff.example.com/mobile-token \
+  --dart-define=LANTERN_OFFLINE_SCOPE=demo-user
 ```
 
 The token endpoint is called asynchronously for each transport attempt
@@ -21,6 +23,9 @@ The token endpoint is called asynchronously for each transport attempt
 The example never embeds a shared `LANTERN_AUTH_TOKENS` value. A public app
 should obtain user/device-scoped, short-lived credentials through a BFF or
 gateway; the server's static token list is an operator-side deployment input.
+`LANTERN_OFFLINE_SCOPE` is required with a token endpoint and must identify
+the user/tenant whose state is stored locally. It is never an access token.
+Anonymous local development uses an `anonymous` scope.
 
 Plaintext requires both the SDK opt-in and a debug/trusted-LAN build:
 
@@ -101,10 +106,18 @@ client only when its owner is disposed. Do not rely on a termination callback:
 iOS may suspend shortly after backgrounding, and Android Doze can stop network
 access. The standard `lantern_client` provides no implicit offline cache,
 background sync, or delivery guarantee. The example's opt-in offline Repository
-uses `InMemoryOfflineStore`, so it demonstrates the state/UX contract but does
-not survive process termination. Production apps must inject a durable,
-encrypted transactional store, bind each partition to the signed-in
-user/tenant, and wipe that partition on logout.
+uses `SqliteOfflineStore` from the experimental `lantern_client_offline_sqlite`
+package. It opens a database in the platform app database directory, with a
+filename derived from the endpoint and account scope. Pending Put mutations and
+their original absolute TTL survive close/reopen and process termination.
+Shutdown awaits Repository disposal before closing SQLite, then closes the
+client. No database is closed during transient `inactive` or background states.
+
+For logout, await `OfflineDemoSession.wipeOnLogout()` before discarding that
+session's credentials; a later session must use its own scope. Closing a session
+alone preserves its offline work. This fixture uses normal sqflite storage,
+which is **not encrypted**. Production applications own encryption, secure key
+storage, OS backup/file-protection policy, account binding, and logout triggers.
 
 ## Checks
 
@@ -118,10 +131,13 @@ flutter build ios --debug --no-codesign
 ```
 
 The native real-wire smoke is in
-`integration_test/mobile_smoke_test.dart`; it covers offline enqueue, cached
-pending state, probe-gated replay, confirmation, authoritative server expiry
-under a behind-device clock, watch cleanup, wipe-before-send, and the direct
-online surface. Hosted Android/iOS jobs attach content-free evidence manifests
+`integration_test/mobile_smoke_test.dart`; it uses the native sqflite plugin and
+covers close/reopen of pending Vertex and Edge Puts, original TTL preservation,
+expiry without sending, probe-gated real-wire replay, confirmation, authoritative
+server expiry under a behind-device clock, watch cleanup, and logout wipe that
+survives reopen while another partition remains intact. It also covers the direct
+online surface. This close/reopen smoke is distinct from the adapter's host-side
+process-crash tests. Hosted Android/iOS jobs attach content-free evidence manifests
 to the exact tested commit and toolchain; they are simulator evidence only.
 See
 [physical-device-smoke.md](physical-device-smoke.md) for the required device

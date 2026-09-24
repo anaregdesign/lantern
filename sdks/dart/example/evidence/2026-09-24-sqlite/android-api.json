@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "kind": "physical_mobile_revision_evidence",
+  "contentFree": true,
+  "physicalDevice": true,
+  "repository": "anaregdesign/lantern",
+  "commit": "50c9b00d9f8013947d8a6eccb6aa86a0b6073dfc",
+  "recordedAt": "2026-09-24T00:39:16.692514Z",
+  "cleanCheckout": true,
+  "toolchain": {
+    "flutter": "3.44.6",
+    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
+    "dart": "3.12.2"
+  },
+  "application": {
+    "packageId": "com.anaregdesign.lantern_example",
+    "target": "integration_test/physical_api_matrix_test.dart",
+    "buildMode": "debug",
+    "binarySha256": "a07fac294aeb6bb86e1786fbc0870cffc08590c79edc7a016e07a58f45ea7360"
+  },
+  "platform": {
+    "kind": "physical-android",
+    "model": "Pixel 9a",
+    "os": "Android 17 (API 37)"
+  },
+  "network": {
+    "transport": "Connect/h2c",
+    "topology": "USB adb reverse to task-owned local server and token BFF",
+    "authenticated": true,
+    "debugInsecureOptIn": true
+  },
+  "scenarios": [
+    "missing_rotated_runtime_tokens",
+    "exact_13_vertex_oneofs",
+    "bounded_cursor_partial_batch_failure",
+    "committed_add_response_loss_idempotency"
+  ],
+  "result": "passed",
+  "limitations": [
+    "Private LAN attempt could not reach host; successful run used USB forwarding without changing device network settings.",
+    "Trusted TLS, radio/Doze, and local-network privacy qualification were not rerun."
+  ]
+}

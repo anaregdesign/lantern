@@ -7,6 +7,7 @@ import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 
 import 'offline_demo.dart';
+import 'offline_session.dart';
 
 /// Lossless, type-labelled text used by the example's value list.
 String formatVertexValue(VertexValue value) => switch (value) {
@@ -49,22 +50,38 @@ final class DemoConfiguration {
     required this.endpoint,
     required this.tokenEndpoint,
     required this.allowInsecure,
+    this.offlineScope,
   });
 
   final Uri endpoint;
   final Uri? tokenEndpoint;
   final bool allowInsecure;
+  final String? offlineScope;
+
+  /// Authentication must bind durable state to an explicit application account.
+  String get offlinePartitionId {
+    final scope = offlineScope;
+    if (scope != null && scope.trim().isNotEmpty) return scope;
+    if (tokenEndpoint != null) {
+      throw StateError(
+        'Set LANTERN_OFFLINE_SCOPE to a non-secret user/tenant identifier.',
+      );
+    }
+    return 'anonymous';
+  }
 
   static DemoConfiguration? fromEnvironment() {
     const rawEndpoint = String.fromEnvironment('LANTERN_ENDPOINT');
     if (rawEndpoint.isEmpty) return null;
     const rawTokenEndpoint = String.fromEnvironment('LANTERN_TOKEN_ENDPOINT');
+    const rawOfflineScope = String.fromEnvironment('LANTERN_OFFLINE_SCOPE');
     return DemoConfiguration(
       endpoint: Uri.parse(rawEndpoint),
       tokenEndpoint: rawTokenEndpoint.isEmpty
           ? null
           : Uri.parse(rawTokenEndpoint),
       allowInsecure: const bool.fromEnvironment('LANTERN_ALLOW_INSECURE'),
+      offlineScope: rawOfflineScope.isEmpty ? null : rawOfflineScope,
     );
   }
 }
@@ -82,7 +99,10 @@ class LanternExampleApp extends StatelessWidget {
       theme: ThemeData(colorSchemeSeed: Colors.amber, useMaterial3: true),
       home: configuration == null
           ? const _ConfigurationHelp()
-          : _ClientOwner(configuration: configuration!),
+          : _ClientOwner(
+              key: ValueKey(configuration),
+              configuration: configuration!,
+            ),
     );
   }
 }
@@ -126,7 +146,7 @@ final class _RuntimeTokenProvider {
 }
 
 final class _ClientOwner extends StatefulWidget {
-  const _ClientOwner({required this.configuration});
+  const _ClientOwner({super.key, required this.configuration});
 
   final DemoConfiguration configuration;
 
@@ -137,7 +157,7 @@ final class _ClientOwner extends StatefulWidget {
 final class _ClientOwnerState extends State<_ClientOwner> {
   late final _RuntimeTokenProvider _tokens;
   late final LanternClient _client;
-  late final OfflineLanternRepository _offlineRepository;
+  late final Future<OfflineDemoSession> _offlineSession;
 
   @override
   void initState() {
@@ -153,25 +173,76 @@ final class _ClientOwnerState extends State<_ClientOwner> {
       retryPolicy: const RetryPolicy(),
       idempotentAdds: true,
     );
-    _offlineRepository = OfflineLanternRepository(
-      store: InMemoryOfflineStore(),
-      remote: LanternClientOfflineRemote(_client),
-    );
+    _offlineSession = _openOfflineSession();
+  }
+
+  Future<OfflineDemoSession> _openOfflineSession() async =>
+      OfflineDemoSession.open(
+        client: _client,
+        endpoint: widget.configuration.endpoint,
+        partitionId: widget.configuration.offlinePartitionId,
+      );
+
+  Future<void> _closeSession() async {
+    OfflineDemoSession? session;
+    try {
+      // Opening may still be in flight when this widget is removed. An open
+      // failure is already displayed by FutureBuilder and owns no store.
+      session = await _offlineSession;
+    } catch (_) {
+      // Still release the client and token provider below.
+    }
+    try {
+      await session?.close();
+    } finally {
+      try {
+        await _client.close();
+      } finally {
+        _tokens.close();
+      }
+    }
   }
 
   @override
   void dispose() {
     // A signed-in/app session owns the client. Transient inactive/background
     // lifecycle states do not close it.
-    unawaited(_offlineRepository.dispose());
-    unawaited(_client.close());
-    _tokens.close();
+    unawaited(
+      _closeSession().catchError((Object error, StackTrace stackTrace) {
+        FlutterError.reportError(
+          FlutterErrorDetails(exception: error, stack: stackTrace),
+        );
+      }),
+    );
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) =>
-      _DiscoveryScreen(client: _client, offlineRepository: _offlineRepository);
+  Widget build(BuildContext context) => FutureBuilder<OfflineDemoSession>(
+    future: _offlineSession,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return const Scaffold(
+          body: Center(
+            child: Text(
+              'Unable to open offline storage. For authenticated sessions, '
+              'set LANTERN_OFFLINE_SCOPE to a non-secret user/tenant identifier.',
+              key: Key('offline-storage-error'),
+            ),
+          ),
+        );
+      }
+      final session = snapshot.data;
+      if (session == null) {
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      }
+      return _DiscoveryScreen(
+        client: _client,
+        offlineRepository: session.repository,
+        offlinePartitionId: session.partitionId,
+      );
+    },
+  );
 }
 
 enum _UiPhase {
@@ -189,10 +260,12 @@ final class _DiscoveryScreen extends StatefulWidget {
   const _DiscoveryScreen({
     required this.client,
     required this.offlineRepository,
+    required this.offlinePartitionId,
   });
 
   final LanternClient client;
   final OfflineLanternRepository offlineRepository;
+  final String offlinePartitionId;
 
   @override
   State<_DiscoveryScreen> createState() => _DiscoveryScreenState();
@@ -584,7 +657,7 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                   MaterialPageRoute<void>(
                     builder: (_) => OfflineDemoScreen(
                       repository: widget.offlineRepository,
-                      partitionId: 'flutter-demo-session',
+                      partitionId: widget.offlinePartitionId,
                     ),
                   ),
                 ),
@@ -625,6 +698,7 @@ final class _ConfigurationHelp extends StatelessWidget {
           child: Text(
             'Set LANTERN_ENDPOINT with --dart-define. '
             'Use LANTERN_TOKEN_ENDPOINT for a runtime short-lived-token BFF. '
+            'Authenticated sessions also require LANTERN_OFFLINE_SCOPE. '
             'Plaintext also requires LANTERN_ALLOW_INSECURE=true and is for '
             'debug/trusted-LAN use only.',
             key: Key('configuration-help'),

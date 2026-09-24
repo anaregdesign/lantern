@@ -9,63 +9,71 @@ import 'helpers.dart';
 void main() {
   final initial = DateTime.utc(2026, 7, 22, 12);
 
-  test(
-    'cache policies distinguish Missing, Unknown, stale, and expired',
-    () async {
-      final clock = MutableClock(initial);
-      final remote = FakeOfflineRemote();
-      final repository = OfflineLanternRepository(
-        store: InMemoryOfflineStore(),
-        remote: remote,
-        config: testConfig(clock),
-      );
+  for (final asynchronous in [false, true]) {
+    test(
+      'cache policies distinguish Missing, Unknown, stale, and expired (async: $asynchronous)',
+      () async {
+        final clock = MutableClock(initial);
+        final remote = FakeOfflineRemote();
+        final repository = OfflineLanternRepository(
+          store: asynchronous
+              ? DelayedOfflineStore(InMemoryOfflineStore())
+              : InMemoryOfflineStore(),
+          remote: remote,
+          config: testConfig(clock),
+        );
 
-      expect(
-        (await repository.readVertex(
+        expect(
+          (await repository.readVertex(
+            'p',
+            'missing',
+            policy: OfflineReadPolicy.cacheOnly,
+          )).state,
+          OfflineReadState.unknown,
+        );
+        final missing = await repository.readVertex('p', 'missing');
+        expect(missing.state, OfflineReadState.missing);
+        expect(missing.source, OfflineReadSource.server);
+
+        remote.vertexGetFailures.add(
+          failure(OfflineRemoteErrorKind.unavailable),
+        );
+        final fallback = await repository.readVertex(
           'p',
           'missing',
+          policy: OfflineReadPolicy.serverFirst,
+        );
+        expect(fallback.state, OfflineReadState.missing);
+        remote.vertexGetFailures.add(
+          failure(OfflineRemoteErrorKind.unavailable),
+        );
+        final unknown = await repository.readVertex(
+          'p',
+          'unknown',
+          policy: OfflineReadPolicy.serverOnly,
+        );
+        expect(unknown.state, OfflineReadState.unknown);
+
+        remote.vertices['ttl'] = Vertex(
+          key: 'ttl',
+          value: VertexValue.string('short'),
+          expiration: initial.add(const Duration(seconds: 1)),
+        );
+        expect(
+          (await repository.readVertex('p', 'ttl')).state,
+          OfflineReadState.fresh,
+        );
+        clock.advance(const Duration(seconds: 1));
+        final expired = await repository.readVertex(
+          'p',
+          'ttl',
           policy: OfflineReadPolicy.cacheOnly,
-        )).state,
-        OfflineReadState.unknown,
-      );
-      final missing = await repository.readVertex('p', 'missing');
-      expect(missing.state, OfflineReadState.missing);
-      expect(missing.source, OfflineReadSource.server);
-
-      remote.vertexGetFailures.add(failure(OfflineRemoteErrorKind.unavailable));
-      final fallback = await repository.readVertex(
-        'p',
-        'missing',
-        policy: OfflineReadPolicy.serverFirst,
-      );
-      expect(fallback.state, OfflineReadState.missing);
-      remote.vertexGetFailures.add(failure(OfflineRemoteErrorKind.unavailable));
-      final unknown = await repository.readVertex(
-        'p',
-        'unknown',
-        policy: OfflineReadPolicy.serverOnly,
-      );
-      expect(unknown.state, OfflineReadState.unknown);
-
-      remote.vertices['ttl'] = Vertex(
-        key: 'ttl',
-        value: VertexValue.string('short'),
-        expiration: initial.add(const Duration(seconds: 1)),
-      );
-      expect(
-        (await repository.readVertex('p', 'ttl')).state,
-        OfflineReadState.fresh,
-      );
-      clock.advance(const Duration(seconds: 1));
-      final expired = await repository.readVertex(
-        'p',
-        'ttl',
-        policy: OfflineReadPolicy.cacheOnly,
-      );
-      expect(expired.state, OfflineReadState.expired);
-      expect(expired.value, isNull);
-    },
-  );
+        );
+        expect(expired.state, OfflineReadState.expired);
+        expect(expired.value, isNull);
+      },
+    );
+  }
 
   test('negative-cache deadline saturates inside durable time range', () async {
     final nearMaximum = DateTime.utc(9999, 12, 31, 23, 59, 59, 999, 998);
@@ -88,8 +96,10 @@ void main() {
       OfflineReadState.missing,
     );
     final cached = await store.transaction(
-      (transaction) =>
-          transaction.getCache('p', const OfflineEntityKey.vertex('missing')),
+      (transaction) async => await transaction.getCache(
+        'p',
+        const OfflineEntityKey.vertex('missing'),
+      ),
     );
     expect(cached!.missingUntil, maximum);
     final snapshot = await store.exportSnapshot();
@@ -261,8 +271,8 @@ void main() {
         .watchVertex('p', 'watched', initialPolicy: OfflineReadPolicy.cacheOnly)
         .listen(snapshots.add);
     await Future<void>.delayed(Duration.zero);
-    await store.transaction((transaction) {
-      transaction.putCache(
+    await store.transaction((transaction) async {
+      await transaction.putCache(
         'p',
         OfflineCacheRecord.value(
           partitionId: 'p',
@@ -339,8 +349,10 @@ void main() {
     await canceledReading;
     expect(
       await store.transaction(
-        (transaction) =>
-            transaction.getCache('p', const OfflineEntityKey.vertex('late')),
+        (transaction) async => await transaction.getCache(
+          'p',
+          const OfflineEntityKey.vertex('late'),
+        ),
       ),
       isNull,
     );
@@ -800,7 +812,9 @@ void main() {
     store.release();
     await Future.wait(<Future<Object?>>[first, second]);
     expect(
-      await store.transaction((transaction) => transaction.outbox('rejected')),
+      await store.transaction(
+        (transaction) async => await transaction.outbox('rejected'),
+      ),
       isEmpty,
     );
 
@@ -1036,8 +1050,10 @@ void main() {
       );
       expect(
         await store.transaction(
-          (transaction) =>
-              transaction.getCache('p', const OfflineEntityKey.vertex('large')),
+          (transaction) async => await transaction.getCache(
+            'p',
+            const OfflineEntityKey.vertex('large'),
+          ),
         ),
         isNull,
       );
@@ -1241,8 +1257,8 @@ final class _GapInjectingStore implements OfflineStore {
     if (wasArmed && _callsAfterArm == 2 && !_injected) {
       _injected = true;
       unawaited(
-        _delegate.transaction((transaction) {
-          transaction.putCache(
+        _delegate.transaction((transaction) async {
+          await transaction.putCache(
             'p',
             OfflineCacheRecord.value(
               partitionId: 'p',

@@ -62,7 +62,12 @@ sanitized artifact uses this minimum JSON shape (one file per platform):
     "offline_put_replay",
     "authoritative_server_expiry",
     "watch_cleanup",
-    "wipe_before_send"
+    "wipe_before_send",
+    "sqlite_pending_close_reopen",
+    "sqlite_original_ttl_preserved",
+    "sqlite_expired_before_replay",
+    "sqlite_logout_wipe_reopen",
+    "sqlite_partition_isolation"
   ],
   "result": "passed"
 }
@@ -248,7 +253,47 @@ and drains. It also proves server-authoritative expiration under a deliberately
 behind device clock, releases a watch, and wipes an unsent Put with zero remote
 mutation. That revised scenario must be rerun from the exact #1162 candidate SHA
 on a physical device before it is recorded as current release evidence. The
-example uses
-`InMemoryOfflineStore`; process-restart durability remains covered by the
-storage-neutral fresh-process, Put response-loss, legacy-Add quarantine, and
-adapter conformance tests rather than being claimed from this device run.
+historical run used `InMemoryOfflineStore`. The current example and native
+smoke use `SqliteOfflineStore`, including pending Put close/reopen, original
+TTL, durable logout wipe, and partition isolation. None of those native SQLite
+scenarios are validated by the historical run above. A new exact-revision
+physical run is required; host-side process-crash tests and simulator runs
+remain separate evidence.
+
+
+## Native SQLite process restart probe
+
+`integration_test/sqlite_restart_probe.dart` is an opt-in application entrypoint
+for physical process termination. Build once in profile mode with a fresh
+16–64-character lower-case hex `LANTERN_SQLITE_RESTART_PROBE_RUN`, install once,
+and launch the same binary three times. Each run owns a separate fixture
+subdirectory; it never opens or clears the example's application database.
+
+1. Wait for `SQLITE_RESTART_PROBE_READY1`, then force-stop/kill the process
+   without clearing application data. Pending Vertex/Edge work and confirmed
+   cache have committed; no graceful database close is performed.
+2. Launch the same installed binary. Wait for `SQLITE_RESTART_PROBE_READY2`,
+   then kill again. This phase verifies pending values/status and the original
+   absolute TTL, wipes one user partition, and checks the sibling partition.
+3. Launch again and require `SQLITE_RESTART_PROBE_PASS`. The final phase verifies
+   durable wipe, generation isolation, absent old-user overlays, and preserved
+   sibling pending work. Different process IDs are required between phases;
+   hot restart and reinstall are not valid evidence.
+
+Record the exact clean checkout SHA, toolchain, device model/OS, installed binary
+hash, kill method and the three content-free markers. This offline probe proves
+storage behavior only; the normal `mobile_smoke_test.dart` separately verifies
+real-server replay. The smoke optionally obtains its synthetic test token at
+runtime from `LANTERN_TOKEN_ENDPOINT`; plaintext fixture endpoints require
+explicit `LANTERN_ALLOW_INSECURE=true`. Private-LAN h2c evidence must say so and
+must not be described as platform-trusted HTTPS or full release qualification.
+
+
+## 2026-09-24 SQLite qualification
+
+Current SQLite-specific physical evidence is recorded under
+[`evidence/2026-09-24-sqlite/`](evidence/2026-09-24-sqlite/README.md), bound to the
+exact tested commit and binary hashes. Both Android and iOS passed actual
+process-kill/relaunch, pending TTL, durable logout wipe, and local user-partition
+isolation. The evidence records its transport and local build limitations and
+does not replace the complete first-publication matrix in #1162.

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'change_store.dart';
 import 'errors.dart';
 import 'types.dart';
 
@@ -33,51 +34,56 @@ abstract interface class OfflineStore {
 /// One storage transaction.
 ///
 /// Every method must reject use after the enclosing [OfflineStore.transaction]
-/// callback finishes, whether that callback commits or rolls back.
+/// callback finishes, whether that callback commits or rolls back. Operations
+/// may complete asynchronously; callers must await each result before continuing
+/// dependent work or finishing the transaction callback.
 abstract interface class OfflineStoreTransaction {
   /// Returns the current partition generation, creating it at zero if needed.
-  int generation(String partitionId);
+  FutureOr<int> generation(String partitionId);
 
   /// Whether replay is durably paused until explicit credential rotation.
-  bool replayPausedForAuth(String partitionId);
+  FutureOr<bool> replayPausedForAuth(String partitionId);
 
   /// Sets the durable partition replay pause atomically with write state.
-  void setReplayPausedForAuth(String partitionId, bool paused);
+  FutureOr<void> setReplayPausedForAuth(String partitionId, bool paused);
 
   /// Reads one confirmed cache record.
-  OfflineCacheRecord? getCache(String partitionId, OfflineEntityKey key);
+  FutureOr<OfflineCacheRecord?> getCache(
+    String partitionId,
+    OfflineEntityKey key,
+  );
 
   /// Stores one confirmed cache record subject to cache capacity/LRU policy.
-  void putCache(String partitionId, OfflineCacheRecord record);
+  FutureOr<void> putCache(String partitionId, OfflineCacheRecord record);
 
   /// Removes one cache record.
-  void deleteCache(String partitionId, OfflineEntityKey key);
+  FutureOr<void> deleteCache(String partitionId, OfflineEntityKey key);
 
   /// Updates local LRU access metadata without publishing a semantic change.
-  void touchCache(
+  FutureOr<void> touchCache(
     String partitionId,
     OfflineEntityKey key,
     DateTime accessedAt,
   );
 
   /// Reads all live and terminal outbox records for an identity in FIFO order.
-  List<OfflineOutboxRecord> outboxForKey(
+  FutureOr<List<OfflineOutboxRecord>> outboxForKey(
     String partitionId,
     OfflineEntityKey key,
   );
 
   /// Reads one durable outbox record.
-  OfflineOutboxRecord? getOutbox(String partitionId, String recordId);
+  FutureOr<OfflineOutboxRecord?> getOutbox(String partitionId, String recordId);
 
   /// Reads all durable records in durable ordinal order.
-  List<OfflineOutboxRecord> outbox(String partitionId);
+  FutureOr<List<OfflineOutboxRecord>> outbox(String partitionId);
 
   /// Reads at most [limit] records after a stable FIFO cursor.
   ///
   /// Supplying [operationId] or [key] scopes the page through an adapter-owned
   /// index. At most one scope may be supplied. Implementations must not inspect
   /// more than [limit] records to produce the page.
-  OfflineOutboxScanPage scanOutbox(
+  FutureOr<OfflineOutboxScanPage> scanOutbox(
     String partitionId, {
     OfflineOutboxCursor? after,
     String? operationId,
@@ -86,7 +92,7 @@ abstract interface class OfflineStoreTransaction {
   });
 
   /// Whether an operation still owns any durable outbox record.
-  bool hasOutboxForOperation(String partitionId, String operationId);
+  FutureOr<bool> hasOutboxForOperation(String partitionId, String operationId);
 
   /// Returns at most [limit] records whose expiration, maximum age, or
   /// dead-letter retention deadline is due at [now].
@@ -94,7 +100,7 @@ abstract interface class OfflineStoreTransaction {
   /// Supplying [operationId] or [key] scopes the lookup through an
   /// adapter-owned deadline index. At most one scope may be supplied. The
   /// lookup must not linearly inspect non-due records.
-  List<OfflineOutboxRecord> dueOutbox(
+  FutureOr<List<OfflineOutboxRecord>> dueOutbox(
     String partitionId, {
     String? operationId,
     OfflineEntityKey? key,
@@ -111,30 +117,35 @@ abstract interface class OfflineStoreTransaction {
   /// later claim, retry, and terminal transitions cannot exceed capacity.
   /// Migration-only legacy Add intents throw
   /// [OfflineUnsupportedOperationException].
-  OfflineOutboxRecord enqueue(OfflineOutboxRecord record);
+  FutureOr<OfflineOutboxRecord> enqueue(OfflineOutboxRecord record);
 
   /// Atomically adds one logical operation under one shared FIFO ordinal.
-  List<OfflineOutboxRecord> enqueueAll(List<OfflineOutboxRecord> records);
+  FutureOr<List<OfflineOutboxRecord>> enqueueAll(
+    List<OfflineOutboxRecord> records,
+  );
 
   /// Replaces one existing durable record within its admitted lifecycle
   /// envelope. Implementations reject lease owners and diagnostic codes above
   /// their explicit per-record UTF-8 bounds before mutating durable state.
-  void updateOutbox(OfflineOutboxRecord record);
+  FutureOr<void> updateOutbox(OfflineOutboxRecord record);
 
   /// Removes one terminal confirmed record.
-  void deleteOutbox(String partitionId, String recordId);
+  FutureOr<void> deleteOutbox(String partitionId, String recordId);
 
   /// Reads one durable logical-operation aggregate.
-  OfflineOperationRecord? getOperation(String partitionId, String operationId);
+  FutureOr<OfflineOperationRecord?> getOperation(
+    String partitionId,
+    String operationId,
+  );
 
   /// Reads every durable operation aggregate in update order.
-  List<OfflineOperationRecord> operations(String partitionId);
+  FutureOr<List<OfflineOperationRecord>> operations(String partitionId);
 
   /// Reads at most [limit] operation aggregates after a stable identity cursor.
   ///
   /// Implementations must not inspect more than [limit] aggregates to produce
   /// the page.
-  OfflineOperationScanPage scanOperations(
+  FutureOr<OfflineOperationScanPage> scanOperations(
     String partitionId, {
     String? afterOperationId,
     required int limit,
@@ -142,7 +153,7 @@ abstract interface class OfflineStoreTransaction {
 
   /// Returns at most [limit] unreferenced terminal aggregates whose retention
   /// deadline is due, using an adapter-owned deadline index.
-  List<OfflineOperationRecord> dueOperations(
+  FutureOr<List<OfflineOperationRecord>> dueOperations(
     String partitionId, {
     required DateTime now,
     required Duration retention,
@@ -152,17 +163,17 @@ abstract interface class OfflineStoreTransaction {
   /// Inserts or replaces one operation aggregate under the active generation.
   /// An existing aggregate may only be advanced when every item identity and
   /// index is unchanged; replacement topology throws an identity conflict.
-  void putOperation(OfflineOperationRecord record);
+  FutureOr<void> putOperation(OfflineOperationRecord record);
 
   /// Removes one retained operation aggregate.
-  void deleteOperation(String partitionId, String operationId);
+  FutureOr<void> deleteOperation(String partitionId, String operationId);
 
   /// Claims FIFO-ready records on independent ordering keys with bounded leases.
   /// The public [owner] is subject to the adapter's explicit UTF-8 byte bound.
   /// The same transaction must advance each claimed aggregate item to
   /// [OfflineWriteState.sending], and must advance any expired lease recovered
   /// by the call back to a matching non-terminal status before commit.
-  List<OfflineOutboxRecord> claim(
+  FutureOr<List<OfflineOutboxRecord>> claim(
     String partitionId, {
     required String owner,
     required DateTime now,
@@ -173,7 +184,7 @@ abstract interface class OfflineStoreTransaction {
 
   /// Extends one live lease only when owner, generation, state, and old lease
   /// still match. A wall-clock rollback never shortens the existing deadline.
-  bool renewLease(
+  FutureOr<bool> renewLease(
     String partitionId,
     String recordId, {
     required String owner,
@@ -182,10 +193,24 @@ abstract interface class OfflineStoreTransaction {
     required Duration leaseDuration,
   });
 
+  /// Reads the last fully applied sequence per CDC origin.
+  FutureOr<OfflineChangeCursor> changeCursor(String partitionId);
+
+  /// Atomically invalidates confirmed cache entries and records chunk progress.
+  /// The last-applied cursor advances only when the final chunk commits.
+  FutureOr<void> applyChangeChunk(String partitionId, OfflineChangeChunk chunk);
+
+  /// Clears confirmed cache and CDC progress, then installs [checkpoint].
+  /// Durable outbox records and their pending writes are preserved.
+  FutureOr<void> resetChangeCursor(
+    String partitionId,
+    OfflineChangeCursor checkpoint,
+  );
+
   /// Transactionally deletes every partition record and increments generation.
   /// This is an explicit barrier that cancels enqueue-topology obligations
   /// created earlier in the same transaction.
-  void wipePartition(String partitionId);
+  FutureOr<void> wipePartition(String partitionId);
 }
 
 /// Stable FIFO position used by bounded outbox maintenance scans.

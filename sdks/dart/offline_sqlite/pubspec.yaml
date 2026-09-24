@@ -1,0 +1,26 @@
+name: lantern_client_offline_sqlite
+description: SQLite persistence for Lantern's storage-neutral offline repository using the mobile OS SQLite engine.
+version: 0.1.0
+publish_to: none
+repository: https://github.com/anaregdesign/lantern
+
+environment:
+  sdk: ">=3.12.0 <4.0.0"
+  flutter: ">=3.44.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  lantern_client_offline:
+    path: ../offline
+  path: 1.9.1
+  sqflite: 2.4.4
+  sqflite_common: 2.5.11
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  lantern_client:
+    path: ..
+  lints: 6.1.0
+  sqflite_common_ffi: ^2.4.0
