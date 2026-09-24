@@ -58,12 +58,13 @@ policy fingerprint before serving receipt-capable traffic. A fresh offline
 client that has never learned the epoch cannot safely enqueue a
 receipt-required mutation. An authenticated capability probe must expose the
 current epoch, retention policy, and endpoint continuity marker before the
-first send. Each receipt-capable mutation echoes that marker; the server
-rejects a different node or generation before execution. Any recovery that
+first send. Each receipt-capable mutation echoes that marker; the server may
+return an already committed matching receipt on any replica, but rejects
+a different node or generation before **new execution**. Any recovery that
 cannot prove all in-horizon local receipts changes the generation. Token
-rotation does not change the epoch. A node
-that rejoins from a complete peer Snapshot adopts its peer's epoch; incomplete
-local recovery or total-cluster loss creates a new active epoch. Known receipts
+rotation does not change the epoch. A node that rejoins from a complete peer
+Snapshot adopts its peer's epoch; incomplete local recovery or total-cluster
+loss creates a new active epoch. Known receipts
 restored from an older backup may remain queryable, but an absent old-epoch ID
 must never execute in the new epoch. A future authenticated-principal/ACL
 design is required before tenant-scoped receipts are claimed.
@@ -99,10 +100,10 @@ WAL commits is forbidden. The envelope is written to the configured WAL
 **before** any state becomes visible. A WAL write/commit failure or staging
 failure releases every reservation and returns an error with no graph,
 result, receipt, origin seq, or subscriber-visible change. After a successful
-WAL commit, installation of the already-validated graph/search state, receipt
-set, and log entry is one
-infallible publication under the same gate; reads, status, Snapshot, and
-Subscribe see all of it or none of it. The public response is sent only after
+WAL commit, installation of the already-validated graph/search state,
+receipt set, and log entry is one infallible publication under the same gate;
+reads, status, Snapshot, and Subscribe see all of it or none of it. The public
+response is sent only after
 publication. A crash between a durable WAL commit and in-memory publication
 replays the envelope before serving. With the current no-op WAL, this is an
 in-memory single-node commit, **not** crash durability; loss of the only copy
@@ -197,9 +198,9 @@ pre-send endpoint continuity marker (node identity plus receipt generation)
 proves the endpoint still has complete receipt state. A different instance,
 changed generation, or uncertain continuity permits status polling only. The
 same rule applies when a load balancer cannot pin a request to that instance:
-the SDK must not perform a blind mutation retry. The
-origin serializes duplicate lookup and new admission under its commit gate, so
-an original in-flight call and same-endpoint retry cannot both execute.
+the SDK must not perform a blind mutation retry. The origin serializes
+duplicate lookup and new admission under its commit gate, so an original
+in-flight call and same-endpoint retry cannot both execute.
 
 Two independent replicas can accept the same ID concurrently during a
 partition if a client violates endpoint stickiness. Without consensus this
@@ -216,10 +217,10 @@ receipt envelopes can claim replica-safe status. #1203 must establish mixed
 Add/Put/Delete convergence before Slice A can re-enable durable Add; receipts
 alone do not fix the graph history. #1282's graph-before-relay retry rule is
 not itself sufficient for receipts: the receipt implementation must strengthen
-that seam to an atomic graph/receipt/relay publication. The
-no-op/conditional/Delete Slice B uses the same envelope architecture. Both
+that seam to an atomic graph/receipt/relay publication. Slice B for
+conditional Put and Delete uses the same envelope architecture. Both
 slices require new proto and SDK surfaces, real Connect/h2c failure tests,
 three-replica/restart/backup cases, and bounded capacity and performance
 gates. None of this blocks #1162's first Put-only offline core release. Until
-those vertical slices pass, the offline package
-continues to reject durable Add, conditional Put, and Delete.
+those vertical slices pass, the offline package continues to reject durable
+Add, conditional Put, and Delete.
