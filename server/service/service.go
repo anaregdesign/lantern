@@ -1327,15 +1327,23 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 	resp := &pb.GetEdgesResponse{
 		Edges: make([]*pb.Edge, 0, len(in)),
 	}
-	for _, k := range in {
-		w, exp, ok := s.cache.GetEdgeDetail(k.GetTail(), k.GetHead())
-		if !ok {
-			resp.Missing = append(resp.Missing, &pb.EdgeKey{Tail: k.GetTail(), Head: k.GetHead()})
+	keys := make([]graphcache.EdgeKey[string], len(in))
+	for i, k := range in {
+		keys[i] = graphcache.EdgeKey[string]{Tail: k.GetTail(), Head: k.GetHead()}
+	}
+	details := s.cache.GetEdgeDetails(keys)
+	if len(details) != len(keys) {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("edge batch read returned %d results for %d keys", len(details), len(keys)))
+	}
+	for i, detail := range details {
+		k := keys[i]
+		if !detail.Found {
+			resp.Missing = append(resp.Missing, &pb.EdgeKey{Tail: k.Tail, Head: k.Head})
 			continue
 		}
-		edge := &pb.Edge{Tail: k.GetTail(), Head: k.GetHead(), Weight: w}
-		if !exp.IsZero() {
-			edge.Expiration = timestamppb.New(exp)
+		edge := &pb.Edge{Tail: k.Tail, Head: k.Head, Weight: detail.Weight}
+		if !detail.Expiration.IsZero() {
+			edge.Expiration = timestamppb.New(detail.Expiration)
 		}
 		resp.Edges = append(resp.Edges, edge)
 	}

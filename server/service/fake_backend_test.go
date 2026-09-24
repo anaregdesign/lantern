@@ -241,6 +241,15 @@ func (f *fakeBackend) GetEdgeDetail(tail, head string) (float32, time.Time, bool
 	return 0, time.Time{}, false
 }
 
+func (f *fakeBackend) GetEdgeDetails(keys []graphcache.EdgeKey[string]) []graphcache.EdgeDetail {
+	results := make([]graphcache.EdgeDetail, len(keys))
+	for i, key := range keys {
+		weight, expiration, found := f.GetEdgeDetail(key.Tail, key.Head)
+		results[i] = graphcache.EdgeDetail{Weight: weight, Expiration: expiration, Found: found}
+	}
+	return results
+}
+
 func (f *fakeBackend) AddEdgesWithExpiration(items []graphcache.EdgeItem[string]) {
 	f.addEdgesCalls++
 	for _, it := range items {

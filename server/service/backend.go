@@ -32,7 +32,7 @@ type Backend interface {
 	DeleteVerticesOutcomes(keys []string) []bool
 
 	// edge reads/writes
-	GetEdgeDetail(tail, head string) (float32, time.Time, bool)
+	GetEdgeDetails(keys []graphcache.EdgeKey[string]) []graphcache.EdgeDetail
 	AddEdgesWithExpiration(items []graphcache.EdgeItem[string])
 	// AddEdgesWithExpirationContrib is the dedup-aware batch sibling of
 	// AddEdgesWithExpiration: a per-item non-zero ContribID makes that
