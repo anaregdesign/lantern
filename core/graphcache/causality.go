@@ -306,7 +306,6 @@ func (c *GraphCache[S, T]) clearEdgeTombstoneLocked(tail, head S) {
 	if c.edgeTombstones != nil {
 		delete(c.edgeTombstones, key)
 	}
-	c.compactEdgeTombstoneDeadlinesLocked()
-	c.refreshOldestEdgeTombstoneDeadlineLocked()
+	c.removeEdgeTombstoneDeadlineLocked(key)
 	c.reconcileEdgeCausalUsageLocked(key)
 }

@@ -33,6 +33,91 @@ func (h *causalDeadlineHeap[K]) Pop() any {
 	return value
 }
 
+// indexedCausalDeadlineHeap keeps exactly one deadline per key. The position
+// map follows heap swaps so a renewal or removal touches only its own heap
+// path, regardless of how many other tombstones are retained.
+type indexedCausalDeadlineHeap[K comparable] struct {
+	entries   []causalDeadlineEntry[K]
+	positions map[K]int
+	peak      int
+}
+
+func (h indexedCausalDeadlineHeap[K]) Len() int { return len(h.entries) }
+func (h indexedCausalDeadlineHeap[K]) Less(i, j int) bool {
+	return h.entries[i].deadline.Before(h.entries[j].deadline)
+}
+func (h indexedCausalDeadlineHeap[K]) Swap(i, j int) {
+	h.entries[i], h.entries[j] = h.entries[j], h.entries[i]
+	h.positions[h.entries[i].key] = i
+	h.positions[h.entries[j].key] = j
+}
+func (h *indexedCausalDeadlineHeap[K]) Push(value any) {
+	entry := value.(causalDeadlineEntry[K])
+	if h.positions == nil {
+		h.positions = make(map[K]int)
+	}
+	h.positions[entry.key] = len(h.entries)
+	h.entries = append(h.entries, entry)
+	if len(h.entries) > h.peak {
+		h.peak = len(h.entries)
+	}
+}
+func (h *indexedCausalDeadlineHeap[K]) Pop() any {
+	last := len(h.entries) - 1
+	entry := h.entries[last]
+	delete(h.positions, entry.key)
+	var zero causalDeadlineEntry[K]
+	h.entries[last] = zero
+	if last == 0 {
+		h.entries = nil
+		h.positions = nil
+		h.peak = 0
+	} else {
+		h.entries = h.entries[:last]
+	}
+	return entry
+}
+
+// upsert returns true only when the key first acquires a deadline.
+func (h *indexedCausalDeadlineHeap[K]) upsert(key K, deadline time.Time) bool {
+	if pos, ok := h.positions[key]; ok {
+		if !h.entries[pos].deadline.Equal(deadline) {
+			h.entries[pos].deadline = deadline
+			heap.Fix(h, pos)
+		}
+		return false
+	}
+	heap.Push(h, causalDeadlineEntry[K]{key: key, deadline: deadline})
+	return true
+}
+
+func (h *indexedCausalDeadlineHeap[K]) remove(key K) bool {
+	pos, ok := h.positions[key]
+	if !ok {
+		return false
+	}
+	heap.Remove(h, pos)
+	return true
+}
+
+// shrink releases backing storage after a large fall in retained deadlines.
+// Call it from the periodic GC sweep, never from an individual write: rebuilding
+// the position map scans every surviving entry.
+func (h *indexedCausalDeadlineHeap[K]) shrink() {
+	if h.peak < causalUsageShrinkFloor || len(h.entries) > h.peak/causalUsageShrinkDivisor {
+		return
+	}
+	entries := make([]causalDeadlineEntry[K], len(h.entries))
+	copy(entries, h.entries) // The existing heap order remains valid.
+	positions := make(map[K]int, len(entries))
+	for i, entry := range entries {
+		positions[entry.key] = i
+	}
+	h.entries = entries
+	h.positions = positions
+	h.peak = len(entries)
+}
+
 // CausalMetadataLimits bounds locally-originated HA causal identities by
 // kind. Zero means unlimited; SetCausalMetadataLimits normalizes negative
 // values to zero for defensive direct-core callers. A causal identity consumes
@@ -87,7 +172,7 @@ func (e *CausalMetadataCapacityError) Error() string {
 }
 
 // The estimates deliberately include the authoritative causal record, budget
-// ledger entry, and lazy deadline-index entries. String payload bytes are
+// ledger entry, and deadline-index entries. String payload bytes are
 // added separately. These constants are versioned observability units rather
 // than allocator-specific claims, so dashboards remain comparable across Go
 // releases.
@@ -118,7 +203,7 @@ func (c *GraphCache[S, T]) SetCausalMetadataLimits(limits CausalMetadataLimits) 
 
 // CausalMetadataStats returns current usage, stable byte estimates, all-time
 // high-water values, cumulative local rejects, and the oldest retained Delete-
-// tombstone deadline. Deadline minima are maintained by lazy heaps, so the
+// tombstone deadline. Deadline minima are maintained by heaps, so the
 // lock-consistent snapshot itself is O(1).
 func (c *GraphCache[S, T]) CausalMetadataStats() CausalMetadataStats {
 	c.mu.RLock()
@@ -157,12 +242,21 @@ func (c *GraphCache[S, T]) trackVertexTombstoneDeadlineLocked(key S, deadline ti
 }
 
 func (c *GraphCache[S, T]) trackEdgeTombstoneDeadlineLocked(key EdgeKey[S], deadline time.Time) {
-	if !deadline.IsZero() {
-		heap.Push(&c.edgeTombstoneDeadlines, causalDeadlineEntry[EdgeKey[S]]{key: key, deadline: deadline})
+	if deadline.IsZero() {
+		c.removeEdgeTombstoneDeadlineLocked(key)
+		return
+	}
+	if c.edgeTombstoneDeadlines.upsert(key, deadline) {
 		c.edgeTombstoneDeadlineBytes += causalEdgeDeadlineEntryBaseBytes + causalKeyPayloadBytes(key.Tail) + causalKeyPayloadBytes(key.Head)
 		c.updateEdgeCausalBytesHighWaterLocked()
 	}
-	c.compactEdgeTombstoneDeadlinesLocked()
+	c.refreshOldestEdgeTombstoneDeadlineLocked()
+}
+
+func (c *GraphCache[S, T]) removeEdgeTombstoneDeadlineLocked(key EdgeKey[S]) {
+	if c.edgeTombstoneDeadlines.remove(key) {
+		c.edgeTombstoneDeadlineBytes -= causalEdgeDeadlineEntryBaseBytes + causalKeyPayloadBytes(key.Tail) + causalKeyPayloadBytes(key.Head)
+	}
 	c.refreshOldestEdgeTombstoneDeadlineLocked()
 }
 
@@ -181,17 +275,11 @@ func (c *GraphCache[S, T]) refreshOldestVertexTombstoneDeadlineLocked() {
 }
 
 func (c *GraphCache[S, T]) refreshOldestEdgeTombstoneDeadlineLocked() {
-	for len(c.edgeTombstoneDeadlines) > 0 {
-		entry := c.edgeTombstoneDeadlines[0]
-		current, ok := c.edgeTombstones[entry.key]
-		if ok && !current.expiration.IsZero() && current.expiration.Equal(entry.deadline) {
-			c.oldestEdgeTombstoneDeadline = entry.deadline
-			return
-		}
-		removed := heap.Pop(&c.edgeTombstoneDeadlines).(causalDeadlineEntry[EdgeKey[S]])
-		c.edgeTombstoneDeadlineBytes -= causalEdgeDeadlineEntryBaseBytes + causalKeyPayloadBytes(removed.key.Tail) + causalKeyPayloadBytes(removed.key.Head)
+	if c.edgeTombstoneDeadlines.Len() > 0 {
+		c.oldestEdgeTombstoneDeadline = c.edgeTombstoneDeadlines.entries[0].deadline
+	} else {
+		c.oldestEdgeTombstoneDeadline = time.Time{}
 	}
-	c.oldestEdgeTombstoneDeadline = time.Time{}
 }
 
 func (c *GraphCache[S, T]) compactVertexTombstoneDeadlinesLocked() {
@@ -215,30 +303,6 @@ func (c *GraphCache[S, T]) compactVertexTombstoneDeadlinesLocked() {
 	c.vertexTombstoneDeadlineBytes = 0
 	for _, entry := range rebuilt {
 		c.vertexTombstoneDeadlineBytes += causalVertexDeadlineEntryBaseBytes + causalKeyPayloadBytes(entry.key)
-	}
-}
-
-func (c *GraphCache[S, T]) compactEdgeTombstoneDeadlinesLocked() {
-	if len(c.edgeTombstoneDeadlines) <= 2*len(c.edgeTombstones)+causalDeadlineCompactSlack {
-		return
-	}
-	deadlineCount := 0
-	for _, tombstone := range c.edgeTombstones {
-		if !tombstone.expiration.IsZero() {
-			deadlineCount++
-		}
-	}
-	rebuilt := make(causalDeadlineHeap[EdgeKey[S]], 0, deadlineCount)
-	for key, tombstone := range c.edgeTombstones {
-		if !tombstone.expiration.IsZero() {
-			rebuilt = append(rebuilt, causalDeadlineEntry[EdgeKey[S]]{key: key, deadline: tombstone.expiration})
-		}
-	}
-	heap.Init(&rebuilt)
-	c.edgeTombstoneDeadlines = rebuilt
-	c.edgeTombstoneDeadlineBytes = 0
-	for _, entry := range rebuilt {
-		c.edgeTombstoneDeadlineBytes += causalEdgeDeadlineEntryBaseBytes + causalKeyPayloadBytes(entry.key.Tail) + causalKeyPayloadBytes(entry.key.Head)
 	}
 }
 

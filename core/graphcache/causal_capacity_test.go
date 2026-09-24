@@ -3,6 +3,7 @@ package graphcache
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -277,6 +278,223 @@ func TestCausalMetadataDeadlineHeapReleasesBackingStorage(t *testing.T) {
 	}
 }
 
+func assertEdgeTombstoneDeadlineIndex(t *testing.T, c *GraphCache[string, string]) {
+	t.Helper()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	h := &c.edgeTombstoneDeadlines
+	count := 0
+	var bytes uint64
+	var oldest time.Time
+	for key, tombstone := range c.edgeTombstones {
+		if tombstone.expiration.IsZero() {
+			continue
+		}
+		count++
+		bytes += causalEdgeDeadlineEntryBaseBytes + causalKeyPayloadBytes(key.Tail) + causalKeyPayloadBytes(key.Head)
+		position, ok := h.positions[key]
+		if !ok || position < 0 || position >= h.Len() {
+			t.Fatalf("missing deadline index position for %v", key)
+		}
+		entry := h.entries[position]
+		if entry.key != key || !entry.deadline.Equal(tombstone.expiration) {
+			t.Fatalf("deadline index entry for %v = %+v, want %v", key, entry, tombstone.expiration)
+		}
+		if oldest.IsZero() || tombstone.expiration.Before(oldest) {
+			oldest = tombstone.expiration
+		}
+	}
+	if h.Len() != count || len(h.positions) != count {
+		t.Fatalf("deadline index len/positions = %d/%d, want %d", h.Len(), len(h.positions), count)
+	}
+	for i, entry := range h.entries {
+		if h.positions[entry.key] != i {
+			t.Fatalf("deadline index position for %v = %d, want %d", entry.key, h.positions[entry.key], i)
+		}
+		if i > 0 && entry.deadline.Before(h.entries[(i-1)/2].deadline) {
+			t.Fatalf("deadline heap child %d precedes parent", i)
+		}
+	}
+	if c.edgeTombstoneDeadlineBytes != bytes || !c.oldestEdgeTombstoneDeadline.Equal(oldest) {
+		t.Fatalf("deadline bytes/oldest = %d/%v, want %d/%v", c.edgeTombstoneDeadlineBytes, c.oldestEdgeTombstoneDeadline, bytes, oldest)
+	}
+	if count == 0 && (h.entries != nil || h.positions != nil) {
+		t.Fatal("empty edge deadline index retains backing storage")
+	}
+}
+
+func TestEdgeTombstoneDeadlineIndexRenewAndRemove(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	base := time.Now().Add(time.Hour)
+	const unrelated = 2048
+	keys := make([]EdgeKey[string], unrelated)
+	for i := range keys {
+		keys[i] = EdgeKey[string]{Tail: fmt.Sprintf("other-%05d", i), Head: "head"}
+	}
+	c.DeleteEdgesHLC(keys, hlc.Timestamp{WallNs: 1}, base)
+	target := EdgeKey[string]{Tail: "target", Head: "head"}
+	c.DeleteEdgeHLC(target.Tail, target.Head, hlc.Timestamp{WallNs: 2}, base.Add(-time.Minute))
+	assertEdgeTombstoneDeadlineIndex(t, c)
+	initialBytes := c.CausalMetadataStats().EdgeEstimatedBytes
+
+	// Moving the same key above and below thousands of other deadlines must
+	// never allocate another index entry or charge another deadline's bytes.
+	for i := 0; i < 4096; i++ {
+		deadline := base.Add(time.Hour)
+		if i%2 == 0 {
+			deadline = base.Add(-time.Minute)
+		}
+		c.DeleteEdgeHLC(target.Tail, target.Head, hlc.Timestamp{WallNs: int64(i + 3)}, deadline)
+		if i%512 == 0 {
+			assertEdgeTombstoneDeadlineIndex(t, c)
+			stats := c.CausalMetadataStats()
+			if stats.EdgeEstimatedBytes != initialBytes || stats.EdgeEstimatedBytesHighWater != initialBytes {
+				t.Fatalf("renewal byte estimate/high-water = %d/%d, want %d", stats.EdgeEstimatedBytes, stats.EdgeEstimatedBytesHighWater, initialBytes)
+			}
+		}
+	}
+
+	// A newer live Put clears only the target's deadline. Restamping it
+	// repeatedly exercises heap.Remove and heap.Push without stale entries.
+	for i := 0; i < 128; i++ {
+		ts := hlc.Timestamp{WallNs: int64(4100 + 2*i)}
+		if !c.PutEdgeWithExpirationHLC(target.Tail, target.Head, 1, base.Add(3*time.Hour), ts) {
+			t.Fatalf("newer Put %d rejected", i)
+		}
+		assertEdgeTombstoneDeadlineIndex(t, c)
+		if !c.DeleteEdgeHLC(target.Tail, target.Head, hlc.Timestamp{WallNs: ts.WallNs + 1}, base.Add(-time.Minute)) {
+			t.Fatalf("Delete %d did not remove live edge", i)
+		}
+		assertEdgeTombstoneDeadlineIndex(t, c)
+	}
+
+	// Expiry removes the remaining deadlines and releases the index storage.
+	c.mu.Lock()
+	c.sweepExpiredTombstonesLocked(base.Add(time.Minute))
+	c.mu.Unlock()
+	assertEdgeTombstoneDeadlineIndex(t, c)
+	stats := c.CausalMetadataStats()
+	if stats.EdgeEntries != 0 || stats.EdgeEstimatedBytes != 0 || !stats.OldestEdgeRetentionDeadline.IsZero() {
+		t.Fatalf("expired edge causal state = %+v", stats)
+	}
+}
+
+func TestEdgeTombstoneDeadlineIndexSnapshotReplay(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	base := time.Now().Add(time.Hour)
+	ts := hlc.Timestamp{WallNs: 10}
+	c.ApplySnapshotEdgeTombstoneHLC("tail", "head", ts, base)
+	c.ApplySnapshotEdgeTombstoneHLC("tail", "head", ts, base.Add(time.Hour))
+	assertEdgeTombstoneDeadlineIndex(t, c)
+	if got := c.CausalMetadataStats().OldestEdgeRetentionDeadline; !got.Equal(base) {
+		t.Fatalf("equal-HLC replay renewed deadline to %v, want %v", got, base)
+	}
+	snapshot := c.SnapshotReplication()
+	if len(snapshot.Tombstones.Edges) != 1 || !snapshot.Tombstones.Edges[0].Expiration.Equal(base) {
+		t.Fatalf("snapshot edge tombstones = %+v, want original deadline", snapshot.Tombstones.Edges)
+	}
+	c.ApplySnapshotEdgeTombstoneHLC("tail", "head", hlc.Timestamp{WallNs: 11}, base.Add(2*time.Hour))
+	assertEdgeTombstoneDeadlineIndex(t, c)
+	if got := c.CausalMetadataStats().OldestEdgeRetentionDeadline; !got.Equal(base.Add(2 * time.Hour)) {
+		t.Fatalf("newer-HLC replay deadline = %v", got)
+	}
+	c.DeleteEdgeHLC("tail", "head", hlc.Timestamp{WallNs: 12}, time.Time{})
+	assertEdgeTombstoneDeadlineIndex(t, c)
+	if _, ok := c.edgeTombstones[EdgeKey[string]{Tail: "tail", Head: "head"}]; !ok {
+		t.Fatal("zero-deadline tombstone was removed with its index entry")
+	}
+}
+
+func TestEdgeTombstoneDeadlineIndexConcurrentStatsAndSnapshot(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	base := time.Now().Add(time.Hour)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			tail := fmt.Sprintf("tail-%d", worker)
+			for i := 0; i < 256; i++ {
+				c.DeleteEdgeHLC(tail, "head", hlc.Timestamp{WallNs: int64(2*i + 1)}, base.Add(time.Duration(i)*time.Second))
+				c.PutEdgeWithExpirationHLC(tail, "head", 1, base.Add(time.Hour), hlc.Timestamp{WallNs: int64(2*i + 2)})
+			}
+		}(worker)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 512; i++ {
+			_ = c.CausalMetadataStats()
+			_ = c.SnapshotReplication()
+		}
+	}()
+	wg.Wait()
+	assertEdgeTombstoneDeadlineIndex(t, c)
+	if got := len(c.edgeTombstones); got != 0 {
+		t.Fatalf("concurrent Put did not clear %d edge tombstones", got)
+	}
+}
+
+func TestEdgeTombstoneDeadlineIndexShrinksOnlyAtGCTick(t *testing.T) {
+	const count = 2048
+	const survivors = count / causalUsageShrinkDivisor
+	base := time.Now().Add(time.Hour)
+	keys := make([]EdgeKey[string], count)
+	for i := range keys {
+		keys[i] = EdgeKey[string]{Tail: fmt.Sprintf("tail-%05d", i), Head: "head"}
+	}
+
+	t.Run("ExpirySweep", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.DeleteEdgesHLC(keys[:count-survivors], hlc.Timestamp{WallNs: 1}, base)
+		c.DeleteEdgesHLC(keys[count-survivors:], hlc.Timestamp{WallNs: 1}, base.Add(time.Hour))
+		c.mu.Lock()
+		oldPositions := c.edgeTombstoneDeadlines.positions
+		c.sweepExpiredTombstonesLocked(base.Add(time.Minute))
+		h := &c.edgeTombstoneDeadlines
+		if h.Len() != survivors || cap(h.entries) != survivors || h.peak != survivors {
+			c.mu.Unlock()
+			t.Fatalf("GC index len/cap/peak = %d/%d/%d, want %d", h.Len(), cap(h.entries), h.peak, survivors)
+		}
+		// The old, oversized map must also be replaced, not just the slice.
+		oldPositions[EdgeKey[string]{Tail: "old-map-only", Head: "head"}] = 0
+		_, oldMapStillActive := h.positions[EdgeKey[string]{Tail: "old-map-only", Head: "head"}]
+		c.mu.Unlock()
+		if oldMapStillActive {
+			t.Fatal("GC retained the oversized position map")
+		}
+		assertEdgeTombstoneDeadlineIndex(t, c)
+	})
+
+	t.Run("WriteDefersShrink", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		c.DeleteEdgesHLC(keys, hlc.Timestamp{WallNs: 1}, base.Add(time.Hour))
+		for _, key := range keys[:count-survivors] {
+			if !c.PutEdgeWithExpirationHLC(key.Tail, key.Head, 1, base.Add(2*time.Hour), hlc.Timestamp{WallNs: 2}) {
+				t.Fatalf("Put %v rejected", key)
+			}
+		}
+		c.mu.RLock()
+		h := &c.edgeTombstoneDeadlines
+		if h.Len() != survivors || cap(h.entries) < count || h.peak != count {
+			c.mu.RUnlock()
+			t.Fatalf("pre-GC index len/cap/peak = %d/%d/%d", h.Len(), cap(h.entries), h.peak)
+		}
+		c.mu.RUnlock()
+		c.mu.Lock()
+		c.sweepExpiredTombstonesLocked(base)
+		c.mu.Unlock()
+		assertEdgeTombstoneDeadlineIndex(t, c)
+		c.mu.RLock()
+		if cap(c.edgeTombstoneDeadlines.entries) != survivors {
+			c.mu.RUnlock()
+			t.Fatalf("post-GC index capacity = %d, want %d", cap(c.edgeTombstoneDeadlines.entries), survivors)
+		}
+		c.mu.RUnlock()
+	})
+}
+
 func BenchmarkCausalMetadataCapacity(b *testing.B) {
 	expired := time.Unix(1, 0)
 	live := time.Now().Add(time.Hour)
@@ -345,5 +563,26 @@ func BenchmarkCausalMetadataStats(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = c.CausalMetadataStats()
+	}
+}
+
+func BenchmarkExactEdgeDeleteWithIndexedDeadlines(b *testing.B) {
+	c := NewGraphCache[string, string](time.Hour)
+	base := time.Now().Add(time.Hour)
+	keys := make([]EdgeKey[string], 10_000)
+	for i := range keys {
+		keys[i] = EdgeKey[string]{Tail: fmt.Sprintf("other-%05d", i), Head: "head"}
+	}
+	c.DeleteEdgesHLC(keys, hlc.Timestamp{WallNs: 1}, base)
+	c.DeleteEdgeHLC("target", "head", hlc.Timestamp{WallNs: 1}, base.Add(-time.Minute))
+	b.ReportAllocs()
+	var wallNs int64 = 2
+	for b.Loop() {
+		deadline := base.Add(time.Hour)
+		if wallNs%2 == 0 {
+			deadline = base.Add(-time.Minute)
+		}
+		c.DeleteEdgeHLC("target", "head", hlc.Timestamp{WallNs: wallNs}, deadline)
+		wallNs++
 	}
 }
