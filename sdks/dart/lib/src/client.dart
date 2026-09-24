@@ -796,7 +796,7 @@ final class LanternInvoker {
       };
       controller.addError(mapped, stack);
       final active = subscription;
-      if (active != null) unawaited(active.cancel());
+      if (active != null) active.cancel().ignore();
       finish();
     }
 
@@ -819,7 +819,7 @@ final class LanternInvoker {
         );
         subscription = active;
         if (paused) active.pause();
-        if (stopped) unawaited(active.cancel());
+        if (stopped) active.cancel().ignore();
       } catch (error, stack) {
         fail(error, stack);
       }
@@ -846,7 +846,7 @@ final class LanternInvoker {
           // Do not make the caller wait for a non-cooperative injected stream
           // to finish.  The signal is already canceled, and Connect's native
           // transport observes it to abort the underlying request.
-          unawaited(active.cancel());
+          active.cancel().ignore();
         }
       },
       onPause: () {

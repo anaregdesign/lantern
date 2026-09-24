@@ -226,7 +226,7 @@ Stream<IdentityFrame> _decodeIdentityFrames(
     stopped = true;
     controller.addError(error, stack);
     final active = upstream;
-    if (active != null) unawaited(active.cancel());
+    if (active != null) active.cancel().ignore();
     unawaited(controller.close());
   }
 
@@ -297,7 +297,7 @@ Stream<IdentityFrame> _decodeIdentityFrames(
       );
       upstream = active;
       if (paused) active.pause();
-      if (stopped) unawaited(active.cancel());
+      if (stopped) active.cancel().ignore();
     },
     onPause: () {
       paused = true;
@@ -310,7 +310,7 @@ Stream<IdentityFrame> _decodeIdentityFrames(
     onCancel: () {
       stopped = true;
       final active = upstream;
-      if (active != null) unawaited(active.cancel());
+      if (active != null) active.cancel().ignore();
     },
   );
   return controller.stream;

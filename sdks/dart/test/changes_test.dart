@@ -288,6 +288,26 @@ void main() {
     },
   );
 
+  test('identity cancellation consumes transport cleanup errors', () async {
+    final listening = Completer<void>();
+    final source = StreamController<replication.SubscribeResponse>(
+      onListen: listening.complete,
+      onCancel: () async => throw StateError('transport cleanup failed'),
+    );
+    final client = _client(_DirectIdentityStreamTransport(source.stream));
+    addTearDown(client.close);
+    final first = Completer<void>();
+    final subscription = client.subscribeIdentity().listen((_) {
+      first.complete();
+    });
+    await listening.future.timeout(const Duration(seconds: 2));
+    source.add(_chunk());
+    await first.future.timeout(const Duration(seconds: 2));
+
+    await subscription.cancel();
+    await Future<void>.delayed(Duration.zero);
+  });
+
   test('unexpected full Mutation and malformed chunks fail closed', () async {
     for (final bad in [
       replication.SubscribeResponse(mutation: replication.Mutation()),
