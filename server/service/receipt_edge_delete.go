@@ -274,14 +274,18 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 // remains available during a publication fault; it does not certify receipts.
 func (c *edgeDeleteReceiptCoordinator) Lookup(id mutationreceipt.ID, now time.Time) (mutationreceipt.Status, mutationreceipt.Receipt, error) {
 	s := c.service
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
-	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
-		return 0, mutationreceipt.Receipt{}, publicationGapError()
-	}
-	status, receipt, err := c.store.Lookup(id, now)
+	var status mutationreceipt.Status
+	var receipt mutationreceipt.Receipt
+	var lookupErr error
+	err := s.withCommittedView(func() error {
+		status, receipt, lookupErr = c.store.Lookup(id, now)
+		return nil
+	})
 	if err != nil {
-		return 0, mutationreceipt.Receipt{}, receiptStoreError(err)
+		return 0, mutationreceipt.Receipt{}, err
+	}
+	if lookupErr != nil {
+		return 0, mutationreceipt.Receipt{}, receiptStoreError(lookupErr)
 	}
 	return status, receipt, nil
 }

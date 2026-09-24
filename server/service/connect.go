@@ -194,7 +194,9 @@ func (h *lanternServiceConnect) ScanEdges(ctx context.Context, req *connect.Requ
 	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.ScanEdges)
 }
 func (h *lanternServiceConnect) GetServerStatus(ctx context.Context, req *connect.Request[pb.GetServerStatusRequest]) (*connect.Response[pb.GetServerStatusResponse], error) {
-	return unaryGraphRead(ctx, req, h.svc, h.svc.GetServerStatus)
+	// GetServerStatus owns its committed view so direct service callers and
+	// this adapter observe the same fail-closed cut without nested RLocks.
+	return unary(ctx, req, h.svc.GetServerStatus)
 }
 func (h *lanternServiceConnect) GetReplicationStatus(ctx context.Context, req *connect.Request[pb.GetReplicationStatusRequest]) (*connect.Response[pb.GetReplicationStatusResponse], error) {
 	return unary(ctx, req, h.svc.GetReplicationStatus)
