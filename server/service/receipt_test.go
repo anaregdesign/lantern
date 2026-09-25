@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -221,6 +222,105 @@ func TestReceiptReadSurfaceMalformedAndFaulted(t *testing.T) {
 		OperationId: id.Bytes(),
 	}); connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("faulted status = %v, want Internal", err)
+	}
+}
+
+func TestReceiptReadSurfaceRejectsFutureIDsBeforeAnyEpochLookup(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	now := time.Now()
+	activeID := receiptOperationID(t, runtime.receipt.epoch, now.Add(-time.Second), 0x61)
+	commitReceiptForStatus(t, runtime.receipt.store, now, mutationreceipt.Intent{
+		ID: activeID, Group: mutationreceipt.GroupID{0x62}, Count: 1,
+		Kind: mutationreceipt.DeleteEdge, Digest: mutationreceipt.IntentDigest([]byte("active")),
+	}, 1)
+
+	retiredEpoch := mutationreceipt.Epoch{0x71}
+	retiredStore, err := mutationreceipt.New(mutationreceipt.Config{
+		Epoch: retiredEpoch, Retention: time.Hour, MaxEntries: 8, MaxBytes: 1 << 20,
+		ClockHighWater: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiredID := receiptOperationID(t, retiredEpoch, now.Add(-time.Second), 0x72)
+	commitReceiptForStatus(t, retiredStore, now, mutationreceipt.Intent{
+		ID: retiredID, Group: mutationreceipt.GroupID{0x73}, Count: 1,
+		Kind: mutationreceipt.DeleteEdge, Digest: mutationreceipt.IntentDigest([]byte("retired")),
+	}, 0)
+	retiredSnapshot, err := retiredStore.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyCatalog, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch: runtime.receipt.epoch, MaxEntries: 8, MaxBytes: 1 << 20,
+		ClockHighWater: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogSnapshot, err := emptyCatalog.Snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogSnapshot.Epochs = []mutationreceipt.RetiredEpochSnapshot{{
+		Policy: mutationreceipt.RetiredEpochPolicy{
+			Epoch: retiredEpoch, Retention: time.Hour, MaxEntries: 8, MaxBytes: 1 << 20,
+		},
+		State: retiredSnapshot,
+	}}
+	runtime.receipt.retired, err = mutationreceipt.NewRetiredCatalogFromSnapshot(
+		mutationreceipt.RetiredCatalogConfig{
+			ActiveEpoch: runtime.receipt.epoch, MaxEntries: 8, MaxBytes: 1 << 20,
+			ClockHighWater: now,
+		},
+		catalogSnapshot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := runtime.receipt.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(10 * time.Minute)
+	tests := []struct {
+		name  string
+		epoch mutationreceipt.Epoch
+	}{
+		{name: "active epoch", epoch: runtime.receipt.epoch},
+		{name: "retired epoch", epoch: retiredEpoch},
+		{name: "unknown epoch", epoch: mutationreceipt.Epoch{0x7f}},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			futureID := receiptOperationID(t, tc.epoch, future, byte(0x80+i))
+			if _, err := svc.GetReceiptStatuses(context.Background(), &pb.GetReceiptStatusesRequest{
+				OperationIds: [][]byte{activeID.Bytes(), futureID.Bytes()},
+			}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("mixed future status = %v, want InvalidArgument", err)
+			}
+			after, err := runtime.receipt.store.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("rejected future ID changed active evidence:\nbefore=%+v\nafter=%+v", before, after)
+			}
+		})
+	}
+
+	unobservedID := receiptOperationID(t, runtime.receipt.epoch, now, 0x91)
+	response, err := svc.GetReceiptStatuses(context.Background(), &pb.GetReceiptStatusesRequest{
+		OperationIds: [][]byte{activeID.Bytes(), unobservedID.Bytes()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statuses := response.GetStatuses(); len(statuses) != 2 ||
+		statuses[0].GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+		statuses[1].GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED {
+		t.Fatalf("active epoch observations changed = %+v", statuses)
 	}
 }
 

@@ -132,36 +132,31 @@ func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetRece
 	}
 	defer release()
 
-	activeIDs := make([]mutationreceipt.ID, 0, len(ids))
-	activeIndexes := make([]int, 0, len(ids))
-	retiredIDs := make([]mutationreceipt.ID, 0, len(ids))
-	retiredIndexes := make([]int, 0, len(ids))
-	for i, id := range ids {
-		epoch, err := id.Epoch()
-		if err != nil {
-			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
-		}
-		if epoch == runtime.epoch {
-			activeIDs = append(activeIDs, id)
-			activeIndexes = append(activeIndexes, i)
-		} else {
-			retiredIDs = append(retiredIDs, id)
-			retiredIndexes = append(retiredIndexes, i)
-		}
-	}
-
-	observations := make([]mutationreceipt.Observation, len(ids))
+	var observations []mutationreceipt.Observation
 	err = s.withCommittedView(func() error {
-		effective, active, err := runtime.store.ObserveMany(activeIDs, time.Now())
+		effective, storeObservations, err := runtime.store.ObserveMany(ids, time.Now())
 		if err != nil {
 			return err
+		}
+		observations = storeObservations
+		retiredIDs := make([]mutationreceipt.ID, 0, len(ids))
+		retiredIndexes := make([]int, 0, len(ids))
+		for i, id := range ids {
+			epoch, err := id.Epoch()
+			if err != nil {
+				return err
+			}
+			if epoch != runtime.epoch {
+				retiredIDs = append(retiredIDs, id)
+				retiredIndexes = append(retiredIndexes, i)
+			}
+		}
+		if len(retiredIDs) == 0 {
+			return nil
 		}
 		retired, err := runtime.retired.LookupMany(retiredIDs, effective)
 		if err != nil {
 			return err
-		}
-		for i, observation := range active {
-			observations[activeIndexes[i]] = observation
 		}
 		for i, observation := range retired {
 			observations[retiredIndexes[i]] = observation

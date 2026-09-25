@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -253,6 +254,44 @@ func TestStoreObserveManyIsAlignedAndAllOrNothing(t *testing.T) {
 	effective, observations, err = s.ObserveMany(nil, testStart.Add(2*time.Minute))
 	if err != nil || len(observations) != 0 || !effective.Equal(testStart.Add(2*time.Minute)) {
 		t.Fatalf("empty observation preflight = %v, %+v, %v", effective, observations, err)
+	}
+}
+
+func TestStoreObserveManyRejectsFutureIDBeforeClockAndEvidenceMutation(t *testing.T) {
+	var persisted []int64
+	s, err := NewWithClockHighWaterSink(Config{
+		Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 1000,
+	}, func(highWater int64) error {
+		persisted = append(persisted, highWater)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := testIntent(t, 1, testStart, GroupID{8}, 0, 1)
+	commitTestBatch(t, s, testStart, []Intent{intent}, [][]byte{{1}})
+	before, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedBefore := append([]int64(nil), persisted...)
+	future := testIntent(t, 2, testStart.Add(20*time.Minute), GroupID{9}, 0, 1).ID
+
+	if _, _, err := s.ObserveMany(
+		[]ID{intent.ID, future},
+		testStart.Add(10*time.Minute),
+	); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("mixed future observation error = %v", err)
+	}
+	after, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("future observation changed evidence:\nbefore=%+v\nafter=%+v", before, after)
+	}
+	if !reflect.DeepEqual(persisted, persistedBefore) {
+		t.Fatalf("future observation persisted clock: %v -> %v", persistedBefore, persisted)
 	}
 }
 

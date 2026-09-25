@@ -275,9 +275,11 @@ func (s *Store) Lookup(id ID, now time.Time) (Status, Receipt, error) {
 	return observations[0].Status, observations[0].Receipt, nil
 }
 
-// ObserveMany advances and persists the Store clock once, expires rows once,
-// and returns request-index-aligned observations. An empty ID list is valid
-// and is used by capability preflight to sample the authoritative clock.
+// ObserveMany validates every ID against one prospective effective clock
+// before persisting that clock, expiring evidence, or performing any lookup.
+// It then advances the Store clock once, expires rows once, and returns
+// request-index-aligned observations. An empty ID list is valid and is used by
+// capability preflight to sample the authoritative clock.
 func (s *Store) ObserveMany(ids []ID, now time.Time) (time.Time, []Observation, error) {
 	type identity struct {
 		epoch  Epoch
@@ -294,8 +296,17 @@ func (s *Store) ObserveMany(ids []ID, now time.Time) (time.Time, []Observation, 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	effective, err := s.advanceLocked(now)
+	effective, err := s.effectiveHighWaterLocked(now)
 	if err != nil {
+		return time.Time{}, nil, err
+	}
+	for _, identity := range identities {
+		if identity.issued > math.MaxInt64-s.retentionMS ||
+			tooFarFuture(identity.issued, effective) {
+			return time.Time{}, nil, ErrInvalidID
+		}
+	}
+	if err := s.persistHighWaterLocked(effective); err != nil {
 		return time.Time{}, nil, err
 	}
 	s.expireLocked(effective)
@@ -318,10 +329,6 @@ func (s *Store) ObserveMany(ids []ID, now time.Time) (time.Time, []Observation, 
 			continue
 		}
 		identity := identities[i]
-		if identity.issued > math.MaxInt64-s.retentionMS ||
-			tooFarFuture(identity.issued, effective) {
-			return time.Time{}, nil, ErrInvalidID
-		}
 		if identity.issued+s.retentionMS <= effective || identity.epoch != s.epoch {
 			s.unknownLookups++
 			observations[i].Status = NoLongerProvable
@@ -348,6 +355,17 @@ func (s *Store) Stats() Stats {
 }
 
 func (s *Store) advanceLocked(now time.Time) (int64, error) {
+	effective, err := s.effectiveHighWaterLocked(now)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.persistHighWaterLocked(effective); err != nil {
+		return 0, err
+	}
+	return effective, nil
+}
+
+func (s *Store) effectiveHighWaterLocked(now time.Time) (int64, error) {
 	if s.highWaterFault != nil {
 		return 0, s.highWaterFault
 	}
@@ -355,16 +373,23 @@ func (s *Store) advanceLocked(now time.Time) (int64, error) {
 	if ms < 0 {
 		return 0, ErrInvalidClock
 	}
-	if ms > s.highWaterMS {
+	if ms < s.highWaterMS {
+		return s.highWaterMS, nil
+	}
+	return ms, nil
+}
+
+func (s *Store) persistHighWaterLocked(effective int64) error {
+	if effective > s.highWaterMS {
 		if s.highWaterSink != nil {
-			if err := s.highWaterSink(ms); err != nil {
+			if err := s.highWaterSink(effective); err != nil {
 				s.highWaterFault = errors.Join(ErrHighWaterPersistence, err)
-				return 0, s.highWaterFault
+				return s.highWaterFault
 			}
 		}
-		s.highWaterMS = ms
+		s.highWaterMS = effective
 	}
-	return s.highWaterMS, nil
+	return nil
 }
 
 func tooFarFuture(issued, now int64) bool {
