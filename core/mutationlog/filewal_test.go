@@ -138,6 +138,186 @@ func TestFileWALResumeEmptyFile(t *testing.T) {
 	}
 }
 
+func TestFileWALTipWitnessMatchesClosedInspectionAcrossResume(t *testing.T) {
+	path, lease, wal, journal, binding := fileWALTipFixture(t)
+	witnesses := make([]FileWALTipWitness, 0, 3)
+	zero, err := wal.TipWitness(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witnesses = append(witnesses, zero)
+	for _, entry := range []Entry{fileWALEntry(1, "first"), fileWALEntry(2, "second")} {
+		if err := wal.Write(entry); err != nil {
+			t.Fatal(err)
+		}
+		witness, err := wal.TipWitness(entry.Seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		witnesses = append(witnesses, witness)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cuts, err := InspectFileWALCuts(path, []uint64{0, 1, 2}, fileWALStringDecode, fileWALCutValidEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range witnesses {
+		assertFileWALTipWitnessMatchesCut(t, witnesses[i], cuts[i])
+	}
+
+	resumedTip, err := ResumeFileWALTipJournal(lease.Path(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumedTip.Close()
+	resumed, err := ResumeFileWAL(
+		lease.Path(),
+		fileWALStringEncode,
+		fileWALStringDecode,
+		func(Entry) error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resumedTip.VerifyAndCatchUp(lease.Path(), fileWALStringDecode, fileWALCutValidEntry); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumed.BindTipJournal(resumedTip); err != nil {
+		t.Fatal(err)
+	}
+	resumedWitness, err := resumed.TipWitness(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileWALTipWitnessMatchesCut(t, resumedWitness, cuts[2])
+	if err := resumed.Write(fileWALEntry(3, "third")); err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := resumed.TipWitness(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advanced.Offset <= resumedWitness.Offset || advanced.SHA256 == resumedWitness.SHA256 ||
+		advanced.ChainSHA256 == resumedWitness.ChainSHA256 {
+		t.Fatalf("advanced witness = %+v, previous %+v", advanced, resumedWitness)
+	}
+	if err := resumed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closedCut, err := InspectFileWALCut(path, 3, fileWALStringDecode, fileWALCutValidEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileWALTipWitnessMatchesCut(t, advanced, closedCut)
+}
+
+func TestFileWALTipWitnessRejectsUncertifiedState(t *testing.T) {
+	t.Run("unbound", func(t *testing.T) {
+		wal, err := CreateFileWAL(filepath.Join(t.TempDir(), "unbound.wal"), fileWALStringEncode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer wal.Close()
+		if witness, err := wal.TipWitness(0); witness != (FileWALTipWitness{}) ||
+			!errors.Is(err, ErrFileWALTipUnverified) {
+			t.Fatalf("unbound witness = %+v, %v", witness, err)
+		}
+	})
+
+	t.Run("sequence mismatch", func(t *testing.T) {
+		_, _, wal, _, _ := fileWALTipFixture(t)
+		if witness, err := wal.TipWitness(1); witness != (FileWALTipWitness{}) ||
+			!errors.Is(err, ErrFileWALSequence) {
+			t.Fatalf("mismatched witness = %+v, %v", witness, err)
+		}
+	})
+
+	t.Run("closed WAL", func(t *testing.T) {
+		_, _, wal, _, _ := fileWALTipFixture(t)
+		if err := wal.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if witness, err := wal.TipWitness(0); witness != (FileWALTipWitness{}) ||
+			!errors.Is(err, ErrFileWALClosed) {
+			t.Fatalf("closed witness = %+v, %v", witness, err)
+		}
+	})
+
+	t.Run("closed tip journal", func(t *testing.T) {
+		_, _, wal, journal, _ := fileWALTipFixture(t)
+		if err := journal.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if witness, err := wal.TipWitness(0); witness != (FileWALTipWitness{}) ||
+			!errors.Is(err, ErrFileWALTipClosed) {
+			t.Fatalf("closed-tip witness = %+v, %v", witness, err)
+		}
+	})
+}
+
+func TestFileWALTipProvenancePinsLogWALAndPath(t *testing.T) {
+	path, lease, wal, _, _ := fileWALTipFixture(t)
+	log := New(Options{WAL: wal})
+	defer log.Close()
+	provenance, err := log.FileWALTipProvenance(lease.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if witness, err := provenance.TipWitness(lease.Path()); err != nil || witness.Seq != 0 {
+		t.Fatalf("fresh provenance witness = %+v, %v", witness, err)
+	}
+	if _, err := log.CommitWithPublication("first", fileWALEntry(1, "first").HLC, nil); err != nil {
+		t.Fatal(err)
+	}
+	if witness, err := provenance.TipWitness(lease.Path()); err != nil || witness.Seq != 1 {
+		t.Fatalf("advanced provenance witness = %+v, %v", witness, err)
+	}
+	if witness, err := provenance.TipWitness(filepath.Join(filepath.Dir(path), "other.wal")); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrFileWALProvenance) {
+		t.Fatalf("wrong-path provenance = %+v, %v", witness, err)
+	}
+	log.mu.Lock()
+	log.lastSeq++
+	log.mu.Unlock()
+	if witness, err := provenance.TipWitness(lease.Path()); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrFileWALSequence) {
+		t.Fatalf("mismatched Log/WAL frontier = %+v, %v", witness, err)
+	}
+	log.mu.Lock()
+	log.lastSeq--
+	log.mu.Unlock()
+	log.mu.Lock()
+	log.wal = NopWAL{}
+	log.mu.Unlock()
+	if witness, err := provenance.TipWitness(lease.Path()); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrFileWALProvenance) {
+		t.Fatalf("replaced-WAL provenance = %+v, %v", witness, err)
+	}
+	log.mu.Lock()
+	log.wal = wal
+	log.mu.Unlock()
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if witness, err := provenance.TipWitness(lease.Path()); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrClosed) {
+		t.Fatalf("closed-Log provenance = %+v, %v", witness, err)
+	}
+}
+
+func assertFileWALTipWitnessMatchesCut(t *testing.T, witness FileWALTipWitness, cut FileWALCut) {
+	t.Helper()
+	if witness.Seq != cut.Seq || witness.Offset != cut.Offset ||
+		witness.SHA256 != cut.SHA256 || witness.ChainSHA256 != cut.ChainSHA256 {
+		t.Fatalf("live witness = %+v, closed cut = %+v", witness, cut)
+	}
+}
+
 func TestFileWALResumeRejectsDamageBeforeRestore(t *testing.T) {
 	_, valid := makeTwoRecordFileWAL(t)
 	second := len(fileWALMagic) + fileWALFrameHeader + int(binary.BigEndian.Uint32(valid[len(fileWALMagic):]))
@@ -405,6 +585,10 @@ func TestFileWALSyncErrorIsIndeterminate(t *testing.T) {
 	}
 	if err := w.Write(fileWALEntry(1, "retry")); !errors.Is(err, ErrFileWALUnusable) {
 		t.Fatalf("FileWAL retry = %v, want unusable", err)
+	}
+	if witness, err := w.TipWitness(0); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrFileWALUnusable) {
+		t.Fatalf("indeterminate WAL exposed witness = %+v, %v", witness, err)
 	}
 	if _, err := l.Append("retry", fileWALEntry(1, "retry").HLC); !errors.Is(err, ErrWALIndeterminate) {
 		t.Fatalf("Log retry = %v, want indeterminate", err)

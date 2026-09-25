@@ -180,11 +180,10 @@ func fileWALTipHeader(walPath string, binding [sha256.Size]byte) ([fileWALTipHea
 	if walPath == "" || binding == ([sha256.Size]byte{}) {
 		return header, "", "", ErrFileWALTipBinding
 	}
-	abs, err := filepath.Abs(walPath)
+	canonical, err := canonicalFileWALPath(walPath)
 	if err != nil {
 		return header, "", "", err
 	}
-	canonical := filepath.Clean(abs)
 	copy(header[:], fileWALTipMagic)
 	copy(header[len(fileWALTipMagic):], binding[:])
 	pathHash := sha256.Sum256([]byte(canonical))
@@ -271,7 +270,7 @@ func (j *FileWALTipJournal) advance(seq uint64, chain [sha256.Size]byte) error {
 	return j.advanceLocked(seq, chain)
 }
 
-func (j *FileWALTipJournal) bind(seq uint64, chain [sha256.Size]byte) error {
+func (j *FileWALTipJournal) bind(walPath string, seq uint64, chain [sha256.Size]byte) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.closed {
@@ -283,10 +282,37 @@ func (j *FileWALTipJournal) bind(seq uint64, chain [sha256.Size]byte) error {
 	if !j.verified {
 		return ErrFileWALTipUnverified
 	}
+	if walPath != j.walPath {
+		return ErrFileWALTipBinding
+	}
 	if seq != j.seq || chain != j.chain {
 		return ErrFileWALTipMismatch
 	}
 	j.bound = true
+	return nil
+}
+
+func (j *FileWALTipJournal) certifyBound(walPath string, seq uint64, chain [sha256.Size]byte) error {
+	if j == nil {
+		return ErrFileWALTipUnverified
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return ErrFileWALTipClosed
+	}
+	if j.unusable {
+		return ErrFileWALTipUnusable
+	}
+	if !j.verified || !j.bound {
+		return ErrFileWALTipUnverified
+	}
+	if walPath != j.walPath {
+		return ErrFileWALTipBinding
+	}
+	if seq != j.seq || chain != j.chain {
+		return ErrFileWALTipMismatch
+	}
 	return nil
 }
 

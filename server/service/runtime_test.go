@@ -85,6 +85,9 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	if runtime.DurableReceiptWAL() {
 		t.Fatal("graph-only runtime reported durable receipt WAL")
 	}
+	if witness, err := runtime.ReceiptWALTipWitness(); witness != (mutationlog.FileWALTipWitness{}) || err == nil {
+		t.Fatalf("graph-only runtime witness = %+v, %v", witness, err)
+	}
 	if runtime.GraphCache() != graph || runtime.log != log || runtime.clock != clock {
 		t.Fatal("graph-only runtime replaced an existing state instance")
 	}
@@ -118,6 +121,135 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	}
 	if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); !errors.Is(err, mutationlog.ErrClosed) {
 		t.Fatalf("append after Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestServingRuntimeReceiptWALTipWitnessFreshAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := durableRuntimeTestConfig(path)
+	fresh, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshClosed := false
+	t.Cleanup(func() {
+		if !freshClosed {
+			_ = fresh.Close()
+		}
+	})
+	zero, err := fresh.ReceiptWALTipWitness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zero.Seq != 0 {
+		t.Fatalf("fresh witness = %+v", zero)
+	}
+	owner := fresh.receipt.owner
+	fresh.receipt.owner = &receiptWALOwnedCandidate{}
+	if witness, err := fresh.ReceiptWALTipWitness(); witness != (mutationlog.FileWALTipWitness{}) || err == nil {
+		t.Fatalf("foreign candidate witness = %+v, %v", witness, err)
+	}
+	fresh.receipt.owner = owner
+
+	entry := recoveryGraphPutEffectEntry(t, 0x71, time.Now().UnixNano(), &pb.MutationOp{
+		Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{
+				Key:        "witness-fresh",
+				Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+			},
+		}},
+	})
+	if appended, err := fresh.log.Append(entry.Op, entry.HLC); err != nil || appended.Seq != 1 {
+		t.Fatalf("fresh witness append = %+v, %v", appended, err)
+	}
+	first, err := fresh.ReceiptWALTipWitness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Seq != 1 || first.Offset <= zero.Offset ||
+		first.SHA256 == zero.SHA256 || first.ChainSHA256 == zero.ChainSHA256 {
+		t.Fatalf("advanced fresh witness = %+v, zero %+v", first, zero)
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	freshClosed = true
+	if witness, err := fresh.ReceiptWALTipWitness(); witness != (mutationlog.FileWALTipWitness{}) || err == nil {
+		t.Fatalf("closed fresh runtime witness = %+v, %v", witness, err)
+	}
+	cuts, err := mutationlog.InspectFileWALCuts(
+		path,
+		[]uint64{0, 1},
+		decodeReceiptWALUnion,
+		validateReceiptWALUnionEntry,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeWALTipWitnessMatchesCut(t, zero, cuts[0])
+	assertRuntimeWALTipWitnessMatchesCut(t, first, cuts[1])
+
+	config.Now = time.Now()
+	config.Receipt.ClockHighWater = config.Now
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedClosed := false
+	t.Cleanup(func() {
+		if !restartedClosed {
+			_ = restarted.Close()
+		}
+	})
+	resumed, err := restarted.ReceiptWALTipWitness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeWALTipWitnessMatchesCut(t, resumed, cuts[1])
+	secondEntry := recoveryGraphPutEffectEntry(t, 0x72, time.Now().UnixNano(), &pb.MutationOp{
+		Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{
+				Key:        "witness-restarted",
+				Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+			},
+		}},
+	})
+	if appended, err := restarted.log.Append(secondEntry.Op, secondEntry.HLC); err != nil || appended.Seq != 2 {
+		t.Fatalf("restarted witness append = %+v, %v", appended, err)
+	}
+	second, err := restarted.ReceiptWALTipWitness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Seq != 2 || second.Offset <= resumed.Offset ||
+		second.SHA256 == resumed.SHA256 || second.ChainSHA256 == resumed.ChainSHA256 {
+		t.Fatalf("advanced restarted witness = %+v, resumed %+v", second, resumed)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restartedClosed = true
+	secondCut, err := mutationlog.InspectFileWALCut(
+		path,
+		2,
+		decodeReceiptWALUnion,
+		validateReceiptWALUnionEntry,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeWALTipWitnessMatchesCut(t, second, secondCut)
+}
+
+func assertRuntimeWALTipWitnessMatchesCut(
+	t *testing.T,
+	witness mutationlog.FileWALTipWitness,
+	cut mutationlog.FileWALCut,
+) {
+	t.Helper()
+	if witness.Seq != cut.Seq || witness.Offset != cut.Offset ||
+		witness.SHA256 != cut.SHA256 || witness.ChainSHA256 != cut.ChainSHA256 {
+		t.Fatalf("runtime witness = %+v, closed cut = %+v", witness, cut)
 	}
 }
 
