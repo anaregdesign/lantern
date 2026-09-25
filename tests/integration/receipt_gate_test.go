@@ -3887,6 +3887,9 @@ func TestPublicVertexReceipts_RealConnectWire(t *testing.T) {
 			deleteStatus.Msg.GetStatus().GetReceipt().GetOriginalResult().GetDeleteVertexExisted() {
 			t.Fatalf("singular absent Delete status = (%+v, %v)", deleteStatus, err)
 		}
+		if _, ok := deleteStatus.Msg.GetStatus().GetReceipt().GetOriginalResult().GetResult().(*pb.ReceiptResult_DeleteVertexExisted); !ok {
+			t.Fatalf("singular absent Delete status missing result arm = %+v", deleteStatus)
+		}
 
 		for _, key := range []string{"delete-present-a", "delete-present-b"} {
 			if _, err := wire.raw.PutVertex(
@@ -3939,8 +3942,10 @@ func TestPublicVertexReceipts_RealConnectWire(t *testing.T) {
 			t.Fatalf("Delete statuses = (%+v, %v)", deleteStatuses, err)
 		}
 		for i, status := range deleteStatuses.Msg.GetStatuses() {
+			result := status.GetReceipt().GetOriginalResult()
+			_, hasDeleteResult := result.GetResult().(*pb.ReceiptResult_DeleteVertexExisted)
 			if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
-				status.GetReceipt().GetOriginalResult().GetDeleteVertexExisted() != wantDelete[i] {
+				!hasDeleteResult || result.GetDeleteVertexExisted() != wantDelete[i] {
 				t.Fatalf("Delete status[%d] = %+v, want %t", i, status, wantDelete[i])
 			}
 		}

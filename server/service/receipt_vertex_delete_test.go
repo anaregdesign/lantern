@@ -116,9 +116,11 @@ func TestPublicVertexDeleteReceiptsPreserveExactAbsentResult(t *testing.T) {
 	status, err := service.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
 		OperationId: receiptContext.GetOperationIds()[0],
 	})
+	result := status.GetStatus().GetReceipt().GetOriginalResult()
+	_, hasDeleteResult := result.GetResult().(*pb.ReceiptResult_DeleteVertexExisted)
 	if err != nil ||
 		status.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
-		status.GetStatus().GetReceipt().GetOriginalResult().GetDeleteVertexExisted() {
+		!hasDeleteResult || result.GetDeleteVertexExisted() {
 		t.Fatalf("public absent Delete status = (%+v, %v)", status, err)
 	}
 }
