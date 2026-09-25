@@ -140,8 +140,8 @@ func TestReceiptWALUnionCodecNonDeleteGraphArms(t *testing.T) {
 }
 
 func TestReceiptWALUnionCodecPreservesGraphNilSlots(t *testing.T) {
-	// The relay path intentionally keeps nil elements distinct from empty
-	// messages, including their original request indexes.
+	// Ordinary relay batches keep nil elements distinct from empty messages,
+	// including their original request indexes.
 	arms := []struct {
 		name string
 		op   *pb.MutationOp
@@ -149,8 +149,6 @@ func TestReceiptWALUnionCodecPreservesGraphNilSlots(t *testing.T) {
 		{"put vertices", &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{nil, {}, {Key: "v"}, nil}}}}},
 		{"add edges", &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{nil, {}, {Tail: "t", Head: "h"}, nil}}}}},
 		{"put edges", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{Edges: []*pb.Edge{nil, {}, {Tail: "t", Head: "h"}, nil}}}}},
-		{"replicated put vertices", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: []*pb.ReplicatedPutVertex{nil, {}, {Outcome: &pb.ReplicatedPutVertex_CausalBarrier{CausalBarrier: &pb.VertexCausalBarrier{Key: "v"}}}, nil}}}}},
-		{"replicated put edges", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: []*pb.ReplicatedPutEdge{nil, {}, {Outcome: &pb.ReplicatedPutEdge_CausalBarrier{CausalBarrier: &pb.EdgeCausalBarrier{Tail: "t", Head: "h"}}}, nil}}}}},
 	}
 	for _, arm := range arms {
 		t.Run(arm.name, func(t *testing.T) {
@@ -178,6 +176,49 @@ func TestReceiptWALUnionCodecPreservesGraphNilSlots(t *testing.T) {
 			reencoded, err := encodeReceiptWALUnion(got)
 			if err != nil || !bytes.Equal(reencoded, raw) {
 				t.Fatalf("noncanonical nil-slot roundtrip: %v", err)
+			}
+		})
+	}
+}
+
+func TestReceiptWALUnionCodecRejectsUnservableReplicatedPutSlots(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   *pb.MutationOp
+	}{
+		{"vertex nil", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: []*pb.ReplicatedPutVertex{nil}}}}},
+		{"vertex missing outcome", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: []*pb.ReplicatedPutVertex{{}}}}}},
+		{"edge nil", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: []*pb.ReplicatedPutEdge{nil}}}}},
+		{"edge missing outcome", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: []*pb.ReplicatedPutEdge{{}}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutation := receiptWALUnionGraphFixture(tc.op)
+			if _, err := encodeReceiptWALUnion(mutation); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("unservable replicated Put encoded: %v", err)
+			}
+			protobuf, err := proto.Marshal(mutation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeReceiptWALUnion(receiptWALUnionRawGraphProto(protobuf, 1)); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("unservable replicated Put decoded: %v", err)
+			}
+			path := filepath.Join(t.TempDir(), "replicated-put.wal")
+			wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := wal.Write(mutationlog.Entry{Seq: 1, HLC: receiptWALUnionGraphHLC(mutation), Op: mutation}); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("unservable replicated Put appended: %v", err)
+			}
+			if err := wal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := mutationlog.ReplayFileWAL(path, decodeReceiptWALUnion, func(mutationlog.Entry) error {
+				t.Fatal("replay visited an unservable replicated Put")
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

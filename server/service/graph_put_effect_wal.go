@@ -102,8 +102,8 @@ const (
 // graphPutSlots preserves original positions, including nil plural entries.
 // A ReplicatedPut* causal barrier can only produce a barrier effect; a live
 // payload can become a barrier if it expired at this receiver's apply sample.
-// The codec can represent nil replicated entries, but current serving apply
-// rejects that mutation shape; a future producer must align those contracts.
+// Replicated Put entries must be concrete: serving apply rejects nil entries
+// and missing outcomes, so private WAL evidence must reject them too.
 // Conditional local Put is published as ReplicatedPutVertices accepted slots,
 // so raw if_absent requests are not a valid receiver-side WAL shape here.
 func graphPutSlots(m *pb.Mutation) ([]graphPutSlotKind, error) {
@@ -156,7 +156,7 @@ func graphPutSlots(m *pb.Mutation) ([]graphPutSlotKind, error) {
 		slots := make([]graphPutSlotKind, len(op.ReplicatedPutVertices.GetEntries()))
 		for i, entry := range op.ReplicatedPutVertices.GetEntries() {
 			if entry == nil {
-				continue
+				return nil, receiptWALUnionError("nil replicated Vertex Put entry at index %d", i)
 			}
 			switch outcome := entry.GetOutcome().(type) {
 			case *pb.ReplicatedPutVertex_Live:
@@ -181,7 +181,7 @@ func graphPutSlots(m *pb.Mutation) ([]graphPutSlotKind, error) {
 		slots := make([]graphPutSlotKind, len(op.ReplicatedPutEdges.GetEntries()))
 		for i, entry := range op.ReplicatedPutEdges.GetEntries() {
 			if entry == nil {
-				continue
+				return nil, receiptWALUnionError("nil replicated Edge Put entry at index %d", i)
 			}
 			switch outcome := entry.GetOutcome().(type) {
 			case *pb.ReplicatedPutEdge_Live:
