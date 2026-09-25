@@ -90,6 +90,7 @@ func TestCausalBarrierSnapshotFramesRoundTrip(t *testing.T) {
 			t.Fatalf("frame %d round trip = %v, want %v", i, copy, frame)
 		}
 	}
+
 	if header.GetHeader().GetCutoffLocalSeq() != 9 || header.GetVertex() != nil || header.GetEdge() != nil || header.GetFooter() != nil {
 		t.Fatal("header oneof getter mismatch")
 	}
@@ -112,5 +113,72 @@ func TestCausalBarrierSnapshotFramesRoundTrip(t *testing.T) {
 	var nilResponse *pb.SnapshotResponse
 	if nilResponse.GetEntry() != nil || nilResponse.GetHeader() != nil || nilResponse.GetVertex() != nil || nilResponse.GetEdge() != nil || nilResponse.GetFooter() != nil || nilResponse.GetVertexCausalBarrier() != nil || nilResponse.GetEdgeCausalBarrier() != nil {
 		t.Fatal("nil SnapshotResponse getters must remain nil-safe")
+	}
+}
+
+func TestReceiptSnapshotWireRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	origin := append([]byte{0x41}, make([]byte, 15)...)
+	header := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
+		CutoffSeqPerOrigin: map[string]uint64{"41000000000000000000000000000000": 7},
+		CutoffHlc:          &pb.HLCTimestamp{WallNs: 100, Logical: 2, NodeId: origin},
+		CutoffLocalSeq:     11,
+		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		ReceiptMetadata: &pb.SnapshotReceiptMetadata{
+			Policy: &pb.ReceiptPolicy{
+				DeploymentEpoch: append([]byte{0x51}, make([]byte, 15)...),
+				Fingerprint:     append([]byte{0x52}, make([]byte, 31)...),
+				RetentionMs:     3_600_000,
+				MaxEntries:      128,
+				MaxBytes:        1 << 20,
+			},
+			ClockHighWaterUnixMs: 99,
+			OriginCutoffs: []*pb.OriginState{{
+				Origin: origin, LastSeq: 7,
+				LastHlc: &pb.HLCTimestamp{WallNs: 98, Logical: 1, NodeId: origin},
+			}},
+		},
+	}}}
+	receipt := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Receipt{Receipt: &pb.SnapshotReceipt{
+		OperationId:    append([]byte{1}, make([]byte, 48)...),
+		LogicalCallId:  append([]byte{2}, make([]byte, 15)...),
+		ItemIndex:      1,
+		ItemCount:      2,
+		Kind:           pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_ADD_EDGE,
+		IntentSha256:   append([]byte{3}, make([]byte, 31)...),
+		DeadlineUnixMs: 3_600_099,
+		OriginalResult: []byte{0xde, 0xad},
+		Contribution:   &pb.SnapshotReceiptContribution{ContributionId: append([]byte{4}, make([]byte, 23)...)},
+	}}}
+	footer := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{
+		ReceiptCount: 1, ReceiptOriginCount: 1,
+	}}}
+
+	for i, frame := range []*pb.SnapshotResponse{header, receipt, footer} {
+		copy := &pb.SnapshotResponse{}
+		roundTripReplicationProto(t, frame, copy)
+		if copy.GetEntry() == nil || !proto.Equal(frame, copy) {
+			t.Fatalf("receipt frame %d round trip = %v, want %v", i, copy, frame)
+		}
+	}
+	metadata := header.GetHeader().GetReceiptMetadata()
+	if metadata.GetPolicy().GetMaxEntries() != 128 ||
+		metadata.GetClockHighWaterUnixMs() != 99 ||
+		metadata.GetOriginCutoffs()[0].GetLastSeq() != 7 {
+		t.Fatalf("receipt header getters = %+v", metadata)
+	}
+	row := receipt.GetReceipt()
+	if row.GetKind() != pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_ADD_EDGE ||
+		len(row.GetOperationId()) != 49 || len(row.GetContribution().GetContributionId()) != 24 ||
+		row.GetOriginalResult()[0] != 0xde {
+		t.Fatalf("receipt row getters = %+v", row)
+	}
+	if footer.GetFooter().GetReceiptCount() != 1 || footer.GetFooter().GetReceiptOriginCount() != 1 {
+		t.Fatalf("receipt footer getters = %+v", footer.GetFooter())
+	}
+	var nilResponse *pb.SnapshotResponse
+	if nilResponse.GetReceipt() != nil {
+		t.Fatal("nil SnapshotResponse receipt getter must remain nil-safe")
 	}
 }

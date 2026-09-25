@@ -236,8 +236,9 @@ message SubscribeResponse {
 
 // Snapshot format is an explicit compatibility boundary. A graph-only image
 // cannot prove mutation-receipt continuity, even when its origin cutoffs are
-// ahead of every retained log entry. Format 2 is reserved for a future
-// receipt-bearing image; this server does not produce it yet.
+// ahead of every retained log entry. RECEIPT_V1 carries one atomic graph,
+// receipt, clock, and origin cut. A receiver that cannot install that complete
+// format must reject its header before applying any body frame.
 enum SnapshotFormat {
   SNAPSHOT_FORMAT_UNSPECIFIED = 0;
   SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = 1;
@@ -251,6 +252,17 @@ enum SnapshotFormat {
 // request field, so the header check is mandatory.
 message SnapshotRequest {
   SnapshotFormat required_format = 1;
+}
+
+// Receipt metadata for one RECEIPT_V1 publication cut. This message is
+// required exactly when an RPC Snapshot header's format is RECEIPT_V1 and is
+// absent from GRAPH_ONLY_V1. origin_cutoffs is sorted by raw origin bytes and
+// must exactly match cutoff_seq_per_origin; the full rows retain each origin's
+// HLC as well as its sequence.
+message SnapshotReceiptMetadata {
+  ReceiptPolicy policy = 1;
+  uint64 clock_high_water_unix_ms = 2;
+  repeated OriginState origin_cutoffs = 3;
 }
 
 // SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
@@ -281,6 +293,9 @@ message SnapshotHeader {
   // Zero is a legacy graph-only image. A receipt-capable receiver must reject
   // zero or GRAPH_ONLY_V1 before changing any local state.
   SnapshotFormat format = 4;
+  // Required and complete for RECEIPT_V1; absent for graph-only formats.
+  // The deployment epoch and policy fingerprint are carried inside policy.
+  SnapshotReceiptMetadata receipt_metadata = 5;
 }
 
 // SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -294,6 +309,42 @@ message SnapshotFooter {
   uint64 edge_causal_barrier_count = 4;
   uint64 vertex_tombstone_count = 5;
   uint64 edge_tombstone_count = 6;
+  uint64 receipt_count = 7;
+  // Cross-checks receipt_metadata.origin_cutoffs and the legacy cutoff map.
+  uint64 receipt_origin_count = 8;
+}
+
+// SnapshotReceiptKind pins the Store mutation family independently of the
+// result encoding. Prefix Delete is deliberately absent.
+enum SnapshotReceiptKind {
+  SNAPSHOT_RECEIPT_KIND_UNSPECIFIED = 0;
+  SNAPSHOT_RECEIPT_KIND_PUT_VERTEX = 1;
+  SNAPSHOT_RECEIPT_KIND_PUT_EDGE = 2;
+  SNAPSHOT_RECEIPT_KIND_ADD_EDGE = 3;
+  SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX = 4;
+  SNAPSHOT_RECEIPT_KIND_DELETE_EDGE = 5;
+}
+
+// Contribution metadata is present exactly for an AddEdge receipt. Keeping
+// it in a message preserves presence and leaves room for later contribution
+// metadata without changing the receipt row's identity fields.
+message SnapshotReceiptContribution {
+  bytes contribution_id = 1; // Nonzero 24-byte Add ContribID.
+}
+
+// One unexpired Store row in a RECEIPT_V1 image. Rows are ordered strictly by
+// operation_id. original_result is the exact opaque result bytes retained by
+// the Store; it is not recomputed from the graph at snapshot time.
+message SnapshotReceipt {
+  bytes operation_id = 1; // Exactly 49 bytes.
+  bytes logical_call_id = 2; // Exactly 16 nonzero bytes.
+  uint32 item_index = 3;
+  uint32 item_count = 4;
+  SnapshotReceiptKind kind = 5;
+  bytes intent_sha256 = 6; // Exactly 32 bytes.
+  uint64 deadline_unix_ms = 7;
+  bytes original_result = 8;
+  SnapshotReceiptContribution contribution = 9;
 }
 
 // SnapshotVertex is the snapshot-time representation of a single live
@@ -372,12 +423,13 @@ message SnapshotEdgeTombstone {
 }
 
 // SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
-// order is always: exactly one SnapshotHeader, then zero or more
-// SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
-// frames, zero or more SnapshotVertexTombstone frames, zero or more
-// SnapshotEdgeTombstone frames, zero or more SnapshotVertex frames, zero or
-// more SnapshotEdge frames, then exactly one SnapshotFooter. Receivers MUST
-// treat any other order as a protocol violation.
+// order is always: exactly one SnapshotHeader; for RECEIPT_V1, zero or more
+// SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
+// frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
+// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
+// zero or more SnapshotVertex frames, zero or more SnapshotEdge frames; then
+// exactly one SnapshotFooter. Receivers MUST treat any other order as a
+// protocol violation.
 message SnapshotResponse {
   oneof entry {
     SnapshotHeader header = 1;
@@ -388,6 +440,7 @@ message SnapshotResponse {
     SnapshotEdgeCausalBarrier edge_causal_barrier = 6;
     SnapshotVertexTombstone vertex_tombstone = 7;
     SnapshotEdgeTombstone edge_tombstone = 8;
+    SnapshotReceipt receipt = 9;
   }
 }
 
@@ -421,10 +474,11 @@ service LanternReplicationService {
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
 
   // Snapshot streams a point-in-time, causally-consistent dump of every
-  // live vertex and edge to a bootstrapping peer. The first frame is a
-  // SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_local_seq,
-  // cutoff_hlc) the server used to materialise the snapshot; the last frame is a
-  // SnapshotFooter with the actual vertex / edge counts streamed.
+  // live vertex and edge to a bootstrapping peer. RECEIPT_V1 additionally
+  // carries the active receipt policy, epoch, clock high-water, complete
+  // unexpired receipt rows, and full origin cutoffs from the same publication
+  // cut. The first frame is a SnapshotHeader; the last frame is a counted
+  // SnapshotFooter.
   //
   // Bootstrap stitch contract: after receiving the SnapshotFooter the
   // peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for

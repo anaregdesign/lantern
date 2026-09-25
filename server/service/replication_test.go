@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -315,6 +317,161 @@ func (s *replicationSnapshotCounter) Send(frame *pb.SnapshotResponse) error {
 	return nil
 }
 
+func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	f.cache.AddEdgeWithExpiration("tail", "head", 1, time.Now().Add(time.Hour))
+	call := receiptDeleteCall(t, f.epoch, graphcache.EdgeKey[string]{Tail: "tail", Head: "head"})
+	if _, err := f.coordinator.Commit(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := mutationreceipt.Config{
+		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+	}
+	calls := 0
+	if err := f.replication.ConfigureReceiptSnapshot(func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+		calls++
+		return source(ctx, got)
+	}, policy); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := &replicationSnapshotRecorder{}
+	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("receipt Snapshot source calls = %d, want 1", calls)
+	}
+	if err := validateReceiptSnapshotFrames(recorder.frames); err != nil {
+		t.Fatalf("producer emitted invalid receipt Snapshot: %v", err)
+	}
+	header := recorder.frames[0].GetHeader()
+	footer := recorder.frames[len(recorder.frames)-1].GetFooter()
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+		header.GetCutoffLocalSeq() != 1 ||
+		len(header.GetReceiptMetadata().GetPolicy().GetDeploymentEpoch()) != 16 ||
+		len(header.GetReceiptMetadata().GetPolicy().GetFingerprint()) != 32 ||
+		header.GetReceiptMetadata().GetPolicy().GetRetentionMs() != uint64(time.Hour/time.Millisecond) ||
+		header.GetReceiptMetadata().GetPolicy().GetMaxEntries() != 32 ||
+		header.GetReceiptMetadata().GetPolicy().GetMaxBytes() != 1<<20 ||
+		len(header.GetReceiptMetadata().GetOriginCutoffs()) != 1 ||
+		footer.GetReceiptCount() != 1 || footer.GetReceiptOriginCount() != 1 {
+		t.Fatalf("receipt Snapshot metadata/footer = %+v / %+v", header, footer)
+	}
+	var receipt *pb.SnapshotReceipt
+	var liveEdge, tombstone bool
+	for _, frame := range recorder.frames {
+		switch {
+		case frame.GetReceipt() != nil:
+			receipt = frame.GetReceipt()
+		case frame.GetEdge() != nil && frame.GetEdge().GetTail() == "tail" && frame.GetEdge().GetHead() == "head":
+			liveEdge = true
+		case frame.GetEdgeTombstone() != nil &&
+			frame.GetEdgeTombstone().GetTail() == "tail" && frame.GetEdgeTombstone().GetHead() == "head":
+			tombstone = true
+		}
+	}
+	if receipt == nil ||
+		receipt.GetKind() != pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE ||
+		!bytes.Equal(receipt.GetOriginalResult(), []byte{1}) ||
+		receipt.GetContribution() != nil || liveEdge || !tombstone {
+		t.Fatalf("receipt/graph atomic cut = receipt %+v, live=%v tombstone=%v", receipt, liveEdge, tombstone)
+	}
+	status, err := f.replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
+	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		t.Fatalf("receipt PeerStatus = %+v, %v", status, err)
+	}
+
+	for _, format := range []pb.SnapshotFormat{
+		pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
+		pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	} {
+		legacy := &replicationSnapshotRecorder{}
+		if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, legacy); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("receipt producer accepted graph-only format %v: %v", format, err)
+		}
+		if len(legacy.frames) != 0 || calls != 1 {
+			t.Fatalf("graph-only downgrade emitted frames or sampled source: frames=%d calls=%d", len(legacy.frames), calls)
+		}
+	}
+	unknown := &replicationSnapshotRecorder{}
+	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: pb.SnapshotFormat(99)}, unknown); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unknown receipt Snapshot format = %v, want InvalidArgument", err)
+	}
+	if len(unknown.frames) != 0 || calls != 1 {
+		t.Fatalf("unknown format emitted frames or sampled source: frames=%d calls=%d", len(unknown.frames), calls)
+	}
+}
+
+func TestLanternReplicationService_ReceiptSnapshotConfigurationFailsClosed(t *testing.T) {
+	valid := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x71}, Retention: time.Hour,
+		MaxEntries: 8, MaxBytes: 1 << 20,
+	}
+	for _, tc := range []struct {
+		name   string
+		source ReceiptWholeStateSource
+		policy mutationreceipt.Config
+	}{
+		{"nil source", nil, valid},
+		{"invalid policy", func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+			return ReceiptWholeStateCapture{}, nil
+		}, mutationreceipt.Config{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			replication := NewLanternReplicationService(nil, cache, hlc.New(hlc.NodeID{0x72}, hlc.Options{}))
+			if err := replication.ConfigureReceiptSnapshot(tc.source, tc.policy); err == nil {
+				t.Fatal("invalid receipt Snapshot configuration succeeded")
+			}
+			for _, format := range []pb.SnapshotFormat{
+				pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
+				pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+				pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			} {
+				recorder := &replicationSnapshotRecorder{}
+				err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, recorder)
+				if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
+					t.Fatalf("failed config format %v = %v, frames=%d", format, err, len(recorder.frames))
+				}
+			}
+		})
+	}
+}
+
+func TestLanternReplicationService_ReceiptSnapshotRejectsMalformedCutBeforeHeader(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := mutationreceipt.Config{
+		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+	}
+	if err := f.replication.ConfigureReceiptSnapshot(func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+		capture, err := source(ctx, got)
+		if err == nil {
+			capture.Graph[len(capture.Graph)-1].GetFooter().ReceiptCount = 1
+		}
+		return capture, err
+	}, policy); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &replicationSnapshotRecorder{}
+	err = f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}, recorder)
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
+		t.Fatalf("malformed cut = %v, frames=%d", err, len(recorder.frames))
+	}
+}
+
 func TestLanternReplicationService_SnapshotCanonicalizesImplicitVertices(t *testing.T) {
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	expiration := time.Now().Add(time.Hour).Round(0)
@@ -322,7 +479,6 @@ func TestLanternReplicationService_SnapshotCanonicalizesImplicitVertices(t *test
 	if !cache.PutEdgeWithExpirationHLC("implicit-tail", "implicit-head", 2, expiration, ts) {
 		t.Fatal("PutEdgeWithExpirationHLC rejected seed edge")
 	}
-
 	replication := NewLanternReplicationService(nil, cache, hlc.New(hlc.NodeID{0x02}, hlc.Options{}))
 	recorder := &replicationSnapshotRecorder{}
 	if err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{}, recorder); err != nil {

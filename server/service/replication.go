@@ -12,6 +12,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
@@ -129,6 +130,8 @@ type LanternReplicationService struct {
 	// lifetime latch: a graph-only Snapshot may never certify receipt state,
 	// including after receipt log entries have been evicted.
 	receiptSnapshotRequired bool
+	receiptSnapshotSource   ReceiptWholeStateSource
+	receiptSnapshotPolicy   mutationreceipt.Config
 }
 
 // NewLanternReplicationService constructs the service. log MUST be the same
@@ -182,13 +185,32 @@ func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintPr
 }
 
 // WithReceiptSnapshotRequired latches the service into receipt-continuity
-// mode. The receipt-bearing Snapshot producer is not implemented yet, so
-// Snapshot fails closed rather than falling back to a graph-only image.
-// Production does not enable receipt writes or this mode in the current
-// release. The future receipt provider must set this before serving writes.
+// mode without configuring a producer. Snapshot fails closed rather than
+// falling back to a graph-only image. Production does not enable receipt
+// writes or this mode in the current release.
 func (s *LanternReplicationService) WithReceiptSnapshotRequired() *LanternReplicationService {
 	s.receiptSnapshotRequired = true
 	return s
+}
+
+// ConfigureReceiptSnapshot latches receipt-continuity mode and installs the
+// exact service-owned whole-state source used by the private archive producer.
+// Configuration happens before serving. A failed or duplicate configuration
+// leaves the service latched so it can never silently downgrade to graph-only.
+func (s *LanternReplicationService) ConfigureReceiptSnapshot(source ReceiptWholeStateSource, policy mutationreceipt.Config) error {
+	s.receiptSnapshotRequired = true
+	if s.receiptSnapshotSource != nil {
+		return errors.New("receipt Snapshot source is already configured")
+	}
+	if source == nil {
+		return errors.New("receipt Snapshot source is nil")
+	}
+	if _, err := mutationreceipt.New(policy); err != nil {
+		return fmt.Errorf("receipt Snapshot policy: %w", err)
+	}
+	s.receiptSnapshotSource = source
+	s.receiptSnapshotPolicy = policy
+	return nil
 }
 
 // Subscribe streams every mutation log entry whose (origin, seq)
@@ -384,16 +406,13 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Snapshot implements pb.LanternReplicationServiceServer.
 //
 // Flow:
-//  1. Capture the per-origin/local-log cutoffs, cutoff_hlc, causal floors,
-//     vertices, and edges in one Snapshot cut. The production
-//     OriginStatesProvider holds the service commit gate across this capture,
-//     and GraphCache takes its own write lock for the graph image. An empty
-//     origin map denotes a cold cluster or an unwired test provider.
-//  2. Send SnapshotHeader first, then each owned body frame, honouring
-//     stream.Context() cancellation between sends. No commit gate is held
-//     while sending to the client.
-//  3. Send a SnapshotFooter with the actually-streamed counts as the very
-//     last frame so receivers can detect truncation.
+//  1. GRAPH_ONLY_V1 captures the per-origin/local-log cutoffs, cutoff_hlc,
+//     causal floors, vertices, and edges in one Snapshot cut.
+//  2. An explicitly configured RECEIPT_V1 producer instead calls its
+//     service-owned source once and preflights the complete detached receipt,
+//     graph, clock, and cutoff image before sending anything.
+//  3. Send SnapshotHeader first, each owned body frame in phase order, and a
+//     counted SnapshotFooter last. No commit gate is held while sending.
 //
 // The implementation deliberately materialises the snapshot in memory.
 // Replication bootstrap is bounded (one peer per call, infrequent), so
@@ -404,12 +423,38 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
 	}
 	if s.receiptSnapshotRequired {
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is required but not implemented"))
+		switch req.GetRequiredFormat() {
+		case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is required"))
+		case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1:
+		default:
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
+		}
+		if s.receiptSnapshotSource == nil {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot producer is not configured"))
+		}
+		capture, err := s.receiptSnapshotSource(ctx, s.receiptSnapshotPolicy)
+		if err != nil {
+			return err
+		}
+		frames, err := prepareReceiptSnapshotFrames(capture, s.receiptSnapshotPolicy)
+		if err != nil {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("receipt-bearing Snapshot is invalid: %w", err))
+		}
+		for _, frame := range frames {
+			if err := ctx.Err(); err != nil {
+				return ctxToConnect(err)
+			}
+			if err := stream.Send(frame); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	switch req.GetRequiredFormat() {
 	case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
 	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1:
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is not implemented"))
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is not configured"))
 	default:
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
 	}

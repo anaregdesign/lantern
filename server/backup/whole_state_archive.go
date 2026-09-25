@@ -239,6 +239,12 @@ func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []service.Origi
 	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
 		return wholeStateArchiveError("graph Snapshot is not receipt format v1")
 	}
+	// Archive v1 carries receipt policy, rows, and origins in its own bounded
+	// records. The embedded SnapshotResponse sequence is only its graph
+	// component, not a standalone RECEIPT_V1 RPC stream.
+	if header.GetReceiptMetadata() != nil || footer.GetReceiptCount() != 0 || footer.GetReceiptOriginCount() != 0 {
+		return wholeStateArchiveError("graph Snapshot contains RPC receipt metadata")
+	}
 	if _, ok := archiveHLC(header.GetCutoffHlc()); !ok {
 		return wholeStateArchiveError("invalid graph cutoff HLC")
 	}

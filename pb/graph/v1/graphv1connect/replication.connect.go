@@ -63,10 +63,11 @@ type LanternReplicationServiceClient interface {
 	// peer nodes, never directly from browsers).
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest]) (*connect.ServerStreamForClient[v1.SubscribeResponse], error)
 	// Snapshot streams a point-in-time, causally-consistent dump of every
-	// live vertex and edge to a bootstrapping peer. The first frame is a
-	// SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_local_seq,
-	// cutoff_hlc) the server used to materialise the snapshot; the last frame is a
-	// SnapshotFooter with the actual vertex / edge counts streamed.
+	// live vertex and edge to a bootstrapping peer. RECEIPT_V1 additionally
+	// carries the active receipt policy, epoch, clock high-water, complete
+	// unexpired receipt rows, and full origin cutoffs from the same publication
+	// cut. The first frame is a SnapshotHeader; the last frame is a counted
+	// SnapshotFooter.
 	//
 	// Bootstrap stitch contract: after receiving the SnapshotFooter the
 	// peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for
@@ -171,10 +172,11 @@ type LanternReplicationServiceHandler interface {
 	// peer nodes, never directly from browsers).
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest], *connect.ServerStream[v1.SubscribeResponse]) error
 	// Snapshot streams a point-in-time, causally-consistent dump of every
-	// live vertex and edge to a bootstrapping peer. The first frame is a
-	// SnapshotHeader carrying the (cutoff_seq_per_origin, cutoff_local_seq,
-	// cutoff_hlc) the server used to materialise the snapshot; the last frame is a
-	// SnapshotFooter with the actual vertex / edge counts streamed.
+	// live vertex and edge to a bootstrapping peer. RECEIPT_V1 additionally
+	// carries the active receipt policy, epoch, clock high-water, complete
+	// unexpired receipt rows, and full origin cutoffs from the same publication
+	// cut. The first frame is a SnapshotHeader; the last frame is a counted
+	// SnapshotFooter.
 	//
 	// Bootstrap stitch contract: after receiving the SnapshotFooter the
 	// peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for

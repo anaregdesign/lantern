@@ -16,8 +16,9 @@ import (
 )
 
 // ReceiptWholeStateCapture is only a detached, healthy in-process publication
-// cut. Its RECEIPT_V1 graph frames are an input to the private archive codec,
-// not a supported Snapshot RPC or proof that a WAL has the current frontier.
+// cut. Its graph frames and Store state feed both the private archive codec and
+// the opt-in RECEIPT_V1 Snapshot producer. It is not proof that a WAL has the
+// current frontier and does not enable receipt writes or installation.
 type ReceiptWholeStateCapture struct {
 	Graph    []*pb.SnapshotResponse
 	Receipts mutationreceipt.Snapshot
@@ -25,15 +26,17 @@ type ReceiptWholeStateCapture struct {
 	Origins  []OriginState
 }
 
-// ReceiptWholeStateSource is a read-only source for the private archive
-// producer. One call returns all sections from one publication cut; callers
-// must not assemble an archive by sampling the service again.
+// ReceiptWholeStateSource is the read-only source shared by the private archive
+// and opt-in replication Snapshot producers. One call returns all sections
+// from one publication cut; callers must not assemble an image by sampling the
+// service again.
 type ReceiptWholeStateSource func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error)
 
 // NewReceiptWholeStateSource exposes only the coordinator's detached capture,
 // never its commit or status operations. It is deliberately absent from the
-// production DI graph and does not enable receipt admission or restore. The
-// service binds its first Store pointer and rejects a different one, even
+// production DI graph; callers may explicitly configure the replication
+// Snapshot producer, but this does not enable receipt admission or restore.
+// The service binds its first Store pointer and rejects a different one, even
 // when the replacement has the same epoch and policy.
 func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store) (ReceiptWholeStateSource, error) {
 	coordinator, err := newEdgeDeleteReceiptCoordinator(s, store)

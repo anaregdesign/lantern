@@ -202,6 +202,12 @@ func TestWholeStateArchiveRejectsInconsistentCut(t *testing.T) {
 			a.Graph[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
 		}},
 		{"unknown graph format", func(a *wholeStateArchive) { a.Graph[0].GetHeader().Format = pb.SnapshotFormat(99) }},
+		{"RPC receipt metadata", func(a *wholeStateArchive) {
+			a.Graph[0].GetHeader().ReceiptMetadata = &pb.SnapshotReceiptMetadata{}
+		}},
+		{"RPC receipt footer count", func(a *wholeStateArchive) {
+			a.Graph[len(a.Graph)-1].GetFooter().ReceiptCount = 1
+		}},
 		{"receipt policy", func(a *wholeStateArchive) { a.Policy.MaxBytes++ }},
 		{"missing origin", func(a *wholeStateArchive) { a.Origins = nil }},
 		{"origin cutoff drift", func(a *wholeStateArchive) { a.Origins[0].LastSeq++ }},
