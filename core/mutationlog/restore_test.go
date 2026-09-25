@@ -172,6 +172,61 @@ func TestResumeLeasedLogFromFileWALOwnsPathUntilShutdown(t *testing.T) {
 	}
 }
 
+func TestCreateLeasedLogWithFileWALOwnsNewPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "new.wal")
+	log, owner, err := CreateLeasedLogWithFileWAL(path, Options{Capacity: 2}, fileWALStringEncode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	if competing, err := AcquireFileWALLease(path); competing != nil || !errors.Is(err, ErrFileWALLeaseBusy) {
+		if competing != nil {
+			_ = competing.Close()
+		}
+		t.Fatalf("concurrent new WAL owner = %p, %v; want busy", competing, err)
+	}
+	if entry, err := log.CommitWithPublication("first", fileWALEntry(1, "first").HLC, nil); err != nil || entry.Seq != 1 {
+		t.Fatalf("new WAL commit = %+v, %v", entry, err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatalf("new WAL lease remained held after shutdown: %v", err)
+	}
+	defer lease.Close()
+	var replayed []Entry
+	if err := lease.WithPath(func(path string) error {
+		return ReplayFileWAL(path, fileWALStringDecode, func(entry Entry) error {
+			replayed = append(replayed, entry)
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != 1 || replayed[0].Seq != 1 || replayed[0].Op != "first" {
+		t.Fatalf("new WAL replay = %+v", replayed)
+	}
+}
+
+func TestCreateLeasedLogWithFileWALRejectsExistingFile(t *testing.T) {
+	path, before := makeTwoRecordFileWAL(t)
+	log, owner, err := CreateLeasedLogWithFileWAL(path, Options{}, fileWALStringEncode)
+	if log != nil || owner != nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("existing WAL create = %p, %p, %v", log, owner, err)
+	}
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatalf("failed create leaked the WAL lease: %v", err)
+	}
+	defer lease.Close()
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("failed create modified WAL: %v", err)
+	}
+}
+
 func TestResumeLeasedLogFromFileWALReleasesPathOnFailure(t *testing.T) {
 	path, before := makeTwoRecordFileWAL(t)
 	restoreErr := errors.New("application restore failed")

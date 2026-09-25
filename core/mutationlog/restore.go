@@ -7,6 +7,49 @@ import (
 	"math"
 )
 
+// CreateLeasedLogWithFileWAL creates a new durable Log while holding one
+// exclusive path lease from file creation through shutdown. An existing WAL is
+// never overwritten or silently resumed. The returned owner closes the Log
+// and writer before releasing the lease. This only establishes WAL/Log
+// ownership; callers still own application-level publication and recovery.
+func CreateLeasedLogWithFileWAL(path string, opts Options, encode func(MutationOp) ([]byte, error)) (*Log, io.Closer, error) {
+	if opts.WAL != nil {
+		return nil, nil, errors.New("mutationlog: leased Log cannot replace a configured WAL")
+	}
+	if encode == nil {
+		return nil, nil, errors.New("mutationlog: FileWAL encoder is nil")
+	}
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	transferred := false
+	var wal *FileWAL
+	defer func() {
+		if !transferred {
+			if wal != nil {
+				_ = wal.Close()
+			}
+			_ = lease.Close()
+		}
+	}()
+	err = lease.WithPath(func(canonicalPath string) error {
+		var createErr error
+		wal, createErr = CreateFileWAL(canonicalPath, encode)
+		return createErr
+	})
+	if err != nil {
+		return nil, nil, errors.Join(err, lease.Close())
+	}
+	opts.WAL = wal
+	log := New(opts)
+	transferred = true
+	return log, &leasedFileWALLogCloser{
+		owner: &resumedLogCloser{log: log, wal: wal},
+		lease: lease,
+	}, nil
+}
+
 // ResumeLogFromFileWAL validates and replays a complete FileWAL, then returns
 // an in-memory Log at exactly the same local sequence frontier. restore must
 // install every decoded entry into application state before returning nil.
@@ -110,17 +153,17 @@ func ResumeLeasedLogFromFileWAL(
 		return nil, nil, errors.Join(missing, lease.Close())
 	}
 	transferred = true
-	return log, &leasedResumedLogCloser{owner: owner, lease: lease}, nil
+	return log, &leasedFileWALLogCloser{owner: owner, lease: lease}, nil
 }
 
 // Close releases the WAL writer before the path lease, so another process
 // cannot acquire the path while this Log may still append.
-type leasedResumedLogCloser struct {
+type leasedFileWALLogCloser struct {
 	owner io.Closer
 	lease *FileWALLease
 }
 
-func (c *leasedResumedLogCloser) Close() error {
+func (c *leasedFileWALLogCloser) Close() error {
 	return errors.Join(c.owner.Close(), c.lease.Close())
 }
 
