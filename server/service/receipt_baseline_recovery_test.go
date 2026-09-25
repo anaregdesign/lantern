@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,23 +230,40 @@ func TestReceiptBaselineMarkerScanEnforcesGenerationAndPolicyChain(t *testing.T)
 	second := first
 	second.PreviousGeneration = first.RotatedGeneration
 	second.RotatedGeneration = [16]byte{3}
+	advanced := second
+	advanced.ReceiptHighWaterMillis++
+	advanced.SnapshotHLC.WallNs += 2_000_000
+	advanced.RestoreFloor.WallNs += 2_000_000
 	for _, tc := range []struct {
 		name       string
 		second     receiptBaselineMarker
-		wantErr    bool
+		wantErr    string
 		wantActive [16]byte
 	}{
-		{name: "valid newest", second: second, wantActive: second.RotatedGeneration},
+		{name: "equal durability frontiers", second: second, wantActive: second.RotatedGeneration},
+		{name: "advancing durability frontiers", second: advanced, wantActive: advanced.RotatedGeneration},
 		{name: "broken chain", second: func() receiptBaselineMarker {
 			bad := second
 			bad.PreviousGeneration = [16]byte{9}
 			return bad
-		}(), wantErr: true},
+		}(), wantErr: "marker generation chain mismatch"},
 		{name: "policy mismatch", second: func() receiptBaselineMarker {
 			bad := second
 			bad.PolicyFingerprint[0] ^= 1
 			return bad
-		}(), wantErr: true},
+		}(), wantErr: "marker policy, epoch, or local node mismatch"},
+		{name: "regressing receipt high-water", second: func() receiptBaselineMarker {
+			bad := second
+			bad.ReceiptHighWaterMillis--
+			return bad
+		}(), wantErr: "marker receipt high-water regressed"},
+		{name: "regressing restore floor", second: func() receiptBaselineMarker {
+			bad := second
+			bad.SnapshotHLC.WallNs = first.ReceiptHighWaterMillis * int64(time.Millisecond)
+			bad.RestoreFloor.WallNs = bad.SnapshotHLC.WallNs
+			bad.RestoreFloor.Logical = bad.SnapshotHLC.Logical + 1
+			return bad
+		}(), wantErr: "marker restore floor regressed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "markers.wal")
@@ -263,9 +281,9 @@ func TestReceiptBaselineMarkerScanEnforcesGenerationAndPolicyChain(t *testing.T)
 				t.Fatal(err)
 			}
 			scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("invalid marker chain selected %+v", scan)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("invalid marker chain selected %+v, err = %v, want %q", scan, err, tc.wantErr)
 				}
 				return
 			}

@@ -52,8 +52,16 @@ func scanReceiptBaselineWAL(
 		}
 		if !scan.hasMarker {
 			scan.firstGeneration = marker.PreviousGeneration
-		} else if marker.PreviousGeneration != scan.activeGeneration {
-			return fmt.Errorf("receipt WAL local seq %d: %w: marker generation chain mismatch", entry.Seq, errReceiptBaselineMarker)
+		} else {
+			if marker.PreviousGeneration != scan.activeGeneration {
+				return fmt.Errorf("receipt WAL local seq %d: %w: marker generation chain mismatch", entry.Seq, errReceiptBaselineMarker)
+			}
+			if marker.ReceiptHighWaterMillis < scan.marker.ReceiptHighWaterMillis {
+				return fmt.Errorf("receipt WAL local seq %d: %w: marker receipt high-water regressed", entry.Seq, errReceiptBaselineMarker)
+			}
+			if marker.RestoreFloor.Less(scan.marker.RestoreFloor) {
+				return fmt.Errorf("receipt WAL local seq %d: %w: marker restore floor regressed", entry.Seq, errReceiptBaselineMarker)
+			}
 		}
 		if _, reused := seenGenerations[marker.RotatedGeneration]; reused ||
 			marker.RotatedGeneration == scan.firstGeneration {

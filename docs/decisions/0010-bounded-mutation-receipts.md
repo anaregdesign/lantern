@@ -589,14 +589,17 @@ high-water. Cancellation is checked again after all reversible staging and
 immediately before the marker write. An indeterminate marker outcome or
 interrupted publication closes the graph/CDC publication generation and
 fail-stops external reads as well as writes. Startup validates the complete WAL
-and generation chain before selecting the newest marker, requires that
-marker's exact sidecar, and never falls back to an older committed baseline. It
-restores the baseline into the existing GraphCache, Store, origin tracker, HLC,
-and Log identities, replays only the suffix, and preserves the responder-local
-WAL sequence while gapping pre-boundary cursors. Natural D4 tombstone and
-receipt expiry is reaped during restore rather than treated as archive
-corruption. Orphan sidecars without a marker are cleanup candidates; missing,
-mismatched, noncanonical, oversized, or corrupt committed state fails startup.
+and generation chain before selecting the newest marker. Successive markers
+must have nondecreasing effective receipt high-waters and responder-local HLC
+restore floors even when each marker is individually canonical. Recovery
+requires the newest marker's exact sidecar and never falls back to an older
+committed baseline. It restores the baseline into the existing GraphCache,
+Store, origin tracker, HLC, and Log identities, replays only the suffix, and
+preserves the responder-local WAL sequence while gapping pre-boundary cursors.
+Natural D4 tombstone and receipt expiry is reaped during restore rather than
+treated as archive corruption. Orphan sidecars without a marker are cleanup
+candidates; missing, mismatched, noncanonical, oversized, or corrupt committed
+state fails startup.
 
 The sole production composition boundary selects
 `LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the
