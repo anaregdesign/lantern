@@ -53,11 +53,17 @@ func captureStagedDeleteState(c *GraphCache[string, string]) stagedDeleteState {
 		}
 		return cmp.Compare(a.Head, b.Head)
 	})
+	slices.SortFunc(snapshot.Tombstones.Vertices, func(a, b SnapshotVertexTombstone[string]) int {
+		return cmp.Compare(a.Key, b.Key)
+	})
 	slices.SortFunc(snapshot.Tombstones.Edges, func(a, b SnapshotEdgeTombstone[string]) int {
 		if n := cmp.Compare(a.Tail, b.Tail); n != 0 {
 			return n
 		}
 		return cmp.Compare(a.Head, b.Head)
+	})
+	slices.SortFunc(snapshot.Barriers.Vertices, func(a, b SnapshotVertexCausalBarrier[string]) int {
+		return cmp.Compare(a.Key, b.Key)
 	})
 	slices.SortFunc(snapshot.Barriers.Edges, func(a, b SnapshotEdgeCausalBarrier[string]) int {
 		if n := cmp.Compare(a.Tail, b.Tail); n != 0 {

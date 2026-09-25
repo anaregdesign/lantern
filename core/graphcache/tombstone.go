@@ -82,9 +82,7 @@ func (c *GraphCache[S, T]) setVertexTombstoneLocked(key S, ts hlc.Timestamp, exp
 		if ts.Less(existing.ts) {
 			return
 		}
-		if ts == existing.ts && !existing.expiration.IsZero() && existing.expiration.Before(expiration) {
-			expiration = existing.expiration
-		}
+		expiration = clampTombstoneExpirationOnReplay(existing, ts, expiration)
 	}
 	c.vertexTombstones[key] = tombstoneEntry{ts: ts, expiration: expiration}
 	c.trackVertexTombstoneDeadlineLocked(key, expiration)
@@ -104,13 +102,20 @@ func (c *GraphCache[S, T]) setEdgeTombstoneLocked(tail, head S, ts hlc.Timestamp
 		if ts.Less(existing.ts) {
 			return
 		}
-		if ts == existing.ts && !existing.expiration.IsZero() && existing.expiration.Before(expiration) {
-			expiration = existing.expiration
-		}
+		expiration = clampTombstoneExpirationOnReplay(existing, ts, expiration)
 	}
 	c.edgeTombstones[k] = tombstoneEntry{ts: ts, expiration: expiration}
 	c.trackEdgeTombstoneDeadlineLocked(k, expiration)
 	c.ensureEdgeCausalUsageLocked(k)
+}
+
+func clampTombstoneExpirationOnReplay(
+	existing tombstoneEntry, ts hlc.Timestamp, expiration time.Time,
+) time.Time {
+	if ts == existing.ts && !existing.expiration.IsZero() && existing.expiration.Before(expiration) {
+		return existing.expiration
+	}
+	return expiration
 }
 
 // ApplySnapshotVertexTombstoneHLC restores a Delete floor with its original
