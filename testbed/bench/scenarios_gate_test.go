@@ -42,6 +42,7 @@ type scenarioCall struct {
 	Name         string `yaml:"name"`
 	Call         string `yaml:"call"`
 	DataTemplate string `yaml:"data_template"`
+	RPS          int    `yaml:"rps"`
 }
 
 // scenarioDoc is the subset of the scenario schema that names RPCs. Keep in
@@ -50,6 +51,7 @@ type scenarioCall struct {
 type scenarioDoc struct {
 	Name   string `yaml:"name"`
 	Target struct {
+		Driver       string         `yaml:"driver"`
 		Call         string         `yaml:"call"`
 		DataTemplate string         `yaml:"data_template"`
 		Calls        []scenarioCall `yaml:"calls"`
@@ -59,6 +61,218 @@ type scenarioDoc struct {
 		DataTemplate string         `yaml:"data_template"`
 		Consumers    []scenarioCall `yaml:"consumers"`
 	} `yaml:"subscribe"`
+}
+
+func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "receipt_admission_lookup.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Target struct {
+			Driver    string         `yaml:"driver"`
+			Endpoints []string       `yaml:"endpoints"`
+			Calls     []scenarioCall `yaml:"calls"`
+		} `yaml:"target"`
+		Cluster struct {
+			ReceiptWAL struct {
+				Enabled    bool   `yaml:"enabled"`
+				Retention  string `yaml:"retention"`
+				MaxEntries int    `yaml:"max_entries"`
+				MaxBytes   int    `yaml:"max_bytes"`
+			} `yaml:"receipt_wal"`
+		} `yaml:"cluster"`
+		Phases struct {
+			Warmup struct {
+				Duration    string `yaml:"duration"`
+				RPS         int    `yaml:"rps"`
+				Concurrency int    `yaml:"concurrency"`
+			} `yaml:"warmup"`
+			Steady struct {
+				Duration    string `yaml:"duration"`
+				RPS         int    `yaml:"rps"`
+				Concurrency int    `yaml:"concurrency"`
+			} `yaml:"steady"`
+			Cooldown string `yaml:"cooldown"`
+		} `yaml:"phases"`
+		PerfGate struct {
+			MinSteadyRPSTotal *float64 `yaml:"min_steady_rps_total"`
+			MaxP99MS          *float64 `yaml:"max_p99_ms"`
+			MaxNonOKRatio     *float64 `yaml:"max_non_ok_ratio"`
+			Producers         map[string]struct {
+				MinSteadyRPS  *float64 `yaml:"min_steady_rps"`
+				MaxP99MS      *float64 `yaml:"max_p99_ms"`
+				MaxNonOKRatio *float64 `yaml:"max_non_ok_ratio"`
+			} `yaml:"producers"`
+		} `yaml:"perf_gate"`
+		LeakGate struct {
+			GoroutineMaxDelta   int `yaml:"goroutine_max_delta"`
+			HeapAllocMaxDeltaMB int `yaml:"heap_alloc_max_delta_mb"`
+		} `yaml:"leak_gate"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse receipt scenario: %v", err)
+	}
+	if doc.Target.Driver != "receipt_edge_delete" {
+		t.Fatalf("target.driver = %q, want receipt_edge_delete", doc.Target.Driver)
+	}
+	if len(doc.Target.Endpoints) != 3 {
+		t.Fatalf("target endpoints = %d, want 3", len(doc.Target.Endpoints))
+	}
+	wantCalls := []struct {
+		name         string
+		call         string
+		minSteadyRPS float64
+		maxP99MS     float64
+	}{
+		{name: "receipt_admission", call: "graph.v1.LanternService/DeleteEdge", minSteadyRPS: 75, maxP99MS: 500},
+		{name: "receipt_lookup", call: "graph.v1.LanternService/GetReceiptStatus", minSteadyRPS: 75, maxP99MS: 200},
+	}
+	if len(doc.Target.Calls) != len(wantCalls) {
+		t.Fatalf("target calls = %d, want %d", len(doc.Target.Calls), len(wantCalls))
+	}
+	totalProducerRPS := 0
+	for i, want := range wantCalls {
+		call := doc.Target.Calls[i]
+		if call.Name != want.name || call.Call != want.call {
+			t.Errorf("target.calls[%d] = (%q, %q), want (%q, %q)", i, call.Name, call.Call, want.name, want.call)
+		}
+		if strings.TrimSpace(call.DataTemplate) != "" {
+			t.Errorf("target.calls[%d] must leave data_template to the receipt driver", i)
+		}
+		totalProducerRPS += call.RPS
+	}
+	if totalProducerRPS != doc.Phases.Steady.RPS {
+		t.Errorf("producer RPS total = %d, steady RPS = %d", totalProducerRPS, doc.Phases.Steady.RPS)
+	}
+	assertThreshold := func(name string, got *float64, want float64) {
+		t.Helper()
+		if got == nil {
+			t.Errorf("%s is missing, want %g", name, want)
+		} else if *got != want {
+			t.Errorf("%s = %g, want %g", name, *got, want)
+		}
+	}
+	for _, want := range wantCalls {
+		gate, ok := doc.PerfGate.Producers[want.name]
+		if !ok {
+			t.Errorf("producer %q has no independent perf gate", want.name)
+			continue
+		}
+		prefix := "perf_gate.producers." + want.name
+		assertThreshold(prefix+".min_steady_rps", gate.MinSteadyRPS, want.minSteadyRPS)
+		assertThreshold(prefix+".max_p99_ms", gate.MaxP99MS, want.maxP99MS)
+		assertThreshold(prefix+".max_non_ok_ratio", gate.MaxNonOKRatio, 0)
+	}
+	if len(doc.PerfGate.Producers) != len(wantCalls) {
+		t.Errorf("perf_gate.producers = %d, want %d", len(doc.PerfGate.Producers), len(wantCalls))
+	}
+	assertThreshold("perf_gate.min_steady_rps_total", doc.PerfGate.MinSteadyRPSTotal, 150)
+	assertThreshold("perf_gate.max_p99_ms", doc.PerfGate.MaxP99MS, 500)
+	assertThreshold("perf_gate.max_non_ok_ratio", doc.PerfGate.MaxNonOKRatio, 0)
+	if doc.LeakGate.GoroutineMaxDelta != 15 {
+		t.Errorf("leak_gate.goroutine_max_delta = %d, want 15", doc.LeakGate.GoroutineMaxDelta)
+	}
+	if doc.LeakGate.HeapAllocMaxDeltaMB != 32 {
+		t.Errorf("leak_gate.heap_alloc_max_delta_mb = %d, want 32", doc.LeakGate.HeapAllocMaxDeltaMB)
+	}
+	if !doc.Cluster.ReceiptWAL.Enabled {
+		t.Fatal("receipt WAL is not enabled")
+	}
+	retention, err := time.ParseDuration(doc.Cluster.ReceiptWAL.Retention)
+	if err != nil || retention < time.Hour {
+		t.Fatalf("receipt retention = %q, %v; want at least 1h", doc.Cluster.ReceiptWAL.Retention, err)
+	}
+	warmupDuration, err := time.ParseDuration(doc.Phases.Warmup.Duration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steadyDuration, err := time.ParseDuration(doc.Phases.Steady.Duration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cooldown, err := time.ParseDuration(doc.Phases.Cooldown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warmupDuration > 15*time.Second || steadyDuration > time.Minute || cooldown > 15*time.Second {
+		t.Errorf("receipt scenario phases are not bounded: %s/%s/%s", warmupDuration, steadyDuration, cooldown)
+	}
+	admissionRPS := totalProducerRPS / len(wantCalls)
+	requiredEntries := int(warmupDuration.Seconds())*(doc.Phases.Warmup.RPS/len(wantCalls)) +
+		int(steadyDuration.Seconds())*admissionRPS
+	if doc.Cluster.ReceiptWAL.MaxEntries < requiredEntries*6/5 {
+		t.Errorf("receipt max_entries = %d, want >= 120%% of %d admitted operations", doc.Cluster.ReceiptWAL.MaxEntries, requiredEntries)
+	}
+	if doc.Cluster.ReceiptWAL.MaxBytes < doc.Cluster.ReceiptWAL.MaxEntries*512 {
+		t.Errorf("receipt max_bytes = %d, want >= 512 bytes per retained entry", doc.Cluster.ReceiptWAL.MaxBytes)
+	}
+
+	runScript, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range []string{
+		`target_driver="$(yq -r '.target.driver // "ghz"'`,
+		`go run ./testbed/bench/receiptprobe`,
+		`receipt_edge_delete requires a fresh Compose lifecycle`,
+		`docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`,
+		`ghz_steady_0_receipt_admission.json`,
+		`ghz_steady_1_receipt_lookup.json`,
+	} {
+		if !strings.Contains(string(runScript), contract) {
+			t.Errorf("run.sh missing receipt driver contract %q", contract)
+		}
+	}
+	projectScope := strings.Index(string(runScript), `export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"`)
+	volumeReset := strings.Index(string(runScript), `docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`)
+	if projectScope < 0 || volumeReset < 0 || projectScope >= volumeReset {
+		t.Error("receipt volume reset must use the named bench Compose project")
+	}
+	composeOverride, err := os.ReadFile("compose.override.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variable := range []string{
+		"LANTERN_BENCH_AUTH_TOKEN",
+		"LANTERN_BENCH_BACKUP_RESTORE_ON_START",
+		"LANTERN_BENCH_RECEIPT_EPOCH",
+		"LANTERN_BENCH_RECEIPT_WAL_MODE",
+		"LANTERN_BENCH_RECEIPT_WAL_PATH",
+		"LANTERN_BENCH_RECEIPT_MAX_ENTRIES",
+		"LANTERN_BENCH_RECEIPT_MAX_BYTES",
+		"LANTERN_BENCH_RECEIPT_RETENTION",
+		"LANTERN_BENCH_NODE_ID_0",
+		"LANTERN_BENCH_NODE_ID_1",
+		"LANTERN_BENCH_NODE_ID_2",
+	} {
+		if !strings.Contains(string(composeOverride), variable) {
+			t.Errorf("compose override missing %s", variable)
+		}
+	}
+
+	releaseList, err := os.ReadFile("release-scenarios.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(releaseList), "\n") {
+		if strings.TrimSpace(strings.SplitN(line, "#", 2)[0]) == "receipt_admission_lookup" {
+			t.Fatal("receipt scenario must stay out of the release sweep until thresholds have stable evidence")
+		}
+	}
+	nightlyWorkflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "bench-nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nightly := string(nightlyWorkflow)
+	for _, contract := range []string{
+		"./testbed/bench/run.sh receipt_admission_lookup",
+		"testbed/bench/out/receipt_admission_lookup/",
+	} {
+		if !strings.Contains(nightly, contract) {
+			t.Errorf("nightly workflow missing receipt contract %q", contract)
+		}
+	}
 }
 
 // TestBroadIlluminateScenarioTopologyContract is the #994 semantic guard that
@@ -670,6 +884,9 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 			if err := yaml.Unmarshal(raw, &doc); err != nil {
 				t.Fatalf("parse yaml: %v", err)
 			}
+			if doc.Target.Driver != "" && doc.Target.Driver != "receipt_edge_delete" {
+				t.Fatalf("unknown target.driver %q", doc.Target.Driver)
+			}
 			calls := doc.calls()
 			if len(calls) == 0 {
 				t.Fatal("scenario declares no target/subscribe calls — run.sh could not drive it")
@@ -679,13 +896,16 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 					t.Errorf("%s: empty call", site)
 					continue
 				}
-				if strings.TrimSpace(c.DataTemplate) == "" {
-					t.Errorf("%s (%s): empty data_template", site, c.Call)
-					continue
-				}
 				desc, err := requestDescriptor(c.Call)
 				if err != nil {
 					t.Errorf("%s: %v", site, err)
+					continue
+				}
+				if strings.TrimSpace(c.DataTemplate) == "" {
+					if doc.Target.Driver == "receipt_edge_delete" && strings.HasPrefix(site, "target.calls[") {
+						continue
+					}
+					t.Errorf("%s (%s): empty data_template", site, c.Call)
 					continue
 				}
 				tmpl, err := template.New(site).Funcs(ghzFuncs()).Parse(c.DataTemplate)

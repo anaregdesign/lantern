@@ -1,10 +1,10 @@
 # lantern bench harness (`testbed/bench/`)
 
 Reusable performance + memory-leak harness for the HA `docker compose`
-cluster (see `deploy/compose/`). Drives the cluster with [`ghz`][ghz],
-captures Prometheus range queries + Go pprof snapshots, applies per-scenario
-leak / lifecycle-metric / semantic / producer-performance gates, and renders a
-Markdown report.
+cluster (see `deploy/compose/`). Drives the cluster with [`ghz`][ghz] or a
+narrow scenario-owned Connect/h2c driver, captures Prometheus range queries +
+Go pprof snapshots, applies per-scenario leak / lifecycle-metric / semantic /
+producer-performance gates, and renders a Markdown report.
 
 > **PR CI does not run the wall-clock scenarios.** The default PR pipeline
 > runs their schema/contract tests, but not a Compose load run. On a root
@@ -33,6 +33,15 @@ Markdown report.
 > runner cannot block a release; it is separate from the short blocking Search
 > qualification above. See issues [#256], [#262], [#573], [#708], [#1063],
 > [#1097].
+>
+> **Receipt qualification is nightly-only.** `bench-nightly.yml` runs
+> `receipt_admission_lookup` after the canonical sweep as a separate blocking
+> fresh-cluster gate. It is intentionally absent from
+> `release-scenarios.txt`: five local runs on the synthetic-parent stack
+> support provisional thresholds, **not final merged-stack evidence**.
+> Fresh measurements after #1440 and the receipt-family/SDK merges, plus
+> cross-runner nightly stability, are required before this durable-WAL
+> workload can become a release blocker ([#1399]).
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
@@ -40,17 +49,19 @@ Markdown report.
 [#708]: https://github.com/anaregdesign/lantern/issues/708
 [#1063]: https://github.com/anaregdesign/lantern/issues/1063
 [#1097]: https://github.com/anaregdesign/lantern/issues/1097
+[#1399]: https://github.com/anaregdesign/lantern/issues/1399
+[#1442]: https://github.com/anaregdesign/lantern/issues/1442
 
 ## Prerequisites
 
 - Docker + `docker compose` v2
-- [`ghz`][ghz] ≥ 0.117 — drives load over gRPC wire frames. The Lantern
+- [`ghz`][ghz] ≥ 0.117 — drives default scenarios over gRPC wire frames. The Lantern
   server is Connect-only (see [#335][i335]), but the Connect-Go handlers
   accept gRPC, gRPC-Web, and Connect on the same h2c socket, and
   `connectrpc.com/grpcreflect` exposes the standard
   `grpc.reflection.v1*` service the harness uses for descriptor
   discovery. ghz keeps working unchanged. See [#383][i383] for the
-  verification log.
+  verification log. The receipt scenario uses its dedicated Go driver instead.
 - [`yq`][yq] v4 (Go reimplementation)
 - `jq`, `curl`, `bash` ≥ 4
 - Go (matching `go.mod` toolchain) — used to build the report renderer
@@ -72,6 +83,9 @@ SKIP_UP=1 KEEP_UP=1 ./testbed/bench/run.sh mixed_rw
 
 # Also capture a 30s CPU profile per replica after the steady phase:
 PPROF_CPU=1 ./testbed/bench/run.sh addedge_contention
+
+# Exercise durable Edge Delete receipt admission plus exact-ID lookup:
+LANTERN_IMAGE=lantern:local ./testbed/bench/run.sh receipt_admission_lookup
 ```
 
 The exit code folds together the leak gate and any declared metric, semantic,
@@ -160,6 +174,56 @@ establish a significant latency change. The on-demand
 exercises the same operation mix over three replicas and is intentionally not
 in the short release sweep until a stable post-change baseline exists.
 
+## Receipt admission and lookup gate (#1442, preparatory for #1399)
+
+[`receipt_admission_lookup.yaml`](scenarios/receipt_admission_lookup.yaml)
+offers 100 operation pairs/s across three replicas. Every pair performs a
+receipt-bearing `DeleteEdge` followed immediately by `GetReceiptStatus` on the
+same endpoint with the exact operation ID. The lookup must return `CONFIRMED`,
+the matching operation/call IDs, intent digest, deadline and item coordinates,
+and the presence-preserving original result `delete_edge_existed=false`.
+Semantic mismatches become non-OK producer outcomes and fail the run.
+
+ghz cannot safely generate one canonical binary operation ID and reuse it in
+another producer, so this scenario selects the allow-listed
+`receipt_edge_delete` driver. It still emits the ghz summary shape consumed by
+the existing perf evaluator and report renderer. The harness provisions a
+fresh authenticated durable-WAL cluster with fixed per-replica node IDs and
+rejects `SKIP_UP=1`. Before startup it removes only the named bench Compose
+project's containers and volumes, so a preceding `KEEP_UP=1` run cannot leak
+retained receipts into the measurement; unrelated volumes are untouched.
+Existing scenarios retain graph-only defaults.
+
+Five preliminary Compose runs on the synthetic-parent stack (Apple M3 Max,
+`darwin/arm64`), recorded in
+[local scenario evidence](evidence/issue-1399/scenario.txt), sustained
+98.05-99.97 operations/s per producer with zero non-OK results. Admission p99
+ranged from 5.24-171.02 ms and lookup p99 from 2.85-62.59 ms; the fourth run
+captured substantial local container-host contention without losing
+throughput or semantic correctness. The producer floors of 75 operations/s
+leave 25% offered-rate headroom. The 500 ms admission and 200 ms lookup
+ceilings retain 2.9x and 3.2x headroom over those worst local p99s, following
+the harness's ≥2x shared-runner rule. These are step-change gates, not
+production capacity claims.
+
+Direct service benchmarks repeatedly delete a missing edge in the same
+durable FileWAL runtime and exclude request construction from timed work.
+They quantify absent-edge/no-op admission overhead, not live-edge delete
+costs. The five-run medians in
+[local benchmark evidence](evidence/issue-1399/direct.txt) were 9.494 ms/op for
+receipt-less Edge Delete, 14.271 ms/op for admitted receipt Edge Delete
+(+4.777 ms, +50.3%), and 5.065 ms/op for confirmed receipt lookup. These
+host-only numbers quantify local overhead; the real-h2c nightly scenario owns
+the enforceable thresholds.
+Neither these direct timings nor the Compose runs above qualify the final
+merged receipt/SDK stack; they are historical synthetic-parent calibration.
+
+```bash
+(cd server && go test ./service -run '^$' \
+  -bench 'Benchmark(PublicReceiptEdgeDeleteAdmission|ReceiptStatusLookup)$' \
+  -benchmem -benchtime=500ms -count=5)
+```
+
 ## Scenarios
 
 | File | What it stresses |
@@ -181,11 +245,13 @@ in the short release sweep until a stable post-change baseline exists.
 | `replication_apply_churn.yaml` | replicated write churn; asserts `lantern_vertex_hlc_entries` returns to baseline (#700, #705) |
 | `edge_contrib_idempotent.yaml` | AddEdge/AddEdges with repeated ContribIDs; verifies at-most-once dedup stays bounded (#706) |
 | `mixed_edge_reset_add.yaml` | on-demand three-replica Put/Delete/Add churn on bounded edge identities; measures reset-aware contribution cost (#1203) |
+| `receipt_admission_lookup.yaml` | nightly-only durable Edge Delete receipt admission plus exact-operation confirmed lookup over real h2c (#1399) |
 | `backup_under_load.yaml`  | BackupSnapshot concurrent with sustained writes — on-demand only, not in release sweep (#707) |
 | `broad_illuminate.yaml` | Six named traversal producers over a verified 64-way/3-hop walk and planted dense communities; preflight rejects a collapsed topology (#994) |
 
-Each YAML declares the phases (`warmup`, `steady`, `cooldown`), the ghz
-target (`call` + `data_template`), optional `subscribe` and `chaos`
+Each YAML declares the phases (`warmup`, `steady`, `cooldown`), the load
+target (`call` + `data_template` for ghz, or an allow-listed custom driver),
+optional `subscribe` and `chaos`
 blocks, and the leak-gate thresholds (`goroutine_max_delta`,
 `heap_alloc_max_delta_mb`). The gate evaluates against `heap_alloc`
 (post-GC live bytes), forcing a `runtime.GC()` via
@@ -206,13 +272,16 @@ default TTL for cache-default paths; it does not rewrite explicit RPC payloads.
 Scenarios that need decay through `ghz` should include an `expiration` template
 in `data_template`.
 
-Every `data_template` is schema-checked at ordinary `go test ./...` time by
+Every ghz `data_template` is schema-checked at ordinary `go test ./...` time by
 `testbed/bench/scenarios_gate_test.go`: it renders each template with
 ghz-style data and protojson-unmarshals the result against the request
 message resolved from the `call` name, so a proto change that orphans a
 scenario fails the schema PR instead of the next nightly (#934). If you
 retire or rename a wire field, migrate every scenario that sends it in the
-same PR.
+same PR. The receipt driver's template-less calls still resolve against the
+wire descriptors, and a dedicated contract test pins its driver, two RPCs,
+capacity, bounded phases, perf gates, fresh-cluster restriction, nightly
+wiring, and release-list exclusion.
 
 `broad_illuminate` additionally has a semantic topology gate. Before warmup,
 the harness seeds a deterministic graph, then verifies the requested 64-way
@@ -362,7 +431,7 @@ testbed/bench/out/<scenario>/<ts>/
 ├── runtime_pre.json                # runtime values + unlabeled lifecycle gauges, after warmup
 ├── runtime_post.json               # same, after cooldown
 ├── ghz_warmup_<endpoint>.json      # raw ghz results, one per invocation
-├── ghz_steady_<...>.json
+├── ghz_steady_<...>.json         # ghz or compatible custom-driver summaries
 ├── ghz_sub*_<n>.json               # if subscribers were launched
 ├── prom/
 │   ├── _index.ndjson               # {query, file} pairs
@@ -399,7 +468,7 @@ testbed/bench/out/<scenario>/<ts>/
    `lantern_subscription_dropped_total` and
    `lantern_subscription_queue_depth_bucket` queries in `prom/`.
 
-## Why only the short qualification is blocking
+## Why blocking qualifications stay bounded
 
 The full sweep needs multi-minute steady phases, a 10-minute soak, pprof and
 Prometheus capture, a healthy Docker daemon, and stable host conditions. It is
@@ -407,7 +476,9 @@ therefore advisory at release time and blocking only in the untruncated
 nightly. Root tags additionally run the deliberately short, tolerant
 `search_qualification` scenario: deterministic semantic and lifecycle
 failures block, while loose throughput/p99 ratchets reject only step changes
-and tolerate normal hosted-runner jitter.
+and tolerate normal hosted-runner jitter. Receipt admission/lookup is also
+blocking nightly, but remains outside the release sweep until hosted-runner
+history supports a release-safe threshold.
 
 [ghz]: https://ghz.sh/
 [yq]: https://github.com/mikefarah/yq

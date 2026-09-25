@@ -1,0 +1,20 @@
+goos: darwin
+goarch: arm64
+cpu: Apple M3 Max
+scenario: receipt_admission_lookup
+image: lantern:local
+offered operation pairs/s: 100
+steady duration: 45s
+
+run                         admission count  admission rps  admission p99 ms  lookup p99 ms  non-OK  max goroutine delta  max heap_alloc delta bytes
+20260925T174032Z            4496             99.9077        5.2433            2.9098         0       6                    11579664
+20260925T174313Z            4497             99.9251        15.9655           7.2388         0       6                    11356384
+20260925T174456Z            4499             99.9682        7.7851            3.1995         0       6                    11286112
+20260925T180106Z            4413             98.0523        171.0179          62.5875        0       6                    11428696
+20260925T180350Z            4487             99.7007        5.5183            2.8492         0       7                    11171856
+
+thresholds:
+  admission: min 75 rps, max p99 500 ms, max non-OK ratio 0
+  lookup:    min 75 rps, max p99 200 ms, max non-OK ratio 0
+  aggregate: min 150 rps, max p99 500 ms, max non-OK ratio 0
+  leak:      max goroutine delta 15, max heap_alloc delta 32 MiB
