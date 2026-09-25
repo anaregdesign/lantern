@@ -41,7 +41,6 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/internal/prototime"
 
 	"connectrpc.com/connect"
 )
@@ -135,6 +134,11 @@ type AntiEntropyConfig struct {
 
 	// Metrics receives per-tick events. nopAntiEntropyMetrics{} when nil.
 	Metrics AntiEntropyMetrics
+
+	// SnapshotInstaller overrides the graph-only in-place installer. nil keeps
+	// the existing GRAPH_ONLY_V1 behavior using apply and snap passed to
+	// NewAntiEntropy.
+	SnapshotInstaller SnapshotInstaller
 }
 
 // AntiEntropy is the periodic convergence driver. Construct with
@@ -146,15 +150,15 @@ type AntiEntropy struct {
 	cfg         AntiEntropyConfig
 	local       LocalStateProvider
 	apply       MutationApplier
-	snap        SnapshotApplier
+	installer   SnapshotInstaller
 	resumeMu    sync.Mutex
 	resumeLocal map[string]uint64
 }
 
-// NewAntiEntropy constructs the driver. local MUST be the same
-// LanternService that backs ApplyMutation so the watermark observed
-// at compare-time matches the state that newly-applied mutations
-// will update. apply / snap are the same seams the pump uses.
+// NewAntiEntropy constructs the driver. local MUST be the same LanternService
+// that backs ApplyMutation so the watermark observed at compare-time matches
+// the state that newly-applied mutations will update. apply is also the
+// mutation target; snap is used only by the default graph-only installer.
 func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply MutationApplier, snap SnapshotApplier) *AntiEntropy {
 	if cfg.Interval < 0 {
 		cfg.Interval = 30 * time.Second
@@ -172,8 +176,12 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 		cfg.HTTPClient = defaultH2CClient()
 	}
 	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
+	installer := cfg.SnapshotInstaller
+	if installer == nil {
+		installer = newGraphOnlySnapshotInstaller(apply, snap)
+	}
 	return &AntiEntropy{
-		cfg: cfg, local: local, apply: apply, snap: snap,
+		cfg: cfg, local: local, apply: apply, installer: installer,
 		resumeLocal: make(map[string]uint64),
 	}
 }
@@ -252,8 +260,10 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		return
 	}
 	msg := resp.Msg
-	if !graphOnlySnapshotFormat(msg.GetRequiredSnapshotFormat()) {
-		log.Error("anti-entropy: peer requires receipt-bearing Snapshot unsupported by this receiver")
+	if !snapshotInstallerCompatible(a.installer, msg.GetRequiredSnapshotFormat()) {
+		log.Error("anti-entropy: peer Snapshot format is incompatible with installer",
+			slog.String("peer_format", msg.GetRequiredSnapshotFormat().String()),
+			slog.String("required_format", a.installer.RequiredFormat().String()))
 		a.cfg.Metrics.OnAntiEntropyError(addr, "snapshot_format_mismatch")
 		return
 	}
@@ -343,9 +353,9 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 
 // catchUp opens a bounded Subscribe stream and applies mutations
 // until the local tracker for peerNID has reached or exceeded
-// target. FailedPrecondition triggers a Snapshot replay (which
-// itself advances local watermarks via the SnapshotApplier seams)
-// after which catchUp returns — the next tick will re-probe.
+// target. FailedPrecondition triggers a Snapshot install (which itself
+// advances the selected format's publication cut) after which catchUp returns
+// — the next tick will re-probe.
 //
 // Under the leaderless Subscribe contract (#415), the peer's log
 // carries entries from every cluster origin. We narrow the request to
@@ -361,8 +371,9 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 
 	cursor := map[string]uint64{hex.EncodeToString(peerNID[:]): fromSeq}
 	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{
-		FromSeqPerOrigin: cursor,
-		FromLocalSeq:     a.snapshotResumeLocal(addr),
+		FromSeqPerOrigin:       cursor,
+		FromLocalSeq:           a.snapshotResumeLocal(addr),
+		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(a.installer),
 	}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
@@ -410,155 +421,26 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 	return applied, recvErr
 }
 
-// snapshotFrom replays a full Snapshot from the peer into the local
-// cache. Triggered by FailedPrecondition on Subscribe. After this
-// returns, the next anti-entropy tick will re-probe PeerStatus and
-// resume normal catch-up.
+// snapshotFrom delegates a full peer Snapshot to the selected installer.
+// Triggered by FailedPrecondition on Subscribe. After this returns, the next
+// anti-entropy tick will re-probe PeerStatus and resume normal catch-up.
 func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient) error {
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		RequiredFormat: a.installer.RequiredFormat(),
 	}))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stream.Close() }()
-	var finishInstall func(bool)
-	defer func() {
-		if finishInstall != nil {
-			finishInstall(false)
-		}
-	}()
-	var recovery searchIndexRecovery
-	var replay snapshotReplayState
-	for stream.Receive() {
-		resp := stream.Msg()
-		switch e := resp.GetEntry().(type) {
-		case *pb.SnapshotResponse_Header:
-			if err := replay.acceptHeader(e.Header); err != nil {
-				return err
-			}
-			finishInstall, err = beginSnapshotInstall(a.apply)
-			if err != nil {
-				return err
-			}
-			if candidate, ok := a.snap.(searchIndexRecovery); ok {
-				recovery = candidate
-				recovery.BeginSearchIndexRecovery()
-			}
-		case *pb.SnapshotResponse_VertexCausalBarrier:
-			if err := replay.acceptBody("vertex causal barrier", snapshotPhaseVertexBarrier); err != nil {
-				return err
-			}
-			barrier := e.VertexCausalBarrier
-			if barrier == nil {
-				return snapshotProtocolError("nil vertex causal barrier")
-			}
-			ts, err := snapshotFloorHLC(barrier.GetHlc())
-			if err != nil || barrier.GetKey() == "" {
-				return snapshotProtocolError("invalid vertex causal barrier")
-			}
-			a.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), ts)
-			replay.counts.vertexBarrier++
-		case *pb.SnapshotResponse_EdgeCausalBarrier:
-			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
-				return err
-			}
-			barrier := e.EdgeCausalBarrier
-			if barrier == nil {
-				return snapshotProtocolError("nil edge causal barrier")
-			}
-			ts, err := snapshotFloorHLC(barrier.GetHlc())
-			if err != nil || barrier.GetTail() == "" || barrier.GetHead() == "" {
-				return snapshotProtocolError("invalid edge causal barrier")
-			}
-			a.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), ts)
-			replay.counts.edgeBarrier++
-		case *pb.SnapshotResponse_VertexTombstone:
-			if err := replay.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone); err != nil {
-				return err
-			}
-			marker := e.VertexTombstone
-			if marker == nil || marker.GetKey() == "" {
-				return snapshotProtocolError("nil or empty vertex tombstone")
-			}
-			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
-			if err != nil {
-				return err
-			}
-			a.snap.ApplySnapshotVertexTombstoneHLC(marker.GetKey(), ts, exp)
-			replay.counts.vertexTombstone++
-		case *pb.SnapshotResponse_EdgeTombstone:
-			if err := replay.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone); err != nil {
-				return err
-			}
-			marker := e.EdgeTombstone
-			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" {
-				return snapshotProtocolError("nil or empty edge tombstone")
-			}
-			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
-			if err != nil {
-				return err
-			}
-			a.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
-			replay.counts.edgeTombstone++
-		case *pb.SnapshotResponse_Vertex:
-			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
-				return err
-			}
-			sv := e.Vertex
-			if sv == nil || sv.GetVertex() == nil {
-				return snapshotProtocolError("nil vertex payload")
-			}
-			v := sv.GetVertex()
-			a.snap.PutVertexWithExpirationHLC(
-				v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
-				snapshotHLC(sv.GetHlc()),
-			)
-			replay.counts.vertices++
-		case *pb.SnapshotResponse_Edge:
-			if err := replay.acceptBody("edge", snapshotPhaseEdge); err != nil {
-				return err
-			}
-			se := e.Edge
-			rows, err := snapshotEdgeRows(se)
-			if err != nil {
-				return err
-			}
-			for _, row := range rows {
-				applySnapshotEdge(a.snap, se.GetTail(), se.GetHead(), row.weight,
-					row.expiration, row.contribID, row.hlc)
-			}
-			replay.counts.edges++
-		case *pb.SnapshotResponse_Footer:
-			if err := replay.acceptFooter(e.Footer); err != nil {
-				return err
-			}
-		default:
-			return snapshotProtocolError("unknown or empty response frame %T", e)
-		}
-	}
-	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+	result, err := installSnapshot(ctx, a.installer, stream)
+	if err != nil {
 		return err
 	}
-	if err := replay.validateComplete(); err != nil {
-		return err
+	if result.searchIndexErr != nil {
+		a.cfg.Logger.Warn("anti-entropy: snapshot rebuilt graph but search index remains incomplete",
+			slog.Any("err", result.searchIndexErr))
 	}
-	if recovery != nil {
-		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
-			a.cfg.Logger.Warn("anti-entropy: snapshot rebuilt graph but search index remains incomplete",
-				slog.Any("err", err))
-		}
-	}
-	if marks, ok := a.apply.(snapshotWatermarkApplier); ok {
-		if err := marks.ApplySnapshotWatermarks(replay.header.GetCutoffSeqPerOrigin(), snapshotHLC(replay.header.GetCutoffHlc())); err != nil {
-			return err
-		}
-	}
-	if finishInstall != nil {
-		finishInstall(true)
-		finishInstall = nil
-	}
-	resume := resumeAfterSnapshot(replay.header)
+	resume := resumeAfterSnapshot(result.Header)
 	a.resumeMu.Lock()
 	a.resumeLocal[addr] = resume.local
 	a.resumeMu.Unlock()

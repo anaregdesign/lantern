@@ -1,10 +1,13 @@
 package replication
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,6 +92,152 @@ func TestPumpRejectsReceiptSnapshotRequirementBeforeSubscribe(t *testing.T) {
 	}
 	if got := peer.snapshots.Load(); got != 0 {
 		t.Fatalf("graph-only Snapshot calls = %d, want 0", got)
+	}
+}
+
+func TestPumpUsesInjectedSnapshotInstaller(t *testing.T) {
+	header := &pb.SnapshotHeader{
+		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		CutoffSeqPerOrigin: map[string]uint64{"origin-a": 7},
+		CutoffLocalSeq:     20,
+	}
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		header:            header,
+		gapFirstSubscribe: true,
+	}
+	server := startInstallerTestPeer(t, peer)
+	installer := &scriptedSnapshotInstaller{
+		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}
+	pump := NewPump(Config{
+		HTTPClient:        defaultH2CClient(),
+		SnapshotInstaller: installer,
+	}, nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := pump.session(ctx, server.URL); err != nil {
+		t.Fatalf("session with injected installer: %v", err)
+	}
+	if got := installer.installCount(); got != 1 {
+		t.Fatalf("installer calls = %d, want 1", got)
+	}
+	subscribes, snapshots := peer.requests()
+	if len(snapshots) != 1 ||
+		snapshots[0].GetRequiredFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		t.Fatalf("Snapshot requests = %+v, want one RECEIPT_V1 request", snapshots)
+	}
+	if len(subscribes) != 2 {
+		t.Fatalf("Subscribe requests = %d, want 2", len(subscribes))
+	}
+	for index, request := range subscribes {
+		if !request.GetAcceptReceiptEnvelopes() {
+			t.Fatalf("Subscribe[%d] did not opt in to receipt envelopes", index)
+		}
+	}
+	if got := subscribes[1].GetFromSeqPerOrigin()["origin-a"]; got != 8 {
+		t.Fatalf("resumed origin cursor = %d, want 8", got)
+	}
+	if got := subscribes[1].GetFromLocalSeq(); got != 21 {
+		t.Fatalf("resumed local cursor = %d, want 21", got)
+	}
+}
+
+func TestPumpInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		statusFormat   pb.SnapshotFormat
+		headerFormat   pb.SnapshotFormat
+		wantSubscribes int
+		wantSnapshots  int
+	}{
+		{
+			name:         "legacy PeerStatus is not receipt compatible",
+			statusFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
+		},
+		{
+			name:         "graph PeerStatus is not receipt compatible",
+			statusFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		},
+		{
+			name:           "legacy header is rejected before installer",
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
+			wantSubscribes: 1,
+			wantSnapshots:  1,
+		},
+		{
+			name:           "graph header is rejected before installer",
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			wantSubscribes: 1,
+			wantSnapshots:  1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installer := &scriptedSnapshotInstaller{
+				required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+				// Even a permissive implementation cannot weaken the driver's
+				// exact RECEIPT_V1 downgrade boundary.
+				compatible: func(pb.SnapshotFormat) bool { return true },
+			}
+			peer := &installerTestPeer{
+				requiredFormat:    tc.statusFormat,
+				header:            &pb.SnapshotHeader{Format: tc.headerFormat},
+				gapFirstSubscribe: true,
+			}
+			server := startInstallerTestPeer(t, peer)
+			pump := NewPump(Config{
+				HTTPClient:        defaultH2CClient(),
+				SnapshotInstaller: installer,
+			}, nil, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			err := pump.session(ctx, server.URL)
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("incompatible format error = %v, want FailedPrecondition", err)
+			}
+			if got := installer.installCount(); got != 0 {
+				t.Fatalf("installer calls = %d, want 0 before mutation", got)
+			}
+			subscribes, snapshots := peer.requests()
+			if len(subscribes) != tc.wantSubscribes {
+				t.Fatalf("Subscribe calls = %d, want %d", len(subscribes), tc.wantSubscribes)
+			}
+			if len(snapshots) != tc.wantSnapshots {
+				t.Fatalf("Snapshot calls = %d, want %d", len(snapshots), tc.wantSnapshots)
+			}
+		})
+	}
+}
+
+func TestPumpLogsNonfatalSearchIndexCompletionFailure(t *testing.T) {
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		header:            &pb.SnapshotHeader{Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1},
+		gapFirstSubscribe: true,
+	}
+	server := startInstallerTestPeer(t, peer)
+	installer := &scriptedSnapshotInstaller{
+		required:       pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		searchIndexErr: errors.New("index rebuild failed"),
+	}
+	var logs bytes.Buffer
+	pump := NewPump(Config{
+		HTTPClient:        defaultH2CClient(),
+		SnapshotInstaller: installer,
+		Logger:            slog.New(slog.NewTextHandler(&logs, nil)),
+	}, nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := pump.session(ctx, server.URL); err != nil {
+		t.Fatalf("session with incomplete search index: %v", err)
+	}
+	if !strings.Contains(logs.String(), "snapshot rebuilt graph but search index remains incomplete") {
+		t.Fatalf("nonfatal search-index failure was not logged: %s", logs.String())
 	}
 }
 
@@ -193,6 +342,257 @@ func (r *recordingApplier) ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.T
 
 func (r *recordingApplier) ApplySnapshotVertexTombstoneHLC(string, hlc.Timestamp, time.Time)       {}
 func (r *recordingApplier) ApplySnapshotEdgeTombstoneHLC(string, string, hlc.Timestamp, time.Time) {}
+
+type snapshotLifecycleMutationApplier struct {
+	events       *[]string
+	beginErr     error
+	watermarkErr error
+	finishes     []bool
+	cutoffs      map[string]uint64
+	watermarkHLC hlc.Timestamp
+}
+
+func (*snapshotLifecycleMutationApplier) ApplyMutation(context.Context, *pb.Mutation) error {
+	return nil
+}
+
+func (a *snapshotLifecycleMutationApplier) BeginSnapshotInstall() (func(bool), error) {
+	*a.events = append(*a.events, "begin")
+	if a.beginErr != nil {
+		return nil, a.beginErr
+	}
+	return func(verified bool) {
+		a.finishes = append(a.finishes, verified)
+		if verified {
+			*a.events = append(*a.events, "finish:true")
+			return
+		}
+		*a.events = append(*a.events, "finish:false")
+	}, nil
+}
+
+func (a *snapshotLifecycleMutationApplier) ApplySnapshotWatermarks(
+	cutoffs map[string]uint64,
+	ts hlc.Timestamp,
+) error {
+	*a.events = append(*a.events, "watermark")
+	a.cutoffs = make(map[string]uint64, len(cutoffs))
+	for origin, seq := range cutoffs {
+		a.cutoffs[origin] = seq
+	}
+	a.watermarkHLC = ts
+	return a.watermarkErr
+}
+
+type snapshotLifecycleGraph struct {
+	recordingApplier
+	events      *[]string
+	completeErr error
+}
+
+func (g *snapshotLifecycleGraph) PutVertexWithExpirationHLC(
+	string,
+	*pb.Vertex,
+	time.Time,
+	hlc.Timestamp,
+) bool {
+	*g.events = append(*g.events, "vertex")
+	return true
+}
+
+func (g *snapshotLifecycleGraph) BeginSearchIndexRecovery() {
+	*g.events = append(*g.events, "search-begin")
+}
+
+func (g *snapshotLifecycleGraph) CompleteSearchIndexRecovery() error {
+	*g.events = append(*g.events, "search-complete")
+	return g.completeErr
+}
+
+type snapshotSliceStream struct {
+	frames  []*pb.SnapshotResponse
+	next    int
+	current *pb.SnapshotResponse
+	err     error
+}
+
+func (s *snapshotSliceStream) Receive() bool {
+	if s.next == len(s.frames) {
+		s.current = nil
+		return false
+	}
+	s.current = s.frames[s.next]
+	s.next++
+	return true
+}
+
+func (s *snapshotSliceStream) Msg() *pb.SnapshotResponse {
+	return s.current
+}
+
+func (s *snapshotSliceStream) Err() error {
+	return s.err
+}
+
+func graphInstallerLifecycleFrames() []*pb.SnapshotResponse {
+	return []*pb.SnapshotResponse{
+		{Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
+			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			CutoffSeqPerOrigin: map[string]uint64{"origin-a": 7},
+			CutoffLocalSeq:     20,
+			CutoffHlc: &pb.HLCTimestamp{
+				WallNs: 30,
+				NodeId: append([]byte{1}, make([]byte, 15)...),
+			},
+		}}},
+		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{
+			Vertex: &pb.Vertex{Key: "installed"},
+		}}},
+		{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{
+			VertexCount: 1,
+		}}},
+	}
+}
+
+func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
+	t.Run("complete publishes watermarks before verified finish", func(t *testing.T) {
+		var events []string
+		apply := &snapshotLifecycleMutationApplier{events: &events}
+		graph := &snapshotLifecycleGraph{events: &events}
+		frames := graphInstallerLifecycleFrames()
+
+		result, err := installSnapshot(
+			context.Background(),
+			newGraphOnlySnapshotInstaller(apply, graph),
+			&snapshotSliceStream{frames: frames},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := strings.Join(events, ","), "begin,search-begin,vertex,search-complete,watermark,finish:true"; got != want {
+			t.Fatalf("lifecycle = %q, want %q", got, want)
+		}
+		if len(apply.finishes) != 1 || !apply.finishes[0] {
+			t.Fatalf("finish calls = %v, want [true]", apply.finishes)
+		}
+		if apply.cutoffs["origin-a"] != 7 || apply.watermarkHLC.WallNs != 30 {
+			t.Fatalf("published watermark = (%v, %+v)", apply.cutoffs, apply.watermarkHLC)
+		}
+		if result.Graph.Vertices != 1 || result.Graph.Edges != 0 {
+			t.Fatalf("graph counts = %+v", result.Graph)
+		}
+		if result.Header == frames[0].GetHeader() || result.Header.GetCutoffLocalSeq() != 20 {
+			t.Fatalf("result header is not an owned clone: %+v", result.Header)
+		}
+		frames[0].GetHeader().CutoffLocalSeq = 99
+		if result.Header.GetCutoffLocalSeq() != 20 {
+			t.Fatalf("result header changed with stream header: %+v", result.Header)
+		}
+	})
+
+	t.Run("search completion failure is nonfatal", func(t *testing.T) {
+		var events []string
+		indexErr := errors.New("index incomplete")
+		apply := &snapshotLifecycleMutationApplier{events: &events}
+		graph := &snapshotLifecycleGraph{events: &events, completeErr: indexErr}
+
+		result, err := installSnapshot(
+			context.Background(),
+			newGraphOnlySnapshotInstaller(apply, graph),
+			&snapshotSliceStream{frames: graphInstallerLifecycleFrames()},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !errors.Is(result.searchIndexErr, indexErr) {
+			t.Fatalf("search completion result = %v, want %v", result.searchIndexErr, indexErr)
+		}
+		if len(apply.finishes) != 1 || !apply.finishes[0] {
+			t.Fatalf("finish calls = %v, want [true]", apply.finishes)
+		}
+		if got := strings.Join(events, ","); !strings.HasSuffix(got, "search-complete,watermark,finish:true") {
+			t.Fatalf("nonfatal lifecycle = %q", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name         string
+		change       func([]*pb.SnapshotResponse) []*pb.SnapshotResponse
+		streamErr    error
+		watermarkErr error
+	}{
+		{
+			name: "missing footer",
+			change: func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+				return frames[:len(frames)-1]
+			},
+		},
+		{
+			name: "footer count mismatch",
+			change: func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+				frames[len(frames)-1].GetFooter().VertexCount = 2
+				return frames
+			},
+		},
+		{
+			name:      "receive failure",
+			change:    func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse { return frames },
+			streamErr: errors.New("receive failed"),
+		},
+		{
+			name:         "watermark publication failure",
+			change:       func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse { return frames },
+			watermarkErr: errors.New("watermark failed"),
+		},
+	} {
+		t.Run(tc.name+" finishes incomplete", func(t *testing.T) {
+			var events []string
+			apply := &snapshotLifecycleMutationApplier{
+				events: &events, watermarkErr: tc.watermarkErr,
+			}
+			graph := &snapshotLifecycleGraph{events: &events}
+			_, err := installSnapshot(
+				context.Background(),
+				newGraphOnlySnapshotInstaller(apply, graph),
+				&snapshotSliceStream{
+					frames: tc.change(graphInstallerLifecycleFrames()),
+					err:    tc.streamErr,
+				},
+			)
+			if err == nil {
+				t.Fatal("incomplete install succeeded")
+			}
+			if len(apply.finishes) != 1 || apply.finishes[0] {
+				t.Fatalf("finish calls = %v, want [false]", apply.finishes)
+			}
+			if got := events[len(events)-1]; got != "finish:false" {
+				t.Fatalf("final lifecycle event = %q, want finish:false; all=%v", got, events)
+			}
+		})
+	}
+
+	t.Run("admission failure does not start index recovery", func(t *testing.T) {
+		var events []string
+		apply := &snapshotLifecycleMutationApplier{
+			events: &events, beginErr: errors.New("install busy"),
+		}
+		graph := &snapshotLifecycleGraph{events: &events}
+		_, err := installSnapshot(
+			context.Background(),
+			newGraphOnlySnapshotInstaller(apply, graph),
+			&snapshotSliceStream{frames: graphInstallerLifecycleFrames()},
+		)
+		if err == nil {
+			t.Fatal("admission failure succeeded")
+		}
+		if got := strings.Join(events, ","); got != "begin" {
+			t.Fatalf("admission lifecycle = %q, want begin only", got)
+		}
+		if len(apply.finishes) != 0 {
+			t.Fatalf("finish called without admission: %v", apply.finishes)
+		}
+	})
+}
 
 func TestApplySnapshotCausalBarriers(t *testing.T) {
 	r := &recordingApplier{}
