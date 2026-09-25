@@ -157,7 +157,7 @@ func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeCo
 		capture: ReceiptWholeStateCapture{
 			Receipts: snapshot, Retired: retired, Policy: policy, Origins: origins,
 		},
-		codec:  &receiptBaselineTestCodec{raw: []byte("canonical-test-receipt-baseline-v1"), build: build},
+		codec:  &receiptBaselineTestCodec{raw: []byte("canonical-test-combined-baseline-v2"), build: build},
 		id:     id,
 		origin: origin,
 		cutoff: cutoff,

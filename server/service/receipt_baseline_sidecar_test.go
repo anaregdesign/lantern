@@ -6,14 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func TestReceiptBaselineSidecarPersistsVerifiesAndCleansOrphans(t *testing.T) {
 	walPath := filepath.Join(t.TempDir(), "receipts.wal")
 	store := receiptBaselineSidecarStore{walPath: walPath}
-	raw := []byte("canonical RECEIPT_V1 baseline")
+	raw := []byte("canonical combined-v2 baseline")
 	digest, path, err := store.persist(ReceiptBaselineFormatCombinedV2, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -40,12 +39,8 @@ func TestReceiptBaselineSidecarPersistsVerifiesAndCleansOrphans(t *testing.T) {
 	if err := os.WriteFile(temp, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	unrecognized := filepath.Join(filepath.Dir(walPath), filepath.Base(walPath)+".receipt-v1.keep")
+	unrecognized := filepath.Join(filepath.Dir(walPath), filepath.Base(walPath)+".neighbor.keep")
 	if err := os.WriteFile(unrecognized, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	legacy := walPath + ".receipt-v1." + strings.Repeat("a", sha256.Size*2) + ".baseline"
-	if err := os.WriteFile(legacy, []byte("incompatible"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.cleanup(receiptBaselineReference{
@@ -64,9 +59,6 @@ func TestReceiptBaselineSidecarPersistsVerifiesAndCleansOrphans(t *testing.T) {
 	}
 	if _, err := os.Stat(unrecognized); err != nil {
 		t.Fatalf("unrecognized neighbor removed: %v", err)
-	}
-	if _, err := os.Stat(legacy); err != nil {
-		t.Fatalf("incompatible v1 sidecar was treated as v2: %v", err)
 	}
 
 	zeroDigestPath := receiptBaselineSidecarPath(

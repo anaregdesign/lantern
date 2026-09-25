@@ -724,8 +724,7 @@ retired receipt clock high-water, and actual staged local HLC restore floor.
 a bounded canonical `LANTRET1` retired section. The retired section binds the
 active epoch and aggregate caps; decoding requires those fields and its
 high-water to match the active section exactly. This private persistence path
-is v2-only: old marker versions and `.receipt-v1` sidecars are incompatible
-and rejected.
+recognizes only marker version 2 and `.receipt-v2` sidecar names.
 
 Before the marker commit, installation fully validates the incoming active and
 retired images, snapshots local retired evidence under a short exclusive cut,
