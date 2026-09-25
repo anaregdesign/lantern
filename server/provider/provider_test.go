@@ -29,6 +29,26 @@ func TestNewGraphCache_CausalMetadataLimits(t *testing.T) {
 	}
 }
 
+func TestConfigureGraphCacheForStagedRecovery(t *testing.T) {
+	cache := graphcache.NewGraphCacheWithStaging[string, *v1.Vertex](time.Minute)
+	ConfigureGraphCache(cache, CacheConfig{
+		TTL: time.Minute, MaxVertexCausalEntries: 7, MaxEdgeCausalEntries: 9,
+	}, SearchConfig{Enabled: true, Positions: true})
+	stats := cache.CausalMetadataStats()
+	if stats.MaxVertexEntries != 7 || stats.MaxEdgeEntries != 9 {
+		t.Fatalf("staged causal limits = (%d, %d), want (7, 9)", stats.MaxVertexEntries, stats.MaxEdgeEntries)
+	}
+	if err := cache.PutVertexWithExpiration("indexed-key", &v1.Vertex{Key: "indexed-key"}, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.CountByPrefix("indexed"); got != 1 {
+		t.Fatalf("staged prefix index count = %d, want 1", got)
+	}
+	if hits := cache.SearchVertices("indexed", 10, ""); len(hits) != 1 || hits[0].ID != "indexed-key" {
+		t.Fatalf("staged search index = %+v, want indexed-key", hits)
+	}
+}
+
 // TestWireCacheGCHooks_EmitsTickSummary asserts that a single
 // "graph cache: gc tick" info log record is emitted per cache tick
 // after WireCacheGCHooks installs the multiplexed hooks (#223).

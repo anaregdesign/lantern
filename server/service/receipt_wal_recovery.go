@@ -234,19 +234,33 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // restrictions. Put, Add, and Delete effects replay only their receiver-local
 // accepted subsets.
 func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
-	return resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, false)
+	return resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, false, nil)
 }
 
 // stageEffectCompleteReceiptWALCandidate is the stricter prerequisite for a
 // future serving restore. Legacy graph Put/Add rows have no receiver-local
 // accepted-effect evidence, even if a detached replay happens to produce a
-// plausible graph. The returned candidate remains read-only: effect evidence
-// alone cannot certify the Store clock, active epoch, or publication cut.
-func stageEffectCompleteReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
-	return resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, true)
+// plausible graph. The lease must cover audit and replay, and configureGraph
+// must install the intended serving indexes and limits on an empty staged
+// cache before replay. The returned candidate remains read-only: effect
+// evidence alone cannot certify the Store clock, epoch, or publication cut.
+func stageEffectCompleteReceiptWALCandidate(lease *mutationlog.FileWALLease, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration, configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error) (*receiptWALRecoveryCandidate, error) {
+	if lease == nil || configureGraph == nil {
+		return nil, fmt.Errorf("%w: WAL lease and graph configuration are required", errReceiptWALUnion)
+	}
+	var candidate *receiptWALRecoveryCandidate
+	err := lease.WithPath(func(path string) error {
+		var stageErr error
+		candidate, stageErr = resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, true, configureGraph)
+		return stageErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return candidate, nil
 }
 
-func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration, requireCompleteEffects bool) (*receiptWALRecoveryCandidate, error) {
+func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration, requireCompleteEffects bool, configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error) (*receiptWALRecoveryCandidate, error) {
 	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
 	if err != nil {
 		return nil, err
@@ -255,6 +269,14 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 		return nil, fmt.Errorf("%w: graph Put/Add rows lack receiver-local accepted-effect evidence", errReceiptWALUnion)
 	}
 	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](defaultTTL)
+	if configureGraph != nil {
+		if err := configureGraph(graph); err != nil {
+			return nil, fmt.Errorf("receipt WAL graph configuration: %w", err)
+		}
+		if !emptyReceiptWALRecoveryGraph(graph) {
+			return nil, fmt.Errorf("%w: graph configuration populated the recovery cache", errReceiptWALUnion)
+		}
+	}
 	origins := newOriginStateTracker()
 	replayService := NewLanternService(graph)
 	candidate := &receiptWALRecoveryCandidate{graph: graph, origins: origins}
@@ -342,6 +364,10 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 		_ = closer.Close()
 		return nil, fmt.Errorf("receipt WAL Store restore: %w", err)
 	}
+	if err := graph.CompleteSearchIndexRecovery(); err != nil {
+		_ = closer.Close()
+		return nil, fmt.Errorf("receipt WAL search rebuild: %w", err)
+	}
 	candidate.knownIDs = make(map[mutationreceipt.ID]struct{}, len(audit.knownReceipts))
 	for _, receipt := range audit.knownReceipts {
 		candidate.knownIDs[receipt.ID] = struct{}{}
@@ -351,6 +377,19 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 	}
 	candidate.log = log
 	return candidate, nil
+}
+
+func emptyReceiptWALRecoveryGraph(graph *graphcache.GraphCache[string, *pb.Vertex]) bool {
+	terms, documents := graph.SearchIndexStats()
+	causal := graph.CausalMetadataStats()
+	if graph.VertexCount() != 0 || graph.EdgeCount() != 0 || graph.VertexHLCCount() != 0 ||
+		terms != 0 || documents != 0 || causal.VertexEntries != 0 || causal.EdgeEntries != 0 {
+		return false
+	}
+	snapshot := graph.SnapshotReplication()
+	return len(snapshot.Barriers.Vertices) == 0 && len(snapshot.Barriers.Edges) == 0 &&
+		len(snapshot.Tombstones.Vertices) == 0 && len(snapshot.Tombstones.Edges) == 0 &&
+		len(snapshot.Graph.Vertices) == 0 && len(snapshot.Graph.Edges) == 0
 }
 
 func receiptWALGraphRecoverable(m *pb.Mutation) bool {

@@ -115,3 +115,51 @@ func TestFileWALLeaseCrossProcess(t *testing.T) {
 		}
 	}
 }
+
+func TestFileWALLeaseKeepsOwnershipThroughCallback(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("FileWAL lease is unavailable on this platform")
+	}
+	lease, err := AcquireFileWALLease(filepath.Join(t.TempDir(), "receipt.wal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := lease.Path()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	callbackDone := make(chan error, 1)
+	go func() {
+		callbackDone <- lease.WithPath(func(path string) error {
+			close(entered)
+			if path != wantPath {
+				return errors.New("callback received a different WAL path")
+			}
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	closeStarted := make(chan struct{})
+	closeDone := make(chan error, 1)
+	go func() {
+		close(closeStarted)
+		closeDone <- lease.Close()
+	}()
+	<-closeStarted
+	select {
+	case err := <-closeDone:
+		t.Fatalf("lease closed during an active WAL pass: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-callbackDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	if err := lease.WithPath(func(string) error { called = true; return nil }); !errors.Is(err, ErrFileWALLeaseClosed) || called {
+		t.Fatalf("closed lease callback = %v, called %v", err, called)
+	}
+}
