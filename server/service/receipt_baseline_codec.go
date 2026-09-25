@@ -10,12 +10,21 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+// ReceiptBaselineFormat identifies the private content-addressed sidecar
+// representation referenced by a WAL baseline marker.
+type ReceiptBaselineFormat uint32
+
+const (
+	ReceiptBaselineFormatCombinedV2 ReceiptBaselineFormat = 2
+)
+
 // ReceiptBaselineArchiveCodec bridges the runtime to the canonical
-// RECEIPT_V1 archive implementation without making service depend on backup.
+// active archive and combined baseline implementations without making service
+// depend on backup.
 // It is an internal composition seam, not a transport or user-facing API.
 type ReceiptBaselineArchiveCodec interface {
-	EncodeReceiptBaseline(context.Context, ReceiptWholeStateCapture) ([]byte, error)
-	StageReceiptBaseline(
+	EncodeCombinedReceiptBaseline(context.Context, ReceiptWholeStateCapture) ([]byte, error)
+	StageCombinedReceiptBaseline(
 		context.Context,
 		[]byte,
 		mutationreceipt.Config,
@@ -29,6 +38,7 @@ type ReceiptBaselineArchiveCodec interface {
 type ReceiptBaselineCandidate struct {
 	Graph          *graphcache.GraphCache[string, *pb.Vertex]
 	Receipts       *mutationreceipt.Store
+	Retired        mutationreceipt.RetiredCatalogSnapshot
 	Policy         mutationreceipt.Config
 	Origins        []OriginState
 	CutoffLocalSeq uint64

@@ -90,6 +90,7 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	}
 	if primary.cache != graph || primary.log != log || primary.clock != clock ||
 		primary.runtime != runtime || primary.receiptStore != nil ||
+		primary.receiptRetiredCatalog != nil ||
 		primary.receiptEdgeDeleteCoordinator != nil {
 		t.Fatal("primary service did not receive the exact graph-only bundle")
 	}
@@ -137,6 +138,12 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		fresh.receipt.generation == ([16]byte{}) {
 		t.Fatalf("fresh runtime receipt identity = %+v", fresh.receipt)
 	}
+	freshHighWater := fresh.receipt.store.Stats().HighWaterMillis
+	freshRetired, _, err := fresh.receipt.retired.snapshot(fresh.receipt.policy, freshHighWater)
+	if err != nil || freshRetired.ClockHighWaterMillis != freshHighWater ||
+		len(freshRetired.Epochs) != 0 {
+		t.Fatalf("fresh retired catalog = %+v, %v", freshRetired, err)
+	}
 	wantSnapshotPolicy := config.Receipt
 	wantSnapshotPolicy.ClockHighWater = time.Time{}
 	if fresh.receipt.policy != wantSnapshotPolicy {
@@ -163,8 +170,10 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	}
 	if primary.cache != fresh.graph || primary.log != fresh.log || primary.clock != fresh.clock ||
 		primary.origins != fresh.origins || primary.receiptStore != fresh.receipt.store ||
+		primary.receiptRetiredCatalog != fresh.receipt.retired ||
 		primary.runtime != fresh || primary.receiptEdgeDeleteCoordinator == nil ||
-		primary.receiptEdgeDeleteCoordinator.store != fresh.receipt.store {
+		primary.receiptEdgeDeleteCoordinator.store != fresh.receipt.store ||
+		primary.receiptEdgeDeleteCoordinator.retired != fresh.receipt.retired {
 		t.Fatal("primary service did not receive the certified durable bundle")
 	}
 	if replication.backend != fresh.graph || replication.log != fresh.log ||
@@ -173,6 +182,7 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		replication.receiptSnapshotSource == nil ||
 		replication.receiptSnapshotSource.owner != primary ||
 		replication.receiptSnapshotSource.store != fresh.receipt.store ||
+		replication.receiptSnapshotSource.retired != fresh.receipt.retired ||
 		replication.receiptSnapshotPolicy != wantSnapshotPolicy {
 		t.Fatal("replication service did not receive the certified durable bundle")
 	}
@@ -241,6 +251,15 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	t.Cleanup(func() { _ = restarted.Close() })
 	if restarted.receipt.generation != generation {
 		t.Fatalf("generation changed across same-epoch restart: %x != %x", restarted.receipt.generation, generation)
+	}
+	restartedHighWater := restarted.receipt.store.Stats().HighWaterMillis
+	restartedRetired, _, err := restarted.receipt.retired.snapshot(
+		restarted.receipt.policy,
+		restartedHighWater,
+	)
+	if err != nil || restartedRetired.ClockHighWaterMillis != restartedHighWater ||
+		len(restartedRetired.Epochs) != 0 {
+		t.Fatalf("marker-free restart retired catalog = %+v, %v", restartedRetired, err)
 	}
 	if vertex, ok := restarted.graph.GetVertex("wal-restored"); !ok || vertex.GetKey() != "wal-restored" {
 		t.Fatalf("WAL-before-publication recovery = %v, %v", vertex, ok)

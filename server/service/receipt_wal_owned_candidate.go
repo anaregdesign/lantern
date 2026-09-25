@@ -214,7 +214,9 @@ func openLeasedReceiptWALCandidateInternal(
 	}
 	if codec != nil {
 		err = lease.WithPath(func(canonicalPath string) error {
-			return (receiptBaselineSidecarStore{walPath: canonicalPath}).cleanup(baseline.marker.Digest)
+			return (receiptBaselineSidecarStore{walPath: canonicalPath}).cleanup(
+				baseline.marker.reference(),
+			)
 		})
 		if err != nil {
 			return nil, err

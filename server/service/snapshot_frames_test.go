@@ -134,6 +134,10 @@ func receiptSnapshotTestCapture(t *testing.T, withReceipt, withGraph bool) (Rece
 		t.Fatal(err)
 	}
 	policy.ClockHighWater = receipts.ClockHighWater()
+	retired, err := newEmptyRetiredCatalogSnapshot(policy, receipts.ClockHighWaterMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	origin := hlc.NodeID{0x65}
 	stamp := hlc.Timestamp{WallNs: issued.Add(time.Minute).UnixNano(), Logical: 2, NodeID: origin}
@@ -152,7 +156,7 @@ func receiptSnapshotTestCapture(t *testing.T, withReceipt, withGraph bool) (Rece
 		t.Fatal(err)
 	}
 	return ReceiptWholeStateCapture{
-		Graph: graph.frames, Receipts: receipts, Policy: policy,
+		Graph: graph.frames, Receipts: receipts, Retired: retired, Policy: policy,
 		Origins: []OriginState{{Origin: origin, LastSeq: 7, LastHLC: stamp}},
 	}, policy
 }

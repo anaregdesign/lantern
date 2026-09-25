@@ -62,6 +62,9 @@ func produceReceiptWholeStateArchive(
 		return zero, err
 	}
 	wholeState := capture.WholeState
+	if len(wholeState.Retired.Epochs) != 0 {
+		return zero, errors.New("backup: active-only receipt archive cannot represent retired receipt evidence")
+	}
 	if wholeState.Policy.Epoch != policy.Epoch || wholeState.Policy.Retention != policy.Retention ||
 		wholeState.Policy.MaxEntries != policy.MaxEntries || wholeState.Policy.MaxBytes != policy.MaxBytes ||
 		(!policy.ClockHighWater.IsZero() && policy.ClockHighWater.UnixMilli() > wholeState.Policy.ClockHighWater.UnixMilli()) {

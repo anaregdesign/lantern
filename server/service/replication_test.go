@@ -409,6 +409,30 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 	if len(unknown.frames) != 0 || calls != 1 {
 		t.Fatalf("unknown format emitted frames or sampled source: frames=%d calls=%d", len(unknown.frames), calls)
 	}
+
+	source.capture = func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+		calls++
+		capture, err := baseCapture(ctx, got)
+		if err != nil {
+			return ReceiptWholeStateCapture{}, err
+		}
+		capture.Retired, _ = mustRetiredCatalogSnapshot(
+			t,
+			got,
+			capture.Receipts.ClockHighWaterMillis,
+			0x67,
+		)
+		return capture, nil
+	}
+	downgrade := &replicationSnapshotRecorder{}
+	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}, downgrade); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("RECEIPT_V1 retired downgrade = %v, want FailedPrecondition", err)
+	}
+	if len(downgrade.frames) != 0 || calls != 2 {
+		t.Fatalf("RECEIPT_V1 retired downgrade emitted frames: frames=%d calls=%d", len(downgrade.frames), calls)
+	}
 }
 
 func TestLanternReplicationService_ReceiptSnapshotConfigurationFailsClosed(t *testing.T) {

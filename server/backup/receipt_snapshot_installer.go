@@ -94,7 +94,7 @@ func (i *ReceiptSnapshotInstaller) Install(
 	if err != nil {
 		return result, fmt.Errorf("backup: decode validated RECEIPT_V1 candidate: %w", err)
 	}
-	if err := i.target.InstallReceiptBaseline(ctx, capture); err != nil {
+	if err := i.target.InstallActiveReceiptBaselineV1(ctx, capture); err != nil {
 		return result, fmt.Errorf("backup: install RECEIPT_V1 baseline: %w", err)
 	}
 	committed = true

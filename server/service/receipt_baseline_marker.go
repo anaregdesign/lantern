@@ -13,20 +13,20 @@ import (
 )
 
 const (
-	receiptBaselineMarkerVersion = 1
-	receiptBaselineMarkerSize    = 4 + sha256.Size + 8 +
+	receiptBaselineMarkerSize = 4 + sha256.Size + 8 +
 		len(mutationreceipt.Epoch{}) + sha256.Size +
 		2*16 + 8 + 8 + 2*(8+4+len(hlc.NodeID{}))
-	maxReceiptBaselineBytes = 512 << 20
+	maxReceiptBaselineV2Bytes = 2*(512<<20) + 128
 )
 
-var errReceiptBaselineMarker = errors.New("service: invalid RECEIPT_V1 baseline marker")
+var errReceiptBaselineMarker = errors.New("service: invalid receipt baseline marker")
 
 // receiptBaselineMarker is a private WAL record that makes one immutable
 // sidecar the serving baseline. The FileWAL frame sequence is the compaction
 // boundary and its HLC must equal RestoreFloor. It is deliberately not a
 // protobuf or public replication operation.
 type receiptBaselineMarker struct {
+	Format                 ReceiptBaselineFormat
 	Digest                 [sha256.Size]byte
 	Size                   uint64
 	Epoch                  mutationreceipt.Epoch
@@ -39,9 +39,25 @@ type receiptBaselineMarker struct {
 	RestoreFloor           hlc.Timestamp
 }
 
+type receiptBaselineReference struct {
+	Format ReceiptBaselineFormat
+	Digest [sha256.Size]byte
+}
+
+func receiptBaselineMaxBytes(format ReceiptBaselineFormat) uint64 {
+	switch format {
+	case ReceiptBaselineFormatCombinedV2:
+		return maxReceiptBaselineV2Bytes
+	default:
+		return 0
+	}
+}
+
 func validateReceiptBaselineMarker(marker receiptBaselineMarker) error {
-	if marker.Digest == ([sha256.Size]byte{}) ||
-		marker.Size == 0 || marker.Size > maxReceiptBaselineBytes ||
+	maxBytes := receiptBaselineMaxBytes(marker.Format)
+	if maxBytes == 0 ||
+		marker.Digest == ([sha256.Size]byte{}) ||
+		marker.Size == 0 || marker.Size > maxBytes ||
 		marker.Epoch == (mutationreceipt.Epoch{}) ||
 		marker.PolicyFingerprint == ([sha256.Size]byte{}) ||
 		marker.PreviousGeneration == ([16]byte{}) ||
@@ -65,7 +81,7 @@ func marshalReceiptBaselineMarker(marker receiptBaselineMarker) ([]byte, error) 
 		return nil, err
 	}
 	raw := make([]byte, receiptBaselineMarkerSize)
-	binary.BigEndian.PutUint32(raw[:4], receiptBaselineMarkerVersion)
+	binary.BigEndian.PutUint32(raw[:4], uint32(marker.Format))
 	off := 4
 	copy(raw[off:], marker.Digest[:])
 	off += sha256.Size
@@ -89,11 +105,12 @@ func marshalReceiptBaselineMarker(marker receiptBaselineMarker) ([]byte, error) 
 }
 
 func unmarshalReceiptBaselineMarker(raw []byte) (receiptBaselineMarker, error) {
-	if len(raw) != receiptBaselineMarkerSize ||
-		binary.BigEndian.Uint32(raw[:4]) != receiptBaselineMarkerVersion {
+	if len(raw) != receiptBaselineMarkerSize {
 		return receiptBaselineMarker{}, errReceiptBaselineMarker
 	}
-	var marker receiptBaselineMarker
+	marker := receiptBaselineMarker{
+		Format: ReceiptBaselineFormat(binary.BigEndian.Uint32(raw[:4])),
+	}
 	off := 4
 	copy(marker.Digest[:], raw[off:off+sha256.Size])
 	off += sha256.Size
@@ -116,10 +133,15 @@ func unmarshalReceiptBaselineMarker(raw []byte) (receiptBaselineMarker, error) {
 	if off != len(raw) {
 		return receiptBaselineMarker{}, errReceiptBaselineMarker
 	}
+
 	if err := validateReceiptBaselineMarker(marker); err != nil {
 		return receiptBaselineMarker{}, err
 	}
 	return marker, nil
+}
+
+func (m receiptBaselineMarker) reference() receiptBaselineReference {
+	return receiptBaselineReference{Format: m.Format, Digest: m.Digest}
 }
 
 func putReceiptBaselineTimestamp(dst []byte, off int, ts hlc.Timestamp) int {

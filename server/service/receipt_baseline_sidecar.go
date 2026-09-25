@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-var errReceiptBaselineSidecar = errors.New("service: invalid RECEIPT_V1 baseline sidecar")
+var errReceiptBaselineSidecar = errors.New("service: invalid receipt baseline sidecar")
 
 type receiptBaselineSidecarFaultPoint string
 
@@ -28,14 +28,18 @@ type receiptBaselineSidecarStore struct {
 	fault   func(receiptBaselineSidecarFaultPoint) error
 }
 
-func (s receiptBaselineSidecarStore) persist(raw []byte) ([sha256.Size]byte, string, error) {
+func (s receiptBaselineSidecarStore) persist(
+	format ReceiptBaselineFormat,
+	raw []byte,
+) ([sha256.Size]byte, string, error) {
 	var zero [sha256.Size]byte
-	if len(raw) == 0 || len(raw) > maxReceiptBaselineBytes {
+	maxBytes := receiptBaselineMaxBytes(format)
+	if maxBytes == 0 || len(raw) == 0 || uint64(len(raw)) > maxBytes {
 		return zero, "", fmt.Errorf("%w: invalid byte length %d", errReceiptBaselineSidecar, len(raw))
 	}
 	digest := sha256.Sum256(raw)
-	finalPath := receiptBaselineSidecarPath(s.walPath, digest)
-	if existing, err := s.load(digest, uint64(len(raw))); err == nil {
+	finalPath := receiptBaselineSidecarPath(s.walPath, format, digest)
+	if existing, err := s.load(format, digest, uint64(len(raw))); err == nil {
 		if !bytes.Equal(existing, raw) {
 			return zero, "", fmt.Errorf("%w: content-addressed file differs", errReceiptBaselineSidecar)
 		}
@@ -52,7 +56,7 @@ func (s receiptBaselineSidecarStore) persist(raw []byte) ([sha256.Size]byte, str
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
 		return zero, "", fmt.Errorf("service: create baseline nonce: %w", err)
 	}
-	tempPath := receiptBaselineTempPrefix(s.walPath, digest) + hex.EncodeToString(nonce[:])
+	tempPath := receiptBaselineTempPrefix(s.walPath, format, digest) + hex.EncodeToString(nonce[:])
 	file, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return zero, "", fmt.Errorf("service: create baseline sidecar: %w", err)
@@ -77,7 +81,7 @@ func (s receiptBaselineSidecarStore) persist(raw []byte) ([sha256.Size]byte, str
 		return zero, "", err
 	}
 	if _, err := os.Lstat(finalPath); err == nil {
-		existing, loadErr := s.load(digest, uint64(len(raw)))
+		existing, loadErr := s.load(format, digest, uint64(len(raw)))
 		if loadErr != nil || !bytes.Equal(existing, raw) {
 			return zero, "", errors.Join(errReceiptBaselineSidecar, loadErr)
 		}
@@ -138,11 +142,16 @@ func (s receiptBaselineSidecarStore) inject(point receiptBaselineSidecarFaultPoi
 	return nil
 }
 
-func (s receiptBaselineSidecarStore) load(digest [sha256.Size]byte, size uint64) ([]byte, error) {
-	if digest == ([sha256.Size]byte{}) || size == 0 || size > maxReceiptBaselineBytes {
+func (s receiptBaselineSidecarStore) load(
+	format ReceiptBaselineFormat,
+	digest [sha256.Size]byte,
+	size uint64,
+) ([]byte, error) {
+	maxBytes := receiptBaselineMaxBytes(format)
+	if maxBytes == 0 || digest == ([sha256.Size]byte{}) || size == 0 || size > maxBytes {
 		return nil, fmt.Errorf("%w: invalid digest or size", errReceiptBaselineSidecar)
 	}
-	path := receiptBaselineSidecarPath(s.walPath, digest)
+	path := receiptBaselineSidecarPath(s.walPath, format, digest)
 	before, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -172,7 +181,7 @@ func (s receiptBaselineSidecarStore) load(digest [sha256.Size]byte, size uint64)
 	return raw, nil
 }
 
-func (s receiptBaselineSidecarStore) cleanup(keep [sha256.Size]byte) error {
+func (s receiptBaselineSidecarStore) cleanup(keep receiptBaselineReference) error {
 	if err := s.inject(receiptBaselineBeforeCleanup); err != nil {
 		return err
 	}
@@ -181,11 +190,12 @@ func (s receiptBaselineSidecarStore) cleanup(keep [sha256.Size]byte) error {
 	if err != nil {
 		return fmt.Errorf("service: list baseline sidecars: %w", err)
 	}
-	finalPrefix := filepath.Base(s.walPath) + ".receipt-v1."
-	tempPrefix := "." + finalPrefix
 	var keepName string
-	if keep != ([sha256.Size]byte{}) {
-		keepName = filepath.Base(receiptBaselineSidecarPath(s.walPath, keep))
+	if keep.Format != 0 || keep.Digest != ([sha256.Size]byte{}) {
+		if receiptBaselineMaxBytes(keep.Format) == 0 || keep.Digest == ([sha256.Size]byte{}) {
+			return fmt.Errorf("%w: invalid retained baseline reference", errReceiptBaselineSidecar)
+		}
+		keepName = filepath.Base(receiptBaselineSidecarPath(s.walPath, keep.Format, keep.Digest))
 	}
 	removed := false
 	for _, entry := range entries {
@@ -193,7 +203,7 @@ func (s receiptBaselineSidecarStore) cleanup(keep [sha256.Size]byte) error {
 		if keepName != "" && name == keepName {
 			continue
 		}
-		if !recognizedReceiptBaselineSidecarName(name, finalPrefix, tempPrefix) {
+		if !recognizedReceiptBaselineSidecarName(name, filepath.Base(s.walPath)) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -209,7 +219,9 @@ func (s receiptBaselineSidecarStore) cleanup(keep [sha256.Size]byte) error {
 	return nil
 }
 
-func recognizedReceiptBaselineSidecarName(name, finalPrefix, tempPrefix string) bool {
+func recognizedReceiptBaselineSidecarName(name, walBase string) bool {
+	finalPrefix := fmt.Sprintf("%s.receipt-v%d.", walBase, ReceiptBaselineFormatCombinedV2)
+	tempPrefix := "." + finalPrefix
 	if strings.HasPrefix(name, finalPrefix) && strings.HasSuffix(name, ".baseline") {
 		digest := strings.TrimSuffix(strings.TrimPrefix(name, finalPrefix), ".baseline")
 		return len(digest) == sha256.Size*2 && validLowerHex(digest)
@@ -217,7 +229,9 @@ func recognizedReceiptBaselineSidecarName(name, finalPrefix, tempPrefix string) 
 	if strings.HasPrefix(name, tempPrefix) {
 		rest := strings.TrimPrefix(name, tempPrefix)
 		digest, suffix, ok := strings.Cut(rest, ".tmp-")
-		return ok && len(digest) == sha256.Size*2 && validLowerHex(digest) && suffix != ""
+		if ok && len(digest) == sha256.Size*2 && validLowerHex(digest) && suffix != "" {
+			return true
+		}
 	}
 	return false
 }
@@ -231,13 +245,26 @@ func validLowerHex(value string) bool {
 	return true
 }
 
-func receiptBaselineSidecarPath(walPath string, digest [sha256.Size]byte) string {
-	return walPath + ".receipt-v1." + hex.EncodeToString(digest[:]) + ".baseline"
+func receiptBaselineSidecarPath(
+	walPath string,
+	format ReceiptBaselineFormat,
+	digest [sha256.Size]byte,
+) string {
+	return fmt.Sprintf("%s.receipt-v%d.%s.baseline", walPath, format, hex.EncodeToString(digest[:]))
 }
 
-func receiptBaselineTempPrefix(walPath string, digest [sha256.Size]byte) string {
+func receiptBaselineTempPrefix(
+	walPath string,
+	format ReceiptBaselineFormat,
+	digest [sha256.Size]byte,
+) string {
 	return filepath.Join(
 		filepath.Dir(walPath),
-		"."+filepath.Base(walPath)+".receipt-v1."+hex.EncodeToString(digest[:])+".tmp-",
+		fmt.Sprintf(
+			".%s.receipt-v%d.%s.tmp-",
+			filepath.Base(walPath),
+			format,
+			hex.EncodeToString(digest[:]),
+		),
 	)
 }

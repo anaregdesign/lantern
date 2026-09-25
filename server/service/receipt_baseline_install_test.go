@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +28,7 @@ type receiptBaselineTestCodec struct {
 	build func() (*ReceiptBaselineCandidate, error)
 }
 
-func (c *receiptBaselineTestCodec) EncodeReceiptBaseline(
+func (c *receiptBaselineTestCodec) EncodeCombinedReceiptBaseline(
 	ctx context.Context,
 	_ ReceiptWholeStateCapture,
 ) ([]byte, error) {
@@ -37,7 +38,7 @@ func (c *receiptBaselineTestCodec) EncodeReceiptBaseline(
 	return append([]byte(nil), c.raw...), nil
 }
 
-func (c *receiptBaselineTestCodec) StageReceiptBaseline(
+func (c *receiptBaselineTestCodec) StageCombinedReceiptBaseline(
 	ctx context.Context,
 	raw []byte,
 	_ mutationreceipt.Config,
@@ -61,9 +62,27 @@ type receiptBaselineTestImage struct {
 	cutoff  hlc.Timestamp
 }
 
+func setReceiptBaselineTestRetired(
+	image *receiptBaselineTestImage,
+	state mutationreceipt.RetiredCatalogSnapshot,
+) {
+	image.capture.Retired = state
+	build := image.codec.build
+	image.codec.build = func() (*ReceiptBaselineCandidate, error) {
+		candidate, err := build()
+		if candidate != nil {
+			candidate.Retired = state
+		}
+		return candidate, err
+	}
+}
+
 func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeConfig) receiptBaselineTestImage {
 	t.Helper()
-	issued := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+	issued := config.Receipt.ClockHighWater.Truncate(time.Millisecond)
+	if issued.IsZero() {
+		issued = time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+	}
 	policy := clearReceiptClockHighWater(config.Receipt)
 	store, err := mutationreceipt.New(policy)
 	if err != nil {
@@ -97,6 +116,10 @@ func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeCo
 		t.Fatal(err)
 	}
 	policy.ClockHighWater = snapshot.ClockHighWater()
+	retired, err := newEmptyRetiredCatalogSnapshot(policy, snapshot.ClockHighWaterMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var origin hlc.NodeID
 	for i := range origin {
 		origin[i] = 0x88
@@ -125,17 +148,19 @@ func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeCo
 			return nil, err
 		}
 		return &ReceiptBaselineCandidate{
-			Graph: graph, Receipts: receipts, Policy: policy,
+			Graph: graph, Receipts: receipts, Retired: retired, Policy: policy,
 			Origins:        append([]OriginState(nil), origins...),
 			CutoffLocalSeq: 41, CutoffHLC: cutoff,
 		}, nil
 	}
 	return receiptBaselineTestImage{
-		capture: ReceiptWholeStateCapture{Receipts: snapshot, Policy: policy, Origins: origins},
-		codec:   &receiptBaselineTestCodec{raw: []byte("canonical-test-receipt-baseline-v1"), build: build},
-		id:      id,
-		origin:  origin,
-		cutoff:  cutoff,
+		capture: ReceiptWholeStateCapture{
+			Receipts: snapshot, Retired: retired, Policy: policy, Origins: origins,
+		},
+		codec:  &receiptBaselineTestCodec{raw: []byte("canonical-test-receipt-baseline-v1"), build: build},
+		id:     id,
+		origin: origin,
+		cutoff: cutoff,
 	}
 }
 
@@ -183,7 +208,7 @@ func assertReceiptBaselinePublicationFault(t *testing.T, service *LanternService
 
 func receiptBaselineSidecars(t *testing.T, path string) []string {
 	t.Helper()
-	matches, err := filepath.Glob(path + ".receipt-v1.*.baseline")
+	matches, err := filepath.Glob(path + ".receipt-v*.*.baseline")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +219,14 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	path := t.TempDir() + "/receipts.wal"
 	config := baselineRuntimeTestConfig(path)
 	image := newReceiptBaselineTestImage(t, config)
+	highWater := image.capture.Receipts.ClockHighWaterMillis
+	retiredState, _ := mustRetiredCatalogSnapshot(
+		t,
+		config.Receipt,
+		highWater,
+		0x47,
+	)
+	setReceiptBaselineTestRetired(&image, retiredState)
 	config.BaselineCodec = image.codec
 	runtime, err := CreateDurableReceiptWALServingRuntime(config)
 	if err != nil {
@@ -216,9 +249,6 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	}
 	defer cancel()
 	laterHighWater := image.capture.Policy.ClockHighWater.Add(2 * time.Minute)
-	var absent mutationreceipt.ID
-	absent[0] = 1
-	_, _, _ = runtime.receipt.store.Lookup(absent, laterHighWater)
 
 	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
 		t.Fatal(err)
@@ -319,109 +349,470 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	}
 }
 
-func TestInstallReceiptBaselineRestartPreservesEffectiveReceiptHighWater(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "receipts.wal")
-	config := baselineRuntimeTestConfig(path)
-	image := newReceiptBaselineTestImage(t, config)
-	if len(image.capture.Receipts.Receipts) != 1 {
-		t.Fatalf("receipt fixture rows = %d, want 1", len(image.capture.Receipts.Receipts))
-	}
-	deadline := image.capture.Receipts.Receipts[0].DeadlineMillis
-	initialHighWater := deadline - int64(2*time.Minute/time.Millisecond)
-	sourceHighWater := deadline - int64(time.Minute/time.Millisecond)
-	effectiveHighWater := deadline + int64(time.Minute/time.Millisecond)
-	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
-	config.Now = time.UnixMilli(initialHighWater)
-
-	baseBuild := image.codec.build
-	buildAtHighWater := func(highWater int64, includeReceipt bool) func() (*ReceiptBaselineCandidate, error) {
-		return func() (*ReceiptBaselineCandidate, error) {
-			candidate, err := baseBuild()
-			if err != nil {
-				return nil, err
-			}
-			state, err := candidate.Receipts.Snapshot()
-			if err != nil {
-				return nil, err
-			}
-			state.ClockHighWaterMillis = highWater
-			if !includeReceipt {
-				state.Receipts = nil
-			}
-			policy := candidate.Policy
-			policy.ClockHighWater = time.UnixMilli(highWater)
-			candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
-			candidate.Policy = policy
-			return candidate, err
+func TestInstallReceiptBaselineRetiredStateInvariants(t *testing.T) {
+	t.Run("unions retired catalog without replacing slot", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		config := baselineRuntimeTestConfig(path)
+		image := newReceiptBaselineTestImage(t, config)
+		highWater := image.capture.Receipts.ClockHighWaterMillis
+		incoming, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x41)
+		local, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x42)
+		setReceiptBaselineTestRetired(&image, incoming)
+		config.BaselineCodec = image.codec
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
 
-	firstCapture := image.capture
-	firstCapture.Receipts.ClockHighWaterMillis = effectiveHighWater
-	firstCapture.Receipts.Receipts = nil
-	firstCapture.Policy.ClockHighWater = time.UnixMilli(effectiveHighWater)
-	firstCodec := &receiptBaselineTestCodec{
-		raw:   []byte("canonical-high-water-baseline-a"),
-		build: buildAtHighWater(effectiveHighWater, false),
-	}
-	secondCapture := image.capture
-	secondCapture.Receipts.ClockHighWaterMillis = sourceHighWater
-	secondCapture.Policy.ClockHighWater = time.UnixMilli(sourceHighWater)
-	secondCodec := &receiptBaselineTestCodec{
-		raw:   []byte("canonical-high-water-baseline-b"),
-		build: buildAtHighWater(sourceHighWater, true),
-	}
+		t.Run("retries when retired catalog advances during encoding", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipts.wal")
+			config := baselineRuntimeTestConfig(path)
+			image := newReceiptBaselineTestImage(t, config)
+			highWater := image.capture.Receipts.ClockHighWaterMillis
+			incoming, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x43)
+			local, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x44)
+			setReceiptBaselineTestRetired(&image, incoming)
+			config.BaselineCodec = image.codec
+			runtime, err := CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = runtime.Close() })
+			primary := runtime.NewLanternService(nil)
+			hookCalls := 0
+			runtime.receipt.installFault = func(point receiptBaselineInstallFaultPoint) error {
+				if point == receiptBaselineAfterSidecarBeforeFinalCut && hookCalls == 0 {
+					hookCalls++
+					mustReplaceRetiredCatalog(
+						t,
+						runtime.receipt.retired,
+						runtime.receipt.policy,
+						highWater,
+						local,
+					)
+				}
+				return nil
+			}
 
-	config.BaselineCodec = firstCodec
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	primary := runtime.NewLanternService(nil)
-	if err := primary.InstallReceiptBaseline(context.Background(), firstCapture); err != nil {
-		t.Fatal(err)
-	}
-	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
-		t.Fatalf("first baseline Store = %+v", got)
-	}
+			if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+				t.Fatal(err)
+			}
+			if hookCalls != 1 {
+				t.Fatalf("retired drift hook calls = %d, want 1", hookCalls)
+			}
+			got, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, highWater)
+			if err != nil || len(got.Epochs) != 2 {
+				t.Fatalf("retried retired union = %+v, %v", got, err)
+			}
+			if last, ok := runtime.log.LastSeq(); !ok || last != 1 {
+				t.Fatalf("retry marker count = %d, %t, want 1, true", last, ok)
+			}
+			if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
+				t.Fatalf("retry sidecars = %v, want one committed v2 sidecar", sidecars)
+			}
+		})
+		t.Cleanup(func() { _ = runtime.Close() })
+		slot := runtime.receipt.retired
+		mustReplaceRetiredCatalog(t, slot, runtime.receipt.policy, highWater, local)
+		primary := runtime.NewLanternService(nil)
 
-	runtime.receipt.baselineCodec = secondCodec
-	if err := primary.InstallReceiptBaseline(context.Background(), secondCapture); err != nil {
-		t.Fatal(err)
-	}
-	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
-		t.Fatalf("second baseline regressed live Store = %+v", got)
-	}
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
+		if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+			t.Fatal(err)
+		}
+		if runtime.receipt.retired != slot || primary.receiptRetiredCatalog != slot {
+			t.Fatal("retired catalog slot identity changed during install")
+		}
+		got, _, err := slot.snapshot(runtime.receipt.policy, highWater)
+		if err != nil {
+			t.Fatal(err)
+		}
+		configured, _, err := retiredCatalogConfig(runtime.receipt.policy, highWater)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantCatalog, err := mutationreceipt.NewRetiredCatalogFromUnion(configured, incoming, local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := wantCatalog.Snapshot(time.UnixMilli(highWater))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) || len(got.Epochs) != 2 {
+			t.Fatalf("retired union = %+v, want %+v", got, want)
+		}
+		if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+			t.Fatalf("idempotent retired union: %v", err)
+		}
+		again, _, err := slot.snapshot(runtime.receipt.policy, highWater)
+		if err != nil || !reflect.DeepEqual(again, want) {
+			t.Fatalf("idempotent retired union = %+v, %v", again, err)
+		}
+	})
 
-	scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !scan.hasMarker || scan.markerSequence != 2 ||
-		scan.marker.ReceiptHighWaterMillis != effectiveHighWater {
-		t.Fatalf("newest baseline marker = %+v", scan)
-	}
+	t.Run("rejects invalid retired union before marker", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			maxEntries int
+			incoming   func(
+				t *testing.T,
+				policy mutationreceipt.Config,
+				highWater int64,
+				local mutationreceipt.RetiredCatalogSnapshot,
+			) mutationreceipt.RetiredCatalogSnapshot
+			want error
+		}{
+			{
+				name: "conflict",
+				incoming: func(
+					_ *testing.T,
+					_ mutationreceipt.Config,
+					_ int64,
+					local mutationreceipt.RetiredCatalogSnapshot,
+				) mutationreceipt.RetiredCatalogSnapshot {
+					conflict := local
+					conflict.Epochs = append([]mutationreceipt.RetiredEpochSnapshot(nil), local.Epochs...)
+					conflict.Epochs[0].State.Receipts = append(
+						[]mutationreceipt.Receipt(nil),
+						local.Epochs[0].State.Receipts...,
+					)
+					conflict.Epochs[0].State.Receipts[0].Result = []byte("conflict")
+					return conflict
+				},
+				want: mutationreceipt.ErrInvalidRetiredCatalogSnapshot,
+			},
+			{
+				name:       "aggregate capacity",
+				maxEntries: 1,
+				incoming: func(
+					t *testing.T,
+					policy mutationreceipt.Config,
+					highWater int64,
+					_ mutationreceipt.RetiredCatalogSnapshot,
+				) mutationreceipt.RetiredCatalogSnapshot {
+					state, _ := mustRetiredCatalogSnapshot(t, policy, highWater, 0x52)
+					return state
+				},
+				want: mutationreceipt.ErrRetiredCatalogCapacity,
+			},
+			{
+				name: "active epoch",
+				incoming: func(
+					_ *testing.T,
+					policy mutationreceipt.Config,
+					_ int64,
+					local mutationreceipt.RetiredCatalogSnapshot,
+				) mutationreceipt.RetiredCatalogSnapshot {
+					state := local
+					state.Epochs = append([]mutationreceipt.RetiredEpochSnapshot(nil), local.Epochs...)
+					state.Epochs[0].Policy.Epoch = policy.Epoch
+					state.Epochs[0].State.Epoch = policy.Epoch
+					return state
+				},
+				want: mutationreceipt.ErrActiveEpochReceipt,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "receipts.wal")
+				config := baselineRuntimeTestConfig(path)
+				if tc.maxEntries != 0 {
+					config.Receipt.MaxEntries = tc.maxEntries
+				}
+				image := newReceiptBaselineTestImage(t, config)
+				highWater := image.capture.Receipts.ClockHighWaterMillis
+				local, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x51)
+				setReceiptBaselineTestRetired(
+					&image,
+					tc.incoming(t, config.Receipt, highWater, local),
+				)
+				config.BaselineCodec = image.codec
+				runtime, err := CreateDurableReceiptWALServingRuntime(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = runtime.Close() })
+				mustReplaceRetiredCatalog(
+					t,
+					runtime.receipt.retired,
+					runtime.receipt.policy,
+					highWater,
+					local,
+				)
+				before, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, highWater)
+				if err != nil {
+					t.Fatal(err)
+				}
+				primary := runtime.NewLanternService(nil)
+				if err := primary.InstallReceiptBaseline(t.Context(), image.capture); !errors.Is(err, tc.want) {
+					t.Fatalf("invalid retired union = %v, want %v", err, tc.want)
+				}
+				after, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, highWater)
+				if err != nil || !reflect.DeepEqual(after, before) {
+					t.Fatalf("rejected retired union changed local state: before=%+v after=%+v err=%v", before, after, err)
+				}
+				if _, ok := runtime.log.LastSeq(); ok {
+					t.Fatal("rejected retired union committed a marker")
+				}
+			})
+		}
+	})
 
-	config.BaselineCodec = secondCodec
-	config.Now = time.UnixMilli(initialHighWater)
-	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = restarted.Close() })
-	if got := restarted.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
-		t.Fatalf("restarted Store = %+v, want high-water %d and no resurrected rows", got, effectiveHighWater)
-	}
-	if status, _, err := restarted.receipt.store.Lookup(
-		image.id,
-		time.UnixMilli(initialHighWater),
-	); err != nil || status != mutationreceipt.NoLongerProvable {
-		t.Fatalf("expired receipt after restart = %v, %v", status, err)
-	}
+	t.Run("active V1 rejects retired evidence before mutation", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		config := baselineRuntimeTestConfig(path)
+		image := newReceiptBaselineTestImage(t, config)
+		config.BaselineCodec = image.codec
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		t.Run("active V1 rechecks retired evidence at final cut", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipts.wal")
+			config := baselineRuntimeTestConfig(path)
+			image := newReceiptBaselineTestImage(t, config)
+			config.BaselineCodec = image.codec
+			runtime, err := CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = runtime.Close() })
+			highWater := image.capture.Receipts.ClockHighWaterMillis
+			local, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x62)
+			primary := runtime.NewLanternService(nil)
+			runtime.receipt.installFault = func(point receiptBaselineInstallFaultPoint) error {
+				if point == receiptBaselineAfterSidecarBeforeFinalCut {
+					runtime.receipt.installFault = nil
+					mustReplaceRetiredCatalog(
+						t,
+						runtime.receipt.retired,
+						runtime.receipt.policy,
+						highWater,
+						local,
+					)
+				}
+				return nil
+			}
+
+			if err := primary.InstallActiveReceiptBaselineV1(t.Context(), image.capture); !errors.Is(
+				err,
+				errRetiredReceiptDowngrade,
+			) {
+				t.Fatalf("active-only final-cut downgrade = %v", err)
+			}
+			if _, ok := runtime.log.LastSeq(); ok {
+				t.Fatal("active-only final-cut rejection committed a marker")
+			}
+			if _, ok := runtime.graph.GetVertex("baseline-searchable"); ok {
+				t.Fatal("active-only final-cut rejection published graph state")
+			}
+			if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 0 {
+				t.Fatalf("active-only final-cut rejection emitted sidecars: %v", sidecars)
+			}
+			got, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, highWater)
+			if err != nil || !reflect.DeepEqual(got, local) {
+				t.Fatalf("active-only final-cut rejection lost retired evidence: %+v, %v", got, err)
+			}
+		})
+		t.Cleanup(func() { _ = runtime.Close() })
+		highWater := image.capture.Receipts.ClockHighWaterMillis
+		local, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x61)
+		mustReplaceRetiredCatalog(
+			t,
+			runtime.receipt.retired,
+			runtime.receipt.policy,
+			highWater,
+			local,
+		)
+		primary := runtime.NewLanternService(nil)
+		graphBefore := runtime.graph.SnapshotReplication()
+		generation := runtime.receipt.generation
+
+		if err := primary.InstallActiveReceiptBaselineV1(t.Context(), image.capture); !errors.Is(
+			err,
+			errRetiredReceiptDowngrade,
+		) {
+			t.Fatalf("active-only install with retired evidence = %v", err)
+		}
+		if !reflect.DeepEqual(runtime.graph.SnapshotReplication(), graphBefore) ||
+			runtime.receipt.generation != generation {
+			t.Fatal("rejected active-only install mutated live graph or generation")
+		}
+		got, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, highWater)
+		if err != nil || !reflect.DeepEqual(got, local) {
+			t.Fatalf("rejected active-only install changed retired state: %+v, %v", got, err)
+		}
+		if _, ok := runtime.log.LastSeq(); ok {
+			t.Fatal("rejected active-only install committed a marker")
+		}
+		if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 0 {
+			t.Fatalf("rejected active-only install emitted sidecars: %v", sidecars)
+		}
+	})
+	t.Run("active V1 preserves a newer empty local high-water", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		config := baselineRuntimeTestConfig(path)
+		image := newReceiptBaselineTestImage(t, config)
+		localHighWater := image.capture.Receipts.ClockHighWaterMillis +
+			int64(5*time.Minute/time.Millisecond)
+		config.Receipt.ClockHighWater = time.UnixMilli(localHighWater)
+		config.Now = time.UnixMilli(localHighWater)
+		config.BaselineCodec = image.codec
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+
+		if err := runtime.NewLanternService(nil).InstallActiveReceiptBaselineV1(
+			t.Context(),
+			image.capture,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if got := runtime.receipt.store.Stats().HighWaterMillis; got != localHighWater {
+			t.Fatalf("active V1 Store high-water = %d, want %d", got, localHighWater)
+		}
+		retired, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, localHighWater)
+		if err != nil || retired.ClockHighWaterMillis != localHighWater || len(retired.Epochs) != 0 {
+			t.Fatalf("active V1 retired catalog = %+v, %v", retired, err)
+		}
+		if _, ok := runtime.graph.GetVertex("baseline-searchable"); !ok {
+			t.Fatal("active V1 did not publish graph state")
+		}
+		scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !scan.hasMarker || scan.marker.ReceiptHighWaterMillis != localHighWater {
+			t.Fatalf("active V1 marker = %+v, want high-water %d", scan, localHighWater)
+		}
+	})
+	t.Run("rejects active high-water rollback", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		config := baselineRuntimeTestConfig(path)
+		image := newReceiptBaselineTestImage(t, config)
+		if len(image.capture.Receipts.Receipts) != 1 {
+			t.Fatalf("receipt fixture rows = %d, want 1", len(image.capture.Receipts.Receipts))
+		}
+		deadline := image.capture.Receipts.Receipts[0].DeadlineMillis
+		initialHighWater := deadline - int64(2*time.Minute/time.Millisecond)
+		sourceHighWater := deadline - int64(time.Minute/time.Millisecond)
+		effectiveHighWater := deadline + int64(time.Minute/time.Millisecond)
+		config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
+		config.Now = time.UnixMilli(initialHighWater)
+
+		baseBuild := image.codec.build
+		buildAtHighWater := func(highWater int64, includeReceipt bool) func() (*ReceiptBaselineCandidate, error) {
+			return func() (*ReceiptBaselineCandidate, error) {
+				candidate, err := baseBuild()
+				if err != nil {
+					return nil, err
+				}
+				state, err := candidate.Receipts.Snapshot()
+				if err != nil {
+					return nil, err
+				}
+				state.ClockHighWaterMillis = highWater
+				if !includeReceipt {
+					state.Receipts = nil
+				}
+				policy := candidate.Policy
+				policy.ClockHighWater = time.UnixMilli(highWater)
+				candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
+				if err != nil {
+					return nil, err
+				}
+				retired, err := newEmptyRetiredCatalogSnapshot(policy, highWater)
+				if err != nil {
+					return nil, err
+				}
+				candidate.Retired = retired
+				candidate.Policy = policy
+				return candidate, err
+			}
+		}
+
+		firstCapture := image.capture
+		firstCapture.Receipts.ClockHighWaterMillis = effectiveHighWater
+		firstCapture.Receipts.Receipts = nil
+		firstCapture.Policy.ClockHighWater = time.UnixMilli(effectiveHighWater)
+		firstRetired, err := newEmptyRetiredCatalogSnapshot(firstCapture.Policy, effectiveHighWater)
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstCapture.Retired = firstRetired
+		firstCodec := &receiptBaselineTestCodec{
+			raw:   []byte("canonical-high-water-baseline-a"),
+			build: buildAtHighWater(effectiveHighWater, false),
+		}
+		secondCapture := image.capture
+		secondCapture.Receipts.ClockHighWaterMillis = sourceHighWater
+		secondCapture.Policy.ClockHighWater = time.UnixMilli(sourceHighWater)
+		secondRetired, err := newEmptyRetiredCatalogSnapshot(secondCapture.Policy, sourceHighWater)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondCapture.Retired = secondRetired
+		secondCodec := &receiptBaselineTestCodec{
+			raw:   []byte("canonical-high-water-baseline-b"),
+			build: buildAtHighWater(sourceHighWater, true),
+		}
+
+		config.BaselineCodec = firstCodec
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		primary := runtime.NewLanternService(nil)
+		if err := primary.InstallReceiptBaseline(context.Background(), firstCapture); err != nil {
+			t.Fatal(err)
+		}
+		if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+			t.Fatalf("first baseline Store = %+v", got)
+		}
+
+		runtime.receipt.baselineCodec = secondCodec
+		if err := primary.InstallReceiptBaseline(context.Background(), secondCapture); !errors.Is(
+			err,
+			mutationreceipt.ErrRetiredCatalogClockRollback,
+		) {
+			t.Fatalf("high-water rollback = %v", err)
+		}
+		if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+			t.Fatalf("second baseline regressed live Store = %+v", got)
+		}
+		if err := runtime.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !scan.hasMarker || scan.markerSequence != 1 ||
+			scan.marker.ReceiptHighWaterMillis != effectiveHighWater {
+			t.Fatalf("newest baseline marker = %+v", scan)
+		}
+
+		config.BaselineCodec = firstCodec
+		config.Now = time.UnixMilli(initialHighWater)
+		config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
+		restarted, err := OpenDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = restarted.Close() })
+		if got := restarted.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+			t.Fatalf("restarted Store = %+v, want high-water %d and no resurrected rows", got, effectiveHighWater)
+		}
+		if status, _, err := restarted.receipt.store.Lookup(
+			image.id,
+			time.UnixMilli(initialHighWater),
+		); err != nil || status != mutationreceipt.NoLongerProvable {
+			t.Fatalf("expired receipt after restart = %v, %v", status, err)
+		}
+	})
 }
 
 func TestInstallReceiptBaselineCrashPointsRecoverOrRemainUncommitted(t *testing.T) {
@@ -464,9 +855,8 @@ func TestInstallReceiptBaselineCrashPointsRecoverOrRemainUncommitted(t *testing.
 			if _, ok := runtime.graph.GetVertex("baseline-searchable"); ok {
 				t.Fatal("orphan sidecar became a restart baseline")
 			}
-			matches, err := filepath.Glob(path + ".receipt-v1.*.baseline")
-			if err != nil || len(matches) != 0 {
-				t.Fatalf("orphan cleanup = %v, %v", matches, err)
+			if matches := receiptBaselineSidecars(t, path); len(matches) != 0 {
+				t.Fatalf("orphan cleanup = %v", matches)
 			}
 			if err := runtime.Close(); err != nil {
 				t.Fatal(err)
@@ -482,6 +872,9 @@ func TestInstallReceiptBaselineCrashPointsRecoverOrRemainUncommitted(t *testing.
 			path := t.TempDir() + "/receipts.wal"
 			config := baselineRuntimeTestConfig(path)
 			image := newReceiptBaselineTestImage(t, config)
+			highWater := image.capture.Receipts.ClockHighWaterMillis
+			retiredState, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x71)
+			setReceiptBaselineTestRetired(&image, retiredState)
 			config.BaselineCodec = image.codec
 			runtime, err := CreateDurableReceiptWALServingRuntime(config)
 			if err != nil {
@@ -509,8 +902,18 @@ func TestInstallReceiptBaselineCrashPointsRecoverOrRemainUncommitted(t *testing.
 				if _, ok := runtime.graph.GetVertex("baseline-searchable"); ok {
 					t.Fatal("pre-publication crash exposed baseline graph")
 				}
-			} else if _, ok := runtime.graph.GetVertex("baseline-searchable"); !ok {
-				t.Fatal("post-publication crash lost installed graph")
+				got, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, highWater)
+				if err != nil || len(got.Epochs) != 0 {
+					t.Fatalf("pre-publication crash exposed retired catalog: %+v, %v", got, err)
+				}
+			} else {
+				if _, ok := runtime.graph.GetVertex("baseline-searchable"); !ok {
+					t.Fatal("post-publication crash lost installed graph")
+				}
+				got, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, highWater)
+				if err != nil || !reflect.DeepEqual(got, retiredState) {
+					t.Fatalf("post-publication retired catalog = %+v, %v", got, err)
+				}
 			}
 			assertReceiptBaselinePublicationFault(t, primary)
 			if err := runtime.Close(); err != nil {
@@ -522,6 +925,10 @@ func TestInstallReceiptBaselineCrashPointsRecoverOrRemainUncommitted(t *testing.
 			}
 			if _, ok := restarted.graph.GetVertex("baseline-searchable"); !ok {
 				t.Fatal("restart did not recover committed baseline")
+			}
+			got, _, err := restarted.receipt.retired.snapshot(restarted.receipt.policy, highWater)
+			if err != nil || !reflect.DeepEqual(got, retiredState) {
+				t.Fatalf("restart retired catalog = %+v, %v", got, err)
 			}
 			if err := restarted.Close(); err != nil {
 				t.Fatal(err)
@@ -612,6 +1019,34 @@ func TestInstallReceiptBaselineRejectsRetainedReceiptRegressionBeforeMarker(t *t
 		t.Fatal(err)
 	}
 	tx.Commit()
+	highWater := runtime.receipt.store.Stats().HighWaterMillis
+	image.capture.Receipts.ClockHighWaterMillis = highWater
+	image.capture.Policy.ClockHighWater = time.UnixMilli(highWater)
+	image.capture.Retired, err = newEmptyRetiredCatalogSnapshot(image.capture.Policy, highWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := image.codec.build
+	image.codec.build = func() (*ReceiptBaselineCandidate, error) {
+		candidate, err := build()
+		if err != nil {
+			return nil, err
+		}
+		state, err := candidate.Receipts.Snapshot()
+		if err != nil {
+			return nil, err
+		}
+		state.ClockHighWaterMillis = highWater
+		policy := candidate.Policy
+		policy.ClockHighWater = time.UnixMilli(highWater)
+		candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
+		if err != nil {
+			return nil, err
+		}
+		candidate.Retired, err = newEmptyRetiredCatalogSnapshot(policy, highWater)
+		candidate.Policy = policy
+		return candidate, err
+	}
 
 	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); !errors.Is(err, mutationreceipt.ErrSnapshotDoesNotDominate) {
 		t.Fatalf("receipt-regressing baseline error = %v", err)
@@ -782,6 +1217,14 @@ func TestInstallReceiptBaselineWALFailureRollsBackStore(t *testing.T) {
 			newHighWater := image.capture.Receipts.ClockHighWaterMillis + int64(5*time.Minute/time.Millisecond)
 			image.capture.Receipts.ClockHighWaterMillis = newHighWater
 			image.capture.Policy.ClockHighWater = time.UnixMilli(newHighWater)
+			retired, err := newEmptyRetiredCatalogSnapshot(
+				image.capture.Policy,
+				newHighWater,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			image.capture.Retired = retired
 			build := image.codec.build
 			image.codec.build = func() (*ReceiptBaselineCandidate, error) {
 				candidate, err := build()
@@ -796,6 +1239,10 @@ func TestInstallReceiptBaselineWALFailureRollsBackStore(t *testing.T) {
 				policy := candidate.Policy
 				policy.ClockHighWater = time.UnixMilli(newHighWater)
 				candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
+				if err != nil {
+					return nil, err
+				}
+				candidate.Retired, err = newEmptyRetiredCatalogSnapshot(policy, newHighWater)
 				candidate.Policy = policy
 				return candidate, err
 			}
@@ -890,7 +1337,7 @@ func TestInstallReceiptBaselineClosedLogCleansRejectedCandidate(t *testing.T) {
 	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
 		t.Fatal(err)
 	}
-	committedDigest := runtime.receipt.committedBaselineDigest
+	committedDigest := runtime.receipt.committedBaseline
 	committedGeneration := runtime.receipt.generation
 	committedSidecars := receiptBaselineSidecars(t, path)
 	if len(committedSidecars) != 1 {
@@ -907,7 +1354,7 @@ func TestInstallReceiptBaselineClosedLogCleansRejectedCandidate(t *testing.T) {
 	if primary.receiptCommitFaulted {
 		t.Fatal("definite closed-log rejection faulted receipt publication")
 	}
-	if runtime.receipt.committedBaselineDigest != committedDigest {
+	if runtime.receipt.committedBaseline != committedDigest {
 		t.Fatal("closed-log rejection changed committed digest")
 	}
 	if runtime.receipt.generation != committedGeneration {
@@ -934,7 +1381,7 @@ func TestInstallReceiptBaselineLegacyWALUncertaintyCleansRejectedCandidate(t *te
 	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
 		t.Fatal(err)
 	}
-	committedDigest := runtime.receipt.committedBaselineDigest
+	committedDigest := runtime.receipt.committedBaseline
 	committedGeneration := runtime.receipt.generation
 	committedSidecars := receiptBaselineSidecars(t, path)
 	if len(committedSidecars) != 1 {
@@ -963,7 +1410,7 @@ func TestInstallReceiptBaselineLegacyWALUncertaintyCleansRejectedCandidate(t *te
 		t.Fatalf("legacy-uncertain baseline error = %v, want ErrLegacyWALUncertain", err)
 	}
 	assertReceiptBaselinePublicationFault(t, primary)
-	if runtime.receipt.committedBaselineDigest != committedDigest {
+	if runtime.receipt.committedBaseline != committedDigest {
 		t.Fatal("legacy-uncertain rejection changed committed digest")
 	}
 	if runtime.receipt.generation != committedGeneration {
@@ -996,7 +1443,7 @@ func TestInstallReceiptBaselineBoundsLiveSidecarRetention(t *testing.T) {
 			t.Fatalf("successful install %d sidecars = %v, want one", i, sidecars)
 		}
 	}
-	committedDigest := runtime.receipt.committedBaselineDigest
+	committedDigest := runtime.receipt.committedBaseline
 	newer := image.cutoff
 	newer.WallNs++
 	if !runtime.origins.Record(image.origin, 2, newer) {
@@ -1007,7 +1454,7 @@ func TestInstallReceiptBaselineBoundsLiveSidecarRetention(t *testing.T) {
 		if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err == nil {
 			t.Fatalf("origin-regressing install %d succeeded", i)
 		}
-		if runtime.receipt.committedBaselineDigest != committedDigest {
+		if runtime.receipt.committedBaseline != committedDigest {
 			t.Fatalf("rejected install %d changed committed digest", i)
 		}
 		if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
