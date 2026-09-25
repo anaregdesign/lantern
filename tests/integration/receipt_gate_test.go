@@ -3586,6 +3586,153 @@ func TestPublicEdgeDeleteReceipts_ThreeReplicaPartitionAntiEntropy(t *testing.T)
 	requireDeletedEdges("C", c)
 }
 
+func TestPublicEdgeDeleteReceipts_ThreeReplicaRelayAfterOriginDisconnect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping three-replica public receipt relay")
+	}
+	const token = "receipt-relay-token"
+	a := newPublicReceiptWireServer(t, hlc.NodeID{0xd1}, 16, token)
+	b := newPublicReceiptWireServer(t, hlc.NodeID{0xd2}, 16, token)
+	c := newPublicReceiptWireServer(t, hlc.NodeID{0xd3}, 16, token)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	capability := publicReceiptCapability(t, a, token)
+	present := &pb.EdgeKey{Tail: "receipt-relay", Head: "present"}
+	absent := &pb.EdgeKey{Tail: "receipt-relay", Head: "absent"}
+	putReceiptWireEdges(t, a.raw, token, present)
+	stopBA := startPublicReceiptPump(t, ctx, "A->B public receipt relay", b, a, token)
+	defer stopBA()
+	stopCA := startPublicReceiptPump(t, ctx, "A->C public receipt seed", c, a, token)
+	defer stopCA()
+	aOrigin := hex.EncodeToString(a.config.NodeID[:])
+	seedCut := map[string]uint64{aOrigin: 1}
+	requireExactReceiptCut(t, "B relay seed", waitForPublicReceiptCut(
+		t, ctx, "B relay seed", b, token, seedCut, 5*time.Second,
+	), seedCut)
+	requireExactReceiptCut(t, "C relay seed", waitForPublicReceiptCut(
+		t, ctx, "C relay seed", c, token, seedCut, 5*time.Second,
+	), seedCut)
+	requireCSeed := func(name string) {
+		t.Helper()
+		response, err := c.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+			Tail: present.GetTail(), Head: present.GetHead(),
+		}, token))
+		if err != nil || response.Msg.GetEdge().GetWeight() != 1 {
+			t.Fatalf("%s C edge = %+v, %v, want weight 1", name, response, err)
+		}
+	}
+	requireCSeed("before partition")
+
+	stopCA()
+	receiptContext := publicReceiptWireContext(
+		t, capability, 0xe1, 2,
+		time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
+	)
+	deleted, err := a.raw.DeleteEdges(ctx, receiptRequestWithToken(&pb.DeleteEdgesRequest{
+		Edges: []*pb.EdgeKey{present, absent}, ReceiptContext: receiptContext,
+	}, token))
+	if err != nil || deleted.Msg.GetDeleted() != 1 ||
+		!reflect.DeepEqual(deleted.Msg.GetExisted(), []bool{true, false}) {
+		t.Fatalf("A relay DeleteEdges = %+v, %v, want [true false]", deleted, err)
+	}
+
+	deleteCut := map[string]uint64{aOrigin: 2}
+	requireExactReceiptCut(t, "B relay confirmed", waitForPublicReceiptCut(
+		t, ctx, "B relay confirmed", b, token, deleteCut, 5*time.Second,
+	), deleteCut)
+	aStatuses := receiptWireStatuses(t, ctx, a, token, receiptContext.GetOperationIds())
+	bStatuses := receiptWireStatuses(t, ctx, b, token, receiptContext.GetOperationIds())
+	requireReceiptDeleteResults(t, "A relay", aStatuses, receiptContext.GetOperationIds(), []bool{true, false})
+	requireReceiptDeleteResults(t, "B relay", bStatuses, receiptContext.GetOperationIds(), []bool{true, false})
+	if !proto.Equal(&pb.GetReceiptStatusesResponse{Statuses: aStatuses}, &pb.GetReceiptStatusesResponse{Statuses: bStatuses}) {
+		t.Fatalf("B relay statuses differ from A:\nA=%+v\nB=%+v", aStatuses, bStatuses)
+	}
+	stopBA()
+	requireExactReceiptCut(t, "C relay partitioned", waitForPublicReceiptCut(
+		t, ctx, "C relay partitioned", c, token, seedCut, 5*time.Second,
+	), seedCut)
+	for i, status := range receiptWireStatuses(t, ctx, c, token, receiptContext.GetOperationIds()) {
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED ||
+			!bytes.Equal(status.GetOperationId(), receiptContext.GetOperationIds()[i]) ||
+			status.GetReceipt() != nil {
+			t.Fatalf("partitioned C relay status[%d] = %+v, want NOT_YET_OBSERVED", i, status)
+		}
+	}
+	requireCSeed("while partitioned")
+
+	a.server.srv.Close()
+	func() {
+		relayCtx, stopRelay := context.WithTimeout(ctx, 5*time.Second)
+		defer stopRelay()
+		stream, err := newReplicationRawClient(t, b.server.url).Subscribe(
+			relayCtx,
+			receiptRequestWithToken(&pb.SubscribeRequest{
+				FromSeqPerOrigin:       map[string]uint64{aOrigin: 2},
+				AcceptReceiptEnvelopes: true,
+			}, token),
+		)
+		if err != nil {
+			t.Fatalf("B relay Subscribe after A disconnect: %v", err)
+		}
+		defer func() {
+			if err := stream.Close(); err != nil {
+				t.Errorf("close B relay stream: %v", err)
+			}
+		}()
+		if !stream.Receive() {
+			t.Fatalf("B relay Subscribe frame: %v", stream.Err())
+		}
+		mutation := stream.Msg().GetMutation()
+		if mutation == nil || mutation.GetSeq() != 2 ||
+			!bytes.Equal(mutation.GetOrigin(), a.config.NodeID[:]) ||
+			mutation.GetOp().GetDeleteEdges() != nil {
+			t.Fatalf("B did not relay A-origin receipt mutation: %+v", stream.Msg())
+		}
+		call := mutation.GetOp().GetReplicatedReceiptEdgeDelete()
+		if call == nil || len(call.GetItems()) != 2 {
+			t.Fatalf("B relay lost receipt envelope: %+v", mutation)
+		}
+		for i, key := range []*pb.EdgeKey{present, absent} {
+			item := call.GetItems()[i]
+			result, ok := item.GetReceipt().GetOriginalResult().GetResult().(*pb.ReceiptResult_DeleteEdgeExisted)
+			if !proto.Equal(item.GetKey(), key) ||
+				!bytes.Equal(item.GetReceipt().GetOperationId(), receiptContext.GetOperationIds()[i]) ||
+				!ok || result.DeleteEdgeExisted != (i == 0) {
+				t.Fatalf("B relay item[%d] = %+v, want original result %t", i, item, i == 0)
+			}
+		}
+	}()
+
+	stopCB := startPublicReceiptPump(t, ctx, "B->C public receipt relay", c, b, token)
+	defer stopCB()
+	requireExactReceiptCut(t, "C relay recovered", waitForPublicReceiptCut(
+		t, ctx, "C relay recovered", c, token, deleteCut, 5*time.Second,
+	), deleteCut)
+	cStatuses := receiptWireStatuses(t, ctx, c, token, receiptContext.GetOperationIds())
+	requireReceiptDeleteResults(t, "C relay", cStatuses, receiptContext.GetOperationIds(), []bool{true, false})
+	if !proto.Equal(&pb.GetReceiptStatusesResponse{Statuses: aStatuses}, &pb.GetReceiptStatusesResponse{Statuses: cStatuses}) {
+		t.Fatalf("C relay statuses differ from A:\nA=%+v\nC=%+v", aStatuses, cStatuses)
+	}
+	for _, replica := range []struct {
+		name string
+		wire publicReceiptWireServer
+	}{
+		{"B", b},
+		{"C", c},
+	} {
+		for _, key := range []*pb.EdgeKey{present, absent} {
+			_, err := replica.wire.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+				Tail: key.GetTail(), Head: key.GetHead(),
+			}, token))
+			if connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatalf("%s GetEdge(%q, %q) = %v, want NotFound",
+					replica.name, key.GetTail(), key.GetHead(), err)
+			}
+		}
+	}
+}
+
 func durableFollowerReceiptMutation(
 	t *testing.T,
 	config mutationreceipt.Config,
