@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add immutable online bounded-receipt capability, identity, endpoint,
+  reconciliation, and three-state status APIs for the public Edge Delete
+  family. Receipt-bearing deletes retain exact request-aligned original
+  results and permit opt-in same-endpoint retry only after continuity is
+  revalidated; existing receipt-less mutations and offline packages are
+  unchanged.
+
 ## 0.3.1
 
 - Regenerate the internal replication wire schema so D4 Delete mutations carry

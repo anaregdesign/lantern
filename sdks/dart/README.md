@@ -111,6 +111,64 @@ receipts and matching TTL/response-loss evidence.
 contributions whose initial live sum is exact. With `idempotentAdds` enabled,
 the entire expanded call is also safe against an ambiguous response loss.
 
+## Bounded Edge Delete receipts
+
+Receipt-bearing Edge Delete is an explicit API alongside the existing
+receipt-less `deleteEdge(s)` methods. The existing methods retain their
+one-attempt ambiguous-result behavior. No receipt-bearing Vertex Put/Delete or
+Edge Add API is exposed yet, and the online package does not persist receipt
+state or enable offline receipt mutations.
+
+Fetch capability from the target endpoint, mint one immutable context, persist
+its exact operation/group/endpoint bytes if recovery must survive process
+death, and use that same context for the mutation:
+
+```dart
+final capability = await client.getReceiptCapability();
+if (capability case ReceiptCapabilityEnabled()) {
+  final receiptContext = client.mintReceiptContext(
+    capability: capability,
+    itemCount: 1,
+  );
+  try {
+    final result = await client.deleteEdgeWithReceipt(
+      const EdgeRef('user:42', 'group:example'),
+      context: receiptContext,
+    );
+    print('existed: ${result.existed}');
+  } on ReceiptReconciliationException catch (error) {
+    final status = await client.getReceiptStatus(
+      error.context.operationIds.single,
+    );
+    switch (status.state) {
+      case ReceiptStatusState.confirmed:
+        print('original existed: ${status.receipt!.existed}');
+      case ReceiptStatusState.notYetObserved:
+        print('not observed; execution remains uncertain');
+      case ReceiptStatusState.noLongerProvable:
+        print('receipt evidence is no longer available');
+    }
+  }
+}
+```
+
+Operation IDs encode the enabled deployment epoch and a server-time-based
+issuance timestamp; operation and logical-call entropy comes from
+cryptographically secure platform randomness by default. The clock and random
+source are injectable for deterministic tests. Constructors validate exact
+byte lengths, nonzero identity components, one shared epoch, unique operation
+IDs, and request-index alignment before network I/O.
+
+With `RetryPolicy` configured, a response-loss retry reuses the exact context
+only after a read-only capability check confirms the same deployment epoch,
+node ID, and endpoint generation. The retry request echoes that marker, so a
+load balancer cannot silently move the destructive replay to another endpoint.
+Bearer-token rotation is independent of continuity. Disabled capability,
+changed continuity, an exhausted ambiguous attempt, or an untrusted response
+throws `ReceiptReconciliationException` with the exact context for status
+lookup. `notYetObserved` is not proof of non-execution, and
+`noLongerProvable` forbids automatic mutation replay.
+
 ## Cursor-paged mobile lists
 
 `scanVertices`, `scanVertexKeys`, and `scanEdges` fetch exactly one bounded
