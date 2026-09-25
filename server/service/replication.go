@@ -84,24 +84,6 @@ type publicationStatusProvider interface {
 	publicationStatus() (<-chan struct{}, bool)
 }
 
-// graphMutationFromLog projects an owned log payload onto the Subscribe wire.
-// A receipt envelope must take the ReplicationMutation path before the legacy
-// graph-only fallback, so a peer cannot advance an origin without receipts.
-func graphMutationFromLog(op mutationlog.MutationOp) (*pb.Mutation, bool) {
-	switch value := op.(type) {
-	case interface{ ReplicationMutation() (*pb.Mutation, error) }:
-		mutation, err := value.ReplicationMutation()
-		return mutation, err == nil && mutation != nil
-	case *pb.Mutation:
-		return value, value != nil
-	case interface{ GraphMutation() *pb.Mutation }:
-		mutation := value.GraphMutation()
-		return mutation, mutation != nil
-	default:
-		return nil, false
-	}
-}
-
 func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
@@ -134,14 +116,16 @@ type SearchConfigFingerprintProvider interface {
 // LanternService.WithReplication wired into the write path, so
 // subscribers see every successfully appended mutation in seq order.
 type LanternReplicationService struct {
-	log     *mutationlog.Log
-	backend Backend
-	clock   *hlc.Clock
-	runtime *ServingRuntime
-	metrics SubscribeMetrics
-	logger  *slog.Logger
-	origins OriginStatesProvider
-	search  SearchConfigFingerprintProvider
+	log                       *mutationlog.Log
+	backend                   Backend
+	clock                     *hlc.Clock
+	runtime                   *ServingRuntime
+	replicationSendMaxBytes   int
+	replicationFrameCertified bool
+	metrics                   SubscribeMetrics
+	logger                    *slog.Logger
+	origins                   OriginStatesProvider
+	search                    SearchConfigFingerprintProvider
 	// Set before serving any receipt-capable write. It is deliberately a
 	// lifetime latch: a graph-only Snapshot may never certify receipt state,
 	// including after receipt log entries have been evicted.
@@ -371,14 +355,26 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				return connect.NewError(connect.CodeFailedPrecondition,
 					errors.New("gapped: subscriber fell behind; snapshot and resubscribe"))
 			}
-			mu, ok := graphMutationFromLog(entry.Op)
-			if !ok {
+			frame, err := subscribeMutationFrame(entry.Op)
+			if err != nil {
 				l := s.loggerOrDefault()
 				l.Warn("replication: unexpected mutation log entry type",
 					slog.String("type", "non-Mutation payload"),
-					slog.Uint64("seq", entry.Seq))
+					slog.Uint64("seq", entry.Seq),
+					slog.Any("err", err))
 				return connect.NewError(connect.CodeInternal, fmt.Errorf(
 					"replication: malformed mutation log entry at seq=%d", entry.Seq))
+			}
+			mu := frame.GetMutation()
+			if s.replicationFrameCertified {
+				if _, err := validateReplicationFrameSize(entry.Op, s.replicationSendMaxBytes); err != nil {
+					l := s.loggerOrDefault()
+					l.Error("replication: certified mutation exceeds send limit",
+						slog.Uint64("seq", entry.Seq),
+						slog.Any("err", err))
+					return connect.NewError(connect.CodeInternal, fmt.Errorf(
+						"replication: certified mutation frame at seq=%d: %w", entry.Seq, err))
+				}
 			}
 			if receipt, err := validateSubscribeReceiptEnvelope(mu); receipt {
 				if !req.GetAcceptReceiptEnvelopes() {
@@ -407,7 +403,7 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			// the same (origin, origin_seq) tuple appear with a
 			// different Seq value on every hop, breaking the
 			// per-origin dedup gate in ApplyMutation.
-			if err := stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{Mutation: mu}}); err != nil {
+			if err := stream.Send(frame); err != nil {
 				s.metrics.OnSubscribeDropped("send_failed")
 				return err
 			}

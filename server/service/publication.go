@@ -300,12 +300,21 @@ func graphEffectMutation(op mutationlog.MutationOp) (*pb.Mutation, error) {
 // durable union. Actual accepted effects are still captured from GraphCache's
 // final application lock; this preflight never predicts which effects win.
 func validateGraphEffectPublicationShape(m *pb.Mutation) error {
+	effect, err := maximalGraphEffectPublication(m)
+	if err != nil {
+		return err
+	}
+	_, err = encodeReceiptWALUnion(effect)
+	return err
+}
+
+func maximalGraphEffectPublication(m *pb.Mutation) (mutationlog.MutationOp, error) {
 	var effect mutationlog.MutationOp
 	switch {
 	case isAnyGraphPut(m):
 		slots, err := graphPutSlots(m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		outcomes := make([]graphcache.PutOutcome, 0, len(slots))
 		for _, slot := range slots {
@@ -320,12 +329,12 @@ func validateGraphEffectPublicationShape(m *pb.Mutation) error {
 		}
 		effect, err = newGraphPutEffectEnvelope(m, outcomes)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	case isAnyGraphAdd(m):
 		slots, err := graphAddSlots(m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		accepted := make([]bool, 0, len(slots))
 		for _, present := range slots {
@@ -335,30 +344,39 @@ func validateGraphEffectPublicationShape(m *pb.Mutation) error {
 		}
 		effect, err = newGraphAddEffectEnvelope(m, accepted)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	case isAnyGraphDelete(m):
 		count, ok := graphDeleteRequestCount(m)
 		if !ok {
-			return receiptWALUnionError("graph Delete publication requires an exact Delete arm")
+			return nil, receiptWALUnionError("graph Delete publication requires an exact Delete arm")
 		}
 		var err error
 		effect, err = newGraphDeleteEffectEnvelope(m, allAcceptedIndexes(count))
 		if err != nil {
-			return err
+			return nil, err
 		}
 	default:
-		return receiptWALUnionError("unsupported graph publication arm")
+		return nil, receiptWALUnionError("unsupported graph publication arm")
 	}
-	_, err := encodeReceiptWALUnion(effect)
-	return err
+	return effect, nil
 }
 
 func (s *LanternService) validateGraphPublicationShape(m *pb.Mutation) error {
+	var err error
 	if s.receiptStore != nil {
-		return s.validateDurableGraphMutationPreflight(m)
+		err = s.validateDurableGraphMutationPreflight(m)
+	} else {
+		err = validateGraphEffectPublicationShape(m)
 	}
-	return validateGraphEffectPublicationShape(m)
+	if err != nil {
+		return err
+	}
+	effect, err := maximalGraphEffectPublication(m)
+	if err != nil {
+		return err
+	}
+	return s.validateReplicationFrame(effect)
 }
 
 // validateDurableGraphMutationPreflight proves that an owned generic graph

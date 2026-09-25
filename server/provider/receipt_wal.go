@@ -268,10 +268,11 @@ func receiptWALGraphConfigurator(
 // constructed outside this package. Listener and replication providers
 // require it, so Wire cannot bind network-facing objects to foreign state.
 type runtimeCertified struct {
-	valid       bool
-	runtime     *service.ServingRuntime
-	primary     *service.LanternService
-	replication *service.LanternReplicationService
+	valid                   bool
+	runtime                 *service.ServingRuntime
+	primary                 *service.LanternService
+	replication             *service.LanternReplicationService
+	replicationSendMaxBytes int
 }
 
 // runtimeRestored is the identity-bearing startup-restore barrier. Even a
@@ -309,19 +310,25 @@ func NewRuntimeCertified(
 	primary *service.LanternService,
 	replication *service.LanternReplicationService,
 	restored runtimeRestored,
+	netConfig NetConfig,
 ) (runtimeCertified, error) {
 	if runtime == nil || primary == nil || replication == nil ||
 		!restored.valid || restored.runtime != runtime || restored.primary != primary {
 		return runtimeCertified{}, errors.New("receipt WAL runtime certification requires both service surfaces")
 	}
-	if err := runtime.CertifyInstallation(primary, replication); err != nil {
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(
+		primary,
+		replication,
+		netConfig.MaxSendMsgBytes,
+	); err != nil {
 		return runtimeCertified{}, fmt.Errorf("certify serving runtime: %w", err)
 	}
 	return runtimeCertified{
-		valid:       true,
-		runtime:     runtime,
-		primary:     primary,
-		replication: replication,
+		valid:                   true,
+		runtime:                 runtime,
+		primary:                 primary,
+		replication:             replication,
+		replicationSendMaxBytes: netConfig.MaxSendMsgBytes,
 	}, nil
 }
 

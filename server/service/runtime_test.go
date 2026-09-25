@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,236 @@ func durableRuntimeTestConfig(path string) DurableReceiptWALRuntimeConfig {
 		},
 		NodeID: hlc.NodeID{0x31},
 		Now:    now,
+	}
+}
+
+func TestServingRuntimeCertificationRejectsRetainedOversizedFrame(t *testing.T) {
+	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	clock := hlc.New(hlc.NodeID{0x71}, hlc.Options{})
+	runtime, err := NewGraphOnlyServingRuntime(graph, log, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	ts := clock.Now()
+	mutation := &pb.Mutation{
+		Seq: 1, Origin: ts.NodeID[:], Hlc: hlcToProto(ts),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{
+				Key:   "retained",
+				Value: &pb.Vertex_Bytes{Bytes: make([]byte, 1024)},
+			}},
+		}},
+	}
+	if _, err := log.Append(mutation, ts); err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = runtime.CertifyInstallationWithReplicationSendLimit(primary, replication, 128)
+	if err == nil || !strings.Contains(err.Error(), "retained replication frame") ||
+		!strings.Contains(err.Error(), "LANTERN_MAX_SEND_MSG_BYTES=128") {
+		t.Fatalf("small-cap certification = %v", err)
+	}
+	if runtime.replicationFrameCertified || primary.replicationFrameCertified ||
+		replication.replicationFrameCertified {
+		t.Fatal("failed certification installed a replication frame limit")
+	}
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(primary, replication, 2048); err != nil {
+		t.Fatalf("larger-cap certification: %v", err)
+	}
+	if !runtime.replicationFrameCertified ||
+		runtime.replicationSendMaxBytes != 2048 ||
+		primary.replicationSendMaxBytes != 2048 ||
+		replication.replicationSendMaxBytes != 2048 {
+		t.Fatal("successful certification did not bind one send limit")
+	}
+}
+
+func TestServingRuntimeRestartRejectsLoweredSendCap(t *testing.T) {
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(primary, replication, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, err = primary.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{
+			Key:        "retained-restart-frame",
+			Value:      &pb.Vertex_Bytes{Bytes: make([]byte, 2048)},
+			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("seed retained frame: %v", err)
+	}
+	entries := runtime.log.RetainedEntries()
+	if len(entries) != 1 {
+		t.Fatalf("retained entries = %d, want 1", len(entries))
+	}
+	frameSize, err := validateReplicationFrameSize(entries[0].Op, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	config.Now = time.Now()
+	config.Receipt.ClockHighWater = config.Now
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedPrimary := restarted.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	restartedReplication, err := restarted.NewLanternReplicationService(restartedPrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = restarted.CertifyInstallationWithReplicationSendLimit(
+		restartedPrimary,
+		restartedReplication,
+		frameSize-1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "retained replication frame") ||
+		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", frameSize-1)) {
+		t.Fatalf("lowered-cap restart certification = %v", err)
+	}
+	if restarted.replicationFrameCertified || restartedPrimary.replicationFrameCertified ||
+		restartedReplication.replicationFrameCertified {
+		t.Fatal("failed lowered-cap restart installed frame certification")
+	}
+	if length, _, _ := restarted.MutationLogStats(); length != 1 {
+		t.Fatalf("failed lowered-cap restart changed retained log length to %d", length)
+	}
+	if seq := restartedPrimary.LocalSeq(config.NodeID); seq != 1 {
+		t.Fatalf("failed lowered-cap restart changed origin seq to %d", seq)
+	}
+	if err := restarted.CertifyInstallationWithReplicationSendLimit(
+		restartedPrimary,
+		restartedReplication,
+		frameSize,
+	); err != nil {
+		t.Fatalf("exact-fit restart certification: %v", err)
+	}
+}
+
+func TestServingRuntimeRestartRejectsRetainedSparseReceiptRelay(t *testing.T) {
+	originConfig := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "origin.wal"))
+	originConfig.NodeID = hlc.NodeID{0x41}
+	originRuntime, err := CreateDurableReceiptWALServingRuntime(originConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = originRuntime.Close() })
+	originPrimary := originRuntime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	originReplication, err := originRuntime.NewLanternReplicationService(originPrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := originRuntime.CertifyInstallationWithReplicationSendLimit(originPrimary, originReplication, 0); err != nil {
+		t.Fatal(err)
+	}
+	keys := []graphcache.EdgeKey[string]{
+		{Tail: "causally-rejected", Head: "receipt-relay"},
+		{Tail: "accepted", Head: "receipt-relay"},
+	}
+	originRuntime.graph.AddEdgeWithExpiration(keys[1].Tail, keys[1].Head, 1, time.Now().Add(time.Hour))
+	call := receiptDeleteCall(t, originConfig.Receipt.Epoch, keys...)
+	if _, err := originPrimary.receiptEdgeDeleteCoordinator.Commit(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	originEnvelope := originRuntime.log.RetainedEntries()[0].Op.(*edgeDeleteReceiptEnvelope)
+	wire, err := originEnvelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	config := originConfig
+	config.Path = filepath.Join(t.TempDir(), "follower.wal")
+	config.NodeID = hlc.NodeID{0x42}
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(primary, replication, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, err = primary.PutEdges(context.Background(), &pb.PutEdgesRequest{Edges: []*pb.Edge{{
+		Tail: keys[0].Tail, Head: keys[0].Head, Weight: 1,
+		Expiration: timestamppb.New(time.Now().Add(-time.Second)),
+	}}})
+	if err != nil {
+		t.Fatalf("persist follower's newer causal barrier: %v", err)
+	}
+	if err := primary.ApplyMutation(context.Background(), wire); err != nil {
+		t.Fatalf("apply sparse receiver-local receipt: %v", err)
+	}
+	if entries := runtime.log.RetainedEntries(); len(entries) != 2 {
+		t.Fatalf("follower retained %d entries, want barrier and receipt", len(entries))
+	}
+	envelope := runtime.log.RetainedEntries()[1].Op.(*edgeDeleteReceiptEnvelope)
+	if len(envelope.Accepted) != 1 || envelope.Accepted[0].Index != 1 {
+		t.Fatalf("receiver-local receipt accepted indexes = %+v, want only index 1", envelope.Accepted)
+	}
+	sparseSize, err := validateReplicationFrameSize(envelope, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximalSize, err := validateReplicationFrameSize(maximalReceiptEdgeDeleteEnvelope(envelope), 0)
+	if err != nil || maximalSize <= sparseSize {
+		t.Fatalf("retained sparse/maximal receipt frame sizes = %d/%d, %v", sparseSize, maximalSize, err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	config.Now = time.Now()
+	config.Receipt.ClockHighWater = config.Now
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedPrimary := restarted.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	restartedReplication, err := restarted.NewLanternReplicationService(restartedPrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = restarted.CertifyInstallationWithReplicationSendLimit(
+		restartedPrimary, restartedReplication, maximalSize-1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "retained replication frame at local log seq 2") ||
+		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", maximalSize-1)) {
+		t.Fatalf("lowered receiver-local relay cap certification = %v", err)
+	}
+	if restarted.replicationFrameCertified || restartedPrimary.replicationFrameCertified ||
+		restartedReplication.replicationFrameCertified {
+		t.Fatal("failed retained receipt certification installed frame limit")
+	}
+	if err := restarted.CertifyInstallationWithReplicationSendLimit(
+		restartedPrimary, restartedReplication, maximalSize,
+	); err != nil {
+		t.Fatalf("exact-fit retained receipt relay certification: %v", err)
 	}
 }
 

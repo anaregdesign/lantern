@@ -74,6 +74,13 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		return connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("replication receipt envelope: %w", receiptErr))
 	}
+	frameOp := mutationlog.MutationOp(m)
+	if receiptEnvelope != nil {
+		frameOp = receiptEnvelope
+	}
+	if err := s.validateReplicationFrame(frameOp); err != nil {
+		return err
+	}
 	if receiptEnvelope == nil && s.receiptStore != nil {
 		if err := s.validateDurableGraphMutationPreflight(m); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication durable preflight: %w", err))
@@ -87,6 +94,16 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		}
 		if err := validateGraphEffectPublicationShape(m); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication publication shape: %w", err))
+		}
+	}
+	if receiptEnvelope == nil {
+		effect, err := maximalGraphEffectPublication(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("replication publication shape: %w", err))
+		}
+		if err := s.validateReplicationFrame(effect); err != nil {
+			return err
 		}
 	}
 	s.replicationCutMu.Lock()

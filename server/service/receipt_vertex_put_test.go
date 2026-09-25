@@ -17,6 +17,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -167,6 +168,51 @@ func TestVertexPutReceiptCoordinatorPreservesExactOutcomesAndRetry(t *testing.T)
 		f.service.LocalSeq(f.service.clock.NodeID()) != 2 || f.log.Len() != 2 {
 		t.Fatalf("receipt-only publication = %#v seq=%d log=%d",
 			noOpEnvelope, f.service.LocalSeq(f.service.clock.NodeID()), f.log.Len())
+	}
+}
+
+func TestVertexPutReceiptRelayMaximumBoundsSparseFollower(t *testing.T) {
+	origin := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x91}, 8, nil)
+	follower := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x92}, 8, nil)
+	vertex := &pb.Vertex{
+		Key:        "sparse-relay",
+		Value:      &pb.Vertex_Bytes{Bytes: make([]byte, 512)},
+		Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+	}
+	call := receiptVertexPutTestCall(t, origin.epoch, 0x91, false, vertex)
+	if _, err := origin.coordinator.Commit(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := origin.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope).ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !follower.cache.ApplyVertexCausalBarrierHLC(vertex.Key, hlc.Timestamp{
+		WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: follower.service.clock.NodeID(),
+	}) {
+		t.Fatal("cannot install follower causal barrier")
+	}
+	if err := follower.service.ApplyMutation(context.Background(), proto.Clone(wire).(*pb.Mutation)); err != nil {
+		t.Fatal(err)
+	}
+	retained := follower.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+	if len(retained.Accepted) != 0 ||
+		retained.Receipts[0].Result[0] != byte(pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE) {
+		t.Fatalf("receiver-local Vertex Put envelope = %+v", retained)
+	}
+	sparseSize, err := validateReplicationFrameSize(retained, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximalSize, err := validateReplicationRelayFrameSize(retained, 0)
+	if err != nil || maximalSize <= sparseSize {
+		t.Fatalf("sparse/maximal Vertex Put frames = %d/%d, %v", sparseSize, maximalSize, err)
+	}
+	if _, err := validateReplicationRelayFrameSize(retained, maximalSize-1); err == nil {
+		t.Fatal("one-byte-under maximal Vertex Put relay was admitted")
+	}
+	if size, err := validateReplicationRelayFrameSize(retained, maximalSize); err != nil || size != maximalSize {
+		t.Fatalf("exact-fit maximal Vertex Put relay = %d, %v", size, err)
 	}
 }
 

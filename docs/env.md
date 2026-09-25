@@ -11,6 +11,21 @@ value is treated as unset for the non-string kinds. The MCP server's
 Search projection, membership, error, TTL, cursor, and HA semantics are
 canonical in the [SearchVertices contract](search.md).
 
+The public and replication handlers share the message-size limits. Before a
+local or relayed mutation is published, Lantern verifies that its exact binary
+full-mutation `SubscribeResponse` and the largest receiver-local relay of any
+receipt envelope fit `LANTERN_MAX_SEND_MSG_BYTES`; an oversize frame is rejected
+with `ResourceExhausted` before graph, Store, WAL, or origin publication.
+Startup also fails if a retained frame or its maximal relay exceeds a newly
+lowered send cap. `LANTERN_MAX_RECV_MSG_BYTES` remains an independent
+request cap, so a request that fits it may still be rejected after response
+projection. Receipt-WAL and receipt-wire 8 MiB bounds do not raise the send cap;
+intrinsic wire limits apply even when the configured cap is unlimited. Every
+full-mutation Subscribe consumer must accept its sender's admitted maximum;
+use compatible peer read limits. Full-mutation Subscribe requires binary
+protobuf (not gRPC-Web text); identity-only ProtoJSON remains supported.
+Snapshot keeps its independent bounded transport contract.
+
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | int | `1024` | Origin-seq gap size above which the anti-entropy sweep logs a warning. |
@@ -53,9 +68,9 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_MAX_EDGES` | int | `0` | Soft local-admission cap on the conservative edge footprint: live edges plus retained Put barriers (0 = unlimited). A live additive edge coexisting with a barrier counts twice, and charging born-expired Put barriers prevents a cap bypass. This intentionally overlaps the separate causal-identity budget; replication apply and backup restore bypass it. |
 | `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | int | `0` | Hard atomic local-origin admission budget over the exact retained edge causal-identity union (live HLC floor, Put barrier, or Delete tombstone); 0 = unlimited. Replication apply bypasses the limit for convergence and can report over-limit. |
 | `LANTERN_MAX_KEY_LEN` | int | `1024` | Maximum accepted vertex-key length in bytes. |
-| `LANTERN_MAX_RECV_MSG_BYTES` | int | `16777216` | Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited). |
+| `LANTERN_MAX_RECV_MSG_BYTES` | int | `16777216` | Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited); independent of replication response expansion. |
 | `LANTERN_MAX_REPLICATION_LAG` | int | `10000` | Readiness gate: maximum tolerated replication lag (entries) before /readyz reports not ready. |
-| `LANTERN_MAX_SEND_MSG_BYTES` | int | `16777216` | Maximum produced response size per Protobuf message, enforced by every generated Connect handler (0 = unlimited). |
+| `LANTERN_MAX_SEND_MSG_BYTES` | int | `16777216` | Maximum produced response size per Protobuf message (0 = unlimited); certified before publication against both actual binary SubscribeResponse frames and maximal receiver-local receipt relays. |
 | `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` | int | `0` | Hard atomic local-origin admission budget over the exact retained vertex causal-identity union (live HLC floor, Put barrier, or Delete tombstone); 0 = unlimited. Replication apply bypasses the limit for convergence and can report over-limit. |
 | `LANTERN_MAX_VERTICES` | int | `0` | Soft local-admission cap on the conservative vertex footprint: live vertices plus retained Put barriers (0 = unlimited). Charging born-expired Put barriers prevents a cap bypass. This intentionally overlaps the separate causal-identity budget; replication apply and backup restore bypass it, and edge admission conservatively assumes both endpoints may be new. |
 | `LANTERN_METRICS_ADDR` | string | `:9090` | host:port for the /metrics + /healthz + /readyz HTTP listener (empty disables it). |

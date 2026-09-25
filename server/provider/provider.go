@@ -30,8 +30,9 @@ import (
 // NetConfig groups the primary listener and message-size / concurrency caps.
 //
 //   - LANTERN_PORT                       (default 6380)
-//   - LANTERN_MAX_RECV_MSG_BYTES         (default 16 MiB)
-//   - LANTERN_MAX_SEND_MSG_BYTES         (default 16 MiB)
+//   - LANTERN_MAX_RECV_MSG_BYTES         (default 16 MiB; request messages)
+//   - LANTERN_MAX_SEND_MSG_BYTES         (default 16 MiB; responses and the
+//     certified full-mutation SubscribeResponse admission bound)
 //   - LANTERN_MAX_CONCURRENT_STREAMS     (default 1024; 0 = unlimited)
 type NetConfig struct {
 	Port                 int
@@ -776,6 +777,12 @@ func NewListener(
 ) (net.Listener, func(), error) {
 	if !certified.valid || !publicReceipts.valid {
 		return nil, nil, errors.New("serving runtime or public receipt state is not certified")
+	}
+	if n.MaxRecvMsgBytes < 0 || n.MaxSendMsgBytes < 0 {
+		return nil, nil, errors.New("connect message size limits must be zero (unlimited) or positive")
+	}
+	if certified.replicationSendMaxBytes != n.MaxSendMsgBytes {
+		return nil, nil, errors.New("listener send limit differs from certified replication frame admission")
 	}
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(n.Port))
 	if err != nil {

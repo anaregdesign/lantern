@@ -122,6 +122,29 @@ func TestNewGraphCache_GCEdgeBudget(t *testing.T) {
 	}
 }
 
+func TestNewListenerRequiresCertifiedReplicationSendLimit(t *testing.T) {
+	config := NetConfig{Port: 0, MaxRecvMsgBytes: 1024, MaxSendMsgBytes: 512}
+	certified := runtimeCertified{valid: true, replicationSendMaxBytes: 256}
+	publicReceipts := publicReceiptsCertified{valid: true}
+	if listener, cleanup, err := NewListener(config, certified, publicReceipts); err == nil {
+		cleanup()
+		listener.Close()
+		t.Fatal("NewListener accepted a send limit different from frame admission")
+	} else if !strings.Contains(err.Error(), "differs from certified replication frame admission") {
+		t.Fatalf("NewListener mismatch error = %v", err)
+	}
+
+	certified.replicationSendMaxBytes = config.MaxSendMsgBytes
+	listener, cleanup, err := NewListener(config, certified, publicReceipts)
+	if err != nil {
+		t.Fatalf("NewListener matching limit: %v", err)
+	}
+	if listener == nil {
+		t.Fatal("NewListener matching limit returned nil listener")
+	}
+	cleanup()
+}
+
 // TestNewConfigValidation covers the #847 boot-time validation pass: a
 // malformed value or an unknown LANTERN_* variable is tolerated (warn +
 // default) by default and fatal under LANTERN_STRICT_CONFIG. The strict

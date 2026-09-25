@@ -1,6 +1,9 @@
 package graphcache
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // ScanByPrefix iterates every live vertex whose projected key starts with
 // prefix, in lexicographic order, invoking fn for each one. fn may return
@@ -187,10 +190,28 @@ func (c *GraphCache[S, T]) DeleteByPrefix(ctx context.Context, prefix string, li
 // replication origin can log identities rather than replaying a predicate
 // that may match a wider set on a peer.
 func (c *GraphCache[S, T]) DeleteByPrefixKeys(ctx context.Context, prefix string, limit int) []S {
+	keys, _ := c.deleteByPrefixKeys(ctx, prefix, limit, nil)
+	return keys
+}
+
+// DeleteByPrefixKeysWithPreflight selects and admits the exact bounded victim
+// set under one cache write lock. preflight may reject without changing graph
+// or causal state, but must not call back into GraphCache while the lock is held.
+func (c *GraphCache[S, T]) DeleteByPrefixKeysWithPreflight(ctx context.Context, prefix string, limit int, preflight func([]S) error) ([]S, error) {
+	if preflight == nil {
+		return nil, errors.New("prefix delete requires a preflight callback")
+	}
+	return c.deleteByPrefixKeys(ctx, prefix, limit, preflight)
+}
+
+func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string, limit int, preflight func([]S) error) ([]S, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.prefixIndex == nil {
-		return nil
+		if preflight != nil {
+			return nil, ctx.Err()
+		}
+		return nil, nil
 	}
 	// Collect first, then delete. We cannot mutate the radix from inside
 	// its own walk (the walk holds radix.mu.RLock; delete needs the
@@ -211,6 +232,19 @@ func (c *GraphCache[S, T]) DeleteByPrefixKeys(ctx context.Context, prefix string
 		victims = append(victims, key)
 		return true
 	})
+	if preflight != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(victims) > 0 {
+			if err := preflight(victims); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	if c.searchIndex != nil && len(victims) > 0 {
 		c.searchCommitMu.Lock()
 		defer c.searchCommitMu.Unlock()
@@ -224,7 +258,7 @@ func (c *GraphCache[S, T]) DeleteByPrefixKeys(ctx context.Context, prefix string
 		c.clearVertexHLCLocked(key)
 	}
 	c.rebuildIncompleteSearchLocked()
-	return victims
+	return victims, nil
 }
 
 // resolveProjected inverts the prefix extractor. For the common

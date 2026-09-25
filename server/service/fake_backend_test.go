@@ -626,6 +626,35 @@ func (f *fakeBackend) DeleteByPrefixKeys(_ context.Context, prefix string, limit
 	return victims
 }
 
+func (f *fakeBackend) DeleteByPrefixKeysWithPreflight(ctx context.Context, prefix string, limit int, preflight func([]string) error) ([]string, error) {
+	var victims []string
+	for key := range f.vertices {
+		if prefix != "" && (len(key) < len(prefix) || key[:len(prefix)] != prefix) {
+			continue
+		}
+		victims = append(victims, key)
+		if limit > 0 && len(victims) >= limit {
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(victims) > 0 {
+		if err := preflight(victims); err != nil {
+			return nil, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, key := range victims {
+		delete(f.vertices, key)
+	}
+	f.deleteVertices += len(victims)
+	return victims, nil
+}
+
 func (f *fakeBackend) ScanEdgesByPrefixPage(_ context.Context, tailPrefix, headPrefix, afterTail, afterHead string, limit int,
 	fn func(string, string, string, string, float32, time.Time) bool,
 ) (bool, bool) {
@@ -697,6 +726,43 @@ func (f *fakeBackend) DeleteEdgesByPrefixKeys(_ context.Context, tailPrefix, hea
 	}
 	f.deleteEdges += len(victims)
 	return victims
+}
+
+func (f *fakeBackend) DeleteEdgesByPrefixKeysWithPreflight(ctx context.Context, tailPrefix, headPrefix string, limit int, preflight func([]graphcache.EdgeKey[string]) error) ([]graphcache.EdgeKey[string], error) {
+	var victims []graphcache.EdgeKey[string]
+	for tail, heads := range f.edges {
+		if tailPrefix != "" && (len(tail) < len(tailPrefix) || tail[:len(tailPrefix)] != tailPrefix) {
+			continue
+		}
+		for head := range heads {
+			if headPrefix != "" && (len(head) < len(headPrefix) || head[:len(headPrefix)] != headPrefix) {
+				continue
+			}
+			victims = append(victims, graphcache.EdgeKey[string]{Tail: tail, Head: head})
+			if limit > 0 && len(victims) >= limit {
+				break
+			}
+		}
+		if limit > 0 && len(victims) >= limit {
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(victims) > 0 {
+		if err := preflight(victims); err != nil {
+			return nil, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, key := range victims {
+		delete(f.edges[key.Tail], key.Head)
+	}
+	f.deleteEdges += len(victims)
+	return victims, nil
 }
 
 // Compile-time check that fakeBackend really satisfies Backend.
@@ -879,6 +945,10 @@ func (f *fakeBackend) DeleteByPrefixHLCCheckedKeys(_ context.Context, prefix str
 	return keys, nil
 }
 
+func (f *fakeBackend) DeleteByPrefixHLCCheckedKeysWithPreflight(ctx context.Context, prefix string, limit uint32, _ hlc.Timestamp, _ time.Time, preflight func([]string) error) ([]string, error) {
+	return f.DeleteByPrefixKeysWithPreflight(ctx, prefix, int(limit), preflight)
+}
+
 func (f *fakeBackend) DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, _ hlc.Timestamp, _ time.Time) (int, error) {
 	return f.DeleteEdgesByPrefix(ctx, tailPrefix, headPrefix, limit), nil
 }
@@ -913,6 +983,10 @@ func (f *fakeBackend) DeleteEdgesByPrefixHLCCheckedKeys(_ context.Context, tailP
 	}
 	f.deleteEdges += len(keys)
 	return keys, nil
+}
+
+func (f *fakeBackend) DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(ctx context.Context, tailPrefix, headPrefix string, limit int, _ hlc.Timestamp, _ time.Time, preflight func([]graphcache.EdgeKey[string]) error) ([]graphcache.EdgeKey[string], error) {
+	return f.DeleteEdgesByPrefixKeysWithPreflight(ctx, tailPrefix, headPrefix, limit, preflight)
 }
 
 // Snapshot* implement the bootstrap surface (#184). The fake backend

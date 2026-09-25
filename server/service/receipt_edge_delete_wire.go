@@ -14,10 +14,12 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+var errReceiptEdgeDeleteWireCapacity = errors.New("receipt Edge Delete wire frame exceeds 8 MiB")
+
 // ReplicationMutation projects the private WAL envelope as a receipt-bearing
 // MutationOp. It never falls back to the graph-only DeleteEdges projection:
 // an older peer must reject the unknown oneof arm before advancing its origin
-// watermark. The producer is not wired to a public write RPC yet.
+// watermark.
 func (e *edgeDeleteReceiptEnvelope) ReplicationMutation() (*pb.Mutation, error) {
 	if _, err := validateReceiptEdgeDeleteWALEnvelope(e); err != nil {
 		return nil, err
@@ -61,7 +63,7 @@ func (e *edgeDeleteReceiptEnvelope) ReplicationMutation() (*pb.Mutation, error) 
 		}},
 	}
 	if proto.Size(wired) > receiptEdgeDeleteWALMaxBytes {
-		return nil, errors.New("receipt Edge Delete wire frame exceeds 8 MiB")
+		return nil, errReceiptEdgeDeleteWireCapacity
 	}
 	return wired, nil
 }

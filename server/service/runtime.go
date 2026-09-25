@@ -27,15 +27,17 @@ import (
 // runtime alone does not enable receipt capability, status, or receipt-bearing
 // mutation RPCs; production activation requires the final certified barrier.
 type ServingRuntime struct {
-	graph    *graphcache.GraphCache[string, *pb.Vertex]
-	log      *mutationlog.Log
-	clock    *hlc.Clock
-	origins  *originStateTracker
-	receipt  *receiptServingRuntime
-	owner    io.Closer
-	closed   atomic.Bool
-	close    sync.Once
-	closeErr error
+	graph                     *graphcache.GraphCache[string, *pb.Vertex]
+	log                       *mutationlog.Log
+	clock                     *hlc.Clock
+	origins                   *originStateTracker
+	receipt                   *receiptServingRuntime
+	owner                     io.Closer
+	replicationSendMaxBytes   int
+	replicationFrameCertified bool
+	closed                    atomic.Bool
+	close                     sync.Once
+	closeErr                  error
 }
 
 type receiptServingRuntime struct {
@@ -595,8 +597,22 @@ func (r *ServingRuntime) CertifyInstallation(
 	primary *LanternService,
 	replication *LanternReplicationService,
 ) error {
+	return r.CertifyInstallationWithReplicationSendLimit(primary, replication, 0)
+}
+
+// CertifyInstallationWithReplicationSendLimit additionally binds mutation
+// admission and the replication handler to one immutable protobuf message
+// limit. A zero limit is explicitly unlimited.
+func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
+	primary *LanternService,
+	replication *LanternReplicationService,
+	maxSendBytes int,
+) error {
 	if r == nil || primary == nil || replication == nil {
 		return errors.New("service: runtime installation requires both service surfaces")
+	}
+	if maxSendBytes < 0 {
+		return errors.New("service: replication send limit must be zero (unlimited) or positive")
 	}
 	if primary.runtime != r || primary.cache != r.graph || primary.log != r.log ||
 		primary.clock != r.clock || primary.origins != r.origins {
@@ -620,6 +636,30 @@ func (r *ServingRuntime) CertifyInstallation(
 		replication.log != r.log || replication.clock != r.clock ||
 		replication.origins != primary {
 		return errors.New("service: replication service is not installed from the serving runtime")
+	}
+	if r.replicationFrameCertified &&
+		(r.replicationSendMaxBytes != maxSendBytes ||
+			!primary.replicationFrameCertified ||
+			primary.replicationSendMaxBytes != maxSendBytes ||
+			!replication.replicationFrameCertified ||
+			replication.replicationSendMaxBytes != maxSendBytes) {
+		return errors.New("service: replication send limit differs from the certified serving runtime")
+	}
+	for _, entry := range r.log.RetainedEntries() {
+		if _, err := validateReplicationFrameSize(entry.Op, maxSendBytes); err != nil {
+			return fmt.Errorf(
+				"service: retained replication frame at local log seq %d is not streamable: %w",
+				entry.Seq,
+				err,
+			)
+		}
+		if _, err := validateReplicationRelayFrameSize(entry.Op, maxSendBytes); err != nil {
+			return fmt.Errorf(
+				"service: retained replication frame at local log seq %d has an unstreamable receiver-local relay: %w",
+				entry.Seq,
+				err,
+			)
+		}
 	}
 	if r.receipt != nil {
 		source, err := NewReceiptWholeStateSource(primary, r.receipt.store)
@@ -657,6 +697,12 @@ func (r *ServingRuntime) CertifyInstallation(
 			return errors.New("service: durable receipt Snapshot is not installed from the serving runtime")
 		}
 	}
+	r.replicationSendMaxBytes = maxSendBytes
+	r.replicationFrameCertified = true
+	primary.replicationSendMaxBytes = maxSendBytes
+	primary.replicationFrameCertified = true
+	replication.replicationSendMaxBytes = maxSendBytes
+	replication.replicationFrameCertified = true
 	return nil
 }
 
@@ -680,7 +726,12 @@ func (r *ServingRuntime) ReceiptWholeStateBackupSource(
 		replication.receiptSnapshotSource.owner != primary ||
 		replication.receiptSnapshotSource.store != r.receipt.store ||
 		replication.receiptSnapshotSource.retired != r.receipt.retired ||
-		replication.receiptSnapshotPolicy != r.receipt.policy {
+		replication.receiptSnapshotPolicy != r.receipt.policy ||
+		!r.replicationFrameCertified ||
+		!primary.replicationFrameCertified ||
+		!replication.replicationFrameCertified ||
+		primary.replicationSendMaxBytes != r.replicationSendMaxBytes ||
+		replication.replicationSendMaxBytes != r.replicationSendMaxBytes {
 		return nil, mutationreceipt.Config{}, errors.New(
 			"service: receipt backup source requires the exact certified serving runtime",
 		)
@@ -715,6 +766,13 @@ func (r *ServingRuntime) ActivatePublicReceipts(
 	if r == nil || r.closed.Load() || r.receipt == nil ||
 		r.receipt.startupRestore != nil || !r.receipt.backupCertified {
 		return errors.New("service: public receipts require a live recovery- and backup-certified durable runtime")
+	}
+	if !r.replicationFrameCertified ||
+		!primary.replicationFrameCertified ||
+		!replication.replicationFrameCertified ||
+		primary.replicationSendMaxBytes != r.replicationSendMaxBytes ||
+		replication.replicationSendMaxBytes != r.replicationSendMaxBytes {
+		return errors.New("service: public receipts require certified replication frame admission")
 	}
 	if _, _, err := r.ReceiptWholeStateBackupSource(primary, replication); err != nil {
 		return err

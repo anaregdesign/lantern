@@ -414,10 +414,7 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	if err := storeTx.ReplaceReservedResults(results); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	if err := storeTx.Stage(); err != nil {
-		return nil, receiptStoreError(err)
-	}
-	receipts, err := storeTx.StagedReceipts()
+	receipts, err := storeTx.ReservedReceipts()
 	if err != nil {
 		return nil, receiptStoreError(err)
 	}
@@ -432,7 +429,16 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	}
 	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
 	if _, err := validateReceiptVertexPutWALEnvelope(envelope); err != nil {
+		if errors.Is(err, errReceiptVertexPutWireCapacity) {
+			return nil, s.replicationFrameCapacityError(err)
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := s.validateReplicationFrame(envelope); err != nil {
+		return nil, err
+	}
+	if err := s.validateReplicationRelayFrame(envelope); err != nil {
+		return nil, err
 	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
@@ -442,6 +448,9 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	defer originTx.Abort()
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
+	}
+	if err := storeTx.Stage(); err != nil {
+		return nil, receiptStoreError(err)
 	}
 	walAttempted = true
 	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
@@ -516,6 +525,9 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
+	if err := s.validateReplicationRelayFrame(e); err != nil {
+		return err
+	}
 	storeTx, err := c.store.Begin(time.Now())
 	if err != nil {
 		return receiptStoreError(err)
@@ -557,10 +569,14 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal,
 			fmt.Errorf("replication Vertex Put receipt relay envelope: %w", err))
 	}
+	if err := s.validateReplicationFrame(localEnvelope); err != nil {
+		return err
+	}
 	if prior, ok := pending.receiptWAL.(*vertexPutReceiptEnvelope); ok &&
 		sameVertexPutAccepted(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
 	}
+
 	if err := storeTx.Stage(); err != nil {
 		return receiptStoreError(err)
 	}
@@ -597,6 +613,40 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 			fmt.Errorf("replication Vertex Put receipt origin clock floor: %w", err))
 	}
 	return nil
+}
+
+func maximalReceiptVertexPutEnvelope(
+	e *vertexPutReceiptEnvelope,
+) (*vertexPutReceiptEnvelope, error) {
+	items, indexes, err := originVertexPutEffects(e)
+	if err != nil {
+		return nil, err
+	}
+	accepted := make([]graphcache.IndexedVertexPut[string, *pb.Vertex], len(items))
+	for i, item := range items {
+		outcome := graphcache.PutOutcomeAppliedAndLive
+		if item.CausalBarrier {
+			outcome = graphcache.PutOutcomeExpired
+		}
+		accepted[i] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+			Index:   indexes[i],
+			Item:    item,
+			Outcome: outcome,
+		}
+	}
+	maximal := &vertexPutReceiptEnvelope{
+		Origin:            e.Origin,
+		OriginSeq:         e.OriginSeq,
+		HLC:               e.HLC,
+		Epoch:             e.Epoch,
+		PolicyFingerprint: e.PolicyFingerprint,
+		IfAbsent:          e.IfAbsent,
+		Original:          cloneReceiptVertices(e.Original),
+		Accepted:          accepted,
+		Receipts:          cloneMutationReceipts(e.Receipts),
+	}
+	maximal.Mutation = receiptVertexPutGraphMutation(maximal)
+	return maximal, nil
 }
 
 func (c *vertexPutReceiptCoordinator) Lookup(

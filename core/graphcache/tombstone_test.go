@@ -464,6 +464,94 @@ func TestDeleteByPrefixHLC_TombstonesPerVertex(t *testing.T) {
 	}
 }
 
+func TestDeleteByPrefixHLCCheckedKeysWithPreflight(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+	ts := hlc.Timestamp{WallNs: 20}
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnablePrefixIndex(identityExtract)
+		c.PutVertexWithExpiration("p:a", "a", exp)
+		c.PutVertexWithExpiration("p:b", "b", exp)
+		return c
+	}
+
+	t.Run("causally accepted set", func(t *testing.T) {
+		c := newCache()
+		if !c.PutVertexWithExpirationHLC("p:a", "protected", exp, hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("protected seed failed")
+		}
+		keys, err := c.DeleteByPrefixHLCCheckedKeysWithPreflight(context.Background(), "p:", 2, ts, exp, func(victims []string) error {
+			if !slices.Equal(victims, []string{"p:b"}) {
+				t.Fatalf("preflight victims = %v, want only causally accepted p:b", victims)
+			}
+			return nil
+		})
+		if err != nil || !slices.Equal(keys, []string{"p:b"}) {
+			t.Fatalf("committed victims = (%v, %v)", keys, err)
+		}
+		if _, ok := c.GetVertex("p:a"); !ok {
+			t.Fatal("protected vertex removed")
+		}
+		if _, ok := c.GetVertex("p:b"); ok {
+			t.Fatal("accepted vertex remains")
+		}
+	})
+
+	t.Run("rejection leaves tombstones unchanged", func(t *testing.T) {
+		c := newCache()
+		rejected := errors.New("frame exceeds send limit")
+		keys, err := c.DeleteByPrefixHLCCheckedKeysWithPreflight(context.Background(), "p:", 2, ts, exp, func([]string) error {
+			return rejected
+		})
+		if keys != nil || !errors.Is(err, rejected) || c.CountByPrefix("p:") != 2 ||
+			c.CausalMetadataStats().VertexEntries != 0 {
+			t.Fatalf("rejected delete = (%v, %v); stats = %+v", keys, err, c.CausalMetadataStats())
+		}
+	})
+
+	t.Run("capacity rejects before preflight", func(t *testing.T) {
+		c := newCache()
+		c.SetCausalMetadataLimits(CausalMetadataLimits{MaxVertexEntries: 1})
+		called := false
+		keys, err := c.DeleteByPrefixHLCCheckedKeysWithPreflight(context.Background(), "p:", 2, ts, exp, func([]string) error {
+			called = true
+			return nil
+		})
+		var capacity *CausalMetadataCapacityError
+		if keys != nil || !errors.As(err, &capacity) || called || c.CountByPrefix("p:") != 2 ||
+			c.CausalMetadataStats().VertexEntries != 0 {
+			t.Fatalf("capacity rejection = (%v, %v); called=%v stats=%+v", keys, err, called, c.CausalMetadataStats())
+		}
+	})
+
+	t.Run("cancellation after preflight is atomic", func(t *testing.T) {
+		c := newCache()
+		ctx, cancel := context.WithCancel(context.Background())
+		keys, err := c.DeleteByPrefixHLCCheckedKeysWithPreflight(ctx, "p:", 1, ts, exp, func([]string) error {
+			cancel()
+			return nil
+		})
+		if keys != nil || !errors.Is(err, context.Canceled) || c.CountByPrefix("p:") != 2 ||
+			c.CausalMetadataStats().VertexEntries != 0 {
+			t.Fatalf("canceled delete = (%v, %v); stats = %+v", keys, err, c.CausalMetadataStats())
+		}
+	})
+
+	t.Run("cancellation with disabled index", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := false
+		keys, err := c.DeleteByPrefixHLCCheckedKeysWithPreflight(ctx, "p:", 1, ts, exp, func([]string) error {
+			called = true
+			return nil
+		})
+		if keys != nil || !errors.Is(err, context.Canceled) || called {
+			t.Fatalf("canceled empty delete = (%v, %v); preflight called=%t", keys, err, called)
+		}
+	})
+}
+
 // TestDeleteVerticesHLC_BatchTombstonesAllDeletesPresent verifies the batched
 // HLC delete (#738) still counts only keys that were present while stamping a
 // tombstone on EVERY supplied key — including absent ones — so a late

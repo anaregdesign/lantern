@@ -169,7 +169,16 @@ func newConnectTestServer(
 	if len(interceptors) > 0 {
 		opts = []connect.HandlerOption{connect.WithInterceptors(interceptors...)}
 	}
+	return newConnectTestServerWithOptions(t, svc, rep, opts...)
+}
 
+func newConnectTestServerWithOptions(
+	t testing.TB,
+	svc *service.LanternService,
+	rep *service.LanternReplicationService,
+	opts ...connect.HandlerOption,
+) *connectTestServer {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternServiceHandler(
 		service.NewLanternServiceConnectHandler(svc),

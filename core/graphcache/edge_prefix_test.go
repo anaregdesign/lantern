@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -709,6 +710,151 @@ func TestGraphCache_DeleteEdgesByPrefixHLC(t *testing.T) {
 		}
 		if _, ok := c.GetWeight("user:1", "post:10"); ok {
 			t.Fatalf("older add resurrected a prefix-deleted edge")
+		}
+	})
+}
+
+func TestGraphCache_DeleteEdgesByPrefixKeysWithPreflight(t *testing.T) {
+	t.Run("exact bounded set", func(t *testing.T) {
+		c := seedDeleteEdges(t)
+		keys, err := c.DeleteEdgesByPrefixKeysWithPreflight(context.Background(), "user:1", "post:", 1, func(victims []EdgeKey[string]) error {
+			if !reflect.DeepEqual(victims, []EdgeKey[string]{{Tail: "user:1", Head: "post:10"}}) {
+				t.Fatalf("preflight victims = %v", victims)
+			}
+			return nil
+		})
+		if err != nil || !reflect.DeepEqual(keys, []EdgeKey[string]{{Tail: "user:1", Head: "post:10"}}) {
+			t.Fatalf("committed edges = (%v, %v)", keys, err)
+		}
+		if _, ok := c.GetWeight("user:1", "post:10"); ok {
+			t.Fatal("admitted edge remains")
+		}
+		if _, ok := c.GetWeight("user:1", "post:11"); !ok {
+			t.Fatal("non-admitted edge removed")
+		}
+	})
+
+	t.Run("rejection and cancellation leave graph unchanged", func(t *testing.T) {
+		for _, cancelPreflight := range []bool{false, true} {
+			c := seedDeleteEdges(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			rejected := errors.New("frame exceeds send limit")
+			keys, err := c.DeleteEdgesByPrefixKeysWithPreflight(ctx, "user:1", "post:", 2, func([]EdgeKey[string]) error {
+				if cancelPreflight {
+					cancel()
+					return nil
+				}
+				return rejected
+			})
+			cancel()
+			want := rejected
+			if cancelPreflight {
+				want = context.Canceled
+			}
+			if keys != nil || !errors.Is(err, want) || len(scanEdgesCollect(t, c, "user:1", "post:")) != 2 {
+				t.Fatalf("rejected/canceled=%v delete = (%v, %v)", cancelPreflight, keys, err)
+			}
+		}
+	})
+
+	t.Run("cancellation with disabled index", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := false
+		keys, err := c.DeleteEdgesByPrefixKeysWithPreflight(ctx, "user:", "post:", 1, func([]EdgeKey[string]) error {
+			called = true
+			return nil
+		})
+		if keys != nil || !errors.Is(err, context.Canceled) || called {
+			t.Fatalf("canceled empty edge delete = (%v, %v); preflight called=%t", keys, err, called)
+		}
+	})
+}
+
+func TestGraphCache_DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(t *testing.T) {
+	exp := time.Now().Add(time.Hour)
+	ts := hlc.Timestamp{WallNs: 20}
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnablePrefixIndex(identityExtract)
+		c.PutEdgeWithExpiration("user:1", "post:10", 1, exp)
+		c.PutEdgeWithExpiration("user:1", "post:11", 1, exp)
+		return c
+	}
+
+	t.Run("causally accepted set", func(t *testing.T) {
+		c := newCache()
+		if !c.PutEdgeWithExpirationHLC("user:1", "post:10", 1, exp, hlc.Timestamp{WallNs: 30}) {
+			t.Fatal("protected seed failed")
+		}
+		keys, err := c.DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(context.Background(), "user:1", "post:", 2, ts, exp, func(victims []EdgeKey[string]) error {
+			if !reflect.DeepEqual(victims, []EdgeKey[string]{{Tail: "user:1", Head: "post:11"}}) {
+				t.Fatalf("preflight victims = %v, want only causally accepted post:11", victims)
+			}
+			return nil
+		})
+		if err != nil || !reflect.DeepEqual(keys, []EdgeKey[string]{{Tail: "user:1", Head: "post:11"}}) {
+			t.Fatalf("committed edges = (%v, %v)", keys, err)
+		}
+		if _, ok := c.GetWeight("user:1", "post:10"); !ok {
+			t.Fatal("protected edge removed")
+		}
+		if _, ok := c.GetWeight("user:1", "post:11"); ok {
+			t.Fatal("accepted edge remains")
+		}
+	})
+
+	t.Run("capacity rejects before preflight", func(t *testing.T) {
+		c := newCache()
+		c.SetCausalMetadataLimits(CausalMetadataLimits{MaxEdgeEntries: 1})
+		called := false
+		keys, err := c.DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(context.Background(), "user:1", "post:", 2, ts, exp, func([]EdgeKey[string]) error {
+			called = true
+			return nil
+		})
+		var capacity *CausalMetadataCapacityError
+		if keys != nil || !errors.As(err, &capacity) || called ||
+			len(scanEdgesCollect(t, c, "user:1", "post:")) != 2 || c.CausalMetadataStats().EdgeEntries != 0 {
+			t.Fatalf("capacity rejection = (%v, %v); called=%v stats=%+v", keys, err, called, c.CausalMetadataStats())
+		}
+	})
+
+	t.Run("rejection and cancellation leave tombstones unchanged", func(t *testing.T) {
+		for _, cancelPreflight := range []bool{false, true} {
+			c := newCache()
+			ctx, cancel := context.WithCancel(context.Background())
+			rejected := errors.New("frame exceeds send limit")
+			keys, err := c.DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(ctx, "user:1", "post:", 2, ts, exp, func([]EdgeKey[string]) error {
+				if cancelPreflight {
+					cancel()
+					return nil
+				}
+				return rejected
+			})
+			cancel()
+			want := rejected
+			if cancelPreflight {
+				want = context.Canceled
+			}
+			if keys != nil || !errors.Is(err, want) ||
+				len(scanEdgesCollect(t, c, "user:1", "post:")) != 2 || c.CausalMetadataStats().EdgeEntries != 0 {
+				t.Fatalf("rejected/canceled=%v delete = (%v, %v); stats=%+v", cancelPreflight, keys, err, c.CausalMetadataStats())
+			}
+		}
+	})
+
+	t.Run("cancellation with disabled index", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := false
+		keys, err := c.DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(ctx, "user:", "post:", 1, ts, exp, func([]EdgeKey[string]) error {
+			called = true
+			return nil
+		})
+		if keys != nil || !errors.Is(err, context.Canceled) || called {
+			t.Fatalf("canceled empty HLC edge delete = (%v, %v); preflight called=%t", keys, err, called)
 		}
 	})
 }

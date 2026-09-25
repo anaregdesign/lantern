@@ -279,14 +279,21 @@ CDC consumer is shedding events and under which `FullPolicy`.
 `lantern_validation_rejected_total{reason}` (the
 bounded reason set: `empty_key`, `key_too_long`, `empty_batch`,
 `batch_too_large`, `nil_item`, `bad_weight`, `step_too_large`, `k_too_large`,
-`bad_ttl`, `bad_cursor`, `capacity`, `empty_edge_prefix`, `order_mismatch`, plus
-`unknown`), `lantern_rate_limit_rejected_total`
+`bad_ttl`, `bad_cursor`, `capacity`, `empty_edge_prefix`, `order_mismatch`,
+`replication_frame`, plus `unknown`), `lantern_rate_limit_rejected_total`
 (token-bucket `ResourceExhausted`; registered even when the limiter is off so
 deployments compare uniformly), `lantern_tombstone_clamp_rejected_total` (LWW
 lost against a live tombstone, retained barrier, or newer live floor — a
 sustained rate flags clock skew or causally-late frames). The first separates
 *client bug* from *server saturation*; the last is a subtle correctness signal
 unique to the HLC model.
+
+`reason="replication_frame"` means the exact canonical full-mutation
+`SubscribeResponse` exceeded `LANTERN_MAX_SEND_MSG_BYTES`; the write was
+rejected before graph, receipt, origin, or mutation-log publication. Treat a
+sustained rate as a request-shaping or send-cap sizing problem. A retained
+frame found after lowering the cap fails startup explicitly instead of
+incrementing this request counter.
 
 For `reason="capacity"`, first compare `lantern_capacity_limit{kind}` with the
 sum of the matching live and causal-barrier gauges for the conservative legacy

@@ -701,7 +701,7 @@ func produceProviderReceiptBackup(
 		cleanup()
 		t.Fatal(err)
 	}
-	certified, err := NewRuntimeCertified(runtime, primary, replication, restored)
+	certified, err := NewRuntimeCertified(runtime, primary, replication, restored, NetConfig{})
 	if err != nil {
 		cleanup()
 		t.Fatal(err)
@@ -823,7 +823,7 @@ func TestNewServingRuntimeSelectsDurableModes(t *testing.T) {
 }
 
 func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
-	certified, err := NewRuntimeCertified(nil, nil, nil, runtimeRestored{})
+	certified, err := NewRuntimeCertified(nil, nil, nil, runtimeRestored{}, NetConfig{})
 	if certified.valid || err == nil {
 		t.Fatalf("incomplete runtime certification = %+v, %v", certified, err)
 	}
@@ -862,7 +862,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	certified, err = NewRuntimeCertified(first, firstPrimary, firstReplication, restored)
+	certified, err = NewRuntimeCertified(first, firstPrimary, firstReplication, restored, NetConfig{})
 	if err != nil || !certified.valid {
 		t.Fatalf("valid runtime certification = %+v, %v", certified, err)
 	}
@@ -874,7 +874,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if certified, err := NewRuntimeCertified(first, secondPrimary, secondReplication, restored); certified.valid || err == nil {
+	if certified, err := NewRuntimeCertified(first, secondPrimary, secondReplication, restored, NetConfig{}); certified.valid || err == nil {
 		t.Fatalf("mismatched runtime certification = %+v, %v", certified, err)
 	}
 }

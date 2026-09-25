@@ -18,7 +18,10 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-var errReceiptVertexDeleteWAL = errors.New("service: invalid receipt Vertex Delete WAL payload")
+var (
+	errReceiptVertexDeleteWAL          = errors.New("service: invalid receipt Vertex Delete WAL payload")
+	errReceiptVertexDeleteWireCapacity = errors.New("receipt Vertex Delete wire frame exceeds 8 MiB")
+)
 
 func receiptVertexDeleteWALError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errReceiptVertexDeleteWAL, fmt.Sprintf(format, args...))
@@ -278,8 +281,11 @@ func validateReceiptVertexDeleteWALEnvelope(e *vertexDeleteReceiptEnvelope) (int
 		return 0, receiptVertexDeleteWALError("graph projection drift")
 	}
 	size := proto.Size(receiptVertexDeleteReplicationMutation(e))
-	if size == 0 || size > receiptVertexWALMaxBytes {
+	if size == 0 {
 		return 0, receiptVertexDeleteWALError("payload exceeds size limit")
+	}
+	if size > receiptVertexWALMaxBytes {
+		return 0, fmt.Errorf("%w: %w (size %d)", errReceiptVertexDeleteWAL, errReceiptVertexDeleteWireCapacity, size)
 	}
 	return size, nil
 }

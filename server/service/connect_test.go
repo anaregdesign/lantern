@@ -58,6 +58,29 @@ func newConnectTestClient(
 	return graphv1connect.NewLanternServiceClient(httpClient, srv.URL)
 }
 
+func TestBinaryProtobufContentType(t *testing.T) {
+	for _, tc := range []struct {
+		contentType string
+		binary      bool
+	}{
+		{"application/connect+proto", true},
+		{"application/grpc+proto", true},
+		{"application/grpc-web+proto", true},
+		{"application/grpc-web-text+proto", false},
+		{"application/grpc-web-text", false},
+		{"application/connect+json", false},
+		{"application/grpc+json", false},
+		{"invalid content type", false},
+	} {
+		t.Run(tc.contentType, func(t *testing.T) {
+			if got := binaryProtobufContentType(tc.contentType); got != tc.binary {
+				t.Fatalf("binaryProtobufContentType(%q) = %t, want %t",
+					tc.contentType, got, tc.binary)
+			}
+		})
+	}
+}
+
 // TestConnectAdapter_PutAndGetVertexRoundTrip is the smoke test for the
 // entire additive Connect path (#337): a real PutVertex / GetVertex pair
 // travels through the Connect-Go client, over h2c, into the adapter, into

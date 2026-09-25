@@ -354,6 +354,12 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := s.validateReplicationFrame(envelope); err != nil {
+		return nil, err
+	}
+	if err := s.validateReplicationRelayFrame(envelope); err != nil {
+		return nil, err
+	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("receipt Edge Delete could not stage contiguous origin seq"))
@@ -450,6 +456,9 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
+	if err := s.validateReplicationRelayFrame(e); err != nil {
+		return err
+	}
 
 	tx, err := c.store.Begin(time.Now())
 	if err != nil {
@@ -490,6 +499,9 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 			return connect.NewError(connect.CodeResourceExhausted, err)
 		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt relay envelope: %w", err))
+	}
+	if err := s.validateReplicationFrame(localEnvelope); err != nil {
+		return err
 	}
 	if prior, ok := pending.receiptWAL.(*edgeDeleteReceiptEnvelope); ok &&
 		slices.Equal(prior.Accepted, localEnvelope.Accepted) {
@@ -545,6 +557,27 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt origin clock floor: %w", err))
 	}
 	return nil
+}
+
+func maximalReceiptEdgeDeleteEnvelope(
+	e *edgeDeleteReceiptEnvelope,
+) *edgeDeleteReceiptEnvelope {
+	maximal := &edgeDeleteReceiptEnvelope{
+		Origin:              e.Origin,
+		OriginSeq:           e.OriginSeq,
+		HLC:                 e.HLC,
+		Epoch:               e.Epoch,
+		PolicyFingerprint:   e.PolicyFingerprint,
+		TombstoneExpiration: e.TombstoneExpiration,
+		OriginalKeys:        append([]graphcache.EdgeKey[string](nil), e.OriginalKeys...),
+		Accepted:            make([]graphcache.IndexedEdgeDelete[string], len(e.OriginalKeys)),
+		Receipts:            cloneMutationReceipts(e.Receipts),
+	}
+	for i, key := range maximal.OriginalKeys {
+		maximal.Accepted[i] = graphcache.IndexedEdgeDelete[string]{Index: i, Key: key}
+	}
+	maximal.Mutation = receiptEdgeDeleteWALMutation(maximal)
+	return maximal
 }
 
 // Lookup is the only receipt status view for this private coordinator. A
