@@ -297,22 +297,25 @@ batch APIs can return response outcomes and accepted indexes from one lock,
 but no serving producer selects the new kind: a future producer must retain
 the same sidecar across an ambiguous WAL append and publication repair,
 including for remote relay and singular Delete mutations. The detached
-recovery candidate still rejects graph Delete envelopes and all graph writes
-after receipt envelopes. A later Put/Add rejected while a tombstone was live
-can become accepted on replay after it expires; Delete evidence alone cannot
-certify a complete graph/receipt restore.
+recovery candidate still rejects graph Delete envelopes, raw graph writes and
+Add effect envelopes after receipt envelopes. A later Put/Add rejected while
+a tombstone was live can become accepted on naive replay after it expires;
+Delete evidence alone cannot certify a complete graph/receipt restore.
 The graph Put kind records the original Mutation and a strictly ordered subset
 of receiver-local accepted request indexes. Each accepted index distinguishes
 a live value or Edge from an accepted-expired causal barrier; omitted indexes
-include locally rejected Put slots. Nil plural slots retain their original
-positions, and a zero-accepted mutation is valid evidence. The outcome list
+include locally rejected Put slots. Ordinary plural Put nil slots retain their
+original positions; replicated Put nil entries fail closed because serving
+apply rejects them. A zero-accepted mutation is valid evidence. The outcome list
 comes from the GraphCache application lock, not an origin projection or later
 read. The inner Put body has its own version, length, and reserved-byte checks.
 Raw older Put rows can be read before a receipt but remain unproven; the
 read-only audit rejects one after a receipt instead of treating its original
-mutation as evidence of a receiver-local effect. The new kind remains unwired
-to the serving writer, and the detached recovery candidate refuses it: no
-graph replay, Store admission, or absent-ID answer is enabled by this sidecar.
+mutation as evidence of a receiver-local effect. The detached recovery
+candidate replays only the accepted subset, preserving live/barrier decisions
+and allowing a live value to expire by recovery time. A contradictory accepted
+decision fails the candidate. The kind remains unwired to the serving writer;
+this detached replay enables neither Store admission nor an absent-ID answer.
 The graph Add kind records an ordered subset of receiver-local accepted wire
 indexes, including nil-slot position preservation for synthesized ContribIDs.
 Rejected, deduplicated, and causally fenced Adds are omitted. GraphCache's
