@@ -490,6 +490,11 @@ tail matches the detached replay. It closes Log, both journals, and lease on
 discard. It remains unpublished: a matching tip does not certify the archive
 cut or install an endpoint generation, and no production provider owns this
 bundle yet.
+A companion private fresh candidate checks an empty staged GraphCache and
+search/index policy before creating any files, then creates WAL, tip, and
+clock journal under one lease and binds the empty Store and appendable Log.
+Existing files and partially created sidecars are never overwritten or
+silently retried as a fresh epoch. Neither candidate is a serving installer.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
