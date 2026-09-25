@@ -51,6 +51,74 @@ func latestPrefixMutation(t *testing.T, log *mutationlog.Log) *pb.Mutation {
 	}
 }
 
+type prefixScanReapBackend struct {
+	*graphcache.GraphCache[string, *pb.Vertex]
+	vertexScans int
+	edgeScans   int
+}
+
+type prefixCancelBackend struct {
+	Backend
+	cancel context.CancelFunc
+}
+
+func (b *prefixCancelBackend) DeleteByPrefixKeysWithPreflight(ctx context.Context, prefix string, limit int, preflight func([]string) error) ([]string, error) {
+	b.cancel()
+	return b.Backend.DeleteByPrefixKeysWithPreflight(ctx, prefix, limit, preflight)
+}
+
+func (b *prefixCancelBackend) DeleteByPrefixHLCCheckedKeysWithPreflight(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, preflight func([]string) error) ([]string, error) {
+	b.cancel()
+	return b.Backend.DeleteByPrefixHLCCheckedKeysWithPreflight(ctx, prefix, limit, ts, expiration, preflight)
+}
+
+func (b *prefixCancelBackend) DeleteEdgesByPrefixKeysWithPreflight(ctx context.Context, tailPrefix, headPrefix string, limit int, preflight func([]graphcache.EdgeKey[string]) error) ([]graphcache.EdgeKey[string], error) {
+	b.cancel()
+	return b.Backend.DeleteEdgesByPrefixKeysWithPreflight(ctx, tailPrefix, headPrefix, limit, preflight)
+}
+
+func (b *prefixCancelBackend) DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time, preflight func([]graphcache.EdgeKey[string]) error) ([]graphcache.EdgeKey[string], error) {
+	b.cancel()
+	return b.Backend.DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(ctx, tailPrefix, headPrefix, limit, ts, expiration, preflight)
+}
+
+func (b *prefixScanReapBackend) ScanByPrefixPage(
+	ctx context.Context, prefix, after string, limit int, desc bool,
+	fn func(string, string, *pb.Vertex) bool,
+) (bool, bool) {
+	var first string
+	more, ok := b.GraphCache.ScanByPrefixPage(ctx, prefix, after, limit, desc, func(projected, key string, value *pb.Vertex) bool {
+		if first == "" {
+			first = key
+		}
+		return fn(projected, key, value)
+	})
+	b.vertexScans++
+	if first != "" {
+		b.DeleteVertex(first)
+	}
+	return more, ok
+}
+
+func (b *prefixScanReapBackend) ScanEdgesByPrefixPage(
+	ctx context.Context, tailPrefix, headPrefix, afterTail, afterHead string, limit int,
+	fn func(string, string, string, string, float32, time.Time) bool,
+) (bool, bool) {
+	var first graphcache.EdgeKey[string]
+	more, ok := b.GraphCache.ScanEdgesByPrefixPage(ctx, tailPrefix, headPrefix, afterTail, afterHead, limit,
+		func(tailProjected, tail, headProjected, head string, weight float32, expiration time.Time) bool {
+			if first == (graphcache.EdgeKey[string]{}) {
+				first = graphcache.EdgeKey[string]{Tail: tail, Head: head}
+			}
+			return fn(tailProjected, tail, headProjected, head, weight, expiration)
+		})
+	b.edgeScans++
+	if first != (graphcache.EdgeKey[string]{}) {
+		b.DeleteEdge(first.Tail, first.Head)
+	}
+	return more, ok
+}
+
 func TestScanVertices_BasicAndCursor(t *testing.T) {
 	fb := newFakeBackend()
 	for _, k := range []string{"users/1", "users/2", "users/3", "orders/1"} {
@@ -400,6 +468,93 @@ func TestDeleteVerticesByPrefix_ReplicationFrameRejectedBeforeDelete(t *testing.
 	}
 }
 
+func TestDeleteVerticesByPrefix_AtomicVictimSelection(t *testing.T) {
+	for _, tombstone := range []struct {
+		name string
+		ttl  time.Duration
+	}{
+		{name: "no tombstones"},
+		{name: "tombstones", ttl: time.Hour},
+	} {
+		t.Run(tombstone.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			cache.EnablePrefixIndex(func(key string) string { return key })
+			for _, key := range []string{"users/a", "users/b"} {
+				if err := cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			backend := &prefixScanReapBackend{GraphCache: cache}
+			log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+			t.Cleanup(func() { _ = log.Close() })
+			svc := NewLanternService(backend).
+				WithReplication(log, hlc.New(hlc.NodeID{0xF1}, hlc.Options{}), nil).
+				WithTombstoneTTL(tombstone.ttl)
+
+			resp, err := svc.DeleteVerticesByPrefix(context.Background(), &pb.DeleteVerticesByPrefixRequest{
+				Prefix: "users/", Limit: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.GetDeleted() != 1 {
+				t.Fatalf("deleted = %d with %d live matches remaining; want 1", resp.GetDeleted(), cache.CountByPrefix("users/"))
+			}
+			if backend.vertexScans != 0 {
+				t.Fatalf("replicated delete ran %d unlocked scans", backend.vertexScans)
+			}
+			if _, ok := cache.GetVertex("users/a"); ok {
+				t.Fatal("first victim remains")
+			}
+			if _, ok := cache.GetVertex("users/b"); !ok {
+				t.Fatal("bounded delete removed the second victim")
+			}
+			if mutation := latestPrefixMutation(t, log); !slices.Equal(mutation.GetOp().GetDeleteVertices().GetKeys(), []string{"users/a"}) {
+				t.Fatalf("logged mutation = %v, want exact first victim", mutation)
+			}
+		})
+	}
+}
+
+func TestDeletePrefix_CancelledBeforeEmptyCacheLock(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edge bool
+		ttl  time.Duration
+	}{
+		{name: "vertex without tombstones"},
+		{name: "vertex with tombstones", ttl: time.Hour},
+		{name: "edge without tombstones", edge: true},
+		{name: "edge with tombstones", edge: true, ttl: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			backend := &prefixCancelBackend{Backend: cache, cancel: cancel}
+			log := mutationlog.New(mutationlog.Options{Capacity: 8})
+			t.Cleanup(func() { _ = log.Close() })
+			node := hlc.NodeID{0xE0}
+			svc := NewLanternService(backend).
+				WithReplication(log, hlc.New(node, hlc.Options{}), nil).
+				WithTombstoneTTL(tc.ttl)
+
+			var err error
+			if tc.edge {
+				_, err = svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "users/"})
+			} else {
+				_, err = svc.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "users/"})
+			}
+			if connect.CodeOf(err) != connect.CodeCanceled {
+				t.Fatalf("canceled prefix delete = %v, want Canceled", err)
+			}
+			if log.Len() != 0 || svc.LocalSeq(node) != 0 {
+				t.Fatal("canceled prefix delete published a mutation")
+			}
+		})
+	}
+}
+
 // TestDeleteVerticesByPrefix_CausalLimitReplicatesExactVictim verifies that a
 // bounded local prefix delete is represented on the HA log by the exact key
 // that committed. Replaying the broad prefix on a peer would delete both
@@ -620,6 +775,53 @@ func TestDeleteEdgesByPrefix_ValidationDryRunAndReal(t *testing.T) {
 	}
 }
 
+func TestDeleteEdgesByPrefix_ReplicationFrameRejectedBeforeDelete(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	cache.EnablePrefixIndex(func(key string) string { return key })
+	edges := []graphcache.EdgeKey[string]{
+		{Tail: "users/a" + strings.Repeat("a", 96), Head: "posts/a" + strings.Repeat("a", 96)},
+		{Tail: "users/b" + strings.Repeat("b", 96), Head: "posts/b" + strings.Repeat("b", 96)},
+	}
+	for _, key := range edges {
+		cache.PutEdgeWithExpiration(key.Tail, key.Head, 1, time.Now().Add(time.Hour))
+	}
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	runtime, err := NewGraphOnlyServingRuntime(cache, log, hlc.New(hlc.NodeID{0xC4}, hlc.Options{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc := runtime.NewLanternService(nil).WithScanLimits(ScanLimits{
+		DeleteByPrefixDefaultLimit: 100,
+		DeleteByPrefixMaxLimit:     100,
+	})
+	replication, err := runtime.NewLanternReplicationService(svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(svc, replication, 128); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.DeleteEdgesByPrefix(context.Background(), &pb.DeleteEdgesByPrefixRequest{
+		TailPrefix: "users/", HeadPrefix: "posts/",
+	})
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("oversized edge prefix delete = %v, want ResourceExhausted", err)
+	}
+	for _, key := range edges {
+		if _, ok := cache.GetWeight(key.Tail, key.Head); !ok {
+			t.Fatalf("oversized edge prefix delete removed %q -> %q", key.Tail, key.Head)
+		}
+	}
+	if length, _, _ := runtime.MutationLogStats(); length != 0 {
+		t.Fatalf("oversized edge prefix delete retained %d log entries", length)
+	}
+	if seq := svc.LocalSeq(hlc.NodeID{0xC4}); seq != 0 {
+		t.Fatalf("oversized edge prefix delete advanced origin seq to %d", seq)
+	}
+}
+
 // TestDeleteEdgesByPrefix_CausalLimitReplicatesExactVictim is the edge sibling
 // of TestDeleteVerticesByPrefix_CausalLimitReplicatesExactVictim.
 func TestDeleteEdgesByPrefix_CausalLimitReplicatesExactVictim(t *testing.T) {
@@ -746,6 +948,54 @@ func TestDeleteEdgesByPrefix_ZeroTombstoneTTLReplicatesExactVictim(t *testing.T)
 		if _, ok := cache.GetWeight(remaining.tail, remaining.head); !ok {
 			t.Fatalf("%s widened bounded edge delete to %q -> %q", name, remaining.tail, remaining.head)
 		}
+	}
+}
+
+func TestDeleteEdgesByPrefix_AtomicVictimSelection(t *testing.T) {
+	for _, tombstone := range []struct {
+		name string
+		ttl  time.Duration
+	}{
+		{name: "no tombstones"},
+		{name: "tombstones", ttl: time.Hour},
+	} {
+		t.Run(tombstone.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			cache.EnablePrefixIndex(func(key string) string { return key })
+			for _, head := range []string{"posts/a", "posts/b"} {
+				cache.PutEdgeWithExpiration("users/a", head, 1, time.Now().Add(time.Hour))
+			}
+			backend := &prefixScanReapBackend{GraphCache: cache}
+			log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+			t.Cleanup(func() { _ = log.Close() })
+			svc := NewLanternService(backend).
+				WithReplication(log, hlc.New(hlc.NodeID{0xF2}, hlc.Options{}), nil).
+				WithTombstoneTTL(tombstone.ttl)
+
+			resp, err := svc.DeleteEdgesByPrefix(context.Background(), &pb.DeleteEdgesByPrefixRequest{
+				TailPrefix: "users/", HeadPrefix: "posts/", Limit: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.GetDeleted() != 1 {
+				t.Fatalf("deleted = %d with later edge still live; want 1", resp.GetDeleted())
+			}
+			if backend.edgeScans != 0 {
+				t.Fatalf("replicated edge delete ran %d unlocked scans", backend.edgeScans)
+			}
+			if _, ok := cache.GetWeight("users/a", "posts/a"); ok {
+				t.Fatal("first edge remains")
+			}
+			if _, ok := cache.GetWeight("users/a", "posts/b"); !ok {
+				t.Fatal("bounded delete removed the second edge")
+			}
+			mutation := latestPrefixMutation(t, log)
+			edges := mutation.GetOp().GetDeleteEdges().GetEdges()
+			if len(edges) != 1 || edges[0].GetTail() != "users/a" || edges[0].GetHead() != "posts/a" {
+				t.Fatalf("logged mutation = %v, want exact first edge", mutation)
+			}
+		})
 	}
 }
 

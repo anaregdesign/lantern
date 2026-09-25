@@ -645,15 +645,20 @@ func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
 			replication.replicationSendMaxBytes != maxSendBytes) {
 		return errors.New("service: replication send limit differs from the certified serving runtime")
 	}
-	if maxSendBytes > 0 {
-		for _, entry := range r.log.RetainedEntries() {
-			if _, err := validateReplicationFrameSize(entry.Op, maxSendBytes); err != nil {
-				return fmt.Errorf(
-					"service: retained replication frame at local log seq %d is not streamable: %w",
-					entry.Seq,
-					err,
-				)
-			}
+	for _, entry := range r.log.RetainedEntries() {
+		if _, err := validateReplicationFrameSize(entry.Op, maxSendBytes); err != nil {
+			return fmt.Errorf(
+				"service: retained replication frame at local log seq %d is not streamable: %w",
+				entry.Seq,
+				err,
+			)
+		}
+		if _, err := validateReplicationRelayFrameSize(entry.Op, maxSendBytes); err != nil {
+			return fmt.Errorf(
+				"service: retained replication frame at local log seq %d has an unstreamable receiver-local relay: %w",
+				entry.Seq,
+				err,
+			)
 		}
 	}
 	if r.receipt != nil {

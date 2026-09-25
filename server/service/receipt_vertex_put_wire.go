@@ -39,7 +39,10 @@ const (
 	receiptVertexItemsField        protoreflect.FieldNumber = 4
 )
 
-var errReceiptVertexPutWAL = errors.New("service: invalid receipt Vertex Put WAL payload")
+var (
+	errReceiptVertexPutWAL          = errors.New("service: invalid receipt Vertex Put WAL payload")
+	errReceiptVertexPutWireCapacity = errors.New("receipt Vertex Put wire frame exceeds 8 MiB")
+)
 
 func receiptVertexPutWALError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errReceiptVertexPutWAL, fmt.Sprintf(format, args...))
@@ -381,8 +384,11 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 		return 0, receiptVertexPutWALError("graph projection drift")
 	}
 	size := proto.Size(receiptVertexPutReplicationMutation(e))
-	if size == 0 || size > receiptVertexWALMaxBytes {
+	if size == 0 {
 		return 0, receiptVertexPutWALError("payload exceeds size limit")
+	}
+	if size > receiptVertexWALMaxBytes {
+		return 0, fmt.Errorf("%w: %w (size %d)", errReceiptVertexPutWAL, errReceiptVertexPutWireCapacity, size)
 	}
 	return size, nil
 }

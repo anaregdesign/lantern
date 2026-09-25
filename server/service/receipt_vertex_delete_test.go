@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -183,6 +184,78 @@ func TestVertexDeleteReceiptCoordinatorReceiptOnlyPublication(t *testing.T) {
 		}
 		cancel()
 		waitReceiptTest(t, "Subscribe cancellation", done)
+	}
+}
+
+func TestVertexDeleteReceiptCoordinatorRejectsOversizedReceiverLocalRelay(t *testing.T) {
+	node := hlc.NodeID{0x83}
+	const itemCount = 8
+	keys := make([]string, itemCount)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("relay-vertex-%02d", i)
+	}
+	prepare := func(t *testing.T) receiptVertexDeleteFixture {
+		t.Helper()
+		f := newReceiptVertexDeleteFixture(t, nil, node, 32, nil)
+		for i, key := range keys {
+			if i%2 == 0 {
+				if !f.cache.ApplyVertexCausalBarrierHLC(key, hlc.Timestamp{
+					WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: node,
+				}) {
+					t.Fatalf("cannot install causal barrier for %q", key)
+				}
+			} else if err := f.cache.PutVertexWithExpiration(
+				key, &pb.Vertex{Key: key}, time.Now().Add(time.Hour),
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f
+	}
+	reference := prepare(t)
+	call := receiptVertexDeleteTestCall(t, reference.epoch, 0x66, keys...)
+	if _, err := reference.coordinator.Commit(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	envelope := reference.log.RetainedEntries()[0].Op.(*vertexDeleteReceiptEnvelope)
+	sparseSize, err := validateReplicationFrameSize(envelope, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximalSize, err := validateReplicationFrameSize(maximalReceiptVertexDeleteEnvelope(envelope), 0)
+	if err != nil || maximalSize <= sparseSize+1 {
+		t.Fatalf("sparse/maximal Vertex Delete sizes = %d/%d, %v", sparseSize, maximalSize, err)
+	}
+
+	rejected := prepare(t)
+	rejected.service.replicationFrameCertified = true
+	rejected.service.replicationSendMaxBytes = maximalSize - 1
+	rejections := 0
+	rejected.service.onValidationReject = func(reason string) {
+		if reason != "replication_frame" {
+			t.Errorf("validation rejection reason = %q", reason)
+		}
+		rejections++
+	}
+	_, err = rejected.coordinator.Commit(
+		context.Background(),
+		receiptVertexDeleteTestCall(t, rejected.epoch, 0x67, keys...),
+	)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", maximalSize-1)) ||
+		rejections != 1 {
+		t.Fatalf("one-byte-under receiver-local relay = %v, rejections=%d", err, rejections)
+	}
+	for i, key := range keys {
+		if i%2 == 1 {
+			if _, live := rejected.cache.GetVertex(key); !live {
+				t.Fatalf("rejected Vertex Delete changed %q", key)
+			}
+		}
+	}
+	if rejected.store.Stats().Entries != 0 || rejected.log.Len() != 0 ||
+		rejected.service.LocalSeq(node) != 0 {
+		t.Fatal("rejected Vertex Delete changed Store, log, or origin")
 	}
 }
 

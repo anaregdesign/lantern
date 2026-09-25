@@ -16,6 +16,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"mime"
 
 	"connectrpc.com/connect"
 
@@ -218,10 +220,30 @@ func (h *lanternReplicationServiceConnect) Subscribe(ctx context.Context, req *c
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
+	if req.Msg.GetProjection() != pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY &&
+		!binaryProtobufContentType(req.Header().Get("Content-Type")) {
+		return connect.NewError(connect.CodeInvalidArgument,
+			errors.New("full-mutation Subscribe requires binary protobuf encoding; JSON and unknown codecs are unsupported"))
+	}
 	// *connect.ServerStream[T] satisfies service.Sender[T] directly
 	// (both expose Send(*T) error). The service method returns a
 	// *connect.Error already, so no translation layer is needed.
 	return h.svc.Subscribe(ctx, req.Msg, stream)
+}
+
+func binaryProtobufContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	switch mediaType {
+	case "application/connect+proto",
+		"application/grpc", "application/grpc+proto",
+		"application/grpc-web", "application/grpc-web+proto":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *lanternReplicationServiceConnect) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {

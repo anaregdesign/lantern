@@ -357,6 +357,9 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err := s.validateReplicationFrame(envelope); err != nil {
 		return nil, err
 	}
+	if err := s.validateReplicationRelayFrame(envelope); err != nil {
+		return nil, err
+	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("receipt Edge Delete could not stage contiguous origin seq"))
@@ -453,7 +456,7 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
-	if err := s.validateReplicationFrame(maximalReceiptEdgeDeleteEnvelope(e)); err != nil {
+	if err := s.validateReplicationRelayFrame(e); err != nil {
 		return err
 	}
 

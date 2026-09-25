@@ -2,6 +2,8 @@ package integration_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -228,6 +231,115 @@ func TestPumpIsNotPinnedByRejectedUnstreamableLocalMutation(t *testing.T) {
 	if seq := target.svc.LocalSeq(sourceID); seq != 1 {
 		t.Fatalf("Pump source cursor = %d, want 1", seq)
 	}
+}
+
+func TestFullSubscribeRejectsJSONBeforeStreamingAtBinarySendBoundary(t *testing.T) {
+	const maxRecvBytes = 8 << 10
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	write := &pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "json-frame-boundary", Value: &pb.Vertex_Bytes{Bytes: make([]byte, 2048)},
+	}}
+	if size := proto.Size(write); size >= maxRecvBytes {
+		t.Fatalf("PutVertex request size %d exceeds receive cap %d", size, maxRecvBytes)
+	}
+
+	reference := newCertifiedPumpNode(t, hlc.NodeID{0x94}, maxRecvBytes, 0)
+	if _, err := reference.raw.PutVertex(ctx, connect.NewRequest(write)); err != nil {
+		t.Fatal(err)
+	}
+	frame := readFullMutationFrame(t, ctx, reference.url, 1)
+	binarySize := proto.Size(frame)
+	json, err := protojson.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(json) <= binarySize {
+		t.Fatalf("JSON Subscribe size %d must exceed binary size %d", len(json), binarySize)
+	}
+
+	node := newCertifiedPumpNode(t, hlc.NodeID{0x95}, maxRecvBytes, binarySize)
+	if _, err := node.raw.PutVertex(ctx, connect.NewRequest(write)); err != nil {
+		t.Fatalf("exact-fit binary PutVertex: %v", err)
+	}
+	if got := proto.Size(readFullMutationFrame(t, ctx, node.url, 1)); got != binarySize {
+		t.Fatalf("binary Subscribe size = %d, want %d", got, binarySize)
+	}
+
+	jsonClient := graphv1connect.NewLanternReplicationServiceClient(h2cClient(), node.url, connect.WithProtoJSON())
+	stream, err := jsonClient.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	if err == nil {
+		defer func() { _ = stream.Close() }()
+		if stream.Receive() {
+			t.Fatal("JSON full Subscribe streamed a mutation beyond its send cap")
+		}
+		err = stream.Err()
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), "binary protobuf") {
+		t.Fatalf("JSON full Subscribe = %v, want explicit binary-only InvalidArgument", err)
+	}
+
+	identity, err := jsonClient.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY, Bootstrap: true,
+	}))
+	if err != nil {
+		t.Fatalf("JSON identity-only Subscribe: %v", err)
+	}
+	defer func() { _ = identity.Close() }()
+	if !identity.Receive() || identity.Msg().GetCheckpoint() == nil {
+		t.Fatalf("JSON identity-only checkpoint = (%v, %v)", identity.Msg(), identity.Err())
+	}
+
+	for _, tc := range []struct {
+		name   string
+		option connect.ClientOption
+	}{
+		{name: "gRPC", option: connect.WithGRPC()},
+		{name: "gRPC-Web", option: connect.WithGRPCWeb()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binaryClient := graphv1connect.NewLanternReplicationServiceClient(h2cClient(), node.url, tc.option)
+			stream, err := binaryClient.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			if !stream.Receive() || proto.Size(stream.Msg()) != binarySize {
+				t.Fatalf("binary full Subscribe frame = (%v, %v), want %d bytes", stream.Msg(), stream.Err(), binarySize)
+			}
+		})
+	}
+
+	t.Run("gRPC-Web text", func(t *testing.T) {
+		body, err := proto.Marshal(&pb.SubscribeRequest{FromLocalSeq: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		requestFrame := make([]byte, 5+len(body))
+		binary.BigEndian.PutUint32(requestFrame[1:5], uint32(len(body)))
+		copy(requestFrame[5:], body)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			node.url+graphv1connect.LanternReplicationServiceSubscribeProcedure,
+			strings.NewReader(base64.StdEncoding.EncodeToString(requestFrame)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/grpc-web-text+proto")
+		request.Header.Set("Accept", "application/grpc-web-text+proto")
+		request.Header.Set("X-Grpc-Web", "1")
+		response, err := h2cClient().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		if base64.StdEncoding.EncodedLen(5+binarySize) <= binarySize {
+			t.Fatal("test requires encoded response larger than binary send cap")
+		}
+		if response.StatusCode != http.StatusUnsupportedMediaType {
+			t.Fatalf("gRPC-Web text full Subscribe status %d, want unsupported media type before streaming",
+				response.StatusCode)
+		}
+	})
 }
 
 func TestFollowerRelayStreamsExactBoundaryAcrossMultipleHops_RealConnectWire(t *testing.T) {

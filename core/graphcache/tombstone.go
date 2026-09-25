@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -416,7 +417,7 @@ func (c *GraphCache[S, T]) deleteEdgesHLC(keys []EdgeKey[S], ts hlc.Timestamp, e
 // stamped at ts/expiration. Returns the number of vertices actually
 // deleted (matching DeleteByPrefix). limit==0 means unlimited.
 func (c *GraphCache[S, T]) DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error) {
-	keys, err := c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, false)
+	keys, err := c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, false, nil)
 	return len(keys), err
 }
 
@@ -433,13 +434,26 @@ func (c *GraphCache[S, T]) DeleteByPrefixHLCChecked(ctx context.Context, prefix 
 // a peer delete identities that the origin's limit or causal budget did not
 // commit.
 func (c *GraphCache[S, T]) DeleteByPrefixHLCCheckedKeys(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) ([]S, error) {
-	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true)
+	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true, nil)
 }
 
-func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, strict bool) ([]S, error) {
+// DeleteByPrefixHLCCheckedKeysWithPreflight checks causal capacity, then
+// preflights the exact causally accepted victims before deleting them under
+// the same cache lock. preflight must not call back into GraphCache.
+func (c *GraphCache[S, T]) DeleteByPrefixHLCCheckedKeysWithPreflight(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, preflight func([]S) error) ([]S, error) {
+	if preflight == nil {
+		return nil, errors.New("HLC prefix delete requires a preflight callback")
+	}
+	return c.deleteByPrefixHLC(ctx, prefix, limit, ts, expiration, true, preflight)
+}
+
+func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time, strict bool, preflight func([]S) error) ([]S, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.prefixIndex == nil {
+		if preflight != nil {
+			return nil, ctx.Err()
+		}
 		return nil, nil
 	}
 	var victims []S
@@ -475,6 +489,19 @@ func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string,
 	}
 	if strict && ts != (hlc.Timestamp{}) {
 		if err := c.checkVertexCausalCapacityLocked(accepted); err != nil {
+			return nil, err
+		}
+	}
+	if preflight != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(accepted) > 0 {
+			if err := preflight(accepted); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 	}

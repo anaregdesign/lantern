@@ -914,8 +914,13 @@ func startDurableReceiptPumpWithApplier(
 	sourceURL string,
 	applier replication.MutationApplier,
 	metrics replication.Metrics,
+	authTokens ...string,
 ) func() {
 	t.Helper()
+	authToken := ""
+	if len(authTokens) > 0 {
+		authToken = authTokens[0]
+	}
 	runCtx, cancel := context.WithCancel(parent)
 	done := make(chan error, 1)
 	pump := replication.NewPump(replication.Config{
@@ -923,6 +928,7 @@ func startDurableReceiptPumpWithApplier(
 		BackoffMin: 10 * time.Millisecond, BackoffMax: 50 * time.Millisecond,
 		HTTPClient: h2cClient(), SnapshotInstaller: newDurableReceiptSnapshotInstaller(t, config, target),
 		SearchConfigFingerprint: target.svc.SearchConfigFingerprint(), Metrics: metrics,
+		AuthToken: authToken,
 	}, applier, targetRuntime.GraphCache())
 	go func() { done <- pump.Run(runCtx) }()
 
@@ -1085,8 +1091,13 @@ func waitForDurableReceiptCut(
 	runtime *service.ServingRuntime,
 	want map[string]uint64,
 	timeout time.Duration,
+	authTokens ...string,
 ) *pb.PeerStatusResponse {
 	t.Helper()
+	authToken := ""
+	if len(authTokens) > 0 {
+		authToken = authTokens[0]
+	}
 	raw := newReplicationRawClient(t, server.url)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -1098,7 +1109,7 @@ func waitForDurableReceiptCut(
 	)
 	for {
 		probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		response, err := raw.PeerStatus(probeCtx, connect.NewRequest(&pb.PeerStatusRequest{}))
+		response, err := raw.PeerStatus(probeCtx, receiptRequestWithToken(&pb.PeerStatusRequest{}, authToken))
 		cancel()
 		lastErr = err
 		if err == nil {
@@ -2567,6 +2578,216 @@ func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *te
 	if err != nil ||
 		status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED {
 		t.Fatalf("rejected receipt visibility = %+v, %v", status, err)
+	}
+}
+
+func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) {
+	const (
+		itemCount = 16
+		recvLimit = 64 << 10
+		token     = "receipt-relay-frame-token"
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	origin := hlc.NodeID{0x76}
+	type call struct {
+		wire    publicReceiptWireServer
+		request *pb.DeleteEdgesRequest
+	}
+	prepare := func(sendLimit int, seed byte) call {
+		wire := newPublicReceiptWireServerWithNetAndTombstoneTTL(
+			t, origin, itemCount*2,
+			provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit},
+			2*time.Hour+time.Second, token,
+		)
+		capability := publicReceiptCapability(t, wire, token)
+		receipts := publicReceiptWireContext(
+			t, capability, seed, itemCount,
+			time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
+		)
+		edges := make([]*pb.EdgeKey, itemCount)
+		for i := range edges {
+			key := fmt.Sprintf("receipt-relay-%02d-%s", i, strings.Repeat("k", 48))
+			edges[i] = &pb.EdgeKey{Tail: key, Head: "head"}
+			if i%2 == 0 {
+				barrier := hlc.Timestamp{WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: origin}
+				if !wire.runtime.GraphCache().ApplyEdgeCausalBarrierHLC(key, "head", barrier) {
+					t.Fatal("cannot install edge causal barrier")
+				}
+				continue
+			}
+			wire.runtime.GraphCache().AddEdgeWithExpiration(key, "head", 1, time.Now().Add(time.Hour))
+		}
+		result := call{
+			wire: wire,
+			request: &pb.DeleteEdgesRequest{
+				Edges: edges, ReceiptContext: receipts,
+			},
+		}
+		size := proto.Size(result.request)
+		if size >= recvLimit {
+			t.Fatalf("request size %d exceeds receive cap %d", size, recvLimit)
+		}
+		now := time.Now()
+		wire.server.svc.WithTombstoneTTL(
+			2*time.Hour + 600*time.Millisecond - time.Duration(now.Nanosecond()),
+		)
+		return result
+	}
+	deleteCall := func(c call) error {
+		_, err := c.wire.raw.DeleteEdges(ctx, receiptRequestWithToken(c.request, token))
+		return err
+	}
+	readFrame := func(wire publicReceiptWireServer) *pb.SubscribeResponse {
+		stream, err := newReplicationRawClient(t, wire.server.url).Subscribe(
+			ctx,
+			receiptRequestWithToken(&pb.SubscribeRequest{
+				FromLocalSeq: 1, AcceptReceiptEnvelopes: true,
+			}, token),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = stream.Close() }()
+		if !stream.Receive() {
+			t.Fatalf("receipt Subscribe: %v", stream.Err())
+		}
+		return proto.Clone(stream.Msg()).(*pb.SubscribeResponse)
+	}
+	maximalFrame := func(frame *pb.SubscribeResponse) *pb.SubscribeResponse {
+		maximal := proto.Clone(frame).(*pb.SubscribeResponse)
+		sparse := 0
+		for _, item := range maximal.GetMutation().GetOp().GetReplicatedReceiptEdgeDelete().GetItems() {
+			if !item.GetCausallyAccepted() {
+				sparse++
+			}
+			item.CausallyAccepted = true
+		}
+		if sparse != itemCount/2 {
+			t.Fatalf("sparse origin has %d nonaccepted items, want %d", sparse, itemCount/2)
+		}
+		return maximal
+	}
+
+	reference := prepare(0, 0x41)
+	if err := deleteCall(reference); err != nil {
+		t.Fatalf("reference receipt Delete: %v", err)
+	}
+	sparse := readFrame(reference.wire)
+	maximal := maximalFrame(sparse)
+	sendLimit := proto.Size(maximal)
+	if proto.Size(sparse) >= sendLimit {
+		t.Fatalf("sparse frame %d did not grow to maximal frame %d", proto.Size(sparse), sendLimit)
+	}
+
+	rejected := prepare(sendLimit-1, 0x42)
+	beforeGraph := rejected.wire.runtime.GraphCache().SnapshotReplication()
+	orderGraph := func(snapshot *graphcache.ReplicationSnapshot[string, *pb.Vertex]) {
+		sort.Slice(snapshot.Graph.Vertices, func(i, j int) bool {
+			return snapshot.Graph.Vertices[i].Key < snapshot.Graph.Vertices[j].Key
+		})
+		sort.Slice(snapshot.Graph.Edges, func(i, j int) bool {
+			return snapshot.Graph.Edges[i].Tail < snapshot.Graph.Edges[j].Tail
+		})
+		sort.Slice(snapshot.Barriers.Edges, func(i, j int) bool {
+			return snapshot.Barriers.Edges[i].Tail < snapshot.Barriers.Edges[j].Tail
+		})
+		sort.Slice(snapshot.Tombstones.Edges, func(i, j int) bool {
+			return snapshot.Tombstones.Edges[i].Tail < snapshot.Tombstones.Edges[j].Tail
+		})
+	}
+	orderGraph(&beforeGraph)
+	beforeWAL, err := os.Stat(rejected.wire.config.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = deleteCall(rejected)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
+		t.Fatalf("one-byte-under maximal relay frame = %v, want ResourceExhausted", err)
+	}
+	afterGraph := rejected.wire.runtime.GraphCache().SnapshotReplication()
+	orderGraph(&afterGraph)
+	if !reflect.DeepEqual(beforeGraph, afterGraph) {
+		t.Fatal("rejected receipt Delete changed graph or causal state")
+	}
+	for i, edge := range rejected.request.GetEdges() {
+		if i%2 == 1 {
+			requireReceiptWireEdge(t, rejected.wire.raw, token, edge)
+		}
+	}
+	if stats := rejected.wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
+		t.Fatalf("rejected receipt Delete changed Store: %+v", stats)
+	}
+	if length, _, _ := rejected.wire.runtime.MutationLogStats(); length != 0 {
+		t.Fatalf("rejected receipt Delete retained %d log entries", length)
+	}
+	if seq := rejected.wire.server.svc.LocalSeq(origin); seq != 0 {
+		t.Fatalf("rejected receipt Delete advanced origin seq to %d", seq)
+	}
+	afterWAL, err := os.Stat(rejected.wire.config.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterWAL.Size() != beforeWAL.Size() {
+		t.Fatalf("rejected receipt Delete changed WAL from %d to %d", beforeWAL.Size(), afterWAL.Size())
+	}
+	operationID := rejected.request.GetReceiptContext().GetOperationIds()[0]
+	status, err := rejected.wire.raw.GetReceiptStatus(ctx, receiptRequestWithToken(
+		&pb.GetReceiptStatusRequest{OperationId: operationID}, token,
+	))
+	if err != nil ||
+		status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED {
+		t.Fatalf("rejected receipt status = %+v, %v", status, err)
+	}
+
+	exact := prepare(sendLimit, 0x43)
+	if err := deleteCall(exact); err != nil {
+		t.Fatalf("exact-fit receipt Delete at maximal %d: %v", sendLimit, err)
+	}
+	exactSparse := readFrame(exact.wire)
+	if proto.Size(exactSparse) != proto.Size(sparse) {
+		t.Fatalf("origin frame size = %d, want sparse %d", proto.Size(exactSparse), proto.Size(sparse))
+	}
+	exactMaximal := maximalFrame(exactSparse)
+	follower := newPublicReceiptWireServerWithNetAndTombstoneTTL(
+		t, hlc.NodeID{0x77}, itemCount*2,
+		provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit},
+		2*time.Hour+time.Second, token,
+	)
+	stopAB := startDurableReceiptPumpWithApplier(
+		t, ctx, "sparse-to-dense receipt relay", follower.config, follower.runtime,
+		follower.server, exact.wire.server.url, follower.server.svc, nil, token,
+	)
+	defer stopAB()
+	cut := map[string]uint64{hex.EncodeToString(origin[:]): 1}
+	waitForDurableReceiptCut(t, ctx, "dense follower", follower.server, follower.runtime, cut, 5*time.Second, token)
+	dense := readFrame(follower)
+	if !proto.Equal(dense, exactMaximal) || proto.Size(dense) != sendLimit {
+		t.Fatalf("receiver-local relay frame size = %d, want maximal %d", proto.Size(dense), sendLimit)
+	}
+	downstream := newPublicReceiptWireServerWithNetAndTombstoneTTL(
+		t, hlc.NodeID{0x78}, itemCount*2,
+		provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit},
+		2*time.Hour+time.Second, token,
+	)
+	stopBC := startDurableReceiptPumpWithApplier(
+		t, ctx, "exact-boundary receipt Pump", downstream.config, downstream.runtime,
+		downstream.server, follower.server.url, downstream.server.svc, nil, token,
+	)
+	defer stopBC()
+	waitForDurableReceiptCut(t, ctx, "downstream at exact cap", downstream.server, downstream.runtime, cut, 5*time.Second, token)
+	if _, err := exact.wire.raw.PutVertices(ctx, receiptRequestWithToken(&pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{Key: "receipt-relay/after", Value: &pb.Vertex_String_{String_: "after"}}},
+	}, token)); err != nil {
+		t.Fatalf("post-boundary mutation: %v", err)
+	}
+	cut[hex.EncodeToString(origin[:])] = 2
+	waitForDurableReceiptCut(t, ctx, "downstream after exact cap", downstream.server, downstream.runtime, cut, 5*time.Second, token)
+	if _, err := downstream.raw.GetVertex(ctx, receiptRequestWithToken(
+		&pb.GetVertexRequest{Key: "receipt-relay/after"}, token,
+	)); err != nil {
+		t.Fatalf("Pump pinned at accepted receipt frame: %v", err)
 	}
 }
 

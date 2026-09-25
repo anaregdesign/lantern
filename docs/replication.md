@@ -478,27 +478,43 @@ suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
 **Full-mutation frame admission (#1440).** The canonical transport projection
 is the protobuf `SubscribeResponse` containing the mutation that `Subscribe`
 will send, including receipt evidence when present. Lantern measures that
-exact outer message, not only the inner `Mutation`. The same projector is used
-before local graph/receipt/origin/log publication, on follower ingress and
-before any receiver-local relay publication, by live `Subscribe`, and while
-certifying every retained log entry at startup. A projection larger than
+exact outer message, not only the inner `Mutation`. For receipt-bearing Edge
+Delete, Vertex Delete, and Vertex Put, a receiving replica can retain more
+causally accepted effects than the sender. Admission therefore also sizes the
+maximum valid receiver-local relay of the **same** receipt evidence (all
+eligible Delete items accepted; all original Put effects accepted), before
+local graph/Store/WAL/origin publication. Follower ingress applies the same
+bound before its own publication. Prefix Deletes choose their exact bounded,
+causally accepted victims and preflight their projected frame under a single
+GraphCache write lock; an expired victim cannot disappear between selection
+and deletion and leave a matching live key behind a zero-count response.
+
+Live `Subscribe` uses the same projector; startup certifies both actual and
+maximal retained projections. A frame larger than
 `LANTERN_MAX_SEND_MSG_BYTES` is rejected with `ResourceExhausted` and
-`lantern_validation_rejected_total{reason="replication_frame"}`. Lowering the
-cap below an existing retained frame fails startup before the listener is
-created instead of exposing a cursor that can never advance.
+`lantern_validation_rejected_total{reason="replication_frame"}`. Intrinsic
+receipt wire limits also reject before publication even with an unlimited
+configured send cap. Lowering the cap below any retained relay bound fails
+startup before listener creation instead of exposing a cursor that cannot
+advance. Full-mutation `Subscribe` requires binary protobuf encoding over
+Connect, gRPC, or binary gRPC-Web: ProtoJSON cannot share the binary byte proof
+and is rejected with `InvalidArgument`. The current Connect handler rejects
+gRPC-Web text with HTTP 415; it is also excluded from full-mutation admission
+because base64 expansion is not covered by binary sizing. Identity-only
+ProtoJSON remains supported.
 
 The public and replication handlers intentionally share the configured send
 cap. `LANTERN_MAX_RECV_MSG_BYTES` is an independent inbound-request limit:
 there is no requirement that send be at least receive, and a request may fit
 receive admission but fail after its replication response is projected.
-Receipt-WAL's internal 8 MiB envelope bound remains an upper bound on durable
-encoding; a lower send cap still wins. The local proof cannot establish an
-unknown downstream client's read limit. Operators must configure every
-full-mutation Subscribe consumer to accept the maximum frame its senders admit
-(homogeneous peer limits are the simplest policy). A lower peer/client read
-cap can still make that consumer retry until configuration is corrected. The
-Snapshot frame and aggregate-stream limits in §8.3 remain independent and are
-not raised by this invariant.
+Receipt-WAL's internal 8 MiB envelope bound and receipt wire's 8 MiB bound are
+separate ceilings; neither raises a lower send cap. The local proof cannot
+establish an unknown downstream client's read limit. Operators must configure
+every full-mutation Subscribe consumer's receive cap at least as high as the
+maximum frame its senders admit (homogeneous compatible peer caps are the
+simplest policy). A lower peer/client read cap can still make that consumer
+retry until configuration is corrected. The Snapshot frame and aggregate-stream
+limits in §8.3 remain independent and are not raised by this invariant.
 
 Back-pressure and publication faults: server terminates the stream with
 `FAILED_PRECONDITION` (`gapped`) if (a) the ring has been truncated below the

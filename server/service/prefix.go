@@ -186,48 +186,27 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		if err != nil {
 			return nil, err
 		}
-		keys := make([]string, 0, limit)
-		s.cache.ScanByPrefixPage(
-			ctx,
-			in.GetPrefix(),
-			"",
-			int(limit),
-			false,
-			func(_ string, key string, _ *pb.Vertex) bool {
-				keys = append(keys, key)
-				return true
-			},
-		)
-		if err := ctx.Err(); err != nil {
-			return nil, ctxToConnect(err)
+		var mutationOp *pb.MutationOp
+		preflight := func(keys []string) error {
+			mutationOp = &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+				DeleteVertices: &pb.DeleteVerticesRequest{Keys: keys},
+			}}
+			return s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp)
 		}
-		if len(keys) == 0 {
-			s.metrics.OnScan("DeleteVerticesByPrefix", 0, time.Since(start))
-			return &pb.DeleteVerticesByPrefixResponse{}, nil
-		}
-		mutationOp := &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
-			DeleteVertices: &pb.DeleteVerticesRequest{Keys: keys},
-		}}
-		if err := s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp); err != nil {
-			return nil, err
-		}
-		var outcomes []bool
-		var accepted []int
+		var keys []string
 		if s.tombstoneTTL > 0 {
-			outcomes, accepted, err = s.cache.DeleteVerticesHLCDecisionsChecked(keys, ts, tombExp)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, ctxToConnect(err)
-				}
-				return nil, writeError(err)
-			}
+			keys, err = s.cache.DeleteByPrefixHLCCheckedKeysWithPreflight(ctx, in.GetPrefix(), limit, ts, tombExp, preflight)
 		} else {
-			outcomes = s.cache.DeleteVerticesOutcomes(keys)
-			accepted = allAcceptedIndexes(len(keys))
+			keys, err = s.cache.DeleteByPrefixKeysWithPreflight(ctx, in.GetPrefix(), int(limit), preflight)
 		}
-		deleted = countExisted(outcomes)
-		if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, accepted); err != nil {
-			return nil, err
+		if err != nil {
+			return nil, prefixDeleteError(err)
+		}
+		deleted = len(keys)
+		if deleted > 0 {
+			if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, allAcceptedIndexes(deleted)); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		deleted = s.cache.DeleteByPrefix(ctx, in.GetPrefix(), int(limit))
@@ -289,59 +268,48 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 		if err != nil {
 			return nil, err
 		}
-		keys := make([]graphcache.EdgeKey[string], 0, limit)
-		s.cache.ScanEdgesByPrefixPage(
-			ctx,
-			in.GetTailPrefix(),
-			in.GetHeadPrefix(),
-			"",
-			"",
-			int(limit),
-			func(_ string, tail string, _ string, head string, _ float32, _ time.Time) bool {
-				keys = append(keys, graphcache.EdgeKey[string]{Tail: tail, Head: head})
-				return true
-			},
-		)
-		if err := ctx.Err(); err != nil {
-			return nil, ctxToConnect(err)
-		}
-		if len(keys) == 0 {
-			s.metrics.OnScan("DeleteEdgesByPrefix", 0, time.Since(start))
-			return &pb.DeleteEdgesByPrefixResponse{}, nil
-		}
-		edges := make([]*pb.EdgeKey, len(keys))
-		for i, key := range keys {
-			edges[i] = &pb.EdgeKey{Tail: key.Tail, Head: key.Head}
-		}
-		mutationOp := &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
-			DeleteEdges: &pb.DeleteEdgesRequest{Edges: edges},
-		}}
-		if err := s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp); err != nil {
-			return nil, err
-		}
-		var outcomes []bool
-		var accepted []int
-		if s.tombstoneTTL > 0 {
-			outcomes, accepted, err = s.cache.DeleteEdgesHLCDecisionsChecked(keys, ts, tombExp)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, ctxToConnect(err)
-				}
-				return nil, writeError(err)
+		var mutationOp *pb.MutationOp
+		preflight := func(keys []graphcache.EdgeKey[string]) error {
+			edges := make([]*pb.EdgeKey, len(keys))
+			for i, key := range keys {
+				edges[i] = &pb.EdgeKey{Tail: key.Tail, Head: key.Head}
 			}
-		} else {
-			outcomes = s.cache.DeleteEdgesOutcomes(keys)
-			accepted = allAcceptedIndexes(len(keys))
+			mutationOp = &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+				DeleteEdges: &pb.DeleteEdgesRequest{Edges: edges},
+			}}
+			return s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp)
 		}
-		deleted = countExisted(outcomes)
-		if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, accepted); err != nil {
-			return nil, err
+		var keys []graphcache.EdgeKey[string]
+		if s.tombstoneTTL > 0 {
+			keys, err = s.cache.DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), ts, tombExp, preflight)
+		} else {
+			keys, err = s.cache.DeleteEdgesByPrefixKeysWithPreflight(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit), preflight)
+		}
+		if err != nil {
+			return nil, prefixDeleteError(err)
+		}
+		deleted = len(keys)
+		if deleted > 0 {
+			if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, allAcceptedIndexes(deleted)); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		deleted = s.cache.DeleteEdgesByPrefix(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit))
 	}
 	s.metrics.OnScan("DeleteEdgesByPrefix", deleted, time.Since(start))
 	return &pb.DeleteEdgesByPrefixResponse{Deleted: uint64(deleted)}, nil
+}
+
+func prefixDeleteError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return ctxToConnect(err)
+	}
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) {
+		return err
+	}
+	return writeError(err)
 }
 
 // clampLimit applies the standard "0 means default, otherwise cap at max"

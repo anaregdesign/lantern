@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -173,6 +174,75 @@ func TestGraphCache_DeleteByPrefix_LimitRespected(t *testing.T) {
 	if got := c.CountByPrefix("p:"); got != 3 {
 		t.Fatalf("remaining count: got %d want 3", got)
 	}
+}
+
+func TestGraphCache_DeleteByPrefixKeysWithPreflight(t *testing.T) {
+	newCache := func() *GraphCache[string, string] {
+		c := NewGraphCache[string, string](time.Hour)
+		c.EnablePrefixIndex(identityExtract)
+		c.PutVertex("p:a", "a")
+		c.PutVertex("p:b", "b")
+		return c
+	}
+
+	t.Run("exact bounded set", func(t *testing.T) {
+		c := newCache()
+		keys, err := c.DeleteByPrefixKeysWithPreflight(context.Background(), "p:", 1, func(victims []string) error {
+			if !reflect.DeepEqual(victims, []string{"p:a"}) {
+				t.Fatalf("preflight victims = %v", victims)
+			}
+			return nil
+		})
+		if err != nil || !reflect.DeepEqual(keys, []string{"p:a"}) {
+			t.Fatalf("committed victims = (%v, %v)", keys, err)
+		}
+		if _, ok := c.GetVertex("p:a"); ok {
+			t.Fatal("admitted victim remains")
+		}
+		if _, ok := c.GetVertex("p:b"); !ok {
+			t.Fatal("non-admitted vertex was removed")
+		}
+	})
+
+	t.Run("rejection is atomic", func(t *testing.T) {
+		c := newCache()
+		rejected := errors.New("frame exceeds send limit")
+		keys, err := c.DeleteByPrefixKeysWithPreflight(context.Background(), "p:", 2, func(victims []string) error {
+			if len(victims) != 2 {
+				t.Fatalf("preflight victims = %v", victims)
+			}
+			return rejected
+		})
+		if keys != nil || !errors.Is(err, rejected) || c.CountByPrefix("p:") != 2 {
+			t.Fatalf("rejected delete = (%v, %v); remaining = %d", keys, err, c.CountByPrefix("p:"))
+		}
+	})
+
+	t.Run("cancellation after preflight is atomic", func(t *testing.T) {
+		c := newCache()
+		ctx, cancel := context.WithCancel(context.Background())
+		keys, err := c.DeleteByPrefixKeysWithPreflight(ctx, "p:", 1, func([]string) error {
+			cancel()
+			return nil
+		})
+		if keys != nil || !errors.Is(err, context.Canceled) || c.CountByPrefix("p:") != 2 {
+			t.Fatalf("canceled delete = (%v, %v); remaining = %d", keys, err, c.CountByPrefix("p:"))
+		}
+	})
+
+	t.Run("cancellation with disabled index", func(t *testing.T) {
+		c := NewGraphCache[string, string](time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := false
+		keys, err := c.DeleteByPrefixKeysWithPreflight(ctx, "p:", 1, func([]string) error {
+			called = true
+			return nil
+		})
+		if keys != nil || !errors.Is(err, context.Canceled) || called {
+			t.Fatalf("canceled empty delete = (%v, %v); preflight called=%t", keys, err, called)
+		}
+	})
 }
 
 func TestGraphCache_PrefixIndex_DroppedOnTTLExpiry(t *testing.T) {

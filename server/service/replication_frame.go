@@ -71,6 +71,46 @@ func validateReplicationFrameSize(op mutationlog.MutationOp, limit int) (int, er
 	return size, nil
 }
 
+// Receiver-local causal admission can add receipt effects to the frame a
+// follower retains. Size the largest valid relay of the same receipt evidence,
+// not just the current node's accepted subset.
+func maximalReplicationRelayEnvelope(op mutationlog.MutationOp) (mutationlog.MutationOp, error) {
+	switch envelope := op.(type) {
+	case *edgeDeleteReceiptEnvelope:
+		if envelope == nil {
+			return nil, errors.New("nil receipt Edge Delete envelope")
+		}
+		return maximalReceiptEdgeDeleteEnvelope(envelope), nil
+	case *vertexDeleteReceiptEnvelope:
+		if envelope == nil {
+			return nil, errors.New("nil receipt Vertex Delete envelope")
+		}
+		return maximalReceiptVertexDeleteEnvelope(envelope), nil
+	case *vertexPutReceiptEnvelope:
+		if envelope == nil {
+			return nil, errors.New("nil receipt Vertex Put envelope")
+		}
+		return maximalReceiptVertexPutEnvelope(envelope)
+	default:
+		return op, nil
+	}
+}
+
+func validateReplicationRelayFrameSize(op mutationlog.MutationOp, limit int) (int, error) {
+	maximal, err := maximalReplicationRelayEnvelope(op)
+	if err != nil {
+		return 0, fmt.Errorf("maximal receipt relay projection: %w", err)
+	}
+	return validateReplicationFrameSize(maximal, limit)
+}
+
+func (s *LanternService) replicationFrameCapacityError(err error) error {
+	if s.onValidationReject != nil {
+		s.onValidationReject("replication_frame")
+	}
+	return connect.NewError(connect.CodeResourceExhausted, err)
+}
+
 func (s *LanternService) validateReplicationFrame(op mutationlog.MutationOp) error {
 	limit := 0
 	if s.replicationFrameCertified {
@@ -78,16 +118,25 @@ func (s *LanternService) validateReplicationFrame(op mutationlog.MutationOp) err
 	}
 	if _, err := validateReplicationFrameSize(op, limit); err != nil {
 		var sizeErr *replicationFrameSizeError
-		if errors.As(err, &sizeErr) {
-			if s.onValidationReject != nil {
-				s.onValidationReject("replication_frame")
-			}
-			return connect.NewError(connect.CodeResourceExhausted, err)
+		if errors.As(err, &sizeErr) ||
+			errors.Is(err, errReceiptEdgeDeleteWireCapacity) ||
+			errors.Is(err, errReceiptVertexDeleteWireCapacity) ||
+			errors.Is(err, errReceiptVertexPutWireCapacity) {
+			return s.replicationFrameCapacityError(err)
 		}
 		return connect.NewError(connect.CodeInternal,
 			fmt.Errorf("replication Subscribe projection: %w", err))
 	}
 	return nil
+}
+
+func (s *LanternService) validateReplicationRelayFrame(op mutationlog.MutationOp) error {
+	maximal, err := maximalReplicationRelayEnvelope(op)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal,
+			fmt.Errorf("maximal receipt relay projection: %w", err))
+	}
+	return s.validateReplicationFrame(maximal)
 }
 
 func publicationShapeError(scope string, err error) error {

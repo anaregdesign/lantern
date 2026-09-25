@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -324,23 +325,55 @@ func (c *GraphCache[S, T]) DeleteEdgesByPrefix(ctx context.Context, tailPrefix, 
 // DeleteEdgesByPrefix. The returned set is collected and committed under one
 // cache lock so replication can preserve the origin's exact bounded scope.
 func (c *GraphCache[S, T]) DeleteEdgesByPrefixKeys(ctx context.Context, tailPrefix, headPrefix string, limit int) []EdgeKey[S] {
+	keys, _ := c.deleteEdgesByPrefixKeys(ctx, tailPrefix, headPrefix, limit, nil)
+	return keys
+}
+
+// DeleteEdgesByPrefixKeysWithPreflight admits the exact bounded edge set
+// before mutation under one cache lock. preflight must not call back into
+// GraphCache and may reject without changing graph or causal state.
+func (c *GraphCache[S, T]) DeleteEdgesByPrefixKeysWithPreflight(ctx context.Context, tailPrefix, headPrefix string, limit int, preflight func([]EdgeKey[S]) error) ([]EdgeKey[S], error) {
+	if preflight == nil {
+		return nil, errors.New("edge prefix delete requires a preflight callback")
+	}
+	return c.deleteEdgesByPrefixKeys(ctx, tailPrefix, headPrefix, limit, preflight)
+}
+
+func (c *GraphCache[S, T]) deleteEdgesByPrefixKeys(ctx context.Context, tailPrefix, headPrefix string, limit int, preflight func([]EdgeKey[S]) error) ([]EdgeKey[S], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
 	if !enabled || !collected {
-		return nil
+		if preflight != nil {
+			return nil, ctx.Err()
+		}
+		return nil, nil
 	}
 	if limit > 0 && len(victims) > limit {
 		victims = victims[:limit]
 	}
 	keys := make([]EdgeKey[S], 0, len(victims))
 	for i := range victims {
-		key := EdgeKey[S]{Tail: victims[i].tail, Head: victims[i].head}
-		c.deleteEdgeLocked(key.Tail, key.Head)
-		c.clearEdgeCausalBarrierLocked(victims[i].tail, victims[i].head)
-		keys = append(keys, key)
+		keys = append(keys, EdgeKey[S]{Tail: victims[i].tail, Head: victims[i].head})
 	}
-	return keys
+	if preflight != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(keys) > 0 {
+			if err := preflight(keys); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	for _, key := range keys {
+		c.deleteEdgeLocked(key.Tail, key.Head)
+		c.clearEdgeCausalBarrierLocked(key.Tail, key.Head)
+	}
+	return keys, nil
 }
 
 // DeleteEdgesByPrefixHLC is the tombstone-aware sibling of DeleteEdgesByPrefix
@@ -351,7 +384,7 @@ func (c *GraphCache[S, T]) DeleteEdgesByPrefixKeys(ctx context.Context, tailPref
 // the number of edges actually deleted, matching DeleteEdgesByPrefix, and any
 // ctx error observed mid-collection.
 func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) (int, error) {
-	keys, err := c.deleteEdgesByPrefixHLC(ctx, tailPrefix, headPrefix, limit, ts, expiration, false)
+	keys, err := c.deleteEdgesByPrefixHLC(ctx, tailPrefix, headPrefix, limit, ts, expiration, false, nil)
 	return len(keys), err
 }
 
@@ -368,14 +401,27 @@ func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLCChecked(ctx context.Context, ta
 // exact DeleteEdges operation so peers cannot widen the delete beyond the
 // origin's limit or causal-metadata admission decision.
 func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLCCheckedKeys(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time) ([]EdgeKey[S], error) {
-	return c.deleteEdgesByPrefixHLC(ctx, tailPrefix, headPrefix, limit, ts, expiration, true)
+	return c.deleteEdgesByPrefixHLC(ctx, tailPrefix, headPrefix, limit, ts, expiration, true, nil)
 }
 
-func (c *GraphCache[S, T]) deleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time, strict bool) ([]EdgeKey[S], error) {
+// DeleteEdgesByPrefixHLCCheckedKeysWithPreflight checks causal capacity, then
+// preflights the exact causally accepted edges before applying them under the
+// same cache lock. preflight must not call back into GraphCache.
+func (c *GraphCache[S, T]) DeleteEdgesByPrefixHLCCheckedKeysWithPreflight(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time, preflight func([]EdgeKey[S]) error) ([]EdgeKey[S], error) {
+	if preflight == nil {
+		return nil, errors.New("HLC edge prefix delete requires a preflight callback")
+	}
+	return c.deleteEdgesByPrefixHLC(ctx, tailPrefix, headPrefix, limit, ts, expiration, true, preflight)
+}
+
+func (c *GraphCache[S, T]) deleteEdgesByPrefixHLC(ctx context.Context, tailPrefix, headPrefix string, limit int, ts hlc.Timestamp, expiration time.Time, strict bool, preflight func([]EdgeKey[S]) error) ([]EdgeKey[S], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	victims, enabled, collected := c.collectEdgeScanRowsLocked(ctx, tailPrefix, headPrefix, "", "", limit)
 	if !enabled {
+		if preflight != nil {
+			return nil, ctx.Err()
+		}
 		return nil, nil
 	}
 	if !collected {
@@ -392,6 +438,19 @@ func (c *GraphCache[S, T]) deleteEdgesByPrefixHLC(ctx context.Context, tailPrefi
 	}
 	if strict && ts != (hlc.Timestamp{}) {
 		if err := c.checkEdgeCausalCapacityLocked(keys); err != nil {
+			return nil, err
+		}
+	}
+	if preflight != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(keys) > 0 {
+			if err := preflight(keys); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 	}

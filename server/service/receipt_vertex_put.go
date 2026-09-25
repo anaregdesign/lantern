@@ -429,9 +429,15 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	}
 	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
 	if _, err := validateReceiptVertexPutWALEnvelope(envelope); err != nil {
+		if errors.Is(err, errReceiptVertexPutWireCapacity) {
+			return nil, s.replicationFrameCapacityError(err)
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := s.validateReplicationFrame(envelope); err != nil {
+		return nil, err
+	}
+	if err := s.validateReplicationRelayFrame(envelope); err != nil {
 		return nil, err
 	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
@@ -519,12 +525,7 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
-	maximal, err := maximalReceiptVertexPutEnvelope(e)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal,
-			fmt.Errorf("replication Vertex Put receipt maximal envelope: %w", err))
-	}
-	if err := s.validateReplicationFrame(maximal); err != nil {
+	if err := s.validateReplicationRelayFrame(e); err != nil {
 		return err
 	}
 	storeTx, err := c.store.Begin(time.Now())

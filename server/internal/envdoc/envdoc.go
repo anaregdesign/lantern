@@ -20,7 +20,7 @@ import (
 var descriptions = map[string]string{
 	"LANTERN_PORT":                   "TCP port of the primary Connect/h2c listener.",
 	"LANTERN_MAX_RECV_MSG_BYTES":     "Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited); independent of replication response expansion.",
-	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response size per Protobuf message (0 = unlimited); also the certified admission cap for canonical full-mutation SubscribeResponse frames.",
+	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response size per Protobuf message (0 = unlimited); certified before publication against both actual binary SubscribeResponse frames and maximal receiver-local receipt relays.",
 	"LANTERN_MAX_CONCURRENT_STREAMS": "HTTP/2 max concurrent streams per connection (0 = unlimited).",
 
 	"LANTERN_TLS_CERT_FILE":      "PEM certificate path; setting cert + key enables TLS on the primary listener.",
@@ -182,16 +182,19 @@ func Render(specs []envconfig.Spec) (string, error) {
 	b.WriteString("Search projection, membership, error, TTL, cursor, and HA semantics are\n")
 	b.WriteString("canonical in the [SearchVertices contract](search.md).\n\n")
 	b.WriteString("The public and replication handlers share the message-size limits. Before a\n")
-	b.WriteString("local or relayed mutation is published, Lantern verifies that its exact\n")
-	b.WriteString("canonical full-mutation `SubscribeResponse` fits\n")
-	b.WriteString("`LANTERN_MAX_SEND_MSG_BYTES`; an oversize mutation is rejected with\n")
-	b.WriteString("`ResourceExhausted`. Startup also fails if a retained log entry exceeds a\n")
-	b.WriteString("newly lowered send cap. `LANTERN_MAX_RECV_MSG_BYTES` remains an independent\n")
+	b.WriteString("local or relayed mutation is published, Lantern verifies that its exact binary\n")
+	b.WriteString("full-mutation `SubscribeResponse` and the largest receiver-local relay of any\n")
+	b.WriteString("receipt envelope fit `LANTERN_MAX_SEND_MSG_BYTES`; an oversize frame is rejected\n")
+	b.WriteString("with `ResourceExhausted` before graph, Store, WAL, or origin publication.\n")
+	b.WriteString("Startup also fails if a retained frame or its maximal relay exceeds a newly\n")
+	b.WriteString("lowered send cap. `LANTERN_MAX_RECV_MSG_BYTES` remains an independent\n")
 	b.WriteString("request cap, so a request that fits it may still be rejected after response\n")
-	b.WriteString("projection. Receipt-WAL's internal 8 MiB envelope bound is a separate upper\n")
-	b.WriteString("bound, not permission to exceed the configured send cap. Every full-mutation\n")
-	b.WriteString("Subscribe consumer must accept the sender's configured maximum; use compatible\n")
-	b.WriteString("limits across peers. Snapshot keeps its independent bounded transport contract.\n\n")
+	b.WriteString("projection. Receipt-WAL and receipt-wire 8 MiB bounds do not raise the send cap;\n")
+	b.WriteString("intrinsic wire limits apply even when the configured cap is unlimited. Every\n")
+	b.WriteString("full-mutation Subscribe consumer must accept its sender's admitted maximum;\n")
+	b.WriteString("use compatible peer read limits. Full-mutation Subscribe requires binary\n")
+	b.WriteString("protobuf (not gRPC-Web text); identity-only ProtoJSON remains supported.\n")
+	b.WriteString("Snapshot keeps its independent bounded transport contract.\n\n")
 	b.WriteString("| Variable | Type | Default | Description |\n")
 	b.WriteString("|---|---|---|---|\n")
 	for _, s := range sorted {

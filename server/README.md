@@ -135,11 +135,16 @@ The receive and send caps are independent: a public request may fit
 `LANTERN_MAX_RECV_MSG_BYTES` while its mutation plus `SubscribeResponse`
 envelope exceeds `LANTERN_MAX_SEND_MSG_BYTES`. Lantern returns
 `ResourceExhausted` before graph, receipt, origin, or log publication in that
-case. A restart also fails before listener creation if the configured send cap
-cannot carry any retained full-mutation frame. Receipt-WAL's internal 8 MiB
-envelope bound and Snapshot's separately bounded transport do not raise this
-cap. Configure every full-mutation Subscribe consumer, including peer
-replication clients, to read at least the maximum frame its senders admit.
+case (metric `lantern_validation_rejected_total{reason="replication_frame"}`).
+Receipt writes are also bounded by the largest receiver-local relay of their
+same evidence, not just the origin's possibly sparse frame. A restart fails
+before listener creation if the configured send cap cannot carry any retained
+relay; intrinsic receipt wire bounds are checked even with an unlimited cap.
+Receipt-WAL's internal 8 MiB bound and Snapshot's separately bounded transport
+do not raise this cap. Full-mutation Subscribe requires binary protobuf
+(Connect, gRPC, or binary gRPC-Web); ProtoJSON is supported only for
+identity-only Subscribe, while gRPC-Web text is unsupported. Configure each
+peer/client read cap to accept at least the maximum frame its senders admit.
 
 ## Observability
 

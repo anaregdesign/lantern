@@ -100,6 +100,30 @@ func TestLanternServiceReplicationFrameRejectsWithMetric(t *testing.T) {
 	}
 }
 
+func TestLanternServiceReceiptWireCapacityRejectsWithUnlimitedSendCap(t *testing.T) {
+	for _, capacity := range []error{
+		errReceiptEdgeDeleteWireCapacity,
+		errReceiptVertexDeleteWireCapacity,
+		errReceiptVertexPutWireCapacity,
+	} {
+		t.Run(capacity.Error(), func(t *testing.T) {
+			svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](0))
+			svc.replicationFrameCertified = true
+			var reasons []string
+			svc.WithValidationRejectHook(func(reason string) {
+				reasons = append(reasons, reason)
+			})
+			err := svc.validateReplicationFrame(&testReplicationProjection{err: capacity})
+			if connect.CodeOf(err) != connect.CodeResourceExhausted || !errors.Is(err, capacity) {
+				t.Fatalf("intrinsic wire capacity = %v, want ResourceExhausted wrapping %v", err, capacity)
+			}
+			if len(reasons) != 1 || reasons[0] != "replication_frame" {
+				t.Fatalf("intrinsic wire capacity reject reasons = %v", reasons)
+			}
+		})
+	}
+}
+
 func TestGraphPublicationFrameUsesLoggableEffectProjection(t *testing.T) {
 	origin := [16]byte{1}
 	mutation := &pb.Mutation{
