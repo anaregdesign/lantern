@@ -169,6 +169,37 @@ func (s *retiredReceiptCatalogSlot) snapshot(
 	return state, s.revision, nil
 }
 
+func (s *retiredReceiptCatalogSlot) lookupMany(
+	policy mutationreceipt.Config,
+	ids []mutationreceipt.ID,
+	highWater time.Time,
+) ([]mutationreceipt.Observation, error) {
+	if s == nil {
+		return nil, errors.New("service: retired receipt catalog slot is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.catalog == nil {
+		return nil, errors.New("service: retired receipt catalog slot is uninitialized")
+	}
+	if err := s.validatePolicyLocked(policy); err != nil {
+		return nil, err
+	}
+	highWaterMillis := highWater.UnixMilli()
+	if highWaterMillis < s.highWaterMillis {
+		return nil, mutationreceipt.ErrRetiredCatalogClockRollback
+	}
+	observations, err := s.catalog.LookupMany(ids, highWater)
+	if err != nil {
+		return nil, err
+	}
+	if highWaterMillis != s.highWaterMillis {
+		s.highWaterMillis = highWaterMillis
+		s.revision++
+	}
+	return observations, nil
+}
+
 func (s *retiredReceiptCatalogSlot) beginReplace(
 	policy mutationreceipt.Config,
 	expectedRevision uint64,

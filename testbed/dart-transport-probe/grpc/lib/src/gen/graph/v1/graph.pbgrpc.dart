@@ -263,9 +263,8 @@ class LanternServiceClient extends $grpc.Client {
     return $createUnaryCall(_$getReplicationStatus, request, options: options);
   }
 
-  /// Receipt preflight follows LanternService auth. The initial implementation
-  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
-  /// capability requires configured auth and one certified policy/endpoint cut.
+  /// Receipt preflight follows LanternService auth. An enabled capability
+  /// requires configured bearer auth and one certified policy/endpoint cut.
   $grpc.ResponseFuture<$0.GetReceiptCapabilityResponse> getReceiptCapability(
     $0.GetReceiptCapabilityRequest request, {
     $grpc.CallOptions? options,
@@ -273,10 +272,9 @@ class LanternServiceClient extends $grpc.Client {
     return $createUnaryCall(_$getReceiptCapability, request, options: options);
   }
 
-  /// Read-only original-result lookup. Until receipt storage and atomic
-  /// publication exist, these fail with FAILED_PRECONDITION rather than
-  /// inventing an absent or expired outcome. The singular form forwards to
-  /// the plural canonical implementation.
+  /// Read-only original-result lookup. Disabled or recovering deployments fail
+  /// with FAILED_PRECONDITION rather than inventing an absent or expired
+  /// outcome. The singular form forwards to the plural canonical implementation.
   $grpc.ResponseFuture<$0.GetReceiptStatusResponse> getReceiptStatus(
     $0.GetReceiptStatusRequest request, {
     $grpc.CallOptions? options,

@@ -19,7 +19,7 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_AUTH_EXEMPT_REFLECTION` | bool | `true` | Keep gRPC server reflection reachable without a token when auth is enabled (schema discovery is not data access). Set false to require the bearer token for reflection too. |
 | `LANTERN_AUTH_TOKENS` | string | (empty) | Comma-separated bearer tokens arming data-plane auth (empty = open, the default). Requests must send 'Authorization: Bearer <token>' matching any entry (constant-time compare); multiple entries allow zero-downtime rotation (add new on all servers -> switch clients -> drop old). Health checks are always exempt. Pair with TLS outside trusted networks - bearer tokens over plaintext h2c are sniffable. |
 | `LANTERN_BACKUP_DIR` | string | (empty) | Mounted directory backup files are written to and startup restore reads from. |
-| `LANTERN_BACKUP_ENABLED` | bool | `false` | Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or private durable receipt sets according to runtime mode. |
+| `LANTERN_BACKUP_ENABLED` | bool | `false` | Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or durable receipt sets according to runtime mode. |
 | `LANTERN_BACKUP_INSTANCE_ID` | string | (empty) | Per-instance ownership token used to derive safe backup filenames; defaults to the hostname. |
 | `LANTERN_BACKUP_INTERVAL` | duration | `5m0s` | Backup production cadence (Go duration). |
 | `LANTERN_BACKUP_RESTORE_ON_START` | bool | `true` | Graph-only: replay the newest valid dump. Durable fresh: restore the strict newest receipt set, with optional absence starting empty. Durable restart: use a set only for eligible current-baseline damage. |
@@ -78,7 +78,7 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_RECEIPT_MAX_BYTES` | int | `0` | Positive retained-receipt logical-byte cap required by fresh/restart mode and immutable for restart. |
 | `LANTERN_RECEIPT_MAX_ENTRIES` | int | `0` | Positive retained-receipt entry cap required by fresh/restart mode and immutable for restart. |
 | `LANTERN_RECEIPT_RETENTION` | duration | `0s` | Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart. |
-| `LANTERN_RECEIPT_WAL_MODE` | string | `graph-only` | Private receipt-WAL runtime mode: graph-only (default), fresh, or restart; durable modes do not enable public receipt APIs. |
+| `LANTERN_RECEIPT_WAL_MODE` | string | `graph-only` | Receipt-WAL runtime mode: graph-only (default), fresh, or restart. Durable modes expose authenticated Edge Delete receipts only after runtime, recovery, replication, Snapshot, and backup certification. |
 | `LANTERN_RECEIPT_WAL_PATH` | string | (empty) | Absolute FileWAL path for fresh/restart mode; its .clock, .tip, .generation, and stable .lease sidecars share the same ownership boundary. |
 | `LANTERN_REFLECTION` | bool | `true` | Serve gRPC server reflection on the primary listener. |
 | `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |

@@ -217,10 +217,10 @@ func bindPublicReceiptFixtureForConcurrencyTest(
 		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
 		ClockHighWater: time.UnixMilli(f.coordinator.store.Stats().HighWaterMillis),
 	}
-	retired, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
-		ActiveEpoch: f.epoch, MaxEntries: 32, MaxBytes: 1 << 20,
-		ClockHighWater: policy.ClockHighWater,
-	})
+	retired, err := newEmptyRetiredReceiptCatalogSlot(
+		policy,
+		policy.ClockHighWater.UnixMilli(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

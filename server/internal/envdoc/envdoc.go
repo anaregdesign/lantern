@@ -19,8 +19,8 @@ import (
 // Render enforces that this table and the envconfig registry agree exactly.
 var descriptions = map[string]string{
 	"LANTERN_PORT":                   "TCP port of the primary Connect/h2c listener.",
-	"LANTERN_MAX_RECV_MSG_BYTES":     "Maximum accepted request message size in bytes.",
-	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response message size in bytes.",
+	"LANTERN_MAX_RECV_MSG_BYTES":     "Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited).",
+	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response size per Protobuf message, enforced by every generated Connect handler (0 = unlimited).",
 	"LANTERN_MAX_CONCURRENT_STREAMS": "HTTP/2 max concurrent streams per connection (0 = unlimited).",
 
 	"LANTERN_TLS_CERT_FILE":      "PEM certificate path; setting cert + key enables TLS on the primary listener.",
@@ -49,7 +49,7 @@ var descriptions = map[string]string{
 	"LANTERN_DRAIN_DELAY_SECONDS":      "Zero-drop rolling-update window: keep serving this long after readiness flips NOT_SERVING (0 = disabled).",
 
 	"LANTERN_MAX_KEY_LEN":                 "Maximum accepted vertex-key length in bytes.",
-	"LANTERN_MAX_BATCH_SIZE":              "Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms).",
+	"LANTERN_MAX_BATCH_SIZE":              "Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms and receipt status lookups). Receipt status lookups retain a hard 10,000-item ceiling when this value is higher or unlimited.",
 	"LANTERN_AUTH_TOKENS":                 "Comma-separated bearer tokens arming data-plane auth (empty = open, the default). Requests must send 'Authorization: Bearer <token>' matching any entry (constant-time compare); multiple entries allow zero-downtime rotation (add new on all servers -> switch clients -> drop old). Health checks are always exempt. Pair with TLS outside trusted networks - bearer tokens over plaintext h2c are sniffable.",
 	"LANTERN_AUTH_EXEMPT_REFLECTION":      "Keep gRPC server reflection reachable without a token when auth is enabled (schema discovery is not data access). Set false to require the bearer token for reflection too.",
 	"LANTERN_LLM_PROVIDER":                "LLM backend for server-side features (#828): disabled (default) | openai | anthropic | gemini. disabled composes the server without any LLM.",
@@ -103,7 +103,7 @@ var descriptions = map[string]string{
 
 	"LANTERN_MUTATION_LOG_CAPACITY":          "Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds.",
 	"LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER": "Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped.",
-	"LANTERN_RECEIPT_WAL_MODE":               "Private receipt-WAL runtime mode: graph-only (default), fresh, or restart; durable modes do not enable public receipt APIs.",
+	"LANTERN_RECEIPT_WAL_MODE":               "Receipt-WAL runtime mode: graph-only (default), fresh, or restart. Durable modes expose authenticated Edge Delete receipts only after runtime, recovery, replication, Snapshot, and backup certification.",
 	"LANTERN_RECEIPT_WAL_PATH":               "Absolute FileWAL path for fresh/restart mode; its .clock, .tip, .generation, and stable .lease sidecars share the same ownership boundary.",
 	"LANTERN_RECEIPT_EPOCH":                  "Nonzero 32-hex-character deployment epoch required by fresh/restart mode and immutable for restart.",
 	"LANTERN_RECEIPT_RETENTION":              "Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart.",
@@ -128,7 +128,7 @@ var descriptions = map[string]string{
 
 	"LANTERN_CORS_ALLOWED_ORIGINS": "Comma-separated browser origins allowed by CORS (e.g. the admin SPA origin); empty disables CORS.",
 
-	"LANTERN_BACKUP_ENABLED":          "Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or private durable receipt sets according to runtime mode.",
+	"LANTERN_BACKUP_ENABLED":          "Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or durable receipt sets according to runtime mode.",
 	"LANTERN_BACKUP_DIR":              "Mounted directory backup files are written to and startup restore reads from.",
 	"LANTERN_BACKUP_INTERVAL":         "Backup production cadence (Go duration).",
 	"LANTERN_BACKUP_RETAIN":           "How many valid backups owned by this instance to keep, newest first (0 keeps all).",

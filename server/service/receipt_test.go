@@ -123,11 +123,12 @@ func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {
 		Digest: mutationreceipt.IntentDigest([]byte("confirmed")),
 	}
 	commitReceiptForStatus(t, runtime.receipt.store, now, confirmedIntent, 0)
+	activeHighWater := runtime.receipt.store.Stats().HighWaterMillis
 
 	oldEpoch := mutationreceipt.Epoch{0x55}
 	oldConfig := mutationreceipt.Config{
 		Epoch: oldEpoch, Retention: time.Hour, MaxEntries: 8, MaxBytes: 1 << 20,
-		ClockHighWater: now,
+		ClockHighWater: time.UnixMilli(activeHighWater),
 	}
 	oldStore, err := mutationreceipt.New(oldConfig)
 	if err != nil {
@@ -144,12 +145,13 @@ func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	emptyCatalog, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
-		ActiveEpoch: epoch, MaxEntries: 8, MaxBytes: 1 << 20, ClockHighWater: now,
+		ActiveEpoch: epoch, MaxEntries: 8, MaxBytes: 1 << 20,
+		ClockHighWater: time.UnixMilli(activeHighWater),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	retiredState, err := emptyCatalog.Snapshot(now)
+	retiredState, err := emptyCatalog.Snapshot(time.UnixMilli(activeHighWater))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,15 +162,13 @@ func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {
 		},
 		State: oldState,
 	}}
-	runtime.receipt.retired, err = mutationreceipt.NewRetiredCatalogFromSnapshot(
-		mutationreceipt.RetiredCatalogConfig{
-			ActiveEpoch: epoch, MaxEntries: 8, MaxBytes: 1 << 20, ClockHighWater: now,
-		},
+	mustReplaceRetiredCatalog(
+		t,
+		runtime.receipt.retired,
+		runtime.receipt.policy,
+		activeHighWater,
 		retiredState,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	capability, err := svc.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
 	nodeID := runtime.clock.NodeID()
@@ -210,6 +210,62 @@ func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {
 	}
 }
 
+func TestReceiptStatusProtoRendersCanonicalMutationResults(t *testing.T) {
+	id := receiptOperationID(t, mutationreceipt.Epoch{0x46}, time.Now(), 0x47)
+	base := mutationreceipt.Receipt{
+		Intent: mutationreceipt.Intent{
+			ID: id, Group: mutationreceipt.GroupID{0x48}, Count: 1,
+			Digest: mutationreceipt.IntentDigest([]byte("status-result")),
+		},
+		DeadlineMillis: time.Now().Add(time.Hour).UnixMilli(),
+	}
+	tests := []struct {
+		name   string
+		kind   mutationreceipt.Kind
+		result byte
+		check  func(*pb.ReceiptResult) bool
+	}{
+		{
+			name: "vertex put", kind: mutationreceipt.PutVertex,
+			result: byte(pb.PutOutcome_PUT_OUTCOME_SUPERSEDED),
+			check: func(result *pb.ReceiptResult) bool {
+				return result.GetPutVertexOutcome() == pb.PutOutcome_PUT_OUTCOME_SUPERSEDED
+			},
+		},
+		{
+			name: "vertex delete", kind: mutationreceipt.DeleteVertex, result: 1,
+			check: func(result *pb.ReceiptResult) bool {
+				return result.GetDeleteVertexExisted()
+			},
+		},
+		{
+			name: "edge delete", kind: mutationreceipt.DeleteEdge, result: 0,
+			check: func(result *pb.ReceiptResult) bool {
+				_, ok := result.GetResult().(*pb.ReceiptResult_DeleteEdgeExisted)
+				return ok && !result.GetDeleteEdgeExisted()
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := base
+			receipt.Kind = tc.kind
+			receipt.Result = []byte{tc.result}
+			status, err := receiptStatusProto(id, mutationreceipt.Observation{
+				Status:  mutationreceipt.Confirmed,
+				Receipt: receipt,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				status.GetReceipt() == nil || !tc.check(status.GetReceipt().GetOriginalResult()) {
+				t.Fatalf("rendered status = %+v", status)
+			}
+		})
+	}
+}
+
 func TestReceiptReadSurfaceMalformedAndFaulted(t *testing.T) {
 	runtime, svc, _ := newActivatedReceiptService(t, 8)
 	if _, err := svc.GetReceiptStatuses(context.Background(), &pb.GetReceiptStatusesRequest{
@@ -242,11 +298,12 @@ func TestReceiptReadSurfaceRejectsFutureIDsBeforeAnyEpochLookup(t *testing.T) {
 		ID: activeID, Group: mutationreceipt.GroupID{0x62}, Count: 1,
 		Kind: mutationreceipt.DeleteEdge, Digest: mutationreceipt.IntentDigest([]byte("active")),
 	}, 1)
+	activeHighWater := runtime.receipt.store.Stats().HighWaterMillis
 
 	retiredEpoch := mutationreceipt.Epoch{0x71}
 	retiredStore, err := mutationreceipt.New(mutationreceipt.Config{
 		Epoch: retiredEpoch, Retention: time.Hour, MaxEntries: 8, MaxBytes: 1 << 20,
-		ClockHighWater: now,
+		ClockHighWater: time.UnixMilli(activeHighWater),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -262,12 +319,12 @@ func TestReceiptReadSurfaceRejectsFutureIDsBeforeAnyEpochLookup(t *testing.T) {
 	}
 	emptyCatalog, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
 		ActiveEpoch: runtime.receipt.epoch, MaxEntries: 8, MaxBytes: 1 << 20,
-		ClockHighWater: now,
+		ClockHighWater: time.UnixMilli(activeHighWater),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalogSnapshot, err := emptyCatalog.Snapshot(now)
+	catalogSnapshot, err := emptyCatalog.Snapshot(time.UnixMilli(activeHighWater))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,16 +334,13 @@ func TestReceiptReadSurfaceRejectsFutureIDsBeforeAnyEpochLookup(t *testing.T) {
 		},
 		State: retiredSnapshot,
 	}}
-	runtime.receipt.retired, err = mutationreceipt.NewRetiredCatalogFromSnapshot(
-		mutationreceipt.RetiredCatalogConfig{
-			ActiveEpoch: runtime.receipt.epoch, MaxEntries: 8, MaxBytes: 1 << 20,
-			ClockHighWater: now,
-		},
+	mustReplaceRetiredCatalog(
+		t,
+		runtime.receipt.retired,
+		runtime.receipt.policy,
+		activeHighWater,
 		catalogSnapshot,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	before, err := runtime.receipt.store.Snapshot()
 	if err != nil {

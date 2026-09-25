@@ -83,6 +83,44 @@ func TestGraphDeleteEffectWALRoundTripKeepsOriginalMutationAndDecision(t *testin
 	}
 }
 
+func TestGraphDeleteEffectWALRejectsReceiptContextOnGenericEdgeDelete(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   *pb.MutationOp
+	}{
+		{
+			name: "singular",
+			op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{
+				Tail: "tail", Head: "head", ReceiptContext: &pb.MutationReceiptContext{},
+			}}},
+		},
+		{
+			name: "plural",
+			op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{
+				Edges:          []*pb.EdgeKey{{Tail: "tail", Head: "head"}},
+				ReceiptContext: &pb.MutationReceiptContext{},
+			}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutation := receiptWALUnionGraphFixture(tc.op)
+			if _, err := newGraphDeleteEffectEnvelope(
+				mutation,
+				allAcceptedIndexes(1),
+			); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("generic receipt-bearing Delete effect = %v, want WAL rejection", err)
+			}
+			envelope := &graphDeleteEffectEnvelope{
+				Mutation:        mutation,
+				AcceptedIndexes: []uint32{0},
+			}
+			if _, err := encodeReceiptWALUnion(envelope); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("encoded generic receipt-bearing Delete effect = %v, want WAL rejection", err)
+			}
+		})
+	}
+}
+
 func TestGraphDeleteEffectWALReplaysEveryExactArmWithAndWithoutTombstones(t *testing.T) {
 	tests := []struct {
 		name      string

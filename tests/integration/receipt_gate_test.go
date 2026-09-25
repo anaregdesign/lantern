@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -267,96 +269,6 @@ func requireRuntimeRetiredReceipt(
 	if err != nil || status != mutationreceipt.Confirmed || !bytes.Equal(receipt.Result, want) {
 		t.Fatalf("retired receipt proof = (%v, %x, %v), want Confirmed %x", status, receipt.Result, err, want)
 	}
-}
-
-func durableFollowerReceiptMutation(
-	t *testing.T,
-	config mutationreceipt.Config,
-	origin hlc.NodeID,
-	seq uint64,
-	tail, head string,
-) (*pb.Mutation, []byte) {
-	t.Helper()
-	return durableFollowerReceiptMutationAt(t, config, origin, seq, tail, head, time.Now())
-}
-
-func durableFollowerReceiptMutationAt(
-	t *testing.T,
-	config mutationreceipt.Config,
-	origin hlc.NodeID,
-	seq uint64,
-	tail, head string,
-	acceptedAt time.Time,
-) (*pb.Mutation, []byte) {
-	t.Helper()
-	store, err := mutationreceipt.New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	issued := acceptedAt.Add(-time.Second)
-	id, err := mutationreceipt.NewID(config.Epoch, issued, [24]byte{0x39, byte(seq)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	group := mutationreceipt.GroupID{0x4a, byte(seq)}
-	canonical := []byte{byte(mutationreceipt.DeleteEdge)}
-	var length [8]byte
-	binary.BigEndian.PutUint64(length[:], uint64(len(tail)))
-	canonical = append(canonical, length[:]...)
-	canonical = append(canonical, tail...)
-	binary.BigEndian.PutUint64(length[:], uint64(len(head)))
-	canonical = append(canonical, length[:]...)
-	canonical = append(canonical, head...)
-	digest := mutationreceipt.IntentDigest(canonical)
-	policy := store.PolicyFingerprint()
-	stamp := hlc.Timestamp{
-		WallNs: acceptedAt.UnixNano(),
-		NodeID: origin,
-	}
-	return &pb.Mutation{
-		Seq: seq, Origin: origin[:],
-		Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, NodeId: origin[:]},
-		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeDelete{
-			ReplicatedReceiptEdgeDelete: &pb.ReplicatedReceiptEdgeDelete{
-				DeploymentEpoch:     config.Epoch[:],
-				PolicyFingerprint:   policy[:],
-				TombstoneExpiration: timestamppb.New(acceptedAt.Add(time.Hour)),
-				Items: []*pb.ReplicatedReceiptEdgeDeleteItem{{
-					Key: &pb.EdgeKey{Tail: tail, Head: head},
-					Receipt: &pb.MutationReceipt{
-						OperationId: id.Bytes(), LogicalCallId: group[:],
-						ItemIndex: 0, ItemCount: 1, IntentSha256: digest[:],
-						DeadlineUnixMs: uint64(issued.Add(config.Retention).UnixMilli()),
-						OriginalResult: &pb.ReceiptResult{Result: &pb.ReceiptResult_DeleteEdgeExisted{
-							DeleteEdgeExisted: false,
-						}},
-					},
-					CausallyAccepted: false,
-				}},
-			},
-		}},
-	}, id.Bytes()
-}
-
-func mountDurableReceiptWireRuntime(
-	t *testing.T,
-	runtime *service.ServingRuntime,
-) (*connectTestServer, *client.Lantern) {
-	t.Helper()
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
-	replication, err := runtime.NewLanternReplicationService(primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.CertifyInstallation(primary, replication); err != nil {
-		t.Fatal(err)
-	}
-	server := newConnectTestServer(t, primary, replication)
-	sdk, err := client.NewLantern(server.url, client.WithHTTPClient(h2cClient()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return server, sdk
 }
 
 func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T) {
@@ -2413,7 +2325,11 @@ func newPublicReceiptWireServer(
 	if err != nil {
 		t.Fatal(err)
 	}
-	certified, err := provider.NewRuntimeCertified(runtime, primary, replicationService)
+	restored, err := provider.NewRuntimeRestored(runtime, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certified, err := provider.NewRuntimeCertified(runtime, primary, replicationService, restored)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2783,6 +2699,103 @@ func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
 			t.Fatalf("cross-endpoint execution = %v, want FailedPrecondition", err)
 		}
 		requireReceiptWireEdge(t, other.raw, newToken, protected)
+	})
+
+	t.Run("uncertified runtime fails closed", func(t *testing.T) {
+		config := durableReceiptWireConfig(
+			filepath.Join(t.TempDir(), "receipts.wal"),
+			hlc.NodeID{0x50},
+		)
+		runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
+		replicationService, err := runtime.NewLanternReplicationService(primary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authConfig := provider.AuthConfig{Tokens: []string{newToken}}
+		server := newConnectTestServer(
+			t,
+			primary,
+			replicationService,
+			provider.NewAuthInterceptor(authConfig),
+		)
+		raw := graphv1connect.NewLanternServiceClient(h2cClient(), server.url)
+
+		capability, err := raw.GetReceiptCapability(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptCapabilityRequest{}, newToken),
+		)
+		if err != nil || capability.Msg.GetEnabled() || capability.Msg.GetPolicy() != nil ||
+			capability.Msg.GetEndpoint() != nil {
+			t.Fatalf("uncertified capability = %+v, %v", capability, err)
+		}
+		protected := &pb.EdgeKey{Tail: "uncertified-protected", Head: "edge"}
+		putReceiptWireEdges(t, raw, newToken, protected)
+		if _, err := raw.DeleteEdge(
+			context.Background(),
+			receiptRequestWithToken(&pb.DeleteEdgeRequest{
+				Tail: protected.GetTail(), Head: protected.GetHead(),
+				ReceiptContext: &pb.MutationReceiptContext{},
+			}, newToken),
+		); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("uncertified receipt mutation = %v, want FailedPrecondition", err)
+		}
+		requireReceiptWireEdge(t, raw, newToken, protected)
+	})
+
+	t.Run("faulted runtime fails closed", func(t *testing.T) {
+		wire := newPublicReceiptWireServer(t, hlc.NodeID{0x53}, 8, newToken)
+		capability := publicReceiptCapability(t, wire, newToken)
+		protected := &pb.EdgeKey{Tail: "faulted-protected", Head: "edge"}
+		putReceiptWireEdges(t, wire.raw, newToken, protected)
+		receiptContext := publicReceiptWireContext(
+			t,
+			capability,
+			0x93,
+			1,
+			time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
+		)
+		finish, err := wire.server.svc.BeginSnapshotInstall()
+		if err != nil {
+			t.Fatal(err)
+		}
+		finish(false)
+
+		after, err := wire.raw.GetReceiptCapability(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptCapabilityRequest{}, newToken),
+		)
+		if err != nil || after.Msg.GetEnabled() || after.Msg.GetPolicy() != nil ||
+			after.Msg.GetEndpoint() != nil {
+			t.Fatalf("faulted capability = %+v, %v", after, err)
+		}
+		if _, err := wire.raw.GetReceiptStatus(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptStatusRequest{
+				OperationId: receiptContext.GetOperationIds()[0],
+			}, newToken),
+		); connect.CodeOf(err) != connect.CodeInternal {
+			t.Fatalf("faulted receipt status = %v, want Internal", err)
+		}
+		if _, err := wire.raw.DeleteEdge(
+			context.Background(),
+			receiptRequestWithToken(&pb.DeleteEdgeRequest{
+				Tail: protected.GetTail(), Head: protected.GetHead(),
+				ReceiptContext: receiptContext,
+			}, newToken),
+		); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("faulted receipt mutation = %v, want FailedPrecondition", err)
+		}
+		if _, _, live := wire.runtime.GraphCache().GetEdgeDetail(
+			protected.GetTail(),
+			protected.GetHead(),
+		); !live {
+			t.Fatal("faulted receipt mutation changed graph")
+		}
 	})
 
 	t.Run("auth-disabled and closed runtime fail closed", func(t *testing.T) {

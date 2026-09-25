@@ -238,9 +238,8 @@ abstract final class LanternService {
     graphv1graph.GetReplicationStatusResponse.new,
   );
 
-  /// Receipt preflight follows LanternService auth. The initial implementation
-  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
-  /// capability requires configured auth and one certified policy/endpoint cut.
+  /// Receipt preflight follows LanternService auth. An enabled capability
+  /// requires configured bearer auth and one certified policy/endpoint cut.
   static const getReceiptCapability = connect.Spec(
     '/$name/GetReceiptCapability',
     connect.StreamType.unary,
@@ -248,10 +247,9 @@ abstract final class LanternService {
     graphv1graph.GetReceiptCapabilityResponse.new,
   );
 
-  /// Read-only original-result lookup. Until receipt storage and atomic
-  /// publication exist, these fail with FAILED_PRECONDITION rather than
-  /// inventing an absent or expired outcome. The singular form forwards to
-  /// the plural canonical implementation.
+  /// Read-only original-result lookup. Disabled or recovering deployments fail
+  /// with FAILED_PRECONDITION rather than inventing an absent or expired
+  /// outcome. The singular form forwards to the plural canonical implementation.
   static const getReceiptStatus = connect.Spec(
     '/$name/GetReceiptStatus',
     connect.StreamType.unary,

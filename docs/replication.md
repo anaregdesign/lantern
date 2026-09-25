@@ -59,7 +59,7 @@ is required for either reads or writes.
    ephemeral. Single-pod loss recovers from peers; total-cluster loss is
    accepted data loss **unless snapshot backups are configured**
    (`LANTERN_BACKUP_*`, see [backup.md](backup.md)). Graph-only nodes restore
-   their newest dump. A private durable receipt-WAL deployment instead uses
+   their newest dump. A durable receipt-WAL deployment instead uses
    `fresh` with an operator-supplied new active epoch to restore the strict
    newest three-member receipt set before runtime certification.
 6. **Rolling update safe.** One pod down → remaining pods serve → new pod
@@ -86,7 +86,8 @@ is required for either reads or writes.
 The bounded mutation-receipt extension is specified in
 [ADR 0010](decisions/0010-bounded-mutation-receipts.md). It requires an atomic
 graph/result/receipt/log boundary and the contiguous publication work in
-#1282. Receipt RPCs and client mutation APIs remain disabled. In private
+#1282. Authenticated, fully certified durable deployments expose capability,
+three-state status, and the optional receipt context on Edge Delete only. In
 durable receipt-WAL mode, the guarded follower, Snapshot producer, detached
 collector, and durable baseline primitive are wired into Pump and
 anti-entropy through one shared exact-`RECEIPT` installer. Graph-only mode
@@ -704,8 +705,8 @@ message SnapshotEdgeContribution {
 Framing contract:
 
 - The request and first header negotiate the image format. Zero request and
-  zero header retain the graph-only interpretation while receipt writes
-  are disabled. Numeric value `2` is intentionally unassigned and unreserved:
+  zero header retain the graph-only interpretation for graph-only consumers.
+  Numeric value `2` is intentionally unassigned and unreserved:
   it is not a legacy receipt format and is rejected as unknown. Graph-only
   Pump and anti-entropy explicitly request
   `GRAPH_ONLY_V1` and accept zero or `GRAPH_ONLY_V1` in the first header, but
@@ -717,6 +718,9 @@ Framing contract:
   receipt-less full Subscribe before checking the retained ring, and rejects every
   graph-only Snapshot request. An opt-in receipt producer exists, but it must
   be configured with the exact service-owned atomic capture source and policy.
+  Generic `DeleteEdge`/`DeleteEdges` mutation arms reject a nested receipt
+  context before queue, graph apply, or graph-effect WAL encoding; receipt
+  replication must use the dedicated `ReplicatedReceiptEdgeDelete` arm.
   The source's private identity must match the responder's primary service,
   serving runtime, graph backend, mutation log, HLC clock, origin tracker, and
   active Store plus the runtime-owned retired-catalog slot; a foreign or
@@ -731,8 +735,11 @@ Framing contract:
   unioned retired catalog, origin vector, HLC floor, private combined baseline marker,
   generation, and resume cutoff publish as one cut. Cancellation, corruption,
   truncation, capacity, epoch/policy mismatch, and format downgrade failures
-  publish nothing. No receipt write/status capability is enabled. Production bounds
-  are 8 MiB per frame,
+  publish nothing. Snapshot installation alone does not enable public receipt
+  writes or status; the production provider activates the Edge Delete surface
+  only after the exact runtime, recovery, replication, Snapshot, and backup
+  state is certified and bearer auth is configured. Production bounds are
+  8 MiB per frame,
   512 MiB per complete wire/canonical image, 1,048,576 total frames, 65,536
   origin rows, and independent nonzero caps for active receipt rows, retired
   epochs, retired receipt rows, and graph frames. The active and retired row
@@ -876,8 +883,9 @@ Implementation notes:
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
   path is exercised at scale (tracked alongside #190).
   Real Connect/h2c tests cover two-node durable gap recovery through Pump and
-  anti-entropy plus tail resumption, while #1394 covers receipt-bearing backup
-  and startup restore continuity. Exhaustive multi-replica partition, restart,
+  anti-entropy plus tail resumption; #1394 covers receipt-bearing backup and
+  startup restore continuity, and #1395 activates the authenticated public
+  Edge Delete layer on that proof. Exhaustive multi-replica partition, restart,
   and soak acceptance remains a separate #1399 follow-up.
 - Delete tombstones committed before the Snapshot cutoff cannot be re-derived
   from the Subscribe tail. Explicit tombstone frames preserve their exact D4
@@ -1054,7 +1062,7 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | Pod falls behind > buffer | `Subscribe` returns `FailedPrecondition` (reason `gapped`) | Pump auto re-snapshots and resumes. |
 | Search config differs across replicas | `lantern_search_config_match{peer}=0`, mismatch counter/log, readiness `NOT_SERVING` | Make every search-affecting `LANTERN_SEARCH_*` value homogeneous, then wait for the next pump/anti-entropy comparison. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
-| Total-cluster loss | every replica down | **Accepted data loss** (D1) unless backups exist. Graph-only nodes restore their newest `.lbk`; private durable receipt-WAL nodes use `fresh` with a new active epoch and the strict newest receipt set, retaining archived known receipts as bounded retired evidence. |
+| Total-cluster loss | every replica down | **Accepted data loss** (D1) unless backups exist. Graph-only nodes restore their newest `.lbk`; durable receipt-WAL nodes use `fresh` with a new active epoch and the strict newest receipt set, retaining archived known receipts as bounded retired evidence. |
 | NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |

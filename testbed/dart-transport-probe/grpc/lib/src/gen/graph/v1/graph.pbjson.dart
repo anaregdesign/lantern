@@ -1111,13 +1111,22 @@ const DeleteEdgeRequest$json = {
   '2': [
     {'1': 'tail', '3': 1, '4': 1, '5': 9, '10': 'tail'},
     {'1': 'head', '3': 2, '4': 1, '5': 9, '10': 'head'},
+    {
+      '1': 'receipt_context',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgeRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List deleteEdgeRequestDescriptor = $convert.base64Decode(
     'ChFEZWxldGVFZGdlUmVxdWVzdBISCgR0YWlsGAEgASgJUgR0YWlsEhIKBGhlYWQYAiABKAlSBG'
-    'hlYWQ=');
+    'hlYWQSSQoPcmVjZWlwdF9jb250ZXh0GAMgASgLMiAuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0'
+    'Q29udGV4dFIOcmVjZWlwdENvbnRleHQ=');
 
 @$core.Deprecated('Use deleteEdgeResponseDescriptor instead')
 const DeleteEdgeResponse$json = {
@@ -1195,13 +1204,22 @@ const DeleteEdgesRequest$json = {
       '6': '.graph.v1.EdgeKey',
       '10': 'edges'
     },
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgesRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List deleteEdgesRequestDescriptor = $convert.base64Decode(
     'ChJEZWxldGVFZGdlc1JlcXVlc3QSJwoFZWRnZXMYASADKAsyES5ncmFwaC52MS5FZGdlS2V5Ug'
-    'VlZGdlcw==');
+    'VlZGdlcxJJCg9yZWNlaXB0X2NvbnRleHQYAiABKAsyIC5ncmFwaC52MS5NdXRhdGlvblJlY2Vp'
+    'cHRDb250ZXh0Ug5yZWNlaXB0Q29udGV4dA==');
 
 @$core.Deprecated('Use deleteEdgesResponseDescriptor instead')
 const DeleteEdgesResponse$json = {
@@ -1987,6 +2005,29 @@ const ReceiptEndpoint$json = {
 final $typed_data.Uint8List receiptEndpointDescriptor = $convert.base64Decode(
     'Cg9SZWNlaXB0RW5kcG9pbnQSFwoHbm9kZV9pZBgBIAEoDFIGbm9kZUlkEh4KCmdlbmVyYXRpb2'
     '4YAiABKAxSCmdlbmVyYXRpb24=');
+
+@$core.Deprecated('Use mutationReceiptContextDescriptor instead')
+const MutationReceiptContext$json = {
+  '1': 'MutationReceiptContext',
+  '2': [
+    {'1': 'operation_ids', '3': 1, '4': 3, '5': 12, '10': 'operationIds'},
+    {'1': 'logical_call_id', '3': 2, '4': 1, '5': 12, '10': 'logicalCallId'},
+    {
+      '1': 'endpoint',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReceiptEndpoint',
+      '10': 'endpoint'
+    },
+  ],
+};
+
+/// Descriptor for `MutationReceiptContext`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutationReceiptContextDescriptor = $convert.base64Decode(
+    'ChZNdXRhdGlvblJlY2VpcHRDb250ZXh0EiMKDW9wZXJhdGlvbl9pZHMYASADKAxSDG9wZXJhdG'
+    'lvbklkcxImCg9sb2dpY2FsX2NhbGxfaWQYAiABKAxSDWxvZ2ljYWxDYWxsSWQSNQoIZW5kcG9p'
+    'bnQYAyABKAsyGS5ncmFwaC52MS5SZWNlaXB0RW5kcG9pbnRSCGVuZHBvaW50');
 
 @$core.Deprecated('Use getReceiptCapabilityRequestDescriptor instead')
 const GetReceiptCapabilityRequest$json = {

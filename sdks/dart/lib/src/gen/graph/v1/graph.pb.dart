@@ -6273,8 +6273,8 @@ class GetReplicationStatusResponse extends $pb.GeneratedMessage {
   $pb.PbList<ReplicationPeer> get peers => $_getList(3);
 }
 
-/// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A future
-/// receipt-enabled server must keep these values stable for its active epoch.
+/// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A
+/// receipt-enabled server keeps these values stable for its active epoch.
 /// All byte fields are absent while receipts are disabled.
 class ReceiptPolicy extends $pb.GeneratedMessage {
   factory ReceiptPolicy({
@@ -6805,7 +6805,7 @@ class ReceiptResult extends $pb.GeneratedMessage {
 
 /// MutationReceipt is one request-index-aligned item from an atomic logical
 /// call. The 49-byte operation ID, 16-byte call ID, and semantic SHA-256 are
-/// validated before any future receipt-enabled mutation. The deadline is the
+/// validated before any receipt-bearing mutation. The deadline is the
 /// ID issuance time plus the active policy's retention horizon.
 class MutationReceipt extends $pb.GeneratedMessage {
   factory MutationReceipt({
@@ -7596,18 +7596,16 @@ class LanternServiceApi {
       _client.invoke<GetReplicationStatusResponse>(ctx, 'LanternService',
           'GetReplicationStatus', request, GetReplicationStatusResponse());
 
-  /// Receipt preflight follows LanternService auth. The initial implementation
-  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
-  /// capability requires configured auth and one certified policy/endpoint cut.
+  /// Receipt preflight follows LanternService auth. An enabled capability
+  /// requires configured bearer auth and one certified policy/endpoint cut.
   $async.Future<GetReceiptCapabilityResponse> getReceiptCapability(
           $pb.ClientContext? ctx, GetReceiptCapabilityRequest request) =>
       _client.invoke<GetReceiptCapabilityResponse>(ctx, 'LanternService',
           'GetReceiptCapability', request, GetReceiptCapabilityResponse());
 
-  /// Read-only original-result lookup. Until receipt storage and atomic
-  /// publication exist, these fail with FAILED_PRECONDITION rather than
-  /// inventing an absent or expired outcome. The singular form forwards to
-  /// the plural canonical implementation.
+  /// Read-only original-result lookup. Disabled or recovering deployments fail
+  /// with FAILED_PRECONDITION rather than inventing an absent or expired
+  /// outcome. The singular form forwards to the plural canonical implementation.
   $async.Future<GetReceiptStatusResponse> getReceiptStatus(
           $pb.ClientContext? ctx, GetReceiptStatusRequest request) =>
       _client.invoke<GetReceiptStatusResponse>(ctx, 'LanternService',

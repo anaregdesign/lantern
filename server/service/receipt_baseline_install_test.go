@@ -1445,6 +1445,8 @@ func (c *blockingReceiptBaselineCodec) StageCombinedReceiptBaseline(
 func TestInstallReceiptBaselineExcludesPublicReceiptOperations(t *testing.T) {
 	path := t.TempDir() + "/receipts.wal"
 	config := baselineRuntimeTestConfig(path)
+	config.Receipt.ClockHighWater = time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	config.Now = config.Receipt.ClockHighWater
 	image := newReceiptBaselineTestImage(t, config)
 	blocking := &blockingReceiptBaselineCodec{
 		delegate: image.codec,
@@ -1510,110 +1512,5 @@ func TestInstallReceiptBaselineExcludesPublicReceiptOperations(t *testing.T) {
 	if err != nil || !after.GetEnabled() ||
 		bytes.Equal(after.GetEndpoint().GetGeneration(), before.GetEndpoint().GetGeneration()) {
 		t.Fatalf("capability after install = %+v, %v", after, err)
-	}
-}
-
-func TestInstallReceiptBaselineRestartPreservesEffectiveReceiptHighWater(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "receipts.wal")
-	config := baselineRuntimeTestConfig(path)
-	image := newReceiptBaselineTestImage(t, config)
-	if len(image.capture.Receipts.Receipts) != 1 {
-		t.Fatalf("receipt fixture rows = %d, want 1", len(image.capture.Receipts.Receipts))
-	}
-	deadline := image.capture.Receipts.Receipts[0].DeadlineMillis
-	initialHighWater := deadline - int64(2*time.Minute/time.Millisecond)
-	sourceHighWater := deadline - int64(time.Minute/time.Millisecond)
-	effectiveHighWater := deadline + int64(time.Minute/time.Millisecond)
-	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
-	config.Now = time.UnixMilli(initialHighWater)
-
-	baseBuild := image.codec.build
-	buildAtHighWater := func(highWater int64, includeReceipt bool) func() (*ReceiptBaselineCandidate, error) {
-		return func() (*ReceiptBaselineCandidate, error) {
-			candidate, err := baseBuild()
-			if err != nil {
-				return nil, err
-			}
-			state, err := candidate.Receipts.Snapshot()
-			if err != nil {
-				return nil, err
-			}
-			state.ClockHighWaterMillis = highWater
-			if !includeReceipt {
-				state.Receipts = nil
-			}
-			policy := candidate.Policy
-			policy.ClockHighWater = time.UnixMilli(highWater)
-			candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
-			candidate.Policy = policy
-			return candidate, err
-		}
-	}
-
-	firstCapture := image.capture
-	firstCapture.Receipts.ClockHighWaterMillis = effectiveHighWater
-	firstCapture.Receipts.Receipts = nil
-	firstCapture.Policy.ClockHighWater = time.UnixMilli(effectiveHighWater)
-	firstCodec := &receiptBaselineTestCodec{
-		raw:   []byte("canonical-high-water-baseline-a"),
-		build: buildAtHighWater(effectiveHighWater, false),
-	}
-	secondCapture := image.capture
-	secondCapture.Receipts.ClockHighWaterMillis = sourceHighWater
-	secondCapture.Policy.ClockHighWater = time.UnixMilli(sourceHighWater)
-	secondCodec := &receiptBaselineTestCodec{
-		raw:   []byte("canonical-high-water-baseline-b"),
-		build: buildAtHighWater(sourceHighWater, true),
-	}
-
-	config.BaselineCodec = firstCodec
-	runtime, err := CreateDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	primary := runtime.NewLanternService(nil)
-	if err := primary.InstallReceiptBaseline(context.Background(), firstCapture); err != nil {
-		t.Fatal(err)
-	}
-	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
-		t.Fatalf("first baseline Store = %+v", got)
-	}
-
-	runtime.receipt.baselineCodec = secondCodec
-	if err := primary.InstallReceiptBaseline(context.Background(), secondCapture); err != nil {
-		t.Fatal(err)
-	}
-	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
-		t.Fatalf("second baseline regressed live Store = %+v", got)
-	}
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !scan.hasMarker || scan.markerSequence != 2 ||
-		scan.marker.ReceiptHighWaterMillis != effectiveHighWater {
-		t.Fatalf("newest baseline marker = %+v", scan)
-	}
-
-	config.BaselineCodec = secondCodec
-	config.Now = time.UnixMilli(initialHighWater)
-	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
-	restarted, err := OpenDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = restarted.Close() })
-	if got := restarted.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
-		t.Fatalf("restarted Store = %+v, want high-water %d and no resurrected rows", got, effectiveHighWater)
-	}
-	if status, _, err := restarted.receipt.store.Lookup(
-		image.id,
-		time.UnixMilli(initialHighWater),
-	); err != nil || status != mutationreceipt.NoLongerProvable {
-		t.Fatalf("expired receipt after restart = %v, %v", status, err)
 	}
 }

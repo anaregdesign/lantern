@@ -1,8 +1,8 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, receipt-bearing Edge Delete and Vertex Put/Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT Snapshot production/install, manifest-last retired-aware receipt backup-set production, and pre-certification durable startup restore are wired for private durable replication, but capability/status RPCs and receipt-enabled client writes remain disabled
+- Status: Accepted and active for authenticated Edge Delete receipts; internal Store, receipt-bearing Edge Delete and Vertex Put/Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT Snapshot production/install, manifest-last retired-aware receipt backup-set production, and pre-listener durable startup certification provide the continuity proof, while #1395 exposes capability, three-state status, and the optional Edge Delete receipt context
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395
 
 ## Context and boundary
 
@@ -24,8 +24,9 @@ publication; its contiguous-publication fix alone still does not provide an
 atomic receipt seam. A condition-not-met Put has no graph mutation to
 replicate, while `BackupSnapshot` and restore carry live graph records only.
 Simply adding a receipt map to any one of these paths would permit graph,
-result, receipt, and log to disagree. The future implementation must replace
-that ordering; this ADR changes no current RPC or write behavior.
+result, receipt, and log to disagree. The Edge Delete receipt path replaces
+that ordering with the commit boundary below; other mutation families remain
+receipt-less publicly even where private receipt commit machinery exists.
 
 ## Decision
 
@@ -89,7 +90,7 @@ bytes: field order, unknown fields, and alternative encodings of defaults
 cannot change the digest. A duplicate with the same ID, group, and digest
 returns the recorded result without executing again. A different digest or
 group returns `InvalidArgument` without mutation. Prefix Delete is excluded
-from v1.
+from the public receipt surface.
 
 ### One origin commit boundary
 
@@ -170,7 +171,7 @@ cutoff. The operation ID's issuance time prevents a later new execution, and
 status is `NO_LONGER_PROVABLE`. A live receipt may never be discarded to
 resolve capacity pressure or a gap.
 
-Replication Snapshot and the versioned whole-state backup must include the
+Replication Snapshot and the canonical whole-state receipt backup set include the
 active epoch, receipt-policy fingerprint, unexpired receipts (including no-op
 results), expiration and clock high-water metadata, and the matching graph
 and contiguous cutoffs. Restore validates and installs one complete cut before
@@ -204,16 +205,19 @@ active Snapshot into a retired member only through the constructor in
 `core/mutationreceipt`, which owns the private Snapshot versions, validates the
 source Store, and preserves its exact same-cut clock high-water and original
 policy. The deterministic destination union charges distinct raw rows against
-configured aggregate bounds before pruning expired evidence. The catalog is
-not yet wired into service lookup routing, and it does not choose a replacement
-epoch/generation by itself. That routing remains required before retired-epoch
-status is exposed.
+configured aggregate bounds before pruning expired evidence. The runtime-owned catalog slot is wired into plural-canonical status lookup.
+One sampled effective high-water validates every active, retired, and unknown
+epoch ID before either Store or catalog lookup, so a later invalid item cannot
+advance durable clock evidence. The catalog does not choose a replacement
+epoch or generation by itself.
 
 ### Bounded retention and admission
 
-Receipt support is disabled until an operator configures a positive entry cap,
-byte cap, and one immutable-per-epoch retention horizon `H` between one hour
-and 30 days. Every replica uses the same policy fingerprint. A receipt's
+Public receipt support activates only when an operator configures a positive
+entry cap, byte cap, one immutable-per-epoch retention horizon `H` between one
+hour and 30 days, and bearer authentication, and the exact durable runtime is
+certified through recovery, replication, Snapshot, and backup construction.
+Every replica uses the same policy fingerprint. A receipt's
 admission/lookup deadline is the issuance time plus `H`; the ID timestamp
 allows an expired retry to be rejected **even after** its receipt bytes have
 been evicted. A client may send a never-before-seen ID only within five
@@ -271,10 +275,14 @@ partitioned status, and total-cluster loss remain explicit unknown outcomes.
 
 ### Internal implementation boundary
 
-The private [Edge Delete coordinator](../../server/service/receipt_edge_delete.go)
-stages graph, per-item receipts, and one origin row before a WAL call. Public
-receipt-bearing mutation RPCs do not invoke it. Its
-private log envelope distinguishes the original request, request-indexed
+The [Edge Delete coordinator](../../server/service/receipt_edge_delete.go)
+is the plural-canonical implementation used by public `DeleteEdges` when its
+one optional receipt context is present; `DeleteEdge` forwards one item, and a
+context-free request remains intentional receipt-less online mode. The
+coordinator validates the whole group, reserves receipt capacity, proves
+deterministic WAL representability, and stages graph, per-item receipts, and
+one origin row before a WAL call. Its private log envelope distinguishes the
+original request, request-indexed
 results, causally accepted graph transitions, epoch/policy, and origin HLC/seq.
 The private [Edge Delete WAL codec](../../server/service/receipt_edge_delete_codec.go)
 can encode that envelope as a bounded, versioned, deterministic payload and
@@ -418,8 +426,9 @@ raw protobuf framing and count item fields before unmarshalling; their
 and the default plural-RPC batch limit. The `FileWAL` payload decoder cannot
 see frame metadata, so a
 replay/restore visitor must additionally validate the frame HLC against the
-decoded graph or receipt HLC before applying state. The union is bound only to
-the opt-in durable runtime; public receipt capability remains disabled.
+decoded graph or receipt HLC before applying state. The union is bound only to the opt-in durable runtime. Public capability is a
+separate downstream gate requiring configured bearer authentication and the
+exact certified runtime, backup, recovery, replication, and Snapshot state.
 Before v1, a private WAL schema change replaces the union version: the graph
 kind pins the reachable `Mutation` schema, rejects an unreviewed field change
 under union v4, and old union versions fail closed rather than gaining aliases,
@@ -465,6 +474,9 @@ a receiver that did not opt in rejects the unknown oneof before
 advancing its origin watermark. Identity-only Subscribe emits DeleteEdge
 keys only for causally accepted items, and an all-rejected call emits a final
 zero-key `RECEIPT_ONLY` marker to advance its cursor without invalidation.
+Generic `MutationOp_DeleteEdge` and `MutationOp_DeleteEdges` arms reject any
+nested receipt context in serving apply and graph-effect WAL validation; the
+dedicated outer arm is the only receipt-bearing replication representation.
 Graph-only Pump does not opt in, and graph-only remote apply rejects the arm.
 This remains an internal wire prerequisite, not a supported receipt CDC
 contract. In durable receipt-WAL mode, Pump and anti-entropy now opt in only
@@ -514,8 +526,9 @@ group-position, contribution, or high-water conflict fails closed. It then
 calls the runtime's combined atomic baseline install once. A cancellation,
 receive error, malformed/truncated stream, independent count or capacity
 breach, epoch/policy mismatch, candidate tampering, or format downgrade
-returns before live publication. This wiring does not enable receipt writes,
-public status, or capability.
+returns before live publication. Snapshot wiring alone does not enable receipt
+writes, public status, or capability; the production provider applies the
+downstream certification and authentication gate.
 The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
 is the active-epoch-only LANTARCH codec (internal format version 1), separate
 from both `.lbk` and the RECEIPT transport. Its graph section carries the
@@ -862,15 +875,21 @@ service, the primary listener, metrics server, or replication pump.
 Wire cleanup releases later owners before this bundle, and `App` retains the
 bundle until all serving goroutines stop. Durable mode selects receipt-set
 production from the exact certified runtime and performs durable restore in a
-private identity-bearing barrier before `NewRuntimeCertified`. Listener,
-metrics-server, Snapshot-installer, Pump, anti-entropy, and backup-scheduler
-construction all follow that barrier. Graph-only mode alone keeps the
+private identity-bearing barrier before `NewRuntimeCertified`. Snapshot
+installer, Pump, anti-entropy, and backup construction follow that barrier.
+After the exact production backup source is certified, a separate public
+receipt barrier activates capability, status, and receipt-bearing Edge Delete
+only when bearer authentication is configured; primary listener construction
+follows that decision. Graph-only mode alone keeps the
 historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
 metrics, and behavior are unchanged.
 
-This runtime mode is private infrastructure only. It does not enable
-`GetReceiptCapability`, receipt status, receipt-bearing client mutations, or
-authenticated client capability negotiation.
+Durable runtime selection alone does not enable the public surface.
+Graph-only, auth-disabled, recovering, faulted, closed, or otherwise
+uncertified runtimes do not advertise capability and reject receipt-bearing
+writes. Bearer token bytes, hashes, and rotation authenticate requests but are
+not receipt identity and do not change the epoch, policy, endpoint generation,
+or namespace.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
@@ -895,8 +914,8 @@ certified serving bundle and binds the receipt Snapshot producer and one
 shared installer to those exact identities. Durable Pump and anti-entropy
 request and atomically install `RECEIPT`; graph-only mode and
 `BackupSnapshot` restore remain graph-only and cannot certify receipt
-continuity. Public enablement still requires the later capability/status and
-receipt-bearing client mutation slice. `Store.Begin` advances clock high-water
+continuity. Public enablement is the final authenticated certification barrier
+described above. `Store.Begin` advances clock high-water
 and expires already-dead receipts even if the new mutation later aborts; only
 newly staged receipts roll back. Recovery persists that monotonic metadata
 through the bound clock journal or the committed baseline marker; losing or
@@ -905,29 +924,27 @@ rotating the epoch.
 
 ## Dependencies and rollout
 
-The first additive wire step exposes a capability probe behind the normal
-LanternService auth interceptor. It reports `enabled=false` without an epoch
-or endpoint marker. The internal `core/mutationreceipt.Store` is not connected
-to a serving commit path, so receipt status RPCs return `FAILED_PRECONDITION`;
-they do not label an unknown operation `NOT_YET_OBSERVED` or
-`NO_LONGER_PROVABLE`. This schema is not permission to send receipt-enabled
-mutations. A later vertical slice must activate status only together with the
-atomic commit, recovery, replication, and Snapshot guarantees above, and
-require configured authentication before advertising an enabled capability.
+The public vertical slice exposes `GetReceiptCapability`,
+`GetReceiptStatus`/`GetReceiptStatuses`, and one canonical optional receipt
+context on `DeleteEdge`/`DeleteEdges`. The capability probe remains behind the
+normal auth interceptor and reports `enabled=false` without epoch or endpoint
+metadata unless the complete production gate above is satisfied. Status is
+read-only and preserves exactly `CONFIRMED`, `NOT_YET_OBSERVED`, and
+`NO_LONGER_PROVABLE`; it never executes a mutation or flattens absence into a
+boolean result. Plural requests are capped at 10,000 items (and by the lower
+configured batch limit), while configured Connect receive/send limits bound
+both authenticated and disabled deployments.
 
 #1282 must establish contiguous relay publication and Snapshot cutoffs before
 receipt envelopes can claim replica-safe status. #1203 must establish mixed
 Add/Put/Delete convergence before Slice A can re-enable durable Add; receipts
 alone do not fix the graph history. #1282's graph-before-relay retry rule is
 not itself sufficient for receipts: the receipt implementation must strengthen
-that seam to an atomic graph/receipt/relay publication. Slice B for
-conditional Put and Delete uses the same envelope architecture. Both
-slices require new proto and SDK surfaces, real Connect/h2c failure tests, and
-bounded capacity and performance gates. Private two-node real-wire Pump and
-anti-entropy gap recovery now cover atomic graph/receipt/origin installation
-and same-responder tail resumption. Exhaustive multi-replica, partition,
-restart, soak, and backup acceptance remains a separate #1393 follow-up;
-#1394 continues to own the receipt-bearing backup boundary. None of this
-blocks #1162's first Put-only offline core release. Until those vertical slices
-pass, the offline package continues to reject durable Add, conditional Put,
-and Delete.
+that seam to an atomic graph/receipt/relay publication. #1393 and #1394 supply
+the replication, Snapshot, backup, and startup continuity prerequisites used
+by #1395. Edge Delete now satisfies the public vertical-slice gate, including
+real Connect/h2c response-loss, lag, capacity, retention, intent-conflict,
+transport-bound, token-rotation, and fail-closed tests. Add, Put, Vertex Delete,
+Prefix Delete, and conditional variants remain outside this public receipt
+context until their own complete slices pass; the offline package therefore
+continues to reject those durable mutation families.

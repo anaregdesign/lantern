@@ -158,12 +158,6 @@ func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
 		len(capability.GetEndpoint().GetGeneration()) != 16 {
 		t.Fatalf("activated capability = %+v, %v", capability, err)
 	}
-	retired, err := fresh.receipt.retired.Snapshot(
-		time.UnixMilli(fresh.receipt.store.Stats().HighWaterMillis),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := fresh.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -181,26 +175,10 @@ func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
 	if err := restarted.CertifyReceiptBackup(restartedPrimary, restartedReplication); err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.ActivatePublicReceipts(restartedPrimary, restartedReplication); err == nil {
-		t.Fatal("restart activated without a recovered retired-catalog proof")
+	if err := restarted.ActivatePublicReceipts(restartedPrimary, restartedReplication); err != nil {
+		t.Fatalf("restart with canonical recovered receipt state: %v", err)
 	}
-	if err := restarted.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	config.RetiredReceipts = &retired
-	certifiedRestart, err := OpenDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = certifiedRestart.Close() })
-	certifiedPrimary, certifiedReplication := install(t, certifiedRestart)
-	if err := certifiedRestart.CertifyReceiptBackup(certifiedPrimary, certifiedReplication); err != nil {
-		t.Fatal(err)
-	}
-	if err := certifiedRestart.ActivatePublicReceipts(certifiedPrimary, certifiedReplication); err != nil {
-		t.Fatalf("restart with complete retired-catalog proof: %v", err)
-	}
+	t.Cleanup(func() { _ = restarted.Close() })
 }
 
 func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {

@@ -1085,8 +1085,8 @@ message GetReplicationStatusResponse {
   repeated ReplicationPeer peers = 10;
 }
 
-// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A future
-// receipt-enabled server must keep these values stable for its active epoch.
+// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A
+// receipt-enabled server keeps these values stable for its active epoch.
 // All byte fields are absent while receipts are disabled.
 message ReceiptPolicy {
   bytes deployment_epoch = 1; // 16 random bytes shared by HA members.
@@ -1147,7 +1147,7 @@ message ReceiptResult {
 
 // MutationReceipt is one request-index-aligned item from an atomic logical
 // call. The 49-byte operation ID, 16-byte call ID, and semantic SHA-256 are
-// validated before any future receipt-enabled mutation. The deadline is the
+// validated before any receipt-bearing mutation. The deadline is the
 // ID issuance time plus the active policy's retention horizon.
 message MutationReceipt {
   bytes operation_id = 1;
@@ -1310,15 +1310,13 @@ service LanternService {
   // single-instance deployments enabled=false and peers is empty.
   rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse);
 
-  // Receipt preflight follows LanternService auth. The initial implementation
-  // reports enabled=false and authorizes no receipt-bearing writes. An enabled
-  // capability requires configured auth and one certified policy/endpoint cut.
+  // Receipt preflight follows LanternService auth. An enabled capability
+  // requires configured bearer auth and one certified policy/endpoint cut.
   rpc GetReceiptCapability(GetReceiptCapabilityRequest) returns (GetReceiptCapabilityResponse);
 
-  // Read-only original-result lookup. Until receipt storage and atomic
-  // publication exist, these fail with FAILED_PRECONDITION rather than
-  // inventing an absent or expired outcome. The singular form forwards to
-  // the plural canonical implementation.
+  // Read-only original-result lookup. Disabled or recovering deployments fail
+  // with FAILED_PRECONDITION rather than inventing an absent or expired
+  // outcome. The singular form forwards to the plural canonical implementation.
   rpc GetReceiptStatus(GetReceiptStatusRequest) returns (GetReceiptStatusResponse);
   rpc GetReceiptStatuses(GetReceiptStatusesRequest) returns (GetReceiptStatusesResponse);
 

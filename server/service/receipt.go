@@ -158,7 +158,7 @@ func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetRece
 		if len(retiredIDs) == 0 {
 			return nil
 		}
-		retired, err := runtime.retired.LookupMany(retiredIDs, effective)
+		retired, err := runtime.retired.lookupMany(runtime.policy, retiredIDs, effective)
 		if err != nil {
 			return err
 		}
@@ -205,10 +205,36 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 	switch observation.Status {
 	case mutationreceipt.Confirmed:
 		receipt := observation.Receipt
-		if receipt.ID != id || receipt.Kind != mutationreceipt.DeleteEdge ||
-			receipt.DeadlineMillis < 0 || len(receipt.Result) != 1 ||
-			receipt.Result[0] > 1 {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Delete receipt is invalid"))
+		if receipt.ID != id || receipt.DeadlineMillis < 0 || len(receipt.Result) != 1 {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed mutation receipt is invalid"))
+		}
+		var result *pb.ReceiptResult
+		switch receipt.Kind {
+		case mutationreceipt.PutVertex:
+			outcome := pb.PutOutcome(receipt.Result[0])
+			if outcome < pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
+				outcome > pb.PutOutcome_PUT_OUTCOME_SUPERSEDED {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Vertex Put receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: outcome},
+			}
+		case mutationreceipt.DeleteVertex:
+			if receipt.Result[0] > 1 {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Vertex Delete receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_DeleteVertexExisted{DeleteVertexExisted: receipt.Result[0] == 1},
+			}
+		case mutationreceipt.DeleteEdge:
+			if receipt.Result[0] > 1 {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Delete receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_DeleteEdgeExisted{DeleteEdgeExisted: receipt.Result[0] == 1},
+			}
+		default:
+			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed mutation receipt kind is not public"))
 		}
 		status.State = pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED
 		status.Receipt = &pb.MutationReceipt{
@@ -218,11 +244,7 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 			ItemCount:      receipt.Count,
 			IntentSha256:   append([]byte(nil), receipt.Digest[:]...),
 			DeadlineUnixMs: uint64(receipt.DeadlineMillis),
-			OriginalResult: &pb.ReceiptResult{
-				Result: &pb.ReceiptResult_DeleteEdgeExisted{
-					DeleteEdgeExisted: receipt.Result[0] == 1,
-				},
-			},
+			OriginalResult: result,
 		}
 	case mutationreceipt.NotYetObserved:
 		status.State = pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED

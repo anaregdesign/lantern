@@ -115,7 +115,7 @@ func (s *LanternService) commitPublicReceiptEdgeDelete(
 // envelope as a receipt-bearing wire arm and refuses unadvertised full-stream
 // consumers. Peer apply consumes the envelope when this private coordinator is
 // bound. Graph-only Snapshot/BackupSnapshot remain receipt-unaware; the
-// certified RECEIPT_V1 source captures this state through its separate path.
+// certified RECEIPT source captures this state through its separate path.
 type edgeDeleteReceiptEnvelope struct {
 	Mutation            *pb.Mutation
 	Origin              hlc.NodeID

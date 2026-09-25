@@ -39,7 +39,7 @@ const (
 	receiptWALUnionMaxBytes = (32 << 20) - 36
 	// A new reachable Mutation field must not silently change what the v4
 	// graph kind persists or replays. Review and version the WAL schema first.
-	receiptWALGraphSchemaFingerprintV4 = "58d9b4cbe7311c0e5e45cf1be6b0b8909a87d458e425b7fb958ab6021283c19a"
+	receiptWALGraphSchemaFingerprintV4 = "da59113fa93663ea88eb27f8b831e71d0c25d49c0c1c6904e3685fcefc97d7d8"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
