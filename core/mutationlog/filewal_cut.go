@@ -17,10 +17,12 @@ var ErrFileWALCutUnavailable = errors.New("mutationlog: FileWAL cut is unavailab
 // is an artifact-binding witness, not proof that the WAL belongs to a given
 // graph/receipt image or that no later commit was lost.
 type FileWALCut struct {
-	Seq          uint64
-	Offset       int64
-	SHA256       [sha256.Size]byte
-	ObservedLast uint64
+	Seq                 uint64
+	Offset              int64
+	SHA256              [sha256.Size]byte
+	ChainSHA256         [sha256.Size]byte
+	ObservedLast        uint64
+	ObservedChainSHA256 [sha256.Size]byte
 }
 
 type fileWALCutPass struct {
@@ -91,18 +93,22 @@ func inspectFileWALCutPass(f *os.File, seq uint64, decode func([]byte) (Mutation
 	// success. At seq zero, the prefix is the version header, not empty bytes.
 	h := sha256.New()
 	_, _ = h.Write([]byte(fileWALMagic))
+	chain := fileWALChainSeed()
 	if seq == 0 {
 		result.cut.Offset = int64(len(fileWALMagic))
 		result.cut.SHA256 = digestFileWALPrefix(h)
+		result.cut.ChainSHA256 = chain
 	}
 	offset := int64(len(fileWALMagic))
 	last, err := scanFileWALFrames(f, decode, validate, func(entry Entry, header, body []byte) error {
 		_, _ = h.Write(header)
 		_, _ = h.Write(body)
+		chain = fileWALChainNext(chain, header, body)
 		offset += int64(len(header) + len(body))
 		if entry.Seq == seq {
 			result.cut.Offset = offset
 			result.cut.SHA256 = digestFileWALPrefix(h)
+			result.cut.ChainSHA256 = chain
 		}
 		return nil
 	})
@@ -120,6 +126,7 @@ func inspectFileWALCutPass(f *os.File, seq uint64, decode func([]byte) (Mutation
 		return fileWALCutPass{}, fmt.Errorf("%w: FileWAL scan offset differs from frame lengths", ErrFileWALCorrupt)
 	}
 	result.cut.ObservedLast = last
+	result.cut.ObservedChainSHA256 = chain
 	result.fullSize = end
 	result.fullHash = digestFileWALPrefix(h)
 	return result, nil
