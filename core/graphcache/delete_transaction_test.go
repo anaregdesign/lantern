@@ -210,6 +210,35 @@ func TestEdgeDeleteTransactionBeginFailureReleasesLocks(t *testing.T) {
 	}
 }
 
+func TestReplicatedEdgeDeleteTransactionMayExceedLocalCausalLimit(t *testing.T) {
+	c := NewGraphCacheWithStaging[string, string](time.Hour)
+	c.SetCausalMetadataLimits(CausalMetadataLimits{MaxEdgeEntries: 1})
+	expiration := time.Now().Add(time.Hour)
+	first := EdgeKey[string]{Tail: "first", Head: "head"}
+	second := EdgeKey[string]{Tail: "second", Head: "head"}
+	if _, err := c.DeleteEdgesHLCChecked([]EdgeKey[string]{first}, hlc.Timestamp{WallNs: 10}, expiration); err != nil {
+		t.Fatal(err)
+	}
+	if tx, err := c.BeginEdgeDelete([]EdgeKey[string]{second}, hlc.Timestamp{WallNs: 20}, expiration); tx != nil || err == nil {
+		if tx != nil {
+			tx.Abort()
+		}
+		t.Fatalf("strict stage beyond causal limit = (%v, %v)", tx, err)
+	}
+	tx, err := c.BeginReplicatedEdgeDelete([]EdgeKey[string]{second}, hlc.Timestamp{WallNs: 20}, expiration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tx.Result().Accepted; len(got) != 1 || got[0].Key != second {
+		tx.Abort()
+		t.Fatalf("replicated accepted set = %+v", got)
+	}
+	tx.Commit()
+	if stats := c.CausalMetadataStats(); stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
+		t.Fatalf("replicated stage did not converge above local limit: %+v", stats)
+	}
+}
+
 func BenchmarkEdgeDeleteTransactionAbort(b *testing.B) {
 	c := NewGraphCacheWithStaging[string, string](time.Hour)
 	c.EnablePrefixIndex(func(key string) string { return key })

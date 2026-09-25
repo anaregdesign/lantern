@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 var testStart = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
@@ -66,6 +68,19 @@ func commitTestBatch(t testing.TB, s *Store, now time.Time, intents []Intent, re
 		t.Fatal(err)
 	}
 	tx.Commit()
+}
+
+func committedTestReceipts(intents []Intent, results [][]byte, retention time.Duration) []Receipt {
+	receipts := make([]Receipt, len(intents))
+	for i, intent := range intents {
+		_, issued, _ := intent.ID.parts()
+		receipts[i] = Receipt{
+			Intent:         intent,
+			Result:         append([]byte(nil), results[i]...),
+			DeadlineMillis: issued + retention.Milliseconds(),
+		}
+	}
+	return receipts
 }
 
 func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {
@@ -202,6 +217,176 @@ func TestStoreRejectsCapacityBeforeAnyReceiptInstallation(t *testing.T) {
 	tx.Abort()
 	if !errors.Is(err, ErrCapacity) || entryStore.Stats().Entries != 1 {
 		t.Fatalf("entry cap = %v, stats = %+v", err, entryStore.Stats())
+	}
+}
+
+func TestStorePrepareCommittedRetainsOnlyLiveGroupPositions(t *testing.T) {
+	s := testStore(t, 2, 1000)
+	group := GroupID{7}
+	intents := []Intent{
+		testIntent(t, 1, testStart, group, 0, 2),
+		testIntent(t, 2, testStart.Add(10*time.Minute), group, 1, 2),
+	}
+	receipts := committedTestReceipts(intents, [][]byte{[]byte("expired"), []byte("live")}, time.Hour)
+	now := testStart.Add(65 * time.Minute)
+	tx, err := s.Begin(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PrepareCommitted(receipts, testStart.Add(5*time.Minute).UnixMilli()); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	staged, err := tx.StagedReceipts()
+	if err != nil || len(staged) != 1 || staged[0].Index != 1 || string(staged[0].Result) != "live" {
+		tx.Abort()
+		t.Fatalf("mixed-expiry stage = %+v, %v", staged, err)
+	}
+	tx.Commit()
+	if got := s.Stats(); got.Entries != 1 || got.ReplicationCapacityStalls != 0 {
+		t.Fatalf("mixed-expiry stats = %+v", got)
+	}
+	if rows := s.groups[group]; rows == nil || rows.count != 2 || len(rows.items) != 1 || rows.items[1] != intents[1].ID {
+		t.Fatalf("mixed-expiry group rows = %+v", rows)
+	}
+	if status, _, err := s.Lookup(intents[0].ID, now); err != nil || status != NoLongerProvable {
+		t.Fatalf("expired sibling status = %v, %v", status, err)
+	}
+	if status, receipt, err := s.Lookup(intents[1].ID, now); err != nil || status != Confirmed || string(receipt.Result) != "live" {
+		t.Fatalf("live sibling status = %v, %+v, %v", status, receipt, err)
+	}
+
+	tx, _ = s.Begin(now.Add(time.Minute))
+	if err := tx.PrepareCommitted(receipts, testStart.Add(5*time.Minute).UnixMilli()); err != nil {
+		tx.Abort()
+		t.Fatalf("exact committed duplicate = %v", err)
+	}
+	if err := tx.Stage(); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	tx.Commit()
+	if got := s.Stats().Entries; got != 1 {
+		t.Fatalf("duplicate changed retained row count to %d", got)
+	}
+
+	conflict := append([]Receipt(nil), receipts...)
+	conflict[1].Result = []byte("changed")
+	tx, _ = s.Begin(now.Add(2 * time.Minute))
+	err = tx.PrepareCommitted(conflict, testStart.Add(5*time.Minute).UnixMilli())
+	tx.Abort()
+	if !errors.Is(err, ErrIntentConflict) {
+		t.Fatalf("committed result conflict = %v", err)
+	}
+}
+
+func TestStorePrepareCommittedCapacityStallsThenRecovers(t *testing.T) {
+	s := testStore(t, 1, 1000)
+	seedIntent := testIntent(t, 1, testStart, GroupID{1}, 0, 1)
+	seed := committedTestReceipts([]Intent{seedIntent}, [][]byte{[]byte("seed")}, time.Hour)
+	tx, _ := s.Begin(testStart.Add(30 * time.Minute))
+	if err := tx.PrepareCommitted(seed, testStart.UnixMilli()); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	tx.Commit()
+
+	delayedIntent := testIntent(t, 2, testStart.Add(20*time.Minute), GroupID{2}, 0, 1)
+	delayed := committedTestReceipts([]Intent{delayedIntent}, [][]byte{[]byte("delayed")}, time.Hour)
+	tx, _ = s.Begin(testStart.Add(40 * time.Minute))
+	err := tx.PrepareCommitted(delayed, testStart.Add(20*time.Minute).UnixMilli())
+	tx.Abort()
+	if !errors.Is(err, ErrCapacity) {
+		t.Fatalf("full Store import = %v, want capacity", err)
+	}
+	if got := s.Stats(); got.Entries != 1 || got.ReplicationCapacityStalls != 1 || got.LocalAdmissionRejects != 0 {
+		t.Fatalf("capacity stall stats = %+v", got)
+	}
+
+	tx, _ = s.Begin(testStart.Add(time.Hour))
+	if err := tx.PrepareCommitted(delayed, testStart.Add(20*time.Minute).UnixMilli()); err != nil {
+		tx.Abort()
+		t.Fatalf("delayed retry after capacity freed = %v", err)
+	}
+	if err := tx.Stage(); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	tx.Commit()
+	if status, receipt, err := s.Lookup(delayedIntent.ID, testStart.Add(time.Hour)); err != nil ||
+		status != Confirmed || string(receipt.Result) != "delayed" {
+		t.Fatalf("delayed committed row = %v, %+v, %v", status, receipt, err)
+	}
+	if got := s.Stats(); got.Entries != 1 || got.ReplicationCapacityStalls != 1 {
+		t.Fatalf("recovered capacity stats = %+v", got)
+	}
+}
+
+func TestStorePrepareCommittedUsesOriginAcceptanceFreshness(t *testing.T) {
+	acceptedAt := testStart
+	followerNow := acceptedAt.Add(-time.Millisecond)
+	s := testStore(t, 2, 1000)
+	boundary := testIntent(t, 1, acceptedAt.Add(5*time.Minute), GroupID{3}, 0, 1)
+	receipt := committedTestReceipts([]Intent{boundary}, [][]byte{[]byte("accepted")}, time.Hour)
+	tx, err := s.Begin(followerNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := tx.ClockHighWaterMillis(); err != nil || got != followerNow.UnixMilli() {
+		tx.Abort()
+		t.Fatalf("initial transaction clock high-water = %d, %v", got, err)
+	}
+	if err := tx.PrepareCommitted(receipt, acceptedAt.UnixMilli()); err != nil {
+		tx.Abort()
+		t.Fatalf("origin-accepted +5m ID was rejected by follower clock: %v", err)
+	}
+	if got, err := tx.ClockHighWaterMillis(); err != nil || got != acceptedAt.UnixMilli() {
+		tx.Abort()
+		t.Fatalf("origin-adjusted transaction clock high-water = %d, %v", got, err)
+	}
+	if err := tx.Stage(); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	tx.Commit()
+	if _, err := tx.ClockHighWaterMillis(); !errors.Is(err, ErrTransactionState) {
+		t.Fatalf("closed transaction clock high-water = %v", err)
+	}
+
+	tooFuture := testIntent(t, 2, acceptedAt.Add(5*time.Minute+time.Millisecond), GroupID{4}, 0, 1)
+	tooFutureReceipt := committedTestReceipts([]Intent{tooFuture}, [][]byte{nil}, time.Hour)
+	tx, _ = s.Begin(followerNow)
+	err = tx.PrepareCommitted(tooFutureReceipt, acceptedAt.UnixMilli())
+	tx.Abort()
+	if !errors.Is(err, ErrInvalidBatch) {
+		t.Fatalf("ID beyond origin freshness window = %v", err)
+	}
+
+	oldBoundary := testIntent(t, 3, acceptedAt.Add(-5*time.Minute), GroupID{5}, 0, 1)
+	oldBoundaryReceipt := committedTestReceipts([]Intent{oldBoundary}, [][]byte{nil}, time.Hour)
+	originHLC := acceptedAt.Add(hlc.DefaultMaxSkew)
+	tx, _ = s.Begin(followerNow)
+	if err := tx.PrepareCommitted(oldBoundaryReceipt, originHLC.UnixMilli()); err != nil {
+		tx.Abort()
+		t.Fatalf("ID at origin old-side skew boundary = %v", err)
+	}
+	tx.Abort()
+
+	tooOld := testIntent(t, 4, acceptedAt.Add(-5*time.Minute-time.Millisecond), GroupID{6}, 0, 1)
+	tooOldReceipt := committedTestReceipts([]Intent{tooOld}, [][]byte{nil}, time.Hour)
+	tx, _ = s.Begin(followerNow)
+	err = tx.PrepareCommitted(tooOldReceipt, originHLC.UnixMilli())
+	tx.Abort()
+	if !errors.Is(err, ErrInvalidBatch) {
+		t.Fatalf("ID beyond origin old-side skew boundary = %v", err)
 	}
 }
 

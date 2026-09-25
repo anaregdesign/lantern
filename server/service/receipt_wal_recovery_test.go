@@ -219,6 +219,78 @@ func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T)
 	}
 }
 
+func TestReceiptWALRecoveryCandidateCoalescesExactReceiptDuplicateAcrossOrigins(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	first := cloneReceiptEdgeDeleteCodecEnvelope(receiptEntry.Op.(*edgeDeleteReceiptEnvelope))
+	first.OriginalKeys = first.OriginalKeys[:1]
+	first.Receipts = first.Receipts[:1]
+	first.Receipts[0].Count = 1
+	first.Accepted = []graphcache.IndexedEdgeDelete[string]{{Index: 0, Key: first.OriginalKeys[0]}}
+	config.MaxEntries = 1
+	config.MaxBytes = receiptWALDecisionCost(first.Receipts[0])
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.PolicyFingerprint = store.PolicyFingerprint()
+	first.Mutation = receiptEdgeDeleteWALMutation(first)
+
+	second := cloneReceiptEdgeDeleteCodecEnvelope(first)
+	second.Origin = hlc.NodeID{0x73}
+	second.OriginSeq = 1
+	second.HLC.WallNs += int64(time.Millisecond)
+	second.HLC.NodeID = second.Origin
+	second.TombstoneExpiration = first.TombstoneExpiration.Add(time.Minute)
+	second.Mutation = receiptEdgeDeleteWALMutation(second)
+
+	path := writeReceiptWALAuditEntries(t,
+		mutationlog.Entry{HLC: first.HLC, Op: first},
+		mutationlog.Entry{HLC: second.HLC, Op: second},
+	)
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{Capacity: 2}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireReceiptWALEvidence(t, candidate, first.Receipts)
+	if stats := candidate.receipts.Stats(); stats.Entries != 1 || stats.Bytes != config.MaxBytes {
+		t.Fatalf("coalesced Store stats = %+v, want one exactly charged receipt", stats)
+	}
+	states := candidate.origins.States()
+	wantFrontiers := map[hlc.NodeID]hlc.Timestamp{first.Origin: first.HLC, second.Origin: second.HLC}
+	for _, state := range states {
+		want, ok := wantFrontiers[state.Origin]
+		if !ok || state.LastSeq != 1 || !state.LastHLC.Equal(want) {
+			t.Fatalf("recovered duplicate origin = %+v, want HLC %+v", state, want)
+		}
+		delete(wantFrontiers, state.Origin)
+	}
+	if len(states) != 2 || len(wantFrontiers) != 0 {
+		t.Fatalf("recovered duplicate origins = %+v", states)
+	}
+	entries := candidate.log.RetainedEntries()
+	if len(entries) != 2 {
+		t.Fatalf("recovered duplicate WAL entries = %+v, want both envelopes", entries)
+	}
+	for i, entry := range entries {
+		envelope, ok := entry.Op.(*edgeDeleteReceiptEnvelope)
+		if !ok || envelope.Receipts[0].ID != first.Receipts[0].ID {
+			t.Fatalf("recovered WAL entry %d = %T %+v", i, entry.Op, entry.Op)
+		}
+	}
+	var found bool
+	for _, tombstone := range candidate.graph.SnapshotReplication().Tombstones.Edges {
+		if tombstone.Tail == first.OriginalKeys[0].Tail && tombstone.Head == first.OriginalKeys[0].Head {
+			if !tombstone.HLC.Equal(second.HLC) || !tombstone.Expiration.Equal(second.TombstoneExpiration) {
+				t.Fatalf("recovered duplicate graph effect = %+v, want second envelope HLC/deadline", tombstone)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("recovered graph omitted duplicate envelope effects")
+	}
+}
+
 func TestReceiptWALRecoveryCandidateCannotCertifyStatusAfterClockRollback(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
 	want := receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts
@@ -1077,10 +1149,11 @@ func TestReceiptWALDecisionAuditRejectsConflictsAndCapacity(t *testing.T) {
 	second := cloneReceiptEdgeDeleteCodecEnvelope(first)
 	second.OriginSeq++
 	second.HLC.Logical++
+	second.Receipts[0].Result[0] ^= 1
 	second.Mutation = receiptEdgeDeleteWALMutation(second)
 	path := writeReceiptWALAuditEntries(t, receiptEntry, mutationlog.Entry{HLC: second.HLC, Op: second})
 	if report, err := auditReceiptDecisionsFromFileWAL(path, config, time.Now()); !errors.Is(err, mutationreceipt.ErrInvalidSnapshot) || !reflect.DeepEqual(report, receiptWALDecisionAudit{}) {
-		t.Fatalf("duplicate decision = %+v, %v", report, err)
+		t.Fatalf("conflicting duplicate decision = %+v, %v", report, err)
 	}
 
 	limited := config

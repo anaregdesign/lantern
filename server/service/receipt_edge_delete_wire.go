@@ -71,10 +71,33 @@ func (e *edgeDeleteReceiptEnvelope) ReplicationMutation() (*pb.Mutation, error) 
 // WAL codec's structural and cross-field validation; remote installation
 // will additionally bind the local policy, capacity, and atomic WAL commit.
 func acceptedReceiptEdgeDeleteKeys(m *pb.Mutation) ([]*pb.EdgeKey, error) {
+	envelope, err := decodeReceiptEdgeDeleteMutation(m)
+	if err != nil {
+		return nil, err
+	}
+	accepted := make([]*pb.EdgeKey, len(envelope.Accepted))
+	for i, item := range envelope.Accepted {
+		accepted[i] = &pb.EdgeKey{Tail: item.Key.Tail, Head: item.Key.Head}
+	}
+	return accepted, nil
+}
+
+// decodeReceiptEdgeDeleteMutation reconstructs the private receipt envelope
+// from its replication projection and runs the same structural,
+// cross-field, and size validation as the WAL codec. The returned envelope
+// owns all mutable slices and can be retained by follower sequencing.
+func decodeReceiptEdgeDeleteMutation(m *pb.Mutation) (*edgeDeleteReceiptEnvelope, error) {
+	if m == nil || m.GetOp() == nil {
+		return nil, errors.New("invalid receipt Edge Delete wire envelope header")
+	}
+	if err := rejectReceiptWALUnknownFields(m.ProtoReflect()); err != nil {
+		return nil, err
+	}
 	call := m.GetOp().GetReplicatedReceiptEdgeDelete()
 	if call == nil || m.GetSeq() == 0 || len(m.GetOrigin()) != 16 ||
 		m.GetHlc() == nil || m.GetHlc().GetWallNs() <= 0 || len(m.GetHlc().GetNodeId()) != 16 ||
 		!bytes.Equal(m.GetOrigin(), m.GetHlc().GetNodeId()) ||
+		m.GetTombstoneExpiration() != nil ||
 		proto.Size(m) > receiptEdgeDeleteWALMaxBytes ||
 		len(call.GetDeploymentEpoch()) != 16 || len(call.GetPolicyFingerprint()) != 32 ||
 		call.GetTombstoneExpiration() == nil || call.GetTombstoneExpiration().CheckValid() != nil ||
@@ -90,7 +113,6 @@ func acceptedReceiptEdgeDeleteKeys(m *pb.Mutation) ([]*pb.EdgeKey, error) {
 	copy(e.Origin[:], m.GetOrigin())
 	copy(e.Epoch[:], call.GetDeploymentEpoch())
 	copy(e.PolicyFingerprint[:], call.GetPolicyFingerprint())
-	accepted := make([]*pb.EdgeKey, 0, len(call.GetItems()))
 	for i, item := range call.GetItems() {
 		if item == nil || item.GetKey() == nil || item.GetReceipt() == nil {
 			return nil, fmt.Errorf("invalid receipt Edge Delete wire item %d", i)
@@ -119,12 +141,33 @@ func acceptedReceiptEdgeDeleteKeys(m *pb.Mutation) ([]*pb.EdgeKey, error) {
 		}
 		if item.GetCausallyAccepted() {
 			e.Accepted = append(e.Accepted, graphcache.IndexedEdgeDelete[string]{Index: i, Key: key})
-			accepted = append(accepted, item.GetKey())
 		}
 	}
 	e.Mutation = receiptEdgeDeleteWALMutation(e)
 	if _, err := validateReceiptEdgeDeleteWALEnvelope(e); err != nil {
 		return nil, err
 	}
-	return accepted, nil
+	return e, nil
+}
+
+// sameReceiptEdgeDeleteIntent excludes the sender-local accepted projection.
+// The same origin sequence may arrive through two relay paths whose causal
+// states differed; this receiver must still decide the accepted set locally.
+func sameReceiptEdgeDeleteIntent(a, b *edgeDeleteReceiptEnvelope) bool {
+	if a == nil || b == nil || a.Origin != b.Origin || a.OriginSeq != b.OriginSeq ||
+		a.HLC != b.HLC || a.Epoch != b.Epoch || a.PolicyFingerprint != b.PolicyFingerprint ||
+		!a.TombstoneExpiration.Equal(b.TombstoneExpiration) ||
+		len(a.OriginalKeys) != len(b.OriginalKeys) || len(a.Receipts) != len(b.Receipts) {
+		return false
+	}
+	for i := range a.OriginalKeys {
+		if a.OriginalKeys[i] != b.OriginalKeys[i] {
+			return false
+		}
+		ar, br := a.Receipts[i], b.Receipts[i]
+		if ar.Intent != br.Intent || ar.DeadlineMillis != br.DeadlineMillis || !bytes.Equal(ar.Result, br.Result) {
+			return false
+		}
+	}
+	return true
 }

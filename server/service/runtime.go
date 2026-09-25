@@ -383,8 +383,9 @@ func (r *ServingRuntime) NewLanternReplicationService(primary *LanternService) (
 }
 
 // CertifyInstallation verifies that both service surfaces use this runtime's
-// exact state instances. It is the narrow cross-package check used by the
-// production composition barrier before any network consumer is constructed.
+// exact state instances and binds the private follower receipt coordinator for
+// durable mode. It is the narrow cross-package barrier used before any network
+// consumer is constructed.
 func (r *ServingRuntime) CertifyInstallation(
 	primary *LanternService,
 	replication *LanternReplicationService,
@@ -397,8 +398,8 @@ func (r *ServingRuntime) CertifyInstallation(
 		return errors.New("service: primary service is not installed from the serving runtime")
 	}
 	if r.receipt == nil {
-		if primary.receiptStore != nil {
-			return errors.New("service: graph-only runtime installed a receipt Store")
+		if primary.receiptStore != nil || primary.receiptEdgeDeleteCoordinator != nil {
+			return errors.New("service: graph-only runtime installed receipt state")
 		}
 	} else if primary.receiptStore != r.receipt.store {
 		return errors.New("service: durable runtime receipt Store is not installed")
@@ -407,6 +408,16 @@ func (r *ServingRuntime) CertifyInstallation(
 		replication.log != r.log || replication.clock != r.clock ||
 		replication.origins != primary {
 		return errors.New("service: replication service is not installed from the serving runtime")
+	}
+	if r.receipt != nil {
+		coordinator, err := newEdgeDeleteReceiptCoordinator(primary, r.receipt.store)
+		if err != nil {
+			return fmt.Errorf("service: bind durable receipt follower coordinator: %w", err)
+		}
+		if coordinator.service != primary || coordinator.cache != r.graph ||
+			coordinator.store != r.receipt.store {
+			return errors.New("service: durable receipt follower coordinator is not installed from the serving runtime")
+		}
 	}
 	return nil
 }

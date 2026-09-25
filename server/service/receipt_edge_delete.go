@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 	"unicode/utf8"
 
@@ -19,9 +20,9 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// edgeDeleteReceiptCoordinator is an unwired #1115 commit prerequisite. A
-// future receipt RPC must provide authenticated epoch admission, replay and
-// receipt-bearing Snapshot/backup before this path can serve traffic.
+// edgeDeleteReceiptCoordinator is private receipt commit infrastructure.
+// The certified durable runtime binds it only after the service has its
+// tombstone policy; public receipt mutation and status surfaces stay disabled.
 type edgeDeleteReceiptCoordinator struct {
 	service *LanternService
 	cache   *graphcache.GraphCache[string, *pb.Vertex]
@@ -44,7 +45,8 @@ type receiptEdgeDeleteCall struct {
 // causally admitted graph transitions. Mutation is the graph-only projection
 // consumed internally by the coordinator. Subscribe projects the full owned
 // envelope as a receipt-bearing wire arm and refuses unadvertised full-stream
-// consumers. Peer apply and Snapshot/BackupSnapshot remain receipt-unaware.
+// consumers. Peer apply consumes the envelope when this private coordinator is
+// bound; Snapshot/BackupSnapshot remain receipt-unaware.
 type edgeDeleteReceiptEnvelope struct {
 	Mutation            *pb.Mutation
 	Origin              hlc.NodeID
@@ -73,8 +75,13 @@ func newEdgeDeleteReceiptCoordinator(s *LanternService, store *mutationreceipt.S
 	if s.receiptStore != nil && s.receiptStore != store {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt Edge Delete Store differs from the service-bound Store"))
 	}
+	if s.receiptEdgeDeleteCoordinator != nil {
+		return s.receiptEdgeDeleteCoordinator, nil
+	}
 	s.receiptStore = store
-	return &edgeDeleteReceiptCoordinator{service: s, cache: cache, store: store}, nil
+	coordinator := &edgeDeleteReceiptCoordinator{service: s, cache: cache, store: store}
+	s.receiptEdgeDeleteCoordinator = coordinator
+	return coordinator, nil
 }
 
 // edgeDeleteDigest encodes the validated semantic intent, independent of
@@ -142,6 +149,17 @@ func receiptStoreError(err error) error {
 	}
 }
 
+func receiptClockFloor(tx *mutationreceipt.Tx) (hlc.Timestamp, error) {
+	millis, err := tx.ClockHighWaterMillis()
+	if err != nil {
+		return hlc.Timestamp{}, err
+	}
+	if millis < 0 || millis > math.MaxInt64/int64(time.Millisecond) {
+		return hlc.Timestamp{}, mutationreceipt.ErrInvalidClock
+	}
+	return hlc.Timestamp{WallNs: millis * int64(time.Millisecond)}, nil
+}
+
 // Commit serializes one logical call under the service publication cut. The
 // lock order is service -> receipt origin cut -> Store -> GraphCache -> origin
 // tracker -> Log. Every allocating/fallible graph and receipt step completes
@@ -190,6 +208,13 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	}
 	if classification == mutationreceipt.Duplicate {
 		return receiptDeleteResponse(prior)
+	}
+	clockFloor, err := receiptClockFloor(tx)
+	if err != nil {
+		return nil, receiptStoreError(err)
+	}
+	if err := s.clock.RestoreFloor(clockFloor); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("receipt Edge Delete clock floor: %w", err))
 	}
 
 	origin := s.clock.NodeID()
@@ -276,6 +301,153 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 	return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: result.Existed}, nil
+}
+
+func (c *edgeDeleteReceiptCoordinator) validateReplicatedEnvelope(e *edgeDeleteReceiptEnvelope) error {
+	if e == nil {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("replication receipt envelope is nil"))
+	}
+	if e.Epoch != c.store.Epoch() {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("replication receipt epoch differs from the local Store"))
+	}
+	if e.PolicyFingerprint != c.store.PolicyFingerprint() {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("replication receipt policy differs from the local Store"))
+	}
+	localWall := c.service.remoteValidationWall()
+	if time.Unix(0, e.HLC.WallNs).After(localWall.Add(hlc.DefaultMaxSkew)) {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("replication receipt origin HLC exceeds maximum clock skew"))
+	}
+	if err := c.store.ValidateCommitted(e.Receipts, e.HLC.WallNs/int64(time.Millisecond)); err != nil {
+		return receiptStoreError(err)
+	}
+	if _, err := c.service.validateIncomingTombstoneExpirationAt(e.Mutation, localWall); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication receipt tombstone: %w", err))
+	}
+	return nil
+}
+
+// commitReplicated runs under replicationCutMu and pendingMu for the next
+// contiguous origin sequence. Store admission precedes graph staging, so a
+// capacity stall leaves the exact queued envelope untouched and retryable.
+// The incoming accepted bits are deliberately ignored: this receiver stages
+// every original key and relays the accepted set returned by that local cut.
+func (c *edgeDeleteReceiptCoordinator) commitReplicated(
+	ctx context.Context,
+	origin hlc.NodeID,
+	seq uint64,
+	ts hlc.Timestamp,
+	pending *pendingMutation,
+) error {
+	if err := ctx.Err(); err != nil {
+		return ctxToConnect(err)
+	}
+	e := pending.receipt
+	if e == nil || e.Origin != origin || e.OriginSeq != seq || e.HLC != ts {
+		return connect.NewError(connect.CodeInternal, errors.New("replication receipt pending identity drift"))
+	}
+	s := c.service
+	s.receiptOriginCutMu.Lock()
+	defer s.receiptOriginCutMu.Unlock()
+	walAttempted := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if walAttempted {
+				s.markReceiptCommitFaultLocked()
+			}
+			panic(recovered)
+		}
+	}()
+	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
+		return publicationGapError()
+	}
+
+	tx, err := c.store.Begin(time.Now())
+	if err != nil {
+		return receiptStoreError(err)
+	}
+	defer tx.Abort()
+	if err := tx.PrepareCommitted(e.Receipts, ts.WallNs/int64(time.Millisecond)); err != nil {
+		return receiptStoreError(err)
+	}
+	clockFloor, err := receiptClockFloor(tx)
+	if err != nil {
+		return receiptStoreError(err)
+	}
+	if err := tx.Stage(); err != nil {
+		return receiptStoreError(err)
+	}
+
+	graphTx, err := c.cache.BeginReplicatedEdgeDelete(e.OriginalKeys, ts, e.TombstoneExpiration)
+	if err != nil {
+		return writeError(err)
+	}
+	defer graphTx.Abort()
+	result := graphTx.Result()
+	localEnvelope := &edgeDeleteReceiptEnvelope{
+		Origin:              origin,
+		OriginSeq:           seq,
+		HLC:                 ts,
+		Epoch:               e.Epoch,
+		PolicyFingerprint:   e.PolicyFingerprint,
+		TombstoneExpiration: e.TombstoneExpiration,
+		OriginalKeys:        append([]graphcache.EdgeKey[string](nil), e.OriginalKeys...),
+		Accepted:            append([]graphcache.IndexedEdgeDelete[string](nil), result.Accepted...),
+		Receipts:            make([]mutationreceipt.Receipt, len(e.Receipts)),
+	}
+	for i, receipt := range e.Receipts {
+		localEnvelope.Receipts[i] = receipt
+		localEnvelope.Receipts[i].Result = append([]byte(nil), receipt.Result...)
+	}
+	localEnvelope.Mutation = receiptEdgeDeleteWALMutation(localEnvelope)
+	if _, err := validateReceiptEdgeDeleteWALEnvelope(localEnvelope); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt relay envelope: %w", err))
+	}
+	if prior := pending.receiptWAL; prior != nil && slices.Equal(prior.Accepted, localEnvelope.Accepted) {
+		localEnvelope = prior
+	}
+
+	originTx, ok := s.origins.stageNext(origin, seq, ts)
+	if !ok {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt could not stage origin %x seq %d", origin, seq))
+	}
+	defer originTx.Abort()
+	if err := ctx.Err(); err != nil {
+		return ctxToConnect(err)
+	}
+
+	// Retain the exact receiver-local evidence before entering the WAL. On an
+	// indeterminate return this is the recovery identity while the service
+	// faults reads, writes, status, Snapshot, and Subscribe.
+	pending.receiptWAL = localEnvelope
+	walAttempted = true
+	_, err = s.log.CommitWithPostRingPublication(localEnvelope, ts, func(mutationlog.Entry) {
+		tx.Commit()
+		graphTx.Commit()
+		originTx.Commit()
+	})
+	if err != nil {
+		var definite *mutationlog.DefiniteWALAbort
+		if !errors.As(err, &definite) && !errors.Is(err, mutationlog.ErrClosed) &&
+			!errors.Is(err, mutationlog.ErrSeqExhausted) {
+			s.markReceiptCommitFaultLocked()
+		}
+		if errors.Is(err, mutationlog.ErrSeqExhausted) {
+			return connect.NewError(connect.CodeResourceExhausted, err)
+		}
+		return connect.NewError(connect.CodeUnavailable, err)
+	}
+	if err := s.clock.RestoreFloor(clockFloor); err != nil {
+		s.markReceiptCommitFaultLocked()
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt clock floor: %w", err))
+	}
+	// The remote stamp is now part of the durable, validated publication cut.
+	// Restore it exactly instead of applying the live-peer skew clamp against
+	// a possibly rolled-back physical clock.
+	if err := s.clock.RestoreFloor(ts); err != nil {
+		s.markReceiptCommitFaultLocked()
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt origin clock floor: %w", err))
+	}
+	return nil
 }
 
 // Lookup is the only receipt status view for this private coordinator. A

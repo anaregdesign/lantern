@@ -81,7 +81,8 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 		t.Fatal("graph-only runtime replaced an existing state instance")
 	}
 	if primary.cache != graph || primary.log != log || primary.clock != clock ||
-		primary.runtime != runtime || primary.receiptStore != nil {
+		primary.runtime != runtime || primary.receiptStore != nil ||
+		primary.receiptEdgeDeleteCoordinator != nil {
 		t.Fatal("primary service did not receive the exact graph-only bundle")
 	}
 	if replication.backend != graph || replication.log != log || replication.clock != clock ||
@@ -129,12 +130,20 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := fresh.CertifyInstallation(primary, replication); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("durable installation without tombstone policy = %v, want failed precondition", err)
+	}
+	if primary.receiptEdgeDeleteCoordinator != nil {
+		t.Fatal("failed certification bound the receipt follower coordinator")
+	}
+	primary.WithTombstoneTTL(2 * time.Hour)
 	if err := fresh.CertifyInstallation(primary, replication); err != nil {
 		t.Fatalf("durable installation certification: %v", err)
 	}
 	if primary.cache != fresh.graph || primary.log != fresh.log || primary.clock != fresh.clock ||
 		primary.origins != fresh.origins || primary.receiptStore != fresh.receipt.store ||
-		primary.runtime != fresh {
+		primary.runtime != fresh || primary.receiptEdgeDeleteCoordinator == nil ||
+		primary.receiptEdgeDeleteCoordinator.store != fresh.receipt.store {
 		t.Fatal("primary service did not receive the certified durable bundle")
 	}
 	if replication.backend != fresh.graph || replication.log != fresh.log ||
@@ -203,6 +212,103 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	states := restarted.origins.States()
 	if len(states) != 1 || states[0].LastSeq != 1 || states[0].LastHLC != entry.HLC {
 		t.Fatalf("restarted origin cut = %+v", states)
+	}
+}
+
+func TestServingRuntimeDurablePersistsGenericRemoteClockFloor(t *testing.T) {
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	config.Receipt.ClockHighWater = time.Now().Add(10 * time.Second).Truncate(time.Millisecond)
+	origin := hlc.NodeID{0x62}
+	firstStamp := hlc.Timestamp{
+		WallNs:  config.Receipt.ClockHighWater.Add(hlc.DefaultMaxSkew / 2).UnixNano(),
+		Logical: 3,
+		NodeID:  origin,
+	}
+	mutation := func(seq uint64, stamp hlc.Timestamp, op *pb.MutationOp) *pb.Mutation {
+		return &pb.Mutation{
+			Seq: seq, Origin: origin[:], Hlc: hlcToProto(stamp), Op: op,
+		}
+	}
+
+	fresh, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshClosed := false
+	t.Cleanup(func() {
+		if !freshClosed {
+			_ = fresh.Close()
+		}
+	})
+	primary := fresh.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := fresh.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.CertifyInstallation(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	expiration := timestamppb.New(time.Unix(0, firstStamp.WallNs).Add(time.Hour))
+	if err := primary.ApplyMutation(context.Background(), mutation(1, firstStamp, &pb.MutationOp{
+		Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: "before-restart", Expiration: expiration},
+		}},
+	})); err != nil {
+		t.Fatalf("first generic remote mutation: %v", err)
+	}
+	if highWater := fresh.receipt.store.Stats().HighWaterMillis; highWater < firstStamp.WallNs/int64(time.Millisecond) {
+		t.Fatalf("fresh Store high-water = %d, want at least %d", highWater, firstStamp.WallNs/int64(time.Millisecond))
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	freshClosed = true
+
+	config.Now = time.Now()
+	config.Receipt.ClockHighWater = config.Now
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedPrimary := restarted.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	restartedReplication, err := restarted.NewLanternReplicationService(restartedPrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.CertifyInstallation(restartedPrimary, restartedReplication); err != nil {
+		t.Fatal(err)
+	}
+	if highWater := restarted.receipt.store.Stats().HighWaterMillis; highWater < firstStamp.WallNs/int64(time.Millisecond) {
+		t.Fatalf("restarted Store high-water = %d, want at least %d", highWater, firstStamp.WallNs/int64(time.Millisecond))
+	}
+
+	secondStamp := firstStamp
+	secondStamp.WallNs += int64(hlc.DefaultMaxSkew / 2)
+	secondStamp.Logical++
+	if err := restartedPrimary.ApplyMutation(context.Background(), mutation(2, secondStamp, &pb.MutationOp{
+		Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+			Edge: &pb.Edge{Tail: "after", Head: "restart", Weight: 1, Expiration: expiration},
+		}},
+	})); err != nil {
+		t.Fatalf("second generic remote mutation after restart: %v", err)
+	}
+	source, err := NewReceiptWholeStateSource(restartedPrimary, restarted.receipt.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := source(context.Background(), config.Receipt)
+	if err != nil {
+		t.Fatalf("receipt capture after restarted generic publication: %v", err)
+	}
+	if len(capture.Origins) != 1 || capture.Origins[0].LastHLC != secondStamp {
+		t.Fatalf("restarted capture origin state = %+v", capture.Origins)
+	}
+	if len(capture.Graph) == 0 || capture.Graph[0].GetHeader() == nil {
+		t.Fatalf("restarted receipt capture has no header: %+v", capture.Graph)
+	}
+	if cutoff := hlcFromProto(capture.Graph[0].GetHeader().GetCutoffHlc()); !secondStamp.Less(cutoff) {
+		t.Fatalf("restarted receipt cutoff %v did not exceed remote origin %v", cutoff, secondStamp)
 	}
 }
 

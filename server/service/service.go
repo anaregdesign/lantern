@@ -98,7 +98,8 @@ type LanternService struct {
 	// receiptStore binds the private receipt coordinator and archive source to
 	// one Store instance. Protected by replicationCutMu; a second Store with
 	// the same policy still cannot substitute an incomplete receipt image.
-	receiptStore *mutationreceipt.Store
+	receiptStore                 *mutationreceipt.Store
+	receiptEdgeDeleteCoordinator *edgeDeleteReceiptCoordinator
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the
@@ -562,18 +563,35 @@ func (s *LanternService) tombstoneExpiration() time.Time {
 	return time.Now().Add(s.tombstoneTTL)
 }
 
+// remoteValidationWall preserves the historical wall-clock validation in
+// graph-only mode. A durable receipt runtime additionally treats the Store's
+// persisted clock high-water as trusted after wall-clock rollback.
+func (s *LanternService) remoteValidationWall() time.Time {
+	localWall := time.Now()
+	if s.receiptStore != nil {
+		if highWater := s.receiptStore.Stats().HighWaterMillis; highWater > localWall.UnixMilli() {
+			localWall = time.UnixMilli(highWater)
+		}
+	}
+	return localWall
+}
+
 // tombstoneDeadlineBounds applies the same origin-HLC and receiver-clock D4
 // limits to locally prepared Deletes and replicated Deletes. Local callers
 // check it before changing the graph so a clock rollback between sampling
 // the deadline and HLC cannot publish a row that peers will reject.
 func (s *LanternService) tombstoneDeadlineBounds(wallNs int64, expiration time.Time) error {
+	return s.tombstoneDeadlineBoundsAt(wallNs, expiration, time.Now())
+}
+
+func (s *LanternService) tombstoneDeadlineBoundsAt(wallNs int64, expiration, localWall time.Time) error {
 	if expiration.IsZero() || s.tombstoneTTL <= 0 {
 		return nil
 	}
 	if expiration.After(time.Unix(0, wallNs).Add(s.tombstoneTTL)) {
 		return fmt.Errorf("Delete tombstone expiration exceeds origin HLC plus LANTERN_TOMBSTONE_TTL")
 	}
-	if expiration.After(time.Now().Add(s.tombstoneTTL).Add(hlc.DefaultMaxSkew)) {
+	if expiration.After(localWall.Add(s.tombstoneTTL).Add(hlc.DefaultMaxSkew)) {
 		return fmt.Errorf("Delete tombstone expiration exceeds LANTERN_TOMBSTONE_TTL plus maximum clock skew")
 	}
 	return nil
@@ -1276,7 +1294,7 @@ func (s *LanternService) preflightLocalGraphPutVerticesLocked(in []*pb.Vertex, t
 	if op == nil {
 		return nil
 	}
-	if err := validateGraphEffectPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
+	if err := s.validateGraphPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("PutVertices publication shape: %w", err))
 	}
 	return nil
@@ -1291,7 +1309,7 @@ func (s *LanternService) preflightLocalGraphPutEdgesLocked(in []*pb.Edge, ts hlc
 	if op == nil {
 		return nil
 	}
-	if err := validateGraphEffectPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
+	if err := s.validateGraphPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("PutEdges publication shape: %w", err))
 	}
 	return nil
@@ -1302,7 +1320,7 @@ func (s *LanternService) preflightLocalGraphDeleteLocked(op *pb.MutationOp, ts h
 	if !expiration.IsZero() {
 		mutation.TombstoneExpiration = timestamppb.New(expiration)
 	}
-	if err := validateGraphEffectPublicationShape(mutation); err != nil {
+	if err := s.validateGraphPublicationShape(mutation); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("Delete publication shape: %w", err))
 	}
 	return nil
@@ -1547,7 +1565,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		}
 		ts := s.clock.Now()
 		mutation := s.newLocalMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
-		if err := validateGraphEffectPublicationShape(mutation); err != nil {
+		if err := s.validateGraphPublicationShape(mutation); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("AddEdges publication shape: %w", err))
 		}
 		// Reserve the origin seq before apply, then synthesize a

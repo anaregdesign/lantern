@@ -1,18 +1,22 @@
 package mutationreceipt
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
 )
 
 const (
-	minRetention  = time.Hour
-	maxRetention  = 30 * 24 * time.Hour
-	freshWindowMS = int64((5 * time.Minute) / time.Millisecond)
+	minRetention          = time.Hour
+	maxRetention          = 30 * 24 * time.Hour
+	freshWindowMS         = int64((5 * time.Minute) / time.Millisecond)
+	committedPastWindowMS = freshWindowMS + int64(hlc.DefaultMaxSkew/time.Millisecond)
 	// Logical byte accounting includes the stored ID, digest, group, index,
 	// count, deadline, and original result. An Add reverse-index binding
 	// additionally owns a copied ContribID and ID. Entry caps bound Go map/
@@ -115,12 +119,13 @@ const (
 // replicated by a future commit integration; this package itself is memory
 // only and cannot certify restart continuity.
 type Stats struct {
-	Entries                 int
-	Bytes                   uint64
-	OldestDeadlineMillis    int64
-	HighWaterMillis         int64
-	LocalAdmissionRejects   uint64
-	NoLongerProvableLookups uint64
+	Entries                   int
+	Bytes                     uint64
+	OldestDeadlineMillis      int64
+	HighWaterMillis           int64
+	LocalAdmissionRejects     uint64
+	ReplicationCapacityStalls uint64
+	NoLongerProvableLookups   uint64
 }
 
 // Store holds only receipt bookkeeping. It does not make graph mutations,
@@ -129,22 +134,23 @@ type Stats struct {
 // only unlocks. Do not attach this Store to a serving mutation path until its
 // outer server publication and recovery boundary is implemented.
 type Store struct {
-	mu              sync.Mutex
-	epoch           Epoch
-	retentionMS     int64
-	maxEntries      int
-	maxBytes        uint64
-	fingerprint     [sha256.Size]byte
-	highWaterMS     int64
-	receipts        map[ID]Receipt
-	groups          map[GroupID]*groupReceiptRows
-	contributions   map[ContribID]ID
-	deadlines       deadlineIndex
-	bytes           uint64
-	admissionReject uint64
-	unknownLookups  uint64
-	highWaterSink   ClockHighWaterSink
-	highWaterFault  error
+	mu                       sync.Mutex
+	epoch                    Epoch
+	retentionMS              int64
+	maxEntries               int
+	maxBytes                 uint64
+	fingerprint              [sha256.Size]byte
+	highWaterMS              int64
+	receipts                 map[ID]Receipt
+	groups                   map[GroupID]*groupReceiptRows
+	contributions            map[ContribID]ID
+	deadlines                deadlineIndex
+	bytes                    uint64
+	admissionReject          uint64
+	replicationCapacityStall uint64
+	unknownLookups           uint64
+	highWaterSink            ClockHighWaterSink
+	highWaterFault           error
 }
 
 // groupReceiptRows binds every currently retained item position to one
@@ -240,6 +246,16 @@ func (s *Store) Begin(now time.Time) (*Tx, error) {
 	return &Tx{store: s, effectiveMS: effective}, nil
 }
 
+// ClockHighWaterMillis returns the monotonic wall sampled by Begin. The
+// transaction remains the single owner of the Store lock, so callers can use
+// this value to align an enclosing commit clock without a second Store read.
+func (tx *Tx) ClockHighWaterMillis() (int64, error) {
+	if tx == nil || tx.closed {
+		return 0, ErrTransactionState
+	}
+	return tx.effectiveMS, nil
+}
+
 // Lookup is read-only with respect to live receipts. It advances the clock
 // high-water and evicts only receipts already past their own deadline. A
 // retained exact old-epoch receipt may answer Confirmed, but an absent
@@ -281,11 +297,12 @@ func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stats := Stats{
-		Entries:                 len(s.receipts),
-		Bytes:                   s.bytes,
-		HighWaterMillis:         s.highWaterMS,
-		LocalAdmissionRejects:   s.admissionReject,
-		NoLongerProvableLookups: s.unknownLookups,
+		Entries:                   len(s.receipts),
+		Bytes:                     s.bytes,
+		HighWaterMillis:           s.highWaterMS,
+		LocalAdmissionRejects:     s.admissionReject,
+		ReplicationCapacityStalls: s.replicationCapacityStall,
+		NoLongerProvableLookups:   s.unknownLookups,
 	}
 	stats.OldestDeadlineMillis = s.deadlines.oldestMillis()
 	return stats
@@ -462,6 +479,155 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 	return Fresh, nil, nil
 }
 
+// PrepareCommitted validates and reserves the live receipt rows from an
+// already-committed replication envelope. acceptedAtMillis is the trusted
+// origin acceptance timestamp, after the caller has bounded its clock skew.
+// IDs must have been fresh at that origin cut, but delayed delivery is not
+// judged against the follower's current clock. The old-side bound additionally
+// admits the HLC's maximum forward skew because the origin can accept an ID
+// against its Store wall before stamping the mutation from an observed clock
+// floor; the future-side bound remains the ordinary freshness window. Expired
+// rows are validated but omitted, while exact live duplicates require no
+// additional capacity.
+// Conflicts and capacity failures leave the transaction ready only for Abort.
+// Like Begin, a validated trusted acceptance time advances the persisted
+// clock high-water even when later admission fails or the transaction aborts.
+//
+// A successful call moves the transaction directly to the reserved state;
+// the caller must call Stage before its external WAL commit.
+func (tx *Tx) PrepareCommitted(receipts []Receipt, acceptedAtMillis int64) error {
+	if tx.closed || tx.mode != txUnclassified {
+		return ErrTransactionState
+	}
+	s := tx.store
+	group, seenContrib, err := s.validateCommitted(receipts, acceptedAtMillis)
+	if err != nil {
+		return err
+	}
+	effective, err := s.advanceLocked(time.UnixMilli(acceptedAtMillis))
+	if err != nil {
+		return err
+	}
+	tx.effectiveMS = effective
+	s.expireLocked(effective)
+	liveMissing := make([]Receipt, 0, len(receipts))
+	liveKnown := 0
+	for _, receipt := range receipts {
+		item := receipt.Intent
+		if receipt.DeadlineMillis <= tx.effectiveMS {
+			continue
+		}
+		if prior, ok := s.receipts[item.ID]; ok {
+			if prior.Intent != item || prior.DeadlineMillis != receipt.DeadlineMillis ||
+				!bytes.Equal(prior.Result, receipt.Result) {
+				return ErrIntentConflict
+			}
+			liveKnown++
+			continue
+		}
+		liveMissing = append(liveMissing, cloneReceipt(receipt))
+	}
+	if rows := s.groups[group]; rows != nil {
+		if rows.count != uint32(len(receipts)) {
+			return ErrIntentConflict
+		}
+		for i, receipt := range receipts {
+			if boundID, exists := rows.items[uint32(i)]; exists && boundID != receipt.ID {
+				return ErrIntentConflict
+			}
+		}
+	}
+	if liveKnown != 0 && len(liveMissing) != 0 {
+		return ErrPartialEnvelope
+	}
+	if liveKnown == 0 && len(liveMissing) != 0 {
+		if _, used := s.groups[group]; used {
+			return ErrIntentConflict
+		}
+		for contrib, id := range seenContrib {
+			if old, bound := s.contributions[contrib]; bound && old != id {
+				return ErrContributionConflict
+			}
+		}
+		if len(liveMissing) > s.maxEntries-len(s.receipts) {
+			s.replicationCapacityStall++
+			return ErrCapacity
+		}
+		var additional uint64
+		for _, receipt := range liveMissing {
+			cost := receipt.cost()
+			if cost > s.maxBytes || additional > s.maxBytes-cost {
+				s.replicationCapacityStall++
+				return ErrCapacity
+			}
+			additional += cost
+		}
+		if additional > s.maxBytes-s.bytes {
+			s.replicationCapacityStall++
+			return ErrCapacity
+		}
+	}
+	tx.intents = make([]Intent, len(liveMissing))
+	for i, receipt := range liveMissing {
+		tx.intents[i] = receipt.Intent
+	}
+	tx.staged = liveMissing
+	tx.mode = txReserved
+	return nil
+}
+
+// ValidateCommitted checks the immutable epoch, policy-derived deadlines,
+// logical-call shape, and origin-time freshness of a committed envelope. It
+// does not inspect or mutate live Store state, so a follower can reject an
+// invalid future sequence before admitting it to its pending queue.
+func (s *Store) ValidateCommitted(receipts []Receipt, acceptedAtMillis int64) error {
+	_, _, err := s.validateCommitted(receipts, acceptedAtMillis)
+	return err
+}
+
+func (s *Store) validateCommitted(receipts []Receipt, acceptedAtMillis int64) (GroupID, map[ContribID]ID, error) {
+	if acceptedAtMillis < 0 || len(receipts) == 0 || uint64(len(receipts)) > math.MaxUint32 {
+		return GroupID{}, nil, ErrInvalidBatch
+	}
+	group := receipts[0].Group
+	if group == (GroupID{}) {
+		return GroupID{}, nil, ErrInvalidBatch
+	}
+	seenID := make(map[ID]struct{}, len(receipts))
+	seenContrib := make(map[ContribID]ID)
+	for i, receipt := range receipts {
+		item := receipt.Intent
+		if item.Group != group || item.Count != uint32(len(receipts)) || item.Index != uint32(i) ||
+			item.Kind < PutVertex || item.Kind > DeleteEdge ||
+			(item.Kind == AddEdge) != item.HasContrib ||
+			(item.HasContrib && item.ContribID == (ContribID{})) ||
+			(!item.HasContrib && item.ContribID != (ContribID{})) {
+			return GroupID{}, nil, ErrInvalidBatch
+		}
+		if _, duplicate := seenID[item.ID]; duplicate {
+			return GroupID{}, nil, ErrInvalidBatch
+		}
+		seenID[item.ID] = struct{}{}
+		if item.HasContrib {
+			if other, used := seenContrib[item.ContribID]; used && other != item.ID {
+				return GroupID{}, nil, ErrContributionConflict
+			}
+			seenContrib[item.ContribID] = item.ID
+		}
+		epoch, issued, err := item.ID.parts()
+		if err != nil {
+			return GroupID{}, nil, err
+		}
+		if epoch != s.epoch || issued > math.MaxInt64-s.retentionMS ||
+			tooFarFuture(issued, acceptedAtMillis) ||
+			(issued <= acceptedAtMillis && acceptedAtMillis-issued > committedPastWindowMS) ||
+			receipt.DeadlineMillis != issued+s.retentionMS {
+			return GroupID{}, nil, ErrInvalidBatch
+		}
+	}
+	return group, seenContrib, nil
+}
+
 // Reserve copies all original results and proves that the entire new batch
 // fits without evicting any live receipt. It does not publish a result; Stage
 // must run before the external WAL commit while this transaction holds mu.
@@ -515,7 +681,10 @@ func (tx *Tx) Stage() error {
 	}
 	s := tx.store
 	tx.mode = txStaged
-	group := tx.intents[0].Group
+	if len(tx.staged) == 0 {
+		return nil
+	}
+	group := tx.staged[0].Group
 	s.groups[group] = &groupReceiptRows{count: tx.intents[0].Count, items: make(map[uint32]ID, len(tx.staged))}
 	tx.groupAdded = true
 	for _, r := range tx.staged {
@@ -571,7 +740,7 @@ func (tx *Tx) Abort() {
 		if tx.mode == txStaged {
 			s := tx.store
 			if tx.groupAdded {
-				delete(s.groups, tx.intents[0].Group)
+				delete(s.groups, tx.staged[0].Group)
 			}
 			for i := tx.applied - 1; i >= 0; i-- {
 				r := tx.staged[i]

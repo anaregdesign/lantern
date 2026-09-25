@@ -197,10 +197,6 @@ func TestReceiptEdgeDeleteWALCodecRejectsEnvelopeDrift(t *testing.T) {
 		{"result drift", func(e *edgeDeleteReceiptEnvelope) { e.Receipts[0].Result[0] = 2 }},
 		{"accepted index drift", func(e *edgeDeleteReceiptEnvelope) { e.Accepted[1].Index = e.Accepted[0].Index }},
 		{"accepted key drift", func(e *edgeDeleteReceiptEnvelope) { e.Accepted[0].Key.Head = "different" }},
-		{"true without accepted", func(e *edgeDeleteReceiptEnvelope) {
-			e.Accepted = nil
-			e.Mutation = receiptEdgeDeleteWALMutation(e)
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -218,6 +214,24 @@ func TestReceiptEdgeDeleteWALCodecRejectsEnvelopeDrift(t *testing.T) {
 	tooLarge.OriginalKeys[0].Tail = strings.Repeat("x", receiptEdgeDeleteWALMaxBytes)
 	if _, err := encodeReceiptEdgeDeleteWAL(tooLarge); !errors.Is(err, errReceiptEdgeDeleteWAL) {
 		t.Fatalf("oversized encode = %v", err)
+	}
+}
+
+func TestReceiptEdgeDeleteWALCodecAllowsReceiverLocalCausalDivergence(t *testing.T) {
+	_, envelope := receiptEdgeDeleteCodecFixture(t, nil)
+	envelope.Accepted = nil
+	envelope.Mutation = receiptEdgeDeleteWALMutation(envelope)
+	raw, err := encodeReceiptEdgeDeleteWAL(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := decodeReceiptEdgeDeleteWAL(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := op.(*edgeDeleteReceiptEnvelope)
+	if len(got.Accepted) != 0 || got.Receipts[0].Result[0] != 1 {
+		t.Fatalf("receiver-local rejection lost original result: %+v", got)
 	}
 }
 
