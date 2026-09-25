@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "kind": "physical_offline_release_evidence",
+  "kind": "physical_offline_identity_cdc_evidence",
   "repository": "anaregdesign/lantern",
   "testedCommit": "3c6567381818d349b43a14f1f2fc3cf99fddd53a",
   "recordedAt": "2026-09-25T00:39:06Z",
@@ -14,8 +14,8 @@
   },
   "application": {
     "packageId": "com.anaregdesign.lanternExample",
-    "target": "integration_test/mobile_smoke_test.dart",
-    "binarySha256": "173cfb1e3d0f35816f7504f14b174dc15911c89c28f8d16eeddae1d18f173a52"
+    "target": "integration_test/physical_identity_cdc_test.dart",
+    "binarySha256": "67426e3cf12cc9511b4e2052d6c9ef184821389a9e2b3ea4ef0bb8b40ab6ac3e"
   },
   "platform": {
     "kind": "physical-ios",
@@ -29,21 +29,16 @@
     "platformTrustedTls": true
   },
   "scenarios": [
-    "authoritative_server_expiry",
-    "ios_local_network_privacy_denial_retry",
-    "offline_put_replay",
-    "online_exact_values",
-    "platform_trusted_tls",
-    "radio_offline_foreground_recovery",
-    "sqlite_expired_before_replay",
-    "sqlite_logout_wipe_reopen",
-    "sqlite_original_ttl_preserved",
-    "sqlite_partition_isolation",
-    "sqlite_pending_close_reopen",
-    "token_rotation",
-    "untrusted_tls_rejection",
-    "watch_cleanup",
-    "wipe_before_send"
+    "identity_cancellation",
+    "identity_checkpoint_revalidation",
+    "identity_cursor_persisted",
+    "identity_live_edge_invalidation",
+    "identity_live_vertex_invalidation",
+    "identity_partition_wipe",
+    "identity_resume_live_invalidation",
+    "identity_runtime_token_refresh",
+    "identity_same_responder",
+    "identity_unknown_survives_sqlite_reopen"
   ],
   "result": "passed",
   "limitations": []
