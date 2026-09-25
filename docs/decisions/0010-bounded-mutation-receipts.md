@@ -362,6 +362,11 @@ no status from this audit: aborted Store clock advances, graph/search state,
 and an atomic origin/log cut remain outside the WAL decision inventory. A
 non-genesis WAL requires a verified receipt-bearing Snapshot baseline before
 it can be audited or resumed.
+`mutationlog.AcquireFileWALLease` provides an advisory process lock for the
+WAL path across separate audit, replay, and append calls. A production owner
+must hold it throughout those calls and shutdown, use its canonical path,
+and never unlink the stable `.lease` sidecar. The lease is not wired into a
+production provider and does not certify application recovery on its own.
 The HLC `RestoreFloor` API can seed a clock from the greatest verified
 committed timestamp without applying the live-peer skew clamp, so a wall-clock
 rollback cannot put the next local mutation below that frontier. No serving
