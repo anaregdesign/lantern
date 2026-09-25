@@ -3010,17 +3010,18 @@ func requireReceiptDeleteResults(
 	}
 }
 
-type dropFirstDeleteEdgesResponseTransport struct {
-	inner   http.RoundTripper
-	dropped atomic.Bool
+type dropFirstReceiptResponseTransport struct {
+	inner      http.RoundTripper
+	pathSuffix string
+	dropped    atomic.Bool
 }
 
-func (t *dropFirstDeleteEdgesResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (t *dropFirstReceiptResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := t.inner.RoundTrip(request)
 	if err != nil {
 		return nil, err
 	}
-	if strings.HasSuffix(request.URL.Path, "/DeleteEdges") &&
+	if strings.HasSuffix(request.URL.Path, t.pathSuffix) &&
 		t.dropped.CompareAndSwap(false, true) {
 		_, _ = io.Copy(io.Discard, response.Body)
 		_ = response.Body.Close()
@@ -3073,7 +3074,9 @@ func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
 			ReceiptContext: receiptContext,
 		}
 		baseClient := h2cClient()
-		dropTransport := &dropFirstDeleteEdgesResponseTransport{inner: baseClient.Transport}
+		dropTransport := &dropFirstReceiptResponseTransport{
+			inner: baseClient.Transport, pathSuffix: "/DeleteEdges",
+		}
 		dropClient := &http.Client{Transport: dropTransport}
 		dropRaw := graphv1connect.NewLanternServiceClient(dropClient, wire.server.url)
 		if _, err := dropRaw.DeleteEdges(
@@ -3731,6 +3734,257 @@ func TestPublicEdgeDeleteReceipts_ThreeReplicaRelayAfterOriginDisconnect(t *test
 			}
 		}
 	}
+}
+
+func TestPublicVertexReceipts_RealConnectWire(t *testing.T) {
+	t.Run("mixed Put replay status conflicts and singular forwarding", func(t *testing.T) {
+		wire := newPublicReceiptWireServer(t, hlc.NodeID{0x33}, 16, testToken)
+		capability := publicReceiptCapability(t, wire, testToken)
+		if !reflect.DeepEqual(capability.GetSupportedMutations(), []pb.ReceiptMutationKind{
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
+		}) {
+			t.Fatalf("supported receipt mutations = %v", capability.GetSupportedMutations())
+		}
+		if _, err := wire.raw.PutVertex(
+			context.Background(),
+			authedReceiptRequest(&pb.PutVertexRequest{
+				Vertex: &pb.Vertex{
+					Key:   "existing",
+					Value: &pb.Vertex_String_{String_: "old"},
+				},
+			}),
+		); err != nil {
+			t.Fatal(err)
+		}
+
+		issued := time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)
+		receiptContext := publicReceiptWireContext(t, capability, 0xa1, 3, issued)
+		request := &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{
+				{Key: "permanent", Value: &pb.Vertex_String_{String_: "live"}},
+				{Key: "existing", Value: &pb.Vertex_String_{String_: "blocked"}},
+				{
+					Key: "expired", Value: &pb.Vertex_String_{String_: "dead"},
+					Expiration: timestamppb.New(time.Now().Add(-time.Minute)),
+				},
+			},
+			IfAbsent: true, ReceiptContext: receiptContext,
+		}
+		dropTransport := &dropFirstReceiptResponseTransport{
+			inner: h2cClient().Transport, pathSuffix: "/PutVertices",
+		}
+		dropRaw := graphv1connect.NewLanternServiceClient(
+			&http.Client{Transport: dropTransport},
+			wire.server.url,
+		)
+		if _, err := dropRaw.PutVertices(
+			context.Background(),
+			authedReceiptRequest(proto.Clone(request).(*pb.PutVerticesRequest)),
+		); err == nil || !dropTransport.dropped.Load() {
+			t.Fatalf("committed Put response loss = %v, dropped=%t", err, dropTransport.dropped.Load())
+		}
+
+		want := []pb.PutOutcome{
+			pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+			pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+			pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+		}
+		replay, err := wire.raw.PutVertices(
+			context.Background(),
+			authedReceiptRequest(proto.Clone(request).(*pb.PutVerticesRequest)),
+		)
+		if err != nil || !reflect.DeepEqual(replay.Msg.GetOutcomes(), want) {
+			t.Fatalf("same-endpoint Put replay = (%+v, %v), want %v", replay, err, want)
+		}
+		permanent, err := wire.raw.GetVertex(
+			context.Background(),
+			authedReceiptRequest(&pb.GetVertexRequest{Key: "permanent"}),
+		)
+		if err != nil || permanent.Msg.GetVertex().GetString_() != "live" ||
+			permanent.Msg.GetVertex().GetExpiration() != nil {
+			t.Fatalf("permanent Put projection = (%+v, %v)", permanent, err)
+		}
+		statuses, err := wire.raw.GetReceiptStatuses(
+			context.Background(),
+			authedReceiptRequest(&pb.GetReceiptStatusesRequest{
+				OperationIds: receiptContext.GetOperationIds(),
+			}),
+		)
+		if err != nil || len(statuses.Msg.GetStatuses()) != len(want) {
+			t.Fatalf("Put statuses = (%+v, %v)", statuses, err)
+		}
+		for i, status := range statuses.Msg.GetStatuses() {
+			if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				status.GetReceipt().GetOriginalResult().GetPutVertexOutcome() != want[i] {
+				t.Fatalf("Put status[%d] = %+v, want %v", i, status, want[i])
+			}
+		}
+
+		changedIntent := proto.Clone(request).(*pb.PutVerticesRequest)
+		changedIntent.Vertices[0].Value = &pb.Vertex_String_{String_: "changed"}
+		if _, err := wire.raw.PutVertices(
+			context.Background(),
+			authedReceiptRequest(changedIntent),
+		); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("changed Put intent = %v, want InvalidArgument", err)
+		}
+		changedGroup := proto.Clone(request).(*pb.PutVerticesRequest)
+		changedGroup.ReceiptContext.LogicalCallId[0]++
+		if _, err := wire.raw.PutVertices(
+			context.Background(),
+			authedReceiptRequest(changedGroup),
+		); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("changed Put group = %v, want InvalidArgument", err)
+		}
+		duplicate := publicReceiptWireContext(t, capability, 0xa2, 2, issued)
+		duplicate.OperationIds[1] = append([]byte(nil), duplicate.OperationIds[0]...)
+		if _, err := wire.raw.PutVertices(
+			context.Background(),
+			authedReceiptRequest(&pb.PutVerticesRequest{
+				Vertices:       []*pb.Vertex{{Key: "duplicate-a"}, {Key: "duplicate-b"}},
+				ReceiptContext: duplicate,
+			}),
+		); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("duplicate Put IDs = %v, want InvalidArgument", err)
+		}
+
+		singularPutContext := publicReceiptWireContext(t, capability, 0xa3, 1, issued)
+		singularPut, err := wire.raw.PutVertex(
+			context.Background(),
+			authedReceiptRequest(&pb.PutVertexRequest{
+				Vertex: &pb.Vertex{
+					Key:   "singular-permanent",
+					Value: &pb.Vertex_String_{String_: "singular"},
+				},
+				ReceiptContext: singularPutContext,
+			}),
+		)
+		if err != nil ||
+			singularPut.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+			t.Fatalf("singular receipt Put = (%+v, %v)", singularPut, err)
+		}
+
+		singularDeleteContext := publicReceiptWireContext(t, capability, 0xa4, 1, issued)
+		singularDelete, err := wire.raw.DeleteVertex(
+			context.Background(),
+			authedReceiptRequest(&pb.DeleteVertexRequest{
+				Key: "absent", ReceiptContext: singularDeleteContext,
+			}),
+		)
+		if err != nil || singularDelete.Msg.GetExisted() {
+			t.Fatalf("singular absent receipt Delete = (%+v, %v)", singularDelete, err)
+		}
+		deleteStatus, err := wire.raw.GetReceiptStatus(
+			context.Background(),
+			authedReceiptRequest(&pb.GetReceiptStatusRequest{
+				OperationId: singularDeleteContext.GetOperationIds()[0],
+			}),
+		)
+		if err != nil ||
+			deleteStatus.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+			deleteStatus.Msg.GetStatus().GetReceipt().GetOriginalResult().GetDeleteVertexExisted() {
+			t.Fatalf("singular absent Delete status = (%+v, %v)", deleteStatus, err)
+		}
+
+		for _, key := range []string{"delete-present-a", "delete-present-b"} {
+			if _, err := wire.raw.PutVertex(
+				context.Background(),
+				authedReceiptRequest(&pb.PutVertexRequest{
+					Vertex: &pb.Vertex{
+						Key: key, Value: &pb.Vertex_String_{String_: key},
+					},
+				}),
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+		deleteContext := publicReceiptWireContext(t, capability, 0xa5, 3, issued)
+		deleteRequest := &pb.DeleteVerticesRequest{
+			Keys:           []string{"delete-present-a", "delete-absent", "delete-present-b"},
+			ReceiptContext: deleteContext,
+		}
+		deleteDropTransport := &dropFirstReceiptResponseTransport{
+			inner: h2cClient().Transport, pathSuffix: "/DeleteVertices",
+		}
+		deleteDropRaw := graphv1connect.NewLanternServiceClient(
+			&http.Client{Transport: deleteDropTransport},
+			wire.server.url,
+		)
+		if _, err := deleteDropRaw.DeleteVertices(
+			context.Background(),
+			authedReceiptRequest(proto.Clone(deleteRequest).(*pb.DeleteVerticesRequest)),
+		); err == nil || !deleteDropTransport.dropped.Load() {
+			t.Fatalf("committed Delete response loss = %v, dropped=%t",
+				err, deleteDropTransport.dropped.Load())
+		}
+		deleteReplay, err := wire.raw.DeleteVertices(
+			context.Background(),
+			authedReceiptRequest(proto.Clone(deleteRequest).(*pb.DeleteVerticesRequest)),
+		)
+		wantDelete := []bool{true, false, true}
+		if err != nil || deleteReplay.Msg.GetDeleted() != 2 ||
+			!reflect.DeepEqual(deleteReplay.Msg.GetExisted(), wantDelete) {
+			t.Fatalf("same-endpoint Delete replay = (%+v, %v), want %v",
+				deleteReplay, err, wantDelete)
+		}
+		deleteStatuses, err := wire.raw.GetReceiptStatuses(
+			context.Background(),
+			authedReceiptRequest(&pb.GetReceiptStatusesRequest{
+				OperationIds: deleteContext.GetOperationIds(),
+			}),
+		)
+		if err != nil || len(deleteStatuses.Msg.GetStatuses()) != len(wantDelete) {
+			t.Fatalf("Delete statuses = (%+v, %v)", deleteStatuses, err)
+		}
+		for i, status := range deleteStatuses.Msg.GetStatuses() {
+			if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				status.GetReceipt().GetOriginalResult().GetDeleteVertexExisted() != wantDelete[i] {
+				t.Fatalf("Delete status[%d] = %+v, want %t", i, status, wantDelete[i])
+			}
+		}
+		changedDelete := proto.Clone(deleteRequest).(*pb.DeleteVerticesRequest)
+		changedDelete.Keys[1] = "changed-absent"
+		if _, err := wire.raw.DeleteVertices(
+			context.Background(),
+			authedReceiptRequest(changedDelete),
+		); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("changed Delete intent = %v, want InvalidArgument", err)
+		}
+	})
+
+	t.Run("Store capacity rejects Put before graph mutation", func(t *testing.T) {
+		wire := newPublicReceiptWireServer(t, hlc.NodeID{0x34}, 1, testToken)
+		capability := publicReceiptCapability(t, wire, testToken)
+		receiptContext := publicReceiptWireContext(
+			t,
+			capability,
+			0xb1,
+			2,
+			time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
+		)
+		if _, err := wire.raw.PutVertices(
+			context.Background(),
+			authedReceiptRequest(&pb.PutVerticesRequest{
+				Vertices:       []*pb.Vertex{{Key: "capacity-a"}, {Key: "capacity-b"}},
+				ReceiptContext: receiptContext,
+			}),
+		); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("Vertex Put capacity = %v, want ResourceExhausted", err)
+		}
+		if stats := wire.runtime.ReceiptStats(); stats.Entries != 0 {
+			t.Fatalf("capacity rejection changed receipt Store: %+v", stats)
+		}
+		for _, key := range []string{"capacity-a", "capacity-b"} {
+			if _, err := wire.raw.GetVertex(
+				context.Background(),
+				authedReceiptRequest(&pb.GetVertexRequest{Key: key}),
+			); connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatalf("capacity rejection GetVertex(%q) = %v, want NotFound", key, err)
+			}
+		}
+	})
 }
 
 func durableFollowerReceiptMutation(

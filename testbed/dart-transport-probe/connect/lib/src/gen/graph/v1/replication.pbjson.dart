@@ -1532,6 +1532,8 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.Vertex': $0.Vertex$json,
   '.google.protobuf.Timestamp': $1.Timestamp$json,
   '.google.protobuf.Duration': $2.Duration$json,
+  '.graph.v1.MutationReceiptContext': $0.MutationReceiptContext$json,
+  '.graph.v1.ReceiptEndpoint': $0.ReceiptEndpoint$json,
   '.graph.v1.PutVerticesRequest': $0.PutVerticesRequest$json,
   '.graph.v1.DeleteVertexRequest': $0.DeleteVertexRequest$json,
   '.graph.v1.DeleteVerticesRequest': $0.DeleteVerticesRequest$json,

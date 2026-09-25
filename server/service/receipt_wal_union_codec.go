@@ -37,9 +37,12 @@ const (
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
 	// Each receipt-envelope body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
-	// A new reachable Mutation field must not silently change what the v4
-	// graph kind persists or replays. Review and version the WAL schema first.
-	receiptWALGraphSchemaFingerprintV4 = "da59113fa93663ea88eb27f8b831e71d0c25d49c0c1c6904e3685fcefc97d7d8"
+	// The full Mutation descriptor includes public receipt contexts. This v4
+	// pin was deliberately advanced with those fields, while graph-arm
+	// encode/decode rejects any populated context so persisted v4 semantics
+	// remain receipt-free. Review every later reachable field before changing
+	// this pin or the WAL version.
+	receiptWALGraphSchemaFingerprintV4 = "8d677f373d720ec99d55cbcbc4ce1ce575e1510e9b32c82dfe1d0f054dabe8bc"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
@@ -432,6 +435,9 @@ func validateReceiptWALGraph(m *pb.Mutation) error {
 	if _, err := receiptWALGraphArm(m); err != nil {
 		return err
 	}
+	if err := rejectGraphReceiptContext(m); err != nil {
+		return err
+	}
 	if err := validateSyntheticAddMutationBounds(m); err != nil {
 		return receiptWALUnionError("graph Add identity: %v", err)
 	}
@@ -439,6 +445,36 @@ func validateReceiptWALGraph(m *pb.Mutation) error {
 		return receiptWALUnionError("graph Delete deadline: %v", err)
 	}
 	return rejectReceiptWALUnknownFields(m.ProtoReflect())
+}
+
+func rejectGraphReceiptContext(m *pb.Mutation) error {
+	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_PutVertex:
+		if op.PutVertex.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph PutVertex cannot carry a receipt context")
+		}
+	case *pb.MutationOp_PutVertices:
+		if op.PutVertices.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph PutVertices cannot carry a receipt context")
+		}
+	case *pb.MutationOp_DeleteVertex:
+		if op.DeleteVertex.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph DeleteVertex cannot carry a receipt context")
+		}
+	case *pb.MutationOp_DeleteVertices:
+		if op.DeleteVertices.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph DeleteVertices cannot carry a receipt context")
+		}
+	case *pb.MutationOp_DeleteEdge:
+		if op.DeleteEdge.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph DeleteEdge cannot carry a receipt context")
+		}
+	case *pb.MutationOp_DeleteEdges:
+		if op.DeleteEdges.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph DeleteEdges cannot carry a receipt context")
+		}
+	}
+	return nil
 }
 
 type receiptWALRepeatedArm struct {

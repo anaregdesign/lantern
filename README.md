@@ -634,6 +634,21 @@ SDK batch writes auto-chunk; a validation interceptor rejects oversize keys
 and batches (`LANTERN_MAX_KEY_LEN`, `LANTERN_MAX_BATCH_SIZE`) and NaN/Inf
 weights before they touch the cache.
 
+Vertex Put, exact Vertex Delete, and exact Edge Delete can opt into bounded,
+server-authoritative receipts through the sole optional
+`MutationReceiptContext` on their plural requests; the singular RPCs are
+one-item facades. An authenticated client must first obtain an enabled
+`GetReceiptCapability`, then send one index-aligned 49-byte operation ID per
+item, one 16-byte logical-call ID, and that endpoint marker. An identical
+same-endpoint retry returns the original aligned `PutOutcome` values or exact
+Delete `existed` booleans without executing again; a changed semantic intent
+fails before mutation. Read-only
+`GetReceiptStatus` / `GetReceiptStatuses` return exactly `CONFIRMED`,
+`NOT_YET_OBSERVED`, or `NO_LONGER_PROVABLE`. Omitting the context preserves
+the receipt-less write path; Add and prefix Delete are not receipt-enabled.
+The full identity, continuity, and retry contract is
+[ADR 0010](docs/decisions/0010-bounded-mutation-receipts.md).
+
 Put liveness is decided by one server application-time sample, not the
 caller's clock. A past expiration returns `EXPIRED` and acts as a delete-like
 overwrite of any prior live value. SDKs fail closed on unknown or misaligned
@@ -774,7 +789,7 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | TLS; the client CA enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | CORS allow-list for browser clients (the Admin needs its origin here) |
 | `LANTERN_BACKUP_*` | off | Periodic graph-only `.lbk` or durable three-member receipt-set production. Restore-on-start runs before serving; durable `restart` prefers a complete current WAL and uses backup only for eligible baseline-sidecar damage, while durable `fresh` requires a new epoch for total-cluster restore. |
-| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Receipt runtime selection: `fresh` creates (and can restore into) a new epoch; `restart` resumes an explicitly configured receipt WAL and narrowly repairs eligible baseline damage. Durable modes require a stable explicit `LANTERN_NODE_ID`; with configured bearer auth and full runtime certification they expose capability, three-state status, and optional Edge Delete receipts. |
+| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Receipt runtime selection: `fresh` creates (and can restore into) a new epoch; `restart` resumes an explicitly configured receipt WAL and narrowly repairs eligible baseline damage. Durable modes require a stable explicit `LANTERN_NODE_ID`; with configured bearer auth and full runtime certification they expose capability, three-state status, and optional receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete. |
 | `LANTERN_RATE_LIMIT_RPS` | `0` | Global token-bucket rate limit |
 | `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Page-size default and hard cap for the `Scan*` RPCs |
 | `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` | `16` / `1024` | Traversal depth / fan-out caps |
@@ -784,12 +799,12 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 One default worth knowing: a write that omits TTL is stored **permanently**
 — decay is opt-in per write.
 
-Receipt context is optional and canonical on exact `DeleteEdge`/`DeleteEdges`
-only; omitting it keeps the existing receipt-less online behavior.
-`DeleteEdge` is the one-item facade over plural `DeleteEdges`. Capability and
-status remain disabled in graph-only, auth-disabled, recovering, faulted, or
-uncertified deployments, and bearer-token rotation never changes receipt
-identity or namespace.
+Receipt context is optional and canonical on `PutVertices`, exact
+`DeleteVertices`, and exact `DeleteEdges`; omitting it keeps the existing
+receipt-less online behavior. Their singular RPCs are one-item facades.
+Capability and status remain disabled in graph-only, auth-disabled, recovering,
+faulted, or uncertified deployments, and bearer-token rotation never changes
+receipt identity or namespace.
 
 ---
 
@@ -843,8 +858,9 @@ and two Bun-managed TypeScript packages; dependency direction is a strict DAG:
 ## Limitations (the honest section)
 
 - **In-memory first.** Snapshot backup + restore-on-boot is built in, but
-  there is no WAL — writes between snapshots are lost on crash. Deployments
-  needing stronger durability replay events from a durable log on boot.
+  graph-only mode has no WAL, so writes between snapshots are lost on crash.
+  The opt-in durable receipt-WAL runtime adds WAL-backed continuity and
+  receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete.
 - **HA, not sharding.** Leaderless full-replica replication is built in;
   the working set must still fit in one process's RAM.
 - **Auth is `requirepass`-tier.** Static bearer tokens and TLS/mTLS — no

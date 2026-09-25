@@ -2,12 +2,14 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
 	"time"
 	"unicode/utf8"
 
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -25,6 +27,45 @@ var (
 
 func receiptVertexDeleteWALError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errReceiptVertexDeleteWAL, fmt.Sprintf(format, args...))
+}
+
+func receiptVertexDeleteWALCapacityError() error {
+	return errors.Join(errReceiptVertexDeleteWAL, errReceiptVertexWALCapacity)
+}
+
+// validateReceiptVertexDeleteWALRequestCapacity proves that the largest
+// possible receiver-local projection (every item causally accepted) fits
+// before Store, graph, clock, origin, or WAL state is touched.
+func validateReceiptVertexDeleteWALRequestCapacity(keys []string) error {
+	if len(keys) == 0 || len(keys) > receiptVertexWALMaxItems {
+		return receiptVertexDeleteWALError("invalid request item count")
+	}
+	callSize := proto.Size(&pb.ReplicatedReceiptVertexDelete{
+		DeploymentEpoch:     make([]byte, len(mutationreceipt.Epoch{})),
+		PolicyFingerprint:   make([]byte, sha256.Size),
+		TombstoneExpiration: &timestamppb.Timestamp{Seconds: -1, Nanos: 999_999_999},
+	})
+	receipt := worstCaseReceiptVertexWALReceipt(&pb.ReceiptResult{
+		Result: &pb.ReceiptResult_DeleteVertexExisted{DeleteVertexExisted: true},
+	})
+	for _, key := range keys {
+		itemSize := proto.Size(&pb.ReplicatedReceiptVertexDeleteItem{
+			Key: key, Receipt: receipt, CausallyAccepted: true,
+		})
+		fieldSize := protowire.SizeTag(4) + protowire.SizeBytes(itemSize)
+		if callSize > receiptVertexWALMaxBytes ||
+			fieldSize > receiptVertexWALMaxBytes-callSize {
+			return receiptVertexDeleteWALCapacityError()
+		}
+		callSize += fieldSize
+	}
+	if worstCaseReceiptVertexWALMutationSize(
+		callSize,
+		receiptVertexDeleteMutationArm,
+	) > receiptVertexWALMaxBytes {
+		return receiptVertexDeleteWALCapacityError()
+	}
+	return nil
 }
 
 func (e *vertexDeleteReceiptEnvelope) ReplicationMutation() (*pb.Mutation, error) {

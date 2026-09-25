@@ -224,6 +224,13 @@ func bindPublicReceiptFixtureForConcurrencyTest(
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.coordinator.retired = retired
+	if _, err := newVertexPutReceiptCoordinator(f.service, f.coordinator.store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newVertexDeleteReceiptCoordinator(f.service, f.coordinator.store); err != nil {
+		t.Fatal(err)
+	}
 	receiptRuntime := &receiptServingRuntime{
 		store: f.coordinator.store, retired: retired, policy: policy,
 		epoch: f.epoch, generation: [16]byte{0x7e},
@@ -235,6 +242,7 @@ func bindPublicReceiptFixtureForConcurrencyTest(
 		origins: f.service.origins, receipt: receiptRuntime,
 	}
 	f.service.runtime = runtime
+	f.service.receiptRetiredCatalog = retired
 	return runtime
 }
 

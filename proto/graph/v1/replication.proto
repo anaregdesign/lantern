@@ -52,9 +52,8 @@ message MutationOp {
     // peers unaware of this contract reject the unknown operation instead
     // of applying a graph-only Delete and advancing the origin watermark.
     ReplicatedReceiptEdgeDelete replicated_receipt_edge_delete = 15;
-    // Private receipt-bearing Vertex Put/Delete envelopes retain each
-    // original request position and the receiver-local graph projection.
-    // Public write requests do not expose operation IDs yet.
+    // Receipt-bearing Vertex Put/Delete envelopes retain each original
+    // request position and the receiver-local graph projection.
     ReplicatedReceiptVertexPut replicated_receipt_vertex_put = 16;
     ReplicatedReceiptVertexDelete replicated_receipt_vertex_delete = 17;
   }
@@ -72,8 +71,8 @@ message ReplicatedReceiptEdgeDeleteItem {
 // A complete, ordered logical call. Mutation.seq/origin/hlc outside this
 // message are the sole causal coordinate. Receipt epoch and policy are kept
 // alongside the graph transition; no-op calls still consume that sequence.
-// This arm remains production-disabled until atomic follower replay,
-// receipt-bearing Snapshot, and recovery are available.
+// Receipt-aware peers persist and relay this arm without projecting it into a
+// graph-only Delete.
 message ReplicatedReceiptEdgeDelete {
   bytes deployment_epoch = 1;
   bytes policy_fingerprint = 2;

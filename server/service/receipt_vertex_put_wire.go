@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -42,10 +43,86 @@ const (
 var (
 	errReceiptVertexPutWAL          = errors.New("service: invalid receipt Vertex Put WAL payload")
 	errReceiptVertexPutWireCapacity = errors.New("receipt Vertex Put wire frame exceeds 8 MiB")
+	errReceiptVertexWALCapacity     = errors.New("service: receipt Vertex WAL payload exceeds capacity")
 )
 
 func receiptVertexPutWALError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errReceiptVertexPutWAL, fmt.Sprintf(format, args...))
+}
+
+func receiptVertexPutWALCapacityError() error {
+	return errors.Join(errReceiptVertexPutWAL, errReceiptVertexWALCapacity)
+}
+
+func worstCaseReceiptVertexWALReceipt(result *pb.ReceiptResult) *pb.MutationReceipt {
+	return &pb.MutationReceipt{
+		OperationId:    make([]byte, len(mutationreceipt.ID{})),
+		LogicalCallId:  make([]byte, len(mutationreceipt.GroupID{})),
+		ItemIndex:      math.MaxUint32,
+		ItemCount:      math.MaxUint32,
+		IntentSha256:   make([]byte, sha256.Size),
+		DeadlineUnixMs: math.MaxUint64,
+		OriginalResult: result,
+	}
+}
+
+func worstCaseReceiptVertexWALMutationSize(
+	callSize int,
+	arm protoreflect.FieldNumber,
+) int {
+	base := proto.Size(&pb.Mutation{
+		Seq: math.MaxUint64,
+		Hlc: &pb.HLCTimestamp{
+			WallNs:  math.MaxInt64,
+			Logical: math.MaxUint32,
+			NodeId:  make([]byte, len(hlc.NodeID{})),
+		},
+		Origin: make([]byte, len(hlc.NodeID{})),
+	})
+	opSize := protowire.SizeTag(protowire.Number(arm)) + protowire.SizeBytes(callSize)
+	return base + protowire.SizeTag(4) + protowire.SizeBytes(opSize)
+}
+
+// validateReceiptVertexPutWALRequestCapacity proves that the largest possible
+// receiver-local projection (every item accepted live) fits before Store,
+// graph, clock, origin, or WAL state is touched. It references request values
+// without cloning their payload bytes and retains no per-item allocation.
+func validateReceiptVertexPutWALRequestCapacity(vertices []*pb.Vertex) error {
+	if len(vertices) == 0 || len(vertices) > receiptVertexWALMaxItems {
+		return receiptVertexPutWALError("invalid request item count")
+	}
+	callSize := proto.Size(&pb.ReplicatedReceiptVertexPut{
+		DeploymentEpoch:   make([]byte, len(mutationreceipt.Epoch{})),
+		PolicyFingerprint: make([]byte, sha256.Size),
+		IfAbsent:          true,
+	})
+	receipt := worstCaseReceiptVertexWALReceipt(&pb.ReceiptResult{
+		Result: &pb.ReceiptResult_PutVertexOutcome{
+			PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_SUPERSEDED,
+		},
+	})
+	for _, vertex := range vertices {
+		itemSize := proto.Size(&pb.ReplicatedReceiptVertexPutItem{
+			Original: vertex,
+			Receipt:  receipt,
+			Accepted: &pb.ReplicatedPutVertex{
+				Outcome: &pb.ReplicatedPutVertex_Live{Live: vertex},
+			},
+		})
+		fieldSize := protowire.SizeTag(4) + protowire.SizeBytes(itemSize)
+		if callSize > receiptVertexWALMaxBytes ||
+			fieldSize > receiptVertexWALMaxBytes-callSize {
+			return receiptVertexPutWALCapacityError()
+		}
+		callSize += fieldSize
+	}
+	if worstCaseReceiptVertexWALMutationSize(
+		callSize,
+		receiptVertexPutMutationArm,
+	) > receiptVertexWALMaxBytes {
+		return receiptVertexPutWALCapacityError()
+	}
+	return nil
 }
 
 func (e *vertexPutReceiptEnvelope) ReplicationMutation() (*pb.Mutation, error) {

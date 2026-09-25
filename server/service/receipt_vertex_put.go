@@ -54,6 +54,35 @@ type vertexPutReceiptEnvelope struct {
 
 func (e *vertexPutReceiptEnvelope) GraphMutation() *pb.Mutation { return e.Mutation }
 
+func (s *LanternService) commitPublicReceiptVertexPut(
+	ctx context.Context,
+	request *pb.PutVerticesRequest,
+) (*pb.PutVerticesResponse, error) {
+	runtime, release, err := s.acquirePublicReceiptRuntime()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	vertices := request.GetVertices()
+	group, ids, err := s.validatePublicReceiptContext(
+		runtime,
+		request.GetReceiptContext(),
+		len(vertices),
+		"vertices",
+	)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]receiptVertexPutItem, len(vertices))
+	for i, id := range ids {
+		items[i] = receiptVertexPutItem{ID: id, Vertex: vertices[i]}
+	}
+	return s.receiptVertexPutCoordinator.Commit(ctx, receiptVertexPutCall{
+		Group: group, Items: items, IfAbsent: request.GetIfAbsent(),
+	})
+}
+
 func newVertexPutReceiptCoordinator(
 	s *LanternService,
 	store *mutationreceipt.Store,
@@ -343,6 +372,9 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	original, items, intents, err := prepareVertexPutReceiptCall(c.service, call)
 	if err != nil {
 		return nil, err
+	}
+	if err := validateReceiptVertexPutWALRequestCapacity(original); err != nil {
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
 	}
 	s := c.service
 	s.replicationCutMu.Lock()

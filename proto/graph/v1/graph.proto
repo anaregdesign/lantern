@@ -239,6 +239,9 @@ message PutVertexRequest {
   // When true, the write applies only if no live vertex exists at the key.
   // An existing live vertex leaves value and expiration untouched (SET NX).
   bool if_absent = 2;
+  // Optional receipt context for one durable, status-queryable operation.
+  // When absent, this is an intentional receipt-less online Put.
+  MutationReceiptContext receipt_context = 3;
 }
 
 // PutOutcome is the server-authoritative application result for one Put item.
@@ -274,6 +277,10 @@ message PutVerticesRequest {
   // keys with a live vertex are left untouched and reported as
   // PUT_OUTCOME_CONDITION_NOT_MET at the matching response index.
   bool if_absent = 2;
+  // Optional durable receipt context. operation_ids must be index-aligned
+  // with vertices. When absent, this is an intentional receipt-less online
+  // Put with no receipt/status guarantee.
+  MutationReceiptContext receipt_context = 3;
 }
 
 message PutVerticesResponse {
@@ -289,6 +296,9 @@ message PutVerticesResponse {
 // endpoints return NotFound in the meantime.
 message DeleteVertexRequest {
   string key = 1;
+  // Optional receipt context for one durable, status-queryable operation.
+  // When absent, this is an intentional receipt-less online Delete.
+  MutationReceiptContext receipt_context = 2;
 }
 
 message DeleteVertexResponse {
@@ -301,6 +311,10 @@ message DeleteVertexResponse {
 // Subject to the same MaxBatchSize / MaxKeyLen guard rails as the put RPCs.
 message DeleteVerticesRequest {
   repeated string keys = 1;
+  // Optional durable receipt context. operation_ids must be index-aligned
+  // with keys. When absent, this is an intentional receipt-less online
+  // Delete with no receipt/status guarantee.
+  MutationReceiptContext receipt_context = 2;
 }
 
 message DeleteVerticesResponse {
@@ -1115,6 +1129,15 @@ message MutationReceiptContext {
 
 message GetReceiptCapabilityRequest {}
 
+// ReceiptMutationKind identifies a mutation family supported by the public
+// durable receipt surface. Absence from supported_mutations means unsupported.
+enum ReceiptMutationKind {
+  RECEIPT_MUTATION_KIND_UNSPECIFIED = 0;
+  RECEIPT_MUTATION_KIND_PUT_VERTEX = 1;
+  RECEIPT_MUTATION_KIND_DELETE_VERTEX = 2;
+  RECEIPT_MUTATION_KIND_DELETE_EDGE = 3;
+}
+
 message GetReceiptCapabilityResponse {
   // False until the atomic graph/receipt/WAL and recovery gates are enabled.
   // Disabled responses must omit policy and endpoint; they confer no retry
@@ -1123,6 +1146,8 @@ message GetReceiptCapabilityResponse {
   ReceiptPolicy policy = 2;
   ReceiptEndpoint endpoint = 3;
   uint64 server_now_unix_ms = 4;
+  // Stable ascending list of mutation families enabled at this endpoint.
+  repeated ReceiptMutationKind supported_mutations = 5;
 }
 
 // MutationReceiptState is a read-only observation on the serving replica.
@@ -1181,8 +1206,8 @@ message GetReceiptStatusesRequest {
 
 message GetReceiptStatusesResponse {
   // Index-aligned with operation_ids, including duplicate IDs. An invalid
-  // request fails as a whole; a future implementation must not return a
-  // partial list or silently interpret absence as NO_LONGER_PROVABLE.
+  // request fails as a whole; the server never returns a partial list or
+  // silently interprets absence as NO_LONGER_PROVABLE.
   repeated ReceiptStatus statuses = 1;
 }
 

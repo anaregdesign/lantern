@@ -1040,9 +1040,18 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 }
 
 func (s *LanternService) PutVertex(ctx context.Context, request *pb.PutVertexRequest) (*pb.PutVertexResponse, error) {
+	if request == nil {
+		request = &pb.PutVertexRequest{}
+	}
+	if request.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(request.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	resp, err := s.PutVertices(ctx, &pb.PutVerticesRequest{
-		Vertices: []*pb.Vertex{request.GetVertex()},
-		IfAbsent: request.GetIfAbsent(),
+		Vertices:       []*pb.Vertex{request.GetVertex()},
+		IfAbsent:       request.GetIfAbsent(),
+		ReceiptContext: request.GetReceiptContext(),
 	})
 	if err != nil {
 		return nil, err
@@ -1109,8 +1118,19 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	if request == nil {
+		request = &pb.PutVerticesRequest{}
+	}
+	if request.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(request.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	in := request.GetVertices()
 	s.metrics.OnBatch("PutVertices", len(in))
+	if request.GetReceiptContext() != nil {
+		return s.commitPublicReceiptVertexPut(ctx, request)
+	}
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(in))
 	for _, v := range in {
 		expiration := prototime.Expiration(v.GetExpiration())
@@ -1367,9 +1387,20 @@ func checkedDeleteOutcomes(outcomes []bool, want int) (int32, error) {
 }
 
 func (s *LanternService) DeleteVertex(ctx context.Context, in *pb.DeleteVertexRequest) (*pb.DeleteVertexResponse, error) {
+	if in == nil {
+		in = &pb.DeleteVertexRequest{}
+	}
+	if in.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(in.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	// Per the proto contract, deleting a vertex leaves its edges orphaned;
 	// the periodic GC loop reaps any tf/df rows whose endpoints disappear.
-	resp, err := s.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{in.GetKey()}})
+	resp, err := s.DeleteVertices(ctx, &pb.DeleteVerticesRequest{
+		Keys:           []string{in.GetKey()},
+		ReceiptContext: in.GetReceiptContext(),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1383,7 +1414,18 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	if in == nil {
+		in = &pb.DeleteVerticesRequest{}
+	}
+	if in.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(in.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	s.metrics.OnBatch("DeleteVertices", len(in.GetKeys()))
+	if in.GetReceiptContext() != nil {
+		return s.commitPublicReceiptVertexDelete(ctx, in)
+	}
 	var outcomes []bool
 	if s.clock != nil {
 		s.replicationCutMu.Lock()

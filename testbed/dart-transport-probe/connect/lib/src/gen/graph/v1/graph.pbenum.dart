@@ -389,6 +389,37 @@ class SearchIndexHealth extends $pb.ProtobufEnum {
   const SearchIndexHealth._(super.value, super.name);
 }
 
+/// ReceiptMutationKind identifies a mutation family supported by the public
+/// durable receipt surface. Absence from supported_mutations means unsupported.
+class ReceiptMutationKind extends $pb.ProtobufEnum {
+  static const ReceiptMutationKind RECEIPT_MUTATION_KIND_UNSPECIFIED =
+      ReceiptMutationKind._(
+          0, _omitEnumNames ? '' : 'RECEIPT_MUTATION_KIND_UNSPECIFIED');
+  static const ReceiptMutationKind RECEIPT_MUTATION_KIND_PUT_VERTEX =
+      ReceiptMutationKind._(
+          1, _omitEnumNames ? '' : 'RECEIPT_MUTATION_KIND_PUT_VERTEX');
+  static const ReceiptMutationKind RECEIPT_MUTATION_KIND_DELETE_VERTEX =
+      ReceiptMutationKind._(
+          2, _omitEnumNames ? '' : 'RECEIPT_MUTATION_KIND_DELETE_VERTEX');
+  static const ReceiptMutationKind RECEIPT_MUTATION_KIND_DELETE_EDGE =
+      ReceiptMutationKind._(
+          3, _omitEnumNames ? '' : 'RECEIPT_MUTATION_KIND_DELETE_EDGE');
+
+  static const $core.List<ReceiptMutationKind> values = <ReceiptMutationKind>[
+    RECEIPT_MUTATION_KIND_UNSPECIFIED,
+    RECEIPT_MUTATION_KIND_PUT_VERTEX,
+    RECEIPT_MUTATION_KIND_DELETE_VERTEX,
+    RECEIPT_MUTATION_KIND_DELETE_EDGE,
+  ];
+
+  static final $core.List<ReceiptMutationKind?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static ReceiptMutationKind? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const ReceiptMutationKind._(super.value, super.name);
+}
+
 /// MutationReceiptState is a read-only observation on the serving replica.
 /// NOT_YET_OBSERVED is never proof that the mutation was not executed elsewhere.
 class MutationReceiptState extends $pb.ProtobufEnum {

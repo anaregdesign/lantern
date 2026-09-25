@@ -159,6 +159,67 @@ func TestReceiptWALUnionCodecNonDeleteGraphArms(t *testing.T) {
 	}
 }
 
+func TestReceiptWALUnionCodecRejectsReceiptContextInGraphArm(t *testing.T) {
+	context := &pb.MutationReceiptContext{}
+	for _, tc := range []struct {
+		name string
+		op   *pb.MutationOp
+	}{
+		{
+			"put vertex",
+			&pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+				PutVertex: &pb.PutVertexRequest{ReceiptContext: context},
+			}},
+		},
+		{
+			"put vertices",
+			&pb.MutationOp{Op: &pb.MutationOp_PutVertices{
+				PutVertices: &pb.PutVerticesRequest{ReceiptContext: context},
+			}},
+		},
+		{
+			"delete vertex",
+			&pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{
+				DeleteVertex: &pb.DeleteVertexRequest{ReceiptContext: context},
+			}},
+		},
+		{
+			"delete vertices",
+			&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+				DeleteVertices: &pb.DeleteVerticesRequest{ReceiptContext: context},
+			}},
+		},
+		{
+			"delete edge",
+			&pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{
+				DeleteEdge: &pb.DeleteEdgeRequest{ReceiptContext: context},
+			}},
+		},
+		{
+			"delete edges",
+			&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+				DeleteEdges: &pb.DeleteEdgesRequest{ReceiptContext: context},
+			}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutation := receiptWALUnionGraphFixture(tc.op)
+			if _, err := encodeReceiptWALUnion(mutation); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("receipt context encoded as a graph mutation: %v", err)
+			}
+			protobuf, err := proto.Marshal(mutation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeReceiptWALUnion(
+				receiptWALUnionRawGraphProto(protobuf, 0),
+			); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("receipt context decoded as a graph mutation: %v", err)
+			}
+		})
+	}
+}
+
 func TestReceiptWALUnionCodecPreservesGraphNilSlots(t *testing.T) {
 	// Ordinary relay batches keep nil elements distinct from empty messages,
 	// including their original request indexes.

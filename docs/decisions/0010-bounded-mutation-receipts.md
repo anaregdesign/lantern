@@ -1,8 +1,8 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted and active for authenticated Edge Delete receipts; internal Store, receipt-bearing Edge Delete and Vertex Put/Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT Snapshot production/install, manifest-last retired-aware receipt backup-set production, and pre-listener durable startup certification provide the continuity proof, while #1395 exposes capability, three-state status, and the optional Edge Delete receipt context
+- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Add, Put Edge, and prefix Delete remain disabled
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396
 
 ## Context and boundary
 
@@ -24,9 +24,10 @@ publication; its contiguous-publication fix alone still does not provide an
 atomic receipt seam. A condition-not-met Put has no graph mutation to
 replicate, while `BackupSnapshot` and restore carry live graph records only.
 Simply adding a receipt map to any one of these paths would permit graph,
-result, receipt, and log to disagree. The Edge Delete receipt path replaces
-that ordering with the commit boundary below; other mutation families remain
-receipt-less publicly even where private receipt commit machinery exists.
+result, receipt, and log to disagree. #1395 replaces that ordering for exact
+Edge Delete, and #1396 extends the same envelope to conditional Vertex Put and
+exact Vertex Delete when their optional receipt context is present. All
+context-free writes retain their existing behavior.
 
 ## Decision
 
@@ -275,15 +276,17 @@ partitioned status, and total-cluster loss remain explicit unknown outcomes.
 
 ### Internal implementation boundary
 
-The [Edge Delete coordinator](../../server/service/receipt_edge_delete.go)
-is the plural-canonical implementation used by public `DeleteEdges` when its
-one optional receipt context is present; `DeleteEdge` forwards one item, and a
-context-free request remains intentional receipt-less online mode. The
-coordinator validates the whole group, reserves receipt capacity, proves
-deterministic WAL representability, and stages graph, per-item receipts, and
-one origin row before a WAL call. Its private log envelope distinguishes the
-original request, request-indexed
-results, causally accepted graph transitions, epoch/policy, and origin HLC/seq.
+The [Edge Delete coordinator](../../server/service/receipt_edge_delete.go),
+[Vertex Put coordinator](../../server/service/receipt_vertex_put.go), and
+[Vertex Delete coordinator](../../server/service/receipt_vertex_delete.go)
+stage graph, per-item receipts, and one origin row before a WAL call. Public
+plural calls invoke their coordinator only when the sole optional
+`MutationReceiptContext` is present; each singular call forwards a one-item
+batch, and context-free calls remain receipt-less. Each private log envelope
+distinguishes the original request, request-indexed results, causally accepted
+graph transitions, epoch/policy, and origin HLC/seq. A generic graph mutation
+carrying a receipt context is rejected so the private receipt envelope is the
+only durable representation.
 The private [Edge Delete WAL codec](../../server/service/receipt_edge_delete_codec.go)
 can encode that envelope as a bounded, versioned, deterministic payload and
 decode it with strict structural and cross-field checks. It reconstructs the
@@ -878,9 +881,10 @@ production from the exact certified runtime and performs durable restore in a
 private identity-bearing barrier before `NewRuntimeCertified`. Snapshot
 installer, Pump, anti-entropy, and backup construction follow that barrier.
 After the exact production backup source is certified, a separate public
-receipt barrier activates capability, status, and receipt-bearing Edge Delete
-only when bearer authentication is configured; primary listener construction
-follows that decision. Graph-only mode alone keeps the
+receipt barrier activates capability, status, and receipt-bearing Vertex Put,
+exact Vertex Delete, and exact Edge Delete only when bearer authentication is
+configured; primary listener construction follows that decision. Graph-only
+mode alone keeps the
 historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
 metrics, and behavior are unchanged.
 
@@ -924,16 +928,26 @@ rotating the epoch.
 
 ## Dependencies and rollout
 
-The public vertical slice exposes `GetReceiptCapability`,
-`GetReceiptStatus`/`GetReceiptStatuses`, and one canonical optional receipt
-context on `DeleteEdge`/`DeleteEdges`. The capability probe remains behind the
-normal auth interceptor and reports `enabled=false` without epoch or endpoint
-metadata unless the complete production gate above is satisfied. Status is
-read-only and preserves exactly `CONFIRMED`, `NOT_YET_OBSERVED`, and
-`NO_LONGER_PROVABLE`; it never executes a mutation or flattens absence into a
-boolean result. Plural requests are capped at 10,000 items (and by the lower
-configured batch limit), while configured Connect receive/send limits bound
-both authenticated and disabled deployments.
+The public vertical slice exposes `GetReceiptCapability` behind the normal
+LanternService auth interceptor. Graph-only, auth-disabled, recovering,
+faulted, closed, or otherwise uncertified runtimes report `enabled=false`
+without epoch or endpoint metadata. An enabled response returns the active
+policy, persisted server-time high-water, and exact node/generation continuity
+marker that receipt-bearing requests must echo.
+
+`GetReceiptStatus` and plural-first `GetReceiptStatuses` are read-only and
+return exactly `CONFIRMED`, `NOT_YET_OBSERVED`, or
+`NO_LONGER_PROVABLE`; only `CONFIRMED` carries the exact original result.
+`PutVertices`, exact `DeleteVertices`, and exact `DeleteEdges` are the enabled
+receipt-bearing mutation families. Their optional context carries one
+index-aligned 49-byte operation ID per item, one nonzero 16-byte logical-call
+ID, and the capability endpoint. The complete group is validated and
+capacity-reserved before mutation. A matching duplicate returns the original
+request-index-aligned result: canonical `PutOutcome` values for Vertex Put and
+exact `existed` booleans for Delete. Intent or group mismatch fails without
+mutation. `PutVertex`, `DeleteVertex`, and `DeleteEdge` are one-item facades.
+Omitting the context preserves receipt-less behavior; Add, Put Edge, and
+prefix Delete remain excluded.
 
 #1282 must establish contiguous relay publication and Snapshot cutoffs before
 receipt envelopes can claim replica-safe status. #1203 must establish mixed
@@ -942,9 +956,10 @@ alone do not fix the graph history. #1282's graph-before-relay retry rule is
 not itself sufficient for receipts: the receipt implementation must strengthen
 that seam to an atomic graph/receipt/relay publication. #1393 and #1394 supply
 the replication, Snapshot, backup, and startup continuity prerequisites used
-by #1395. Edge Delete now satisfies the public vertical-slice gate, including
-real Connect/h2c response-loss, lag, capacity, retention, intent-conflict,
-transport-bound, token-rotation, and fail-closed tests. Add, Put, Vertex Delete,
-Prefix Delete, and conditional variants remain outside this public receipt
-context until their own complete slices pass; the offline package therefore
-continues to reject those durable mutation families.
+by #1395 and #1396. Edge Delete, conditional Vertex Put, and exact Vertex
+Delete now satisfy the public vertical-slice gate, including real Connect/h2c
+response-loss, lag, capacity, retention, intent-conflict, transport-bound,
+token-rotation, and fail-closed tests. Durable Add, Put Edge, and prefix Delete
+remain outside this public receipt context. The offline package continues to
+reject durable Add, conditional Put, and Delete until its client layer adopts
+the corresponding certified receipt families.

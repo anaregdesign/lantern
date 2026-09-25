@@ -86,12 +86,13 @@ is required for either reads or writes.
 The bounded mutation-receipt extension is specified in
 [ADR 0010](decisions/0010-bounded-mutation-receipts.md). It requires an atomic
 graph/result/receipt/log boundary and the contiguous publication work in
-#1282. Authenticated, fully certified durable deployments expose capability,
-three-state status, and the optional receipt context on Edge Delete only. In
-durable receipt-WAL mode, the guarded follower, Snapshot producer, detached
-collector, and durable baseline primitive are wired into Pump and
-anti-entropy through one shared exact-`RECEIPT` installer. Graph-only mode
-and D1 remain unchanged.
+#1282. A certified, authenticated durable runtime exposes capability/status
+plus optional receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge
+Delete; high-level SDK mutation APIs remain disabled. In private durable
+receipt-WAL mode, the guarded follower, Snapshot producer, detached collector,
+and durable baseline primitive are wired into Pump and anti-entropy through
+one shared exact-`RECEIPT` installer. Graph-only mode and D1 remain
+unchanged.
 
 ## 4. CRDT semantics per RPC
 
@@ -919,6 +920,16 @@ Implementation notes:
   or publication panic retains the candidate and fail-stops serving. A
   post-commit cleanup error is logged without turning a committed install into
   an apparent rejection.
+- A final pre-listener provider barrier activates public receipts only after
+  the exact runtime, primary service, replication service, backup source, and
+  recovery evidence are certified and bearer authentication is configured.
+  Its public mutation families are optional receipt-bearing Vertex Put, exact
+  Vertex Delete, and exact Edge Delete; capability and singular/plural status
+  share the same committed view. A faulted, recovering, closed, auth-disabled,
+  or uncertified runtime omits receipt identity and fails closed. Restart
+  activation additionally requires complete lease-owned WAL recovery and
+  same-cut reconstruction of the active Store and retired catalog from any
+  committed private combined baseline.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,
   one-peer-at-a-time operation, so the O(N+E) overhead is acceptable.
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
@@ -926,8 +937,9 @@ Implementation notes:
   Real Connect/h2c tests cover two-node durable gap recovery through Pump and
   anti-entropy plus tail resumption; #1394 covers receipt-bearing backup and
   startup restore continuity, and #1395 activates the authenticated public
-  Edge Delete layer on that proof. Exhaustive multi-replica partition, restart,
-  and soak acceptance remains a separate #1399 follow-up.
+  Edge Delete layer on that proof. #1396 extends the same public envelope to
+  conditional Vertex Put and exact Vertex Delete. Exhaustive multi-replica
+  partition, restart, and soak acceptance remains a separate #1399 follow-up.
 - Delete tombstones committed before the Snapshot cutoff cannot be re-derived
   from the Subscribe tail. Explicit tombstone frames preserve their exact D4
   deadline across bootstrap. Put causal barriers — whether born expired or

@@ -88,6 +88,125 @@ func receiptVertexPutTestCall(
 	return call
 }
 
+func TestPublicVertexPutReceiptsRouteAndValidate(t *testing.T) {
+	runtime, service, _ := newActivatedReceiptService(t, 16)
+	if _, err := service.PutVertex(context.Background(), &pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "existing", Value: &pb.Vertex_String_{String_: "old"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	receiptContext := publicReceiptContext(t, runtime, 0x21, 3)
+	request := &pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{
+			{Key: "permanent", Value: &pb.Vertex_String_{String_: "live"}},
+			{Key: "existing", Value: &pb.Vertex_String_{String_: "blocked"}},
+			{
+				Key: "expired", Value: &pb.Vertex_String_{String_: "dead"},
+				Expiration: timestamppb.New(time.Now().Add(-time.Minute)),
+			},
+		},
+		IfAbsent: true, ReceiptContext: receiptContext,
+	}
+	want := []pb.PutOutcome{
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+	}
+	beforeLog := runtime.log.Len()
+	beforeSeq := service.LocalSeq(service.clock.NodeID())
+	response, err := service.PutVertices(context.Background(), request)
+	if err != nil || !slices.Equal(response.GetOutcomes(), want) {
+		t.Fatalf("public PutVertices = (%+v, %v), want %v", response, err, want)
+	}
+	if got, live := runtime.graph.GetVertex("permanent"); !live ||
+		got.GetString_() != "live" || got.GetExpiration() != nil {
+		t.Fatalf("permanent Vertex = (%+v, %t)", got, live)
+	}
+	if runtime.log.Len() != beforeLog+1 ||
+		service.LocalSeq(service.clock.NodeID()) != beforeSeq+1 {
+		t.Fatal("public PutVertices did not publish exactly one receipt envelope")
+	}
+
+	replay, err := service.PutVertices(
+		context.Background(),
+		proto.Clone(request).(*pb.PutVerticesRequest),
+	)
+	if err != nil || !proto.Equal(replay, response) || runtime.log.Len() != beforeLog+1 {
+		t.Fatalf("public PutVertices replay = (%+v, %v), want %+v", replay, err, response)
+	}
+	statuses, err := service.GetReceiptStatuses(context.Background(), &pb.GetReceiptStatusesRequest{
+		OperationIds: receiptContext.GetOperationIds(),
+	})
+	if err != nil || len(statuses.GetStatuses()) != len(want) {
+		t.Fatalf("public Put status = (%+v, %v)", statuses, err)
+	}
+	for i, status := range statuses.GetStatuses() {
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+			status.GetReceipt().GetOriginalResult().GetPutVertexOutcome() != want[i] {
+			t.Fatalf("public Put status[%d] = %+v, want %v", i, status, want[i])
+		}
+	}
+
+	changedIntent := proto.Clone(request).(*pb.PutVerticesRequest)
+	changedIntent.Vertices[0].Value = &pb.Vertex_String_{String_: "changed"}
+	if _, err := service.PutVertices(context.Background(), changedIntent); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("changed Put intent = %v, want InvalidArgument", err)
+	}
+	changedGroup := proto.Clone(request).(*pb.PutVerticesRequest)
+	changedGroup.ReceiptContext.LogicalCallId[0]++
+	if _, err := service.PutVertices(context.Background(), changedGroup); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("changed Put group = %v, want InvalidArgument", err)
+	}
+
+	duplicateContext := publicReceiptContext(t, runtime, 0x22, 2)
+	duplicateContext.OperationIds[1] = append([]byte(nil), duplicateContext.OperationIds[0]...)
+	if _, err := service.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices:       []*pb.Vertex{{Key: "duplicate-a"}, {Key: "duplicate-b"}},
+		ReceiptContext: duplicateContext,
+	}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("duplicate Put IDs = %v, want InvalidArgument", err)
+	}
+	if _, live := runtime.graph.GetVertex("duplicate-a"); live {
+		t.Fatal("duplicate Put IDs mutated graph")
+	}
+
+	noOpContext := publicReceiptContext(t, runtime, 0x23, 1)
+	beforeLog = runtime.log.Len()
+	beforeSeq = service.LocalSeq(service.clock.NodeID())
+	noOp, err := service.PutVertex(context.Background(), &pb.PutVertexRequest{
+		Vertex:   &pb.Vertex{Key: "existing", Value: &pb.Vertex_String_{String_: "ignored"}},
+		IfAbsent: true, ReceiptContext: noOpContext,
+	})
+	if err != nil || noOp.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET ||
+		runtime.log.Len() != beforeLog+1 ||
+		service.LocalSeq(service.clock.NodeID()) != beforeSeq+1 {
+		t.Fatalf("receipt-only singular Put = (%+v, %v), log=%d seq=%d",
+			noOp, err, runtime.log.Len(), service.LocalSeq(service.clock.NodeID()))
+	}
+}
+
+func TestPublicVertexPutReceiptCapacityRejectsBeforePublication(t *testing.T) {
+	runtime, service, _ := newActivatedReceiptService(t, 1)
+	receiptContext := publicReceiptContext(
+		t,
+		runtime,
+		0x24,
+		2,
+	)
+	if _, err := service.PutVertices(context.Background(), &pb.PutVerticesRequest{
+		Vertices:       []*pb.Vertex{{Key: "capacity-a"}, {Key: "capacity-b"}},
+		ReceiptContext: receiptContext,
+	}); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("public Put capacity = %v, want ResourceExhausted", err)
+	}
+	if _, live := runtime.graph.GetVertex("capacity-a"); live ||
+		runtime.log.Len() != 0 || runtime.ReceiptStats().Entries != 0 ||
+		service.LocalSeq(service.clock.NodeID()) != 0 {
+		t.Fatal("public Put capacity rejection changed graph, Store, log, or origin")
+	}
+}
+
 func TestVertexPutReceiptCoordinatorPreservesExactOutcomesAndRetry(t *testing.T) {
 	f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x73}, 32, nil)
 	now := time.Now()
@@ -241,6 +360,28 @@ func TestVertexPutReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
 		if _, live := f.cache.GetVertex("one"); live || f.log.Len() != 0 ||
 			f.service.LocalSeq(f.service.clock.NodeID()) != 0 {
 			t.Fatal("capacity rejection changed graph, log, or origin")
+		}
+	})
+
+	t.Run("WAL capacity", func(t *testing.T) {
+		f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x76}, 8, nil)
+		beforeStore := f.store.Stats()
+		call := receiptVertexPutTestCall(t, f.epoch, 0x23, false, &pb.Vertex{
+			Key: "oversized-wal",
+			Value: &pb.Vertex_String_{
+				String_: strings.Repeat("x", receiptVertexWALMaxBytes/2),
+			},
+		})
+		_, err := f.coordinator.Commit(context.Background(), call)
+		if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!errors.Is(err, errReceiptVertexWALCapacity) {
+			t.Fatalf("WAL capacity rejection = %v, want ResourceExhausted capacity error", err)
+		}
+		if _, live := f.cache.GetVertex("oversized-wal"); live ||
+			f.store.Stats() != beforeStore || f.log.Len() != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 ||
+			f.cache.VertexHLCCount() != 0 {
+			t.Fatal("WAL capacity rejection changed graph, Store, log, or origin")
 		}
 	})
 

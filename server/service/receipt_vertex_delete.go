@@ -50,6 +50,35 @@ type vertexDeleteReceiptEnvelope struct {
 
 func (e *vertexDeleteReceiptEnvelope) GraphMutation() *pb.Mutation { return e.Mutation }
 
+func (s *LanternService) commitPublicReceiptVertexDelete(
+	ctx context.Context,
+	request *pb.DeleteVerticesRequest,
+) (*pb.DeleteVerticesResponse, error) {
+	runtime, release, err := s.acquirePublicReceiptRuntime()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	keys := request.GetKeys()
+	group, ids, err := s.validatePublicReceiptContext(
+		runtime,
+		request.GetReceiptContext(),
+		len(keys),
+		"keys",
+	)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]receiptVertexDeleteItem, len(keys))
+	for i, id := range ids {
+		items[i] = receiptVertexDeleteItem{ID: id, Key: keys[i]}
+	}
+	return s.receiptVertexDeleteCoordinator.Commit(ctx, receiptVertexDeleteCall{
+		Group: group, Items: items,
+	})
+}
+
 func newVertexDeleteReceiptCoordinator(
 	s *LanternService,
 	store *mutationreceipt.Store,
@@ -136,6 +165,9 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	keys, intents, err := prepareVertexDeleteReceiptCall(call)
 	if err != nil {
 		return nil, err
+	}
+	if err := validateReceiptVertexDeleteWALRequestCapacity(keys); err != nil {
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
 	}
 	s := c.service
 	s.replicationCutMu.Lock()
