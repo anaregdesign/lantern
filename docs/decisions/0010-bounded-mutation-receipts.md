@@ -470,7 +470,12 @@ The internal Store can now take an optional synchronous
 Begin/Lookup changes in-memory state, and a sink error permanently faults
 those decisions and Snapshot export. Snapshot import validates first, then
 binds and advances the sink. This establishes the in-process persistence seam
-only; no production journal, WAL binding, or serving recovery owns it yet.
+only. A raw `ClockJournal` can now create or resume a synced, checksummed
+sidecar bound to the canonical WAL path, epoch, and policy fingerprint, while
+rejecting torn or incompatible metadata. Its caller must hold the same WAL
+lease through journal Close. Neither path binding nor the journal alone
+attests the WAL bytes, their archive/suffix cut, or a complete serving state;
+no production provider owns this journal or enables receipt recovery yet.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
