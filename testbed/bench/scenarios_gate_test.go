@@ -106,8 +106,9 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 			} `yaml:"producers"`
 		} `yaml:"perf_gate"`
 		LeakGate struct {
-			GoroutineMaxDelta   int `yaml:"goroutine_max_delta"`
-			HeapAllocMaxDeltaMB int `yaml:"heap_alloc_max_delta_mb"`
+			GoroutineMaxDelta    int    `yaml:"goroutine_max_delta"`
+			HeapAllocMaxDeltaMB  int    `yaml:"heap_alloc_max_delta_mb"`
+			SteadySampleInterval string `yaml:"steady_sample_interval"`
 		} `yaml:"leak_gate"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -176,6 +177,9 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	if doc.LeakGate.HeapAllocMaxDeltaMB != 32 {
 		t.Errorf("leak_gate.heap_alloc_max_delta_mb = %d, want 32", doc.LeakGate.HeapAllocMaxDeltaMB)
 	}
+	if doc.LeakGate.SteadySampleInterval != "5s" {
+		t.Errorf("leak_gate.steady_sample_interval = %q, want 5s", doc.LeakGate.SteadySampleInterval)
+	}
 	if !doc.Cluster.ReceiptWAL.Enabled {
 		t.Fatal("receipt WAL is not enabled")
 	}
@@ -198,6 +202,11 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	if warmupDuration > 15*time.Second || steadyDuration > time.Minute || cooldown > 15*time.Second {
 		t.Errorf("receipt scenario phases are not bounded: %s/%s/%s", warmupDuration, steadyDuration, cooldown)
 	}
+	if interval, err := time.ParseDuration(doc.LeakGate.SteadySampleInterval); err != nil ||
+		interval <= 0 || interval > steadyDuration/3 {
+		t.Errorf("receipt steady sampling interval = %q, want bounded coverage of %s",
+			doc.LeakGate.SteadySampleInterval, steadyDuration)
+	}
 	admissionRPS := totalProducerRPS / len(wantCalls)
 	requiredEntries := int(warmupDuration.Seconds())*(doc.Phases.Warmup.RPS/len(wantCalls)) +
 		int(steadyDuration.Seconds())*admissionRPS
@@ -219,6 +228,14 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		`docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`,
 		`ghz_steady_0_receipt_admission.json`,
 		`ghz_steady_1_receipt_lookup.json`,
+		`-metrics-endpoints "$metrics_urls"`,
+		`-metrics-interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")"`,
+		`-metrics-report "$OUTDIR/runtime_steady.json"`,
+		`go run ./testbed/bench/receiptprobe evaluate-leak`,
+		`-steady "$OUTDIR/runtime_steady.json"`,
+		`-duration "$steady_duration"`,
+		`-max-goroutines "$g_thresh"`,
+		`-max-heap-mb "$h_thresh_mb"`,
 	} {
 		if !strings.Contains(string(runScript), contract) {
 			t.Errorf("run.sh missing receipt driver contract %q", contract)
@@ -228,6 +245,13 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	volumeReset := strings.Index(string(runScript), `docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`)
 	if projectScope < 0 || volumeReset < 0 || projectScope >= volumeReset {
 		t.Error("receipt volume reset must use the named bench Compose project")
+	}
+	steadySampling := strings.Index(string(runScript), `-metrics-report "$OUTDIR/runtime_steady.json"`)
+	optionalCapture := strings.LastIndex(string(runScript), `if [[ "${LEAK_GATE_ONLY:-0}" == "1" ]]`)
+	receiptEvaluation := strings.Index(string(runScript), `go run ./testbed/bench/receiptprobe evaluate-leak`)
+	if steadySampling < 0 || optionalCapture < 0 || receiptEvaluation < 0 ||
+		steadySampling >= optionalCapture || receiptEvaluation <= optionalCapture {
+		t.Error("receipt steady sampling and its leak verdict must stay active with LEAK_GATE_ONLY=1")
 	}
 	composeOverride, err := os.ReadFile("compose.override.yml")
 	if err != nil {

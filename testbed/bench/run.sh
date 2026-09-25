@@ -471,6 +471,18 @@ run_receipt_probe() {
       -lookup-report "$lookup_report"
     )
   fi
+  if [[ "$phase" == "steady" ]]; then
+    local metrics_urls="" port
+    for port in "${REPLICA_METRICS_PORTS[@]}"; do
+      [[ -z "$metrics_urls" ]] || metrics_urls+=","
+      metrics_urls+="http://localhost:${port}/metrics"
+    done
+    args+=(
+      -metrics-endpoints "$metrics_urls"
+      -metrics-interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")"
+      -metrics-report "$OUTDIR/runtime_steady.json"
+    )
+  fi
   (
     cd "$REPO_ROOT"
     go run ./testbed/bench/receiptprobe "${args[@]}"
@@ -704,9 +716,27 @@ g_thresh="$(yq -r '.leak_gate.goroutine_max_delta' "$SCENARIO_FILE")"
 # evaluate. See issue #248 — heap_inuse is span-level and includes free
 # slots, so it is unreliable as a leak signal under sustained churn.
 h_thresh_mb="$(yq -r '.leak_gate.heap_alloc_max_delta_mb // .leak_gate.heap_inuse_max_delta_mb' "$SCENARIO_FILE")"
-h_thresh_bytes=$(( h_thresh_mb * 1024 * 1024 ))
-
-leak_json="$(jq -n \
+if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+  # Receipt sampling runs inside the steady driver, including with
+  # LEAK_GATE_ONLY=1. Require all three unforced /metrics series in addition
+  # to the existing post-warmup/post-cooldown GC live-set snapshots.
+  if ! (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/receiptprobe evaluate-leak \
+      -pre "$OUTDIR/runtime_pre.json" \
+      -post "$OUTDIR/runtime_post.json" \
+      -steady "$OUTDIR/runtime_steady.json" \
+      -duration "$steady_duration" \
+      -interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")" \
+      -max-goroutines "$g_thresh" \
+      -max-heap-mb "$h_thresh_mb" \
+      -out "$OUTDIR/leak_gate.json"
+  ); then
+    log "receipt leak gate reported failure"
+  fi
+else
+  h_thresh_bytes=$(( h_thresh_mb * 1024 * 1024 ))
+  leak_json="$(jq -n \
   --slurpfile pre  "$OUTDIR/runtime_pre.json" \
   --slurpfile post "$OUTDIR/runtime_post.json" \
   --argjson g_thresh "$g_thresh" \
@@ -740,7 +770,8 @@ leak_json="$(jq -n \
     verdict: (if any($r[]; .goroutine_delta > $g_thresh or .heap_alloc_delta_bytes > $h_thresh)
               then "fail" else "pass" end)
   }')"
-printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"
+  printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"
+fi
 verdict="$(jq -r '.verdict' "$OUTDIR/leak_gate.json")"
 log "leak gate verdict: $verdict"
 

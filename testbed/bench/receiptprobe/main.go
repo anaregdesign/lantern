@@ -83,6 +83,7 @@ type probeConfig struct {
 	requestTimeout time.Duration
 	concurrency    int
 	pairRPS        int
+	steadyMetrics  *steadyMetricsConfig
 }
 
 type summary struct {
@@ -107,6 +108,9 @@ type resultSet struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "evaluate-leak" {
+		os.Exit(runReceiptLeakEvaluation(os.Args[2:]))
+	}
 	var (
 		endpointsFlag   = flag.String("endpoints", "", "comma-separated Lantern endpoint URLs")
 		token           = flag.String("token", "", "bearer token")
@@ -117,6 +121,9 @@ func main() {
 		pairRPS         = flag.Int("pair-rps", 0, "offered receipt operation pairs per second")
 		admissionReport = flag.String("admission-report", "", "admission summary output path")
 		lookupReport    = flag.String("lookup-report", "", "lookup summary output path")
+		metricsURLs     = flag.String("metrics-endpoints", "", "comma-separated replica /metrics URLs during steady load")
+		metricsInterval = flag.Duration("metrics-interval", 0, "steady replica sampling interval")
+		metricsReport   = flag.String("metrics-report", "", "steady replica samples output path")
 	)
 	flag.Parse()
 
@@ -145,6 +152,18 @@ func main() {
 	if (*admissionReport == "") != (*lookupReport == "") {
 		fatalf("-admission-report and -lookup-report must be supplied together")
 	}
+	var steadyMetrics *steadyMetricsConfig
+	if *metricsURLs != "" || *metricsInterval != 0 || *metricsReport != "" {
+		if *phase != "steady" || *metricsReport == "" || *metricsInterval <= 0 ||
+			*metricsInterval > *duration {
+			fatalf("steady metrics require -phase steady, -metrics-report, and an interval within the offered duration")
+		}
+		replicas, err := parseRuntimeMetricsEndpoints(*metricsURLs)
+		if err != nil {
+			fatalf("steady metrics endpoints: %v", err)
+		}
+		steadyMetrics = &steadyMetricsConfig{endpoints: replicas, interval: *metricsInterval}
+	}
 
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
@@ -170,12 +189,13 @@ func main() {
 		requestTimeout: *requestTimeout,
 		concurrency:    *concurrency,
 		pairRPS:        *pairRPS,
+		steadyMetrics:  steadyMetrics,
 	}
 	runCtx, runCancel := context.WithTimeout(
 		context.Background(),
 		*duration+2**requestTimeout+30*time.Second,
 	)
-	results, runErr := runProbe(runCtx, cfg, endpoints, nonce)
+	results, steadyReport, runErr := runProbe(runCtx, cfg, endpoints, nonce)
 	runCancel()
 
 	if *admissionReport != "" {
@@ -184,6 +204,14 @@ func main() {
 		}
 		if err := writeSummary(*lookupReport, results.lookup); err != nil {
 			fatalf("write lookup report: %v", err)
+		}
+	}
+	if steadyMetrics != nil {
+		if steadyReport == nil {
+			fatalf("steady metrics report was not captured")
+		}
+		if err := writeReceiptArtifact(*metricsReport, steadyReport); err != nil {
+			fatalf("write steady metrics report: %v", err)
 		}
 	}
 	if runErr != nil {
@@ -311,9 +339,9 @@ func runProbe(
 	cfg probeConfig,
 	endpoints []receiptEndpoint,
 	nonce [16]byte,
-) (resultSet, error) {
+) (resultSet, *steadyMetricsReport, error) {
 	if len(endpoints) == 0 {
-		return resultSet{}, errors.New("no receipt endpoints configured")
+		return resultSet{}, nil, errors.New("no receipt endpoints configured")
 	}
 
 	var admissionSamples, lookupSamples sampleCollector
@@ -346,6 +374,15 @@ func runProbe(
 	}
 
 	start := time.Now()
+	var metricsStop chan struct{}
+	var metricsDone chan steadyMetricsReport
+	if cfg.steadyMetrics != nil {
+		metricsStop = make(chan struct{})
+		metricsDone = make(chan steadyMetricsReport, 1)
+		go func() {
+			metricsDone <- sampleSteadyMetrics(ctx, *cfg.steadyMetrics, start, metricsStop)
+		}()
+	}
 	ticker := time.NewTicker(time.Second / time.Duration(cfg.pairRPS))
 	timer := time.NewTimer(cfg.duration)
 	var sequence uint64
@@ -377,26 +414,39 @@ schedule:
 	close(jobs)
 	workers.Wait()
 	elapsed := time.Since(start)
+	var steadyReport *steadyMetricsReport
+	if metricsStop != nil {
+		close(metricsStop)
+		report := <-metricsDone
+		report.DurationMS = elapsed.Milliseconds()
+		if err := validateSteadyMetrics(report, *cfg.steadyMetrics, cfg.duration); err != nil {
+			report.Failure = err.Error()
+		}
+		steadyReport = &report
+	}
 
 	results := resultSet{
 		admission: summarize(admissionSamples.snapshot(), elapsed),
 		lookup:    summarize(lookupSamples.snapshot(), elapsed),
 	}
+	if steadyReport != nil && steadyReport.Failure != "" {
+		return results, steadyReport, fmt.Errorf("steady runtime sampling: %s", steadyReport.Failure)
+	}
 	if ctx.Err() != nil {
-		return results, fmt.Errorf("receipt probe context ended: %w", ctx.Err())
+		return results, steadyReport, fmt.Errorf("receipt probe context ended: %w", ctx.Err())
 	}
 	if results.admission.Count == 0 {
-		return results, errors.New("receipt probe admitted no operations")
+		return results, steadyReport, errors.New("receipt probe admitted no operations")
 	}
 	if results.lookup.Count != results.admission.Count {
-		return results, fmt.Errorf(
+		return results, steadyReport, fmt.Errorf(
 			"receipt lookup coverage mismatch: admission=%d lookup=%d",
 			results.admission.Count,
 			results.lookup.Count,
 		)
 	}
 	if nonOKCount(results.admission) != 0 || nonOKCount(results.lookup) != 0 {
-		return results, fmt.Errorf(
+		return results, steadyReport, fmt.Errorf(
 			"receipt probe observed non-OK results: admission=%d (%s) lookup=%d (%s)",
 			nonOKCount(results.admission),
 			firstFailure(admissionSamples.snapshot()),
@@ -404,7 +454,7 @@ schedule:
 			firstFailure(lookupSamples.snapshot()),
 		)
 	}
-	return results, nil
+	return results, steadyReport, nil
 }
 
 func newReceiptOperation(

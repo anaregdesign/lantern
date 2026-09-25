@@ -194,6 +194,17 @@ project's containers and volumes, so a preceding `KEEP_UP=1` run cannot leak
 retained receipts into the measurement; unrelated volumes are untouched.
 Existing scenarios retain graph-only defaults.
 
+The receipt leak gate samples `go_goroutines` and
+`go_memstats_heap_alloc_bytes` on **all three replicas** every 5s while the
+steady producer runs, without forcing GC during load. It requires complete,
+finite readings throughout the measured window (at least nine rounds over
+45s, with no interval gap above 7.5s); a failed or incomplete scrape fails
+the run. Each replica's observed peak must remain within +15 goroutines and
++32 MiB `heap_alloc` of its post-warmup GC baseline. The existing
+post-cooldown/post-warmup GC live-set delta must **also** stay within those
+bounds. The report shows both independently; `LEAK_GATE_ONLY=1` skips optional
+profiles and Prometheus range queries, not steady resource sampling.
+
 Five preliminary Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in
 [local scenario evidence](evidence/issue-1399/scenario.txt), sustained
@@ -216,7 +227,9 @@ receipt-less Edge Delete, 14.271 ms/op for admitted receipt Edge Delete
 host-only numbers quantify local overhead; the real-h2c nightly scenario owns
 the enforceable thresholds.
 Neither these direct timings nor the Compose runs above qualify the final
-merged receipt/SDK stack; they are historical synthetic-parent calibration.
+merged receipt/SDK stack; they are historical synthetic-parent calibration
+and predate the steady-window resource gate. Fresh uncontended measurements
+after the remaining receipt families merge are required for #1399.
 
 ```bash
 (cd server && go test ./service -run '^$' \

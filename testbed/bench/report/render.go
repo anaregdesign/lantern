@@ -45,8 +45,11 @@ type LeakGate struct {
 		// compatibility with older leak_gate.json artifacts.
 		HeapInuseMaxDeltaMB int `json:"heap_inuse_max_delta_mb,omitempty"`
 	} `json:"thresholds"`
-	Replicas []LeakGateReplica `json:"replicas"`
-	Verdict  string            `json:"verdict"`
+	SteadySampleInterval string            `json:"steady_sample_interval"`
+	SteadySampleCount    int               `json:"steady_sample_count"`
+	Replicas             []LeakGateReplica `json:"replicas"`
+	Failures             []string          `json:"failures"`
+	Verdict              string            `json:"verdict"`
 }
 
 // LeakGateReplica is one row of the per-replica delta table.
@@ -55,12 +58,16 @@ type LeakGateReplica struct {
 	GoroutinesPre       int    `json:"goroutines_pre"`
 	GoroutinesPost      int    `json:"goroutines_post"`
 	GoroutineDelta      int    `json:"goroutine_delta"`
+	GoroutinesPeak      int64  `json:"goroutines_peak"`
+	GoroutinePeakDelta  int64  `json:"goroutine_peak_delta"`
 	HeapInusePreBytes   int64  `json:"heap_inuse_pre_bytes"`
 	HeapInusePostBytes  int64  `json:"heap_inuse_post_bytes"`
 	HeapInuseDeltaBytes int64  `json:"heap_inuse_delta_bytes"`
 	HeapAllocPreBytes   int64  `json:"heap_alloc_pre_bytes"`
 	HeapAllocPostBytes  int64  `json:"heap_alloc_post_bytes"`
 	HeapAllocDeltaBytes int64  `json:"heap_alloc_delta_bytes"`
+	HeapAllocPeakBytes  int64  `json:"heap_alloc_peak_bytes"`
+	HeapAllocPeakDelta  int64  `json:"heap_alloc_peak_delta_bytes"`
 	HeapObjectsPre      int64  `json:"heap_objects_pre"`
 	HeapObjectsPost     int64  `json:"heap_objects_post"`
 	HeapObjectsDelta    int64  `json:"heap_objects_delta"`
@@ -362,7 +369,7 @@ func RenderReport(w io.Writer, in Input) error {
 		}
 		bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n",
 			in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
-		bw.printf("Gate evaluates against `heap_alloc` (post-GC live bytes); `heap_inuse` and `heap_objects` are shown for context only.\n\n")
+		bw.printf("Post-cooldown gate evaluates `heap_alloc` after forced GC; `heap_inuse` and `heap_objects` are shown for context only.\n\n")
 		bw.printf("| replica | goroutines (Δ) | heap_alloc MiB (pre → post = Δ) | heap_inuse MiB (pre → post = Δ) | heap_objects (Δ) | vertex_hlc post (entries / high-water) |\n")
 		bw.printf("| --- | --- | --- | --- | --- | --- |\n")
 		for _, r := range in.LeakGate.Replicas {
@@ -380,6 +387,24 @@ func RenderReport(w io.Writer, in Input) error {
 			)
 		}
 		bw.printf("\n")
+		if in.LeakGate.SteadySampleInterval != "" {
+			bw.printf("Receipt steady gate: %d complete three-replica `/metrics` rounds at nominal %s intervals, without forced GC. Peaks are compared with the post-warmup baseline; both the steady peaks and post-cooldown live-set deltas must pass.\n\n",
+				in.LeakGate.SteadySampleCount, in.LeakGate.SteadySampleInterval)
+			bw.printf("| replica | steady goroutines peak (Δ) | steady heap_alloc peak MiB (Δ) |\n")
+			bw.printf("| --- | --- | --- |\n")
+			for _, r := range in.LeakGate.Replicas {
+				bw.printf("| `%s` | %d (**%+d**) | %.1f (**%+.1f**) |\n",
+					r.Endpoint, r.GoroutinesPeak, r.GoroutinePeakDelta,
+					bytesToMiB(r.HeapAllocPeakBytes), bytesToMiB(r.HeapAllocPeakDelta))
+			}
+			bw.printf("\n")
+		}
+		for _, failure := range in.LeakGate.Failures {
+			bw.printf("- %s\n", failure)
+		}
+		if len(in.LeakGate.Failures) > 0 {
+			bw.printf("\n")
+		}
 	}
 
 	bw.printf("## Metric gate\n\n")
