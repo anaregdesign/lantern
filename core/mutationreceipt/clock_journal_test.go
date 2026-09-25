@@ -29,6 +29,15 @@ func clockJournalPolicy(t *testing.T, config Config) [32]byte {
 	return store.PolicyFingerprint()
 }
 
+func TestSyncClockJournalDirectory(t *testing.T) {
+	if err := syncClockJournalDirectory(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncClockJournalDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("sync missing clock journal directory succeeded")
+	}
+}
+
 func TestClockJournalRestoresAbortedAndLookupHighWater(t *testing.T) {
 	path, config := clockJournalFixture(t)
 	policy := clockJournalPolicy(t, config)

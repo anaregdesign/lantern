@@ -76,13 +76,7 @@ func CreateClockJournal(walPath string, epoch Epoch, policyFingerprint [32]byte)
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("mutationreceipt: sync clock journal header: %w", err)
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return nil, fmt.Errorf("mutationreceipt: open clock journal directory: %w", err)
-	}
-	syncErr := dir.Sync()
-	closeErr := dir.Close()
-	if err := errors.Join(syncErr, closeErr); err != nil {
+	if err := syncClockJournalDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("mutationreceipt: sync clock journal directory: %w", err)
 	}
 	keep = true
