@@ -57,6 +57,7 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 		highWater = configured
 	}
 	rows := make(map[hlc.NodeID]originRow)
+	seenReceipts := make(map[mutationreceipt.ID]mutationreceipt.Receipt)
 	report := receiptWALDecisionAudit{}
 	var knownBytes uint64
 	seenReceipt := false
@@ -133,6 +134,15 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 				if receipt.DeadlineMillis-issued != config.Retention.Milliseconds() {
 					return fmt.Errorf("receipt WAL local seq %d: %w: retention differs from policy", entry.Seq, errReceiptWALUnion)
 				}
+				if previous, duplicate := seenReceipts[receipt.ID]; duplicate {
+					if !sameReceiptWALDecision(previous, receipt) {
+						return fmt.Errorf("receipt WAL local seq %d: %w: conflicting duplicate operation ID %x", entry.Seq, mutationreceipt.ErrInvalidSnapshot, receipt.ID)
+					}
+					continue
+				}
+				copyOf := receipt
+				copyOf.Result = append([]byte(nil), receipt.Result...)
+				seenReceipts[receipt.ID] = copyOf
 				// Expired results are never returned as confirmed. The ID and
 				// retention policy still make them non-executable, but this
 				// audit cannot answer any absent-ID status.
@@ -147,8 +157,6 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 					return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, mutationreceipt.ErrCapacity)
 				}
 				knownBytes += cost
-				copyOf := receipt
-				copyOf.Result = append([]byte(nil), receipt.Result...)
 				report.knownReceipts = append(report.knownReceipts, copyOf)
 			}
 		}
@@ -187,6 +195,12 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 func receiptWALDecisionCost(receipt mutationreceipt.Receipt) uint64 {
 	return uint64(len(receipt.ID) + len(receipt.Digest) + len(receipt.Group) +
 		4 + 4 + 8 + 1 + len(receipt.Result))
+}
+
+func sameReceiptWALDecision(a, b mutationreceipt.Receipt) bool {
+	return a.Intent == b.Intent &&
+		a.DeadlineMillis == b.DeadlineMillis &&
+		bytes.Equal(a.Result, b.Result)
 }
 
 // receiptWALRecoveryCandidate is deliberately detached from LanternService.
@@ -307,7 +321,7 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 			// graph. A stale receipt HLC may lose to an earlier WAL Put;
 			// DeleteEdgesHLCChecked would silently skip it while the Store
 			// still returned the forged original result as Confirmed.
-			tx, err := graph.BeginEdgeDelete(value.OriginalKeys, value.HLC, value.TombstoneExpiration)
+			tx, err := graph.BeginReplicatedEdgeDelete(value.OriginalKeys, value.HLC, value.TombstoneExpiration)
 			if err != nil {
 				return fmt.Errorf("receipt WAL local seq %d: receipt graph replay: %w", entry.Seq, err)
 			}

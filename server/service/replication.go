@@ -186,8 +186,8 @@ func (s *LanternReplicationService) WithSearchConfig(p SearchConfigFingerprintPr
 
 // WithReceiptSnapshotRequired latches the service into receipt-continuity
 // mode without configuring a producer. Snapshot fails closed rather than
-// falling back to a graph-only image. Production does not enable receipt
-// writes or this mode in the current release.
+// falling back to a graph-only image. Production durable-runtime
+// certification uses ConfigureReceiptSnapshot instead.
 func (s *LanternReplicationService) WithReceiptSnapshotRequired() *LanternReplicationService {
 	s.receiptSnapshotRequired = true
 	return s

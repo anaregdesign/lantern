@@ -232,24 +232,17 @@ func validateReceiptEdgeDeleteWALEnvelope(e *edgeDeleteReceiptEnvelope) (int, er
 		}
 	}
 	previous := -1
-	accepted := make([]bool, count)
 	for i, item := range e.Accepted {
 		if item.Index <= previous || item.Index >= count || item.Index < 0 ||
 			item.Key != e.OriginalKeys[item.Index] {
 			return 0, receiptEdgeDeleteWALError("accepted index or key drift at item %d", i)
 		}
 		previous = item.Index
-		accepted[item.Index] = true
 		key := item.Key
 		if size > receiptEdgeDeleteWALMaxBytes-len(key.Tail)-len(key.Head) {
 			return 0, receiptEdgeDeleteWALError("payload exceeds size limit")
 		}
 		size += len(key.Tail) + len(key.Head)
-	}
-	for i, receipt := range e.Receipts {
-		if receipt.Result[0] == 1 && !accepted[i] {
-			return 0, receiptEdgeDeleteWALError("true result has no accepted transition at item %d", i)
-		}
 	}
 	if size > receiptEdgeDeleteWALMaxBytes || !proto.Equal(e.Mutation, receiptEdgeDeleteWALMutation(e)) {
 		return 0, receiptEdgeDeleteWALError("payload too large or graph projection drift")

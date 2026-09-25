@@ -222,6 +222,16 @@ func (u *stagedIndexedDeadlineUndo[K]) restore(h *indexedCausalDeadlineHeap[K]) 
 func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLocked(
 	keys []EdgeKey[S], ts hlc.Timestamp, expiration, now time.Time, projected map[EdgeKey[S]]string,
 ) (*stagedEdgeDelete[S, T], error) {
+	return c.prepareStagedEdgeDeleteLockedWithCapacity(keys, ts, expiration, now, projected, true)
+}
+
+func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLockedWithCapacity(
+	keys []EdgeKey[S],
+	ts hlc.Timestamp,
+	expiration, now time.Time,
+	projected map[EdgeKey[S]]string,
+	strict bool,
+) (*stagedEdgeDelete[S, T], error) {
 	if c.publicationGate == nil {
 		return nil, errors.New("graphcache: staged Delete requires a publication gate")
 	}
@@ -279,7 +289,7 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLocked(
 			plan.after = nil
 		}
 	}
-	if ts != (hlc.Timestamp{}) && c.causalLimits.MaxEdgeEntries > 0 {
+	if strict && ts != (hlc.Timestamp{}) && c.causalLimits.MaxEdgeEntries > 0 {
 		accepted := make([]EdgeKey[S], len(stage.plans))
 		for i, plan := range stage.plans {
 			accepted[i] = plan.key

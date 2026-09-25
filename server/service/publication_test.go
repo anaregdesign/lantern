@@ -282,6 +282,322 @@ func TestPublishRemoteMutation_FailedAppendRetriesWithoutDoubleApply(t *testing.
 	}
 }
 
+func TestPublishRemoteMutationAdvancesClockAfterContiguousCommit(t *testing.T) {
+	base := time.Now()
+	local, origin := bytes16("local-clock"), bytes16("remote-clock")
+	clock := hlc.New(local, hlc.Options{Now: func() int64 { return base.UnixNano() }})
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(cache).WithReplication(log, clock, nil)
+	mutation := func(seq uint64, stamp hlc.Timestamp, key string) *pb.Mutation {
+		return &pb.Mutation{
+			Seq: seq, Origin: origin[:], Hlc: hlcToProto(stamp),
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: key, Expiration: timestamppb.New(base.Add(time.Hour))},
+			}}},
+		}
+	}
+	firstStamp := hlc.Timestamp{WallNs: base.Add(100 * time.Millisecond).UnixNano(), Logical: 1, NodeID: origin}
+	secondStamp := hlc.Timestamp{WallNs: base.Add(200 * time.Millisecond).UnixNano(), Logical: 2, NodeID: origin}
+	if err := svc.ApplyMutation(context.Background(), mutation(2, secondStamp, "second")); err != nil {
+		t.Fatal(err)
+	}
+	if queuedClock := clock.Now(); !queuedClock.Less(secondStamp) {
+		t.Fatalf("queued remote mutation advanced clock to %v before publication", queuedClock)
+	}
+	if err := svc.ApplyMutation(context.Background(), mutation(1, firstStamp, "first")); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.LocalSeq(origin); got != 2 {
+		t.Fatalf("contiguous remote frontier = %d, want 2", got)
+	}
+	if next := clock.Now(); !secondStamp.Less(next) {
+		t.Fatalf("local clock %v did not advance beyond published remote HLC %v", next, secondStamp)
+	}
+	futureStamp := hlc.Timestamp{
+		WallNs: base.Add(2 * hlc.DefaultMaxSkew).UnixNano(),
+		NodeID: origin,
+	}
+	if err := svc.ApplyMutation(context.Background(), mutation(3, futureStamp, "graph-only-future")); err != nil {
+		t.Fatalf("graph-only future HLC changed behavior: %v", err)
+	}
+	if next := clock.Now(); !next.Less(futureStamp) {
+		t.Fatalf("graph-only clock %v did not preserve skew clamping below %v", next, futureStamp)
+	}
+}
+
+func TestPublishRemoteMutationDurableClockFloorAfterWallRollback(t *testing.T) {
+	base := time.Now()
+	highWater := base.Add(hlc.DefaultMaxSkew).Truncate(time.Millisecond)
+	config := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour,
+		MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: highWater,
+	}
+	origin := hlc.NodeID{0x58}
+	f := newReceiptEdgeDeleteFixtureWithStoreConfigAndClock(
+		t, nil, hlc.NodeID{0x59}, config,
+		hlc.Options{Now: func() int64 { return base.UnixNano() }},
+	)
+	stamp := hlc.Timestamp{
+		WallNs:  highWater.Add(hlc.DefaultMaxSkew / 2).UnixNano(),
+		Logical: 7,
+		NodeID:  origin,
+	}
+	future := timestamppb.New(time.Unix(0, stamp.WallNs).Add(time.Hour))
+	first := &pb.Mutation{
+		Seq: 1, Origin: origin[:], Hlc: hlcToProto(stamp),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: "rollback-put", Expiration: future},
+		}}},
+	}
+	lastStamp := stamp
+	lastStamp.Logical++
+	second := &pb.Mutation{
+		Seq: 2, Origin: origin[:], Hlc: hlcToProto(lastStamp),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+			Edge: &pb.Edge{Tail: "rollback", Head: "add", Weight: 1, Expiration: future},
+		}}},
+	}
+	if err := f.service.ApplyMutation(context.Background(), second); err != nil {
+		t.Fatalf("queue durable remote mutation after wall rollback: %v", err)
+	}
+	if got := f.coordinator.store.Stats().HighWaterMillis; got != highWater.UnixMilli() {
+		t.Fatalf("queued remote mutation advanced Store high-water to %d, want %d", got, highWater.UnixMilli())
+	}
+	hostile := lastStamp
+	hostile.WallNs = highWater.Add(hlc.DefaultMaxSkew + time.Nanosecond).UnixNano()
+	hostile.Logical++
+	err := f.service.ApplyMutation(context.Background(), &pb.Mutation{
+		Seq: 3, Origin: origin[:], Hlc: hlcToProto(hostile),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: "hostile-future", Expiration: future},
+		}}},
+	})
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("hostile future HLC after queued frame = %v, want InvalidArgument", err)
+	}
+	if err := f.service.ApplyMutation(context.Background(), first); err != nil {
+		t.Fatalf("drain durable remote mutations after wall rollback: %v", err)
+	}
+	if got := f.coordinator.store.Stats().HighWaterMillis; got < lastStamp.WallNs/int64(time.Millisecond) {
+		t.Fatalf("committed remote mutation left Store high-water at %d, want at least %d", got, lastStamp.WallNs/int64(time.Millisecond))
+	}
+	states := f.service.OriginStates()
+	if len(states) != 1 || states[0].Origin != origin || states[0].LastSeq != 2 ||
+		states[0].LastHLC != lastStamp {
+		t.Fatalf("durable remote origin state = %+v", states)
+	}
+
+	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := source.Capture(context.Background(), config)
+	if err != nil {
+		t.Fatalf("receipt capture after generic remote publication: %v", err)
+	}
+	if len(capture.Graph) == 0 || capture.Graph[0].GetHeader() == nil {
+		t.Fatalf("receipt capture has no header: %+v", capture.Graph)
+	}
+	cutoff := hlcFromProto(capture.Graph[0].GetHeader().GetCutoffHlc())
+	if !lastStamp.Less(cutoff) {
+		t.Fatalf("receipt capture cutoff %v did not exceed generic origin HLC %v", cutoff, lastStamp)
+	}
+}
+
+func TestPublishRemoteMutationDurablePreflightPreservesClockHighWater(t *testing.T) {
+	base := time.Now().Truncate(time.Millisecond)
+	config := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour,
+		MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: base,
+	}
+	f := newReceiptEdgeDeleteFixtureWithStoreConfigAndClock(
+		t, nil, hlc.NodeID{0x69}, config,
+		hlc.Options{Now: func() int64 { return base.UnixNano() }},
+	)
+	future := timestamppb.New(base.Add(time.Hour))
+	invalidExpiration := &timestamppb.Timestamp{Seconds: 253402300800}
+	tests := []struct {
+		name   string
+		origin hlc.NodeID
+		op     *pb.MutationOp
+	}{
+		{
+			name:   "nil singular payload",
+			origin: hlc.NodeID{0x70},
+			op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+				PutVertex: &pb.PutVertexRequest{},
+			}},
+		},
+		{
+			name:   "empty plural payload",
+			origin: hlc.NodeID{0x71},
+			op: &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+				AddEdges: &pb.AddEdgesRequest{},
+			}},
+		},
+		{
+			name:   "invalid expiration",
+			origin: hlc.NodeID{0x72},
+			op: &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+				PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{
+					Tail: "invalid", Head: "expiration", Expiration: invalidExpiration,
+				}},
+			}},
+		},
+		{
+			name:   "invalid contribution identity",
+			origin: hlc.NodeID{0x73},
+			op: &pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+				AddEdge: &pb.AddEdgeRequest{
+					Edge:      &pb.Edge{Tail: "invalid", Head: "contribution", Expiration: future},
+					ContribId: []byte{1},
+				},
+			}},
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stamp := hlc.Timestamp{
+				WallNs:  base.Add(time.Duration(i+1) * 50 * time.Millisecond).UnixNano(),
+				Logical: uint32(i + 1),
+				NodeID:  tt.origin,
+			}
+			err := f.service.ApplyMutation(context.Background(), &pb.Mutation{
+				Seq: 1, Origin: tt.origin[:], Hlc: hlcToProto(stamp), Op: tt.op,
+			})
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("invalid durable mutation error = %v, want InvalidArgument", err)
+			}
+			if got := f.coordinator.store.Stats().HighWaterMillis; got != base.UnixMilli() {
+				t.Fatalf("invalid durable mutation advanced Store high-water to %d, want %d", got, base.UnixMilli())
+			}
+			if got := f.service.LocalSeq(tt.origin); got != 0 {
+				t.Fatalf("invalid durable mutation advanced origin to %d", got)
+			}
+			if pending := f.service.pendingMutations[tt.origin]; len(pending) != 0 {
+				t.Fatalf("invalid durable mutation remained queued: %+v", pending)
+			}
+		})
+	}
+	if got := f.log.Len(); got != 0 {
+		t.Fatalf("invalid durable mutations appended %d relay rows", got)
+	}
+	if _, live := f.cache.GetWeight("invalid", "expiration"); live {
+		t.Fatal("invalid durable mutation changed the graph")
+	}
+	if _, err := f.service.AddEdges(context.Background(), &pb.AddEdgesRequest{}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty local durable AddEdges error = %v, want InvalidArgument", err)
+	}
+	if _, err := f.service.AddEdge(context.Background(), &pb.AddEdgeRequest{
+		Edge:      &pb.Edge{Tail: "local", Head: "invalid-contribution", Expiration: future},
+		ContribId: []byte{1},
+	}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("invalid local durable contribution identity error = %v, want InvalidArgument", err)
+	}
+	if got := f.log.Len(); got != 0 {
+		t.Fatalf("invalid local durable mutations appended %d relay rows", got)
+	}
+
+	origin := hlc.NodeID{0x74}
+	stamp := hlc.Timestamp{
+		WallNs:  base.Add(250 * time.Millisecond).UnixNano(),
+		Logical: 5,
+		NodeID:  origin,
+	}
+	if err := f.service.ApplyMutation(context.Background(), &pb.Mutation{
+		Seq: 1, Origin: origin[:], Hlc: hlcToProto(stamp),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "valid", Expiration: future}},
+		}},
+	}); err != nil {
+		t.Fatalf("valid durable mutation after rejected frames: %v", err)
+	}
+	if got := f.coordinator.store.Stats().HighWaterMillis; got < stamp.WallNs/int64(time.Millisecond) {
+		t.Fatalf("valid durable mutation left Store high-water at %d, want at least %d", got, stamp.WallNs/int64(time.Millisecond))
+	}
+	if _, live := f.cache.GetVertex("valid"); !live {
+		t.Fatal("valid durable mutation did not change the graph")
+	}
+	if got := f.service.LocalSeq(origin); got != 1 {
+		t.Fatalf("valid durable mutation advanced origin to %d, want 1", got)
+	}
+	if got := f.log.Len(); got != 1 {
+		t.Fatalf("valid durable mutation appended %d relay rows, want 1", got)
+	}
+}
+
+func TestGraphOnlyPublicationPreservesEmptyAddBatch(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	service := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).
+		WithReplication(log, hlc.New(hlc.NodeID{0x75}, hlc.Options{}), nil)
+	if _, err := service.AddEdges(context.Background(), &pb.AddEdgesRequest{}); err != nil {
+		t.Fatalf("graph-only empty AddEdges: %v", err)
+	}
+	if got := log.Len(); got != 1 {
+		t.Fatalf("graph-only empty AddEdges appended %d rows, want 1", got)
+	}
+}
+
+func TestPublishRemoteMutationDurableRevalidatesOwnedQueuedFrame(t *testing.T) {
+	base := time.Now().Truncate(time.Millisecond)
+	config := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour,
+		MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: base,
+	}
+	f := newReceiptEdgeDeleteFixtureWithStoreConfigAndClock(
+		t, nil, hlc.NodeID{0x76}, config,
+		hlc.Options{Now: func() int64 { return base.UnixNano() }},
+	)
+	origin := hlc.NodeID{0x77}
+	future := timestamppb.New(base.Add(time.Hour))
+	mutation := func(seq uint64, offset time.Duration, key string) *pb.Mutation {
+		stamp := hlc.Timestamp{
+			WallNs: base.Add(offset).UnixNano(), Logical: uint32(seq), NodeID: origin,
+		}
+		return &pb.Mutation{
+			Seq: seq, Origin: origin[:], Hlc: hlcToProto(stamp),
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+				PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Expiration: future}},
+			}},
+		}
+	}
+	if err := f.service.ApplyMutation(context.Background(), mutation(2, 200*time.Millisecond, "second")); err != nil {
+		t.Fatalf("queue future durable mutation: %v", err)
+	}
+	queued := f.service.pendingMutations[origin][2]
+	if queued == nil {
+		t.Fatal("future durable mutation was not queued")
+	}
+	queued.mutation.GetOp().GetPutVertex().Vertex = nil
+
+	err := f.service.ApplyMutation(context.Background(), mutation(1, 100*time.Millisecond, "first"))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("owned queued revalidation error = %v, want InvalidArgument", err)
+	}
+	firstStamp := base.Add(100 * time.Millisecond).UnixMilli()
+	if got := f.coordinator.store.Stats().HighWaterMillis; got != firstStamp {
+		t.Fatalf("rejected queued frame advanced Store high-water to %d, want %d", got, firstStamp)
+	}
+	if got := f.service.LocalSeq(origin); got != 1 {
+		t.Fatalf("rejected queued frame advanced origin to %d, want 1", got)
+	}
+	if got := f.log.Len(); got != 1 {
+		t.Fatalf("rejected queued frame appended %d relay rows, want 1", got)
+	}
+	if _, live := f.cache.GetVertex("first"); !live {
+		t.Fatal("first contiguous frame did not commit")
+	}
+	if _, live := f.cache.GetVertex("second"); live {
+		t.Fatal("rejected queued frame changed the graph")
+	}
+	if pending := f.service.pendingMutations[origin][2]; pending != queued {
+		t.Fatal("rejected queued frame did not retain exact pending evidence")
+	}
+}
+
 func TestLocalGraphWritesPublishEffectCompleteEnvelopes(t *testing.T) {
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 16})

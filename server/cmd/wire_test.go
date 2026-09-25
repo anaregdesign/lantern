@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"os"
@@ -19,6 +20,63 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func productionReceiptEdgeDeleteMutation(
+	t *testing.T,
+	config mutationreceipt.Config,
+	origin hlc.NodeID,
+	seq uint64,
+	tail, head string,
+) *pb.Mutation {
+	t.Helper()
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := time.Now().Add(-time.Second)
+	id, err := mutationreceipt.NewID(config.Epoch, issued, [24]byte{0x39, byte(seq)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := mutationreceipt.GroupID{0x4a}
+	canonical := []byte{byte(mutationreceipt.DeleteEdge)}
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(tail)))
+	canonical = append(canonical, length[:]...)
+	canonical = append(canonical, tail...)
+	binary.BigEndian.PutUint64(length[:], uint64(len(head)))
+	canonical = append(canonical, length[:]...)
+	canonical = append(canonical, head...)
+	digest := mutationreceipt.IntentDigest(canonical)
+	policy := store.PolicyFingerprint()
+	stamp := hlc.Timestamp{
+		WallNs: time.Now().Add(100 * time.Millisecond).UnixNano(),
+		NodeID: origin,
+	}
+	return &pb.Mutation{
+		Seq: seq, Origin: origin[:],
+		Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, NodeId: origin[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeDelete{
+			ReplicatedReceiptEdgeDelete: &pb.ReplicatedReceiptEdgeDelete{
+				DeploymentEpoch:     config.Epoch[:],
+				PolicyFingerprint:   policy[:],
+				TombstoneExpiration: timestamppb.New(time.Unix(0, stamp.WallNs).Add(30 * time.Minute)),
+				Items: []*pb.ReplicatedReceiptEdgeDeleteItem{{
+					Key: &pb.EdgeKey{Tail: tail, Head: head},
+					Receipt: &pb.MutationReceipt{
+						OperationId: id.Bytes(), LogicalCallId: group[:],
+						ItemIndex: 0, ItemCount: 1, IntentSha256: digest[:],
+						DeadlineUnixMs: uint64(issued.Add(config.Retention).UnixMilli()),
+						OriginalResult: &pb.ReceiptResult{Result: &pb.ReceiptResult_DeleteEdgeExisted{
+							DeleteEdgeExisted: false,
+						}},
+					},
+					CausallyAccepted: false,
+				}},
+			},
+		}},
+	}
+}
 
 func setDurableRuntimeEnv(t *testing.T, mode, path string, port int) {
 	t.Helper()
@@ -165,6 +223,13 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 		cleanup()
 		t.Fatal("local Delete did not remove the existing vertex")
 	}
+	receiptTail, receiptHead := "receipt-tail", "receipt-head"
+	if response, err := app.svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: receiptTail, Head: receiptHead, Weight: 1, Expiration: future,
+	}}); err != nil || response.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		cleanup()
+		t.Fatalf("local receipt fixture PutEdge = (%v, %v)", response, err)
+	}
 
 	remote := hlc.NodeID{0x72}
 	base := time.Now()
@@ -201,23 +266,39 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 			t.Fatalf("remote mutation %d: %v", seq, err)
 		}
 	}
+	receiptConfig := mutationreceipt.Config{
+		Epoch: app.cfg.ReceiptWAL.Epoch, Retention: app.cfg.ReceiptWAL.Retention,
+		MaxEntries: app.cfg.ReceiptWAL.MaxEntries, MaxBytes: uint64(app.cfg.ReceiptWAL.MaxBytes),
+	}
+	receiptMutation := productionReceiptEdgeDeleteMutation(
+		t, receiptConfig, remote, 4, receiptTail, receiptHead,
+	)
+	if err := app.svc.ApplyMutation(ctx, receiptMutation); err != nil {
+		cleanup()
+		t.Fatalf("production durable receipt follower apply: %v", err)
+	}
+	if response, err := app.svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: receiptTail, Head: receiptHead}); response != nil ||
+		connect.CodeOf(err) != connect.CodeNotFound {
+		cleanup()
+		t.Fatalf("receipt follower graph decision = %v, %v, want absent", response, err)
+	}
 	if stats := app.runtime.GraphCache().CausalMetadataStats(); stats.VertexEntries != 5 ||
 		!stats.VertexOverLimit || stats.VertexRejected != 0 {
 		cleanup()
 		t.Fatalf("fresh causal metadata = %+v, want five accepted over a limit of two", stats)
 	}
-	if length, capacity, evicted := app.runtime.MutationLogStats(); length != 6 ||
+	if length, capacity, evicted := app.runtime.MutationLogStats(); length != 8 ||
 		capacity < length || evicted != 0 {
 		cleanup()
-		t.Fatalf("fresh mutation Log = len %d cap %d evicted %d, want 6, >=6, 0", length, capacity, evicted)
+		t.Fatalf("fresh mutation Log = len %d cap %d evicted %d, want 8, >=8, 0", length, capacity, evicted)
 	}
-	if got := app.svc.LocalSeq(app.cfg.Replication.NodeID); got != 3 {
+	if got := app.svc.LocalSeq(app.cfg.Replication.NodeID); got != 4 {
 		cleanup()
-		t.Fatalf("fresh local origin sequence = %d, want 3", got)
+		t.Fatalf("fresh local origin sequence = %d, want 4", got)
 	}
-	if got := app.svc.LocalSeq(remote); got != 3 {
+	if got := app.svc.LocalSeq(remote); got != 4 {
 		cleanup()
-		t.Fatalf("fresh remote origin sequence = %d, want 3", got)
+		t.Fatalf("fresh remote origin sequence = %d, want 4", got)
 	}
 	cleanup()
 
@@ -247,18 +328,18 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 		cleanupRestart()
 		t.Fatal("durable generation bytes changed across restart")
 	}
-	if length, capacity, evicted := restarted.runtime.MutationLogStats(); length != 6 ||
+	if length, capacity, evicted := restarted.runtime.MutationLogStats(); length != 8 ||
 		capacity < length || evicted != 0 {
 		cleanupRestart()
-		t.Fatalf("restarted mutation Log = len %d cap %d evicted %d, want 6, >=6, 0", length, capacity, evicted)
+		t.Fatalf("restarted mutation Log = len %d cap %d evicted %d, want 8, >=8, 0", length, capacity, evicted)
 	}
-	if got := restarted.svc.LocalSeq(restarted.cfg.Replication.NodeID); got != 3 {
+	if got := restarted.svc.LocalSeq(restarted.cfg.Replication.NodeID); got != 4 {
 		cleanupRestart()
-		t.Fatalf("restarted local origin sequence = %d, want 3", got)
+		t.Fatalf("restarted local origin sequence = %d, want 4", got)
 	}
-	if got := restarted.svc.LocalSeq(remote); got != 3 {
+	if got := restarted.svc.LocalSeq(remote); got != 4 {
 		cleanupRestart()
-		t.Fatalf("restarted remote origin sequence = %d, want 3", got)
+		t.Fatalf("restarted remote origin sequence = %d, want 4", got)
 	}
 	for _, key := range []string{"local-live", "remote-live"} {
 		response, err := restarted.svc.GetVertex(ctx, &pb.GetVertexRequest{Key: key})
@@ -277,6 +358,19 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	if got := restarted.runtime.GraphCache().CountByPrefix("remote-"); got != 1 {
 		cleanupRestart()
 		t.Fatalf("rebuilt prefix index count = %d, want 1", got)
+	}
+	if response, err := restarted.svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: receiptTail, Head: receiptHead}); response != nil ||
+		connect.CodeOf(err) != connect.CodeNotFound {
+		cleanupRestart()
+		t.Fatalf("restarted receipt follower graph decision = %v, %v, want absent", response, err)
+	}
+	if err := restarted.svc.ApplyMutation(ctx, receiptMutation); err != nil {
+		cleanupRestart()
+		t.Fatalf("restarted receipt follower duplicate: %v", err)
+	}
+	if length, _, _ := restarted.runtime.MutationLogStats(); length != 8 {
+		cleanupRestart()
+		t.Fatalf("receipt follower duplicate changed mutation Log length to %d", length)
 	}
 	if stats := restarted.runtime.GraphCache().CausalMetadataStats(); stats.VertexEntries != 5 ||
 		!stats.VertexOverLimit || stats.VertexRejected != 0 {
@@ -427,6 +521,22 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 			cleanup()
 		}
 		t.Fatalf("graph-only app = %p, cleanup %v, mode %q", app, cleanup != nil, app.cfg.ReceiptWAL.Mode)
+	}
+	graphOnlyReceipt := productionReceiptEdgeDeleteMutation(t, mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour,
+		MaxEntries: 32, MaxBytes: 1 << 20,
+	}, hlc.NodeID{0x72}, 1, "graph-only-tail", "graph-only-head")
+	if err := app.svc.ApplyMutation(context.Background(), graphOnlyReceipt); connect.CodeOf(err) != connect.CodeUnimplemented {
+		cleanup()
+		t.Fatalf("graph-only receipt follower apply = %v, want Unimplemented", err)
+	}
+	if got := app.svc.LocalSeq(hlc.NodeID{0x72}); got != 0 {
+		cleanup()
+		t.Fatalf("graph-only receipt rejection advanced origin to %d", got)
+	}
+	if length, _, _ := app.runtime.MutationLogStats(); length != 0 {
+		cleanup()
+		t.Fatalf("graph-only receipt rejection changed mutation Log length to %d", length)
 	}
 	cleanup()
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))

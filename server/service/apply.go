@@ -57,28 +57,34 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}
+	var receiptEnvelope *edgeDeleteReceiptEnvelope
 	if _, receipt := m.GetOp().GetOp().(*pb.MutationOp_ReplicatedReceiptEdgeDelete); receipt {
-		// The wire can carry this envelope before follower Store/WAL/Snapshot
-		// integration exists. Reject it before queueing or moving a cutoff.
-		// FailedPrecondition is reserved for actual tail gaps: current pumps
-		// would otherwise try a graph-only Snapshot as recovery.
-		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("receipt-bearing replication apply is not enabled"))
-	}
-	if err := validateSyntheticAddMutationBounds(m); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
-	}
-	if _, err := s.validateIncomingTombstoneExpiration(m); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
-	}
-	if err := validateGraphEffectPublicationShape(m); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication publication shape: %w", err))
+		var err error
+		receiptEnvelope, err = decodeReceiptEdgeDeleteMutation(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication receipt envelope: %w", err))
+		}
+	} else if s.receiptStore != nil {
+		if err := s.validateDurableGraphMutationPreflight(m); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication durable preflight: %w", err))
+		}
+	} else {
+		if err := validateSyntheticAddMutationBounds(m); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
+		}
+		if _, err := s.validateIncomingTombstoneExpiration(m); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
+		}
+		if err := validateGraphEffectPublicationShape(m); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication publication shape: %w", err))
+		}
 	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
 	if s.receiptCommitFaulted {
 		return publicationGapError()
 	}
-	return s.publishRemoteMutation(ctx, m)
+	return s.publishRemoteMutation(ctx, m, receiptEnvelope)
 }
 
 // applyMutationGraph runs exactly one sequenced mutation against the graph.
@@ -455,6 +461,10 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, e
 // D3 permits up to DefaultMaxSkew between the two nodes' wall clocks.
 // A delayed deadline may already be past.
 func (s *LanternService) validateIncomingTombstoneExpiration(m *pb.Mutation) (time.Time, error) {
+	return s.validateIncomingTombstoneExpirationAt(m, s.remoteValidationWall())
+}
+
+func (s *LanternService) validateIncomingTombstoneExpirationAt(m *pb.Mutation, localWall time.Time) (time.Time, error) {
 	expiration, err := mutationTombstoneExpiration(m, s.tombstoneTTL > 0)
 	if err != nil || expiration.IsZero() {
 		return expiration, err
@@ -462,7 +472,7 @@ func (s *LanternService) validateIncomingTombstoneExpiration(m *pb.Mutation) (ti
 	if m.GetHlc() == nil {
 		return time.Time{}, fmt.Errorf("Delete mutation lacks its origin HLC")
 	}
-	if err := s.tombstoneDeadlineBounds(m.GetHlc().GetWallNs(), expiration); err != nil {
+	if err := s.tombstoneDeadlineBoundsAt(m.GetHlc().GetWallNs(), expiration, localWall); err != nil {
 		return time.Time{}, err
 	}
 	return expiration, nil

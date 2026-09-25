@@ -28,12 +28,14 @@ const (
 )
 
 type pendingMutation struct {
-	mutation *pb.Mutation
-	walOp    mutationlog.MutationOp
-	size     int
-	applied  bool // graph committed; retry the log append without applying twice
-	faulted  bool // relay WAL failed after graph apply; all CDC streams are gapped
-	opName   string
+	mutation   *pb.Mutation
+	receipt    *edgeDeleteReceiptEnvelope
+	receiptWAL *edgeDeleteReceiptEnvelope
+	walOp      mutationlog.MutationOp
+	size       int
+	applied    bool // graph committed; retry the log append without applying twice
+	faulted    bool // relay WAL failed after graph apply; all CDC streams are gapped
+	opName     string
 }
 
 func publicationGapError() error {
@@ -271,6 +273,235 @@ func validateGraphEffectPublicationShape(m *pb.Mutation) error {
 	return err
 }
 
+func (s *LanternService) validateGraphPublicationShape(m *pb.Mutation) error {
+	if s.receiptStore != nil {
+		return s.validateDurableGraphMutationPreflight(m)
+	}
+	return validateGraphEffectPublicationShape(m)
+}
+
+// validateDurableGraphMutationPreflight proves that an owned generic graph
+// mutation can complete apply before advancing the receipt Store's persistent
+// clock high-water. Graph-only runtimes retain their historical permissive
+// nil/empty batch behavior.
+func (s *LanternService) validateDurableGraphMutationPreflight(m *pb.Mutation) error {
+	if err := validateSyntheticAddMutationBounds(m); err != nil {
+		return err
+	}
+	if _, err := s.validateIncomingTombstoneExpiration(m); err != nil {
+		return err
+	}
+	if err := validateGraphEffectPublicationShape(m); err != nil {
+		return err
+	}
+
+	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_PutVertex:
+		if op == nil || op.PutVertex == nil || op.PutVertex.GetVertex() == nil {
+			return errors.New("PutVertex has no applicable vertex")
+		}
+		return validateDurableGraphExpiration("PutVertex", op.PutVertex.GetVertex().GetExpiration())
+	case *pb.MutationOp_PutVertices:
+		if op == nil || op.PutVertices == nil {
+			return errors.New("PutVertices request is nil")
+		}
+		return validateDurableVertexBatch("PutVertices", op.PutVertices.GetVertices())
+	case *pb.MutationOp_ReplicatedPutVertices:
+		if op == nil || op.ReplicatedPutVertices == nil {
+			return errors.New("ReplicatedPutVertices request is nil")
+		}
+		entries := op.ReplicatedPutVertices.GetEntries()
+		if len(entries) == 0 {
+			return errors.New("ReplicatedPutVertices has no applicable entry")
+		}
+		for i, entry := range entries {
+			if entry == nil {
+				return fmt.Errorf("ReplicatedPutVertices entry %d is nil", i)
+			}
+			switch outcome := entry.GetOutcome().(type) {
+			case *pb.ReplicatedPutVertex_Live:
+				if outcome.Live == nil {
+					return fmt.Errorf("ReplicatedPutVertices entry %d has a nil live payload", i)
+				}
+				if err := validateDurableGraphExpiration(
+					fmt.Sprintf("ReplicatedPutVertices entry %d", i),
+					outcome.Live.GetExpiration(),
+				); err != nil {
+					return err
+				}
+			case *pb.ReplicatedPutVertex_CausalBarrier:
+				if outcome.CausalBarrier == nil {
+					return fmt.Errorf("ReplicatedPutVertices entry %d has a nil causal barrier", i)
+				}
+			default:
+				return fmt.Errorf("ReplicatedPutVertices entry %d has no outcome", i)
+			}
+		}
+		return nil
+	case *pb.MutationOp_PutEdge:
+		if op == nil || op.PutEdge == nil || op.PutEdge.GetEdge() == nil {
+			return errors.New("PutEdge has no applicable edge")
+		}
+		return validateDurableGraphExpiration("PutEdge", op.PutEdge.GetEdge().GetExpiration())
+	case *pb.MutationOp_PutEdges:
+		if op == nil || op.PutEdges == nil {
+			return errors.New("PutEdges request is nil")
+		}
+		return validateDurableEdgeBatch("PutEdges", op.PutEdges.GetEdges())
+	case *pb.MutationOp_ReplicatedPutEdges:
+		if op == nil || op.ReplicatedPutEdges == nil {
+			return errors.New("ReplicatedPutEdges request is nil")
+		}
+		entries := op.ReplicatedPutEdges.GetEntries()
+		if len(entries) == 0 {
+			return errors.New("ReplicatedPutEdges has no applicable entry")
+		}
+		for i, entry := range entries {
+			if entry == nil {
+				return fmt.Errorf("ReplicatedPutEdges entry %d is nil", i)
+			}
+			switch outcome := entry.GetOutcome().(type) {
+			case *pb.ReplicatedPutEdge_Live:
+				if outcome.Live == nil {
+					return fmt.Errorf("ReplicatedPutEdges entry %d has a nil live payload", i)
+				}
+				if err := validateDurableGraphExpiration(
+					fmt.Sprintf("ReplicatedPutEdges entry %d", i),
+					outcome.Live.GetExpiration(),
+				); err != nil {
+					return err
+				}
+			case *pb.ReplicatedPutEdge_CausalBarrier:
+				if outcome.CausalBarrier == nil {
+					return fmt.Errorf("ReplicatedPutEdges entry %d has a nil causal barrier", i)
+				}
+			default:
+				return fmt.Errorf("ReplicatedPutEdges entry %d has no outcome", i)
+			}
+		}
+		return nil
+	case *pb.MutationOp_AddEdge:
+		if op == nil || op.AddEdge == nil || op.AddEdge.GetEdge() == nil {
+			return errors.New("AddEdge has no applicable edge")
+		}
+		if err := validateDurableContribID("AddEdge", op.AddEdge.GetContribId()); err != nil {
+			return err
+		}
+		return validateDurableGraphExpiration("AddEdge", op.AddEdge.GetEdge().GetExpiration())
+	case *pb.MutationOp_AddEdges:
+		if op == nil || op.AddEdges == nil {
+			return errors.New("AddEdges request is nil")
+		}
+		edges := op.AddEdges.GetEdges()
+		contribIDs := op.AddEdges.GetContribIds()
+		if len(contribIDs) > len(edges) {
+			return fmt.Errorf("AddEdges has %d contribution IDs for %d edge slots", len(contribIDs), len(edges))
+		}
+		applicable := 0
+		for i, edge := range edges {
+			var contribID []byte
+			if i < len(contribIDs) {
+				contribID = contribIDs[i]
+			}
+			if edge == nil {
+				if len(contribID) != 0 {
+					return fmt.Errorf("AddEdges contribution ID %d targets a nil edge slot", i)
+				}
+				continue
+			}
+			applicable++
+			if err := validateDurableContribID(fmt.Sprintf("AddEdges contribution ID %d", i), contribID); err != nil {
+				return err
+			}
+			if err := validateDurableGraphExpiration(fmt.Sprintf("AddEdges edge %d", i), edge.GetExpiration()); err != nil {
+				return err
+			}
+		}
+		if applicable == 0 {
+			return errors.New("AddEdges has no applicable edge")
+		}
+		return nil
+	case *pb.MutationOp_DeleteVertex:
+		if op == nil || op.DeleteVertex == nil {
+			return errors.New("DeleteVertex request is nil")
+		}
+		return nil
+	case *pb.MutationOp_DeleteVertices:
+		if op == nil || op.DeleteVertices == nil || len(op.DeleteVertices.GetKeys()) == 0 {
+			return errors.New("DeleteVertices has no applicable key")
+		}
+		return nil
+	case *pb.MutationOp_DeleteEdge:
+		if op == nil || op.DeleteEdge == nil {
+			return errors.New("DeleteEdge request is nil")
+		}
+		return nil
+	case *pb.MutationOp_DeleteEdges:
+		if op == nil || op.DeleteEdges == nil || len(op.DeleteEdges.GetEdges()) == 0 {
+			return errors.New("DeleteEdges has no applicable edge key")
+		}
+		for i, edge := range op.DeleteEdges.GetEdges() {
+			if edge == nil {
+				return fmt.Errorf("DeleteEdges edge key %d is nil", i)
+			}
+		}
+		return nil
+	default:
+		return errors.New("unsupported durable graph mutation")
+	}
+}
+
+func validateDurableVertexBatch(name string, vertices []*pb.Vertex) error {
+	applicable := 0
+	for i, vertex := range vertices {
+		if vertex == nil {
+			continue
+		}
+		applicable++
+		if err := validateDurableGraphExpiration(fmt.Sprintf("%s vertex %d", name, i), vertex.GetExpiration()); err != nil {
+			return err
+		}
+	}
+	if applicable == 0 {
+		return fmt.Errorf("%s has no applicable vertex", name)
+	}
+	return nil
+}
+
+func validateDurableEdgeBatch(name string, edges []*pb.Edge) error {
+	applicable := 0
+	for i, edge := range edges {
+		if edge == nil {
+			continue
+		}
+		applicable++
+		if err := validateDurableGraphExpiration(fmt.Sprintf("%s edge %d", name, i), edge.GetExpiration()); err != nil {
+			return err
+		}
+	}
+	if applicable == 0 {
+		return fmt.Errorf("%s has no applicable edge", name)
+	}
+	return nil
+}
+
+func validateDurableGraphExpiration(name string, expiration *timestamppb.Timestamp) error {
+	if expiration == nil {
+		return nil
+	}
+	if err := expiration.CheckValid(); err != nil {
+		return fmt.Errorf("%s has invalid expiration: %w", name, err)
+	}
+	return nil
+}
+
+func validateDurableContribID(name string, id []byte) error {
+	if len(id) != 0 && len(id) != len(graphcache.ContribID{}) {
+		return fmt.Errorf("%s must be empty or %d bytes", name, len(graphcache.ContribID{}))
+	}
+	return nil
+}
+
 func allAcceptedIndexes(count int) []int {
 	indexes := make([]int, count)
 	for i := range indexes {
@@ -285,7 +516,11 @@ func allAcceptedIndexes(count int) []int {
 // seq commits. Snapshot refuses to serve while a remote graph effect has not
 // reached the relay log. Local graph-first writes use the same gate and fault
 // generation through publishLocalGraphMutationLocked.
-func (s *LanternService) publishRemoteMutation(ctx context.Context, m *pb.Mutation) error {
+func (s *LanternService) publishRemoteMutation(
+	ctx context.Context,
+	m *pb.Mutation,
+	receipt *edgeDeleteReceiptEnvelope,
+) error {
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_DeleteVerticesByPrefix, *pb.MutationOp_DeleteEdgesByPrefix:
 		// A predicate may mutate only part of a graph before an interrupted
@@ -309,6 +544,17 @@ func (s *LanternService) publishRemoteMutation(ctx context.Context, m *pb.Mutati
 	if s.origins == nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: origin state is unavailable"))
 	}
+	if receipt != nil {
+		coordinator := s.receiptEdgeDeleteCoordinator
+		if coordinator == nil {
+			return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("receipt-bearing replication apply is not enabled"))
+		}
+		if err := coordinator.validateReplicatedEnvelope(receipt); err != nil {
+			return err
+		}
+	} else if err := s.validateDurableRemoteHLC(hlcFromProto(m.GetHlc())); err != nil {
+		return err
+	}
 	committed := s.origins.LocalSeq(origin)
 	if m.GetSeq() <= committed {
 		return nil
@@ -322,13 +568,24 @@ func (s *LanternService) publishRemoteMutation(ctx context.Context, m *pb.Mutati
 	}
 	queue := s.pendingMutations[origin]
 	if prev, exists := queue[m.GetSeq()]; exists {
-		if !proto.Equal(prev.mutation, m) {
+		same := proto.Equal(prev.mutation, m)
+		if prev.receipt != nil || receipt != nil {
+			same = sameReceiptEdgeDeleteIntent(prev.receipt, receipt)
+		}
+		if !same {
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("replication: conflicting mutation for origin %x seq %d", origin, m.GetSeq()))
 		}
 	} else {
 		size := proto.Size(m)
 		if s.pendingCount >= maxPendingMutations || size > maxPendingBytes-s.pendingBytes {
 			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("replication: pending mutation buffer full"))
+		}
+		queuedMutation := cloneQueuedMutation(m)
+		if receipt != nil {
+			// decodeReceiptEdgeDeleteMutation already made an owned graph
+			// projection. Retaining a second full receipt frame would nearly
+			// double the bounded pending queue's actual memory.
+			queuedMutation = receipt.Mutation
 		}
 		if queue == nil {
 			queue = make(map[uint64]*pendingMutation)
@@ -337,7 +594,11 @@ func (s *LanternService) publishRemoteMutation(ctx context.Context, m *pb.Mutati
 			}
 			s.pendingMutations[origin] = queue
 		}
-		queue[m.GetSeq()] = &pendingMutation{mutation: cloneQueuedMutation(m), size: size}
+		queue[m.GetSeq()] = &pendingMutation{
+			mutation: queuedMutation,
+			receipt:  receipt,
+			size:     size,
+		}
 		s.pendingCount++
 		s.pendingBytes += size
 	}
@@ -415,12 +676,57 @@ func (s *LanternService) drainRemoteOrigin(ctx context.Context, origin hlc.NodeI
 			return nil
 		}
 		m := pending.mutation
+		if pending.receipt != nil {
+			coordinator := s.receiptEdgeDeleteCoordinator
+			if coordinator == nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("receipt-bearing replication coordinator became unavailable"))
+			}
+			if err := coordinator.commitReplicated(ctx, origin, seq, hlcFromProto(m.GetHlc()), pending); err != nil {
+				return err
+			}
+			if s.onReplicationApply != nil {
+				s.onReplicationApply("replicated_receipt_edge_delete")
+			}
+			if s.onApplied != nil {
+				s.onApplied(hex.EncodeToString(origin[:]))
+			}
+			s.dropPending(origin, seq)
+			queue = s.pendingMutations[origin]
+			continue
+		}
 		if !pending.applied {
+			if s.receiptStore != nil {
+				ts := hlcFromProto(m.GetHlc())
+				if err := s.validateDurableGraphMutationPreflight(m); err != nil {
+					return connect.NewError(connect.CodeInvalidArgument,
+						fmt.Errorf("replication durable queued preflight for origin %x seq %d: %w", origin, seq, err))
+				}
+				if err := s.validateDurableRemoteHLC(ts); err != nil {
+					return err
+				}
+				if err := s.persistDurableRemoteClockHighWater(ts); err != nil {
+					return err
+				}
+			}
 			result, err := s.applyMutationGraph(m)
 			if err != nil {
+				if s.receiptStore != nil {
+					s.receiptOriginCutMu.Lock()
+					s.markReceiptCommitFaultLocked()
+					s.receiptOriginCutMu.Unlock()
+					return connect.NewError(connect.CodeInternal,
+						fmt.Errorf("replication: durable graph apply failed after preflight and clock persistence: %w", err))
+				}
 				return err
 			}
 			if result.opName == "" {
+				if s.receiptStore != nil {
+					s.receiptOriginCutMu.Lock()
+					s.markReceiptCommitFaultLocked()
+					s.receiptOriginCutMu.Unlock()
+					return connect.NewError(connect.CodeInternal,
+						fmt.Errorf("replication: durable graph apply produced no effect after preflight and clock persistence for origin %x seq %d", origin, seq))
+				}
 				s.dropPending(origin, seq)
 				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: mutation origin %x seq %d has no applicable op", origin, seq))
 			}
@@ -437,6 +743,16 @@ func (s *LanternService) drainRemoteOrigin(ctx context.Context, origin hlc.NodeI
 		if !s.origins.Record(origin, seq, hlcFromProto(m.GetHlc())) {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: noncontiguous publication for origin %x seq %d", origin, seq))
 		}
+		if s.receiptStore != nil {
+			if err := s.clock.RestoreFloor(hlcFromProto(m.GetHlc())); err != nil {
+				s.receiptOriginCutMu.Lock()
+				s.markReceiptCommitFaultLocked()
+				s.receiptOriginCutMu.Unlock()
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: durable origin clock floor: %w", err))
+			}
+		} else if s.clock != nil {
+			s.clock.Update(hlcFromProto(m.GetHlc()))
+		}
 		if s.onReplicationApply != nil {
 			s.onReplicationApply(pending.opName)
 		}
@@ -445,6 +761,31 @@ func (s *LanternService) drainRemoteOrigin(ctx context.Context, origin hlc.NodeI
 		}
 		s.dropPending(origin, seq)
 		queue = s.pendingMutations[origin]
+	}
+	return nil
+}
+
+func (s *LanternService) persistDurableRemoteClockHighWater(ts hlc.Timestamp) error {
+	tx, err := s.receiptStore.Begin(time.Unix(0, ts.WallNs))
+	if err != nil {
+		return receiptStoreError(err)
+	}
+	tx.Abort()
+	return nil
+}
+
+func (s *LanternService) validateDurableRemoteHLC(ts hlc.Timestamp) error {
+	if s.receiptStore == nil {
+		return nil
+	}
+	if s.clock == nil {
+		return connect.NewError(connect.CodeInternal, errors.New("replication: durable runtime clock is unavailable"))
+	}
+	if ts.WallNs <= 0 {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("replication: durable remote HLC wall time must be positive"))
+	}
+	if time.Unix(0, ts.WallNs).After(s.remoteValidationWall().Add(hlc.DefaultMaxSkew)) {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("replication: durable remote HLC exceeds maximum clock skew"))
 	}
 	return nil
 }

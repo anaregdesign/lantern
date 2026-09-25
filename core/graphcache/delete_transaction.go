@@ -47,6 +47,23 @@ type EdgeDeleteTransaction[S comparable, T any] struct {
 func (c *GraphCache[S, T]) BeginEdgeDelete(
 	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time,
 ) (*EdgeDeleteTransaction[S, T], error) {
+	return c.beginEdgeDelete(keys, ts, expiration, true)
+}
+
+// BeginReplicatedEdgeDelete stages a certified remote Delete without applying
+// local causal-metadata admission limits. A follower must converge on an
+// already-committed effect even when its own configured budget is full. The
+// caller still owns the same external WAL/publication obligations as
+// BeginEdgeDelete.
+func (c *GraphCache[S, T]) BeginReplicatedEdgeDelete(
+	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time,
+) (*EdgeDeleteTransaction[S, T], error) {
+	return c.beginEdgeDelete(keys, ts, expiration, false)
+}
+
+func (c *GraphCache[S, T]) beginEdgeDelete(
+	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time, strict bool,
+) (*EdgeDeleteTransaction[S, T], error) {
 	if c.publicationGate == nil {
 		return nil, errors.New("graphcache: staged Delete requires a publication gate")
 	}
@@ -78,7 +95,7 @@ func (c *GraphCache[S, T]) BeginEdgeDelete(
 		}
 	}()
 	var err error
-	stage, err = c.prepareStagedEdgeDeleteLocked(keys, ts, expiration, c.applicationTime(), projected)
+	stage, err = c.prepareStagedEdgeDeleteLockedWithCapacity(keys, ts, expiration, c.applicationTime(), projected, strict)
 	if err != nil {
 		return nil, err
 	}

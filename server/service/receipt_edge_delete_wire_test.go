@@ -185,3 +185,52 @@ func TestReceiptEdgeDeleteWireProducerUsesWALValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeReceiptEdgeDeleteMutationOwnsAndFullyValidatesWire(t *testing.T) {
+	wire, err := wireReceiptEdgeDeleteFixture(t).ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := decodeReceiptEdgeDeleteMutation(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire.Origin[0] ^= 1
+	item := wire.GetOp().GetReplicatedReceiptEdgeDelete().Items[0]
+	item.Key.Head = "caller-mutated"
+	item.Receipt.OperationId[0] ^= 1
+	item.Receipt.OriginalResult = &pb.ReceiptResult{
+		Result: &pb.ReceiptResult_DeleteEdgeExisted{DeleteEdgeExisted: false},
+	}
+	if envelope.Origin[0] != 0x41 || envelope.OriginalKeys[0].Head != "accepted" ||
+		envelope.Receipts[0].ID[0] != 1 || envelope.Receipts[0].Result[0] != 1 {
+		t.Fatalf("decoded envelope aliases caller wire: %+v", envelope)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*pb.Mutation)
+	}{
+		{"top-level unknown fields", func(m *pb.Mutation) {
+			m.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x01})
+		}},
+		{"nested unknown fields", func(m *pb.Mutation) {
+			m.GetOp().GetReplicatedReceiptEdgeDelete().Items[0].Receipt.ProtoReflect().
+				SetUnknown([]byte{0xf8, 0x07, 0x01})
+		}},
+		{"outer tombstone expiration", func(m *pb.Mutation) {
+			m.TombstoneExpiration = timestamppb.New(time.Now().Add(time.Hour))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad, err := wireReceiptEdgeDeleteFixture(t).ReplicationMutation()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(bad)
+			if _, err := decodeReceiptEdgeDeleteMutation(bad); err == nil {
+				t.Fatal("malformed wire decoded")
+			}
+		})
+	}
+}
