@@ -59,7 +59,7 @@ const SnapshotFormat$json = {
   '2': [
     {'1': 'SNAPSHOT_FORMAT_UNSPECIFIED', '2': 0},
     {'1': 'SNAPSHOT_FORMAT_GRAPH_ONLY_V1', '2': 1},
-    {'1': 'SNAPSHOT_FORMAT_RECEIPT_V1', '2': 2},
+    {'1': 'SNAPSHOT_FORMAT_RECEIPT_V2', '2': 2},
   ],
 };
 
@@ -67,7 +67,7 @@ const SnapshotFormat$json = {
 final $typed_data.Uint8List snapshotFormatDescriptor = $convert.base64Decode(
     'Cg5TbmFwc2hvdEZvcm1hdBIfChtTTkFQU0hPVF9GT1JNQVRfVU5TUEVDSUZJRUQQABIhCh1TTk'
     'FQU0hPVF9GT1JNQVRfR1JBUEhfT05MWV9WMRABEh4KGlNOQVBTSE9UX0ZPUk1BVF9SRUNFSVBU'
-    'X1YxEAI=');
+    'X1YyEAI=');
 
 @$core.Deprecated('Use snapshotReceiptKindDescriptor instead')
 const SnapshotReceiptKind$json = {
@@ -888,12 +888,12 @@ const SnapshotReceiptMetadata$json = {
   '1': 'SnapshotReceiptMetadata',
   '2': [
     {
-      '1': 'policy',
+      '1': 'active_policy',
       '3': 1,
       '4': 1,
       '5': 11,
       '6': '.graph.v1.ReceiptPolicy',
-      '10': 'policy'
+      '10': 'activePolicy'
     },
     {
       '1': 'clock_high_water_unix_ms',
@@ -910,15 +910,24 @@ const SnapshotReceiptMetadata$json = {
       '6': '.graph.v1.OriginState',
       '10': 'originCutoffs'
     },
+    {
+      '1': 'retired_policies',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReceiptPolicy',
+      '10': 'retiredPolicies'
+    },
   ],
 };
 
 /// Descriptor for `SnapshotReceiptMetadata`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List snapshotReceiptMetadataDescriptor = $convert.base64Decode(
-    'ChdTbmFwc2hvdFJlY2VpcHRNZXRhZGF0YRIvCgZwb2xpY3kYASABKAsyFy5ncmFwaC52MS5SZW'
-    'NlaXB0UG9saWN5UgZwb2xpY3kSNgoYY2xvY2tfaGlnaF93YXRlcl91bml4X21zGAIgASgEUhRj'
-    'bG9ja0hpZ2hXYXRlclVuaXhNcxI8Cg5vcmlnaW5fY3V0b2ZmcxgDIAMoCzIVLmdyYXBoLnYxLk'
-    '9yaWdpblN0YXRlUg1vcmlnaW5DdXRvZmZz');
+    'ChdTbmFwc2hvdFJlY2VpcHRNZXRhZGF0YRI8Cg1hY3RpdmVfcG9saWN5GAEgASgLMhcuZ3JhcG'
+    'gudjEuUmVjZWlwdFBvbGljeVIMYWN0aXZlUG9saWN5EjYKGGNsb2NrX2hpZ2hfd2F0ZXJfdW5p'
+    'eF9tcxgCIAEoBFIUY2xvY2tIaWdoV2F0ZXJVbml4TXMSPAoOb3JpZ2luX2N1dG9mZnMYAyADKA'
+    'syFS5ncmFwaC52MS5PcmlnaW5TdGF0ZVINb3JpZ2luQ3V0b2ZmcxJCChByZXRpcmVkX3BvbGlj'
+    'aWVzGAQgAygLMhcuZ3JhcGgudjEuUmVjZWlwdFBvbGljeVIPcmV0aXJlZFBvbGljaWVz');
 
 @$core.Deprecated('Use snapshotHeaderDescriptor instead')
 const SnapshotHeader$json = {
@@ -1016,13 +1025,27 @@ const SnapshotFooter$json = {
       '5': 4,
       '10': 'edgeTombstoneCount'
     },
-    {'1': 'receipt_count', '3': 7, '4': 1, '5': 4, '10': 'receiptCount'},
     {
-      '1': 'receipt_origin_count',
-      '3': 8,
+      '1': 'active_receipt_count',
+      '3': 7,
       '4': 1,
       '5': 4,
-      '10': 'receiptOriginCount'
+      '10': 'activeReceiptCount'
+    },
+    {'1': 'origin_count', '3': 8, '4': 1, '5': 4, '10': 'originCount'},
+    {
+      '1': 'retired_epoch_count',
+      '3': 9,
+      '4': 1,
+      '5': 4,
+      '10': 'retiredEpochCount'
+    },
+    {
+      '1': 'retired_receipt_count',
+      '3': 10,
+      '4': 1,
+      '5': 4,
+      '10': 'retiredReceiptCount'
     },
   ],
 };
@@ -1034,9 +1057,10 @@ final $typed_data.Uint8List snapshotFooterDescriptor = $convert.base64Decode(
     'bnQYAyABKARSGHZlcnRleENhdXNhbEJhcnJpZXJDb3VudBI5ChllZGdlX2NhdXNhbF9iYXJyaW'
     'VyX2NvdW50GAQgASgEUhZlZGdlQ2F1c2FsQmFycmllckNvdW50EjQKFnZlcnRleF90b21ic3Rv'
     'bmVfY291bnQYBSABKARSFHZlcnRleFRvbWJzdG9uZUNvdW50EjAKFGVkZ2VfdG9tYnN0b25lX2'
-    'NvdW50GAYgASgEUhJlZGdlVG9tYnN0b25lQ291bnQSIwoNcmVjZWlwdF9jb3VudBgHIAEoBFIM'
-    'cmVjZWlwdENvdW50EjAKFHJlY2VpcHRfb3JpZ2luX2NvdW50GAggASgEUhJyZWNlaXB0T3JpZ2'
-    'luQ291bnQ=');
+    'NvdW50GAYgASgEUhJlZGdlVG9tYnN0b25lQ291bnQSMAoUYWN0aXZlX3JlY2VpcHRfY291bnQY'
+    'ByABKARSEmFjdGl2ZVJlY2VpcHRDb3VudBIhCgxvcmlnaW5fY291bnQYCCABKARSC29yaWdpbk'
+    'NvdW50Ei4KE3JldGlyZWRfZXBvY2hfY291bnQYCSABKARSEXJldGlyZWRFcG9jaENvdW50EjIK'
+    'FXJldGlyZWRfcmVjZWlwdF9jb3VudBgKIAEoBFITcmV0aXJlZFJlY2VpcHRDb3VudA==');
 
 @$core.Deprecated('Use snapshotReceiptContributionDescriptor instead')
 const SnapshotReceiptContribution$json = {

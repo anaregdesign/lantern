@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
@@ -59,14 +60,21 @@ func NewSnapshotInstallerSelection(
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
 		TempDir: filepath.Dir(config.Path),
 		Limits: backup.ReceiptSnapshotCollectorLimits{
-			MaxFrameBytes:  receiptSnapshotInstallerMaxFrameBytes,
-			MaxFrames:      receiptSnapshotInstallerMaxFrames,
-			MaxTotalBytes:  receiptSnapshotInstallerMaxTotalBytes,
-			MaxReceipts:    maxReceipts,
-			MaxOrigins:     receiptSnapshotInstallerMaxOrigins,
-			MaxGraphFrames: receiptSnapshotInstallerMaxFrames - 2,
+			MaxFrameBytes:      receiptSnapshotInstallerMaxFrameBytes,
+			MaxFrames:          receiptSnapshotInstallerMaxFrames,
+			MaxTotalBytes:      receiptSnapshotInstallerMaxTotalBytes,
+			MaxActiveReceipts:  maxReceipts,
+			MaxRetiredEpochs:   maxReceipts,
+			MaxRetiredReceipts: maxReceipts,
+			MaxOrigins:         receiptSnapshotInstallerMaxOrigins,
+			MaxGraphFrames:     receiptSnapshotInstallerMaxFrames - 2,
 		},
 		ExpectedPolicy: config.receiptConfig(time.Time{}),
+		ExpectedRetiredConfig: mutationreceipt.RetiredCatalogConfig{
+			ActiveEpoch: config.Epoch,
+			MaxEntries:  config.MaxEntries,
+			MaxBytes:    uint64(config.MaxBytes),
+		},
 		DefaultTTL:     cacheConfig.TTL,
 		ConfigureGraph: receiptWALGraphConfigurator(cacheConfig, searchConfig),
 	})

@@ -86,21 +86,22 @@ class IdentityOperation extends $pb.ProtobufEnum {
 
 /// Snapshot format is an explicit compatibility boundary. A graph-only image
 /// cannot prove mutation-receipt continuity, even when its origin cutoffs are
-/// ahead of every retained log entry. RECEIPT_V1 carries one atomic graph,
-/// receipt, clock, and origin cut. A receiver that cannot install that complete
-/// format must reject its header before applying any body frame.
+/// ahead of every retained log entry. RECEIPT_V2 carries one atomic graph,
+/// active receipt Store, retired receipt catalog, clock, and origin cut. A
+/// receiver that cannot install that complete format must reject its header
+/// before applying any body frame.
 class SnapshotFormat extends $pb.ProtobufEnum {
   static const SnapshotFormat SNAPSHOT_FORMAT_UNSPECIFIED =
       SnapshotFormat._(0, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_UNSPECIFIED');
   static const SnapshotFormat SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = SnapshotFormat._(
       1, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_GRAPH_ONLY_V1');
-  static const SnapshotFormat SNAPSHOT_FORMAT_RECEIPT_V1 =
-      SnapshotFormat._(2, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_RECEIPT_V1');
+  static const SnapshotFormat SNAPSHOT_FORMAT_RECEIPT_V2 =
+      SnapshotFormat._(2, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_RECEIPT_V2');
 
   static const $core.List<SnapshotFormat> values = <SnapshotFormat>[
     SNAPSHOT_FORMAT_UNSPECIFIED,
     SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
-    SNAPSHOT_FORMAT_RECEIPT_V1,
+    SNAPSHOT_FORMAT_RECEIPT_V2,
   ];
 
   static final $core.List<SnapshotFormat?> _byValue =

@@ -228,20 +228,20 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	repl := newReplicationRawClient(t, server.url)
 	status, err := repl.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
 	if err != nil ||
-		status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
 		t.Fatalf("production receipt PeerStatus = (%v, %v)", status, err)
 	}
 
-	legacy, err := repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
+	unopted, err := repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
 	if err == nil {
-		defer func() { _ = legacy.Close() }()
-		if legacy.Receive() {
-			t.Fatal("legacy full Subscribe emitted an entry in durable receipt mode")
+		defer func() { _ = unopted.Close() }()
+		if unopted.Receive() {
+			t.Fatal("receipt-less full Subscribe emitted an entry in durable receipt mode")
 		}
-		err = legacy.Err()
+		err = unopted.Err()
 	}
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("legacy full Subscribe = %v, want InvalidArgument", err)
+		t.Fatalf("receipt-less full Subscribe = %v, want InvalidArgument", err)
 	}
 
 	downgrade, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
@@ -259,7 +259,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	}
 
 	stream, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -295,9 +295,10 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	}
 	fingerprint := policyStore.PolicyFingerprint()
 	if header == nil ||
-		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
-		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
-		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetFingerprint(), fingerprint[:]) {
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+		!bytes.Equal(header.GetReceiptMetadata().GetActivePolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
+		!bytes.Equal(header.GetReceiptMetadata().GetActivePolicy().GetFingerprint(), fingerprint[:]) ||
+		len(header.GetReceiptMetadata().GetRetiredPolicies()) != 0 {
 		t.Fatalf("production receipt Snapshot header = %+v", header)
 	}
 	if receipt == nil ||
@@ -306,7 +307,9 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 		receipt.GetItemIndex() != 0 || receipt.GetItemCount() != 1 {
 		t.Fatalf("production receipt Snapshot row = %+v", receipt)
 	}
-	if footer == nil || footer.GetReceiptCount() != 1 || footer.GetEdgeTombstoneCount() != 1 ||
+	if footer == nil || footer.GetActiveReceiptCount() != 1 ||
+		footer.GetRetiredEpochCount() != 0 || footer.GetRetiredReceiptCount() != 0 ||
+		footer.GetOriginCount() != 2 || footer.GetEdgeTombstoneCount() != 1 ||
 		edgeTombstones != 1 {
 		t.Fatalf("production receipt Snapshot footer/tombstones = %+v / %d", footer, edgeTombstones)
 	}
@@ -549,9 +552,15 @@ func newDurableReceiptSnapshotInstaller(
 		TempDir: filepath.Dir(config.Path),
 		Limits: backup.ReceiptSnapshotCollectorLimits{
 			MaxFrameBytes: 8 << 20, MaxFrames: 128, MaxTotalBytes: 16 << 20,
-			MaxReceipts: 32, MaxOrigins: 16, MaxGraphFrames: 96,
+			MaxActiveReceipts: 32, MaxRetiredEpochs: 32, MaxRetiredReceipts: 32,
+			MaxOrigins: 16, MaxGraphFrames: 96,
 		},
 		ExpectedPolicy: expectedPolicy,
+		ExpectedRetiredConfig: mutationreceipt.RetiredCatalogConfig{
+			ActiveEpoch: expectedPolicy.Epoch,
+			MaxEntries:  expectedPolicy.MaxEntries,
+			MaxBytes:    expectedPolicy.MaxBytes,
+		},
 		DefaultTTL:     config.DefaultTTL,
 		ConfigureGraph: config.ConfigureGraph,
 	})
@@ -630,7 +639,7 @@ func (p *scriptedReceiptPumpPeer) PeerStatus(
 	*connect.Request[pb.PeerStatusRequest],
 ) (*connect.Response[pb.PeerStatusResponse], error) {
 	return connect.NewResponse(&pb.PeerStatusResponse{
-		RequiredSnapshotFormat:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredSnapshotFormat:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 		SearchConfigFingerprint: p.searchConfigFingerprint,
 	}), nil
 }
@@ -827,7 +836,7 @@ func requireDurableReceiptSnapshot(
 	stream, err := newReplicationRawClient(t, server.url).Snapshot(
 		ctx,
 		connect.NewRequest(&pb.SnapshotRequest{
-			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 		}),
 	)
 	if err != nil {
@@ -866,7 +875,7 @@ func requireDurableReceiptSnapshot(
 		t.Fatalf("%s Snapshot stream: %v", name, err)
 	}
 	if headers != 1 || footers != 1 || header == nil || footer == nil ||
-		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
 		t.Fatalf("%s Snapshot framing = headers %d footers %d header %+v footer %+v",
 			name, headers, footers, header, footer)
 	}
@@ -882,8 +891,9 @@ func requireDurableReceiptSnapshot(
 			}
 		}
 	}
-	if receipts != 1 || matchingRows != 1 || footer.GetReceiptCount() != 1 ||
-		footer.GetReceiptOriginCount() != uint64(len(wantCut)) {
+	if receipts != 1 || matchingRows != 1 || footer.GetActiveReceiptCount() != 1 ||
+		footer.GetRetiredEpochCount() != 0 || footer.GetRetiredReceiptCount() != 0 ||
+		footer.GetOriginCount() != uint64(len(wantCut)) {
 		t.Fatalf("%s Snapshot receipt rows = total %d matching %d footer %+v",
 			name, receipts, matchingRows, footer)
 	}
@@ -1175,7 +1185,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 
 // TestDurableReceiptWALRuntime_ThreeReplicaAcceptance supplies the remaining
 // cross-layer evidence for #1393. Public receipt writes stay disabled, so one
-// private follower envelope is injected at A; A→B tailing, A→C RECEIPT_V1
+// private follower envelope is injected at A; A→B tailing, A→C RECEIPT_V2
 // handoff, and B→C partition recovery all traverse real Connect/h2c.
 func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 	if testing.Short() {
@@ -1544,7 +1554,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 			stream, err := newReplicationRawClient(t, target.url).Snapshot(
 				ctx,
 				connect.NewRequest(&pb.SnapshotRequest{
-					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 				}),
 			)
 			if err != nil {
@@ -1568,7 +1578,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 			if err := stream.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if header == nil || header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+			if header == nil || header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
 				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(receiptOrigin[:])] != 1 ||
 				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(sourceConfig.NodeID[:])] < 9 ||
 				!foundReceipt {

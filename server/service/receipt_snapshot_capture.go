@@ -19,9 +19,10 @@ import (
 )
 
 // ReceiptWholeStateCapture is only a detached, healthy in-process publication
-// cut. Its graph frames and Store state feed both the private archive codec and
-// the opt-in RECEIPT_V1 Snapshot producer. It is not proof that a WAL has the
-// current frontier and does not enable receipt writes or installation.
+// cut. Its graph frames and active Store state feed both the private archive
+// codec and the opt-in RECEIPT_V2 Snapshot producer; Retired is transported
+// only by RECEIPT_V2. It is not proof that a WAL has the current frontier and
+// does not enable receipt writes or installation.
 type ReceiptWholeStateCapture struct {
 	Graph    []*pb.SnapshotResponse
 	Receipts mutationreceipt.Snapshot
@@ -145,7 +146,10 @@ func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store)
 // durable. Store.Begin and Store.Lookup also advance high-water without a WAL
 // envelope. Restore must persist those advances or rotate the active epoch
 // before serving receipt-capable traffic; this private seam enables neither.
-func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeState(ctx context.Context, policy mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeState(
+	ctx context.Context,
+	policy mutationreceipt.Config,
+) (ReceiptWholeStateCapture, error) {
 	capture, err := c.captureReceiptWholeStateCut(ctx, policy, false)
 	if err != nil {
 		return ReceiptWholeStateCapture{}, err
@@ -284,7 +288,7 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 	}
 
 	collector := &receiptSnapshotFrameCollector{}
-	if err := sendSnapshotFrames(ctx, image, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1, collector); err != nil {
+	if err := sendSnapshotFrames(ctx, image, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2, collector); err != nil {
 		return ReceiptWholeStateBackupCapture{}, err
 	}
 	wholeState := ReceiptWholeStateCapture{

@@ -13,9 +13,9 @@ import (
 func TestAntiEntropyUsesInjectedSnapshotInstallerAndResumes(t *testing.T) {
 	origin := hlc.NodeID{0x41}
 	peer := &installerTestPeer{
-		requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 		header: &pb.SnapshotHeader{
-			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 			CutoffSeqPerOrigin: map[string]uint64{hex.EncodeToString(origin[:]): 7},
 			CutoffLocalSeq:     20,
 		},
@@ -25,7 +25,7 @@ func TestAntiEntropyUsesInjectedSnapshotInstallerAndResumes(t *testing.T) {
 	}
 	server := startInstallerTestPeer(t, peer)
 	installer := &scriptedSnapshotInstaller{
-		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 	}
 	driver := NewAntiEntropy(AntiEntropyConfig{
 		HTTPClient:        defaultH2CClient(),
@@ -50,8 +50,8 @@ func TestAntiEntropyUsesInjectedSnapshotInstallerAndResumes(t *testing.T) {
 		t.Fatalf("initial origin cursor = %d, want 1", got)
 	}
 	if len(snapshots) != 1 ||
-		snapshots[0].GetRequiredFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
-		t.Fatalf("Snapshot requests = %+v, want one RECEIPT_V1 request", snapshots)
+		snapshots[0].GetRequiredFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+		t.Fatalf("Snapshot requests = %+v, want one RECEIPT_V2 request", snapshots)
 	}
 
 	driver.tickPeer(ctx, server.URL)
@@ -89,14 +89,14 @@ func TestAntiEntropyInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testi
 		},
 		{
 			name:           "legacy header is rejected before installer",
-			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
 			wantSubscribes: 1,
 			wantSnapshots:  1,
 		},
 		{
 			name:           "graph header is rejected before installer",
-			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 			wantSubscribes: 1,
 			wantSnapshots:  1,
@@ -112,7 +112,7 @@ func TestAntiEntropyInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testi
 			}
 			server := startInstallerTestPeer(t, peer)
 			installer := &scriptedSnapshotInstaller{
-				required:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+				required:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 				compatible: func(pb.SnapshotFormat) bool { return true },
 			}
 			driver := NewAntiEntropy(AntiEntropyConfig{

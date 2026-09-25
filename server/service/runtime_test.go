@@ -193,16 +193,24 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		t.Fatal("replication service did not receive the certified durable bundle")
 	}
 	status, err := replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
-	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
 		t.Fatalf("durable runtime PeerStatus = (%v, %v)", status, err)
 	}
 	recorder := &replicationSnapshotRecorder{}
 	if err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 	}, recorder); err != nil {
 		t.Fatalf("durable runtime receipt Snapshot: %v", err)
 	}
-	if err := validateReceiptSnapshotFrames(recorder.frames); err != nil {
+	if err := validateReceiptSnapshotFrames(
+		recorder.frames,
+		wantSnapshotPolicy,
+		mutationreceipt.RetiredCatalogConfig{
+			ActiveEpoch: wantSnapshotPolicy.Epoch,
+			MaxEntries:  wantSnapshotPolicy.MaxEntries,
+			MaxBytes:    wantSnapshotPolicy.MaxBytes,
+		},
+	); err != nil {
 		t.Fatalf("durable runtime receipt Snapshot frames: %v", err)
 	}
 	configuredSource := replication.receiptSnapshotSource

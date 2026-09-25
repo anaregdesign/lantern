@@ -137,15 +137,16 @@ func (IdentityOperation) EnumDescriptor() ([]byte, []int) {
 
 // Snapshot format is an explicit compatibility boundary. A graph-only image
 // cannot prove mutation-receipt continuity, even when its origin cutoffs are
-// ahead of every retained log entry. RECEIPT_V1 carries one atomic graph,
-// receipt, clock, and origin cut. A receiver that cannot install that complete
-// format must reject its header before applying any body frame.
+// ahead of every retained log entry. RECEIPT_V2 carries one atomic graph,
+// active receipt Store, retired receipt catalog, clock, and origin cut. A
+// receiver that cannot install that complete format must reject its header
+// before applying any body frame.
 type SnapshotFormat int32
 
 const (
 	SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED   SnapshotFormat = 0
 	SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 SnapshotFormat = 1
-	SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1    SnapshotFormat = 2
+	SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2    SnapshotFormat = 2
 )
 
 // Enum value maps for SnapshotFormat.
@@ -153,12 +154,12 @@ var (
 	SnapshotFormat_name = map[int32]string{
 		0: "SNAPSHOT_FORMAT_UNSPECIFIED",
 		1: "SNAPSHOT_FORMAT_GRAPH_ONLY_V1",
-		2: "SNAPSHOT_FORMAT_RECEIPT_V1",
+		2: "SNAPSHOT_FORMAT_RECEIPT_V2",
 	}
 	SnapshotFormat_value = map[string]int32{
 		"SNAPSHOT_FORMAT_UNSPECIFIED":   0,
 		"SNAPSHOT_FORMAT_GRAPH_ONLY_V1": 1,
-		"SNAPSHOT_FORMAT_RECEIPT_V1":    2,
+		"SNAPSHOT_FORMAT_RECEIPT_V2":    2,
 	}
 )
 
@@ -1880,10 +1881,9 @@ func (*SubscribeResponse_Checkpoint) isSubscribeResponse_Event() {}
 func (*SubscribeResponse_IdentityChunk) isSubscribeResponse_Event() {}
 
 // SnapshotRequest opens a server-streaming snapshot at a single cutoff.
-// Legacy zero means graph-only while receipt writes are disabled. A receiver
-// that needs receipts MUST request RECEIPT_V1 and check the first header's
-// format before applying any body frame. An old server may ignore the new
-// request field, so the header check is mandatory.
+// Zero means graph-only while receipt writes are disabled. A durable receiver
+// MUST request RECEIPT_V2 and check the first header's format before applying
+// any body frame. The header check remains mandatory.
 type SnapshotRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	RequiredFormat SnapshotFormat         `protobuf:"varint,1,opt,name=required_format,json=requiredFormat,proto3,enum=graph.v1.SnapshotFormat" json:"required_format,omitempty"`
@@ -1928,17 +1928,23 @@ func (x *SnapshotRequest) GetRequiredFormat() SnapshotFormat {
 	return SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED
 }
 
-// Receipt metadata for one RECEIPT_V1 publication cut. This message is
-// required exactly when an RPC Snapshot header's format is RECEIPT_V1 and is
-// absent from GRAPH_ONLY_V1. origin_cutoffs is sorted by raw origin bytes and
-// must exactly match cutoff_seq_per_origin; the full rows retain each origin's
-// HLC as well as its sequence. clock_high_water_unix_ms must not exceed
+// Receipt metadata for one RECEIPT_V2 publication cut. This message is
+// required exactly when an RPC Snapshot header's format is RECEIPT_V2 and is
+// absent from GRAPH_ONLY_V1. active_policy names the writable Store epoch.
+// retired_policies contains every represented read-only epoch, sorted strictly
+// by raw deployment_epoch bytes; it cannot contain active_policy's epoch.
+// Every retired policy has at least one row in the following receipt stream.
+// origin_cutoffs is sorted by raw origin bytes and must exactly match
+// cutoff_seq_per_origin; the full rows retain each origin's HLC as well as its
+// sequence. clock_high_water_unix_ms is the active Store's sole clock
+// authority, applies to every retired epoch, and must not exceed
 // floor(SnapshotHeader.cutoff_hlc.wall_ns / 1ms).
 type SnapshotReceiptMetadata struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
-	Policy               *ReceiptPolicy         `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
+	ActivePolicy         *ReceiptPolicy         `protobuf:"bytes,1,opt,name=active_policy,json=activePolicy,proto3" json:"active_policy,omitempty"`
 	ClockHighWaterUnixMs uint64                 `protobuf:"varint,2,opt,name=clock_high_water_unix_ms,json=clockHighWaterUnixMs,proto3" json:"clock_high_water_unix_ms,omitempty"`
 	OriginCutoffs        []*OriginState         `protobuf:"bytes,3,rep,name=origin_cutoffs,json=originCutoffs,proto3" json:"origin_cutoffs,omitempty"`
+	RetiredPolicies      []*ReceiptPolicy       `protobuf:"bytes,4,rep,name=retired_policies,json=retiredPolicies,proto3" json:"retired_policies,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1973,9 +1979,9 @@ func (*SnapshotReceiptMetadata) Descriptor() ([]byte, []int) {
 	return file_graph_v1_replication_proto_rawDescGZIP(), []int{20}
 }
 
-func (x *SnapshotReceiptMetadata) GetPolicy() *ReceiptPolicy {
+func (x *SnapshotReceiptMetadata) GetActivePolicy() *ReceiptPolicy {
 	if x != nil {
-		return x.Policy
+		return x.ActivePolicy
 	}
 	return nil
 }
@@ -1994,14 +2000,22 @@ func (x *SnapshotReceiptMetadata) GetOriginCutoffs() []*OriginState {
 	return nil
 }
 
+func (x *SnapshotReceiptMetadata) GetRetiredPolicies() []*ReceiptPolicy {
+	if x != nil {
+		return x.RetiredPolicies
+	}
+	return nil
+}
+
 // SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
 // freezes the per-origin watermark and the snapshot-open HLC the server
 // used to materialise the snapshot.
 //
 // A bootstrapping graph-only peer advances the cutoffs only after a verified
-// footer. A future RECEIPT_V1 receiver must stage and atomically install its
-// graph, receipt, epoch, policy, and clock image before advancing these
-// cutoffs. It then resumes Subscribe against the SAME responder with both
+// footer. A RECEIPT_V2 receiver must stage and atomically install its graph,
+// active Store, retired catalog, epoch policies, and clock image before
+// advancing these cutoffs. It then resumes Subscribe against the SAME
+// responder with both
 // `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
 // cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
 // snapshot and the live tail stitch without gap or overlap.
@@ -2013,7 +2027,7 @@ func (x *SnapshotReceiptMetadata) GetOriginCutoffs() []*OriginState {
 // the server has not yet applied any origin (cold cluster) and the
 // resume Subscribe should pass an empty cursor.
 //
-// RECEIPT_V1 is strict: every frame and recursively nested message must have
+// RECEIPT_V2 is strict: every frame and recursively nested message must have
 // no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
 // HLC must be at or below cutoff_hlc and at or below the matching full origin
 // row; a graph HLC whose origin is absent from that vector is invalid.
@@ -2025,11 +2039,12 @@ type SnapshotHeader struct {
 	// separate from the portable per-origin watermarks and only resumes a tail
 	// against the same responder.
 	CutoffLocalSeq uint64 `protobuf:"varint,3,opt,name=cutoff_local_seq,json=cutoffLocalSeq,proto3" json:"cutoff_local_seq,omitempty"`
-	// Zero is a legacy graph-only image. A receipt-capable receiver must reject
-	// zero or GRAPH_ONLY_V1 before changing any local state.
+	// Zero selects the graph-only default. A receipt-capable receiver must
+	// reject zero or GRAPH_ONLY_V1 before changing any local state.
 	Format SnapshotFormat `protobuf:"varint,4,opt,name=format,proto3,enum=graph.v1.SnapshotFormat" json:"format,omitempty"`
-	// Required and complete for RECEIPT_V1; absent for graph-only formats.
-	// The deployment epoch and policy fingerprint are carried inside policy.
+	// Required and complete for RECEIPT_V2; absent for graph-only formats.
+	// Deployment epochs and policy fingerprints are carried inside the active
+	// and retired policies.
 	ReceiptMetadata *SnapshotReceiptMetadata `protobuf:"bytes,5,opt,name=receipt_metadata,json=receiptMetadata,proto3" json:"receipt_metadata,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -2112,11 +2127,14 @@ type SnapshotFooter struct {
 	EdgeCausalBarrierCount   uint64                 `protobuf:"varint,4,opt,name=edge_causal_barrier_count,json=edgeCausalBarrierCount,proto3" json:"edge_causal_barrier_count,omitempty"`
 	VertexTombstoneCount     uint64                 `protobuf:"varint,5,opt,name=vertex_tombstone_count,json=vertexTombstoneCount,proto3" json:"vertex_tombstone_count,omitempty"`
 	EdgeTombstoneCount       uint64                 `protobuf:"varint,6,opt,name=edge_tombstone_count,json=edgeTombstoneCount,proto3" json:"edge_tombstone_count,omitempty"`
-	ReceiptCount             uint64                 `protobuf:"varint,7,opt,name=receipt_count,json=receiptCount,proto3" json:"receipt_count,omitempty"`
-	// Cross-checks receipt_metadata.origin_cutoffs and the legacy cutoff map.
-	ReceiptOriginCount uint64 `protobuf:"varint,8,opt,name=receipt_origin_count,json=receiptOriginCount,proto3" json:"receipt_origin_count,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	ActiveReceiptCount       uint64                 `protobuf:"varint,7,opt,name=active_receipt_count,json=activeReceiptCount,proto3" json:"active_receipt_count,omitempty"`
+	// Cross-checks receipt_metadata.origin_cutoffs and the graph cutoff map.
+	OriginCount uint64 `protobuf:"varint,8,opt,name=origin_count,json=originCount,proto3" json:"origin_count,omitempty"`
+	// Independently cross-check the represented retired policy set and rows.
+	RetiredEpochCount   uint64 `protobuf:"varint,9,opt,name=retired_epoch_count,json=retiredEpochCount,proto3" json:"retired_epoch_count,omitempty"`
+	RetiredReceiptCount uint64 `protobuf:"varint,10,opt,name=retired_receipt_count,json=retiredReceiptCount,proto3" json:"retired_receipt_count,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *SnapshotFooter) Reset() {
@@ -2191,16 +2209,30 @@ func (x *SnapshotFooter) GetEdgeTombstoneCount() uint64 {
 	return 0
 }
 
-func (x *SnapshotFooter) GetReceiptCount() uint64 {
+func (x *SnapshotFooter) GetActiveReceiptCount() uint64 {
 	if x != nil {
-		return x.ReceiptCount
+		return x.ActiveReceiptCount
 	}
 	return 0
 }
 
-func (x *SnapshotFooter) GetReceiptOriginCount() uint64 {
+func (x *SnapshotFooter) GetOriginCount() uint64 {
 	if x != nil {
-		return x.ReceiptOriginCount
+		return x.OriginCount
+	}
+	return 0
+}
+
+func (x *SnapshotFooter) GetRetiredEpochCount() uint64 {
+	if x != nil {
+		return x.RetiredEpochCount
+	}
+	return 0
+}
+
+func (x *SnapshotFooter) GetRetiredReceiptCount() uint64 {
+	if x != nil {
+		return x.RetiredReceiptCount
 	}
 	return 0
 }
@@ -2252,9 +2284,11 @@ func (x *SnapshotReceiptContribution) GetContributionId() []byte {
 	return nil
 }
 
-// One unexpired Store row in a RECEIPT_V1 image. Rows are ordered strictly by
-// operation_id. original_result is the exact opaque result bytes retained by
-// the Store; it is not recomputed from the graph at snapshot time.
+// One unexpired active or retired Store row in a RECEIPT_V2 image. The epoch is
+// self-identifying inside operation_id. All rows are ordered strictly by raw
+// operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
+// original_result is the exact opaque result bytes retained by the Store; it
+// is not recomputed from the graph at snapshot time.
 type SnapshotReceipt struct {
 	state          protoimpl.MessageState       `protogen:"open.v1"`
 	OperationId    []byte                       `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`         // Exactly 49 bytes.
@@ -2824,7 +2858,7 @@ func (x *SnapshotEdgeTombstone) GetExpiration() *timestamppb.Timestamp {
 }
 
 // SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
-// order is always: exactly one SnapshotHeader; for RECEIPT_V1, zero or more
+// order is always: exactly one SnapshotHeader; for RECEIPT_V2, zero or more
 // SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
 // frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
 // SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
@@ -3144,8 +3178,8 @@ type PeerStatusResponse struct {
 	// empty means the responder cannot prove search-config compatibility.
 	SearchConfigFingerprint string `protobuf:"bytes,3,opt,name=search_config_fingerprint,json=searchConfigFingerprint,proto3" json:"search_config_fingerprint,omitempty"`
 	// The minimum Snapshot format needed to preserve the responder's durable
-	// state. Old peers may ignore this field; Snapshot itself must reject a
-	// graph-only request when RECEIPT_V1 is required.
+	// state. Snapshot rejects an unspecified or graph-only request when
+	// RECEIPT_V2 is required.
 	RequiredSnapshotFormat SnapshotFormat `protobuf:"varint,4,opt,name=required_snapshot_format,json=requiredSnapshotFormat,proto3,enum=graph.v1.SnapshotFormat" json:"required_snapshot_format,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
@@ -3328,11 +3362,12 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x0eidentity_chunk\x18\x03 \x01(\v2\x17.graph.v1.IdentityChunkH\x00R\ridentityChunkB\a\n" +
 	"\x05event\"T\n" +
 	"\x0fSnapshotRequest\x12A\n" +
-	"\x0frequired_format\x18\x01 \x01(\x0e2\x18.graph.v1.SnapshotFormatR\x0erequiredFormat\"\xc0\x01\n" +
-	"\x17SnapshotReceiptMetadata\x12/\n" +
-	"\x06policy\x18\x01 \x01(\v2\x17.graph.v1.ReceiptPolicyR\x06policy\x126\n" +
+	"\x0frequired_format\x18\x01 \x01(\x0e2\x18.graph.v1.SnapshotFormatR\x0erequiredFormat\"\x91\x02\n" +
+	"\x17SnapshotReceiptMetadata\x12<\n" +
+	"\ractive_policy\x18\x01 \x01(\v2\x17.graph.v1.ReceiptPolicyR\factivePolicy\x126\n" +
 	"\x18clock_high_water_unix_ms\x18\x02 \x01(\x04R\x14clockHighWaterUnixMs\x12<\n" +
-	"\x0eorigin_cutoffs\x18\x03 \x03(\v2\x15.graph.v1.OriginStateR\roriginCutoffs\"\x9d\x03\n" +
+	"\x0eorigin_cutoffs\x18\x03 \x03(\v2\x15.graph.v1.OriginStateR\roriginCutoffs\x12B\n" +
+	"\x10retired_policies\x18\x04 \x03(\v2\x17.graph.v1.ReceiptPolicyR\x0fretiredPolicies\"\x9d\x03\n" +
 	"\x0eSnapshotHeader\x12c\n" +
 	"\x15cutoff_seq_per_origin\x18\x01 \x03(\v20.graph.v1.SnapshotHeader.CutoffSeqPerOriginEntryR\x12cutoffSeqPerOrigin\x125\n" +
 	"\n" +
@@ -3342,7 +3377,7 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x10receipt_metadata\x18\x05 \x01(\v2!.graph.v1.SnapshotReceiptMetadataR\x0freceiptMetadata\x1aE\n" +
 	"\x17CutoffSeqPerOriginEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x8b\x03\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xed\x03\n" +
 	"\x0eSnapshotFooter\x12!\n" +
 	"\fvertex_count\x18\x01 \x01(\x04R\vvertexCount\x12\x1d\n" +
 	"\n" +
@@ -3350,9 +3385,12 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x1bvertex_causal_barrier_count\x18\x03 \x01(\x04R\x18vertexCausalBarrierCount\x129\n" +
 	"\x19edge_causal_barrier_count\x18\x04 \x01(\x04R\x16edgeCausalBarrierCount\x124\n" +
 	"\x16vertex_tombstone_count\x18\x05 \x01(\x04R\x14vertexTombstoneCount\x120\n" +
-	"\x14edge_tombstone_count\x18\x06 \x01(\x04R\x12edgeTombstoneCount\x12#\n" +
-	"\rreceipt_count\x18\a \x01(\x04R\freceiptCount\x120\n" +
-	"\x14receipt_origin_count\x18\b \x01(\x04R\x12receiptOriginCount\"F\n" +
+	"\x14edge_tombstone_count\x18\x06 \x01(\x04R\x12edgeTombstoneCount\x120\n" +
+	"\x14active_receipt_count\x18\a \x01(\x04R\x12activeReceiptCount\x12!\n" +
+	"\forigin_count\x18\b \x01(\x04R\voriginCount\x12.\n" +
+	"\x13retired_epoch_count\x18\t \x01(\x04R\x11retiredEpochCount\x122\n" +
+	"\x15retired_receipt_count\x18\n" +
+	" \x01(\x04R\x13retiredReceiptCount\"F\n" +
 	"\x1bSnapshotReceiptContribution\x12'\n" +
 	"\x0fcontribution_id\x18\x01 \x01(\fR\x0econtributionId\"\x90\x03\n" +
 	"\x0fSnapshotReceipt\x12!\n" +
@@ -3440,7 +3478,7 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x0eSnapshotFormat\x12\x1f\n" +
 	"\x1bSNAPSHOT_FORMAT_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dSNAPSHOT_FORMAT_GRAPH_ONLY_V1\x10\x01\x12\x1e\n" +
-	"\x1aSNAPSHOT_FORMAT_RECEIPT_V1\x10\x02*\xfa\x01\n" +
+	"\x1aSNAPSHOT_FORMAT_RECEIPT_V2\x10\x02*\xfa\x01\n" +
 	"\x13SnapshotReceiptKind\x12%\n" +
 	"!SNAPSHOT_RECEIPT_KIND_UNSPECIFIED\x10\x00\x12$\n" +
 	" SNAPSHOT_RECEIPT_KIND_PUT_VERTEX\x10\x01\x12\"\n" +
@@ -3580,49 +3618,50 @@ var file_graph_v1_replication_proto_depIdxs = []int32{
 	20, // 44: graph.v1.SubscribeResponse.checkpoint:type_name -> graph.v1.IdentityCheckpoint
 	21, // 45: graph.v1.SubscribeResponse.identity_chunk:type_name -> graph.v1.IdentityChunk
 	2,  // 46: graph.v1.SnapshotRequest.required_format:type_name -> graph.v1.SnapshotFormat
-	60, // 47: graph.v1.SnapshotReceiptMetadata.policy:type_name -> graph.v1.ReceiptPolicy
+	60, // 47: graph.v1.SnapshotReceiptMetadata.active_policy:type_name -> graph.v1.ReceiptPolicy
 	38, // 48: graph.v1.SnapshotReceiptMetadata.origin_cutoffs:type_name -> graph.v1.OriginState
-	42, // 49: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
-	4,  // 50: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
-	2,  // 51: graph.v1.SnapshotHeader.format:type_name -> graph.v1.SnapshotFormat
-	24, // 52: graph.v1.SnapshotHeader.receipt_metadata:type_name -> graph.v1.SnapshotReceiptMetadata
-	3,  // 53: graph.v1.SnapshotReceipt.kind:type_name -> graph.v1.SnapshotReceiptKind
-	27, // 54: graph.v1.SnapshotReceipt.contribution:type_name -> graph.v1.SnapshotReceiptContribution
-	58, // 55: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
-	4,  // 56: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
-	4,  // 57: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
-	57, // 58: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
-	4,  // 59: graph.v1.SnapshotEdgeContribution.hlc:type_name -> graph.v1.HLCTimestamp
-	4,  // 60: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
-	31, // 61: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
-	4,  // 62: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
-	4,  // 63: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	57, // 64: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
-	4,  // 65: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	57, // 66: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
-	25, // 67: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
-	29, // 68: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
-	32, // 69: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
-	26, // 70: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
-	30, // 71: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
-	33, // 72: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
-	34, // 73: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
-	35, // 74: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
-	28, // 75: graph.v1.SnapshotResponse.receipt:type_name -> graph.v1.SnapshotReceipt
-	4,  // 76: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
-	38, // 77: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
-	2,  // 78: graph.v1.PeerStatusResponse.required_snapshot_format:type_name -> graph.v1.SnapshotFormat
-	19, // 79: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
-	23, // 80: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
-	37, // 81: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
-	22, // 82: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
-	36, // 83: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
-	39, // 84: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
-	82, // [82:85] is the sub-list for method output_type
-	79, // [79:82] is the sub-list for method input_type
-	79, // [79:79] is the sub-list for extension type_name
-	79, // [79:79] is the sub-list for extension extendee
-	0,  // [0:79] is the sub-list for field type_name
+	60, // 49: graph.v1.SnapshotReceiptMetadata.retired_policies:type_name -> graph.v1.ReceiptPolicy
+	42, // 50: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
+	4,  // 51: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
+	2,  // 52: graph.v1.SnapshotHeader.format:type_name -> graph.v1.SnapshotFormat
+	24, // 53: graph.v1.SnapshotHeader.receipt_metadata:type_name -> graph.v1.SnapshotReceiptMetadata
+	3,  // 54: graph.v1.SnapshotReceipt.kind:type_name -> graph.v1.SnapshotReceiptKind
+	27, // 55: graph.v1.SnapshotReceipt.contribution:type_name -> graph.v1.SnapshotReceiptContribution
+	58, // 56: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
+	4,  // 57: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
+	4,  // 58: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	57, // 59: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
+	4,  // 60: graph.v1.SnapshotEdgeContribution.hlc:type_name -> graph.v1.HLCTimestamp
+	4,  // 61: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
+	31, // 62: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
+	4,  // 63: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	4,  // 64: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	57, // 65: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
+	4,  // 66: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	57, // 67: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
+	25, // 68: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
+	29, // 69: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
+	32, // 70: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
+	26, // 71: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
+	30, // 72: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
+	33, // 73: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
+	34, // 74: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
+	35, // 75: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
+	28, // 76: graph.v1.SnapshotResponse.receipt:type_name -> graph.v1.SnapshotReceipt
+	4,  // 77: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
+	38, // 78: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
+	2,  // 79: graph.v1.PeerStatusResponse.required_snapshot_format:type_name -> graph.v1.SnapshotFormat
+	19, // 80: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
+	23, // 81: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
+	37, // 82: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
+	22, // 83: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
+	36, // 84: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
+	39, // 85: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
+	83, // [83:86] is the sub-list for method output_type
+	80, // [80:83] is the sub-list for method input_type
+	80, // [80:80] is the sub-list for extension type_name
+	80, // [80:80] is the sub-list for extension extendee
+	0,  // [0:80] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_replication_proto_init() }

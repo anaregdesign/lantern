@@ -31,33 +31,12 @@ var errReceiptBaselineInstallDrift = errors.New("service: receipt baseline insta
 // it into this service's identity-stable runtime objects. It is a private
 // in-process composition primitive; no public receipt RPC calls it.
 func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture ReceiptWholeStateCapture) error {
-	return s.installReceiptBaseline(ctx, capture, false)
-}
-
-// InstallActiveReceiptBaselineV1 imports an active-only RECEIPT_V1 capture
-// only while both the detached image and local retired catalog are empty.
-func (s *LanternService) InstallActiveReceiptBaselineV1(
-	ctx context.Context,
-	capture ReceiptWholeStateCapture,
-) error {
-	if len(capture.Retired.Epochs) != 0 {
-		return errRetiredReceiptDowngrade
-	}
-	empty, err := newEmptyRetiredCatalogSnapshot(
-		capture.Policy,
-		capture.Receipts.ClockHighWaterMillis,
-	)
-	if err != nil {
-		return fmt.Errorf("service: construct RECEIPT_V1 empty retired catalog: %w", err)
-	}
-	capture.Retired = empty
-	return s.installReceiptBaseline(ctx, capture, true)
+	return s.installReceiptBaseline(ctx, capture)
 }
 
 func (s *LanternService) installReceiptBaseline(
 	ctx context.Context,
 	capture ReceiptWholeStateCapture,
-	requireEmptyRetired bool,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -136,7 +115,6 @@ func (s *LanternService) installReceiptBaseline(
 			incoming,
 			incomingReceipts,
 			graphFrames,
-			requireEmptyRetired,
 		)
 		if err != nil {
 			return err
@@ -162,7 +140,6 @@ func (s *LanternService) installReceiptBaseline(
 			prepared.candidate,
 			raw,
 			digest,
-			requireEmptyRetired,
 			&markerMayBeDurable,
 		)
 		if err == nil {
@@ -215,7 +192,6 @@ func (s *LanternService) prepareReceiptBaselineAttempt(
 	incoming *ReceiptBaselineCandidate,
 	incomingReceipts mutationreceipt.Snapshot,
 	graphFrames []*pb.SnapshotResponse,
-	requireEmptyRetired bool,
 ) (receiptBaselineInstallObservation, preparedReceiptBaselineAttempt, error) {
 	var observed receiptBaselineInstallObservation
 	err := s.withExclusiveCommittedView(func() error {
@@ -237,9 +213,6 @@ func (s *LanternService) prepareReceiptBaselineAttempt(
 			return fmt.Errorf("service: snapshot current retired receipt catalog: %w", err)
 		}
 		observed.origins = s.origins.States()
-		if requireEmptyRetired && len(observed.retired.Epochs) != 0 {
-			return errRetiredReceiptDowngrade
-		}
 		return validateOriginStateDominance(incoming.Origins, observed.origins)
 	})
 	if err != nil {
@@ -247,11 +220,8 @@ func (s *LanternService) prepareReceiptBaselineAttempt(
 	}
 	effectiveHighWater := incomingReceipts.ClockHighWaterMillis
 	if effectiveHighWater < observed.active.ClockHighWaterMillis {
-		if !requireEmptyRetired {
-			return receiptBaselineInstallObservation{}, preparedReceiptBaselineAttempt{},
-				fmt.Errorf("%w: active receipt high-water would move backward", mutationreceipt.ErrRetiredCatalogClockRollback)
-		}
-		effectiveHighWater = observed.active.ClockHighWaterMillis
+		return receiptBaselineInstallObservation{}, preparedReceiptBaselineAttempt{},
+			fmt.Errorf("%w: active receipt high-water would move backward", mutationreceipt.ErrRetiredCatalogClockRollback)
 	}
 	activeConfig := receiptRuntime.policy
 	activeConfig.ClockHighWater = time.UnixMilli(effectiveHighWater)
@@ -345,7 +315,6 @@ func (s *LanternService) commitReceiptBaselineAttempt(
 	candidate *ReceiptBaselineCandidate,
 	raw []byte,
 	digest [32]byte,
-	requireEmptyRetired bool,
 	markerMayBeDurable *bool,
 ) (err error) {
 	defer func() {
@@ -385,9 +354,6 @@ func (s *LanternService) commitReceiptBaselineAttempt(
 			return fmt.Errorf("service: snapshot final retired receipt catalog: %w", err)
 		}
 		currentOrigins := s.origins.States()
-		if requireEmptyRetired && len(currentRetired.Epochs) != 0 {
-			return errRetiredReceiptDowngrade
-		}
 		if revision != observed.revision ||
 			!reflect.DeepEqual(currentActive, observed.active) ||
 			!reflect.DeepEqual(currentRetired, observed.retired) ||

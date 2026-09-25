@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -20,8 +21,6 @@ import (
 )
 
 const receiptSnapshotMaxFrameBytes = 8 << 20
-
-var errRetiredReceiptDowngrade = errors.New("service: active-only receipt format cannot represent retired receipt evidence")
 
 // replicationSnapshotCut groups data copied under a publication cut. The
 // receipt capture clones mutable Vertex payloads before releasing its cut;
@@ -36,8 +35,8 @@ type replicationSnapshotCut struct {
 }
 
 // sendSnapshotFrames projects a detached graph cut into graph frames. A
-// RECEIPT_V1 capture uses these frames as an intermediate representation;
-// prepareReceiptSnapshotFrames adds the receipt metadata and rows before the
+// RECEIPT_V2 capture uses these frames as an intermediate representation;
+// PrepareReceiptSnapshotFrames adds the receipt metadata and rows before the
 // public producer sends anything.
 func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format pb.SnapshotFormat, stream Sender[pb.SnapshotResponse]) error {
 	cutoffPerOrigin, cutoffHLC, cutoffLocalSeq := cut.cutoffPerOrigin, cut.cutoffHLC, cut.cutoffLocalSeq
@@ -194,34 +193,29 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 	return stream.Send(footer)
 }
 
-// prepareReceiptSnapshotFrames converts one detached publication cut into a
-// complete RECEIPT_V1 stream. It validates and owns the full frame sequence
+// PrepareReceiptSnapshotFrames converts one detached publication cut into a
+// complete RECEIPT_V2 stream. It validates and owns the full frame sequence
 // before the caller sends the header, so malformed source data cannot expose a
 // success-shaped partial image.
-func prepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mutationreceipt.Config) ([]*pb.SnapshotResponse, error) {
-	if err := validateActiveOnlyRetiredSnapshot(
-		capture.Policy,
-		capture.Receipts,
-		capture.Retired,
-	); err != nil {
-		return nil, err
-	}
+func PrepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mutationreceipt.Config) ([]*pb.SnapshotResponse, error) {
 	if err := validateReceiptSnapshotCapture(capture, requested); err != nil {
 		return nil, err
+	}
+	retiredConfig, _, err := retiredCatalogConfig(
+		capture.Policy,
+		capture.Receipts.ClockHighWaterMillis,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("receipt Snapshot has invalid retired catalog policy: %w", err)
 	}
 
 	headerFrame := proto.Clone(capture.Graph[0]).(*pb.SnapshotResponse)
 	header := headerFrame.GetHeader()
 	header.ReceiptMetadata = &pb.SnapshotReceiptMetadata{
-		Policy: &pb.ReceiptPolicy{
-			DeploymentEpoch: append([]byte(nil), capture.Receipts.Epoch[:]...),
-			Fingerprint:     append([]byte(nil), capture.Receipts.PolicyFingerprint[:]...),
-			RetentionMs:     uint64(capture.Policy.Retention / time.Millisecond),
-			MaxEntries:      uint64(capture.Policy.MaxEntries),
-			MaxBytes:        capture.Policy.MaxBytes,
-		},
+		ActivePolicy:         receiptSnapshotPolicy(capture.Policy, capture.Receipts.PolicyFingerprint),
 		ClockHighWaterUnixMs: uint64(capture.Receipts.ClockHighWaterMillis),
 		OriginCutoffs:        make([]*pb.OriginState, len(capture.Origins)),
+		RetiredPolicies:      make([]*pb.ReceiptPolicy, len(capture.Retired.Epochs)),
 	}
 	for i, origin := range capture.Origins {
 		header.ReceiptMetadata.OriginCutoffs[i] = &pb.OriginState{
@@ -230,10 +224,31 @@ func prepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mu
 			LastHlc: hlcToProto(origin.LastHLC),
 		}
 	}
+	for i, member := range capture.Retired.Epochs {
+		config := mutationreceipt.Config{
+			Epoch:      member.Policy.Epoch,
+			Retention:  member.Policy.Retention,
+			MaxEntries: member.Policy.MaxEntries,
+			MaxBytes:   member.Policy.MaxBytes,
+		}
+		header.ReceiptMetadata.RetiredPolicies[i] =
+			receiptSnapshotPolicy(config, member.State.PolicyFingerprint)
+	}
 
-	frames := make([]*pb.SnapshotResponse, 0, len(capture.Graph)+len(capture.Receipts.Receipts))
+	rows := make([]mutationreceipt.Receipt, 0, len(capture.Receipts.Receipts))
+	rows = append(rows, capture.Receipts.Receipts...)
+	retiredCount := 0
+	for _, member := range capture.Retired.Epochs {
+		rows = append(rows, member.State.Receipts...)
+		retiredCount += len(member.State.Receipts)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return bytes.Compare(rows[i].ID[:], rows[j].ID[:]) < 0
+	})
+
+	frames := make([]*pb.SnapshotResponse, 0, len(capture.Graph)+len(rows))
 	frames = append(frames, headerFrame)
-	for _, receipt := range capture.Receipts.Receipts {
+	for _, receipt := range rows {
 		row, err := receiptSnapshotRow(receipt)
 		if err != nil {
 			return nil, err
@@ -242,41 +257,44 @@ func prepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mu
 			Entry: &pb.SnapshotResponse_Receipt{Receipt: row},
 		})
 	}
+	graphBody := make([]*pb.SnapshotResponse, 0, len(capture.Graph)-2)
 	for _, frame := range capture.Graph[1 : len(capture.Graph)-1] {
-		frames = append(frames, proto.Clone(frame).(*pb.SnapshotResponse))
+		owned := proto.Clone(frame).(*pb.SnapshotResponse)
+		if edge := owned.GetEdge(); edge != nil {
+			sort.Slice(edge.Contributions, func(i, j int) bool {
+				return bytes.Compare(
+					edge.Contributions[i].GetContribId(),
+					edge.Contributions[j].GetContribId(),
+				) < 0
+			})
+		}
+		graphBody = append(graphBody, owned)
 	}
+	sort.Slice(graphBody, func(i, j int) bool {
+		return compareReceiptSnapshotGraphFrames(graphBody[i], graphBody[j]) < 0
+	})
+	frames = append(frames, graphBody...)
 	footerFrame := proto.Clone(capture.Graph[len(capture.Graph)-1]).(*pb.SnapshotResponse)
-	footerFrame.GetFooter().ReceiptCount = uint64(len(capture.Receipts.Receipts))
-	footerFrame.GetFooter().ReceiptOriginCount = uint64(len(capture.Origins))
+	footerFrame.GetFooter().ActiveReceiptCount = uint64(len(capture.Receipts.Receipts))
+	footerFrame.GetFooter().RetiredEpochCount = uint64(len(capture.Retired.Epochs))
+	footerFrame.GetFooter().RetiredReceiptCount = uint64(retiredCount)
+	footerFrame.GetFooter().OriginCount = uint64(len(capture.Origins))
 	frames = append(frames, footerFrame)
 
-	if err := validateReceiptSnapshotFrames(frames); err != nil {
+	if err := validateReceiptSnapshotFrames(frames, requested, retiredConfig); err != nil {
 		return nil, err
 	}
 	return frames, nil
 }
 
-// validateActiveOnlyRetiredSnapshot rejects any retired state that an
-// active-only format cannot represent without changing the captured clock cut.
-func validateActiveOnlyRetiredSnapshot(
-	policy mutationreceipt.Config,
-	active mutationreceipt.Snapshot,
-	retired mutationreceipt.RetiredCatalogSnapshot,
-) error {
-	if retired.ClockHighWaterMillis != active.ClockHighWaterMillis {
-		return fmt.Errorf("%w: active and retired clock high-water differ", errRetiredReceiptDowngrade)
+func receiptSnapshotPolicy(config mutationreceipt.Config, fingerprint [32]byte) *pb.ReceiptPolicy {
+	return &pb.ReceiptPolicy{
+		DeploymentEpoch: append([]byte(nil), config.Epoch[:]...),
+		Fingerprint:     append([]byte(nil), fingerprint[:]...),
+		RetentionMs:     uint64(config.Retention / time.Millisecond),
+		MaxEntries:      uint64(config.MaxEntries),
+		MaxBytes:        config.MaxBytes,
 	}
-	config, _, err := retiredCatalogConfig(policy, active.ClockHighWaterMillis)
-	if err != nil {
-		return fmt.Errorf("active-only receipt format has invalid retired catalog policy: %w", err)
-	}
-	if _, err := mutationreceipt.NewRetiredCatalogFromSnapshot(config, retired); err != nil {
-		return fmt.Errorf("active-only receipt format has invalid retired catalog state: %w", err)
-	}
-	if len(retired.Epochs) != 0 {
-		return errRetiredReceiptDowngrade
-	}
-	return nil
 }
 
 func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested mutationreceipt.Config) error {
@@ -291,10 +309,12 @@ func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested 
 			requested.ClockHighWater.UnixMilli() > capture.Receipts.ClockHighWaterMillis) {
 		return fmt.Errorf("receipt Snapshot capture policy differs from requested policy: %w", mutationreceipt.ErrInvalidSnapshot)
 	}
-	if capture.Policy.ClockHighWater.UnixMilli() != capture.Receipts.ClockHighWaterMillis {
+	if capture.Policy.ClockHighWater.IsZero() ||
+		capture.Policy.ClockHighWater.UnixMilli() != capture.Receipts.ClockHighWaterMillis {
 		return fmt.Errorf("receipt Snapshot clock high-water mismatch: %w", mutationreceipt.ErrInvalidSnapshot)
 	}
-	if _, err := mutationreceipt.NewFromSnapshot(capture.Policy, capture.Receipts); err != nil {
+	active, err := mutationreceipt.NewFromSnapshot(capture.Policy, capture.Receipts)
+	if err != nil {
 		return fmt.Errorf("receipt Snapshot has invalid Store state: %w", err)
 	}
 	retiredConfig, _, err := retiredCatalogConfig(
@@ -304,8 +324,26 @@ func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested 
 	if err != nil {
 		return fmt.Errorf("receipt Snapshot has invalid retired catalog policy: %w", err)
 	}
-	if _, err := mutationreceipt.NewRetiredCatalogFromSnapshot(retiredConfig, capture.Retired); err != nil {
-		return fmt.Errorf("receipt Snapshot has invalid retired catalog state: %w", err)
+	canonicalActive, err := active.Snapshot()
+	if err != nil {
+		return fmt.Errorf("receipt Snapshot canonicalize Store state: %w", err)
+	}
+	if !equalReceiptSnapshot(canonicalActive, capture.Receipts) {
+		return fmt.Errorf("receipt Snapshot Store state is not lossless and canonical: %w", mutationreceipt.ErrInvalidSnapshot)
+	}
+	if capture.Retired.ClockHighWaterMillis != capture.Receipts.ClockHighWaterMillis {
+		return fmt.Errorf("receipt Snapshot retired catalog metadata mismatch: %w", mutationreceipt.ErrInvalidRetiredCatalogSnapshot)
+	}
+	retired, err := mutationreceipt.NewRetiredCatalogFromSnapshot(retiredConfig, capture.Retired)
+	if err != nil {
+		return fmt.Errorf("receipt Snapshot has invalid retired catalog: %w", err)
+	}
+	canonicalRetired, err := retired.Snapshot(capture.Receipts.ClockHighWater())
+	if err != nil {
+		return fmt.Errorf("receipt Snapshot canonicalize retired catalog: %w", err)
+	}
+	if !equalRetiredCatalogSnapshot(canonicalRetired, capture.Retired) {
+		return fmt.Errorf("receipt Snapshot retired catalog is not lossless and canonical: %w", mutationreceipt.ErrInvalidRetiredCatalogSnapshot)
 	}
 	if err := ValidateReceiptSnapshotGraphCapture(capture.Graph, capture.Origins); err != nil {
 		return err
@@ -315,6 +353,29 @@ func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested 
 		return fmt.Errorf("receipt Snapshot clock high-water exceeds graph cutoff: %w", mutationreceipt.ErrInvalidSnapshot)
 	}
 	return nil
+}
+
+func equalReceiptSnapshot(left, right mutationreceipt.Snapshot) bool {
+	if len(left.Receipts) == 0 {
+		left.Receipts = nil
+	}
+	if len(right.Receipts) == 0 {
+		right.Receipts = nil
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func equalRetiredCatalogSnapshot(
+	left,
+	right mutationreceipt.RetiredCatalogSnapshot,
+) bool {
+	if len(left.Epochs) == 0 {
+		left.Epochs = nil
+	}
+	if len(right.Epochs) == 0 {
+		right.Epochs = nil
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 // ValidateReceiptSnapshotGraphCapture validates the detached graph component
@@ -340,9 +401,10 @@ func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
 		header.GetReceiptMetadata() != nil ||
-		footer.GetReceiptCount() != 0 || footer.GetReceiptOriginCount() != 0 {
+		footer.GetActiveReceiptCount() != 0 || footer.GetRetiredEpochCount() != 0 ||
+		footer.GetRetiredReceiptCount() != 0 || footer.GetOriginCount() != 0 {
 		return fmt.Errorf("receipt Snapshot graph capture has invalid receipt framing")
 	}
 	cutoff, ok := receiptSnapshotHLC(header.GetCutoffHlc())
@@ -357,6 +419,7 @@ func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 		frames[1:len(frames)-1],
 		footer,
 		receiptSnapshotCausalBounds{cutoff: cutoff, originLast: originLast},
+		false,
 	)
 }
 
@@ -383,6 +446,7 @@ func validateReceiptSnapshotGraphBody(
 	frames []*pb.SnapshotResponse,
 	footer *pb.SnapshotFooter,
 	bounds receiptSnapshotCausalBounds,
+	requireCanonical bool,
 ) error {
 	var counts [6]uint64
 	phase := 0
@@ -392,6 +456,7 @@ func validateReceiptSnapshotGraphBody(
 	edgeTombstones := make(map[receiptSnapshotEdgeKey]hlc.Timestamp)
 	vertices := make(map[string]struct{})
 	edges := make(map[receiptSnapshotEdgeKey]struct{})
+	var previousFrame *pb.SnapshotResponse
 	for _, frame := range frames {
 		if frame == nil {
 			return fmt.Errorf("nil graph frame")
@@ -400,7 +465,12 @@ func validateReceiptSnapshotGraphBody(
 		if rank == 0 || rank < phase {
 			return fmt.Errorf("receipt Snapshot graph frames are malformed or reordered")
 		}
+		if requireCanonical && previousFrame != nil && rank == phase &&
+			compareReceiptSnapshotGraphFrames(previousFrame, frame) >= 0 {
+			return fmt.Errorf("receipt Snapshot graph frames are not in strict canonical order")
+		}
 		phase = rank
+		previousFrame = frame
 		switch entry := frame.GetEntry().(type) {
 		case *pb.SnapshotResponse_VertexCausalBarrier:
 			barrier := entry.VertexCausalBarrier
@@ -491,7 +561,12 @@ func validateReceiptSnapshotGraphBody(
 		case *pb.SnapshotResponse_Edge:
 			item := entry.Edge
 			key := receiptSnapshotEdgeKey{item.GetTail(), item.GetHead()}
-			putFloor, err := validateReceiptSnapshotEdge(item, edgeTombstones[key], bounds)
+			putFloor, err := validateReceiptSnapshotEdge(
+				item,
+				edgeTombstones[key],
+				bounds,
+				requireCanonical,
+			)
 			if err != nil {
 				return err
 			}
@@ -590,6 +665,7 @@ func validateReceiptSnapshotEdge(
 	edge *pb.SnapshotEdge,
 	tombstone hlc.Timestamp,
 	bounds receiptSnapshotCausalBounds,
+	requireCanonical bool,
 ) (hlc.Timestamp, error) {
 	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || len(edge.GetContributions()) == 0 {
 		return hlc.Timestamp{}, fmt.Errorf("invalid live edge")
@@ -604,11 +680,16 @@ func validateReceiptSnapshotEdge(
 	}
 	var seenPut bool
 	seenAdds := make(map[[24]byte]struct{})
-	for _, contribution := range edge.GetContributions() {
+	var previousID []byte
+	for i, contribution := range edge.GetContributions() {
 		if contribution == nil || !validOptionalReceiptSnapshotTimestamp(contribution.GetExpiration()) {
 			return hlc.Timestamp{}, fmt.Errorf("invalid live edge contribution")
 		}
 		idBytes := contribution.GetContribId()
+		if requireCanonical && i != 0 && bytes.Compare(previousID, idBytes) >= 0 {
+			return hlc.Timestamp{}, fmt.Errorf("live edge contributions are not in strict canonical order")
+		}
+		previousID = idBytes
 		switch len(idBytes) {
 		case 0:
 			if tombstone != (hlc.Timestamp{}) {
@@ -668,6 +749,38 @@ func snapshotGraphFrameRank(frame *pb.SnapshotResponse) int {
 		return 6
 	default:
 		return 0
+	}
+}
+
+func compareReceiptSnapshotGraphFrames(left, right *pb.SnapshotResponse) int {
+	leftRank, rightRank := snapshotGraphFrameRank(left), snapshotGraphFrameRank(right)
+	if leftRank != rightRank {
+		return leftRank - rightRank
+	}
+	leftFirst, leftSecond := receiptSnapshotGraphFrameIdentity(left)
+	rightFirst, rightSecond := receiptSnapshotGraphFrameIdentity(right)
+	if compared := strings.Compare(leftFirst, rightFirst); compared != 0 {
+		return compared
+	}
+	return strings.Compare(leftSecond, rightSecond)
+}
+
+func receiptSnapshotGraphFrameIdentity(frame *pb.SnapshotResponse) (string, string) {
+	switch {
+	case frame.GetVertexCausalBarrier() != nil:
+		return frame.GetVertexCausalBarrier().GetKey(), ""
+	case frame.GetEdgeCausalBarrier() != nil:
+		return frame.GetEdgeCausalBarrier().GetTail(), frame.GetEdgeCausalBarrier().GetHead()
+	case frame.GetVertexTombstone() != nil:
+		return frame.GetVertexTombstone().GetKey(), ""
+	case frame.GetEdgeTombstone() != nil:
+		return frame.GetEdgeTombstone().GetTail(), frame.GetEdgeTombstone().GetHead()
+	case frame.GetVertex() != nil:
+		return frame.GetVertex().GetVertex().GetKey(), ""
+	case frame.GetEdge() != nil:
+		return frame.GetEdge().GetTail(), frame.GetEdge().GetHead()
+	default:
+		return "", ""
 	}
 }
 
@@ -746,17 +859,25 @@ func ValidateReceiptSnapshotFrame(frame *pb.SnapshotResponse) error {
 }
 
 // validateReceiptSnapshotFrames is the producer's final preflight.
-func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
-	_, err := DecodeReceiptSnapshotFrames(frames)
+func validateReceiptSnapshotFrames(
+	frames []*pb.SnapshotResponse,
+	expected mutationreceipt.Config,
+	retiredConfig mutationreceipt.RetiredCatalogConfig,
+) error {
+	_, err := DecodeReceiptSnapshotFrames(frames, expected, retiredConfig)
 	return err
 }
 
-// DecodeReceiptSnapshotFrames validates one complete RECEIPT_V1 stream and
+// DecodeReceiptSnapshotFrames validates one complete RECEIPT_V2 stream and
 // converts it into the detached capture shape consumed by the private
 // whole-state archive/staging layer. The returned graph stream owns cloned
 // frames and has receipt metadata/counts split back out of its header/footer.
 // It installs nothing and returns no partial capture.
-func DecodeReceiptSnapshotFrames(frames []*pb.SnapshotResponse) (ReceiptWholeStateCapture, error) {
+func DecodeReceiptSnapshotFrames(
+	frames []*pb.SnapshotResponse,
+	expected mutationreceipt.Config,
+	retiredConfig mutationreceipt.RetiredCatalogConfig,
+) (ReceiptWholeStateCapture, error) {
 	if len(frames) < 2 {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot stream lacks header or footer")
 	}
@@ -770,8 +891,8 @@ func DecodeReceiptSnapshotFrames(frames []*pb.SnapshotResponse) (ReceiptWholeSta
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
-		header.GetReceiptMetadata() == nil || header.GetReceiptMetadata().GetPolicy() == nil {
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+		header.GetReceiptMetadata() == nil || header.GetReceiptMetadata().GetActivePolicy() == nil {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot header metadata is missing")
 	}
 	cutoff, ok := receiptSnapshotHLC(header.GetCutoffHlc())
@@ -779,24 +900,55 @@ func DecodeReceiptSnapshotFrames(frames []*pb.SnapshotResponse) (ReceiptWholeSta
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot cutoff HLC is invalid")
 	}
 
-	config, state, err := receiptSnapshotStoreState(header.GetReceiptMetadata())
+	metadata := header.GetReceiptMetadata()
+	config, state, err := receiptSnapshotStoreState(
+		metadata.GetActivePolicy(),
+		metadata.GetClockHighWaterUnixMs(),
+	)
 	if err != nil {
 		return ReceiptWholeStateCapture{}, err
+	}
+	if config.Epoch != expected.Epoch ||
+		config.Retention != expected.Retention ||
+		config.MaxEntries != expected.MaxEntries ||
+		config.MaxBytes != expected.MaxBytes ||
+		(!expected.ClockHighWater.IsZero() &&
+			expected.ClockHighWater.UnixMilli() > state.ClockHighWaterMillis) {
+		return ReceiptWholeStateCapture{}, fmt.Errorf(
+			"receipt Snapshot active policy differs from expected policy: %w",
+			mutationreceipt.ErrInvalidSnapshot,
+		)
 	}
 	if state.ClockHighWaterMillis > cutoff.WallNs/int64(time.Millisecond) {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot clock high-water exceeds cutoff HLC")
 	}
+	retiredState, retiredEpochs, err := receiptSnapshotRetiredState(metadata, config.Epoch)
+	if err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
+	if retiredConfig.ActiveEpoch != config.Epoch ||
+		retiredConfig.MaxEntries <= 0 || retiredConfig.MaxBytes == 0 ||
+		(!retiredConfig.ClockHighWater.IsZero() &&
+			retiredConfig.ClockHighWater.UnixMilli() != state.ClockHighWaterMillis) {
+		return ReceiptWholeStateCapture{}, fmt.Errorf(
+			"receipt Snapshot retired catalog policy differs from expected policy: %w",
+			mutationreceipt.ErrInvalidRetiredCatalogConfig,
+		)
+	}
+	retiredConfig.ClockHighWater = state.ClockHighWater()
 	originLast, origins, err := validateReceiptSnapshotWireOrigins(header, cutoff)
 	if err != nil {
 		return ReceiptWholeStateCapture{}, err
 	}
 
-	var receiptCount uint64
+	var activeReceiptCount, retiredReceiptCount uint64
 	graphFrames := make([]*pb.SnapshotResponse, 0, len(frames))
 	headerFrame := proto.Clone(frames[0]).(*pb.SnapshotResponse)
 	headerFrame.GetHeader().ReceiptMetadata = nil
 	graphFrames = append(graphFrames, headerFrame)
 	graphStarted := false
+	var previousID mutationreceipt.ID
+	havePreviousID := false
 	for _, frame := range frames[1 : len(frames)-1] {
 		if row := frame.GetReceipt(); row != nil {
 			if graphStarted {
@@ -806,60 +958,90 @@ func DecodeReceiptSnapshotFrames(frames []*pb.SnapshotResponse) (ReceiptWholeSta
 			if err != nil {
 				return ReceiptWholeStateCapture{}, err
 			}
-			state.Receipts = append(state.Receipts, receipt)
-			receiptCount++
+			if havePreviousID && bytes.Compare(previousID[:], receipt.ID[:]) >= 0 {
+				return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot rows are not in strict epoch and ID order")
+			}
+			previousID = receipt.ID
+			havePreviousID = true
+			epoch := receiptSnapshotReceiptEpoch(receipt.ID)
+			if epoch == state.Epoch {
+				state.Receipts = append(state.Receipts, receipt)
+				activeReceiptCount++
+			} else if index, exists := retiredEpochs[epoch]; exists {
+				retiredState.Epochs[index].State.Receipts =
+					append(retiredState.Epochs[index].State.Receipts, receipt)
+				retiredReceiptCount++
+			} else {
+				return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot row belongs to an undeclared epoch")
+			}
 			continue
 		}
 		graphStarted = true
 		graphFrames = append(graphFrames, proto.Clone(frame).(*pb.SnapshotResponse))
 	}
-	if receiptCount != footer.GetReceiptCount() ||
-		uint64(len(header.GetReceiptMetadata().GetOriginCutoffs())) != footer.GetReceiptOriginCount() {
+	if activeReceiptCount != footer.GetActiveReceiptCount() ||
+		retiredReceiptCount != footer.GetRetiredReceiptCount() ||
+		uint64(len(retiredState.Epochs)) != footer.GetRetiredEpochCount() ||
+		uint64(len(metadata.GetOriginCutoffs())) != footer.GetOriginCount() {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot footer count mismatch")
 	}
 	if err := validateReceiptSnapshotGraphBody(
 		graphFrames[1:],
 		footer,
 		receiptSnapshotCausalBounds{cutoff: cutoff, originLast: originLast},
+		true,
 	); err != nil {
 		return ReceiptWholeStateCapture{}, err
 	}
 	if _, err := mutationreceipt.NewFromSnapshot(config, state); err != nil {
-		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot rows are invalid: %w", err)
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot active rows are invalid: %w", err)
+	}
+	retiredCatalog, err := mutationreceipt.NewRetiredCatalogFromSnapshot(retiredConfig, retiredState)
+	if err != nil {
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot retired rows are invalid: %w", err)
+	}
+	canonicalRetired, err := retiredCatalog.Snapshot(state.ClockHighWater())
+	if err != nil {
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot canonicalize retired rows: %w", err)
+	}
+	if !equalRetiredCatalogSnapshot(canonicalRetired, retiredState) {
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot retired rows cannot be reconstructed losslessly")
 	}
 	footerFrame := proto.Clone(frames[len(frames)-1]).(*pb.SnapshotResponse)
-	footerFrame.GetFooter().ReceiptCount = 0
-	footerFrame.GetFooter().ReceiptOriginCount = 0
+	footerFrame.GetFooter().ActiveReceiptCount = 0
+	footerFrame.GetFooter().RetiredEpochCount = 0
+	footerFrame.GetFooter().RetiredReceiptCount = 0
+	footerFrame.GetFooter().OriginCount = 0
 	graphFrames = append(graphFrames, footerFrame)
-	retired, err := newEmptyRetiredCatalogSnapshot(config, state.ClockHighWaterMillis)
-	if err != nil {
-		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot empty retired catalog: %w", err)
-	}
 	capture := ReceiptWholeStateCapture{
-		Graph: graphFrames, Receipts: state, Retired: retired, Policy: config, Origins: origins,
+		Graph: graphFrames, Receipts: state, Policy: config,
+		Retired: retiredState, Origins: origins,
 	}
-	if err := validateReceiptSnapshotCapture(capture, config); err != nil {
+	if err := validateReceiptSnapshotCapture(capture, expected); err != nil {
 		return ReceiptWholeStateCapture{}, err
 	}
 	return capture, nil
 }
 
-func receiptSnapshotStoreState(metadata *pb.SnapshotReceiptMetadata) (mutationreceipt.Config, mutationreceipt.Snapshot, error) {
-	policy := metadata.GetPolicy()
+func receiptSnapshotStoreState(
+	policy *pb.ReceiptPolicy,
+	clockHighWater uint64,
+) (mutationreceipt.Config, mutationreceipt.Snapshot, error) {
 	maxInt := uint64(^uint(0) >> 1)
-	if len(policy.GetDeploymentEpoch()) != len(mutationreceipt.Epoch{}) ||
+	if policy == nil ||
+		len(policy.GetDeploymentEpoch()) != len(mutationreceipt.Epoch{}) ||
 		len(policy.GetFingerprint()) != 32 ||
 		policy.GetRetentionMs() > uint64(math.MaxInt64/int64(time.Millisecond)) ||
 		policy.GetMaxEntries() == 0 || policy.GetMaxEntries() > maxInt ||
 		policy.GetMaxBytes() == 0 ||
-		metadata.GetClockHighWaterUnixMs() > math.MaxInt64 {
+		clockHighWater > math.MaxInt64 {
 		return mutationreceipt.Config{}, mutationreceipt.Snapshot{}, fmt.Errorf("receipt Snapshot policy metadata is invalid")
 	}
 	var epoch mutationreceipt.Epoch
 	var fingerprint [32]byte
 	copy(epoch[:], policy.GetDeploymentEpoch())
 	copy(fingerprint[:], policy.GetFingerprint())
-	highWater := int64(metadata.GetClockHighWaterUnixMs())
+	highWater := int64(clockHighWater)
 	config := mutationreceipt.Config{
 		Epoch:          epoch,
 		Retention:      time.Duration(policy.GetRetentionMs()) * time.Millisecond,
@@ -876,6 +1058,51 @@ func receiptSnapshotStoreState(metadata *pb.SnapshotReceiptMetadata) (mutationre
 	return config, state, nil
 }
 
+func receiptSnapshotRetiredState(
+	metadata *pb.SnapshotReceiptMetadata,
+	active mutationreceipt.Epoch,
+) (mutationreceipt.RetiredCatalogSnapshot, map[mutationreceipt.Epoch]int, error) {
+	state := mutationreceipt.RetiredCatalogSnapshot{
+		Version:              1,
+		ClockHighWaterMillis: int64(metadata.GetClockHighWaterUnixMs()),
+		Epochs:               make([]mutationreceipt.RetiredEpochSnapshot, 0, len(metadata.GetRetiredPolicies())),
+	}
+	byEpoch := make(map[mutationreceipt.Epoch]int, len(metadata.GetRetiredPolicies()))
+	var previous mutationreceipt.Epoch
+	for i, wirePolicy := range metadata.GetRetiredPolicies() {
+		config, memberState, err := receiptSnapshotStoreState(
+			wirePolicy,
+			metadata.GetClockHighWaterUnixMs(),
+		)
+		if err != nil {
+			return mutationreceipt.RetiredCatalogSnapshot{}, nil, err
+		}
+		if config.Epoch == active ||
+			(i != 0 && bytes.Compare(previous[:], config.Epoch[:]) >= 0) {
+			return mutationreceipt.RetiredCatalogSnapshot{}, nil,
+				fmt.Errorf("receipt Snapshot retired policies are invalid or unordered")
+		}
+		previous = config.Epoch
+		byEpoch[config.Epoch] = len(state.Epochs)
+		state.Epochs = append(state.Epochs, mutationreceipt.RetiredEpochSnapshot{
+			Policy: mutationreceipt.RetiredEpochPolicy{
+				Epoch:      config.Epoch,
+				Retention:  config.Retention,
+				MaxEntries: config.MaxEntries,
+				MaxBytes:   config.MaxBytes,
+			},
+			State: memberState,
+		})
+	}
+	return state, byEpoch, nil
+}
+
+func receiptSnapshotReceiptEpoch(id mutationreceipt.ID) mutationreceipt.Epoch {
+	var epoch mutationreceipt.Epoch
+	copy(epoch[:], id[1:17])
+	return epoch
+}
+
 func receiptFromSnapshotRow(row *pb.SnapshotReceipt) (mutationreceipt.Receipt, error) {
 	if row == nil || len(row.GetOperationId()) != len(mutationreceipt.ID{}) ||
 		len(row.GetLogicalCallId()) != len(mutationreceipt.GroupID{}) ||
@@ -886,8 +1113,13 @@ func receiptFromSnapshotRow(row *pb.SnapshotReceipt) (mutationreceipt.Receipt, e
 	if err != nil {
 		return mutationreceipt.Receipt{}, err
 	}
+	id, err := mutationreceipt.DecodeID(row.GetOperationId())
+	if err != nil {
+		return mutationreceipt.Receipt{}, fmt.Errorf("receipt Snapshot operation ID is invalid: %w", err)
+	}
 	receipt := mutationreceipt.Receipt{
 		Intent: mutationreceipt.Intent{
+			ID:    id,
 			Index: row.GetItemIndex(),
 			Count: row.GetItemCount(),
 			Kind:  kind,
@@ -895,7 +1127,6 @@ func receiptFromSnapshotRow(row *pb.SnapshotReceipt) (mutationreceipt.Receipt, e
 		Result:         append([]byte(nil), row.GetOriginalResult()...),
 		DeadlineMillis: int64(row.GetDeadlineUnixMs()),
 	}
-	copy(receipt.ID[:], row.GetOperationId())
 	copy(receipt.Group[:], row.GetLogicalCallId())
 	copy(receipt.Digest[:], row.GetIntentSha256())
 	if row.GetContribution() != nil {

@@ -278,34 +278,40 @@ message SubscribeResponse {
 
 // Snapshot format is an explicit compatibility boundary. A graph-only image
 // cannot prove mutation-receipt continuity, even when its origin cutoffs are
-// ahead of every retained log entry. RECEIPT_V1 carries one atomic graph,
-// receipt, clock, and origin cut. A receiver that cannot install that complete
-// format must reject its header before applying any body frame.
+// ahead of every retained log entry. RECEIPT_V2 carries one atomic graph,
+// active receipt Store, retired receipt catalog, clock, and origin cut. A
+// receiver that cannot install that complete format must reject its header
+// before applying any body frame.
 enum SnapshotFormat {
   SNAPSHOT_FORMAT_UNSPECIFIED = 0;
   SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = 1;
-  SNAPSHOT_FORMAT_RECEIPT_V1 = 2;
+  SNAPSHOT_FORMAT_RECEIPT_V2 = 2;
 }
 
 // SnapshotRequest opens a server-streaming snapshot at a single cutoff.
-// Legacy zero means graph-only while receipt writes are disabled. A receiver
-// that needs receipts MUST request RECEIPT_V1 and check the first header's
-// format before applying any body frame. An old server may ignore the new
-// request field, so the header check is mandatory.
+// Zero means graph-only while receipt writes are disabled. A durable receiver
+// MUST request RECEIPT_V2 and check the first header's format before applying
+// any body frame. The header check remains mandatory.
 message SnapshotRequest {
   SnapshotFormat required_format = 1;
 }
 
-// Receipt metadata for one RECEIPT_V1 publication cut. This message is
-// required exactly when an RPC Snapshot header's format is RECEIPT_V1 and is
-// absent from GRAPH_ONLY_V1. origin_cutoffs is sorted by raw origin bytes and
-// must exactly match cutoff_seq_per_origin; the full rows retain each origin's
-// HLC as well as its sequence. clock_high_water_unix_ms must not exceed
+// Receipt metadata for one RECEIPT_V2 publication cut. This message is
+// required exactly when an RPC Snapshot header's format is RECEIPT_V2 and is
+// absent from GRAPH_ONLY_V1. active_policy names the writable Store epoch.
+// retired_policies contains every represented read-only epoch, sorted strictly
+// by raw deployment_epoch bytes; it cannot contain active_policy's epoch.
+// Every retired policy has at least one row in the following receipt stream.
+// origin_cutoffs is sorted by raw origin bytes and must exactly match
+// cutoff_seq_per_origin; the full rows retain each origin's HLC as well as its
+// sequence. clock_high_water_unix_ms is the active Store's sole clock
+// authority, applies to every retired epoch, and must not exceed
 // floor(SnapshotHeader.cutoff_hlc.wall_ns / 1ms).
 message SnapshotReceiptMetadata {
-  ReceiptPolicy policy = 1;
+  ReceiptPolicy active_policy = 1;
   uint64 clock_high_water_unix_ms = 2;
   repeated OriginState origin_cutoffs = 3;
+  repeated ReceiptPolicy retired_policies = 4;
 }
 
 // SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
@@ -313,9 +319,10 @@ message SnapshotReceiptMetadata {
 // used to materialise the snapshot.
 //
 // A bootstrapping graph-only peer advances the cutoffs only after a verified
-// footer. A future RECEIPT_V1 receiver must stage and atomically install its
-// graph, receipt, epoch, policy, and clock image before advancing these
-// cutoffs. It then resumes Subscribe against the SAME responder with both
+// footer. A RECEIPT_V2 receiver must stage and atomically install its graph,
+// active Store, retired catalog, epoch policies, and clock image before
+// advancing these cutoffs. It then resumes Subscribe against the SAME
+// responder with both
 // `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
 // cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
 // snapshot and the live tail stitch without gap or overlap.
@@ -327,7 +334,7 @@ message SnapshotReceiptMetadata {
 // the server has not yet applied any origin (cold cluster) and the
 // resume Subscribe should pass an empty cursor.
 //
-// RECEIPT_V1 is strict: every frame and recursively nested message must have
+// RECEIPT_V2 is strict: every frame and recursively nested message must have
 // no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
 // HLC must be at or below cutoff_hlc and at or below the matching full origin
 // row; a graph HLC whose origin is absent from that vector is invalid.
@@ -338,11 +345,12 @@ message SnapshotHeader {
   // separate from the portable per-origin watermarks and only resumes a tail
   // against the same responder.
   uint64 cutoff_local_seq = 3;
-  // Zero is a legacy graph-only image. A receipt-capable receiver must reject
-  // zero or GRAPH_ONLY_V1 before changing any local state.
+  // Zero selects the graph-only default. A receipt-capable receiver must
+  // reject zero or GRAPH_ONLY_V1 before changing any local state.
   SnapshotFormat format = 4;
-  // Required and complete for RECEIPT_V1; absent for graph-only formats.
-  // The deployment epoch and policy fingerprint are carried inside policy.
+  // Required and complete for RECEIPT_V2; absent for graph-only formats.
+  // Deployment epochs and policy fingerprints are carried inside the active
+  // and retired policies.
   SnapshotReceiptMetadata receipt_metadata = 5;
 }
 
@@ -357,9 +365,12 @@ message SnapshotFooter {
   uint64 edge_causal_barrier_count = 4;
   uint64 vertex_tombstone_count = 5;
   uint64 edge_tombstone_count = 6;
-  uint64 receipt_count = 7;
-  // Cross-checks receipt_metadata.origin_cutoffs and the legacy cutoff map.
-  uint64 receipt_origin_count = 8;
+  uint64 active_receipt_count = 7;
+  // Cross-checks receipt_metadata.origin_cutoffs and the graph cutoff map.
+  uint64 origin_count = 8;
+  // Independently cross-check the represented retired policy set and rows.
+  uint64 retired_epoch_count = 9;
+  uint64 retired_receipt_count = 10;
 }
 
 // SnapshotReceiptKind pins the Store mutation family independently of the
@@ -380,9 +391,11 @@ message SnapshotReceiptContribution {
   bytes contribution_id = 1; // Nonzero 24-byte Add ContribID.
 }
 
-// One unexpired Store row in a RECEIPT_V1 image. Rows are ordered strictly by
-// operation_id. original_result is the exact opaque result bytes retained by
-// the Store; it is not recomputed from the graph at snapshot time.
+// One unexpired active or retired Store row in a RECEIPT_V2 image. The epoch is
+// self-identifying inside operation_id. All rows are ordered strictly by raw
+// operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
+// original_result is the exact opaque result bytes retained by the Store; it
+// is not recomputed from the graph at snapshot time.
 message SnapshotReceipt {
   bytes operation_id = 1; // Exactly 49 bytes.
   bytes logical_call_id = 2; // Exactly 16 nonzero bytes.
@@ -471,7 +484,7 @@ message SnapshotEdgeTombstone {
 }
 
 // SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
-// order is always: exactly one SnapshotHeader; for RECEIPT_V1, zero or more
+// order is always: exactly one SnapshotHeader; for RECEIPT_V2, zero or more
 // SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
 // frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
 // SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
@@ -522,11 +535,11 @@ service LanternReplicationService {
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
 
   // Snapshot streams a point-in-time, causally-consistent dump of every
-  // live vertex and edge to a bootstrapping peer. RECEIPT_V1 additionally
-  // carries the active receipt policy, epoch, clock high-water, complete
-  // unexpired receipt rows, and full origin cutoffs from the same publication
-  // cut. The first frame is a SnapshotHeader; the last frame is a counted
-  // SnapshotFooter.
+  // live vertex and edge to a bootstrapping peer. RECEIPT_V2 additionally
+  // carries the active receipt policy/rows, every bounded retired epoch policy
+  // and row, the active Store clock high-water, and full origin cutoffs from
+  // the same publication cut. The first frame is a SnapshotHeader; the last
+  // frame is a counted SnapshotFooter.
   //
   // Bootstrap stitch contract: after receiving the SnapshotFooter the
   // peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for
@@ -589,7 +602,7 @@ message PeerStatusResponse {
   // empty means the responder cannot prove search-config compatibility.
   string search_config_fingerprint = 3;
   // The minimum Snapshot format needed to preserve the responder's durable
-  // state. Old peers may ignore this field; Snapshot itself must reject a
-  // graph-only request when RECEIPT_V1 is required.
+  // state. Snapshot rejects an unspecified or graph-only request when
+  // RECEIPT_V2 is required.
   SnapshotFormat required_snapshot_format = 4;
 }

@@ -66,7 +66,7 @@ func wholeStateArchiveFixtureAt(t *testing.T, issued time.Time) wholeStateArchiv
 		{Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
 			CutoffSeqPerOrigin: map[string]uint64{hex.EncodeToString(origin[:]): 7},
 			CutoffLocalSeq:     11, CutoffHlc: frameHLC,
-			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
 		}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: &pb.Vertex{Key: "tail"}, Hlc: frameHLC}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: &pb.Vertex{Key: "head"}, Hlc: frameHLC}}},
@@ -300,7 +300,7 @@ func TestWholeStateArchiveRejectsInconsistentCut(t *testing.T) {
 			a.Graph[0].GetHeader().ReceiptMetadata = &pb.SnapshotReceiptMetadata{}
 		}},
 		{"RPC receipt footer count", func(a *wholeStateArchive) {
-			a.Graph[len(a.Graph)-1].GetFooter().ReceiptCount = 1
+			a.Graph[len(a.Graph)-1].GetFooter().ActiveReceiptCount = 1
 		}},
 		{"receipt policy", func(a *wholeStateArchive) { a.Policy.MaxBytes++ }},
 		{"missing origin", func(a *wholeStateArchive) { a.Origins = nil }},

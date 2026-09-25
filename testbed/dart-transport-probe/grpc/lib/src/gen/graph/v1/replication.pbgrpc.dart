@@ -69,11 +69,11 @@ class LanternReplicationServiceClient extends $grpc.Client {
   }
 
   /// Snapshot streams a point-in-time, causally-consistent dump of every
-  /// live vertex and edge to a bootstrapping peer. RECEIPT_V1 additionally
-  /// carries the active receipt policy, epoch, clock high-water, complete
-  /// unexpired receipt rows, and full origin cutoffs from the same publication
-  /// cut. The first frame is a SnapshotHeader; the last frame is a counted
-  /// SnapshotFooter.
+  /// live vertex and edge to a bootstrapping peer. RECEIPT_V2 additionally
+  /// carries the active receipt policy/rows, every bounded retired epoch policy
+  /// and row, the active Store clock high-water, and full origin cutoffs from
+  /// the same publication cut. The first frame is a SnapshotHeader; the last
+  /// frame is a counted SnapshotFooter.
   ///
   /// Bootstrap stitch contract: after receiving the SnapshotFooter the
   /// peer MUST call `Subscribe(from_seq_per_origin = {origin: seq+1 for

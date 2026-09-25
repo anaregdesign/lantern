@@ -18,8 +18,8 @@ const (
 	ReceiptBaselineFormatCombined ReceiptBaselineFormat = 1
 )
 
-// ReceiptBaselineArchiveCodec bridges the runtime to the canonical
-// active archive and combined baseline implementations without making service
+// ReceiptBaselineArchiveCodec bridges the runtime to the canonical LANTARCH
+// active-section and combined-baseline implementations without making service
 // depend on backup.
 // It is an internal composition seam, not a transport or user-facing API.
 type ReceiptBaselineArchiveCodec interface {

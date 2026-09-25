@@ -223,8 +223,8 @@ func snapshotInstallerCompatible(installer SnapshotInstaller, format pb.Snapshot
 		if !graphOnlySnapshotFormat(format) {
 			return false
 		}
-	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1:
-		if format != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2:
+		if format != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
 			return false
 		}
 	default:
@@ -235,7 +235,7 @@ func snapshotInstallerCompatible(installer SnapshotInstaller, format pb.Snapshot
 
 func snapshotAcceptsReceiptEnvelopes(installer SnapshotInstaller) bool {
 	return installer != nil &&
-		installer.RequiredFormat() == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1
+		installer.RequiredFormat() == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2
 }
 
 type prefetchedSnapshotStream struct {
@@ -737,7 +737,7 @@ type Config struct {
 
 	// SnapshotInstaller overrides the graph-only in-place installer. nil keeps
 	// the existing GRAPH_ONLY_V1 behavior using apply and snap passed to
-	// NewPump. A future receipt installer can require RECEIPT_V1 without
+	// NewPump. A durable receipt installer requires RECEIPT_V2 without
 	// changing the Pump transport or retry driver.
 	SnapshotInstaller SnapshotInstaller
 }

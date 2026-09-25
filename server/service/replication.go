@@ -275,8 +275,8 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
 	// Check before opening the ring. A receipt entry may already have been
-	// evicted, so a per-entry opt-in check alone cannot guard an old peer from
-	// treating a gap as permission to install a graph-only Snapshot.
+	// evicted, so a per-entry opt-in check alone cannot guard a receipt-less
+	// peer from treating a gap as permission to install a graph-only Snapshot.
 	if s.receiptSnapshotRequired &&
 		(req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_UNSPECIFIED ||
 			req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION) &&
@@ -427,7 +427,7 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Flow:
 //  1. GRAPH_ONLY_V1 captures the per-origin/local-log cutoffs, cutoff_hlc,
 //     causal floors, vertices, and edges in one Snapshot cut.
-//  2. An explicitly configured RECEIPT_V1 producer instead calls its
+//  2. An explicitly configured RECEIPT_V2 producer instead calls its
 //     service-owned source once and preflights the complete detached receipt,
 //     graph, clock, and cutoff image before sending anything.
 //  3. Send SnapshotHeader first, each owned body frame in phase order, and a
@@ -445,7 +445,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		switch req.GetRequiredFormat() {
 		case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is required"))
-		case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1:
+		case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2:
 		default:
 			return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
 		}
@@ -456,7 +456,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		if err != nil {
 			return err
 		}
-		frames, err := prepareReceiptSnapshotFrames(capture, s.receiptSnapshotPolicy)
+		frames, err := PrepareReceiptSnapshotFrames(capture, s.receiptSnapshotPolicy)
 		if err != nil {
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("receipt-bearing Snapshot is invalid: %w", err))
 		}
@@ -472,7 +472,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 	}
 	switch req.GetRequiredFormat() {
 	case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
-	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1:
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2:
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is not configured"))
 	default:
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
@@ -561,7 +561,7 @@ func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerSt
 	}
 	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}
 	if s.receiptSnapshotRequired {
-		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1
+		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2
 	} else {
 		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
 	}
