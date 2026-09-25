@@ -21,22 +21,36 @@ func fileWALCutValidEntry(entry Entry) error {
 func TestInspectFileWALCutHashesExactPrefixAndValidSuffix(t *testing.T) {
 	path, original := makeTwoRecordFileWAL(t)
 	firstEnd := len(fileWALMagic) + fileWALFrameHeader + fileWALBodyHeader + len("first")
-	for _, tc := range []struct {
+	requested := []uint64{0, 1, 2, 1}
+	cuts, err := InspectFileWALCuts(path, requested, fileWALStringDecode, fileWALCutValidEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range []struct {
 		seq    uint64
 		offset int
 	}{
 		{0, len(fileWALMagic)},
 		{1, firstEnd},
 		{2, len(original)},
+		{1, firstEnd},
 	} {
-		cut, err := InspectFileWALCut(path, tc.seq, fileWALStringDecode, fileWALCutValidEntry)
-		if err != nil {
-			t.Fatalf("cut %d: %v", tc.seq, err)
-		}
+		cut := cuts[i]
 		if cut.Seq != tc.seq || cut.Offset != int64(tc.offset) || cut.ObservedLast != 2 ||
-			cut.SHA256 != sha256.Sum256(original[:tc.offset]) {
+			cut.SHA256 != sha256.Sum256(original[:tc.offset]) ||
+			cut.ObservedOffset != int64(len(original)) || cut.ObservedSHA256 != sha256.Sum256(original) {
 			t.Fatalf("cut %d = %+v", tc.seq, cut)
 		}
+	}
+	if cuts[0].ChainSHA256 != fileWALChainSeed() {
+		t.Fatalf("zero cut chain = %x, want seed %x", cuts[0].ChainSHA256, fileWALChainSeed())
+	}
+	if cuts[2].ChainSHA256 != cuts[2].ObservedChainSHA256 ||
+		cuts[2].Offset != cuts[2].ObservedOffset || cuts[2].SHA256 != cuts[2].ObservedSHA256 {
+		t.Fatalf("tip cut differs from observed tip: %+v", cuts[2])
+	}
+	if cuts[1] != cuts[3] {
+		t.Fatalf("duplicate cuts differ: %+v != %+v", cuts[1], cuts[3])
 	}
 	w, err := ResumeFileWAL(path, fileWALStringEncode, fileWALStringDecode, func(Entry) error { return nil })
 	if err != nil {
@@ -56,8 +70,13 @@ func TestInspectFileWALCutHashesExactPrefixAndValidSuffix(t *testing.T) {
 		t.Fatal("valid suffix rewrote the cut prefix")
 	}
 	cut, err := InspectFileWALCut(path, 1, fileWALStringDecode, fileWALCutValidEntry)
-	if err != nil || cut.Offset != int64(firstEnd) || cut.SHA256 != sha256.Sum256(original[:firstEnd]) || cut.ObservedLast != 3 {
+	if err != nil || cut.Offset != int64(firstEnd) || cut.SHA256 != sha256.Sum256(original[:firstEnd]) ||
+		cut.ObservedLast != 3 || cut.ObservedOffset != int64(len(after)) || cut.ObservedSHA256 != sha256.Sum256(after) {
 		t.Fatalf("cut after valid suffix = %+v, %v", cut, err)
+	}
+	tip, err := InspectFileWALCut(path, 3, fileWALStringDecode, fileWALCutValidEntry)
+	if err != nil || cut.ObservedChainSHA256 != tip.ChainSHA256 {
+		t.Fatalf("observed tip chain = %x, tip = %+v, %v", cut.ObservedChainSHA256, tip, err)
 	}
 	unchanged, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(after, unchanged) {
@@ -72,6 +91,12 @@ func TestInspectFileWALCutRejectsUnavailableAndInvalidSuffix(t *testing.T) {
 	}
 	if cut, err := InspectFileWALCut(path, 1, nil, fileWALCutValidEntry); err == nil || cut != (FileWALCut{}) {
 		t.Fatalf("nil decoder = %+v, %v", cut, err)
+	}
+	if cuts, err := InspectFileWALCuts(path, nil, fileWALStringDecode, fileWALCutValidEntry); err == nil || cuts != nil {
+		t.Fatalf("empty cuts = %+v, %v", cuts, err)
+	}
+	if cuts, err := InspectFileWALCuts(path, []uint64{1, 3}, fileWALStringDecode, fileWALCutValidEntry); !errors.Is(err, ErrFileWALCutUnavailable) || cuts != nil {
+		t.Fatalf("partly unavailable cuts = %+v, %v", cuts, err)
 	}
 	for _, tc := range []struct {
 		name string
@@ -148,15 +173,15 @@ func TestInspectFileWALCutDetectsPathReplacementAndSameSizeWrite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path, _ := makeTwoRecordFileWAL(t)
 			calls := 0
-			cut, err := InspectFileWALCut(path, 1, func(raw []byte) (MutationOp, error) {
+			cuts, err := InspectFileWALCuts(path, []uint64{0, 1}, func(raw []byte) (MutationOp, error) {
 				calls++
 				if calls == 1 {
 					tc.edit(t, path)
 				}
 				return string(raw), nil
 			}, fileWALCutValidEntry)
-			if !errors.Is(err, ErrFileWALCorrupt) || cut != (FileWALCut{}) {
-				t.Fatalf("mutated path = %+v, %v", cut, err)
+			if !errors.Is(err, ErrFileWALCorrupt) || cuts != nil {
+				t.Fatalf("mutated path = %+v, %v", cuts, err)
 			}
 		})
 	}
@@ -164,11 +189,12 @@ func TestInspectFileWALCutDetectsPathReplacementAndSameSizeWrite(t *testing.T) {
 
 func TestInspectFileWALCutHashesBeforeDecoderMutation(t *testing.T) {
 	path, raw := makeTwoRecordFileWAL(t)
-	cut, err := InspectFileWALCut(path, 2, func(payload []byte) (MutationOp, error) {
+	firstEnd := len(fileWALMagic) + fileWALFrameHeader + fileWALBodyHeader + len("first")
+	cut, err := InspectFileWALCut(path, 1, func(payload []byte) (MutationOp, error) {
 		payload[0] ^= 0xff
 		return string(payload), nil
 	}, fileWALCutValidEntry)
-	if err != nil || cut.SHA256 != sha256.Sum256(raw) {
+	if err != nil || cut.SHA256 != sha256.Sum256(raw[:firstEnd]) || cut.ObservedSHA256 != sha256.Sum256(raw) {
 		t.Fatalf("decoder changed raw digest = %+v, %v", cut, err)
 	}
 }

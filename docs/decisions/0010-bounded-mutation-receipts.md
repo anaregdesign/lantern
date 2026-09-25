@@ -507,13 +507,18 @@ candidate. No production provider or restore path consumes this candidate;
 the existing graph-only Snapshot receiver's in-place overlay is not an
 atomic receipt installer.
 The private [FileWAL cut manifest](../../server/backup/receipt_archive_wal_cut.go)
-binds complete archive bytes to the original WAL frame bytes through the
-archive's local sequence. Inspection checks the entire FileWAL, so a valid
-suffix may be appended after the cut, but corrupt or undecodable suffixes
-fail closed. This byte pairing neither proves that the archive source used
-that FileWAL nor detects loss of a valid suffix beyond the cut. The caller
-must own a non-mutating WAL path during each inspection; no production path
-creates or consumes the manifest.
+binds complete archive bytes to both the original WAL frame bytes through the
+archive's local sequence and the exact complete valid FileWAL tip observed at
+manifest creation. The cut and observed-tip witnesses each carry sequence,
+offset, raw-prefix digest, and rolling frame chain from one stable two-pass
+inspection. Staging requires both recorded prefixes to remain exact, checks
+the complete current FileWAL, rejects loss or replacement of a suffix that
+already existed at bind time, and permits a valid suffix appended after the
+recorded tip. This byte pairing does not prove that the archive source used
+that FileWAL, that commits after the recorded tip were retained, or that the
+runtime tip journal belongs to the archive. The caller must own a non-mutating
+WAL path during each inspection; no production path creates or consumes the
+manifest.
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
 recovery still needs an atomic installer and proof that the WAL covers the
