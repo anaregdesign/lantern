@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -209,18 +210,37 @@ func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T)
 
 func TestStageEffectCompleteReceiptWALCandidate(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
+	configure := func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+		graph.EnablePrefixIndex(func(key string) string { return key })
+		graph.EnableSearchIndex(func(key string, _ *pb.Vertex) search.Document { return search.Text(key) }, strings.Compare)
+		return nil
+	}
+	stage := func(path string, configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error) (*receiptWALRecoveryCandidate, error) {
+		lease, err := mutationlog.AcquireFileWALLease(path)
+		if err != nil {
+			return nil, err
+		}
+		defer lease.Close()
+		return stageEffectCompleteReceiptWALCandidate(lease, config, time.Now(), mutationlog.Options{}, time.Hour, configureGraph)
+	}
 	seed := recoveryGraphPutEffectEntry(t, 0x72, receiptEntry.HLC.WallNs-1,
 		&pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
 			Edge: &pb.Edge{Tail: "tail", Head: "present", Weight: 1,
 				Expiration: timestamppb.New(time.Now().Add(time.Hour))},
 		}}})
-	path := writeReceiptWALAuditEntries(t, seed, receiptEntry)
-	candidate, err := stageEffectCompleteReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	path := writeReceiptWALAuditEntries(t, auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeAppliedAndLive), seed, receiptEntry)
+	candidate, err := stage(path, configure)
 	if err != nil || candidate == nil {
 		t.Fatalf("effect-complete candidate = %p, %v", candidate, err)
 	}
-	if seq, ok := candidate.log.LastSeq(); !ok || seq != 2 {
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 3 {
 		t.Fatalf("effect-complete Log frontier = %d, %v", seq, ok)
+	}
+	if candidate.graph.CountByPrefix("graph") != 1 {
+		t.Fatal("configured prefix index omitted the recovered Vertex")
+	}
+	if hits := candidate.graph.SearchVertices("graph", 10, ""); len(hits) != 1 || hits[0].ID != "graph-only" {
+		t.Fatalf("configured search index omitted the recovered Vertex: %+v", hits)
 	}
 	if _, err := candidate.log.Append(&pb.Mutation{}, receiptEntry.HLC); !errors.Is(err, mutationlog.ErrClosed) {
 		t.Fatalf("effect-complete candidate opened serving Log: %v", err)
@@ -235,11 +255,29 @@ func TestStageEffectCompleteReceiptWALCandidate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeReceiptWALAuditEntries(t, tc.legacy, receiptEntry)
-			if got, err := stageEffectCompleteReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); got != nil ||
+			if got, err := stage(path, configure); got != nil ||
 				!errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "accepted-effect evidence") {
 				t.Fatalf("legacy graph candidate = %p, %v; want fail-closed", got, err)
 			}
 		})
+	}
+	if got, err := stage(path, nil); got != nil || !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("unconfigured recovery stage = %p, %v; want rejection", got, err)
+	}
+	if got, err := stage(path, func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+		return graph.PutVertexWithExpiration("injected", &pb.Vertex{Key: "injected"}, time.Now().Add(time.Hour))
+	}); got != nil || !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("prepopulated recovery stage = %p, %v; want rejection", got, err)
+	}
+	lease, err := mutationlog.AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := stageEffectCompleteReceiptWALCandidate(lease, config, time.Now(), mutationlog.Options{}, time.Hour, configure); got != nil || !errors.Is(err, mutationlog.ErrFileWALLeaseClosed) {
+		t.Fatalf("closed lease recovery stage = %p, %v; want rejection", got, err)
 	}
 }
 

@@ -597,6 +597,15 @@ func newLogger(o ObservabilityConfig, w io.Writer) *slog.Logger {
 
 func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string, *v1.Vertex] {
 	gc := graphcache.NewGraphCache[string, *v1.Vertex](c.TTL)
+	ConfigureGraphCache(gc, c, sc)
+	return gc
+}
+
+// ConfigureGraphCache applies the production cache policy to a fresh cache.
+// Receipt WAL and archive staging use the same policy before replay, while
+// NewGraphCache uses it for the ordinary graph-only provider. Indexes must be
+// enabled before the first mutation reaches the cache.
+func ConfigureGraphCache(gc *graphcache.GraphCache[string, *v1.Vertex], c CacheConfig, sc SearchConfig) {
 	gc.SetGCEdgeBudget(c.GCEdgeBudget)
 	gc.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{
 		MaxVertexEntries: c.MaxVertexCausalEntries,
@@ -621,7 +630,6 @@ func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string
 		opts = append(opts, graphcache.WithSearchAnalysisLimits(sc.AnalysisLimits))
 		gc.EnableSearchIndex(vertexSearchDocument, strings.Compare, opts...)
 	}
-	return gc
 }
 
 // NewDomainMetrics registers the Lantern-specific `lantern_*` collectors on
