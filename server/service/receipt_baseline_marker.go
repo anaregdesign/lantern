@@ -16,7 +16,7 @@ const (
 	receiptBaselineMarkerSize = 4 + sha256.Size + 8 +
 		len(mutationreceipt.Epoch{}) + sha256.Size +
 		2*16 + 8 + 8 + 2*(8+4+len(hlc.NodeID{}))
-	maxReceiptBaselineV2Bytes = 2*(512<<20) + 128
+	maxCombinedReceiptBaselineBytes = 2*(512<<20) + 128
 )
 
 var errReceiptBaselineMarker = errors.New("service: invalid receipt baseline marker")
@@ -46,8 +46,8 @@ type receiptBaselineReference struct {
 
 func receiptBaselineMaxBytes(format ReceiptBaselineFormat) uint64 {
 	switch format {
-	case ReceiptBaselineFormatCombinedV2:
-		return maxReceiptBaselineV2Bytes
+	case ReceiptBaselineFormatCombined:
+		return maxCombinedReceiptBaselineBytes
 	default:
 		return 0
 	}

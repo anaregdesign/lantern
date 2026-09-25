@@ -157,7 +157,7 @@ func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeCo
 		capture: ReceiptWholeStateCapture{
 			Receipts: snapshot, Retired: retired, Policy: policy, Origins: origins,
 		},
-		codec:  &receiptBaselineTestCodec{raw: []byte("canonical-test-combined-baseline-v2"), build: build},
+		codec:  &receiptBaselineTestCodec{raw: []byte("canonical-test-combined-baseline"), build: build},
 		id:     id,
 		origin: origin,
 		cutoff: cutoff,
@@ -208,7 +208,7 @@ func assertReceiptBaselinePublicationFault(t *testing.T, service *LanternService
 
 func receiptBaselineSidecars(t *testing.T, path string) []string {
 	t.Helper()
-	matches, err := filepath.Glob(path + ".receipt-v*.*.baseline")
+	matches, err := filepath.Glob(path + ".receipt.*.baseline")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func TestInstallReceiptBaselineRetiredStateInvariants(t *testing.T) {
 				t.Fatalf("retry marker count = %d, %t, want 1, true", last, ok)
 			}
 			if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
-				t.Fatalf("retry sidecars = %v, want one committed v2 sidecar", sidecars)
+				t.Fatalf("retry sidecars = %v, want one committed sidecar", sidecars)
 			}
 		})
 		t.Cleanup(func() { _ = runtime.Close() })

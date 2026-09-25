@@ -38,6 +38,12 @@ func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := string(raw[:8]); got != "LANTCBLN" {
+		t.Fatalf("combined baseline magic = %q", got)
+	}
+	if got := binary.BigEndian.Uint16(raw[8:10]); got != 1 {
+		t.Fatalf("combined baseline version = %d, want 1", got)
+	}
 	active, retired, metadata, err := decodeCombinedReceiptBaseline(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +154,20 @@ func TestReceiptBaselineCodecRejectsNoncanonicalAndMismatchedPolicy(t *testing.T
 				name: "magic",
 				mutate: func(raw []byte) []byte {
 					raw[0] ^= 1
+					return raw
+				},
+			},
+			{
+				name: "retired magic",
+				mutate: func(raw []byte) []byte {
+					copy(raw[:8], "LANT"+"BLN2")
+					return raw
+				},
+			},
+			{
+				name: "retired version",
+				mutate: func(raw []byte) []byte {
+					binary.BigEndian.PutUint16(raw[8:10], 2)
 					return raw
 				},
 			},
