@@ -45,29 +45,31 @@ const ServiceName = "graph.v1.LanternService"
 // wire binding maps it to *graphcache.GraphCache in production. Tests can supply
 // a fake without standing up the real cache.
 type LanternService struct {
-	cache                   Backend
-	runtime                 *ServingRuntime
-	scan                    ScanLimits
-	search                  SearchLimits
-	searchConfigFingerprint string
-	searchGate              *semaphore.Weighted
-	searchSessions          *searchSessionStore
-	log                     *mutationlog.Log
-	clock                   *hlc.Clock
-	origin                  []byte
-	onAppend                func()
-	logger                  *slog.Logger
-	tombstoneTTL            time.Duration
-	origins                 *originStateTracker
-	onApplied               func(origin string)
-	onReplicationApply      func(op string)
-	onValidationReject      func(reason string)
-	onTombstoneClampReject  func()
-	metrics                 HotPathMetrics
-	traversalTimeout        time.Duration
-	traversalWorkBudget     graphcache.PPRWorkBudget
-	traversalMaxResults     int
-	capacity                CapacityLimits
+	cache                     Backend
+	runtime                   *ServingRuntime
+	scan                      ScanLimits
+	search                    SearchLimits
+	searchConfigFingerprint   string
+	searchGate                *semaphore.Weighted
+	searchSessions            *searchSessionStore
+	log                       *mutationlog.Log
+	clock                     *hlc.Clock
+	origin                    []byte
+	onAppend                  func()
+	logger                    *slog.Logger
+	tombstoneTTL              time.Duration
+	origins                   *originStateTracker
+	onApplied                 func(origin string)
+	onReplicationApply        func(op string)
+	onValidationReject        func(reason string)
+	onTombstoneClampReject    func()
+	replicationSendMaxBytes   int
+	replicationFrameCertified bool
+	metrics                   HotPathMetrics
+	traversalTimeout          time.Duration
+	traversalWorkBudget       graphcache.PPRWorkBudget
+	traversalMaxResults       int
+	capacity                  CapacityLimits
 	// replicationCutMu keeps a Snapshot cutoff from overtaking a remote
 	// ApplyMutation or any local graph/log publication boundary.
 	replicationCutMu publicationGate
@@ -1298,7 +1300,7 @@ func (s *LanternService) preflightLocalGraphPutVerticesLocked(in []*pb.Vertex, t
 		return nil
 	}
 	if err := s.validateGraphPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("PutVertices publication shape: %w", err))
+		return publicationShapeError("PutVertices", err)
 	}
 	return nil
 }
@@ -1313,7 +1315,7 @@ func (s *LanternService) preflightLocalGraphPutEdgesLocked(in []*pb.Edge, ts hlc
 		return nil
 	}
 	if err := s.validateGraphPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("PutEdges publication shape: %w", err))
+		return publicationShapeError("PutEdges", err)
 	}
 	return nil
 }
@@ -1324,7 +1326,7 @@ func (s *LanternService) preflightLocalGraphDeleteLocked(op *pb.MutationOp, ts h
 		mutation.TombstoneExpiration = timestamppb.New(expiration)
 	}
 	if err := s.validateGraphPublicationShape(mutation); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("Delete publication shape: %w", err))
+		return publicationShapeError("Delete", err)
 	}
 	return nil
 }
@@ -1569,7 +1571,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		ts := s.clock.Now()
 		mutation := s.newLocalMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
 		if err := s.validateGraphPublicationShape(mutation); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("AddEdges publication shape: %w", err))
+			return nil, publicationShapeError("AddEdges", err)
 		}
 		// Reserve the origin seq before apply, then synthesize a
 		// (origin, seq, wire-index) ContribID for every unkeyed edge. This

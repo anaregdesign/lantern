@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,6 +347,56 @@ func TestDeleteVerticesByPrefix_DryRunAndReal(t *testing.T) {
 	}
 	if len(fb.vertices) != 0 {
 		t.Errorf("cache still has %d entries after delete", len(fb.vertices))
+	}
+}
+
+func TestDeleteVerticesByPrefix_ReplicationFrameRejectedBeforeDelete(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	cache.EnablePrefixIndex(func(key string) string { return key })
+	keys := []string{
+		"users/a" + strings.Repeat("a", 96),
+		"users/b" + strings.Repeat("b", 96),
+	}
+	for _, key := range keys {
+		if err := cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	runtime, err := NewGraphOnlyServingRuntime(cache, log, hlc.New(hlc.NodeID{0xC0}, hlc.Options{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc := runtime.NewLanternService(nil).WithScanLimits(ScanLimits{
+		DeleteByPrefixDefaultLimit: 100,
+		DeleteByPrefixMaxLimit:     100,
+	})
+	replication, err := runtime.NewLanternReplicationService(svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(svc, replication, 128); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.DeleteVerticesByPrefix(
+		context.Background(),
+		&pb.DeleteVerticesByPrefixRequest{Prefix: "users/"},
+	)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("oversized prefix delete = %v, want ResourceExhausted", err)
+	}
+	for _, key := range keys {
+		if _, ok := cache.GetVertex(key); !ok {
+			t.Fatalf("oversized prefix delete removed %q", key)
+		}
+	}
+	if length, _, _ := runtime.MutationLogStats(); length != 0 {
+		t.Fatalf("oversized prefix delete retained %d log entries", length)
+	}
+	if seq := svc.LocalSeq(hlc.NodeID{0xC0}); seq != 0 {
+		t.Fatalf("oversized prefix delete advanced origin seq to %d", seq)
 	}
 }
 

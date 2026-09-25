@@ -475,6 +475,31 @@ duplicate hops; snapshot recovery resumes with both header-derived origin and
 same-responder local cursors. It still performs input-side self-echo
 suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
 
+**Full-mutation frame admission (#1440).** The canonical transport projection
+is the protobuf `SubscribeResponse` containing the mutation that `Subscribe`
+will send, including receipt evidence when present. Lantern measures that
+exact outer message, not only the inner `Mutation`. The same projector is used
+before local graph/receipt/origin/log publication, on follower ingress and
+before any receiver-local relay publication, by live `Subscribe`, and while
+certifying every retained log entry at startup. A projection larger than
+`LANTERN_MAX_SEND_MSG_BYTES` is rejected with `ResourceExhausted` and
+`lantern_validation_rejected_total{reason="replication_frame"}`. Lowering the
+cap below an existing retained frame fails startup before the listener is
+created instead of exposing a cursor that can never advance.
+
+The public and replication handlers intentionally share the configured send
+cap. `LANTERN_MAX_RECV_MSG_BYTES` is an independent inbound-request limit:
+there is no requirement that send be at least receive, and a request may fit
+receive admission but fail after its replication response is projected.
+Receipt-WAL's internal 8 MiB envelope bound remains an upper bound on durable
+encoding; a lower send cap still wins. The local proof cannot establish an
+unknown downstream client's read limit. Operators must configure every
+full-mutation Subscribe consumer to accept the maximum frame its senders admit
+(homogeneous peer limits are the simplest policy). A lower peer/client read
+cap can still make that consumer retry until configuration is corrected. The
+Snapshot frame and aggregate-stream limits in §8.3 remain independent and are
+not raised by this invariant.
+
 Back-pressure and publication faults: server terminates the stream with
 `FAILED_PRECONDITION` (`gapped`) if (a) the ring has been truncated below the
 requested responder-local replay position, (b) the consumer's send buffer
@@ -1060,6 +1085,8 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 |---|---|---|
 | Single pod crash | k8s probe / Compose healthcheck | k8s/Compose restarts pod → bootstraps from peers. |
 | Pod falls behind > buffer | `Subscribe` returns `FailedPrecondition` (reason `gapped`) | Pump auto re-snapshots and resumes. |
+| Retained full-mutation frame exceeds a lowered `LANTERN_MAX_SEND_MSG_BYTES` | Startup certification names the retained local log seq and projected size, then refuses listener creation. | Restore the prior cap or start from a certified Snapshot/WAL whose retained frames fit; do not bypass certification. |
+| Subscribe consumer read cap is lower than a sender's admitted frame | Consumer reports `ResourceExhausted` and cannot advance that cursor. | Make peer/client read limits at least the maximum sender send cap, then reconnect. |
 | Search config differs across replicas | `lantern_search_config_match{peer}=0`, mismatch counter/log, readiness `NOT_SERVING` | Make every search-affecting `LANTERN_SEARCH_*` value homogeneous, then wait for the next pump/anti-entropy comparison. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
 | Total-cluster loss | every replica down | **Accepted data loss** (D1) unless backups exist. Graph-only nodes restore their newest `.lbk`; durable receipt-WAL nodes use `fresh` with a new active epoch and the strict newest receipt set, retaining archived known receipts as bounded retired evidence. |

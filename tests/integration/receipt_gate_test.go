@@ -719,6 +719,7 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 		primary,
 		replicationService,
 		restored,
+		provider.NetConfig{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -2312,6 +2313,40 @@ func newPublicReceiptWireServer(
 	maxEntries int,
 	tokens ...string,
 ) publicReceiptWireServer {
+	return newPublicReceiptWireServerWithNet(
+		t,
+		nodeID,
+		maxEntries,
+		provider.NetConfig{},
+		tokens...,
+	)
+}
+
+func newPublicReceiptWireServerWithNet(
+	t *testing.T,
+	nodeID hlc.NodeID,
+	maxEntries int,
+	netConfig provider.NetConfig,
+	tokens ...string,
+) publicReceiptWireServer {
+	return newPublicReceiptWireServerWithNetAndTombstoneTTL(
+		t,
+		nodeID,
+		maxEntries,
+		netConfig,
+		2*time.Hour,
+		tokens...,
+	)
+}
+
+func newPublicReceiptWireServerWithNetAndTombstoneTTL(
+	t *testing.T,
+	nodeID hlc.NodeID,
+	maxEntries int,
+	netConfig provider.NetConfig,
+	tombstoneTTL time.Duration,
+	tokens ...string,
+) publicReceiptWireServer {
 	t.Helper()
 	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), nodeID)
 	config.Receipt.MaxEntries = maxEntries
@@ -2320,7 +2355,7 @@ func newPublicReceiptWireServer(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(tombstoneTTL)
 	replicationService, err := runtime.NewLanternReplicationService(primary)
 	if err != nil {
 		t.Fatal(err)
@@ -2329,7 +2364,13 @@ func newPublicReceiptWireServer(
 	if err != nil {
 		t.Fatal(err)
 	}
-	certified, err := provider.NewRuntimeCertified(runtime, primary, replicationService, restored)
+	certified, err := provider.NewRuntimeCertified(
+		runtime,
+		primary,
+		replicationService,
+		restored,
+		netConfig,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2366,12 +2407,166 @@ func newPublicReceiptWireServer(
 	if auth.Enabled() {
 		interceptors = append(interceptors, auth)
 	}
-	server := newConnectTestServer(t, primary, replicationService, interceptors...)
+	options := []connect.HandlerOption{
+		connect.WithReadMaxBytes(netConfig.MaxRecvMsgBytes),
+		connect.WithSendMaxBytes(netConfig.MaxSendMsgBytes),
+	}
+	if len(interceptors) > 0 {
+		options = append(options, connect.WithInterceptors(interceptors...))
+	}
+	server := newConnectTestServerWithOptions(t, primary, replicationService, options...)
 	return publicReceiptWireServer{
 		runtime: runtime,
 		server:  server,
 		raw:     graphv1connect.NewLanternServiceClient(h2cClient(), server.url),
 		config:  config,
+	}
+}
+
+func TestReceiptMutationFrameLimitRejectsBeforePublication_RealConnectWire(t *testing.T) {
+	const (
+		maxRecvBytes = 64 << 10
+		itemCount    = 32
+		token        = "receipt-frame-token"
+	)
+	nodeID := hlc.NodeID{0x63}
+	type preparedReceiptCall struct {
+		wire    publicReceiptWireServer
+		request *pb.DeleteEdgesRequest
+	}
+	prepare := func(maxSendBytes int, seed byte) preparedReceiptCall {
+		wire := newPublicReceiptWireServerWithNetAndTombstoneTTL(
+			t,
+			nodeID,
+			itemCount*2,
+			provider.NetConfig{
+				MaxRecvMsgBytes: maxRecvBytes,
+				MaxSendMsgBytes: maxSendBytes,
+			},
+			2*time.Hour,
+			token,
+		)
+		capability := publicReceiptCapability(t, wire, token)
+		receiptContext := publicReceiptWireContext(
+			t,
+			capability,
+			seed,
+			itemCount,
+			time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
+		)
+		edges := make([]*pb.EdgeKey, itemCount)
+		for i := range edges {
+			edges[i] = &pb.EdgeKey{
+				Tail: fmt.Sprintf("replication-frame-tail-%02d-%s", i, strings.Repeat("t", 96)),
+				Head: fmt.Sprintf("replication-frame-head-%02d-%s", i, strings.Repeat("h", 96)),
+			}
+			wire.runtime.GraphCache().AddEdgeWithExpiration(
+				edges[i].GetTail(),
+				edges[i].GetHead(),
+				1,
+				time.Now().Add(time.Hour),
+			)
+		}
+		request := &pb.DeleteEdgesRequest{
+			Edges:          edges,
+			ReceiptContext: receiptContext,
+		}
+		if size := proto.Size(request); size >= maxRecvBytes {
+			t.Fatalf("receipt regression request size = %d, want below receive cap %d", size, maxRecvBytes)
+		}
+		now := time.Now()
+		wire.server.svc.WithTombstoneTTL(
+			2*time.Hour + 600*time.Millisecond - time.Duration(now.Nanosecond()),
+		)
+		return preparedReceiptCall{wire: wire, request: request}
+	}
+
+	readFrame := func(call preparedReceiptCall) *pb.SubscribeResponse {
+		stream, err := newReplicationRawClient(t, call.wire.server.url).Subscribe(
+			context.Background(),
+			receiptRequestWithToken(&pb.SubscribeRequest{
+				FromLocalSeq:           1,
+				AcceptReceiptEnvelopes: true,
+			}, token),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = stream.Close() }()
+		if !stream.Receive() {
+			t.Fatalf("receipt Subscribe receive: %v", stream.Err())
+		}
+		return proto.Clone(stream.Msg()).(*pb.SubscribeResponse)
+	}
+
+	reference := prepare(0, 0x64)
+	if _, err := reference.wire.raw.DeleteEdges(
+		context.Background(),
+		receiptRequestWithToken(reference.request, token),
+	); err != nil {
+		t.Fatalf("reference receipt DeleteEdges: %v", err)
+	}
+	frameSize := proto.Size(readFrame(reference))
+
+	exact := prepare(frameSize, 0x65)
+	if _, err := exact.wire.raw.DeleteEdges(
+		context.Background(),
+		receiptRequestWithToken(exact.request, token),
+	); err != nil {
+		t.Fatalf("exact-fit receipt DeleteEdges at %d bytes: %v", frameSize, err)
+	}
+	if got := proto.Size(readFrame(exact)); got != frameSize {
+		t.Fatalf("exact-fit receipt frame size = %d, want %d", got, frameSize)
+	}
+
+	rejected := prepare(frameSize-1, 0x66)
+	beforeWAL, err := os.Stat(rejected.wire.config.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = rejected.wire.raw.DeleteEdges(
+		context.Background(),
+		receiptRequestWithToken(rejected.request, token),
+	)
+	if err == nil {
+		t.Fatalf(
+			"one-byte-under receipt mutation was accepted: reference frame=%d accepted frame=%d",
+			frameSize,
+			proto.Size(readFrame(rejected)),
+		)
+	}
+	if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", frameSize-1)) {
+		t.Fatalf("unstreamable receipt DeleteEdges = %v, want explicit ResourceExhausted", err)
+	}
+	for _, edge := range rejected.request.GetEdges() {
+		requireReceiptWireEdge(t, rejected.wire.raw, token, edge)
+	}
+	if stats := rejected.wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
+		t.Fatalf("rejected receipt mutation changed Store: %+v", stats)
+	}
+	if length, _, _ := rejected.wire.runtime.MutationLogStats(); length != 0 {
+		t.Fatalf("rejected receipt mutation retained %d log entries", length)
+	}
+	if seq := rejected.wire.server.svc.LocalSeq(nodeID); seq != 0 {
+		t.Fatalf("rejected receipt mutation advanced origin seq to %d", seq)
+	}
+	afterWAL, err := os.Stat(rejected.wire.config.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterWAL.Size() != beforeWAL.Size() {
+		t.Fatalf("rejected receipt mutation changed WAL size from %d to %d", beforeWAL.Size(), afterWAL.Size())
+	}
+	status, err := rejected.wire.raw.GetReceiptStatus(
+		context.Background(),
+		receiptRequestWithToken(&pb.GetReceiptStatusRequest{
+			OperationId: rejected.request.GetReceiptContext().GetOperationIds()[0],
+		}, token),
+	)
+	if err != nil ||
+		status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED {
+		t.Fatalf("rejected receipt visibility = %+v, %v", status, err)
 	}
 }
 

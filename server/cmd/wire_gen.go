@@ -48,7 +48,7 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, lanternService, lanternReplicationService, runtimeRestored)
+	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, lanternService, lanternReplicationService, runtimeRestored, netConfig)
 	if err != nil {
 		cleanup()
 		return nil, nil, err

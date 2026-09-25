@@ -19,9 +19,11 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -86,6 +88,203 @@ func newPumpNodeWithWALAndMetrics(t *testing.T, nodeID hlc.NodeID, logCapacity i
 		sdk:    newConnectClientFor(t, srv.url),
 		raw:    graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
 		nodeID: nodeID,
+	}
+}
+
+func newCertifiedPumpNode(
+	t *testing.T,
+	nodeID hlc.NodeID,
+	maxRecvBytes int,
+	maxSendBytes int,
+) *pumpNode {
+	t.Helper()
+	log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 16})
+	clock := hlc.New(nodeID, hlc.Options{})
+	limits := productionSearchLimits(true, true)
+	cache := newProductionSearchCache(time.Minute, true, true, limits.AnalysisLimits)
+	runtime, err := service.NewGraphOnlyServingRuntime(cache, log, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc := runtime.NewLanternService(nil).
+		WithSearchLimits(limits).
+		WithTombstoneTTL(time.Hour)
+	rep, err := runtime.NewLanternReplicationService(svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep.WithOriginStates(svc).WithSearchConfig(svc)
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(svc, rep, maxSendBytes); err != nil {
+		t.Fatal(err)
+	}
+	validation := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+	server := newConnectTestServerWithOptions(
+		t,
+		svc,
+		rep,
+		connect.WithReadMaxBytes(maxRecvBytes),
+		connect.WithSendMaxBytes(maxSendBytes),
+		connect.WithInterceptors(validation.ConnectInterceptor()),
+	)
+	return &pumpNode{
+		url:    server.url,
+		cache:  cache,
+		clock:  clock,
+		log:    log,
+		svc:    svc,
+		sdk:    newConnectClientFor(t, server.url),
+		raw:    graphv1connect.NewLanternServiceClient(h2cClient(), server.url),
+		nodeID: nodeID,
+	}
+}
+
+func readFullMutationFrame(
+	t *testing.T,
+	ctx context.Context,
+	url string,
+	fromLocalSeq uint64,
+) *pb.SubscribeResponse {
+	t.Helper()
+	stream, err := newReplicationRawClient(t, url).Subscribe(
+		ctx,
+		connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: fromLocalSeq}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	if !stream.Receive() {
+		t.Fatalf("Subscribe(%d) receive: %v", fromLocalSeq, stream.Err())
+	}
+	return proto.Clone(stream.Msg()).(*pb.SubscribeResponse)
+}
+
+func TestPumpIsNotPinnedByRejectedUnstreamableLocalMutation(t *testing.T) {
+	const maxRecvBytes = 8 << 10
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	largeRequest := &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+		Key:   "too-large-to-replicate",
+		Value: &pb.Vertex_Bytes{Bytes: make([]byte, 2048)},
+	}}}
+	if size := proto.Size(largeRequest); size >= maxRecvBytes {
+		t.Fatalf("oversized regression request size = %d, want below receive cap %d", size, maxRecvBytes)
+	}
+
+	reference := newCertifiedPumpNode(t, hlc.NodeID{0x90}, maxRecvBytes, 0)
+	if _, err := reference.raw.PutVertices(
+		ctx,
+		connect.NewRequest(proto.Clone(largeRequest).(*pb.PutVerticesRequest)),
+	); err != nil {
+		t.Fatalf("reference PutVertices: %v", err)
+	}
+	frameSize := proto.Size(readFullMutationFrame(t, ctx, reference.url, 1))
+
+	exact := newCertifiedPumpNode(t, hlc.NodeID{0x91}, maxRecvBytes, frameSize)
+	if _, err := exact.raw.PutVertices(
+		ctx,
+		connect.NewRequest(proto.Clone(largeRequest).(*pb.PutVerticesRequest)),
+	); err != nil {
+		t.Fatalf("exact-fit PutVertices at %d bytes: %v", frameSize, err)
+	}
+	if got := proto.Size(readFullMutationFrame(t, ctx, exact.url, 1)); got != frameSize {
+		t.Fatalf("exact-fit streamed frame size = %d, want %d", got, frameSize)
+	}
+
+	sourceID := hlc.NodeID{0x92}
+	source := newCertifiedPumpNode(t, sourceID, maxRecvBytes, frameSize-1)
+	if _, err := source.raw.PutVertices(
+		ctx,
+		connect.NewRequest(proto.Clone(largeRequest).(*pb.PutVerticesRequest)),
+	); connect.CodeOf(err) != connect.CodeResourceExhausted ||
+		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", frameSize-1)) {
+		t.Fatalf("unstreamable PutVertices = %v, want explicit ResourceExhausted", err)
+	}
+	if _, ok := source.cache.GetVertex("too-large-to-replicate"); ok {
+		t.Fatal("rejected unstreamable mutation changed source graph")
+	}
+	if length := source.log.Len(); length != 0 {
+		t.Fatalf("rejected unstreamable mutation retained %d log entries", length)
+	}
+	if seq := source.svc.LocalSeq(sourceID); seq != 0 {
+		t.Fatalf("rejected unstreamable mutation advanced source seq to %d", seq)
+	}
+
+	if _, err := source.raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{
+		Vertices: []*pb.Vertex{{Key: "streamable", Value: &pb.Vertex_String_{String_: "ok"}}},
+	})); err != nil {
+		t.Fatalf("streamable PutVertices: %v", err)
+	}
+	target := newPumpNode(t, hlc.NodeID{0x93})
+	target.startPump(ctx, t, []string{source.url})
+	if !waitForVertex(t, target.cache, "streamable", 5*time.Second) {
+		t.Fatal("Pump did not advance through the first accepted source frame")
+	}
+	if _, ok := target.cache.GetVertex("too-large-to-replicate"); ok {
+		t.Fatal("Pump observed rejected oversized mutation")
+	}
+	if seq := target.svc.LocalSeq(sourceID); seq != 1 {
+		t.Fatalf("Pump source cursor = %d, want 1", seq)
+	}
+}
+
+func TestFollowerRelayStreamsExactBoundaryAcrossMultipleHops_RealConnectWire(t *testing.T) {
+	const maxRecvBytes = 8 << 10
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	remoteOrigin := hlc.NodeID{0xA0}
+	mutation := &pb.Mutation{
+		Origin: remoteOrigin[:],
+		Seq:    1,
+		Hlc: &pb.HLCTimestamp{
+			WallNs: time.Now().UnixNano(),
+			NodeId: remoteOrigin[:],
+		},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{
+				Key:   "multi-hop-exact-frame",
+				Value: &pb.Vertex_Bytes{Bytes: make([]byte, 2048)},
+			}},
+		}},
+	}
+	frameSize := proto.Size(&pb.SubscribeResponse{
+		Event: &pb.SubscribeResponse_Mutation{Mutation: mutation},
+	})
+
+	source := newCertifiedPumpNode(t, hlc.NodeID{0xA1}, maxRecvBytes, 0)
+	if err := source.svc.ApplyMutation(ctx, proto.Clone(mutation).(*pb.Mutation)); err != nil {
+		t.Fatalf("seed source relay frame: %v", err)
+	}
+	relay := newCertifiedPumpNode(t, hlc.NodeID{0xA2}, maxRecvBytes, frameSize)
+	relay.startPump(ctx, t, []string{source.url})
+	if !waitForVertex(t, relay.cache, "multi-hop-exact-frame", 5*time.Second) {
+		t.Fatal("exact-fit follower did not accept source frame")
+	}
+	downstream := newCertifiedPumpNode(t, hlc.NodeID{0xA3}, maxRecvBytes, 0)
+	downstream.startPump(ctx, t, []string{relay.url})
+	if !waitForVertex(t, downstream.cache, "multi-hop-exact-frame", 5*time.Second) {
+		t.Fatal("exact-fit follower could not relay the accepted frame")
+	}
+	if seq := downstream.svc.LocalSeq(remoteOrigin); seq != 1 {
+		t.Fatalf("downstream origin cursor = %d, want 1", seq)
+	}
+
+	tooSmall := newCertifiedPumpNode(t, hlc.NodeID{0xA4}, maxRecvBytes, frameSize-1)
+	err := tooSmall.svc.ApplyMutation(ctx, proto.Clone(mutation).(*pb.Mutation))
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("one-byte-oversize follower apply = %v, want ResourceExhausted", err)
+	}
+	if _, ok := tooSmall.cache.GetVertex("multi-hop-exact-frame"); ok {
+		t.Fatal("one-byte-oversize follower changed graph state")
+	}
+	if length := tooSmall.log.Len(); length != 0 {
+		t.Fatalf("one-byte-oversize follower retained %d log entries", length)
+	}
+	if seq := tooSmall.svc.LocalSeq(remoteOrigin); seq != 0 {
+		t.Fatalf("one-byte-oversize follower advanced origin seq to %d", seq)
 	}
 }
 

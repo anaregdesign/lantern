@@ -211,10 +211,7 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	if err := storeTx.ReplaceReservedResults(results); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	if err := storeTx.Stage(); err != nil {
-		return nil, receiptStoreError(err)
-	}
-	receipts, err := storeTx.StagedReceipts()
+	receipts, err := storeTx.ReservedReceipts()
 	if err != nil {
 		return nil, receiptStoreError(err)
 	}
@@ -230,6 +227,9 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	if _, err := validateReceiptVertexDeleteWALEnvelope(envelope); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := s.validateReplicationFrame(envelope); err != nil {
+		return nil, err
+	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
 		return nil, connect.NewError(connect.CodeInternal,
@@ -238,6 +238,9 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	defer originTx.Abort()
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
+	}
+	if err := storeTx.Stage(); err != nil {
+		return nil, receiptStoreError(err)
 	}
 	walAttempted = true
 	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
@@ -318,6 +321,9 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
+	if err := s.validateReplicationFrame(maximalReceiptVertexDeleteEnvelope(e)); err != nil {
+		return err
+	}
 	storeTx, err := c.store.Begin(time.Now())
 	if err != nil {
 		return receiptStoreError(err)
@@ -352,10 +358,14 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal,
 			fmt.Errorf("replication Vertex Delete receipt relay envelope: %w", err))
 	}
+	if err := s.validateReplicationFrame(localEnvelope); err != nil {
+		return err
+	}
 	if prior, ok := pending.receiptWAL.(*vertexDeleteReceiptEnvelope); ok &&
 		slices.Equal(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
 	}
+
 	if err := storeTx.Stage(); err != nil {
 		return receiptStoreError(err)
 	}
@@ -392,6 +402,27 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 			fmt.Errorf("replication Vertex Delete receipt origin clock floor: %w", err))
 	}
 	return nil
+}
+
+func maximalReceiptVertexDeleteEnvelope(
+	e *vertexDeleteReceiptEnvelope,
+) *vertexDeleteReceiptEnvelope {
+	maximal := &vertexDeleteReceiptEnvelope{
+		Origin:              e.Origin,
+		OriginSeq:           e.OriginSeq,
+		HLC:                 e.HLC,
+		Epoch:               e.Epoch,
+		PolicyFingerprint:   e.PolicyFingerprint,
+		TombstoneExpiration: e.TombstoneExpiration,
+		OriginalKeys:        append([]string(nil), e.OriginalKeys...),
+		Accepted:            make([]graphcache.IndexedVertexDelete[string], len(e.OriginalKeys)),
+		Receipts:            cloneMutationReceipts(e.Receipts),
+	}
+	for i, key := range maximal.OriginalKeys {
+		maximal.Accepted[i] = graphcache.IndexedVertexDelete[string]{Index: i, Key: key}
+	}
+	maximal.Mutation = receiptVertexDeleteGraphMutation(maximal)
+	return maximal
 }
 
 func (c *vertexDeleteReceiptCoordinator) Lookup(

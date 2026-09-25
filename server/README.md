@@ -100,7 +100,7 @@ failure (#847). The most common knobs:
 | `LANTERN_DEFAULT_TTL_SECONDS` | `60` | Surfaced in `GetServerStatus`/startup logs only; **not** applied to RPC writes (omitted TTL/expiration ⇒ permanent; decay is opt-in per write, #523). |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | GraphCache GC tick. |
 | `LANTERN_GC_EDGE_BUDGET` | `0` | Maximum tail buckets swept per tick; `0` keeps the full sweep. A high-degree tail can still dominate a bounded tick. Monitor tail backlog and reclamation lag when enabling. |
-| `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | Per-RPC message size caps (Connect / gRPC / gRPC-Web). |
+| `LANTERN_MAX_RECV_MSG_BYTES` / `LANTERN_MAX_SEND_MSG_BYTES` | `16 MiB` | Per-RPC message size caps (Connect / gRPC / gRPC-Web). The send cap is also the certified admission bound for canonical full-mutation `SubscribeResponse` frames. |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | `1024` | Per-connection stream cap (0 = unlimited). |
 | `LANTERN_RATE_LIMIT_RPS` / `LANTERN_RATE_LIMIT_BURST` | `0` | Process-wide token-bucket rate limit (0 disables). |
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | `500` | Emit a `slog` warning per unary/stream RPC whose handler exceeds this duration (0 disables). |
@@ -130,6 +130,16 @@ Replication-specific variables (`LANTERN_PEERS`, `LANTERN_MAX_REPLICATION_LAG`,
 anti-entropy intervals, etc.) are documented in
 [docs/replication.md](../docs/replication.md) and the runbook at
 [docs/ha-runbook.md](../docs/ha-runbook.md).
+
+The receive and send caps are independent: a public request may fit
+`LANTERN_MAX_RECV_MSG_BYTES` while its mutation plus `SubscribeResponse`
+envelope exceeds `LANTERN_MAX_SEND_MSG_BYTES`. Lantern returns
+`ResourceExhausted` before graph, receipt, origin, or log publication in that
+case. A restart also fails before listener creation if the configured send cap
+cannot carry any retained full-mutation frame. Receipt-WAL's internal 8 MiB
+envelope bound and Snapshot's separately bounded transport do not raise this
+cap. Configure every full-mutation Subscribe consumer, including peer
+replication clients, to read at least the maximum frame its senders admit.
 
 ## Observability
 
