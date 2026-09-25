@@ -15,3 +15,5 @@ else
   go run github.com/bufbuild/buf/cmd/buf@v1.71.0 generate \
     --template sdks/dart/buf.gen.yaml
 fi
+
+dart format "$generated"

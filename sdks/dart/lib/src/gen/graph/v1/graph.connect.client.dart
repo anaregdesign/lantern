@@ -7,7 +7,7 @@ import "package:connectrpc/connect.dart" as connect;
 import "graph.pb.dart" as graphv1graph;
 import "graph.connect.spec.dart" as specs;
 
-extension type LanternServiceClient (connect.Transport _transport) {
+extension type LanternServiceClient(connect.Transport _transport) {
   Future<graphv1graph.IlluminateResponse> illuminate(
     graphv1graph.IlluminateRequest input, {
     connect.Headers? headers,
