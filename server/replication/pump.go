@@ -47,6 +47,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -58,10 +59,10 @@ type MutationApplier interface {
 	ApplyMutation(ctx context.Context, m *pb.Mutation) error
 }
 
-// SnapshotApplier is the surface the pump uses to replay snapshot
-// frames into the local graph cache. *graphcache.GraphCache[string,
-// *pb.Vertex] satisfies it directly via its HLC + ContribID seams added
-// in #181.
+// SnapshotApplier is the surface the default graph-only installer uses to
+// replay frames into the local graph cache. *graphcache.GraphCache[string,
+// *pb.Vertex] satisfies it directly via its HLC + ContribID seams added in
+// #181.
 type SnapshotApplier interface {
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, exp time.Time, ts hlc.Timestamp) bool
 	AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, cid graphcache.ContribID, ts hlc.Timestamp) bool
@@ -70,6 +71,48 @@ type SnapshotApplier interface {
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 	ApplySnapshotVertexTombstoneHLC(key string, ts hlc.Timestamp, expiration time.Time)
 	ApplySnapshotEdgeTombstoneHLC(tail, head string, ts hlc.Timestamp, expiration time.Time)
+}
+
+// SnapshotStream is the transport-neutral receive side consumed by a
+// SnapshotInstaller. Connect's client stream satisfies it directly; adapters
+// in other server packages can implement the same narrow surface without
+// importing Connect or creating a package cycle. The caller retains ownership
+// of closing the underlying transport.
+type SnapshotStream interface {
+	Receive() bool
+	Msg() *pb.SnapshotResponse
+	Err() error
+}
+
+// SnapshotGraphCounts reports the verified graph frames installed from one
+// complete Snapshot stream.
+type SnapshotGraphCounts struct {
+	Vertices             uint64
+	Edges                uint64
+	VertexCausalBarriers uint64
+	EdgeCausalBarriers   uint64
+	VertexTombstones     uint64
+	EdgeTombstones       uint64
+}
+
+// SnapshotInstallResult is returned only after a complete verified install.
+// Header is an owned clone, safe to retain for same-responder resume after the
+// transport advances or closes.
+type SnapshotInstallResult struct {
+	Header *pb.SnapshotHeader
+	Graph  SnapshotGraphCounts
+
+	searchIndexErr error
+}
+
+// SnapshotInstaller owns format-specific Snapshot validation and publication.
+// CompatibleFormat is consulted for both PeerStatus and the first wire header.
+// RequiredFormat is sent on Snapshot requests and controls whether full
+// Subscribe requests opt in to receipt-bearing mutation envelopes.
+type SnapshotInstaller interface {
+	RequiredFormat() pb.SnapshotFormat
+	CompatibleFormat(pb.SnapshotFormat) bool
+	Install(context.Context, SnapshotStream) (SnapshotInstallResult, error)
 }
 
 type searchIndexRecovery interface {
@@ -95,6 +138,30 @@ func beginSnapshotInstall(applier MutationApplier) (func(bool), error) {
 	return nil, nil
 }
 
+type graphOnlySnapshotInstaller struct {
+	apply MutationApplier
+	snap  SnapshotApplier
+	marks snapshotWatermarkApplier
+}
+
+func newGraphOnlySnapshotInstaller(apply MutationApplier, snap SnapshotApplier) SnapshotInstaller {
+	installer := &graphOnlySnapshotInstaller{
+		apply: apply, snap: snap,
+	}
+	if marks, ok := apply.(snapshotWatermarkApplier); ok {
+		installer.marks = marks
+	}
+	return installer
+}
+
+func (*graphOnlySnapshotInstaller) RequiredFormat() pb.SnapshotFormat {
+	return pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+}
+
+func (*graphOnlySnapshotInstaller) CompatibleFormat(format pb.SnapshotFormat) bool {
+	return graphOnlySnapshotFormat(format)
+}
+
 type snapshotFramePhase uint8
 
 const (
@@ -116,9 +183,20 @@ type snapshotReplayCounts struct {
 	edgeTombstone   uint64
 }
 
-// snapshotReplayState is shared by pump and anti-entropy Snapshot consumers.
-// It fail-closes on truncation, duplicate framing, and body reordering before
-// either caller advances durable resume watermarks.
+func (c snapshotReplayCounts) graphCounts() SnapshotGraphCounts {
+	return SnapshotGraphCounts{
+		Vertices:             c.vertices,
+		Edges:                c.edges,
+		VertexCausalBarriers: c.vertexBarrier,
+		EdgeCausalBarriers:   c.edgeBarrier,
+		VertexTombstones:     c.vertexTombstone,
+		EdgeTombstones:       c.edgeTombstone,
+	}
+}
+
+// snapshotReplayState validates the default graph-only install. It fail-closes
+// on truncation, duplicate framing, and body reordering before the installer
+// advances durable resume watermarks.
 type snapshotReplayState struct {
 	gotHeader bool
 	sawFooter bool
@@ -135,6 +213,102 @@ func snapshotProtocolError(format string, args ...any) error {
 func graphOnlySnapshotFormat(format pb.SnapshotFormat) bool {
 	return format == pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED ||
 		format == pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+}
+
+func snapshotInstallerCompatible(installer SnapshotInstaller, format pb.SnapshotFormat) bool {
+	if installer == nil {
+		return false
+	}
+	switch installer.RequiredFormat() {
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
+		if !graphOnlySnapshotFormat(format) {
+			return false
+		}
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1:
+		if format != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+			return false
+		}
+	default:
+		return false
+	}
+	return installer.CompatibleFormat(format)
+}
+
+func snapshotAcceptsReceiptEnvelopes(installer SnapshotInstaller) bool {
+	return installer != nil &&
+		installer.RequiredFormat() == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1
+}
+
+type prefetchedSnapshotStream struct {
+	stream  SnapshotStream
+	first   *pb.SnapshotResponse
+	current *pb.SnapshotResponse
+	pending bool
+}
+
+func (s *prefetchedSnapshotStream) Receive() bool {
+	if s.pending {
+		s.pending = false
+		s.current = s.first
+		return true
+	}
+	if !s.stream.Receive() {
+		s.current = nil
+		return false
+	}
+	s.current = s.stream.Msg()
+	return true
+}
+
+func (s *prefetchedSnapshotStream) Msg() *pb.SnapshotResponse {
+	return s.current
+}
+
+func (s *prefetchedSnapshotStream) Err() error {
+	return s.stream.Err()
+}
+
+// installSnapshot rejects a downgrade or incompatible first header before the
+// selected installer can mutate state, then replays that header through the
+// transport-neutral stream so format-specific installers still validate the
+// complete framing themselves.
+func installSnapshot(
+	ctx context.Context,
+	installer SnapshotInstaller,
+	stream SnapshotStream,
+) (SnapshotInstallResult, error) {
+	if installer == nil {
+		return SnapshotInstallResult{}, snapshotProtocolError("no installer configured")
+	}
+	if !stream.Receive() {
+		if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+			return SnapshotInstallResult{}, err
+		}
+		return SnapshotInstallResult{}, snapshotProtocolError("stream ended before header")
+	}
+	first := stream.Msg()
+	header := first.GetHeader()
+	if header == nil {
+		return SnapshotInstallResult{}, snapshotProtocolError("first frame is not a header")
+	}
+	if !snapshotInstallerCompatible(installer, header.GetFormat()) {
+		return SnapshotInstallResult{}, connect.NewError(
+			connect.CodeFailedPrecondition,
+			fmt.Errorf(
+				"snapshot: installer requires %s, peer sent %s",
+				installer.RequiredFormat(), header.GetFormat(),
+			),
+		)
+	}
+	ownedHeader := proto.Clone(header).(*pb.SnapshotHeader)
+	result, err := installer.Install(ctx, &prefetchedSnapshotStream{
+		stream: stream, first: first, pending: true,
+	})
+	if err != nil {
+		return SnapshotInstallResult{}, err
+	}
+	result.Header = ownedHeader
+	return result, nil
 }
 
 func (s *snapshotReplayState) acceptHeader(header *pb.SnapshotHeader) error {
@@ -318,6 +492,157 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 	return rows, nil
 }
 
+func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotStream) (SnapshotInstallResult, error) {
+	var finishInstall func(bool)
+	defer func() {
+		if finishInstall != nil {
+			finishInstall(false)
+		}
+	}()
+	var recovery searchIndexRecovery
+	var searchIndexErr error
+	var replay snapshotReplayState
+	for stream.Receive() {
+		resp := stream.Msg()
+		switch e := resp.GetEntry().(type) {
+		case *pb.SnapshotResponse_Header:
+			if err := replay.acceptHeader(e.Header); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			var err error
+			finishInstall, err = beginSnapshotInstall(i.apply)
+			if err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			// A mismatched or malformed first header must not mark an intact
+			// search index incomplete. Begin recovery only after format and
+			// install admission have both succeeded.
+			if candidate, ok := i.snap.(searchIndexRecovery); ok {
+				recovery = candidate
+				recovery.BeginSearchIndexRecovery()
+			}
+		case *pb.SnapshotResponse_VertexCausalBarrier:
+			if err := replay.acceptBody("vertex causal barrier", snapshotPhaseVertexBarrier); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			barrier := e.VertexCausalBarrier
+			if barrier == nil {
+				return SnapshotInstallResult{}, snapshotProtocolError("nil vertex causal barrier")
+			}
+			ts, err := snapshotFloorHLC(barrier.GetHlc())
+			if err != nil || barrier.GetKey() == "" {
+				return SnapshotInstallResult{}, snapshotProtocolError("invalid vertex causal barrier")
+			}
+			i.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), ts)
+			replay.counts.vertexBarrier++
+		case *pb.SnapshotResponse_EdgeCausalBarrier:
+			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			barrier := e.EdgeCausalBarrier
+			if barrier == nil {
+				return SnapshotInstallResult{}, snapshotProtocolError("nil edge causal barrier")
+			}
+			ts, err := snapshotFloorHLC(barrier.GetHlc())
+			if err != nil || barrier.GetTail() == "" || barrier.GetHead() == "" {
+				return SnapshotInstallResult{}, snapshotProtocolError("invalid edge causal barrier")
+			}
+			i.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), ts)
+			replay.counts.edgeBarrier++
+		case *pb.SnapshotResponse_VertexTombstone:
+			if err := replay.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			marker := e.VertexTombstone
+			if marker == nil || marker.GetKey() == "" {
+				return SnapshotInstallResult{}, snapshotProtocolError("nil or empty vertex tombstone")
+			}
+			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
+			if err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			i.snap.ApplySnapshotVertexTombstoneHLC(marker.GetKey(), ts, exp)
+			replay.counts.vertexTombstone++
+		case *pb.SnapshotResponse_EdgeTombstone:
+			if err := replay.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			marker := e.EdgeTombstone
+			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" {
+				return SnapshotInstallResult{}, snapshotProtocolError("nil or empty edge tombstone")
+			}
+			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
+			if err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			i.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
+			replay.counts.edgeTombstone++
+		case *pb.SnapshotResponse_Vertex:
+			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			sv := e.Vertex
+			if sv == nil || sv.GetVertex() == nil {
+				return SnapshotInstallResult{}, snapshotProtocolError("nil vertex payload")
+			}
+			v := sv.GetVertex()
+			i.snap.PutVertexWithExpirationHLC(
+				v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
+				snapshotHLC(sv.GetHlc()),
+			)
+			replay.counts.vertices++
+		case *pb.SnapshotResponse_Edge:
+			if err := replay.acceptBody("edge", snapshotPhaseEdge); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			se := e.Edge
+			rows, err := snapshotEdgeRows(se)
+			if err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			for _, row := range rows {
+				applySnapshotEdge(i.snap, se.GetTail(), se.GetHead(), row.weight,
+					row.expiration, row.contribID, row.hlc)
+			}
+			replay.counts.edges++
+		case *pb.SnapshotResponse_Footer:
+			if err := replay.acceptFooter(e.Footer); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+		default:
+			return SnapshotInstallResult{}, snapshotProtocolError("unknown or empty response frame %T", e)
+		}
+	}
+	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return SnapshotInstallResult{}, err
+	}
+	if err := replay.validateComplete(); err != nil {
+		return SnapshotInstallResult{}, err
+	}
+	if recovery != nil {
+		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
+			searchIndexErr = err
+		}
+	}
+	if i.marks != nil {
+		if err := i.marks.ApplySnapshotWatermarks(
+			replay.header.GetCutoffSeqPerOrigin(),
+			snapshotHLC(replay.header.GetCutoffHlc()),
+		); err != nil {
+			return SnapshotInstallResult{}, err
+		}
+	}
+	if finishInstall != nil {
+		finishInstall(true)
+		finishInstall = nil
+	}
+	return SnapshotInstallResult{
+		Header:         proto.Clone(replay.header).(*pb.SnapshotHeader),
+		Graph:          replay.counts.graphCounts(),
+		searchIndexErr: searchIndexErr,
+	}, nil
+}
+
 // Metrics is the narrow surface the pump uses to publish per-peer
 // counters. Wiring the prometheus collectors themselves lands in #187;
 // for now we expose just the hook signatures so the pump compiles in
@@ -410,6 +735,12 @@ type Config struct {
 	// Metrics receives per-peer lifecycle events. nopMetrics{} is
 	// used when nil.
 	Metrics Metrics
+
+	// SnapshotInstaller overrides the graph-only in-place installer. nil keeps
+	// the existing GRAPH_ONLY_V1 behavior using apply and snap passed to
+	// NewPump. A future receipt installer can require RECEIPT_V1 without
+	// changing the Pump transport or retry driver.
+	SnapshotInstaller SnapshotInstaller
 }
 
 // Pump is the long-running peer-replication driver. Construct with
@@ -417,17 +748,16 @@ type Config struct {
 // (or returns immediately when Peers is empty), so it is meant to be
 // invoked from inside an errgroup alongside the Connect listener.
 type Pump struct {
-	cfg     Config
-	apply   MutationApplier
-	snap    SnapshotApplier
-	marks   snapshotWatermarkApplier
-	tracker *peerTracker
+	cfg       Config
+	apply     MutationApplier
+	installer SnapshotInstaller
+	tracker   *peerTracker
 }
 
-// NewPump constructs the pump. apply MUST be the local
-// LanternService instance so replayed mutations are not re-broadcast;
-// snap MUST be the same underlying graph cache the read RPCs serve so
-// snapshot replays converge with subsequent Subscribe deltas.
+// NewPump constructs the pump. apply MUST be the local LanternService instance
+// so replayed mutations are not re-broadcast. When Config.SnapshotInstaller is
+// nil, snap MUST be the same underlying graph cache the read RPCs serve so the
+// default graph-only install converges with subsequent Subscribe deltas.
 func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 	if cfg.BackoffMin <= 0 {
 		cfg.BackoffMin = 250 * time.Millisecond
@@ -445,11 +775,13 @@ func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 		cfg.HTTPClient = defaultH2CClient()
 	}
 	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
-	pump := &Pump{cfg: cfg, apply: apply, snap: snap, tracker: newPeerTracker()}
-	if marks, ok := apply.(snapshotWatermarkApplier); ok {
-		pump.marks = marks
+	installer := cfg.SnapshotInstaller
+	if installer == nil {
+		installer = newGraphOnlySnapshotInstaller(apply, snap)
 	}
-	return pump
+	return &Pump{
+		cfg: cfg, apply: apply, installer: installer, tracker: newPeerTracker(),
+	}
 }
 
 // Run starts one goroutine per peer and blocks until ctx is
@@ -586,8 +918,11 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	if err != nil {
 		return fmt.Errorf("peer capability status: %w", err)
 	}
-	if !graphOnlySnapshotFormat(status.Msg.GetRequiredSnapshotFormat()) {
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("peer requires receipt-bearing Snapshot unsupported by this pump"))
+	if !snapshotInstallerCompatible(p.installer, status.Msg.GetRequiredSnapshotFormat()) {
+		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+			"peer Snapshot format %s is incompatible with installer requiring %s",
+			status.Msg.GetRequiredSnapshotFormat(), p.installer.RequiredFormat(),
+		))
 	}
 	if p.cfg.SearchConfigFingerprint != "" {
 		remote := status.Msg.GetSearchConfigFingerprint()
@@ -669,8 +1004,9 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 // caller so the live tail starts after the point-in-time cut.
 func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64) error {
 	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
-		FromSeqPerOrigin: cursor,
-		FromLocalSeq:     fromLocalSeq,
+		FromSeqPerOrigin:       cursor,
+		FromLocalSeq:           fromLocalSeq,
+		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(p.installer),
 	}))
 	if err != nil {
 		return err
@@ -698,164 +1034,33 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 	return nil
 }
 
-// snapshot opens a Snapshot stream and replays every causal floor and live
-// graph frame into the local cache via the SnapshotApplier seams.
-// Returns nil on a clean (header + payload + footer) stream, or any
-// receive / apply error.
+// snapshot opens a Snapshot stream and delegates its complete receive/install
+// lifecycle to the selected format strategy.
 //
 // The returned header supplies the exact per-origin resume cursor and local
 // watermark cut for the live tail. Replaying those cutoffs before Subscribe
 // prevents both duplicate application and an infinite gapped-snapshot loop.
 func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) (*pb.SnapshotHeader, error) {
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		RequiredFormat: p.installer.RequiredFormat(),
 	}))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
-	var finishInstall func(bool)
-	defer func() {
-		if finishInstall != nil {
-			finishInstall(false)
-		}
-	}()
-	var recovery searchIndexRecovery
 	start := time.Now()
-	var replay snapshotReplayState
-	for stream.Receive() {
-		resp := stream.Msg()
-		switch e := resp.GetEntry().(type) {
-		case *pb.SnapshotResponse_Header:
-			if err := replay.acceptHeader(e.Header); err != nil {
-				return nil, err
-			}
-			finishInstall, err = beginSnapshotInstall(p.apply)
-			if err != nil {
-				return nil, err
-			}
-			// A mismatched or malformed first header must not mark an intact
-			// search index incomplete. Begin recovery only after format and
-			// install admission have both succeeded.
-			if candidate, ok := p.snap.(searchIndexRecovery); ok {
-				recovery = candidate
-				recovery.BeginSearchIndexRecovery()
-			}
-		case *pb.SnapshotResponse_VertexCausalBarrier:
-			if err := replay.acceptBody("vertex causal barrier", snapshotPhaseVertexBarrier); err != nil {
-				return nil, err
-			}
-			barrier := e.VertexCausalBarrier
-			if barrier == nil {
-				return nil, snapshotProtocolError("nil vertex causal barrier")
-			}
-			ts, err := snapshotFloorHLC(barrier.GetHlc())
-			if err != nil || barrier.GetKey() == "" {
-				return nil, snapshotProtocolError("invalid vertex causal barrier")
-			}
-			p.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), ts)
-			replay.counts.vertexBarrier++
-		case *pb.SnapshotResponse_EdgeCausalBarrier:
-			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
-				return nil, err
-			}
-			barrier := e.EdgeCausalBarrier
-			if barrier == nil {
-				return nil, snapshotProtocolError("nil edge causal barrier")
-			}
-			ts, err := snapshotFloorHLC(barrier.GetHlc())
-			if err != nil || barrier.GetTail() == "" || barrier.GetHead() == "" {
-				return nil, snapshotProtocolError("invalid edge causal barrier")
-			}
-			p.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), ts)
-			replay.counts.edgeBarrier++
-		case *pb.SnapshotResponse_VertexTombstone:
-			if err := replay.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone); err != nil {
-				return nil, err
-			}
-			marker := e.VertexTombstone
-			if marker == nil || marker.GetKey() == "" {
-				return nil, snapshotProtocolError("nil or empty vertex tombstone")
-			}
-			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
-			if err != nil {
-				return nil, err
-			}
-			p.snap.ApplySnapshotVertexTombstoneHLC(marker.GetKey(), ts, exp)
-			replay.counts.vertexTombstone++
-		case *pb.SnapshotResponse_EdgeTombstone:
-			if err := replay.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone); err != nil {
-				return nil, err
-			}
-			marker := e.EdgeTombstone
-			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" {
-				return nil, snapshotProtocolError("nil or empty edge tombstone")
-			}
-			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
-			if err != nil {
-				return nil, err
-			}
-			p.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
-			replay.counts.edgeTombstone++
-		case *pb.SnapshotResponse_Vertex:
-			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
-				return nil, err
-			}
-			sv := e.Vertex
-			if sv == nil || sv.GetVertex() == nil {
-				return nil, snapshotProtocolError("nil vertex payload")
-			}
-			v := sv.GetVertex()
-			p.snap.PutVertexWithExpirationHLC(
-				v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
-				snapshotHLC(sv.GetHlc()),
-			)
-			replay.counts.vertices++
-		case *pb.SnapshotResponse_Edge:
-			if err := replay.acceptBody("edge", snapshotPhaseEdge); err != nil {
-				return nil, err
-			}
-			se := e.Edge
-			rows, err := snapshotEdgeRows(se)
-			if err != nil {
-				return nil, err
-			}
-			for _, row := range rows {
-				applySnapshotEdge(p.snap, se.GetTail(), se.GetHead(), row.weight,
-					row.expiration, row.contribID, row.hlc)
-			}
-			replay.counts.edges++
-		case *pb.SnapshotResponse_Footer:
-			if err := replay.acceptFooter(e.Footer); err != nil {
-				return nil, err
-			}
-		default:
-			return nil, snapshotProtocolError("unknown or empty response frame %T", e)
-		}
-	}
-	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+	result, err := installSnapshot(ctx, p.installer, stream)
+	if err != nil {
 		return nil, err
 	}
-	if err := replay.validateComplete(); err != nil {
-		return nil, err
+	if result.searchIndexErr != nil {
+		p.cfg.Logger.Warn("replication pump: snapshot rebuilt graph but search index remains incomplete",
+			slog.String("peer", addr), slog.Any("err", result.searchIndexErr))
 	}
-	if recovery != nil {
-		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
-			p.cfg.Logger.Warn("replication pump: snapshot rebuilt graph but search index remains incomplete",
-				slog.String("peer", addr), slog.Any("err", err))
-		}
-	}
-	if p.marks != nil {
-		if err := p.marks.ApplySnapshotWatermarks(replay.header.GetCutoffSeqPerOrigin(), snapshotHLC(replay.header.GetCutoffHlc())); err != nil {
-			return nil, err
-		}
-	}
-	if finishInstall != nil {
-		finishInstall(true)
-		finishInstall = nil
-	}
-	p.cfg.Metrics.OnPumpSnapshotReplayed(addr, replay.counts.vertices, replay.counts.edges, time.Since(start))
-	return replay.header, nil
+	p.cfg.Metrics.OnPumpSnapshotReplayed(
+		addr, result.Graph.Vertices, result.Graph.Edges, time.Since(start),
+	)
+	return result.Header, nil
 }
 
 type snapshotResumeCursor struct {
