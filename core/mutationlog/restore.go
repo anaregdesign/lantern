@@ -50,6 +50,83 @@ func CreateLeasedLogWithFileWAL(path string, opts Options, encode func(MutationO
 	}, nil
 }
 
+// CreateLeasedLogWithFileWALTip creates a fresh WAL and tip sidecar under one
+// lease, binds their empty genesis frontier, and retains all three owners
+// through Log shutdown. Existing or partially created files fail closed;
+// callers must not remove them automatically after an uncertain creation
+// failure. binding must identify the active application epoch and policy.
+func CreateLeasedLogWithFileWALTip(
+	path string,
+	opts Options,
+	encode func(MutationOp) ([]byte, error),
+	binding [32]byte,
+) (_ *Log, _ io.Closer, err error) {
+	if opts.WAL != nil || encode == nil || binding == ([32]byte{}) {
+		return nil, nil, errors.New("mutationlog: fresh tipped Log requires a FileWAL encoder, binding, and no configured WAL")
+	}
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var wal *FileWAL
+	var tip *FileWALTipJournal
+	transferred := false
+	defer func() {
+		if !transferred {
+			if tip != nil {
+				err = errors.Join(err, tip.Close())
+			}
+			if wal != nil {
+				err = errors.Join(err, wal.Close())
+			}
+			err = errors.Join(err, lease.Close())
+		}
+	}()
+	err = lease.WithPath(func(canonicalPath string) error {
+		var createErr error
+		wal, createErr = CreateFileWAL(canonicalPath, encode)
+		if createErr != nil {
+			return createErr
+		}
+		tip, createErr = CreateFileWALTipJournal(canonicalPath, binding)
+		if createErr != nil {
+			return createErr
+		}
+		// A new O_EXCL FileWAL must contain only its version header. Reject
+		// any unexpected frame rather than attesting unknown application data.
+		unexpectedFrame := func([]byte) (MutationOp, error) {
+			return nil, ErrFileWALTipMismatch
+		}
+		if createErr = tip.VerifyAndCatchUp(canonicalPath, unexpectedFrame, func(Entry) error {
+			return ErrFileWALTipMismatch
+		}); createErr != nil {
+			return createErr
+		}
+		return wal.BindTipJournal(tip)
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	opts.WAL = wal
+	log := New(opts)
+	transferred = true
+	return log, &leasedFileWALTipLogCloser{
+		owner: &resumedLogCloser{log: log, wal: wal},
+		tip:   tip,
+		lease: lease,
+	}, nil
+}
+
+type leasedFileWALTipLogCloser struct {
+	owner io.Closer
+	tip   *FileWALTipJournal
+	lease *FileWALLease
+}
+
+func (c *leasedFileWALTipLogCloser) Close() error {
+	return errors.Join(c.owner.Close(), c.tip.Close(), c.lease.Close())
+}
+
 // ResumeLogFromFileWAL validates and replays a complete FileWAL, then returns
 // an in-memory Log at exactly the same local sequence frontier. restore must
 // install every decoded entry into application state before returning nil.
@@ -78,6 +155,40 @@ func ResumeLogFromFileWAL(
 	decode func([]byte) (MutationOp, error),
 	restore func(Entry) error,
 ) (*Log, io.Closer, error) {
+	return resumeLogFromFileWAL(path, opts, encode, decode, nil, restore, nil)
+}
+
+// ResumeLogFromFileWALWithTip requires an existing tip journal from the same
+// exclusive path lease. It replays the complete WAL into the caller's
+// detached application state, checks its published prefix against the tip,
+// durably attests any valid extra suffix, and binds that journal to every
+// future FileWAL.Write before constructing the live Log. The caller owns
+// closing the journal after the returned Log owner and before the lease.
+// A failed restore may have changed application state; discard it.
+func ResumeLogFromFileWALWithTip(
+	path string,
+	opts Options,
+	encode func(MutationOp) ([]byte, error),
+	decode func([]byte) (MutationOp, error),
+	validate func(Entry) error,
+	restore func(Entry) error,
+	tip *FileWALTipJournal,
+) (*Log, io.Closer, error) {
+	if validate == nil || tip == nil {
+		return nil, nil, errors.New("mutationlog: FileWAL tip validator and journal are required")
+	}
+	return resumeLogFromFileWAL(path, opts, encode, decode, validate, restore, tip)
+}
+
+func resumeLogFromFileWAL(
+	path string,
+	opts Options,
+	encode func(MutationOp) ([]byte, error),
+	decode func([]byte) (MutationOp, error),
+	validate func(Entry) error,
+	restore func(Entry) error,
+	tip *FileWALTipJournal,
+) (*Log, io.Closer, error) {
 	if opts.WAL != nil {
 		return nil, nil, errors.New("mutationlog: resumed Log cannot replace a configured WAL")
 	}
@@ -105,6 +216,14 @@ func ResumeLogFromFileWAL(
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	if tip != nil {
+		if err := tip.VerifyAndCatchUp(path, decode, validate); err != nil {
+			return nil, nil, errors.Join(err, wal.Close())
+		}
+		if err := wal.BindTipJournal(tip); err != nil {
+			return nil, nil, errors.Join(err, wal.Close())
+		}
 	}
 	return attachResumedFileWAL(opts, wal, tail)
 }

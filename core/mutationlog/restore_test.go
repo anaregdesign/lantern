@@ -2,6 +2,7 @@ package mutationlog
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -381,3 +382,124 @@ func TestAttachResumedFileWALRejectsFrontierMismatchAndClosesWriter(t *testing.T
 		t.Fatalf("mismatched writer Write = %v, want closed", err)
 	}
 }
+
+func TestResumeLogFromFileWALWithTipBindsFutureCommits(t *testing.T) {
+	_, lease, wal, journal, binding := fileWALTipFixture(t)
+	if err := wal.Write(fileWALEntry(1, "first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resumedTip, err := ResumeFileWALTipJournal(lease.Path(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumedTip.Close()
+	var restored []Entry
+	log, owner, err := ResumeLogFromFileWALWithTip(lease.Path(), Options{Capacity: 2}, fileWALStringEncode,
+		fileWALStringDecode, fileWALCutValidEntry, func(e Entry) error {
+			restored = append(restored, e)
+			return nil
+		}, resumedTip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	if len(restored) != 1 || restored[0].Seq != 1 {
+		t.Fatalf("restored entries = %+v", restored)
+	}
+	if _, err := log.CommitWithPublication("second", fileWALEntry(2, "second").HLC, nil); err != nil {
+		t.Fatal(err)
+	}
+	if seq, _, ok := resumedTip.Frontier(); !ok || seq != 2 {
+		t.Fatalf("new Log commit did not advance tip: %d, %v", seq, ok)
+	}
+}
+
+func TestResumeLogFromFileWALWithTipRejectsLostPublishedSuffix(t *testing.T) {
+	path, lease, wal, journal, binding := fileWALTipFixture(t)
+	for _, e := range []Entry{fileWALEntry(1, "first"), fileWALEntry(2, "second")} {
+		if err := wal.Write(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	firstEnd := int64(len(fileWALMagic) + fileWALFrameHeader + fileWALBodyHeader + len("first"))
+	if err := os.Truncate(path, firstEnd); err != nil {
+		t.Fatal(err)
+	}
+	resumedTip, err := ResumeFileWALTipJournal(lease.Path(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumedTip.Close()
+	log, owner, err := ResumeLogFromFileWALWithTip(lease.Path(), Options{}, fileWALStringEncode,
+		fileWALStringDecode, fileWALCutValidEntry, func(Entry) error { return nil }, resumedTip)
+	if log != nil || owner != nil || !errors.Is(err, ErrFileWALCutUnavailable) {
+		t.Fatalf("truncated Log recovery = %p, %p, %v", log, owner, err)
+	}
+}
+
+func TestCreateLeasedLogWithFileWALTipOwnsFreshAndRestartPaths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh.wal")
+	if _, _, err := CreateLeasedLogWithFileWALTip(path, Options{}, fileWALStringEncode, [32]byte{}); err == nil {
+		t.Fatal("zero binding accepted")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid binding created a partial WAL: %v", err)
+	}
+	binding := sha256.Sum256([]byte("fresh epoch and policy"))
+	log, owner, err := CreateLeasedLogWithFileWALTip(path, Options{Capacity: 2}, fileWALStringEncode, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if competitor, err := AcquireFileWALLease(path); competitor != nil || !errors.Is(err, ErrFileWALLeaseBusy) {
+		if competitor != nil {
+			_ = competitor.Close()
+		}
+		t.Fatalf("fresh owner lost lease: %p, %v", competitor, err)
+	}
+	if _, err := log.CommitWithPublication("first", fileWALEntry(1, "first").HLC, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CreateLeasedLogWithFileWALTip(path, Options{}, fileWALStringEncode, binding); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("fresh helper reused existing path: %v", err)
+	}
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	tip, err := ResumeFileWALTipJournal(lease.Path(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tip.Close()
+	resumed, resumedOwner, err := ResumeLogFromFileWALWithTip(lease.Path(), Options{Capacity: 2},
+		fileWALStringEncode, fileWALStringDecode, fileWALCutValidEntry, func(Entry) error { return nil }, tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumedOwner.Close()
+	if seq, ok := resumed.LastSeq(); !ok || seq != 1 {
+		t.Fatalf("fresh Log restart frontier = %d, %v", seq, ok)
+	}
+}
+
+type failingTipWriter struct{ err error }
+
+func (w failingTipWriter) Write([]byte) (int, error) { return 0, w.err }
+func (w failingTipWriter) Sync() error               { return w.err }
+func (w failingTipWriter) Close() error              { return nil }

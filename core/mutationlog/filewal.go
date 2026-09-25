@@ -1,6 +1,7 @@
 package mutationlog
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -28,6 +29,8 @@ type FileWAL struct {
 	mu       sync.Mutex
 	file     fileWALWriter
 	encode   func(MutationOp) ([]byte, error)
+	tip      *FileWALTipJournal
+	chain    [sha256.Size]byte
 	lastSeq  uint64
 	offset   int64
 	unusable bool
@@ -98,7 +101,7 @@ func CreateFileWAL(path string, encode func(MutationOp) ([]byte, error)) (*FileW
 		return nil, fmt.Errorf("mutationlog: close FileWAL directory: %w", dirCloseErr)
 	}
 	closeOnError = false
-	return &FileWAL{file: f, encode: encode, offset: int64(len(fileWALMagic))}, nil
+	return &FileWAL{file: f, encode: encode, chain: fileWALChainSeed(), offset: int64(len(fileWALMagic))}, nil
 }
 
 // ResumeFileWAL opens an existing, exclusively owned file for append only
@@ -138,7 +141,7 @@ func ResumeFileWAL(path string, encode func(MutationOp) ([]byte, error), decode 
 	if !initial.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: not a regular file", ErrFileWALCorrupt)
 	}
-	lastSeq, offset, err := replayOpenedFileWAL(f, decode, visit)
+	lastSeq, offset, chain, err := replayOpenedFileWAL(f, decode, visit)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +153,23 @@ func ResumeFileWAL(path string, encode func(MutationOp) ([]byte, error), decode 
 		return nil, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
 	}
 	closeOnError = false
-	return &FileWAL{file: f, encode: encode, lastSeq: lastSeq, offset: offset}, nil
+	return &FileWAL{file: f, encode: encode, chain: chain, lastSeq: lastSeq, offset: offset}, nil
+}
+
+// BindTipJournal installs a verified journal at this WAL's exact full replay
+// frontier. Future Write calls sync the frame, then its chain tip, before
+// returning success. A journal failure permanently poisons the WAL.
+func (w *FileWAL) BindTipJournal(journal *FileWALTipJournal) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if journal == nil || w.tip != nil || w.closed || w.unusable {
+		return ErrFileWALUnusable
+	}
+	if err := journal.bind(w.lastSeq, w.chain); err != nil {
+		return err
+	}
+	w.tip = journal
+	return nil
 }
 
 // Write implements WAL. A nil return means the full frame and file have been
@@ -194,7 +213,14 @@ func (w *FileWAL) Write(entry Entry) error {
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("mutationlog: sync FileWAL frame: %w", err)
 	}
+	nextChain := fileWALChainNext(w.chain, frame[:fileWALFrameHeader], frame[fileWALFrameHeader:])
+	if w.tip != nil {
+		if err := w.tip.advance(entry.Seq, nextChain); err != nil {
+			return fmt.Errorf("%w: record FileWAL tip: %w", ErrFileWALUnusable, err)
+		}
+	}
 	w.lastSeq = entry.Seq
+	w.chain = nextChain
 	w.offset += int64(len(frame))
 	w.unusable = false
 	return nil
@@ -246,40 +272,57 @@ func ReplayFileWAL(path string, decode func([]byte) (MutationOp, error), visit f
 		return err
 	}
 	defer f.Close()
-	_, _, err = replayOpenedFileWAL(f, decode, visit)
+	_, _, _, err = replayOpenedFileWAL(f, decode, visit)
 	return err
 }
 
-func replayOpenedFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, int64, error) {
+func replayOpenedFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, int64, [sha256.Size]byte, error) {
 	if _, err := scanFileWAL(f, nil, nil); err != nil {
-		return 0, 0, err
+		return 0, 0, [sha256.Size]byte{}, err
 	}
 	validatedOffset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, [sha256.Size]byte{}, err
 	}
 	if _, err := scanFileWAL(f, decode, nil); err != nil {
-		return 0, 0, err
+		return 0, 0, [sha256.Size]byte{}, err
 	}
 	decodedOffset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, [sha256.Size]byte{}, err
 	}
 	if decodedOffset != validatedOffset {
-		return 0, 0, fmt.Errorf("%w: file size changed during decode", ErrFileWALCorrupt)
+		return 0, 0, [sha256.Size]byte{}, fmt.Errorf("%w: file size changed during decode", ErrFileWALCorrupt)
 	}
-	lastSeq, err := scanFileWAL(f, decode, visit)
+	chain := fileWALChainSeed()
+	lastSeq, err := scanFileWALFrames(f, decode, visit, func(_ Entry, header, body []byte) error {
+		chain = fileWALChainNext(chain, header, body)
+		return nil
+	})
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, [sha256.Size]byte{}, err
 	}
 	restoredOffset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, [sha256.Size]byte{}, err
 	}
 	if restoredOffset != validatedOffset {
-		return 0, 0, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
+		return 0, 0, [sha256.Size]byte{}, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
 	}
-	return lastSeq, restoredOffset, nil
+	return lastSeq, restoredOffset, chain, nil
+}
+
+func fileWALChainSeed() [sha256.Size]byte { return sha256.Sum256([]byte(fileWALMagic)) }
+
+func fileWALChainNext(previous [sha256.Size]byte, header, body []byte) [sha256.Size]byte {
+	h := sha256.New()
+	_, _ = h.Write([]byte("lantern-filewal-chain-v1\x00"))
+	_, _ = h.Write(previous[:])
+	_, _ = h.Write(header)
+	_, _ = h.Write(body)
+	var next [sha256.Size]byte
+	copy(next[:], h.Sum(nil))
+	return next
 }
 
 func scanFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, error) {

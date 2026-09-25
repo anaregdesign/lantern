@@ -483,6 +483,15 @@ matches the detached replay. It closes Log, journal, and lease together on
 discard. It is deliberately unpublished: an apparently valid WAL prefix can
 still omit a later durable suffix, and no provider has installed an epoch or
 endpoint generation at a trusted serving cut.
+A separate opt-in FileWAL tip journal can now durably record each frame's
+local sequence and rolling hash after the WAL fsync but before the Log reports
+success. On restart it verifies the complete attested prefix and rejects a
+valid-looking WAL truncation or changed frame; a fully validated extra suffix
+may be attested before serving, since the previous process may have crashed
+between WAL fsync and tip publication. The caller must bind the journal to
+the active epoch/policy and keep it under the same path lease. This core
+primitive is not yet installed by the server, and a matching tip alone does
+not certify the graph/Store/origin image or archive cut.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
