@@ -321,9 +321,13 @@ immutable envelope for append-only repair without reapplying graph effects.
 The detached
 recovery candidate replays only accepted exact Vertex/Edge identities in
 request order, preserving duplicates, accepted absent-key floors, and the
-origin's absolute tombstone deadline. It rejects an accepted transition that
-is no longer causally admissible, while zero-accepted frames advance only the
-origin/log frontier. Raw graph writes after a receipt remain gated. A later
+origin's absolute tombstone deadline. These effects were already committed
+through the receiver's non-strict replication path, so recovery uses the same
+convergence path even when the configured causal-metadata budget is full. It
+still rejects an accepted transition that is no longer causally admissible;
+local-origin checked admission remains bounded and unchanged. Zero-accepted
+frames advance only the origin/log frontier. Raw graph writes after a receipt
+remain gated. A later
 Put/Add rejected while a tombstone was live can become accepted on naive replay
 after it expires;
 Delete evidence alone cannot certify a complete graph/receipt restore.
@@ -339,10 +343,12 @@ Raw older Put rows can be read before a receipt but remain unproven; the
 read-only audit rejects one after a receipt instead of treating its original
 mutation as evidence of a receiver-local effect. The detached recovery
 candidate replays only the accepted subset, preserving live/barrier decisions
-and allowing a live value to expire by recovery time. A contradictory accepted
-decision fails the candidate. Every enabled local and remote Put path emits
-this private kind. Serving use of this graph-only evidence enables neither
-Store admission nor an absent-ID answer.
+and allowing a live value to expire by recovery time. Because these are
+already-committed receiver effects, replay bypasses local causal-metadata
+admission while still requiring every recorded outcome to remain causally
+accepted. A contradictory accepted decision fails the candidate. Every
+enabled local and remote Put path emits this private kind. Serving use of this
+graph-only evidence enables neither Store admission nor an absent-ID answer.
 The stricter effect-complete staging path rejects even pre-receipt raw Put/Add
 rows before replay. It is a prerequisite for future serving recovery, not a
 serving certificate: Store clock high-water, epoch continuity, and atomic

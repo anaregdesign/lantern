@@ -411,10 +411,7 @@ func replayGraphPutEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effe
 			}
 			items[i] = item
 		}
-		outcomes, err := graph.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
-		if err != nil {
-			return err
-		}
+		outcomes := graph.PutVerticesWithExpirationHLCOutcomes(items, ts)
 		return verifyGraphPutReplayOutcomes(effect.Accepted, outcomes)
 	case *pb.MutationOp_PutEdge, *pb.MutationOp_PutEdges, *pb.MutationOp_ReplicatedPutEdges:
 		items := make([]graphcache.EdgeItem[string], len(effect.Accepted))
@@ -425,10 +422,7 @@ func replayGraphPutEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effe
 			}
 			items[i] = item
 		}
-		outcomes, err := graph.PutEdgesWithExpirationHLCOutcomesChecked(items, ts)
-		if err != nil {
-			return err
-		}
+		outcomes := graph.PutEdgesWithExpirationHLCOutcomes(items, ts)
 		return verifyGraphPutReplayOutcomes(effect.Accepted, outcomes)
 	default:
 		return receiptWALUnionError("graph Put effect has unsupported replay arm %T", op)
@@ -571,7 +565,7 @@ func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e
 	case *pb.MutationOp_DeleteVertex:
 		keys := []string{op.DeleteVertex.GetKey()}
 		if retainsTombstone {
-			_, replayed, err = graph.DeleteVerticesHLCDecisionsChecked(keys, ts, deadline)
+			_, replayed = graph.DeleteVerticesHLCDecisions(keys, ts, deadline)
 		} else {
 			graph.DeleteVertices(keys)
 			replayed = []int{0}
@@ -582,7 +576,7 @@ func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e
 			keys[i] = op.DeleteVertices.GetKeys()[index]
 		}
 		if retainsTombstone {
-			_, replayed, err = graph.DeleteVerticesHLCDecisionsChecked(keys, ts, deadline)
+			_, replayed = graph.DeleteVerticesHLCDecisions(keys, ts, deadline)
 		} else {
 			graph.DeleteVertices(keys)
 			replayed = allAcceptedIndexes(len(keys))
@@ -590,7 +584,7 @@ func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e
 	case *pb.MutationOp_DeleteEdge:
 		keys := []graphcache.EdgeKey[string]{{Tail: op.DeleteEdge.GetTail(), Head: op.DeleteEdge.GetHead()}}
 		if retainsTombstone {
-			_, replayed, err = graph.DeleteEdgesHLCDecisionsChecked(keys, ts, deadline)
+			_, replayed = graph.DeleteEdgesHLCDecisions(keys, ts, deadline)
 		} else {
 			graph.DeleteEdges(keys)
 			replayed = []int{0}
@@ -602,7 +596,7 @@ func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e
 			keys[i] = graphcache.EdgeKey[string]{Tail: key.GetTail(), Head: key.GetHead()}
 		}
 		if retainsTombstone {
-			_, replayed, err = graph.DeleteEdgesHLCDecisionsChecked(keys, ts, deadline)
+			_, replayed = graph.DeleteEdgesHLCDecisions(keys, ts, deadline)
 		} else {
 			graph.DeleteEdges(keys)
 			replayed = allAcceptedIndexes(len(keys))
@@ -610,10 +604,7 @@ func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e
 	default:
 		return receiptWALUnionError("graph Delete effect has unsupported replay arm %T", op)
 	}
-	if err != nil {
-		return receiptWALUnionError("graph Delete effect application: %v", err)
-	}
-	if len(replayed) != len(effect.AcceptedIndexes) {
+	if !slices.Equal(replayed, allAcceptedIndexes(len(effect.AcceptedIndexes))) {
 		return receiptWALUnionError("graph Delete accepted effect replayed as rejected")
 	}
 	return nil
