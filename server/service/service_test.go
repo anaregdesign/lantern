@@ -801,6 +801,39 @@ func TestLanternService_DeleteEdge(t *testing.T) {
 	if dResp2.GetExisted() {
 		t.Errorf("DeleteEdge.Existed = true on second call, want false")
 	}
+
+	t.Run("ReceiptlessRequestsPreserveUnknownFieldCompatibility", func(t *testing.T) {
+		for _, edge := range []*pb.Edge{
+			{Tail: "legacy-singular", Head: "edge", Weight: 1},
+			{Tail: "legacy-plural", Head: "edge", Weight: 1},
+		} {
+			if _, err := s.PutEdge(ctx, &pb.PutEdgeRequest{Edge: edge}); err != nil {
+				t.Fatalf("PutEdge(%s): %v", edge.GetTail(), err)
+			}
+		}
+
+		singular := &pb.DeleteEdgeRequest{Tail: "legacy-singular", Head: "edge"}
+		singular.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x01})
+		singularResp, err := s.DeleteEdge(ctx, singular)
+		if err != nil {
+			t.Fatalf("receipt-less DeleteEdge with unknown field: %v", err)
+		}
+		if !singularResp.GetExisted() {
+			t.Fatal("receipt-less DeleteEdge did not preserve existed=true")
+		}
+
+		plural := &pb.DeleteEdgesRequest{
+			Edges: []*pb.EdgeKey{{Tail: "legacy-plural", Head: "edge"}},
+		}
+		plural.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x01})
+		pluralResp, err := s.DeleteEdges(ctx, plural)
+		if err != nil {
+			t.Fatalf("receipt-less DeleteEdges with unknown field: %v", err)
+		}
+		if len(pluralResp.GetExisted()) != 1 || !pluralResp.GetExisted()[0] {
+			t.Fatalf("receipt-less DeleteEdges outcomes = %v, want [true]", pluralResp.GetExisted())
+		}
+	})
 }
 
 func seedTriangle(t *testing.T, s *LanternService) {

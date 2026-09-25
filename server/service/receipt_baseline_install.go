@@ -43,7 +43,7 @@ func (s *LanternService) installReceiptBaseline(
 	}
 	if s == nil || s.runtime == nil || s.runtime.receipt == nil ||
 		s.runtime.receipt.owner == nil || s.runtime.receipt.baselineCodec == nil ||
-		s.runtime.receipt.baselineInstallGate == nil ||
+		s.runtime.receipt.operationAdmission == nil ||
 		s.cache != s.runtime.graph || s.log != s.runtime.log ||
 		s.clock != s.runtime.clock || s.origins != s.runtime.origins ||
 		s.receiptStore != s.runtime.receipt.store ||
@@ -51,14 +51,11 @@ func (s *LanternService) installReceiptBaseline(
 		return errors.New("service: durable baseline install requires the exact certified runtime")
 	}
 	receiptRuntime := s.runtime.receipt
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-receiptRuntime.baselineInstallGate:
+	releaseAdmission, err := receiptRuntime.operationAdmission.acquireExclusive(ctx)
+	if err != nil {
+		return err
 	}
-	defer func() {
-		receiptRuntime.baselineInstallGate <- struct{}{}
-	}()
+	defer releaseAdmission()
 	if err := s.withExclusiveCommittedView(func() error { return nil }); err != nil {
 		return err
 	}

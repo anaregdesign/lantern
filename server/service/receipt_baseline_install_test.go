@@ -292,7 +292,9 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	if err != nil || capability.GetEnabled() {
 		t.Fatalf("baseline install exposed receipt capability: %+v, %v", capability, err)
 	}
-	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: image.id.Bytes(),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("baseline install exposed receipt status: %v", err)
 	}
 
@@ -1407,5 +1409,108 @@ func TestInstallReceiptBaselineCleanupFailureReportsCommittedState(t *testing.T)
 	}
 	if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
 		t.Fatalf("cleanup failure sidecars = %v, want committed candidate", sidecars)
+	}
+}
+
+type blockingReceiptBaselineCodec struct {
+	delegate ReceiptBaselineArchiveCodec
+	entered  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (c *blockingReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
+	ctx context.Context,
+	capture ReceiptWholeStateCapture,
+) ([]byte, error) {
+	c.once.Do(func() { close(c.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+	}
+	return c.delegate.EncodeCombinedReceiptBaseline(ctx, capture)
+}
+
+func (c *blockingReceiptBaselineCodec) StageCombinedReceiptBaseline(
+	ctx context.Context,
+	raw []byte,
+	config mutationreceipt.Config,
+	defaultTTL time.Duration,
+	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
+) (*ReceiptBaselineCandidate, error) {
+	return c.delegate.StageCombinedReceiptBaseline(ctx, raw, config, defaultTTL, configureGraph)
+}
+
+func TestInstallReceiptBaselineExcludesPublicReceiptOperations(t *testing.T) {
+	path := t.TempDir() + "/receipts.wal"
+	config := baselineRuntimeTestConfig(path)
+	config.Receipt.ClockHighWater = time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	config.Now = config.Receipt.ClockHighWater
+	image := newReceiptBaselineTestImage(t, config)
+	blocking := &blockingReceiptBaselineCodec{
+		delegate: image.codec,
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	config.BaselineCodec = blocking
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallation(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyReceiptBackup(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ActivatePublicReceipts(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	before, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || !before.GetEnabled() {
+		t.Fatalf("capability before install = %+v, %v", before, err)
+	}
+
+	installDone := make(chan error, 1)
+	go func() {
+		installDone <- primary.InstallReceiptBaseline(context.Background(), image.capture)
+	}()
+	waitReceiptTest(t, "exclusive baseline install", blocking.entered)
+
+	during, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || during.GetEnabled() || during.GetPolicy() != nil || during.GetEndpoint() != nil {
+		t.Fatalf("capability during install = %+v, %v", during, err)
+	}
+	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: image.id.Bytes(),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("status during install = %v, want FailedPrecondition", err)
+	}
+	if _, err := primary.DeleteEdge(context.Background(), &pb.DeleteEdgeRequest{
+		Tail: "blocked", Head: "during-install",
+		ReceiptContext: &pb.MutationReceiptContext{
+			OperationIds:  [][]byte{image.id.Bytes()},
+			LogicalCallId: []byte{0x93, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+			Endpoint:      before.GetEndpoint(),
+		},
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("receipt mutation during install = %v, want FailedPrecondition", err)
+	}
+
+	close(blocking.release)
+	if err := waitReceiptTest(t, "baseline install completion", installDone); err != nil {
+		t.Fatal(err)
+	}
+	after, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || !after.GetEnabled() ||
+		bytes.Equal(after.GetEndpoint().GetGeneration(), before.GetEndpoint().GetGeneration()) {
+		t.Fatalf("capability after install = %+v, %v", after, err)
 	}
 }

@@ -3,43 +3,270 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-var errReceiptsDisabled = errors.New("mutation receipts are not enabled on this server")
+// MaxReceiptStatusBatchSize is the handler-private ceiling for status
+// amplification. Production validation may impose a lower configured batch
+// limit, but no interceptor configuration can raise this bound.
+const MaxReceiptStatusBatchSize = 10_000
 
-// GetReceiptCapability is the preflight for future receipt writes. It follows
-// the configured LanternService auth policy. Until graph, receipt, WAL,
-// recovery, and Snapshot state share one certified publication boundary, it
-// never advertises an epoch or endpoint marker. In particular, a process-local
-// receipt map is not a capability.
-func (s *LanternService) GetReceiptCapability(ctx context.Context, _ *pb.GetReceiptCapabilityRequest) (*pb.GetReceiptCapabilityResponse, error) {
+var (
+	errReceiptsDisabled   = errors.New("mutation receipts are not enabled on this server")
+	errReceiptsRecovering = errors.New("mutation receipt recovery or Snapshot installation is in progress")
+)
+
+func invalidReceiptRequest(err error) error {
+	return connect.NewError(connect.CodeInvalidArgument, err)
+}
+
+func (s *LanternService) publicReceiptRuntime() *receiptServingRuntime {
+	if s == nil || s.runtime == nil || s.runtime.closed.Load() ||
+		s.runtime.receipt == nil || !s.runtime.receipt.publicEnabled.Load() {
+		return nil
+	}
+	runtime := s.runtime.receipt
+	coordinator := s.receiptEdgeDeleteCoordinator
+	if runtime.store == nil || runtime.retired == nil ||
+		s.receiptStore != runtime.store ||
+		coordinator == nil || coordinator.service != s ||
+		coordinator.cache != s.runtime.graph || coordinator.store != runtime.store {
+		return nil
+	}
+	return runtime
+}
+
+func (s *LanternService) acquirePublicReceiptRuntime() (*receiptServingRuntime, func(), error) {
+	runtime := s.publicReceiptRuntime()
+	if runtime == nil || runtime.operationAdmission == nil {
+		return nil, nil, connect.NewError(connect.CodeFailedPrecondition, errReceiptsDisabled)
+	}
+	release, ok := runtime.operationAdmission.tryAcquireShared()
+	if !ok {
+		return nil, nil, connect.NewError(connect.CodeFailedPrecondition, errReceiptsRecovering)
+	}
+	return runtime, release, nil
+}
+
+// GetReceiptCapability samples the same persisted monotonic clock used for
+// receipt admission. A disabled, recovering, closed, faulted, or otherwise
+// uncertified runtime returns enabled=false without identity-bearing fields.
+func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetReceiptCapabilityRequest) (*pb.GetReceiptCapabilityResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	return &pb.GetReceiptCapabilityResponse{}, nil
+	if req == nil {
+		req = &pb.GetReceiptCapabilityRequest{}
+	}
+	if err := rejectProtoUnknownFields(req.ProtoReflect()); err != nil {
+		return nil, invalidReceiptRequest(err)
+	}
+	runtime, release, err := s.acquirePublicReceiptRuntime()
+	if err != nil {
+		return &pb.GetReceiptCapabilityResponse{}, nil
+	}
+	defer release()
+
+	var effective time.Time
+	err = s.withCommittedView(func() error {
+		var observeErr error
+		effective, _, observeErr = runtime.store.ObserveMany(nil, time.Now())
+		return observeErr
+	})
+	if err != nil || effective.UnixMilli() < 0 {
+		return &pb.GetReceiptCapabilityResponse{}, nil
+	}
+	nodeID := s.clock.NodeID()
+	if nodeID == ([16]byte{}) || runtime.generation == ([16]byte{}) {
+		return &pb.GetReceiptCapabilityResponse{}, nil
+	}
+	fingerprint := runtime.store.PolicyFingerprint()
+	return &pb.GetReceiptCapabilityResponse{
+		Enabled: true,
+		Policy: &pb.ReceiptPolicy{
+			DeploymentEpoch: append([]byte(nil), runtime.epoch[:]...),
+			Fingerprint:     append([]byte(nil), fingerprint[:]...),
+			RetentionMs:     uint64(runtime.policy.Retention / time.Millisecond),
+			MaxEntries:      uint64(runtime.policy.MaxEntries),
+			MaxBytes:        runtime.policy.MaxBytes,
+		},
+		Endpoint: &pb.ReceiptEndpoint{
+			NodeId:     append([]byte(nil), nodeID[:]...),
+			Generation: append([]byte(nil), runtime.generation[:]...),
+		},
+		ServerNowUnixMs: uint64(effective.UnixMilli()),
+	}, nil
 }
 
-// GetReceiptStatuses is the canonical read-only status path. No receipt
-// engine is wired yet, so returning NOT_YET_OBSERVED or NO_LONGER_PROVABLE
-// would falsely describe an operation this server cannot account for.
-func (s *LanternService) GetReceiptStatuses(ctx context.Context, _ *pb.GetReceiptStatusesRequest) (*pb.GetReceiptStatusesResponse, error) {
+// GetReceiptStatuses is the plural-canonical read-only status path. All IDs
+// are decoded before the committed view is sampled; status never executes a
+// graph mutation.
+func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetReceiptStatusesRequest) (*pb.GetReceiptStatusesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	return nil, connect.NewError(connect.CodeFailedPrecondition, errReceiptsDisabled)
+	if req == nil {
+		req = &pb.GetReceiptStatusesRequest{}
+	}
+	if err := rejectProtoUnknownFields(req.ProtoReflect()); err != nil {
+		return nil, invalidReceiptRequest(err)
+	}
+	rawIDs := req.GetOperationIds()
+	if len(rawIDs) == 0 || len(rawIDs) > MaxReceiptStatusBatchSize {
+		return nil, invalidReceiptRequest(mutationreceipt.ErrInvalidBatch)
+	}
+	ids := make([]mutationreceipt.ID, len(rawIDs))
+	for i, raw := range rawIDs {
+		id, err := mutationreceipt.DecodeID(raw)
+		if err != nil {
+			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
+		}
+		ids[i] = id
+	}
+
+	runtime, release, err := s.acquirePublicReceiptRuntime()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	var observations []mutationreceipt.Observation
+	err = s.withCommittedView(func() error {
+		effective, storeObservations, err := runtime.store.ObserveMany(ids, time.Now())
+		if err != nil {
+			return err
+		}
+		observations = storeObservations
+		retiredIDs := make([]mutationreceipt.ID, 0, len(ids))
+		retiredIndexes := make([]int, 0, len(ids))
+		for i, id := range ids {
+			epoch, err := id.Epoch()
+			if err != nil {
+				return err
+			}
+			if epoch != runtime.epoch {
+				retiredIDs = append(retiredIDs, id)
+				retiredIndexes = append(retiredIndexes, i)
+			}
+		}
+		if len(retiredIDs) == 0 {
+			return nil
+		}
+		retired, err := runtime.retired.lookupMany(runtime.policy, retiredIDs, effective)
+		if err != nil {
+			return err
+		}
+		for i, observation := range retired {
+			observations[retiredIndexes[i]] = observation
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, receiptLookupError(err)
+	}
+
+	statuses := make([]*pb.ReceiptStatus, len(ids))
+	var noLongerProvable uint64
+	for i, observation := range observations {
+		status, err := receiptStatusProto(ids[i], observation)
+		if err != nil {
+			return nil, err
+		}
+		if observation.Status == mutationreceipt.NoLongerProvable {
+			noLongerProvable++
+		}
+		statuses[i] = status
+	}
+	runtime.noLongerProvableLookups.Add(noLongerProvable)
+	return &pb.GetReceiptStatusesResponse{Statuses: statuses}, nil
 }
 
-// GetReceiptStatus forwards one item to the plural implementation, preserving
-// its fail-closed behavior until the receipt engine is enabled.
+func receiptLookupError(err error) error {
+	switch {
+	case errors.Is(err, mutationreceipt.ErrInvalidID),
+		errors.Is(err, mutationreceipt.ErrActiveEpochReceipt):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, mutationreceipt.ErrInvalidClock),
+		errors.Is(err, mutationreceipt.ErrRetiredCatalogClockRollback):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
+}
+
+func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Observation) (*pb.ReceiptStatus, error) {
+	status := &pb.ReceiptStatus{OperationId: id.Bytes()}
+	switch observation.Status {
+	case mutationreceipt.Confirmed:
+		receipt := observation.Receipt
+		if receipt.ID != id || receipt.DeadlineMillis < 0 || len(receipt.Result) != 1 {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed mutation receipt is invalid"))
+		}
+		var result *pb.ReceiptResult
+		switch receipt.Kind {
+		case mutationreceipt.PutVertex:
+			outcome := pb.PutOutcome(receipt.Result[0])
+			if outcome < pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
+				outcome > pb.PutOutcome_PUT_OUTCOME_SUPERSEDED {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Vertex Put receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: outcome},
+			}
+		case mutationreceipt.DeleteVertex:
+			if receipt.Result[0] > 1 {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Vertex Delete receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_DeleteVertexExisted{DeleteVertexExisted: receipt.Result[0] == 1},
+			}
+		case mutationreceipt.DeleteEdge:
+			if receipt.Result[0] > 1 {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Delete receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_DeleteEdgeExisted{DeleteEdgeExisted: receipt.Result[0] == 1},
+			}
+		default:
+			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed mutation receipt kind is not public"))
+		}
+		status.State = pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED
+		status.Receipt = &pb.MutationReceipt{
+			OperationId:    receipt.ID.Bytes(),
+			LogicalCallId:  append([]byte(nil), receipt.Group[:]...),
+			ItemIndex:      receipt.Index,
+			ItemCount:      receipt.Count,
+			IntentSha256:   append([]byte(nil), receipt.Digest[:]...),
+			DeadlineUnixMs: uint64(receipt.DeadlineMillis),
+			OriginalResult: result,
+		}
+	case mutationreceipt.NotYetObserved:
+		status.State = pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED
+	case mutationreceipt.NoLongerProvable:
+		status.State = pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE
+	default:
+		return nil, connect.NewError(connect.CodeInternal, errors.New("receipt Store returned an unknown status"))
+	}
+	return status, nil
+}
+
+// GetReceiptStatus forwards exactly one item to the plural implementation.
 func (s *LanternService) GetReceiptStatus(ctx context.Context, req *pb.GetReceiptStatusRequest) (*pb.GetReceiptStatusResponse, error) {
 	if req == nil {
 		req = &pb.GetReceiptStatusRequest{}
 	}
-	resp, err := s.GetReceiptStatuses(ctx, &pb.GetReceiptStatusesRequest{OperationIds: [][]byte{req.GetOperationId()}})
+	if err := rejectProtoUnknownFields(req.ProtoReflect()); err != nil {
+		return nil, invalidReceiptRequest(err)
+	}
+	resp, err := s.GetReceiptStatuses(ctx, &pb.GetReceiptStatusesRequest{
+		OperationIds: [][]byte{req.GetOperationId()},
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -9,7 +9,7 @@
 Lantern is an **in-memory** store, so a single instance loses its whole graph
 on any restart — including a routine **rolling update** or pod restart. In
 graph-only mode, snapshot durability periodically dumps the graph to a mounted
-volume and restores the newest dump before serving. Private durable
+volume and restores the newest dump before serving. Durable
 receipt-WAL mode uses the same production schedule for a receipt-bearing
 backup set and restores it only at the durable runtime construction boundary,
 under the FileWAL lease and before any listener or background worker exists.
@@ -23,7 +23,7 @@ so HLC ordering lets newer peer state win per key — replicas take priority, th
 dump only fills gaps, and a whole-cluster cold start recovers from the dumps
 instead of coming up empty.
 
-The historical path is **snapshot-based** durability. The private durable path
+The historical path is **snapshot-based** durability. The durable receipt path
 pairs a receipt-bearing snapshot with exact FileWAL cut/tip evidence. Neither
 changes a leaderless-replication invariant.
 
@@ -57,10 +57,10 @@ The `.lbk` format contains graph records only. It does not preserve mutation
 receipts, contribution identities, origin cutoffs, or receipt clock
 high-water, so it cannot prove receipt continuity after restore.
 
-## Private durable receipt-WAL mode
+## Durable receipt-WAL mode
 
 With `LANTERN_RECEIPT_WAL_MODE=fresh|restart`, the same scheduler and
-`BackupNow` path produce a private receipt backup set instead of an `.lbk`.
+`BackupNow` path produce a receipt backup set instead of an `.lbk`.
 The source is selected only from the exact certified `ServingRuntime` and
 captures the graph, active receipt Store, runtime-owned retired receipt
 catalog, origin frontier, HLC cutoff, live FileWAL tip witness, stable NodeID,
@@ -202,9 +202,13 @@ The generation record remembers when a fresh runtime requires its first
 startup-restore baseline. A crash before that marker commits cannot later
 turn the empty target into a valid restart. The private identity-bearing
 restore barrier commits any pending baseline before `NewRuntimeCertified`;
-listener, metrics-server, Snapshot installer, Pump, anti-entropy, and backup
-scheduler construction all depend on that certification. Receipt
-capability/status and receipt-enabled client writes remain disabled.
+Snapshot installer, Pump, anti-entropy, and backup construction all depend on
+that certification. After the exact production backup source is certified, a
+final barrier enables receipt capability, three-state status, and the optional
+Edge Delete receipt context only when bearer authentication is configured.
+Graph-only, auth-disabled, recovering, faulted, or uncertified deployments
+remain fail-closed. Rotating configured bearer tokens does not change receipt
+epoch, policy, endpoint generation, or namespace.
 
 ### Why per-instance files (the shared-storage decision)
 
@@ -226,7 +230,7 @@ every backend, and degrade cleanly to the single-instance case.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `LANTERN_BACKUP_ENABLED` | `false` | Master switch for periodic production. Requires `LANTERN_BACKUP_DIR`; writes graph-only `.lbk` files or private durable receipt sets according to runtime mode. |
+| `LANTERN_BACKUP_ENABLED` | `false` | Master switch for periodic production. Requires `LANTERN_BACKUP_DIR`; writes graph-only `.lbk` files or durable receipt sets according to runtime mode. |
 | `LANTERN_BACKUP_DIR` | _(empty)_ | Mounted directory backup files are written to and startup restore reads from. |
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Backup cadence (`time.ParseDuration`). |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep newest N valid own dumps/sets; `0` keeps all. |
@@ -317,5 +321,5 @@ its narrowly eligible baseline-sidecar repair.
 - [docs/replication.md](replication.md) — the multi-replica peer-bootstrap recovery
   path and the deployment-topology matrix (D7).
 - `lantern-cli dump` / `lantern-cli restore` — the on-demand, file-compatible
-  CLI half of the graph-only `.lbk` format. They do not consume private receipt
+  CLI half of the graph-only `.lbk` format. They do not consume durable receipt
   backup sets.

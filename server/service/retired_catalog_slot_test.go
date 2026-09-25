@@ -93,3 +93,61 @@ func TestRetiredReceiptCatalogSlotRejectsPolicyAndClockDrift(t *testing.T) {
 		t.Fatalf("active-epoch retired replacement = %v", err)
 	}
 }
+
+func TestRetiredReceiptCatalogSlotLookupManyPreservesIdentityAndClock(t *testing.T) {
+	highWater := time.Date(2026, 9, 25, 2, 0, 0, 0, time.UTC).UnixMilli()
+	policy := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x71}, Retention: time.Hour,
+		MaxEntries: 8, MaxBytes: 1 << 20,
+	}
+	state, id := mustRetiredCatalogSnapshot(t, policy, highWater, 0x72)
+	slot, err := newRetiredReceiptCatalogSlot(policy, highWater, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := mutationreceipt.NewID(
+		state.Epochs[0].Policy.Epoch,
+		time.UnixMilli(highWater),
+		[24]byte{0x73},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := time.UnixMilli(highWater).Add(time.Minute)
+	observations, err := slot.lookupMany(policy, []mutationreceipt.ID{id, unknown, id}, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 3 ||
+		observations[0].Status != mutationreceipt.Confirmed ||
+		observations[1].Status != mutationreceipt.NoLongerProvable ||
+		observations[2].Status != mutationreceipt.Confirmed {
+		t.Fatalf("retired lookup observations = %+v", observations)
+	}
+	snapshot, revision, err := slot.snapshot(policy, later.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ClockHighWaterMillis != later.UnixMilli() || revision != 2 {
+		t.Fatalf("retired lookup state = high-water %d, revision %d", snapshot.ClockHighWaterMillis, revision)
+	}
+
+	active, err := mutationreceipt.NewID(policy.Epoch, later, [24]byte{0x74})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := slot.lookupMany(
+		policy,
+		[]mutationreceipt.ID{id, active},
+		later.Add(time.Minute),
+	); got != nil || !errors.Is(err, mutationreceipt.ErrActiveEpochReceipt) {
+		t.Fatalf("active-epoch lookup = %+v, %v", got, err)
+	}
+	after, afterRevision, err := slot.snapshot(policy, later.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, snapshot) || afterRevision != revision {
+		t.Fatal("rejected retired lookup changed catalog state")
+	}
+}

@@ -78,9 +78,20 @@ func TestAuthInterceptor(t *testing.T) {
 	})
 
 	t.Run("empty and whitespace tokens cannot arm auth", func(t *testing.T) {
-		a := NewAuthInterceptor(AuthConfig{Tokens: []string{"", "  ", "\t"}})
+		config := AuthConfig{Tokens: []string{"", "  ", "\t"}}
+		a := NewAuthInterceptor(config)
 		if a.Enabled() {
 			t.Fatal("blank tokens must leave auth disabled — the empty token must never be accepted")
+		}
+		if config.Enabled() {
+			t.Fatal("blank tokens must not certify public receipt activation")
+		}
+	})
+
+	t.Run("config activation ignores token values", func(t *testing.T) {
+		if !((AuthConfig{Tokens: []string{"old"}}).Enabled()) ||
+			!((AuthConfig{Tokens: []string{"new", "old"}}).Enabled()) {
+			t.Fatal("any usable token set must certify bearer-auth configuration")
 		}
 	})
 

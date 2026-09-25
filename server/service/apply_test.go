@@ -48,6 +48,96 @@ func TestApplyMutation_UnknownReceiptArmFailsClosed(t *testing.T) {
 	}
 }
 
+func TestApplyMutation_GenericEdgeDeleteReceiptContextFailsBeforeQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   func(*pb.MutationReceiptContext) *pb.MutationOp
+	}{
+		{
+			name: "singular",
+			op: func(receipt *pb.MutationReceiptContext) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{
+					Tail: "target", Head: "edge", ReceiptContext: receipt,
+				}}}
+			},
+		},
+		{
+			name: "plural",
+			op: func(receipt *pb.MutationReceiptContext) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{
+					Edges:          []*pb.EdgeKey{{Tail: "target", Head: "edge"}},
+					ReceiptContext: receipt,
+				}}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			expiration := time.Now().Add(time.Hour)
+			cache.AddEdgeWithExpiration("target", "edge", 1, expiration)
+			cache.AddEdgeWithExpiration("gate", "edge", 1, expiration)
+			log := mutationlog.New(mutationlog.Options{Capacity: 8})
+			t.Cleanup(func() { _ = log.Close() })
+			origin := hlc.NodeID{0x6d}
+			svc := NewLanternService(cache).WithTombstoneTTL(time.Hour).
+				WithReplication(log, hlc.New(hlc.NodeID{0x6e}, hlc.Options{}), nil)
+			now := time.Now()
+			mutation := func(seq uint64, op *pb.MutationOp) *pb.Mutation {
+				return &pb.Mutation{
+					Seq: seq, Origin: origin[:],
+					Hlc: &pb.HLCTimestamp{
+						NodeId: origin[:],
+						WallNs: now.Add(time.Duration(seq) * time.Nanosecond).UnixNano(),
+					},
+					Op:                  op,
+					TombstoneExpiration: timestamppb.New(now.Add(30 * time.Minute)),
+				}
+			}
+			if err := svc.ApplyMutation(
+				context.Background(),
+				mutation(2, tc.op(&pb.MutationReceiptContext{})),
+			); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("generic receipt-bearing Delete = %v, want InvalidArgument", err)
+			}
+			if got := svc.LocalSeq(origin); got != 0 || log.Len() != 0 ||
+				svc.pendingCount != 0 || svc.pendingBytes != 0 {
+				t.Fatalf(
+					"rejected receipt-bearing Delete advanced origin/log/pending to %d/%d/%d/%d",
+					got,
+					log.Len(),
+					svc.pendingCount,
+					svc.pendingBytes,
+				)
+			}
+			if _, _, live := cache.GetEdgeDetail("target", "edge"); !live {
+				t.Fatal("rejected receipt-bearing Delete changed graph")
+			}
+
+			if err := svc.ApplyMutation(
+				context.Background(),
+				mutation(1, &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{
+					DeleteEdge: &pb.DeleteEdgeRequest{Tail: "gate", Head: "edge"},
+				}}),
+			); err != nil {
+				t.Fatalf("context-free predecessor = %v", err)
+			}
+			if got := svc.LocalSeq(origin); got != 1 || log.Len() != 1 ||
+				svc.pendingCount != 0 || svc.pendingBytes != 0 {
+				t.Fatalf(
+					"context-free predecessor advanced origin/log/pending to %d/%d/%d/%d, want 1/1/0/0",
+					got,
+					log.Len(),
+					svc.pendingCount,
+					svc.pendingBytes,
+				)
+			}
+			if _, _, live := cache.GetEdgeDetail("target", "edge"); !live {
+				t.Fatal("rejected receipt-bearing future Delete was queued")
+			}
+		})
+	}
+}
+
 func TestApplyMutation_SupersededEdgePutDoesNotReviveEndpoint(t *testing.T) {
 	expiration := timestamppb.New(time.Now().Add(time.Hour))
 	for _, tc := range []struct {

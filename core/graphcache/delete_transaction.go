@@ -27,8 +27,8 @@ type EdgeDeleteStageResult[S comparable] struct {
 // EdgeDeleteTransaction owns both GraphCache visibility locks until Commit or
 // Abort. It is single-owner and must not be used concurrently. While open, the
 // caller must not invoke another GraphCache method on the same cache. Callers
-// should defer Abort immediately after Begin succeeds; Abort is safe after
-// Commit.
+// should defer Abort immediately after Begin or Prepare succeeds; Abort is safe
+// after Commit.
 //
 // This is only an in-memory graph primitive. The enclosing server must hold
 // its receipt/log/Snapshot publication cut across the WAL transaction, and
@@ -47,7 +47,18 @@ type EdgeDeleteTransaction[S comparable, T any] struct {
 func (c *GraphCache[S, T]) BeginEdgeDelete(
 	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time,
 ) (*EdgeDeleteTransaction[S, T], error) {
-	return c.beginEdgeDelete(keys, ts, expiration, true)
+	tx, err := c.PrepareEdgeDelete(keys, ts, expiration)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			tx.Abort()
+			panic(recovered)
+		}
+	}()
+	tx.Apply()
+	return tx, nil
 }
 
 // BeginReplicatedEdgeDelete stages a certified remote Delete without applying
@@ -58,10 +69,40 @@ func (c *GraphCache[S, T]) BeginEdgeDelete(
 func (c *GraphCache[S, T]) BeginReplicatedEdgeDelete(
 	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time,
 ) (*EdgeDeleteTransaction[S, T], error) {
-	return c.beginEdgeDelete(keys, ts, expiration, false)
+	tx, err := c.PrepareReplicatedEdgeDelete(keys, ts, expiration)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			tx.Abort()
+			panic(recovered)
+		}
+	}()
+	tx.Apply()
+	return tx, nil
 }
 
-func (c *GraphCache[S, T]) beginEdgeDelete(
+// PrepareEdgeDelete computes the exact accepted projection and captures all
+// rollback state without applying a graph, index, dictionary, tombstone, or
+// causal mutation. The returned transaction keeps both visibility locks until
+// Apply followed by Commit, or Abort. This lets an enclosing durable
+// coordinator finish capacity and WAL-representability admission first.
+func (c *GraphCache[S, T]) PrepareEdgeDelete(
+	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time,
+) (*EdgeDeleteTransaction[S, T], error) {
+	return c.prepareEdgeDelete(keys, ts, expiration, true)
+}
+
+// PrepareReplicatedEdgeDelete is the non-applying counterpart to
+// BeginReplicatedEdgeDelete.
+func (c *GraphCache[S, T]) PrepareReplicatedEdgeDelete(
+	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time,
+) (*EdgeDeleteTransaction[S, T], error) {
+	return c.prepareEdgeDelete(keys, ts, expiration, false)
+}
+
+func (c *GraphCache[S, T]) prepareEdgeDelete(
 	keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time, strict bool,
 ) (*EdgeDeleteTransaction[S, T], error) {
 	if c.publicationGate == nil {
@@ -99,7 +140,6 @@ func (c *GraphCache[S, T]) beginEdgeDelete(
 	if err != nil {
 		return nil, err
 	}
-	stage.applyLocked()
 	tx := &EdgeDeleteTransaction[S, T]{stage: stage}
 	owned = false
 	return tx, nil
@@ -115,10 +155,20 @@ func (tx *EdgeDeleteTransaction[S, T]) Result() EdgeDeleteStageResult[S] {
 	}
 }
 
+// Apply performs the prepared in-memory transition while both visibility locks
+// remain held. Preparation performed every fallible admission check; Apply is
+// called only after the enclosing receipt and WAL envelope have been admitted.
+func (tx *EdgeDeleteTransaction[S, T]) Apply() {
+	if tx == nil || tx.closed || tx.stage.applied {
+		panic("graphcache: staged Delete applied in invalid state")
+	}
+	tx.stage.applyLocked()
+}
+
 // Commit publishes an already staged Delete by releasing its visibility
 // locks. It performs no graph mutation or allocation after the WAL commit.
 func (tx *EdgeDeleteTransaction[S, T]) Commit() {
-	if tx.closed {
+	if tx.closed || !tx.stage.applied {
 		panic("graphcache: staged Delete committed after close")
 	}
 	tx.closed = true

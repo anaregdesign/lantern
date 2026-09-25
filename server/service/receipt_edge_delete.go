@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -20,9 +21,9 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-// edgeDeleteReceiptCoordinator is private receipt commit infrastructure.
-// The certified durable runtime binds it only after the service has its
-// tombstone policy; public receipt mutation and status surfaces stay disabled.
+// edgeDeleteReceiptCoordinator is the receipt commit infrastructure. The
+// certified durable runtime binds it after the service has its tombstone
+// policy; the final activation barrier controls public access.
 type edgeDeleteReceiptCoordinator struct {
 	service *LanternService
 	cache   *graphcache.GraphCache[string, *pb.Vertex]
@@ -41,13 +42,80 @@ type receiptEdgeDeleteCall struct {
 	Items []receiptEdgeDeleteItem
 }
 
+func (s *LanternService) commitPublicReceiptEdgeDelete(
+	ctx context.Context,
+	request *pb.DeleteEdgesRequest,
+) (*pb.DeleteEdgesResponse, error) {
+	runtime, release, err := s.acquirePublicReceiptRuntime()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	context := request.GetReceiptContext()
+	if context == nil || context.GetEndpoint() == nil {
+		return nil, invalidReceiptRequest(errors.New("receipt context and endpoint are required"))
+	}
+	edges := request.GetEdges()
+	rawIDs := context.GetOperationIds()
+	if len(rawIDs) != len(edges) || len(rawIDs) == 0 {
+		return nil, invalidReceiptRequest(errors.New("receipt operation IDs must be nonempty and index-aligned with edges"))
+	}
+	group, err := mutationreceipt.DecodeGroupID(context.GetLogicalCallId())
+	if err != nil {
+		return nil, invalidReceiptRequest(err)
+	}
+	endpoint := context.GetEndpoint()
+	nodeID := s.clock.NodeID()
+	if len(endpoint.GetNodeId()) != len(nodeID) ||
+		len(endpoint.GetGeneration()) != len(runtime.generation) ||
+		!bytes.Equal(endpoint.GetNodeId(), nodeID[:]) ||
+		!bytes.Equal(endpoint.GetGeneration(), runtime.generation[:]) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("receipt endpoint does not match the active certified generation"))
+	}
+
+	items := make([]receiptEdgeDeleteItem, len(edges))
+	seen := make(map[mutationreceipt.ID]struct{}, len(edges))
+	for i, rawID := range rawIDs {
+		id, err := mutationreceipt.DecodeID(rawID)
+		if err != nil {
+			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
+		}
+		epoch, err := id.Epoch()
+		if err != nil {
+			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
+		}
+		if epoch != runtime.epoch {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("operation_ids[%d] is outside the active receipt epoch", i))
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d] duplicates an earlier item", i))
+		}
+		seen[id] = struct{}{}
+		edge := edges[i]
+		if edge == nil {
+			return nil, invalidReceiptRequest(fmt.Errorf("edges[%d] is nil", i))
+		}
+		items[i] = receiptEdgeDeleteItem{
+			ID: id, Tail: edge.GetTail(), Head: edge.GetHead(),
+		}
+	}
+	return s.receiptEdgeDeleteCoordinator.Commit(ctx, receiptEdgeDeleteCall{
+		Group: group,
+		Items: items,
+	})
+}
+
 // edgeDeleteReceiptEnvelope is one owned WAL payload. OriginalKeys and
 // Receipts retain request index and original result; Accepted records only
 // causally admitted graph transitions. Mutation is the graph-only projection
 // consumed internally by the coordinator. Subscribe projects the full owned
 // envelope as a receipt-bearing wire arm and refuses unadvertised full-stream
 // consumers. Peer apply consumes the envelope when this private coordinator is
-// bound; Snapshot/BackupSnapshot remain receipt-unaware.
+// bound. Graph-only Snapshot/BackupSnapshot remain receipt-unaware; the
+// certified RECEIPT source captures this state through its separate path.
 type edgeDeleteReceiptEnvelope struct {
 	Mutation            *pb.Mutation
 	Origin              hlc.NodeID
@@ -186,6 +254,9 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err != nil {
 		return nil, err
 	}
+	if err := validateReceiptEdgeDeleteWALRequestCapacity(keys); err != nil {
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
 	s := c.service
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
@@ -232,7 +303,7 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err != nil {
 		return nil, err
 	}
-	graphTx, err := c.cache.BeginEdgeDelete(keys, ts, expiration)
+	graphTx, err := c.cache.PrepareEdgeDelete(keys, ts, expiration)
 	if err != nil {
 		return nil, writeError(err)
 	}
@@ -253,10 +324,7 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err := tx.Reserve(results); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	if err := tx.Stage(); err != nil {
-		return nil, receiptStoreError(err)
-	}
-	receipts, err := tx.StagedReceipts()
+	receipts, err := tx.ReservedReceipts()
 	if err != nil {
 		return nil, receiptStoreError(err)
 	}
@@ -280,6 +348,12 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		Accepted:            append([]graphcache.IndexedEdgeDelete[string](nil), result.Accepted...),
 		Receipts:            receipts,
 	}
+	if _, err := validateReceiptEdgeDeleteWALEnvelope(envelope); err != nil {
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("receipt Edge Delete could not stage contiguous origin seq"))
@@ -288,6 +362,10 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	if err := tx.Stage(); err != nil {
+		return nil, receiptStoreError(err)
+	}
+	graphTx.Apply()
 	walAttempted = true
 	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
 		// The ring/seq now contain the matching entry, but log readers
@@ -305,6 +383,9 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 			s.markReceiptCommitFaultLocked()
 		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}
 		return nil, connect.NewError(connect.CodeUnavailable, err)
@@ -382,11 +463,7 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if err != nil {
 		return receiptStoreError(err)
 	}
-	if err := tx.Stage(); err != nil {
-		return receiptStoreError(err)
-	}
-
-	graphTx, err := c.cache.BeginReplicatedEdgeDelete(e.OriginalKeys, ts, e.TombstoneExpiration)
+	graphTx, err := c.cache.PrepareReplicatedEdgeDelete(e.OriginalKeys, ts, e.TombstoneExpiration)
 	if err != nil {
 		return writeError(err)
 	}
@@ -409,6 +486,9 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	}
 	localEnvelope.Mutation = receiptEdgeDeleteWALMutation(localEnvelope)
 	if _, err := validateReceiptEdgeDeleteWALEnvelope(localEnvelope); err != nil {
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
+			return connect.NewError(connect.CodeResourceExhausted, err)
+		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt relay envelope: %w", err))
 	}
 	if prior, ok := pending.receiptWAL.(*edgeDeleteReceiptEnvelope); ok &&
@@ -424,6 +504,10 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
+	if err := tx.Stage(); err != nil {
+		return receiptStoreError(err)
+	}
+	graphTx.Apply()
 
 	// Retain the exact receiver-local evidence before entering the WAL. On an
 	// indeterminate return this is the recovery identity while the service
@@ -442,6 +526,9 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 			s.markReceiptCommitFaultLocked()
 		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
+			return connect.NewError(connect.CodeResourceExhausted, err)
+		}
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
 			return connect.NewError(connect.CodeResourceExhausted, err)
 		}
 		return connect.NewError(connect.CodeUnavailable, err)

@@ -53,7 +53,18 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	listener, cleanup2, err := provider.NewListener(netConfig, runtimeCertified)
+	authConfig := provider.NewAuthConfig(config)
+	backupper, err := provider.NewBackupper(backupConfig, receiptWALConfig, servingRuntime, lanternService, runtimeCertified, registry, logger)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	publicReceiptsCertified, err := provider.NewPublicReceiptsCertified(receiptWALConfig, authConfig, servingRuntime, lanternService, backupper, runtimeCertified)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	listener, cleanup2, err := provider.NewListener(netConfig, runtimeCertified, publicReceiptsCertified)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -62,7 +73,6 @@ func initializeApp() (*App, func(), error) {
 	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
 	rateLimitConfig := provider.NewRateLimitConfig(config)
 	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
-	authConfig := provider.NewAuthConfig(config)
 	authInterceptor := provider.NewAuthInterceptorProvider(authConfig, domainMetrics)
 	loggingInterceptor := provider.NewLoggingInterceptor(logger)
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
@@ -100,12 +110,6 @@ func initializeApp() (*App, func(), error) {
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)
-	backupper, err := provider.NewBackupper(backupConfig, receiptWALConfig, servingRuntime, lanternService, runtimeCertified, registry, logger)
-	if err != nil {
-		cleanup2()
-		cleanup()
-		return nil, nil, err
-	}
 	llmConfig := provider.NewLLMConfig(config)
 	llmEngine, err := provider.NewLLMEngine(llmConfig)
 	if err != nil {
@@ -113,7 +117,7 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	domainMetricsWired := provider.WireDomainMetrics(graphCache, domainMetrics)
+	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
 	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, domainMetricsWired, cacheGCHooksWired)
 	return app, func() {

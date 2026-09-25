@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -22,9 +23,9 @@ import (
 )
 
 // ServingRuntime is the single process-owned state cut installed before any
-// listener or replication worker is constructed. Its receipt state remains
-// private: constructing a durable runtime does not enable receipt capability,
-// status, or receipt-bearing mutation RPCs.
+// listener or replication worker is constructed. Constructing a durable
+// runtime alone does not enable receipt capability, status, or receipt-bearing
+// mutation RPCs; production activation requires the final certified barrier.
 type ServingRuntime struct {
 	graph    *graphcache.GraphCache[string, *pb.Vertex]
 	log      *mutationlog.Log
@@ -32,26 +33,30 @@ type ServingRuntime struct {
 	origins  *originStateTracker
 	receipt  *receiptServingRuntime
 	owner    io.Closer
+	closed   atomic.Bool
 	close    sync.Once
 	closeErr error
 }
 
 type receiptServingRuntime struct {
-	store               *mutationreceipt.Store
-	retired             *retiredReceiptCatalogSlot
-	policy              mutationreceipt.Config
-	epoch               mutationreceipt.Epoch
-	generation          [16]byte
-	committedBaseline   receiptBaselineReference
-	baselineInstallGate chan struct{}
-	baselineCodec       ReceiptBaselineArchiveCodec
-	defaultTTL          time.Duration
-	configureGraph      func(*graphcache.GraphCache[string, *pb.Vertex]) error
-	owner               *receiptWALOwnedCandidate
-	startupRestore      *ReceiptStartupRestore
-	recaptureOnRestore  bool
-	sidecarFault        func(receiptBaselineSidecarFaultPoint) error
-	installFault        func(receiptBaselineInstallFaultPoint) error
+	store                   *mutationreceipt.Store
+	retired                 *retiredReceiptCatalogSlot
+	policy                  mutationreceipt.Config
+	epoch                   mutationreceipt.Epoch
+	generation              [16]byte
+	committedBaseline       receiptBaselineReference
+	operationAdmission      *receiptOperationAdmission
+	baselineCodec           ReceiptBaselineArchiveCodec
+	defaultTTL              time.Duration
+	configureGraph          func(*graphcache.GraphCache[string, *pb.Vertex]) error
+	owner                   *receiptWALOwnedCandidate
+	startupRestore          *ReceiptStartupRestore
+	recaptureOnRestore      bool
+	sidecarFault            func(receiptBaselineSidecarFaultPoint) error
+	installFault            func(receiptBaselineInstallFaultPoint) error
+	backupCertified         bool
+	publicEnabled           atomic.Bool
+	noLongerProvableLookups atomic.Uint64
 }
 
 const (
@@ -469,26 +474,23 @@ func certifyReceiptWALServingRuntime(
 	if err := clock.RestoreFloor(floor); err != nil {
 		return nil, fmt.Errorf("service: restore durable receipt WAL HLC frontier: %w", err)
 	}
-	baselineInstallGate := make(chan struct{}, 1)
-	baselineInstallGate <- struct{}{}
-
 	return &ServingRuntime{
 		graph:   candidate.state.graph,
 		log:     candidate.state.log,
 		clock:   clock,
 		origins: candidate.state.origins,
 		receipt: &receiptServingRuntime{
-			store:               candidate.state.receipts,
-			retired:             retired,
-			policy:              policy,
-			epoch:               candidate.state.receipts.Epoch(),
-			generation:          generation,
-			committedBaseline:   committedBaseline,
-			baselineInstallGate: baselineInstallGate,
-			baselineCodec:       config.BaselineCodec,
-			defaultTTL:          config.DefaultTTL,
-			configureGraph:      config.ConfigureGraph,
-			owner:               candidate,
+			store:              candidate.state.receipts,
+			retired:            retired,
+			policy:             policy,
+			epoch:              candidate.state.receipts.Epoch(),
+			generation:         generation,
+			committedBaseline:  committedBaseline,
+			operationAdmission: newReceiptOperationAdmission(),
+			baselineCodec:      config.BaselineCodec,
+			defaultTTL:         config.DefaultTTL,
+			configureGraph:     config.ConfigureGraph,
+			owner:              candidate,
 		},
 		owner: candidate,
 	}, nil
@@ -548,6 +550,17 @@ func (r *ServingRuntime) receiptWALTipWitness(
 // MutationLogStats samples the exact Log installed into both service surfaces.
 func (r *ServingRuntime) MutationLogStats() (length, capacity int, evicted uint64) {
 	return r.log.Len(), r.log.Cap(), r.log.Evicted()
+}
+
+// ReceiptStats samples the active bounded Store. A graph-only runtime returns
+// the zero value and never exposes receipt metrics as capability.
+func (r *ServingRuntime) ReceiptStats() mutationreceipt.Stats {
+	if r == nil || r.receipt == nil || r.receipt.store == nil {
+		return mutationreceipt.Stats{}
+	}
+	stats := r.receipt.store.Stats()
+	stats.NoLongerProvableLookups = r.receipt.noLongerProvableLookups.Load()
+	return stats
 }
 
 // NewLanternService installs this runtime's exact private state into the
@@ -678,6 +691,38 @@ func (r *ServingRuntime) ReceiptWholeStateBackupSource(
 	return replication.receiptSnapshotSource, r.receipt.policy, nil
 }
 
+// CertifyReceiptBackup binds the exact runtime/service/replication cut to the
+// production whole-state backup source. Public receipts remain disabled until
+// this proof and bearer-auth activation both complete.
+func (r *ServingRuntime) CertifyReceiptBackup(
+	primary *LanternService,
+	replication *LanternReplicationService,
+) error {
+	if _, _, err := r.ReceiptWholeStateBackupSource(primary, replication); err != nil {
+		return err
+	}
+	r.receipt.backupCertified = true
+	return nil
+}
+
+// ActivatePublicReceipts enables capability, status, and receipt-bearing Edge
+// Delete only for the exact durable cut already certified for recovery,
+// replication, and backup.
+func (r *ServingRuntime) ActivatePublicReceipts(
+	primary *LanternService,
+	replication *LanternReplicationService,
+) error {
+	if r == nil || r.closed.Load() || r.receipt == nil ||
+		r.receipt.startupRestore != nil || !r.receipt.backupCertified {
+		return errors.New("service: public receipts require a live recovery- and backup-certified durable runtime")
+	}
+	if _, _, err := r.ReceiptWholeStateBackupSource(primary, replication); err != nil {
+		return err
+	}
+	r.receipt.publicEnabled.Store(true)
+	return nil
+}
+
 // Close releases the runtime owner exactly once. Durable mode closes its Log,
 // FileWAL, journals, and lease; graph-only mode closes only its in-memory Log.
 func (r *ServingRuntime) Close() error {
@@ -685,6 +730,7 @@ func (r *ServingRuntime) Close() error {
 		return nil
 	}
 	r.close.Do(func() {
+		r.closed.Store(true)
 		if r.owner != nil {
 			r.closeErr = r.owner.Close()
 		}

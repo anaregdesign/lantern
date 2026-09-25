@@ -956,3 +956,45 @@ func TestRetiredCatalogConcurrentLookupAndSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestRetiredCatalogLookupManyPreservesOrderAndRejectsActiveEpoch(t *testing.T) {
+	config, snapshot, intents := retiredCatalogFixture(t)
+	catalog, err := NewRetiredCatalogFromSnapshot(config, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := retiredTestIntent(t, Epoch{7}, 0x77, testStart)
+	observations, err := catalog.LookupMany(
+		[]ID{intents[2].ID, unknown.ID, intents[0].ID, intents[2].ID},
+		config.ClockHighWater,
+	)
+	if err != nil || len(observations) != 4 {
+		t.Fatalf("LookupMany = %+v, %v", observations, err)
+	}
+	if observations[0].Status != Confirmed || string(observations[0].Receipt.Result) != "third" ||
+		observations[1].Status != NoLongerProvable ||
+		observations[2].Status != Confirmed || string(observations[2].Receipt.Result) != "first" ||
+		observations[3].Status != Confirmed || string(observations[3].Receipt.Result) != "third" {
+		t.Fatalf("aligned retired observations = %+v", observations)
+	}
+	observations[0].Receipt.Result[0] = 'X'
+	status, receipt, err := catalog.Lookup(intents[2].ID, config.ClockHighWater)
+	if err != nil || status != Confirmed || string(receipt.Result) != "third" {
+		t.Fatalf("caller-mutated observation changed catalog = %v, %+v, %v", status, receipt, err)
+	}
+
+	active := retiredTestIntent(t, config.ActiveEpoch, 0x78, testStart)
+	if got, err := catalog.LookupMany(
+		[]ID{intents[0].ID, active.ID},
+		config.ClockHighWater.Add(time.Minute),
+	); got != nil || !errors.Is(err, ErrActiveEpochReceipt) {
+		t.Fatalf("active-epoch plural lookup = %+v, %v", got, err)
+	}
+	state, err := catalog.Snapshot(config.ClockHighWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ClockHighWaterMillis != config.ClockHighWater.UnixMilli() {
+		t.Fatal("rejected plural lookup advanced retired catalog clock")
+	}
+}

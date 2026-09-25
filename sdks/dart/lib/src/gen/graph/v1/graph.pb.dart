@@ -3360,10 +3360,12 @@ class DeleteEdgeRequest extends $pb.GeneratedMessage {
   factory DeleteEdgeRequest({
     $core.String? tail,
     $core.String? head,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (tail != null) result.tail = tail;
     if (head != null) result.head = head;
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -3382,6 +3384,8 @@ class DeleteEdgeRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOS(1, _omitFieldNames ? '' : 'tail')
     ..aOS(2, _omitFieldNames ? '' : 'head')
+    ..aOM<MutationReceiptContext>(3, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3422,6 +3426,19 @@ class DeleteEdgeRequest extends $pb.GeneratedMessage {
   $core.bool hasHead() => $_has(1);
   @$pb.TagNumber(2)
   void clearHead() => $_clearField(2);
+
+  /// Optional receipt context for one durable, status-queryable operation.
+  /// When absent, this is an intentional receipt-less online Delete.
+  @$pb.TagNumber(3)
+  MutationReceiptContext get receiptContext => $_getN(2);
+  @$pb.TagNumber(3)
+  set receiptContext(MutationReceiptContext value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceiptContext() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceiptContext() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(2);
 }
 
 class DeleteEdgeResponse extends $pb.GeneratedMessage {
@@ -3731,9 +3748,11 @@ class ScanEdgesResponse extends $pb.GeneratedMessage {
 class DeleteEdgesRequest extends $pb.GeneratedMessage {
   factory DeleteEdgesRequest({
     $core.Iterable<EdgeKey>? edges,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (edges != null) result.edges.addAll(edges);
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -3752,6 +3771,8 @@ class DeleteEdgesRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..pc<EdgeKey>(1, _omitFieldNames ? '' : 'edges', $pb.PbFieldType.PM,
         subBuilder: EdgeKey.create)
+    ..aOM<MutationReceiptContext>(2, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3777,6 +3798,20 @@ class DeleteEdgesRequest extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(1)
   $pb.PbList<EdgeKey> get edges => $_getList(0);
+
+  /// Optional durable receipt context. operation_ids must be index-aligned
+  /// with edges. When absent, this is an intentional receipt-less online
+  /// Delete with no receipt/status guarantee.
+  @$pb.TagNumber(2)
+  MutationReceiptContext get receiptContext => $_getN(1);
+  @$pb.TagNumber(2)
+  set receiptContext(MutationReceiptContext value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceiptContext() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceiptContext() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(1);
 }
 
 class DeleteEdgesResponse extends $pb.GeneratedMessage {
@@ -6238,8 +6273,8 @@ class GetReplicationStatusResponse extends $pb.GeneratedMessage {
   $pb.PbList<ReplicationPeer> get peers => $_getList(3);
 }
 
-/// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A future
-/// receipt-enabled server must keep these values stable for its active epoch.
+/// ReceiptPolicy is deployment-scoped, not bound to a bearer token. A
+/// receipt-enabled server keeps these values stable for its active epoch.
 /// All byte fields are absent while receipts are disabled.
 class ReceiptPolicy extends $pb.GeneratedMessage {
   factory ReceiptPolicy({
@@ -6424,6 +6459,90 @@ class ReceiptEndpoint extends $pb.GeneratedMessage {
   $core.bool hasGeneration() => $_has(1);
   @$pb.TagNumber(2)
   void clearGeneration() => $_clearField(2);
+}
+
+/// MutationReceiptContext opts one logical mutation call into durable receipt
+/// coordination. The endpoint is copied from GetReceiptCapability; operation
+/// IDs are exactly 49 bytes and logical_call_id is exactly 16 nonzero bytes.
+class MutationReceiptContext extends $pb.GeneratedMessage {
+  factory MutationReceiptContext({
+    $core.Iterable<$core.List<$core.int>>? operationIds,
+    $core.List<$core.int>? logicalCallId,
+    ReceiptEndpoint? endpoint,
+  }) {
+    final result = create();
+    if (operationIds != null) result.operationIds.addAll(operationIds);
+    if (logicalCallId != null) result.logicalCallId = logicalCallId;
+    if (endpoint != null) result.endpoint = endpoint;
+    return result;
+  }
+
+  MutationReceiptContext._();
+
+  factory MutationReceiptContext.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory MutationReceiptContext.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MutationReceiptContext',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..p<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'operationIds', $pb.PbFieldType.PY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'logicalCallId', $pb.PbFieldType.OY)
+    ..aOM<ReceiptEndpoint>(3, _omitFieldNames ? '' : 'endpoint',
+        subBuilder: ReceiptEndpoint.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MutationReceiptContext clone() =>
+      MutationReceiptContext()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MutationReceiptContext copyWith(
+          void Function(MutationReceiptContext) updates) =>
+      super.copyWith((message) => updates(message as MutationReceiptContext))
+          as MutationReceiptContext;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static MutationReceiptContext create() => MutationReceiptContext._();
+  @$core.override
+  MutationReceiptContext createEmptyInstance() => create();
+  static $pb.PbList<MutationReceiptContext> createRepeated() =>
+      $pb.PbList<MutationReceiptContext>();
+  @$core.pragma('dart2js:noInline')
+  static MutationReceiptContext getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<MutationReceiptContext>(create);
+  static MutationReceiptContext? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<$core.List<$core.int>> get operationIds => $_getList(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get logicalCallId => $_getN(1);
+  @$pb.TagNumber(2)
+  set logicalCallId($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasLogicalCallId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearLogicalCallId() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  ReceiptEndpoint get endpoint => $_getN(2);
+  @$pb.TagNumber(3)
+  set endpoint(ReceiptEndpoint value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasEndpoint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearEndpoint() => $_clearField(3);
+  @$pb.TagNumber(3)
+  ReceiptEndpoint ensureEndpoint() => $_ensure(2);
 }
 
 class GetReceiptCapabilityRequest extends $pb.GeneratedMessage {
@@ -6686,7 +6805,7 @@ class ReceiptResult extends $pb.GeneratedMessage {
 
 /// MutationReceipt is one request-index-aligned item from an atomic logical
 /// call. The 49-byte operation ID, 16-byte call ID, and semantic SHA-256 are
-/// validated before any future receipt-enabled mutation. The deadline is the
+/// validated before any receipt-bearing mutation. The deadline is the
 /// ID issuance time plus the active policy's retention horizon.
 class MutationReceipt extends $pb.GeneratedMessage {
   factory MutationReceipt({
@@ -7477,18 +7596,16 @@ class LanternServiceApi {
       _client.invoke<GetReplicationStatusResponse>(ctx, 'LanternService',
           'GetReplicationStatus', request, GetReplicationStatusResponse());
 
-  /// Receipt preflight follows LanternService auth. The initial implementation
-  /// reports enabled=false and authorizes no receipt-bearing writes. An enabled
-  /// capability requires configured auth and one certified policy/endpoint cut.
+  /// Receipt preflight follows LanternService auth. An enabled capability
+  /// requires configured bearer auth and one certified policy/endpoint cut.
   $async.Future<GetReceiptCapabilityResponse> getReceiptCapability(
           $pb.ClientContext? ctx, GetReceiptCapabilityRequest request) =>
       _client.invoke<GetReceiptCapabilityResponse>(ctx, 'LanternService',
           'GetReceiptCapability', request, GetReceiptCapabilityResponse());
 
-  /// Read-only original-result lookup. Until receipt storage and atomic
-  /// publication exist, these fail with FAILED_PRECONDITION rather than
-  /// inventing an absent or expired outcome. The singular form forwards to
-  /// the plural canonical implementation.
+  /// Read-only original-result lookup. Disabled or recovering deployments fail
+  /// with FAILED_PRECONDITION rather than inventing an absent or expired
+  /// outcome. The singular form forwards to the plural canonical implementation.
   $async.Future<GetReceiptStatusResponse> getReceiptStatus(
           $pb.ClientContext? ctx, GetReceiptStatusRequest request) =>
       _client.invoke<GetReceiptStatusResponse>(ctx, 'LanternService',

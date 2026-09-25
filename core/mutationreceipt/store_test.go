@@ -1,9 +1,11 @@
 package mutationreceipt
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -178,6 +180,118 @@ func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {
 	tx.Abort()
 	if !errors.Is(err, ErrIntentConflict) {
 		t.Fatalf("same IDs reused in another valid group = %v", err)
+	}
+}
+
+func TestStoreReservedReceiptsAreDetachedAndNotVisible(t *testing.T) {
+	s := testStore(t, 1, 1000)
+	intent := testIntent(t, 1, testStart, GroupID{8}, 0, 1)
+	tx, err := s.Begin(testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]Intent{intent}); err != nil || class != Fresh {
+		t.Fatalf("Classify = %v, %v", class, err)
+	}
+	if err := tx.Reserve([][]byte{{1}}); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := tx.ReservedReceipts()
+	if err != nil || len(reserved) != 1 || !bytes.Equal(reserved[0].Result, []byte{1}) {
+		t.Fatalf("ReservedReceipts = %+v, %v", reserved, err)
+	}
+	reserved[0].Result[0] = 0
+	if tx.applied != 0 || len(s.receipts) != 0 || s.bytes != 0 {
+		t.Fatal("reserved receipts became visible before Stage")
+	}
+	again, err := tx.ReservedReceipts()
+	if err != nil || !bytes.Equal(again[0].Result, []byte{1}) {
+		t.Fatalf("caller mutation changed reserved receipt = %+v, %v", again, err)
+	}
+}
+
+func TestStoreObserveManyIsAlignedAndAllOrNothing(t *testing.T) {
+	s := testStore(t, 2, 1000)
+	group := GroupID{8}
+	intents := []Intent{
+		testIntent(t, 1, testStart, group, 0, 2),
+		testIntent(t, 2, testStart, group, 1, 2),
+	}
+	commitTestBatch(t, s, testStart, intents, [][]byte{{1}, {0}})
+
+	effective, observations, err := s.ObserveMany(
+		[]ID{intents[1].ID, intents[0].ID, intents[1].ID},
+		testStart.Add(time.Minute),
+	)
+	if err != nil || !effective.Equal(testStart.Add(time.Minute)) || len(observations) != 3 {
+		t.Fatalf("ObserveMany = %v, %+v, %v", effective, observations, err)
+	}
+	if observations[0].Status != Confirmed || observations[0].Receipt.ID != intents[1].ID ||
+		observations[1].Status != Confirmed || observations[1].Receipt.ID != intents[0].ID ||
+		observations[2].Status != Confirmed || observations[2].Receipt.ID != intents[1].ID {
+		t.Fatalf("aligned observations = %+v", observations)
+	}
+	observations[0].Receipt.Result[0] = 9
+	if status, receipt, err := s.Lookup(intents[1].ID, effective); err != nil ||
+		status != Confirmed || !bytes.Equal(receipt.Result, []byte{0}) {
+		t.Fatalf("caller-mutated observation changed Store = %v, %+v, %v", status, receipt, err)
+	}
+
+	before := s.Stats().HighWaterMillis
+	invalid := intents[0].ID
+	invalid[0] = 0xff
+	if _, _, err := s.ObserveMany(
+		[]ID{intents[0].ID, invalid},
+		testStart.Add(10*time.Minute),
+	); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("invalid plural observation error = %v", err)
+	}
+	if after := s.Stats().HighWaterMillis; after != before {
+		t.Fatalf("invalid plural observation advanced clock: %d -> %d", before, after)
+	}
+
+	effective, observations, err = s.ObserveMany(nil, testStart.Add(2*time.Minute))
+	if err != nil || len(observations) != 0 || !effective.Equal(testStart.Add(2*time.Minute)) {
+		t.Fatalf("empty observation preflight = %v, %+v, %v", effective, observations, err)
+	}
+}
+
+func TestStoreObserveManyRejectsFutureIDBeforeClockAndEvidenceMutation(t *testing.T) {
+	var persisted []int64
+	s, err := NewWithClockHighWaterSink(Config{
+		Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 1000,
+	}, func(highWater int64) error {
+		persisted = append(persisted, highWater)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := testIntent(t, 1, testStart, GroupID{8}, 0, 1)
+	commitTestBatch(t, s, testStart, []Intent{intent}, [][]byte{{1}})
+	before, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedBefore := append([]int64(nil), persisted...)
+	future := testIntent(t, 2, testStart.Add(20*time.Minute), GroupID{9}, 0, 1).ID
+
+	if _, _, err := s.ObserveMany(
+		[]ID{intent.ID, future},
+		testStart.Add(10*time.Minute),
+	); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("mixed future observation error = %v", err)
+	}
+	after, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("future observation changed evidence:\nbefore=%+v\nafter=%+v", before, after)
+	}
+	if !reflect.DeepEqual(persisted, persistedBefore) {
+		t.Fatalf("future observation persisted clock: %v -> %v", persistedBefore, persisted)
 	}
 }
 

@@ -197,14 +197,12 @@ type LanternServiceClient interface {
 	// dashboard at any cadence the operator finds useful. On
 	// single-instance deployments enabled=false and peers is empty.
 	GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error)
-	// Receipt preflight follows LanternService auth. The initial implementation
-	// reports enabled=false and authorizes no receipt-bearing writes. An enabled
-	// capability requires configured auth and one certified policy/endpoint cut.
+	// Receipt preflight follows LanternService auth. An enabled capability
+	// requires configured bearer auth and one certified policy/endpoint cut.
 	GetReceiptCapability(context.Context, *connect.Request[v1.GetReceiptCapabilityRequest]) (*connect.Response[v1.GetReceiptCapabilityResponse], error)
-	// Read-only original-result lookup. Until receipt storage and atomic
-	// publication exist, these fail with FAILED_PRECONDITION rather than
-	// inventing an absent or expired outcome. The singular form forwards to
-	// the plural canonical implementation.
+	// Read-only original-result lookup. Disabled or recovering deployments fail
+	// with FAILED_PRECONDITION rather than inventing an absent or expired
+	// outcome. The singular form forwards to the plural canonical implementation.
 	GetReceiptStatus(context.Context, *connect.Request[v1.GetReceiptStatusRequest]) (*connect.Response[v1.GetReceiptStatusResponse], error)
 	GetReceiptStatuses(context.Context, *connect.Request[v1.GetReceiptStatusesRequest]) (*connect.Response[v1.GetReceiptStatusesResponse], error)
 	// BackupSnapshot streams a whole-graph, point-in-time backup: every
@@ -664,14 +662,12 @@ type LanternServiceHandler interface {
 	// dashboard at any cadence the operator finds useful. On
 	// single-instance deployments enabled=false and peers is empty.
 	GetReplicationStatus(context.Context, *connect.Request[v1.GetReplicationStatusRequest]) (*connect.Response[v1.GetReplicationStatusResponse], error)
-	// Receipt preflight follows LanternService auth. The initial implementation
-	// reports enabled=false and authorizes no receipt-bearing writes. An enabled
-	// capability requires configured auth and one certified policy/endpoint cut.
+	// Receipt preflight follows LanternService auth. An enabled capability
+	// requires configured bearer auth and one certified policy/endpoint cut.
 	GetReceiptCapability(context.Context, *connect.Request[v1.GetReceiptCapabilityRequest]) (*connect.Response[v1.GetReceiptCapabilityResponse], error)
-	// Read-only original-result lookup. Until receipt storage and atomic
-	// publication exist, these fail with FAILED_PRECONDITION rather than
-	// inventing an absent or expired outcome. The singular form forwards to
-	// the plural canonical implementation.
+	// Read-only original-result lookup. Disabled or recovering deployments fail
+	// with FAILED_PRECONDITION rather than inventing an absent or expired
+	// outcome. The singular form forwards to the plural canonical implementation.
 	GetReceiptStatus(context.Context, *connect.Request[v1.GetReceiptStatusRequest]) (*connect.Response[v1.GetReceiptStatusResponse], error)
 	GetReceiptStatuses(context.Context, *connect.Request[v1.GetReceiptStatusesRequest]) (*connect.Response[v1.GetReceiptStatusesResponse], error)
 	// BackupSnapshot streams a whole-graph, point-in-time backup: every

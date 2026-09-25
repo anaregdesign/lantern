@@ -11,9 +11,11 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // newConnectTestClient starts an h2c httptest server in front of the
@@ -107,6 +109,69 @@ func TestConnectAdapter_GetServerStatus(t *testing.T) {
 	}
 	if resp == nil || resp.Msg == nil {
 		t.Fatal("GetServerStatus: nil response")
+	}
+}
+
+func TestConnectAdapter_FaultedReceiptRuntimeFailsClosed(t *testing.T) {
+	runtime, svc, replication := newActivatedReceiptService(t, 8)
+	client := newConnectTestClient(t, svc, replication)
+	ctx := context.Background()
+
+	capability, err := client.GetReceiptCapability(
+		ctx,
+		connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
+	)
+	if err != nil || !capability.Msg.GetEnabled() {
+		t.Fatalf("initial capability = %+v, %v", capability, err)
+	}
+	operationID, err := mutationreceipt.NewID(
+		runtime.receipt.epoch,
+		time.UnixMilli(int64(capability.Msg.GetServerNowUnixMs())).Add(-time.Second),
+		[24]byte{0x5a},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptContext := &pb.MutationReceiptContext{
+		OperationIds:  [][]byte{operationID.Bytes()},
+		LogicalCallId: []byte{0x6b, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		Endpoint:      capability.Msg.GetEndpoint(),
+	}
+	if _, err := client.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{
+		Edge: &pb.Edge{
+			Tail:       "faulted",
+			Head:       "protected",
+			Weight:     1,
+			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		},
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.replicationCutMu.Lock()
+	svc.markReceiptCommitFaultLocked()
+	svc.replicationCutMu.Unlock()
+
+	capability, err = client.GetReceiptCapability(
+		ctx,
+		connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
+	)
+	if err != nil || capability.Msg.GetEnabled() || capability.Msg.GetPolicy() != nil ||
+		capability.Msg.GetEndpoint() != nil {
+		t.Fatalf("faulted capability = %+v, %v", capability, err)
+	}
+	if _, err := client.GetReceiptStatus(ctx, connect.NewRequest(&pb.GetReceiptStatusRequest{
+		OperationId: operationID.Bytes(),
+	})); connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("faulted status = %v, want Internal", err)
+	}
+	if _, err := client.DeleteEdge(ctx, connect.NewRequest(&pb.DeleteEdgeRequest{
+		Tail: "faulted", Head: "protected", ReceiptContext: receiptContext,
+	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("faulted receipt mutation = %v, want FailedPrecondition", err)
+	}
+	if _, _, ok := runtime.GraphCache().GetEdgeDetail("faulted", "protected"); !ok {
+		t.Fatal("faulted receipt mutation changed the graph")
 	}
 }
 

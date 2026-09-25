@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 // connectCallValidator drives the ValidationInterceptor's Connect
@@ -126,6 +127,39 @@ func TestValidationInterceptor_RejectHookFiresPerReason(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("reject hook reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidationInterceptorReceiptStatusBatchUsesLowerEffectiveLimit(t *testing.T) {
+	id := make([]byte, 49)
+	tests := []struct {
+		name       string
+		configured int
+		count      int
+	}{
+		{name: "configured limit", configured: 2, count: 3},
+		{
+			name:       "handler hard limit",
+			configured: service.MaxReceiptStatusBatchSize + 1,
+			count:      service.MaxReceiptStatusBatchSize + 1,
+		},
+		{
+			name:  "unlimited config still uses handler hard limit",
+			count: service.MaxReceiptStatusBatchSize + 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ids := make([][]byte, tc.count)
+			for i := range ids {
+				ids[i] = id
+			}
+			v := NewValidationInterceptor(ValidationLimits{MaxBatchSize: tc.configured})
+			err := connectCallValidator(t, v, &pb.GetReceiptStatusesRequest{OperationIds: ids})
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("status batch validation = %v, want InvalidArgument", err)
 			}
 		})
 	}

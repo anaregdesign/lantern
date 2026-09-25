@@ -827,7 +827,7 @@ func TestRuntimeCertificationRejectsIncompleteServices(t *testing.T) {
 	if certified.valid || err == nil {
 		t.Fatalf("incomplete runtime certification = %+v, %v", certified, err)
 	}
-	listener, cleanup, err := NewListener(NetConfig{}, certified)
+	listener, cleanup, err := NewListener(NetConfig{}, certified, publicReceiptsCertified{})
 	if listener != nil || cleanup != nil || err == nil {
 		if cleanup != nil {
 			cleanup()

@@ -35,6 +35,7 @@ type ContribID [24]byte
 type ID [idSize]byte
 
 var ErrInvalidID = errors.New("mutationreceipt: invalid operation ID")
+var ErrInvalidGroupID = errors.New("mutationreceipt: invalid logical-call ID")
 
 // NewID encodes caller-generated randomness. It never generates entropy on
 // behalf of a client, which must persist the returned ID before first send.
@@ -69,8 +70,27 @@ func DecodeID(raw []byte) (ID, error) {
 	return id, nil
 }
 
+// DecodeGroupID accepts exactly one nonzero 16-byte logical-call identity.
+func DecodeGroupID(raw []byte) (GroupID, error) {
+	if len(raw) != len(GroupID{}) {
+		return GroupID{}, ErrInvalidGroupID
+	}
+	var id GroupID
+	copy(id[:], raw)
+	if id == (GroupID{}) {
+		return GroupID{}, ErrInvalidGroupID
+	}
+	return id, nil
+}
+
 // Bytes returns a copy of the wire representation.
 func (id ID) Bytes() []byte { return append([]byte(nil), id[:]...) }
+
+// Epoch returns the validated deployment epoch encoded in id.
+func (id ID) Epoch() (Epoch, error) {
+	epoch, _, err := id.parts()
+	return epoch, err
+}
 
 func (id ID) parts() (Epoch, int64, error) {
 	var epoch Epoch

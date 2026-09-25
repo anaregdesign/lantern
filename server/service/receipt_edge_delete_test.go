@@ -1,9 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"reflect"
+	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,6 +34,47 @@ type receiptEdgeDeleteFixture struct {
 	log         *mutationlog.Log
 	replication *LanternReplicationService
 	epoch       mutationreceipt.Epoch
+}
+
+func canonicalizeReceiptReplicationSnapshot(snapshot *graphcache.ReplicationSnapshot[string, *pb.Vertex]) {
+	sort.Slice(snapshot.Graph.Vertices, func(i, j int) bool {
+		return snapshot.Graph.Vertices[i].Key < snapshot.Graph.Vertices[j].Key
+	})
+	sort.Slice(snapshot.Graph.Edges, func(i, j int) bool {
+		left, right := snapshot.Graph.Edges[i], snapshot.Graph.Edges[j]
+		if left.Tail != right.Tail {
+			return left.Tail < right.Tail
+		}
+		return left.Head < right.Head
+	})
+	for i := range snapshot.Graph.Edges {
+		sort.Slice(snapshot.Graph.Edges[i].Contributions, func(left, right int) bool {
+			return bytes.Compare(
+				snapshot.Graph.Edges[i].Contributions[left].ContribID[:],
+				snapshot.Graph.Edges[i].Contributions[right].ContribID[:],
+			) < 0
+		})
+	}
+	sort.Slice(snapshot.Barriers.Vertices, func(i, j int) bool {
+		return snapshot.Barriers.Vertices[i].Key < snapshot.Barriers.Vertices[j].Key
+	})
+	sort.Slice(snapshot.Barriers.Edges, func(i, j int) bool {
+		left, right := snapshot.Barriers.Edges[i], snapshot.Barriers.Edges[j]
+		if left.Tail != right.Tail {
+			return left.Tail < right.Tail
+		}
+		return left.Head < right.Head
+	})
+	sort.Slice(snapshot.Tombstones.Vertices, func(i, j int) bool {
+		return snapshot.Tombstones.Vertices[i].Key < snapshot.Tombstones.Vertices[j].Key
+	})
+	sort.Slice(snapshot.Tombstones.Edges, func(i, j int) bool {
+		left, right := snapshot.Tombstones.Edges[i], snapshot.Tombstones.Edges[j]
+		if left.Tail != right.Tail {
+			return left.Tail < right.Tail
+		}
+		return left.Head < right.Head
+	})
 }
 
 func newReceiptEdgeDeleteFixture(t *testing.T, wal mutationlog.WAL) receiptEdgeDeleteFixture {
@@ -163,15 +208,337 @@ func receiptDeleteCall(t *testing.T, epoch mutationreceipt.Epoch, keys ...graphc
 	return call
 }
 
-func waitReceiptTest[T any](t *testing.T, label string, ch <-chan T) T {
+func bindPublicReceiptFixtureForConcurrencyTest(
+	t *testing.T,
+	f receiptEdgeDeleteFixture,
+) *ServingRuntime {
 	t.Helper()
+	policy := mutationreceipt.Config{
+		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+		ClockHighWater: time.UnixMilli(f.coordinator.store.Stats().HighWaterMillis),
+	}
+	retired, err := newEmptyRetiredReceiptCatalogSlot(
+		policy,
+		policy.ClockHighWater.UnixMilli(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptRuntime := &receiptServingRuntime{
+		store: f.coordinator.store, retired: retired, policy: policy,
+		epoch: f.epoch, generation: [16]byte{0x7e},
+		operationAdmission: newReceiptOperationAdmission(),
+	}
+	receiptRuntime.publicEnabled.Store(true)
+	runtime := &ServingRuntime{
+		graph: f.cache, log: f.log, clock: f.service.clock,
+		origins: f.service.origins, receipt: receiptRuntime,
+	}
+	f.service.runtime = runtime
+	return runtime
+}
+
+func publicReceiptContext(
+	t *testing.T,
+	runtime *ServingRuntime,
+	seed byte,
+	count int,
+) *pb.MutationReceiptContext {
+	t.Helper()
+	ids := make([][]byte, count)
+	issued := time.Now().Add(-time.Second)
+	for i := range ids {
+		id := receiptOperationID(t, runtime.receipt.epoch, issued, seed+byte(i))
+		ids[i] = id.Bytes()
+	}
+	nodeID := runtime.clock.NodeID()
+	return &pb.MutationReceiptContext{
+		OperationIds:  ids,
+		LogicalCallId: append([]byte(nil), seed, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+		Endpoint: &pb.ReceiptEndpoint{
+			NodeId:     append([]byte(nil), nodeID[:]...),
+			Generation: append([]byte(nil), runtime.receipt.generation[:]...),
+		},
+	}
+}
+
+func TestPublicReceiptDeleteEdgesReplaysAlignedOriginalResults(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	ctx := context.Background()
+	if _, err := svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "present", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		{Tail: "protected", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	request := &pb.DeleteEdgesRequest{
+		Edges: []*pb.EdgeKey{
+			{Tail: "present", Head: "edge"},
+			{Tail: "absent", Head: "edge"},
+		},
+		ReceiptContext: publicReceiptContext(t, runtime, 0x61, 2),
+	}
+	first, err := svc.DeleteEdges(ctx, proto.Clone(request).(*pb.DeleteEdgesRequest))
+	if err != nil || first.GetDeleted() != 1 ||
+		!reflect.DeepEqual(first.GetExisted(), []bool{true, false}) {
+		t.Fatalf("first public receipt delete = %+v, %v", first, err)
+	}
+	replay, err := svc.DeleteEdges(ctx, proto.Clone(request).(*pb.DeleteEdgesRequest))
+	if err != nil || !proto.Equal(first, replay) {
+		t.Fatalf("duplicate public receipt delete = %+v, %v, want %+v", replay, err, first)
+	}
+
+	statuses, err := svc.GetReceiptStatuses(ctx, &pb.GetReceiptStatusesRequest{
+		OperationIds: request.GetReceiptContext().GetOperationIds(),
+	})
+	if err != nil || len(statuses.GetStatuses()) != 2 ||
+		!statuses.GetStatuses()[0].GetReceipt().GetOriginalResult().GetDeleteEdgeExisted() ||
+		statuses.GetStatuses()[1].GetReceipt().GetOriginalResult().GetDeleteEdgeExisted() {
+		t.Fatalf("committed receipt statuses = %+v, %v", statuses, err)
+	}
+
+	mismatch := proto.Clone(request).(*pb.DeleteEdgesRequest)
+	mismatch.Edges[1] = &pb.EdgeKey{Tail: "protected", Head: "edge"}
+	if _, err := svc.DeleteEdges(ctx, mismatch); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("semantic mismatch = %v, want InvalidArgument", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("protected", "edge"); !ok {
+		t.Fatal("semantic mismatch mutated a protected edge")
+	}
+}
+
+func TestPublicReceiptDeleteEdgesValidatesBeforeMutationAndCapacity(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 1)
+	ctx := context.Background()
+	if _, err := svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "first", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		{Tail: "second", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	duplicate := publicReceiptContext(t, runtime, 0x71, 2)
+	duplicate.OperationIds[1] = append([]byte(nil), duplicate.OperationIds[0]...)
+	if _, err := svc.DeleteEdges(ctx, &pb.DeleteEdgesRequest{
+		Edges: []*pb.EdgeKey{
+			{Tail: "first", Head: "edge"},
+			{Tail: "second", Head: "edge"},
+		},
+		ReceiptContext: duplicate,
+	}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("duplicate operation IDs = %v, want InvalidArgument", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("first", "edge"); !ok {
+		t.Fatal("invalid receipt context mutated first edge")
+	}
+
+	firstContext := publicReceiptContext(t, runtime, 0x72, 1)
+	if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{
+		Tail: "first", Head: "edge", ReceiptContext: firstContext,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondContext := publicReceiptContext(t, runtime, 0x73, 1)
+	if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{
+		Tail: "second", Head: "edge", ReceiptContext: secondContext,
+	}); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("capacity rejection = %v, want ResourceExhausted", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("second", "edge"); !ok {
+		t.Fatal("capacity rejection happened after graph mutation")
+	}
+
+	stale := proto.Clone(secondContext).(*pb.MutationReceiptContext)
+	stale.Endpoint.Generation[0] ^= 0xff
+	if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{
+		Tail: "second", Head: "edge", ReceiptContext: stale,
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("stale endpoint = %v, want FailedPrecondition", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("second", "edge"); !ok {
+		t.Fatal("stale endpoint mutated the edge")
+	}
+}
+
+func TestPublicReceiptDeleteEdgesRejectsUnrepresentableWALBeforeState(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	ctx := context.Background()
+	tail := strings.Repeat("t", 500)
+	const head = "edge"
+	if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: tail, Head: head, Weight: 1,
+		Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	const count = 10_000
+	edges := make([]*pb.EdgeKey, count)
+	nodeID := runtime.clock.NodeID()
+	receiptContext := &pb.MutationReceiptContext{
+		OperationIds:  make([][]byte, count),
+		LogicalCallId: []byte{0x79, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+		Endpoint: &pb.ReceiptEndpoint{
+			NodeId:     append([]byte(nil), nodeID[:]...),
+			Generation: append([]byte(nil), runtime.receipt.generation[:]...),
+		},
+	}
+	issued := time.Now().Add(-time.Second)
+	for i := range edges {
+		edges[i] = &pb.EdgeKey{Tail: tail, Head: head}
+		var random [24]byte
+		binary.BigEndian.PutUint64(random[:8], uint64(i+1))
+		id, err := mutationreceipt.NewID(runtime.receipt.epoch, issued, random)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receiptContext.OperationIds[i] = id.Bytes()
+	}
+	request := &pb.DeleteEdgesRequest{
+		Edges: edges, ReceiptContext: receiptContext,
+	}
+	beforeGraph := runtime.graph.SnapshotReplication()
+	canonicalizeReceiptReplicationSnapshot(&beforeGraph)
+	beforeReceipts := runtime.receipt.store.Stats()
+	beforeSeq := svc.LocalSeq(runtime.clock.NodeID())
+	beforeLog := runtime.log.Len()
+
+	var firstError string
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := svc.DeleteEdges(ctx, request)
+		if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
+			t.Fatalf("oversize attempt %d = %v, want stable ResourceExhausted", attempt+1, err)
+		}
+		if attempt == 0 {
+			firstError = err.Error()
+		} else if err.Error() != firstError {
+			t.Fatalf("oversize retry error changed: %q -> %q", firstError, err)
+		}
+	}
+
+	afterGraph := runtime.graph.SnapshotReplication()
+	canonicalizeReceiptReplicationSnapshot(&afterGraph)
+	if !reflect.DeepEqual(afterGraph, beforeGraph) {
+		t.Fatal("oversize receipt request changed graph, index, or causal state")
+	}
+	if got := runtime.receipt.store.Stats(); got != beforeReceipts {
+		t.Fatalf("oversize receipt request changed Store state: before=%+v after=%+v", beforeReceipts, got)
+	}
+	if got := svc.LocalSeq(runtime.clock.NodeID()); got != beforeSeq {
+		t.Fatalf("oversize receipt request changed origin sequence: %d -> %d", beforeSeq, got)
+	}
+	if got := runtime.log.Len(); got != beforeLog {
+		t.Fatalf("oversize receipt request changed WAL/log state: %d -> %d", beforeLog, got)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail(tail, head); !ok {
+		t.Fatal("oversize receipt request deleted the seed edge")
+	}
+}
+
+func TestPublicReceiptOperationsShareAdmissionDuringCommit(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	var writes atomic.Int32
+	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
+		if writes.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}))
+	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
+	f.cache.AddEdgeWithExpiration("tail", "head", 1, time.Now().Add(time.Hour))
+	request := &pb.DeleteEdgesRequest{
+		Edges:          []*pb.EdgeKey{{Tail: "tail", Head: "head"}},
+		ReceiptContext: publicReceiptContext(t, runtime, 0x7a, 1),
+	}
+	type deleteResult struct {
+		response *pb.DeleteEdgesResponse
+		err      error
+	}
+	firstDone := make(chan deleteResult, 1)
+	go func() {
+		response, err := f.service.DeleteEdges(
+			context.Background(),
+			proto.Clone(request).(*pb.DeleteEdgesRequest),
+		)
+		firstDone <- deleteResult{response: response, err: err}
+	}()
+	waitReceiptTest(t, "public receipt WAL write", entered)
+
+	capabilityDone := make(chan struct {
+		response *pb.GetReceiptCapabilityResponse
+		err      error
+	}, 1)
+	go func() {
+		response, err := f.service.GetReceiptCapability(
+			context.Background(),
+			&pb.GetReceiptCapabilityRequest{},
+		)
+		capabilityDone <- struct {
+			response *pb.GetReceiptCapabilityResponse
+			err      error
+		}{response: response, err: err}
+	}()
+	statusDone := make(chan struct {
+		response *pb.GetReceiptStatusesResponse
+		err      error
+	}, 1)
+	go func() {
+		response, err := f.service.GetReceiptStatuses(
+			context.Background(),
+			&pb.GetReceiptStatusesRequest{
+				OperationIds: request.GetReceiptContext().GetOperationIds(),
+			},
+		)
+		statusDone <- struct {
+			response *pb.GetReceiptStatusesResponse
+			err      error
+		}{response: response, err: err}
+	}()
+	retryDone := make(chan deleteResult, 1)
+	go func() {
+		response, err := f.service.DeleteEdges(
+			context.Background(),
+			proto.Clone(request).(*pb.DeleteEdgesRequest),
+		)
+		retryDone <- deleteResult{response: response, err: err}
+	}()
+
 	select {
-	case result := <-ch:
-		return result
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", label)
-		var zero T
-		return zero
+	case result := <-capabilityDone:
+		t.Fatalf("capability misclassified healthy mutation overlap: %+v", result)
+	case result := <-statusDone:
+		t.Fatalf("status misclassified healthy mutation overlap: %+v", result)
+	case result := <-retryDone:
+		t.Fatalf("duplicate retry misclassified healthy mutation overlap: %+v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+
+	first := waitReceiptTest(t, "first public receipt response", firstDone)
+	retry := waitReceiptTest(t, "duplicate public receipt response", retryDone)
+	capability := waitReceiptTest(t, "overlapping capability", capabilityDone)
+	status := waitReceiptTest(t, "overlapping status", statusDone)
+	if first.err != nil || retry.err != nil || !proto.Equal(first.response, retry.response) ||
+		first.response.GetDeleted() != 1 || writes.Load() != 1 {
+		t.Fatalf("response-loss retry = first(%+v, %v) retry(%+v, %v) writes=%d",
+			first.response, first.err, retry.response, retry.err, writes.Load())
+	}
+	if capability.err != nil || !capability.response.GetEnabled() {
+		t.Fatalf("capability during healthy overlap = %+v, %v", capability.response, capability.err)
+	}
+	if status.err != nil || len(status.response.GetStatuses()) != 1 ||
+		status.response.GetStatuses()[0].GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED {
+		t.Fatalf("status during healthy overlap = %+v, %v", status.response, status.err)
 	}
 }
 

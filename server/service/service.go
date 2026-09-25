@@ -1691,8 +1691,17 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 }
 
 func (s *LanternService) DeleteEdge(ctx context.Context, in *pb.DeleteEdgeRequest) (*pb.DeleteEdgeResponse, error) {
+	if in == nil {
+		in = &pb.DeleteEdgeRequest{}
+	}
+	if in.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(in.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	resp, err := s.DeleteEdges(ctx, &pb.DeleteEdgesRequest{
-		Edges: []*pb.EdgeKey{{Tail: in.GetTail(), Head: in.GetHead()}},
+		Edges:          []*pb.EdgeKey{{Tail: in.GetTail(), Head: in.GetHead()}},
+		ReceiptContext: in.GetReceiptContext(),
 	})
 	if err != nil {
 		return nil, err
@@ -1707,8 +1716,19 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	if in == nil {
+		in = &pb.DeleteEdgesRequest{}
+	}
+	if in.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(in.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	inEdges := in.GetEdges()
 	s.metrics.OnBatch("DeleteEdges", len(inEdges))
+	if in.GetReceiptContext() != nil {
+		return s.commitPublicReceiptEdgeDelete(ctx, in)
+	}
 	keys := make([]graphcache.EdgeKey[string], 0, len(inEdges))
 	for _, e := range inEdges {
 		keys = append(keys, graphcache.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})

@@ -119,7 +119,14 @@ func NewBackupper(
 		if err != nil {
 			return nil, err
 		}
-		return backup.NewReceipt(svc, source, policy, cfg, reg, logger)
+		backupper, err := backup.NewReceipt(svc, source, policy, cfg, reg, logger)
+		if err != nil {
+			return nil, err
+		}
+		if err := runtime.CertifyReceiptBackup(svc, certified.replication); err != nil {
+			return nil, err
+		}
+		return backupper, nil
 	default:
 		return nil, errors.New("backup: invalid receipt WAL mode")
 	}

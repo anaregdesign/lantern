@@ -87,11 +87,35 @@ func isAnyGraphDelete(m *pb.Mutation) bool {
 	}
 }
 
+// validateGenericGraphDeleteReceiptContext prevents the generic graph relay
+// arms from stripping a public receipt context. Receipt-bearing Edge Delete
+// replication must use ReplicatedReceiptEdgeDelete so graph and evidence
+// remain one atomic envelope.
+func validateGenericGraphDeleteReceiptContext(m *pb.Mutation) error {
+	if m == nil || m.GetOp() == nil {
+		return nil
+	}
+	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_DeleteEdge:
+		if op != nil && op.DeleteEdge != nil && op.DeleteEdge.GetReceiptContext() != nil {
+			return receiptWALUnionError("generic DeleteEdge cannot carry receipt context")
+		}
+	case *pb.MutationOp_DeleteEdges:
+		if op != nil && op.DeleteEdges != nil && op.DeleteEdges.GetReceiptContext() != nil {
+			return receiptWALUnionError("generic DeleteEdges cannot carry receipt context")
+		}
+	}
+	return nil
+}
+
 func validateGraphDeleteEffectEnvelope(e *graphDeleteEffectEnvelope) error {
 	if e == nil {
 		return receiptWALUnionError("nil graph Delete effect envelope")
 	}
 	if err := validateReceiptWALGraph(e.Mutation); err != nil {
+		return err
+	}
+	if err := validateGenericGraphDeleteReceiptContext(e.Mutation); err != nil {
 		return err
 	}
 	count, ok := graphDeleteRequestCount(e.Mutation)

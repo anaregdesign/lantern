@@ -25,6 +25,9 @@ func TestIDWireContract(t *testing.T) {
 	if err != nil || decoded != id {
 		t.Fatalf("DecodeID = %x, %v", decoded, err)
 	}
+	if decodedEpoch, err := decoded.Epoch(); err != nil || decodedEpoch != epoch {
+		t.Fatalf("Epoch = %x, %v", decodedEpoch, err)
+	}
 	raw[0] = 255
 	if id[0] != 1 {
 		t.Fatal("Bytes exposed the ID's backing storage")
@@ -52,5 +55,17 @@ func TestIDWireContract(t *testing.T) {
 	}
 	if _, err := NewID(epoch, issued, [24]byte{}); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("zero randomness error = %v", err)
+	}
+
+	group := GroupID{7}
+	decodedGroup, err := DecodeGroupID(group[:])
+	if err != nil || decodedGroup != group {
+		t.Fatalf("DecodeGroupID = %x, %v", decodedGroup, err)
+	}
+	if _, err := DecodeGroupID(group[:len(group)-1]); !errors.Is(err, ErrInvalidGroupID) {
+		t.Fatalf("short logical-call ID error = %v", err)
+	}
+	if _, err := DecodeGroupID(make([]byte, len(group))); !errors.Is(err, ErrInvalidGroupID) {
+		t.Fatalf("zero logical-call ID error = %v", err)
 	}
 }

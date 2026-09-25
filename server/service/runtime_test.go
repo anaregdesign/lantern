@@ -60,7 +60,7 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
 
-	primary := runtime.NewLanternService(nil)
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
 	if replication, err := runtime.NewLanternReplicationService(nil); replication != nil || err == nil {
 		t.Fatalf("nil primary service produced replication service %p, %v", replication, err)
 	}
@@ -120,6 +120,65 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); !errors.Is(err, mutationlog.ErrClosed) {
 		t.Fatalf("append after Close = %v, want ErrClosed", err)
 	}
+}
+
+func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	install := func(t *testing.T, runtime *ServingRuntime) (*LanternService, *LanternReplicationService) {
+		t.Helper()
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+		replication, err := runtime.NewLanternReplicationService(primary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CertifyInstallation(primary, replication); err != nil {
+			t.Fatal(err)
+		}
+		return primary, replication
+	}
+
+	fresh, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, replication := install(t, fresh)
+	if err := fresh.ActivatePublicReceipts(primary, replication); err == nil {
+		t.Fatal("public receipts activated before backup certification")
+	}
+	if err := fresh.CertifyReceiptBackup(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.ActivatePublicReceipts(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	capability, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || !capability.GetEnabled() ||
+		!bytes.Equal(capability.GetPolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
+		!bytes.Equal(capability.GetEndpoint().GetNodeId(), config.NodeID[:]) ||
+		len(capability.GetEndpoint().GetGeneration()) != 16 {
+		t.Fatalf("activated capability = %+v, %v", capability, err)
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	capability, err = primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || capability.GetEnabled() || capability.GetPolicy() != nil ||
+		capability.GetEndpoint() != nil {
+		t.Fatalf("closed capability = %+v, %v", capability, err)
+	}
+
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedPrimary, restartedReplication := install(t, restarted)
+	if err := restarted.CertifyReceiptBackup(restartedPrimary, restartedReplication); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ActivatePublicReceipts(restartedPrimary, restartedReplication); err != nil {
+		t.Fatalf("restart with canonical recovered receipt state: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
 }
 
 func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
@@ -227,7 +286,9 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	if capability.GetEnabled() {
 		t.Fatal("durable runtime enabled public receipt capability")
 	}
-	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: validReceiptOperationIDForTest(t, 0x02),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("durable runtime receipt status error = %v, want failed precondition", err)
 	}
 	wantClockFloor := config.Receipt.ClockHighWater.UnixMilli() * int64(time.Millisecond)

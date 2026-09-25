@@ -128,6 +128,13 @@ type Stats struct {
 	NoLongerProvableLookups   uint64
 }
 
+// Observation is one read-only, request-index-aligned receipt lookup result.
+// Receipt is populated exactly when Status is Confirmed.
+type Observation struct {
+	Status  Status
+	Receipt Receipt
+}
+
 // Store holds only receipt bookkeeping. It does not make graph mutations,
 // log entries, or Snapshot cuts atomic. Stage may allocate before WAL while
 // its writes are hidden by the lock; Abort reverses those writes, and Commit
@@ -261,36 +268,75 @@ func (tx *Tx) ClockHighWaterMillis() (int64, error) {
 // retained exact old-epoch receipt may answer Confirmed, but an absent
 // old-epoch ID is never executable or reported NotYetObserved.
 func (s *Store) Lookup(id ID, now time.Time) (Status, Receipt, error) {
+	_, observations, err := s.ObserveMany([]ID{id}, now)
+	if err != nil {
+		return 0, Receipt{}, err
+	}
+	return observations[0].Status, observations[0].Receipt, nil
+}
+
+// ObserveMany validates every ID against one prospective effective clock
+// before persisting that clock, expiring evidence, or performing any lookup.
+// It then advances the Store clock once, expires rows once, and returns
+// request-index-aligned observations. An empty ID list is valid and is used by
+// capability preflight to sample the authoritative clock.
+func (s *Store) ObserveMany(ids []ID, now time.Time) (time.Time, []Observation, error) {
+	type identity struct {
+		epoch  Epoch
+		issued int64
+	}
+	identities := make([]identity, len(ids))
+	for i, id := range ids {
+		epoch, issued, err := id.parts()
+		if err != nil {
+			return time.Time{}, nil, err
+		}
+		identities[i] = identity{epoch: epoch, issued: issued}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	effective, err := s.advanceLocked(now)
+	effective, err := s.effectiveHighWaterLocked(now)
 	if err != nil {
-		return 0, Receipt{}, err
+		return time.Time{}, nil, err
+	}
+	for _, identity := range identities {
+		if identity.issued > math.MaxInt64-s.retentionMS ||
+			tooFarFuture(identity.issued, effective) {
+			return time.Time{}, nil, ErrInvalidID
+		}
+	}
+	if err := s.persistHighWaterLocked(effective); err != nil {
+		return time.Time{}, nil, err
 	}
 	s.expireLocked(effective)
-	epoch, issued, err := id.parts()
-	if err != nil {
-		return 0, Receipt{}, err
-	}
-	// An exact retained receipt remains authoritative even after an epoch
-	// rollover. It carries its own original deadline; the new active epoch
-	// may have a different retention policy. Absence in a retired epoch must
-	// still never authorize execution of that ID.
-	if r, ok := s.receipts[id]; ok {
-		if r.DeadlineMillis > effective {
-			return Confirmed, cloneReceipt(r), nil
+
+	observations := make([]Observation, len(ids))
+	for i, id := range ids {
+		// An exact retained receipt remains authoritative even after an epoch
+		// rollover. It carries its own original deadline; the new active epoch
+		// may have a different retention policy. Absence in a retired epoch
+		// must still never authorize execution of that ID.
+		if receipt, ok := s.receipts[id]; ok {
+			if receipt.DeadlineMillis > effective {
+				observations[i] = Observation{
+					Status: Confirmed, Receipt: cloneReceipt(receipt),
+				}
+				continue
+			}
+			s.unknownLookups++
+			observations[i].Status = NoLongerProvable
+			continue
 		}
-		s.unknownLookups++
-		return NoLongerProvable, Receipt{}, nil
+		identity := identities[i]
+		if identity.issued+s.retentionMS <= effective || identity.epoch != s.epoch {
+			s.unknownLookups++
+			observations[i].Status = NoLongerProvable
+			continue
+		}
+		observations[i].Status = NotYetObserved
 	}
-	if issued > math.MaxInt64-s.retentionMS || tooFarFuture(issued, effective) {
-		return 0, Receipt{}, ErrInvalidID
-	}
-	if issued+s.retentionMS <= effective || epoch != s.epoch {
-		s.unknownLookups++
-		return NoLongerProvable, Receipt{}, nil
-	}
-	return NotYetObserved, Receipt{}, nil
+	return time.UnixMilli(effective), observations, nil
 }
 
 func (s *Store) Stats() Stats {
@@ -309,6 +355,17 @@ func (s *Store) Stats() Stats {
 }
 
 func (s *Store) advanceLocked(now time.Time) (int64, error) {
+	effective, err := s.effectiveHighWaterLocked(now)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.persistHighWaterLocked(effective); err != nil {
+		return 0, err
+	}
+	return effective, nil
+}
+
+func (s *Store) effectiveHighWaterLocked(now time.Time) (int64, error) {
 	if s.highWaterFault != nil {
 		return 0, s.highWaterFault
 	}
@@ -316,16 +373,23 @@ func (s *Store) advanceLocked(now time.Time) (int64, error) {
 	if ms < 0 {
 		return 0, ErrInvalidClock
 	}
-	if ms > s.highWaterMS {
+	if ms < s.highWaterMS {
+		return s.highWaterMS, nil
+	}
+	return ms, nil
+}
+
+func (s *Store) persistHighWaterLocked(effective int64) error {
+	if effective > s.highWaterMS {
 		if s.highWaterSink != nil {
-			if err := s.highWaterSink(ms); err != nil {
+			if err := s.highWaterSink(effective); err != nil {
 				s.highWaterFault = errors.Join(ErrHighWaterPersistence, err)
-				return 0, s.highWaterFault
+				return s.highWaterFault
 			}
 		}
-		s.highWaterMS = ms
+		s.highWaterMS = effective
 	}
-	return s.highWaterMS, nil
+	return nil
 }
 
 func tooFarFuture(issued, now int64) bool {
@@ -691,6 +755,17 @@ func (tx *Tx) ReplaceReservedResults(results [][]byte) error {
 	return nil
 }
 
+// ReservedReceipts returns owned copies after exact capacity reservation but
+// before Stage mutates the Store's hidden maps. Durable coordinators use this
+// to prove their complete WAL envelope is representable before applying any
+// receipt or domain mutation.
+func (tx *Tx) ReservedReceipts() ([]Receipt, error) {
+	if tx == nil || tx.closed || tx.mode != txReserved || tx.applied != 0 {
+		return nil, ErrTransactionState
+	}
+	return cloneReceipts(tx.staged), nil
+}
+
 // Stage inserts all new receipts into the private, locked state before an
 // external WAL commit. It may allocate; no Store reader can see the rows while
 // the transaction holds mu. A failed WAL call must be followed by Abort.
@@ -729,11 +804,15 @@ func (tx *Tx) StagedReceipts() ([]Receipt, error) {
 	if tx.closed || tx.mode != txStaged || tx.applied != len(tx.staged) {
 		return nil, ErrTransactionState
 	}
-	result := make([]Receipt, len(tx.staged))
-	for i, receipt := range tx.staged {
+	return cloneReceipts(tx.staged), nil
+}
+
+func cloneReceipts(receipts []Receipt) []Receipt {
+	result := make([]Receipt, len(receipts))
+	for i, receipt := range receipts {
 		result[i] = cloneReceipt(receipt)
 	}
-	return result, nil
+	return result
 }
 
 // Commit has no Store mutation or allocation: releasing mu makes all staged

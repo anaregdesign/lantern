@@ -21,6 +21,11 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+var productionReceiptEpoch = mutationreceipt.Epoch{
+	0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+	0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+}
+
 func productionReceiptEdgeDeleteMutation(
 	t *testing.T,
 	config mutationreceipt.Config,
@@ -76,6 +81,15 @@ func productionReceiptEdgeDeleteMutation(
 			},
 		}},
 	}
+}
+
+func productionReceiptOperationID(t *testing.T, epoch mutationreceipt.Epoch, seed byte) []byte {
+	t.Helper()
+	id, err := mutationreceipt.NewID(epoch, time.Now().Add(-time.Second), [24]byte{seed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Bytes()
 }
 
 func setDurableRuntimeEnv(t *testing.T, mode, path string, port int) {
@@ -156,12 +170,13 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"newLanternReplicationService(",
 		"provider.NewRuntimeRestored(",
 		"provider.NewRuntimeCertified(",
+		"provider.NewBackupper(",
+		"provider.NewPublicReceiptsCertified(",
 		"provider.NewListener(",
 		"provider.NewMetricsServer(",
 		"provider.NewSnapshotInstallerSelection(",
 		"provider.NewReplicationPump(",
 		"provider.NewAntiEntropyDriver(",
-		"provider.NewBackupper(",
 	}
 	previous := -1
 	for _, needle := range ordered {
@@ -236,7 +251,9 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	}
 	if _, err := app.svc.GetReceiptStatus(
 		t.Context(),
-		&pb.GetReceiptStatusRequest{},
+		&pb.GetReceiptStatusRequest{
+			OperationId: productionReceiptOperationID(t, productionReceiptEpoch, 0x81),
+		},
 	); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("durable backup production receipt status = %v, want FailedPrecondition", err)
 	}
@@ -453,7 +470,9 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 		cleanupRestart()
 		t.Fatal("durable restart enabled public receipt capability")
 	}
-	if _, err := restarted.svc.GetReceiptStatus(ctx, &pb.GetReceiptStatusRequest{}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+	if _, err := restarted.svc.GetReceiptStatus(ctx, &pb.GetReceiptStatusRequest{
+		OperationId: productionReceiptOperationID(t, productionReceiptEpoch, 0x82),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		cleanupRestart()
 		t.Fatalf("durable restart receipt status error = %v, want failed precondition", err)
 	}
