@@ -869,8 +869,8 @@ historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
 metrics, and behavior are unchanged.
 
 This runtime mode is private infrastructure only. It does not enable
-`GetReceiptCapability`, receipt status, receipt-bearing client mutations, peer
-capability negotiation, or retired-aware peer transport.
+`GetReceiptCapability`, receipt status, receipt-bearing client mutations, or
+authenticated client capability negotiation.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 

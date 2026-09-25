@@ -876,9 +876,9 @@ Implementation notes:
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
   path is exercised at scale (tracked alongside #190).
   Real Connect/h2c tests cover two-node durable gap recovery through Pump and
-  anti-entropy plus tail resumption. Exhaustive multi-replica partition,
-  restart, soak, and receipt-bearing backup acceptance remains a separate
-  #1393 follow-up; #1394 owns the backup/restore continuity boundary.
+  anti-entropy plus tail resumption, while #1394 covers receipt-bearing backup
+  and startup restore continuity. Exhaustive multi-replica partition, restart,
+  and soak acceptance remains a separate #1399 follow-up.
 - Delete tombstones committed before the Snapshot cutoff cannot be re-derived
   from the Subscribe tail. Explicit tombstone frames preserve their exact D4
   deadline across bootstrap. Put causal barriers — whether born expired or

@@ -709,6 +709,7 @@ func produceProviderReceiptBackup(
 	if _, err := primary.PutVertex(context.Background(), &pb.PutVertexRequest{
 		Vertex: &pb.Vertex{
 			Key:        "startup-restored",
+			Value:      &pb.Vertex_Nil{Nil: true},
 			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
 		},
 	}); err != nil {
