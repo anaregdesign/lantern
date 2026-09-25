@@ -342,6 +342,17 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
 			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
 		}},
+		{"explicit vertex and tombstone overlap", "live vertex and tombstone overlap", func(a *wholeStateArchive) {
+			stamp := a.Graph[0].GetHeader().GetCutoffHlc()
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{
+				VertexTombstone: &pb.SnapshotVertexTombstone{
+					Key:        "tail",
+					Hlc:        stamp,
+					Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)),
+				},
+			}})
+			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
+		}},
 		{"invalid edge tombstone", "invalid edge tombstone", func(a *wholeStateArchive) {
 			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeTombstone{EdgeTombstone: &pb.SnapshotEdgeTombstone{Tail: "tail", Head: "head", Hlc: a.Graph[0].GetHeader().GetCutoffHlc()}}})
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++

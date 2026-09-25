@@ -287,13 +287,6 @@ func TestReceiptWholeStateArchiveStageRejectsLostOrInconsistentFloors(t *testing
 			a.Graph[2].GetVertex().Hlc = newer
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
 		}},
-		{"live vertex HLC survives tombstone", func(a *wholeStateArchive) {
-			a.Graph = append(a.Graph[:1], append([]*pb.SnapshotResponse{{Entry: &pb.SnapshotResponse_VertexTombstone{
-				VertexTombstone: &pb.SnapshotVertexTombstone{Key: "tail", Hlc: a.Graph[0].GetHeader().GetCutoffHlc(),
-					Expiration: timestamppb.New(time.Now().Add(time.Hour))},
-			}}}, a.Graph[1:]...)...)
-			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			archive := wholeStateArchiveFixture(t)

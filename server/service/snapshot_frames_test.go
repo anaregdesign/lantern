@@ -375,6 +375,19 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 				}},
 			)
 		}},
+		{"live vertex and tombstone overlap", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			stamp := proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			frames[len(frames)-1].GetFooter().VertexTombstoneCount++
+			return insertReceiptSnapshotFrames(frames, 2, &pb.SnapshotResponse{
+				Entry: &pb.SnapshotResponse_VertexTombstone{
+					VertexTombstone: &pb.SnapshotVertexTombstone{
+						Key:        "live",
+						Hlc:        stamp,
+						Expiration: timestamppb.New(time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)),
+					},
+				},
+			})
+		}},
 		{"live vertex older than causal barrier", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			stamp := proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
 			frames[2].GetVertex().GetHlc().WallNs--
@@ -440,6 +453,19 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 				len(c.Graph)-1,
 				receiptSnapshotPutEdgeFrame("live", "missing"),
 			)
+		}},
+		{"live vertex and tombstone overlap", func(c *ReceiptWholeStateCapture) {
+			stamp := proto.Clone(c.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			c.Graph[len(c.Graph)-1].GetFooter().VertexTombstoneCount++
+			c.Graph = insertReceiptSnapshotFrames(c.Graph, 1, &pb.SnapshotResponse{
+				Entry: &pb.SnapshotResponse_VertexTombstone{
+					VertexTombstone: &pb.SnapshotVertexTombstone{
+						Key:        "live",
+						Hlc:        stamp,
+						Expiration: timestamppb.New(time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)),
+					},
+				},
+			})
 		}},
 		{"live vertex older than causal barrier", func(c *ReceiptWholeStateCapture) {
 			stamp := proto.Clone(c.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)

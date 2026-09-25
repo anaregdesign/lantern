@@ -376,6 +376,15 @@ func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.
 			if _, exists := vertices[key]; exists {
 				return fmt.Errorf("duplicate live vertex")
 			}
+			if _, exists := vertexTombstones[key]; exists {
+				// AddEdge may recreate a structural endpoint after a Vertex
+				// Delete. Its canonical nil marker has no Vertex Put HLC and
+				// intentionally retains the tombstone floor; every explicit
+				// vertex value must be disjoint from that tombstone.
+				if item.GetHlc() != nil || !item.GetVertex().GetNil() {
+					return fmt.Errorf("live vertex and tombstone overlap")
+				}
+			}
 			if barrier, exists := vertexBarriers[key]; exists {
 				var liveHLC hlc.Timestamp
 				if item.GetHlc() != nil {
