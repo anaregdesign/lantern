@@ -82,15 +82,18 @@ noncanonical, trailing, digest-mismatched, or size-mismatched data. Its fully
 validated result owns the archive bytes and parsed WAL cut/tip witnesses so a
 later restore layer does not need to reopen either member or the live WAL.
 
-Persistence orders durability as follows: create each member temp exclusively
-inside the target directory; write all bytes, file-sync, and close it; publish
-both members with an atomic no-replace hard-link-and-unlink move; directory-sync;
-create/write/file-sync/close the manifest temp; publish the manifest through the
-same no-replace move last; then directory-sync again. Failed attempts clean only
-paths they provably created, so a destination that races publication is neither
-overwritten nor removed. Retention counts only fully validated committed sets
-for this instance and removes each old manifest first, directory-syncs, removes
-its members, and directory-syncs again. `LANTERN_BACKUP_RETAIN=0` keeps all sets.
+Persistence orders durability as follows: create each final member with
+`O_CREATE|O_EXCL`; write all bytes, file-sync, and close it; directory-sync;
+then create the final manifest with `O_CREATE|O_EXCL`, write/file-sync/close it
+last, and directory-sync again. A manifest is a commit marker only after the
+strict loader accepts its complete canonical contents and bound members, so a
+visible partial marker fails closed. This protocol uses no file locking or hard
+links and never replaces an existing name. Failed attempts clean only paths
+whose exclusive create proved ownership; files left by an interrupted process
+or racing writer are preserved and ignored rather than guessed-owned. Retention
+counts only fully validated committed sets for this instance and removes each
+old manifest first, directory-syncs, removes its members, and directory-syncs
+again. `LANTERN_BACKUP_RETAIN=0` keeps all sets.
 Periodic, manual, and final-shutdown attempts are serialized, and set IDs stay
 unique and increasing even if wall time repeats or moves backward.
 Existing `lantern_backup_*` timing, failure, vertex, and edge metrics remain

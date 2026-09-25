@@ -597,18 +597,20 @@ fully validated loader returns owned archive bytes, decoded cut/tip witnesses,
 and the same-cut identity without consulting the live appendable WAL, and is
 shared by retention so selection rules cannot drift.
 
-Each member is created exclusively in the target directory, completely
-written, file-synced, and closed before atomic no-replace publication (a
-hard-link-and-unlink move in the target directory). After both member
-publications the directory is synced; the manifest is then exclusively written,
-file-synced, closed, published through the same no-replace move last, and
-followed by a final directory sync. Cancellation and every filesystem error
-abort the attempt and clean only paths provably owned by it; a racing
-destination is never overwritten or subsequently treated as attempt-owned.
+Each final member is created with `O_CREATE|O_EXCL`, completely written,
+file-synced, and closed before the directory is synced. The final manifest is
+then created with `O_CREATE|O_EXCL`, written, file-synced, and closed last,
+followed by a final directory sync. A visible partial manifest is not a commit:
+the strict canonical loader must validate it and every bound member before the
+set exists. The protocol requires neither file locking nor hard-link support
+and never replaces an existing name. Cancellation and every filesystem error
+abort the attempt and clean only paths whose exclusive create proved ownership;
+files from interrupted processes or racing writers are preserved and ignored
+rather than guessed-owned.
 Retention counts only complete valid sets for the configured instance and
 prunes each manifest first, syncs the directory, removes its members, and syncs
-again. Other instances and unrecognized files are untouched; well-scoped own
-orphan temps/members are cleanup candidates. `retain=0` keeps all. Periodic,
+again. Other instances, unrecognized files, and unproven orphan files are
+untouched. `retain=0` keeps all. Periodic,
 manual, and final-shutdown attempts serialize, while per-instance IDs remain
 unique and increasing across repeated/backward clocks and process restarts.
 

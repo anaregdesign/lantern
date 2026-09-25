@@ -16,8 +16,8 @@
 // Shared storage is never assumed safe for concurrent writes (networked or
 // FUSE-backed filesystems generally have no reliable file locking), so every
 // writer owns instance-scoped names. Graph-only writes use temp file + rename.
-// Receipt sets sync and rename their immutable members before atomically
-// publishing a manifest-last commit marker.
+// Receipt sets exclusively create and sync immutable final members before
+// exclusively creating and syncing a manifest-last commit marker.
 package backup
 
 import (

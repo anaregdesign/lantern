@@ -88,6 +88,17 @@ func TestReceiptBackupSetPersistsOneImmutableValidatedCapture(t *testing.T) {
 		}
 	}
 
+	evidence, err := LoadReceiptBackupSet(b.cfg.Dir, b.cfg.InstanceID, loaded.manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.SetID != loaded.id || evidence.BackupTimestamp != loaded.createdAt ||
+		evidence.NodeID != capture.NodeID || evidence.Generation != capture.Generation ||
+		evidence.WALCut != capture.WALTip || evidence.Stats != loaded.stats ||
+		!bytes.Equal(evidence.Archive, loaded.archiveRaw) {
+		t.Fatalf("public receipt backup-set evidence = %+v", evidence)
+	}
+
 	owned := append([]byte(nil), loaded.archiveRaw...)
 	if err := os.WriteFile(loaded.memberPaths[0], bytes.Repeat([]byte{0x5a}, len(owned)), receiptBackupSetFilePermissions); err != nil {
 		t.Fatal(err)

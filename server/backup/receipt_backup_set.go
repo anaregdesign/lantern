@@ -78,6 +78,51 @@ type loadedReceiptBackupSet struct {
 	createdAt  time.Time
 }
 
+// ReceiptBackupSetEvidence is the immutable, fully validated input for a later
+// durable restore layer. Archive owns its bytes and WALCut is the exact closed
+// FileWAL witness captured with the archive, NodeID, and Generation.
+type ReceiptBackupSetEvidence struct {
+	SetID           uint64
+	BackupTimestamp time.Time
+	NodeID          hlc.NodeID
+	Generation      [16]byte
+	WALCut          mutationlog.FileWALTipWitness
+	Stats           Stats
+	Archive         []byte
+}
+
+// LoadReceiptBackupSet validates and loads one committed receipt backup set
+// without consulting the live appendable WAL.
+func LoadReceiptBackupSet(
+	dir, instance, manifestPath string,
+) (ReceiptBackupSetEvidence, error) {
+	if err := validateReceiptBackupSetInstance(instance); err != nil {
+		return ReceiptBackupSetEvidence{}, err
+	}
+	b := &Backupper{
+		cfg: Config{Dir: dir, InstanceID: instance},
+		fs:  newReceiptBackupFS(),
+	}
+	loaded, err := b.loadReceiptBackupSet(manifestPath)
+	if err != nil {
+		return ReceiptBackupSetEvidence{}, err
+	}
+	return ReceiptBackupSetEvidence{
+		SetID:           loaded.id,
+		BackupTimestamp: loaded.createdAt,
+		NodeID:          loaded.nodeID,
+		Generation:      loaded.generation,
+		WALCut: mutationlog.FileWALTipWitness{
+			Seq:         loaded.walCut.cutSeq,
+			Offset:      loaded.walCut.cutOffset,
+			SHA256:      loaded.walCut.cutSHA256,
+			ChainSHA256: loaded.walCut.cutChainSHA256,
+		},
+		Stats:   loaded.stats,
+		Archive: loaded.archiveRaw,
+	}, nil
+}
+
 func newReceiptBackupSetManifest(
 	instance string,
 	setID uint64,
