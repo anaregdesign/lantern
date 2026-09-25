@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,9 +10,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -24,12 +28,14 @@ import (
 // writes) and a raw Connect-Go replication client (for
 // Snapshot/Subscribe).
 type snapshotPeer struct {
-	cache *graphcache.GraphCache[string, *pb.Vertex]
-	clock *hlc.Clock
-	log   *mutationlog.Log
-	sdk   *client.Lantern
-	raw   graphv1connect.LanternServiceClient
-	repl  graphv1connect.LanternReplicationServiceClient
+	cache       *graphcache.GraphCache[string, *pb.Vertex]
+	clock       *hlc.Clock
+	log         *mutationlog.Log
+	service     *service.LanternService
+	replication *service.LanternReplicationService
+	sdk         *client.Lantern
+	raw         graphv1connect.LanternServiceClient
+	repl        graphv1connect.LanternReplicationServiceClient
 }
 
 func newSnapshotPeer(t *testing.T, nodeID hlc.NodeID) *snapshotPeer {
@@ -57,17 +63,20 @@ func newSnapshotPeerWithMode(t *testing.T, nodeID hlc.NodeID, logCapacity int, r
 		WithOriginStates(svc).
 		WithSearchConfig(svc)
 	if receiptSnapshotRequired {
+		svc.WithTombstoneTTL(time.Hour)
 		rep.WithReceiptSnapshotRequired()
 	}
 	srv := newConnectTestServer(t, svc, rep, vi.ConnectInterceptor())
 
 	return &snapshotPeer{
-		cache: cache,
-		clock: clock,
-		log:   log,
-		sdk:   newConnectClientFor(t, srv.url),
-		raw:   graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
-		repl:  newReplicationRawClient(t, srv.url),
+		cache:       cache,
+		clock:       clock,
+		log:         log,
+		service:     svc,
+		replication: rep,
+		sdk:         newConnectClientFor(t, srv.url),
+		raw:         graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
+		repl:        newReplicationRawClient(t, srv.url),
 	}
 }
 
@@ -211,6 +220,123 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 	}
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("legacy Snapshot = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestReceiptSnapshotProducer_RealConnectWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	peer := newSnapshotPeerWithMode(t, hlc.NodeID{0x41}, 1024, true)
+	epoch := mutationreceipt.Epoch{0x51}
+	policy := mutationreceipt.Config{
+		Epoch:      epoch,
+		Retention:  time.Hour,
+		MaxEntries: 16,
+		MaxBytes:   1 << 20,
+	}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := time.Now().Add(-time.Second)
+	id, err := mutationreceipt.NewID(epoch, issued, [24]byte{0x52})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := mutationreceipt.Intent{
+		ID:     id,
+		Group:  mutationreceipt.GroupID{0x53},
+		Count:  1,
+		Kind:   mutationreceipt.PutVertex,
+		Digest: mutationreceipt.IntentDigest([]byte("wire-receipt")),
+	}
+	tx, err := store.Begin(issued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]mutationreceipt.Intent{intent}); err != nil || class != mutationreceipt.Fresh {
+		t.Fatalf("Classify = (%v, %v), want fresh", class, err)
+	}
+	originalResult := []byte{0x7a, 0x01}
+	if err := tx.Reserve([][]byte{originalResult}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+
+	if _, err := peer.sdk.PutVertex(ctx, "receipt-wire", "value", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	source, err := service.NewReceiptWholeStateSource(peer.service, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.replication.ConfigureReceiptSnapshot(source, policy); err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := peer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	var frames []*pb.SnapshotResponse
+	for stream.Receive() {
+		frames = append(frames, proto.Clone(stream.Msg()).(*pb.SnapshotResponse))
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 4 {
+		t.Fatalf("receipt Snapshot frames = %d, want header/receipt/vertex/footer", len(frames))
+	}
+	header := frames[0].GetHeader()
+	receipt := frames[1].GetReceipt()
+	vertex := frames[2].GetVertex()
+	footer := frames[3].GetFooter()
+	fingerprint := store.PolicyFingerprint()
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+		header.GetCutoffLocalSeq() != 1 ||
+		header.GetReceiptMetadata().GetPolicy().GetRetentionMs() != uint64(time.Hour/time.Millisecond) ||
+		header.GetReceiptMetadata().GetPolicy().GetMaxEntries() != 16 ||
+		header.GetReceiptMetadata().GetPolicy().GetMaxBytes() != 1<<20 ||
+		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetDeploymentEpoch(), epoch[:]) ||
+		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetFingerprint(), fingerprint[:]) ||
+		len(header.GetReceiptMetadata().GetOriginCutoffs()) != 1 {
+		t.Fatalf("receipt Snapshot header = %+v", header)
+	}
+	if receipt.GetKind() != pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_PUT_VERTEX ||
+		!bytes.Equal(receipt.GetOperationId(), id.Bytes()) ||
+		!bytes.Equal(receipt.GetOriginalResult(), originalResult) ||
+		receipt.GetContribution() != nil {
+		t.Fatalf("receipt Snapshot row = %+v", receipt)
+	}
+	if vertex.GetVertex().GetKey() != "receipt-wire" {
+		t.Fatalf("receipt Snapshot graph row = %+v", vertex)
+	}
+	if footer.GetReceiptCount() != 1 || footer.GetReceiptOriginCount() != 1 ||
+		footer.GetVertexCount() != 1 || footer.GetEdgeCount() != 0 {
+		t.Fatalf("receipt Snapshot footer = %+v", footer)
+	}
+
+	downgrade, err := peer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}))
+	if err == nil {
+		defer func() { _ = downgrade.Close() }()
+		if downgrade.Receive() {
+			t.Fatalf("graph-only downgrade emitted frame: %+v", downgrade.Msg())
+		}
+		err = downgrade.Err()
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("graph-only downgrade = %v, want FailedPrecondition", err)
 	}
 }
 

@@ -260,16 +260,24 @@ func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested 
 	if _, err := mutationreceipt.NewFromSnapshot(capture.Policy, capture.Receipts); err != nil {
 		return fmt.Errorf("receipt Snapshot has invalid Store state: %w", err)
 	}
-	if err := validateReceiptSnapshotGraphCapture(capture.Graph, capture.Origins); err != nil {
+	if err := ValidateReceiptSnapshotGraphCapture(capture.Graph, capture.Origins); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins []OriginState) error {
+// ValidateReceiptSnapshotGraphCapture validates the detached graph component
+// shared by the receipt Snapshot and private archive producers. It rejects any
+// frame sequence that a strict receiver could not install.
+func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins []OriginState) error {
 	if len(frames) < 2 || frames[0] == nil || frames[0].GetHeader() == nil ||
 		frames[len(frames)-1] == nil || frames[len(frames)-1].GetFooter() == nil {
 		return fmt.Errorf("receipt Snapshot graph capture lacks header or footer")
+	}
+	for _, frame := range frames {
+		if frame == nil || proto.Size(frame) > receiptSnapshotMaxFrameBytes {
+			return fmt.Errorf("receipt Snapshot graph frame is nil or exceeds %d bytes", receiptSnapshotMaxFrameBytes)
+		}
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
@@ -284,17 +292,128 @@ func validateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 	if err := validateReceiptSnapshotOrigins(header, origins); err != nil {
 		return err
 	}
+	return validateReceiptSnapshotGraphBody(frames[1:len(frames)-1], footer)
+}
+
+type receiptSnapshotEdgeKey struct{ tail, head string }
+
+func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.SnapshotFooter) error {
 	var counts [6]uint64
 	phase := 0
-	for _, frame := range frames[1 : len(frames)-1] {
-		if frame == nil || proto.Size(frame) > receiptSnapshotMaxFrameBytes {
-			return fmt.Errorf("receipt Snapshot graph frame is nil or exceeds %d bytes", receiptSnapshotMaxFrameBytes)
+	vertexBarriers := make(map[string]hlc.Timestamp)
+	edgeBarriers := make(map[receiptSnapshotEdgeKey]hlc.Timestamp)
+	vertexTombstones := make(map[string]struct{})
+	edgeTombstones := make(map[receiptSnapshotEdgeKey]hlc.Timestamp)
+	vertices := make(map[string]struct{})
+	edges := make(map[receiptSnapshotEdgeKey]struct{})
+	for _, frame := range frames {
+		if frame == nil {
+			return fmt.Errorf("nil graph frame")
 		}
 		rank := snapshotGraphFrameRank(frame)
 		if rank == 0 || rank < phase {
 			return fmt.Errorf("receipt Snapshot graph frames are malformed or reordered")
 		}
 		phase = rank
+		switch entry := frame.GetEntry().(type) {
+		case *pb.SnapshotResponse_VertexCausalBarrier:
+			barrier := entry.VertexCausalBarrier
+			if barrier == nil || barrier.GetKey() == "" || !validReceiptSnapshotHLC(barrier.GetHlc()) {
+				return fmt.Errorf("invalid vertex causal barrier")
+			}
+			if _, exists := vertexBarriers[barrier.GetKey()]; exists {
+				return fmt.Errorf("duplicate vertex causal barrier")
+			}
+			vertexBarriers[barrier.GetKey()], _ = receiptSnapshotHLC(barrier.GetHlc())
+		case *pb.SnapshotResponse_EdgeCausalBarrier:
+			barrier := entry.EdgeCausalBarrier
+			if barrier == nil || barrier.GetTail() == "" || barrier.GetHead() == "" ||
+				!validReceiptSnapshotHLC(barrier.GetHlc()) {
+				return fmt.Errorf("invalid edge causal barrier")
+			}
+			key := receiptSnapshotEdgeKey{barrier.GetTail(), barrier.GetHead()}
+			if _, exists := edgeBarriers[key]; exists {
+				return fmt.Errorf("duplicate edge causal barrier")
+			}
+			edgeBarriers[key], _ = receiptSnapshotHLC(barrier.GetHlc())
+		case *pb.SnapshotResponse_VertexTombstone:
+			marker := entry.VertexTombstone
+			if marker == nil || marker.GetKey() == "" || !validReceiptSnapshotHLC(marker.GetHlc()) ||
+				!validReceiptSnapshotTimestamp(marker.GetExpiration()) {
+				return fmt.Errorf("invalid vertex tombstone")
+			}
+			if _, exists := vertexTombstones[marker.GetKey()]; exists {
+				return fmt.Errorf("duplicate vertex tombstone")
+			}
+			if _, exists := vertexBarriers[marker.GetKey()]; exists {
+				return fmt.Errorf("vertex causal barrier and tombstone overlap")
+			}
+			vertexTombstones[marker.GetKey()] = struct{}{}
+		case *pb.SnapshotResponse_EdgeTombstone:
+			marker := entry.EdgeTombstone
+			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" ||
+				!validReceiptSnapshotHLC(marker.GetHlc()) ||
+				!validReceiptSnapshotTimestamp(marker.GetExpiration()) {
+				return fmt.Errorf("invalid edge tombstone")
+			}
+			key := receiptSnapshotEdgeKey{marker.GetTail(), marker.GetHead()}
+			if _, exists := edgeTombstones[key]; exists {
+				return fmt.Errorf("duplicate edge tombstone")
+			}
+			if _, exists := edgeBarriers[key]; exists {
+				return fmt.Errorf("edge causal barrier and tombstone overlap")
+			}
+			edgeTombstones[key], _ = receiptSnapshotHLC(marker.GetHlc())
+		case *pb.SnapshotResponse_Vertex:
+			item := entry.Vertex
+			if item == nil || item.GetVertex() == nil || item.GetVertex().GetKey() == "" ||
+				!validOptionalReceiptSnapshotHLC(item.GetHlc()) ||
+				!validOptionalReceiptSnapshotTimestamp(item.GetVertex().GetExpiration()) ||
+				!validReceiptSnapshotVertexValue(item.GetVertex()) {
+				return fmt.Errorf("invalid live vertex")
+			}
+			key := item.GetVertex().GetKey()
+			if _, exists := vertices[key]; exists {
+				return fmt.Errorf("duplicate live vertex")
+			}
+			if barrier, exists := vertexBarriers[key]; exists {
+				var liveHLC hlc.Timestamp
+				if item.GetHlc() != nil {
+					liveHLC, _ = receiptSnapshotHLC(item.GetHlc())
+				}
+				if liveHLC.Less(barrier) {
+					return fmt.Errorf("live vertex is older than its causal barrier")
+				}
+			}
+			vertices[key] = struct{}{}
+		case *pb.SnapshotResponse_Edge:
+			item := entry.Edge
+			key := receiptSnapshotEdgeKey{item.GetTail(), item.GetHead()}
+			if err := validateReceiptSnapshotEdge(item, edgeTombstones[key]); err != nil {
+				return err
+			}
+			if _, exists := edges[key]; exists {
+				return fmt.Errorf("duplicate live edge")
+			}
+			var putFloor hlc.Timestamp
+			if item.GetHlc() != nil {
+				putFloor, _ = receiptSnapshotHLC(item.GetHlc())
+			}
+			if barrier, exists := edgeBarriers[key]; exists {
+				if putFloor != barrier {
+					return fmt.Errorf("live edge Put floor differs from its causal barrier")
+				}
+			} else if putFloor != (hlc.Timestamp{}) {
+				return fmt.Errorf("live edge Put floor lacks a causal barrier")
+			}
+			if _, exists := vertices[key.tail]; !exists {
+				return fmt.Errorf("live edge tail is absent")
+			}
+			if _, exists := vertices[key.head]; !exists {
+				return fmt.Errorf("live edge head is absent")
+			}
+			edges[key] = struct{}{}
+		}
 		counts[rank-1]++
 	}
 	if counts != [6]uint64{
@@ -306,6 +425,98 @@ func validateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 		footer.GetEdgeCount(),
 	} {
 		return fmt.Errorf("receipt Snapshot graph footer count mismatch")
+	}
+	return nil
+}
+
+func validReceiptSnapshotHLC(stamp *pb.HLCTimestamp) bool {
+	_, ok := receiptSnapshotHLC(stamp)
+	return ok
+}
+
+func validOptionalReceiptSnapshotHLC(stamp *pb.HLCTimestamp) bool {
+	return stamp == nil || validReceiptSnapshotHLC(stamp)
+}
+
+func validReceiptSnapshotTimestamp(stamp *timestamppb.Timestamp) bool {
+	return stamp != nil && stamp.CheckValid() == nil
+}
+
+func validOptionalReceiptSnapshotTimestamp(stamp *timestamppb.Timestamp) bool {
+	return stamp == nil || stamp.CheckValid() == nil
+}
+
+func validReceiptSnapshotVertexValue(vertex *pb.Vertex) bool {
+	switch value := vertex.GetValue().(type) {
+	case *pb.Vertex_Timestamp:
+		return validReceiptSnapshotTimestamp(value.Timestamp)
+	case *pb.Vertex_Duration:
+		return value.Duration != nil && value.Duration.CheckValid() == nil
+	case *pb.Vertex_Nil:
+		return value.Nil
+	default:
+		return true
+	}
+}
+
+func validateReceiptSnapshotEdge(edge *pb.SnapshotEdge, tombstone hlc.Timestamp) error {
+	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || len(edge.GetContributions()) == 0 {
+		return fmt.Errorf("invalid live edge")
+	}
+	var putFloor hlc.Timestamp
+	if edge.GetHlc() != nil {
+		var ok bool
+		putFloor, ok = receiptSnapshotHLC(edge.GetHlc())
+		if !ok {
+			return fmt.Errorf("invalid live edge Put floor")
+		}
+	}
+	var seenPut bool
+	seenAdds := make(map[[24]byte]struct{})
+	for _, contribution := range edge.GetContributions() {
+		if contribution == nil || !validOptionalReceiptSnapshotTimestamp(contribution.GetExpiration()) {
+			return fmt.Errorf("invalid live edge contribution")
+		}
+		idBytes := contribution.GetContribId()
+		switch len(idBytes) {
+		case 0:
+			if tombstone != (hlc.Timestamp{}) {
+				return fmt.Errorf("live edge Put contribution conflicts with tombstone")
+			}
+			if seenPut {
+				return fmt.Errorf("duplicate live edge Put contribution")
+			}
+			seenPut = true
+			if contribution.GetHlc() == nil {
+				if putFloor != (hlc.Timestamp{}) {
+					return fmt.Errorf("live edge Put contribution lacks its floor HLC")
+				}
+			} else {
+				stamp, ok := receiptSnapshotHLC(contribution.GetHlc())
+				if !ok || stamp != putFloor {
+					return fmt.Errorf("live edge Put contribution HLC mismatch")
+				}
+			}
+		case 24:
+			var id [24]byte
+			copy(id[:], idBytes)
+			if id == ([24]byte{}) {
+				return fmt.Errorf("zero live edge Add ContribID")
+			}
+			if _, exists := seenAdds[id]; exists {
+				return fmt.Errorf("duplicate live edge Add ContribID")
+			}
+			seenAdds[id] = struct{}{}
+			addHLC, ok := receiptSnapshotHLC(contribution.GetHlc())
+			if !ok || (putFloor != (hlc.Timestamp{}) && !putFloor.Less(addHLC)) {
+				return fmt.Errorf("invalid live edge Add HLC")
+			}
+			if tombstone != (hlc.Timestamp{}) && !tombstone.Less(addHLC) {
+				return fmt.Errorf("live edge Add does not follow tombstone")
+			}
+		default:
+			return fmt.Errorf("invalid live edge ContribID length")
+		}
 	}
 	return nil
 }
@@ -388,7 +599,8 @@ func receiptKindFromSnapshot(kind pb.SnapshotReceiptKind) (mutationreceipt.Kind,
 }
 
 // validateReceiptSnapshotFrames is the producer's final preflight. It mirrors
-// the future receiver's structural obligations without installing any state.
+// the future receiver's structural and semantic obligations without
+// installing any state.
 func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
 	if len(frames) < 2 || frames[0] == nil || frames[0].GetHeader() == nil ||
 		frames[len(frames)-1] == nil || frames[len(frames)-1].GetFooter() == nil {
@@ -417,12 +629,12 @@ func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
 		return err
 	}
 
-	var counts [6]uint64
 	var receiptCount uint64
-	phase := 0
+	graphFrames := make([]*pb.SnapshotResponse, 0, len(frames)-2)
+	graphStarted := false
 	for _, frame := range frames[1 : len(frames)-1] {
 		if row := frame.GetReceipt(); row != nil {
-			if phase != 0 {
+			if graphStarted {
 				return fmt.Errorf("receipt Snapshot receipt row follows graph data")
 			}
 			receipt, err := receiptFromSnapshotRow(row)
@@ -433,23 +645,15 @@ func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
 			receiptCount++
 			continue
 		}
-		rank := snapshotGraphFrameRank(frame)
-		if rank == 0 || rank < phase {
-			return fmt.Errorf("receipt Snapshot body frame is malformed or reordered")
-		}
-		phase = rank
-		counts[rank-1]++
+		graphStarted = true
+		graphFrames = append(graphFrames, frame)
 	}
-	if counts != [6]uint64{
-		footer.GetVertexCausalBarrierCount(),
-		footer.GetEdgeCausalBarrierCount(),
-		footer.GetVertexTombstoneCount(),
-		footer.GetEdgeTombstoneCount(),
-		footer.GetVertexCount(),
-		footer.GetEdgeCount(),
-	} || receiptCount != footer.GetReceiptCount() ||
+	if receiptCount != footer.GetReceiptCount() ||
 		uint64(len(header.GetReceiptMetadata().GetOriginCutoffs())) != footer.GetReceiptOriginCount() {
 		return fmt.Errorf("receipt Snapshot footer count mismatch")
+	}
+	if err := validateReceiptSnapshotGraphBody(graphFrames, footer); err != nil {
+		return err
 	}
 	if _, err := mutationreceipt.NewFromSnapshot(config, state); err != nil {
 		return fmt.Errorf("receipt Snapshot rows are invalid: %w", err)

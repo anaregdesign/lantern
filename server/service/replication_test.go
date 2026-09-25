@@ -446,29 +446,50 @@ func TestLanternReplicationService_ReceiptSnapshotConfigurationFailsClosed(t *te
 }
 
 func TestLanternReplicationService_ReceiptSnapshotRejectsMalformedCutBeforeHeader(t *testing.T) {
-	f := newReceiptEdgeDeleteFixture(t, nil)
-	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	policy := mutationreceipt.Config{
-		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
-	}
-	if err := f.replication.ConfigureReceiptSnapshot(func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
-		capture, err := source(ctx, got)
-		if err == nil {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ReceiptWholeStateCapture)
+	}{
+		{"receipt footer count", func(capture *ReceiptWholeStateCapture) {
 			capture.Graph[len(capture.Graph)-1].GetFooter().ReceiptCount = 1
-		}
-		return capture, err
-	}, policy); err != nil {
-		t.Fatal(err)
-	}
-	recorder := &replicationSnapshotRecorder{}
-	err = f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
-	}, recorder)
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
-		t.Fatalf("malformed cut = %v, frames=%d", err, len(recorder.frames))
+		}},
+		{"invalid graph payload", func(capture *ReceiptWholeStateCapture) {
+			capture.Graph[len(capture.Graph)-1].GetFooter().VertexCount = 1
+			capture.Graph = insertReceiptSnapshotFrames(
+				capture.Graph,
+				len(capture.Graph)-1,
+				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Vertex{
+					Vertex: &pb.SnapshotVertex{},
+				}},
+			)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReceiptEdgeDeleteFixture(t, nil)
+			source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy := mutationreceipt.Config{
+				Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+			}
+			if err := f.replication.ConfigureReceiptSnapshot(func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+				capture, err := source(ctx, got)
+				if err == nil {
+					tc.mutate(&capture)
+				}
+				return capture, err
+			}, policy); err != nil {
+				t.Fatal(err)
+			}
+			recorder := &replicationSnapshotRecorder{}
+			err = f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
+				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			}, recorder)
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
+				t.Fatalf("malformed cut = %v, frames=%d", err, len(recorder.frames))
+			}
+		})
 	}
 }
 

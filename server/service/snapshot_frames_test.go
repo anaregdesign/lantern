@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -160,6 +161,16 @@ func cloneReceiptSnapshotFrames(frames []*pb.SnapshotResponse) []*pb.SnapshotRes
 	return out
 }
 
+func receiptSnapshotPutEdgeFrame(tail, head string) *pb.SnapshotResponse {
+	return &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+		Tail: tail,
+		Head: head,
+		Contributions: []*pb.SnapshotEdgeContribution{{
+			Weight: 1,
+		}},
+	}}}
+}
+
 func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.T) {
 	capture, policy := receiptSnapshotTestCapture(t, true, true)
 	frames, err := prepareReceiptSnapshotFrames(capture, policy)
@@ -290,6 +301,94 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			frames[1].GetReceipt().Contribution = nil
 			return frames
 		}},
+		{"nil live vertex", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().Vertex = nil
+			return frames
+		}},
+		{"empty live vertex key", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Key = ""
+			return frames
+		}},
+		{"invalid live vertex timestamp", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Expiration = &timestamppb.Timestamp{Seconds: 253402300800}
+			return frames
+		}},
+		{"invalid live vertex HLC", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetHlc().NodeId = make([]byte, 16)
+			return frames
+		}},
+		{"duplicate live vertex", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			duplicate := proto.Clone(frames[2]).(*pb.SnapshotResponse)
+			frames[len(frames)-1].GetFooter().VertexCount++
+			return insertReceiptSnapshotFrames(frames, len(frames)-1, duplicate)
+		}},
+		{"nil live edge", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[len(frames)-1].GetFooter().EdgeCount++
+			return insertReceiptSnapshotFrames(frames, len(frames)-1, &pb.SnapshotResponse{
+				Entry: &pb.SnapshotResponse_Edge{},
+			})
+		}},
+		{"duplicate live edge", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[len(frames)-1].GetFooter().EdgeCount += 2
+			return insertReceiptSnapshotFrames(
+				frames,
+				len(frames)-1,
+				receiptSnapshotPutEdgeFrame("live", "live"),
+				receiptSnapshotPutEdgeFrame("live", "live"),
+			)
+		}},
+		{"malformed Add contribution ID", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			edge := receiptSnapshotPutEdgeFrame("live", "live")
+			edge.GetEdge().Contributions[0].ContribId = []byte{1}
+			edge.GetEdge().Contributions[0].Hlc =
+				proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			frames[len(frames)-1].GetFooter().EdgeCount++
+			return insertReceiptSnapshotFrames(frames, len(frames)-1, edge)
+		}},
+		{"missing edge endpoint", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[len(frames)-1].GetFooter().EdgeCount++
+			return insertReceiptSnapshotFrames(
+				frames,
+				len(frames)-1,
+				receiptSnapshotPutEdgeFrame("live", "missing"),
+			)
+		}},
+		{"causal barrier and tombstone overlap", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			stamp := proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			frames[len(frames)-1].GetFooter().VertexCausalBarrierCount++
+			frames[len(frames)-1].GetFooter().VertexTombstoneCount++
+			return insertReceiptSnapshotFrames(
+				frames,
+				2,
+				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{
+					VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{
+						Key: "live",
+						Hlc: stamp,
+					},
+				}},
+				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{
+					VertexTombstone: &pb.SnapshotVertexTombstone{
+						Key:        "live",
+						Hlc:        proto.Clone(stamp).(*pb.HLCTimestamp),
+						Expiration: timestamppb.New(time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)),
+					},
+				}},
+			)
+		}},
+		{"live vertex older than causal barrier", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			stamp := proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			frames[2].GetVertex().GetHlc().WallNs--
+			frames[len(frames)-1].GetFooter().VertexCausalBarrierCount++
+			return insertReceiptSnapshotFrames(frames, 2, &pb.SnapshotResponse{
+				Entry: &pb.SnapshotResponse_VertexCausalBarrier{
+					VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "live", Hlc: stamp},
+				},
+			})
+		}},
+		{"origin HLC beyond cutoff", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[0].GetHeader().GetReceiptMetadata().GetOriginCutoffs()[0].GetLastHlc().WallNs++
+			return frames
+		}},
 		{"oversized receipt", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[1].GetReceipt().OriginalResult = make([]byte, receiptSnapshotMaxFrameBytes)
 			return frames
@@ -315,8 +414,46 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 		{"graph receipt metadata", func(c *ReceiptWholeStateCapture) {
 			c.Graph[0].GetHeader().ReceiptMetadata = &pb.SnapshotReceiptMetadata{}
 		}},
+		{"nil live vertex", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().Vertex = nil
+		}},
+		{"invalid live vertex HLC", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetHlc().NodeId = make([]byte, 16)
+		}},
+		{"duplicate live vertex", func(c *ReceiptWholeStateCapture) {
+			duplicate := proto.Clone(c.Graph[1]).(*pb.SnapshotResponse)
+			c.Graph[len(c.Graph)-1].GetFooter().VertexCount++
+			c.Graph = insertReceiptSnapshotFrames(c.Graph, len(c.Graph)-1, duplicate)
+		}},
+		{"malformed live edge contribution", func(c *ReceiptWholeStateCapture) {
+			edge := receiptSnapshotPutEdgeFrame("live", "live")
+			edge.GetEdge().Contributions[0].ContribId = []byte{1}
+			edge.GetEdge().Contributions[0].Hlc =
+				proto.Clone(c.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			c.Graph[len(c.Graph)-1].GetFooter().EdgeCount++
+			c.Graph = insertReceiptSnapshotFrames(c.Graph, len(c.Graph)-1, edge)
+		}},
+		{"missing edge endpoint", func(c *ReceiptWholeStateCapture) {
+			c.Graph[len(c.Graph)-1].GetFooter().EdgeCount++
+			c.Graph = insertReceiptSnapshotFrames(
+				c.Graph,
+				len(c.Graph)-1,
+				receiptSnapshotPutEdgeFrame("live", "missing"),
+			)
+		}},
+		{"live vertex older than causal barrier", func(c *ReceiptWholeStateCapture) {
+			stamp := proto.Clone(c.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			c.Graph[1].GetVertex().GetHlc().WallNs--
+			c.Graph[len(c.Graph)-1].GetFooter().VertexCausalBarrierCount++
+			c.Graph = insertReceiptSnapshotFrames(c.Graph, 1, &pb.SnapshotResponse{
+				Entry: &pb.SnapshotResponse_VertexCausalBarrier{
+					VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "live", Hlc: stamp},
+				},
+			})
+		}},
 		{"policy capacity", func(c *ReceiptWholeStateCapture) { c.Policy.MaxBytes++ }},
 		{"origin cutoff", func(c *ReceiptWholeStateCapture) { c.Origins[0].LastSeq++ }},
+		{"origin HLC beyond cutoff", func(c *ReceiptWholeStateCapture) { c.Origins[0].LastHLC.WallNs++ }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := ReceiptWholeStateCapture{

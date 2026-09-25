@@ -801,8 +801,10 @@ Implementation notes:
   service publication gate. All header metadata, receipt rows, graph frames,
   origin/local cutoffs, and HLC values are derived solely from that detached
   cut; components are never re-sampled afterward. Before sending the header,
-  it validates Store reconstruction, phase order, counts, field sizes, and an
-  8 MiB per-frame bound across the complete stream. Any malformed capture
+  it validates Store reconstruction, phase order, counts, field sizes, graph
+  identities and endpoint closure, timestamp/HLC and contribution validity,
+  duplicate/overlapping state, causal floors, origin/cutoff consistency, and
+  an 8 MiB per-frame bound across the complete stream. Any malformed capture
   therefore sends no partial image. The ordinary graph-only producer and wire
   behavior are unchanged.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,

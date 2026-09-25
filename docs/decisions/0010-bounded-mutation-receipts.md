@@ -444,7 +444,10 @@ streams the epoch, policy fingerprint/retention/capacity, clock high-water,
 sorted unexpired receipt rows with original result and Add contribution
 metadata, full origin HLC/sequence rows, local cutoff, graph frames, and a
 counted footer. A receipt-only cut is valid. Missing, malformed, reordered,
-count-mismatched, or oversized receipt metadata produces no header.
+count-mismatched, or oversized receipt metadata produces no header. The same
+preflight validates graph payload identities, timestamps/HLCs, Add contribution
+IDs, duplicate/overlapping state, causal floors, and edge endpoints before the
+first frame is sent.
 `WithReceiptSnapshotRequired` without that configured source still fails
 closed.
 Current Pump and anti-entropy request graph-only format and reject a receipt

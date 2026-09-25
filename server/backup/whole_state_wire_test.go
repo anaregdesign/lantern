@@ -87,6 +87,11 @@ func TestArchiveGraphWireAcceptsReorderedFieldsAcrossArchiveDecode(t *testing.T)
 	secondOrigin.LastSeq = 1
 	a.Origins = append(a.Origins, secondOrigin)
 	a.Graph[0].GetHeader().CutoffSeqPerOrigin[hex.EncodeToString(secondOrigin.Origin[:])] = secondOrigin.LastSeq
+	a.Graph[0].GetHeader().CutoffHlc = &pb.HLCTimestamp{
+		WallNs:  secondOrigin.LastHLC.WallNs,
+		Logical: secondOrigin.LastHLC.Logical,
+		NodeId:  append([]byte(nil), secondOrigin.LastHLC.NodeID[:]...),
+	}
 	header, err := proto.Marshal(a.Graph[0].GetHeader())
 	if err != nil {
 		t.Fatal(err)
