@@ -359,7 +359,7 @@ func TestEdgeDeleteReceiptCoordinatorAlignsStoreClockBeforeReplication(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	capture, err := source(context.Background(), remoteConfig)
+	capture, err := source.Capture(context.Background(), remoteConfig)
 	if err != nil {
 		t.Fatalf("receipt snapshot after remote publication = %v", err)
 	}
@@ -1114,7 +1114,7 @@ func TestEdgeDeleteReceiptFollowerUsesBoundedOriginFreshness(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		capture, err := source(context.Background(), config)
+		capture, err := source.Capture(context.Background(), config)
 		if err != nil {
 			t.Fatalf("rollback receipt snapshot = %v", err)
 		}

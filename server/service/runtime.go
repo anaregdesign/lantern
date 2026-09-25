@@ -38,6 +38,7 @@ type ServingRuntime struct {
 
 type receiptServingRuntime struct {
 	store      *mutationreceipt.Store
+	policy     mutationreceipt.Config
 	epoch      mutationreceipt.Epoch
 	generation [16]byte
 }
@@ -100,7 +101,7 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 	if err != nil {
 		return nil, errors.Join(err, candidate.Close())
 	}
-	return certifyReceiptWALServingRuntime(candidate, config.NodeID, generation)
+	return certifyReceiptWALServingRuntime(candidate, config.NodeID, generation, config.Receipt)
 }
 
 // OpenDurableReceiptWALServingRuntime resumes one complete genesis WAL under
@@ -136,7 +137,7 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 	if err != nil {
 		return nil, err
 	}
-	return certifyReceiptWALServingRuntime(candidate, config.NodeID, generation)
+	return certifyReceiptWALServingRuntime(candidate, config.NodeID, generation, config.Receipt)
 }
 
 func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfig) error {
@@ -298,6 +299,7 @@ func certifyReceiptWALServingRuntime(
 	candidate *receiptWALOwnedCandidate,
 	nodeID hlc.NodeID,
 	generation [16]byte,
+	policy mutationreceipt.Config,
 ) (_ *ServingRuntime, err error) {
 	if candidate == nil || candidate.state == nil || candidate.state.graph == nil ||
 		candidate.state.receipts == nil || candidate.state.origins == nil ||
@@ -312,6 +314,15 @@ func certifyReceiptWALServingRuntime(
 			err = errors.Join(err, candidate.Close())
 		}
 	}()
+	policy.ClockHighWater = time.Time{}
+	policyStore, err := mutationreceipt.New(policy)
+	if err != nil {
+		return nil, fmt.Errorf("service: certify receipt Snapshot policy: %w", err)
+	}
+	if candidate.state.receipts.Epoch() != policy.Epoch ||
+		candidate.state.receipts.PolicyFingerprint() != policyStore.PolicyFingerprint() {
+		return nil, errors.New("service: durable receipt WAL policy does not match recovered Store")
+	}
 
 	clock := hlc.New(nodeID, hlc.Options{})
 	floor := candidate.state.hlcFrontier
@@ -336,6 +347,7 @@ func certifyReceiptWALServingRuntime(
 		origins: candidate.state.origins,
 		receipt: &receiptServingRuntime{
 			store:      candidate.state.receipts,
+			policy:     policy,
 			epoch:      candidate.state.receipts.Epoch(),
 			generation: generation,
 		},
@@ -383,9 +395,9 @@ func (r *ServingRuntime) NewLanternReplicationService(primary *LanternService) (
 }
 
 // CertifyInstallation verifies that both service surfaces use this runtime's
-// exact state instances and binds the private follower receipt coordinator for
-// durable mode. It is the narrow cross-package barrier used before any network
-// consumer is constructed.
+// exact state instances, then atomically activates the private follower
+// coordinator and receipt Snapshot producer for durable mode. It is the narrow
+// cross-package barrier used before any network consumer is constructed.
 func (r *ServingRuntime) CertifyInstallation(
 	primary *LanternService,
 	replication *LanternReplicationService,
@@ -401,6 +413,9 @@ func (r *ServingRuntime) CertifyInstallation(
 		if primary.receiptStore != nil || primary.receiptEdgeDeleteCoordinator != nil {
 			return errors.New("service: graph-only runtime installed receipt state")
 		}
+		if replication.receiptSnapshotRequired || replication.receiptSnapshotSource != nil {
+			return errors.New("service: graph-only runtime installed receipt Snapshot state")
+		}
 	} else if primary.receiptStore != r.receipt.store {
 		return errors.New("service: durable runtime receipt Store is not installed")
 	}
@@ -410,13 +425,28 @@ func (r *ServingRuntime) CertifyInstallation(
 		return errors.New("service: replication service is not installed from the serving runtime")
 	}
 	if r.receipt != nil {
-		coordinator, err := newEdgeDeleteReceiptCoordinator(primary, r.receipt.store)
+		source, err := NewReceiptWholeStateSource(primary, r.receipt.store)
 		if err != nil {
-			return fmt.Errorf("service: bind durable receipt follower coordinator: %w", err)
+			return fmt.Errorf("service: bind durable receipt follower and Snapshot source: %w", err)
 		}
-		if coordinator.service != primary || coordinator.cache != r.graph ||
+		coordinator := primary.receiptEdgeDeleteCoordinator
+		if coordinator == nil || coordinator.service != primary || coordinator.cache != r.graph ||
 			coordinator.store != r.receipt.store {
 			return errors.New("service: durable receipt follower coordinator is not installed from the serving runtime")
+		}
+		if replication.receiptSnapshotSource == nil {
+			if err := replication.ConfigureReceiptSnapshot(source, r.receipt.policy); err != nil {
+				return fmt.Errorf("service: configure durable receipt Snapshot: %w", err)
+			}
+		} else if !replication.receiptSnapshotRequired ||
+			!replication.receiptSnapshotSource.belongsTo(replication) ||
+			replication.receiptSnapshotSource.owner != primary ||
+			replication.receiptSnapshotSource.store != r.receipt.store ||
+			replication.receiptSnapshotPolicy != r.receipt.policy {
+			return errors.New("service: durable receipt Snapshot configuration differs from the serving runtime")
+		}
+		if !replication.receiptSnapshotRequired || replication.receiptSnapshotSource == nil {
+			return errors.New("service: durable receipt Snapshot is not installed from the serving runtime")
 		}
 	}
 	return nil

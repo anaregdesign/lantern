@@ -68,6 +68,14 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	receiptLatched, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptLatched.WithReceiptSnapshotRequired()
+	if err := runtime.CertifyInstallation(primary, receiptLatched); err == nil {
+		t.Fatal("graph-only runtime certified receipt Snapshot state")
+	}
 	if err := runtime.CertifyInstallation(primary, replication); err != nil {
 		t.Fatalf("graph-only installation certification: %v", err)
 	}
@@ -86,8 +94,13 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 		t.Fatal("primary service did not receive the exact graph-only bundle")
 	}
 	if replication.backend != graph || replication.log != log || replication.clock != clock ||
-		replication.runtime != runtime || replication.origins != primary {
+		replication.runtime != runtime || replication.origins != primary ||
+		replication.receiptSnapshotRequired || replication.receiptSnapshotSource != nil {
 		t.Fatal("replication service did not receive the exact graph-only bundle")
+	}
+	status, err := replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
+	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
+		t.Fatalf("graph-only runtime PeerStatus = (%v, %v)", status, err)
 	}
 	capability, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
 	if err != nil {
@@ -124,6 +137,11 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		fresh.receipt.generation == ([16]byte{}) {
 		t.Fatalf("fresh runtime receipt identity = %+v", fresh.receipt)
 	}
+	wantSnapshotPolicy := config.Receipt
+	wantSnapshotPolicy.ClockHighWater = time.Time{}
+	if fresh.receipt.policy != wantSnapshotPolicy {
+		t.Fatalf("fresh runtime receipt Snapshot policy = %+v, want %+v", fresh.receipt.policy, wantSnapshotPolicy)
+	}
 	generation := fresh.receipt.generation
 	primary := fresh.NewLanternService(nil)
 	replication, err := fresh.NewLanternReplicationService(primary)
@@ -135,6 +153,9 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	}
 	if primary.receiptEdgeDeleteCoordinator != nil {
 		t.Fatal("failed certification bound the receipt follower coordinator")
+	}
+	if replication.receiptSnapshotRequired || replication.receiptSnapshotSource != nil {
+		t.Fatal("failed certification partially activated receipt Snapshot")
 	}
 	primary.WithTombstoneTTL(2 * time.Hour)
 	if err := fresh.CertifyInstallation(primary, replication); err != nil {
@@ -148,8 +169,32 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	}
 	if replication.backend != fresh.graph || replication.log != fresh.log ||
 		replication.clock != fresh.clock || replication.origins != primary ||
-		replication.runtime != fresh {
+		replication.runtime != fresh || !replication.receiptSnapshotRequired ||
+		replication.receiptSnapshotSource == nil ||
+		replication.receiptSnapshotSource.owner != primary ||
+		replication.receiptSnapshotSource.store != fresh.receipt.store ||
+		replication.receiptSnapshotPolicy != wantSnapshotPolicy {
 		t.Fatal("replication service did not receive the certified durable bundle")
+	}
+	status, err := replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
+	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		t.Fatalf("durable runtime PeerStatus = (%v, %v)", status, err)
+	}
+	recorder := &replicationSnapshotRecorder{}
+	if err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}, recorder); err != nil {
+		t.Fatalf("durable runtime receipt Snapshot: %v", err)
+	}
+	if err := validateReceiptSnapshotFrames(recorder.frames); err != nil {
+		t.Fatalf("durable runtime receipt Snapshot frames: %v", err)
+	}
+	configuredSource := replication.receiptSnapshotSource
+	if err := fresh.CertifyInstallation(primary, replication); err != nil {
+		t.Fatalf("repeat durable installation certification: %v", err)
+	}
+	if replication.receiptSnapshotSource != configuredSource {
+		t.Fatal("repeat durable installation certification replaced the receipt Snapshot source")
 	}
 	capability, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
 	if err != nil {
@@ -297,7 +342,7 @@ func TestServingRuntimeDurablePersistsGenericRemoteClockFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	capture, err := source(context.Background(), config.Receipt)
+	capture, err := source.Capture(context.Background(), config.Receipt)
 	if err != nil {
 		t.Fatalf("receipt capture after restarted generic publication: %v", err)
 	}

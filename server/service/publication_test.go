@@ -393,7 +393,7 @@ func TestPublishRemoteMutationDurableClockFloorAfterWallRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	capture, err := source(context.Background(), config)
+	capture, err := source.Capture(context.Background(), config)
 	if err != nil {
 		t.Fatalf("receipt capture after generic remote publication: %v", err)
 	}

@@ -3,6 +3,7 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func authedReceiptRequest[T any](msg *T) *connect.Request[T] {
@@ -98,6 +100,63 @@ func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.DurableRec
 	}
 }
 
+func durableFollowerReceiptMutation(
+	t *testing.T,
+	config mutationreceipt.Config,
+	origin hlc.NodeID,
+	seq uint64,
+	tail, head string,
+) (*pb.Mutation, []byte) {
+	t.Helper()
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := time.Now().Add(-time.Second)
+	id, err := mutationreceipt.NewID(config.Epoch, issued, [24]byte{0x39, byte(seq)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := mutationreceipt.GroupID{0x4a}
+	canonical := []byte{byte(mutationreceipt.DeleteEdge)}
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(tail)))
+	canonical = append(canonical, length[:]...)
+	canonical = append(canonical, tail...)
+	binary.BigEndian.PutUint64(length[:], uint64(len(head)))
+	canonical = append(canonical, length[:]...)
+	canonical = append(canonical, head...)
+	digest := mutationreceipt.IntentDigest(canonical)
+	policy := store.PolicyFingerprint()
+	stamp := hlc.Timestamp{
+		WallNs: time.Now().UnixNano(),
+		NodeID: origin,
+	}
+	return &pb.Mutation{
+		Seq: seq, Origin: origin[:],
+		Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, NodeId: origin[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeDelete{
+			ReplicatedReceiptEdgeDelete: &pb.ReplicatedReceiptEdgeDelete{
+				DeploymentEpoch:     config.Epoch[:],
+				PolicyFingerprint:   policy[:],
+				TombstoneExpiration: timestamppb.New(time.Unix(0, stamp.WallNs).Add(time.Hour)),
+				Items: []*pb.ReplicatedReceiptEdgeDeleteItem{{
+					Key: &pb.EdgeKey{Tail: tail, Head: head},
+					Receipt: &pb.MutationReceipt{
+						OperationId: id.Bytes(), LogicalCallId: group[:],
+						ItemIndex: 0, ItemCount: 1, IntentSha256: digest[:],
+						DeadlineUnixMs: uint64(issued.Add(config.Retention).UnixMilli()),
+						OriginalResult: &pb.ReceiptResult{Result: &pb.ReceiptResult_DeleteEdgeExisted{
+							DeleteEdgeExisted: false,
+						}},
+					},
+					CausallyAccepted: false,
+				}},
+			},
+		}},
+	}, id.Bytes()
+}
+
 func mountDurableReceiptWireRuntime(
 	t *testing.T,
 	runtime *service.ServingRuntime,
@@ -117,6 +176,128 @@ func mountDurableReceiptWireRuntime(
 		t.Fatal(err)
 	}
 	return server, sdk
+}
+
+func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), hlc.NodeID{0x31})
+	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, sdk := mountDurableReceiptWireRuntime(t, runtime)
+	defer closeDurableReceiptWireRuntime(t, server, sdk, runtime)
+
+	const tail, head = "receipt-snapshot-tail", "receipt-snapshot-head"
+	if outcome, err := sdk.PutEdge(ctx, tail, head, 1, time.Hour); err != nil ||
+		outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("seed PutEdge = (%v, %v)", outcome, err)
+	}
+	origin := hlc.NodeID{0x72}
+	mutation, operationID := durableFollowerReceiptMutation(
+		t, config.Receipt, origin, 1, tail, head,
+	)
+	if err := server.svc.ApplyMutation(ctx, mutation); err != nil {
+		t.Fatalf("follower receipt apply: %v", err)
+	}
+
+	repl := newReplicationRawClient(t, server.url)
+	status, err := repl.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+	if err != nil ||
+		status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		t.Fatalf("production receipt PeerStatus = (%v, %v)", status, err)
+	}
+
+	legacy, err := repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
+	if err == nil {
+		defer func() { _ = legacy.Close() }()
+		if legacy.Receive() {
+			t.Fatal("legacy full Subscribe emitted an entry in durable receipt mode")
+		}
+		err = legacy.Err()
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("legacy full Subscribe = %v, want InvalidArgument", err)
+	}
+
+	downgrade, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}))
+	if err == nil {
+		defer func() { _ = downgrade.Close() }()
+		if downgrade.Receive() {
+			t.Fatal("graph-only downgrade emitted a frame in durable receipt mode")
+		}
+		err = downgrade.Err()
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("graph-only Snapshot downgrade = %v, want FailedPrecondition", err)
+	}
+
+	stream, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	var (
+		header         *pb.SnapshotHeader
+		receipt        *pb.SnapshotReceipt
+		footer         *pb.SnapshotFooter
+		edgeTombstones int
+	)
+	for stream.Receive() {
+		frame := stream.Msg()
+		switch entry := frame.GetEntry().(type) {
+		case *pb.SnapshotResponse_Header:
+			header = entry.Header
+		case *pb.SnapshotResponse_Receipt:
+			receipt = entry.Receipt
+		case *pb.SnapshotResponse_EdgeTombstone:
+			if entry.EdgeTombstone.GetTail() == tail && entry.EdgeTombstone.GetHead() == head {
+				edgeTombstones++
+			}
+		case *pb.SnapshotResponse_Footer:
+			footer = entry.Footer
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	policyStore, err := mutationreceipt.New(config.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := policyStore.PolicyFingerprint()
+	if header == nil ||
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
+		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetFingerprint(), fingerprint[:]) {
+		t.Fatalf("production receipt Snapshot header = %+v", header)
+	}
+	if receipt == nil ||
+		receipt.GetKind() != pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE ||
+		!bytes.Equal(receipt.GetOperationId(), operationID) ||
+		receipt.GetItemIndex() != 0 || receipt.GetItemCount() != 1 {
+		t.Fatalf("production receipt Snapshot row = %+v", receipt)
+	}
+	if footer == nil || footer.GetReceiptCount() != 1 || footer.GetEdgeTombstoneCount() != 1 ||
+		edgeTombstones != 1 {
+		t.Fatalf("production receipt Snapshot footer/tombstones = %+v / %d", footer, edgeTombstones)
+	}
+
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), server.url)
+	capability, err := raw.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}))
+	if err != nil || capability.Msg.GetEnabled() {
+		t.Fatalf("production public receipt capability = (%v, %v)", capability, err)
+	}
+	if _, err := raw.GetReceiptStatus(ctx, connect.NewRequest(&pb.GetReceiptStatusRequest{
+		OperationId: operationID,
+	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("production public receipt status = %v, want FailedPrecondition", err)
+	}
 }
 
 func closeDurableReceiptWireRuntime(
