@@ -774,6 +774,7 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | TLS; the client CA enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | CORS allow-list for browser clients (the Admin needs its origin here) |
 | `LANTERN_BACKUP_*` | off | Periodic whole-graph snapshot + restore-on-boot |
+| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Private durable runtime selection: `fresh` creates and `restart` resumes an explicitly configured receipt WAL; requires a stable explicit `LANTERN_NODE_ID`, is incompatible with `LANTERN_BACKUP_*`, and does not enable public receipt APIs |
 | `LANTERN_RATE_LIMIT_RPS` | `0` | Global token-bucket rate limit |
 | `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Page-size default and hard cap for the `Scan*` RPCs |
 | `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` | `16` / `1024` | Traversal depth / fan-out caps |

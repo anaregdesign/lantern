@@ -11,7 +11,7 @@ import (
 	"github.com/google/wire"
 )
 
-func initializeApp() (*App, error) {
+func initializeApp() (*App, func(), error) {
 	wire.Build(
 		provider.NewConfig,
 		provider.NewNetConfig,
@@ -28,18 +28,19 @@ func initializeApp() (*App, error) {
 		provider.NewScanConfig,
 		provider.NewSearchConfig,
 		provider.NewMutationLogConfig,
+		provider.NewReceiptWALConfig,
 		provider.NewReplicationConfig,
 		provider.NewReadinessConfig,
 		provider.NewPeerConfig,
 		provider.NewPeerResolver,
 		provider.NewAntiEntropyConfig,
-		provider.NewHLCClock,
-		provider.NewMutationLogRuntime,
-		provider.NewMutationLog,
 		provider.NewLogger,
 		provider.NewTracing,
-		provider.NewGraphCache,
 		provider.NewDomainMetrics,
+		provider.NewServingRuntime,
+		provider.NewRuntimeGraph,
+		provider.NewRuntimeCertified,
+		provider.WireDomainMetrics,
 		provider.WireCacheGCHooks,
 		provider.NewReadinessGate,
 		provider.NewPumpMetrics,
@@ -66,9 +67,8 @@ func initializeApp() (*App, error) {
 		service.NewLanternServer,
 		wire.Bind(new(service.Listener), new(*provider.LanternListener)),
 		wire.Bind(new(service.HealthSetter), new(*provider.HealthChecker)),
-		wire.Bind(new(service.Backend), new(*graphcache.GraphCache[string, *pb.Vertex])),
 		wire.Bind(new(service.Watcher), new(*graphcache.GraphCache[string, *pb.Vertex])),
 		newApp,
 	)
-	return nil, nil
+	return nil, nil, nil
 }

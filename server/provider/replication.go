@@ -8,9 +8,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
-	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
-	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 )
 
 // MutationLogConfig sizes the in-memory mutation log ring buffer used by
@@ -42,15 +40,18 @@ type MutationLogConfig struct {
 //   - LANTERN_NODE_ID                    32-char hex (16 bytes); when unset
 //     a cryptographically random NodeID is generated at process start so
 //     two unrelated nodes never collide. Operators that want a stable
-//     identity across restarts must set this explicitly.
+//     graph-only identity across restarts must set this explicitly. Private
+//     durable receipt-WAL modes require an explicit nonzero value and bind it
+//     into the persistent generation metadata.
 //   - LANTERN_TOMBSTONE_TTL              max retention window for delete
 //     tombstones and the upper bound on caller-supplied Expiration on
 //     Add*/Put* RPCs. Default 1 year (8760h). Set to a value larger than
 //     the longest plausible cross-cluster delivery delay to avoid late
 //     writes resurrecting deleted entries.
 type ReplicationConfig struct {
-	NodeID       hlc.NodeID
-	TombstoneTTL time.Duration
+	NodeID         hlc.NodeID
+	TombstoneTTL   time.Duration
+	nodeIDExplicit bool
 }
 
 // NewMutationLogConfig returns the MutationLogConfig slice of Config.
@@ -78,7 +79,7 @@ func loadReplicationConfig() ReplicationConfig {
 	if raw != "" {
 		if b, err := hex.DecodeString(raw); err == nil && len(b) == len(id) {
 			copy(id[:], b)
-			return ReplicationConfig{NodeID: id, TombstoneTTL: ttl}
+			return ReplicationConfig{NodeID: id, TombstoneTTL: ttl, nodeIDExplicit: true}
 		}
 		// Fall through to random on malformed input. Logged here so the
 		// operator sees the fallback without crashing startup, and recorded
@@ -106,38 +107,3 @@ func loadReplicationConfig() ReplicationConfig {
 func NewHLCClock(rc ReplicationConfig) *hlc.Clock {
 	return hlc.New(rc.NodeID, hlc.Options{})
 }
-
-// NewMutationLogRuntime constructs the bounded in-memory mutation log. The capacity
-// gauge is initialised here (rather than from inside mutationlog itself) so
-// the core package keeps zero dependencies on prometheus.
-func NewMutationLogRuntime(mlc MutationLogConfig, m *domainmetrics.DomainMetrics) *MutationLogRuntime {
-	log := mutationlog.New(mutationlog.Options{
-		Capacity:         mlc.Capacity,
-		SubscriberBuffer: mlc.SubscriberBuffer,
-		// Forward dispatcher fan-out drops to the Prometheus counter so
-		// operators see slow-subscriber pressure (#260). The callback
-		// pattern keeps core/mutationlog free of prometheus deps.
-		OnDrop: m.OnMutationLogSubscriberDropped,
-	})
-	m.SetMutationLogCapacity(mlc.Capacity)
-	return &MutationLogRuntime{Log: log}
-}
-
-// MutationLogRuntime keeps the Log's lifetime with the composition root. A
-// future durable receipt provider will extend this owner with its FileWAL and
-// path lease; the graph-only default still owns just the in-memory Log.
-type MutationLogRuntime struct {
-	Log *mutationlog.Log
-}
-
-// Close stops the dispatcher after serving goroutines have exited.
-func (r *MutationLogRuntime) Close() error {
-	if r == nil || r.Log == nil {
-		return nil
-	}
-	return r.Log.Close()
-}
-
-// NewMutationLog exposes the one Log owned by the runtime to service and
-// replication providers without creating a second instance.
-func NewMutationLog(r *MutationLogRuntime) *mutationlog.Log { return r.Log }

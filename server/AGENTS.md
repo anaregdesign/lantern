@@ -33,9 +33,16 @@ in the root module instead of under `server/`.
   ```
 
 - **Providers take the focused sub-config slice they actually need** (e.g.
-  `NewListener(*NetConfig)`), not the aggregate `*Config`. Keep that SRP invariant when
+  `NewListener` takes `NetConfig` plus the private runtime-certification
+  marker), not the aggregate `*Config`. Keep that SRP invariant when
   adding providers; only `App`/`main` may hold `*Config` because they observe multiple
   slices. The env-var parsing lives in `internal/envconfig/`.
+- `provider.NewServingRuntime` is the sole graph-only versus private durable
+  receipt-WAL composition boundary. It must finish lease acquisition, full-cut
+  validation, replay/index rebuild, HLC restoration, and exact service
+  installation before the private certification dependency permits listeners,
+  metrics serving, or the replication pump to be constructed. Keep legacy
+  graph-only restore mutually exclusive with durable mode.
 - **wire cannot handle generic type arguments**, so the cache provider returns the
   concrete `GraphCache[string, *Vertex]`. Re-check this before trying to introduce
   generics in the provider graph.

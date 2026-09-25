@@ -275,6 +275,7 @@ type Config struct {
 	Scan          ScanConfig
 	Search        SearchConfig
 	MutationLog   MutationLogConfig
+	ReceiptWAL    ReceiptWALConfig
 	Replication   ReplicationConfig
 	Peer          PeerConfig
 	AntiEntropy   AntiEntropyConfig
@@ -387,6 +388,7 @@ func NewConfig() (*Config, error) {
 			},
 		},
 		MutationLog: loadMutationLogConfig(),
+		ReceiptWAL:  loadReceiptWALConfig(),
 		Replication: loadReplicationConfig(),
 		Readiness:   loadReadinessConfig(),
 		Peer:        peer,
@@ -420,6 +422,9 @@ func NewConfig() (*Config, error) {
 		return nil, fmt.Errorf("LANTERN_GC_EDGE_BUDGET must be zero (full sweep) or positive")
 	}
 	if err := validateSearchConfig(cfg.Search); err != nil {
+		return nil, err
+	}
+	if err := validateReceiptWALConfig(cfg.ReceiptWAL, cfg.Backup, cfg.Replication); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -633,19 +638,25 @@ func ConfigureGraphCache(gc *graphcache.GraphCache[string, *v1.Vertex], c CacheC
 }
 
 // NewDomainMetrics registers the Lantern-specific `lantern_*` collectors on
-// the shared Prometheus registry and binds lock-consistent cache, causal,
-// search, and replication samplers for each DomainMetrics.Run tick. The GC
-// hooks themselves are installed separately by WireCacheGCHooks so the metrics
-// adapter can be multiplexed with the structured per-tick log (#223).
-func NewDomainMetrics(
-	reg *prometheus.Registry,
-	o ObservabilityConfig,
-	cache *graphcache.GraphCache[string, *v1.Vertex],
-) *domainmetrics.DomainMetrics {
-	m := domainmetrics.New(reg, domainmetrics.Options{
+// the shared Prometheus registry. WireDomainMetrics binds the selected
+// runtime's lock-consistent cache, causal, search, and replication samplers.
+// The GC hooks themselves are installed separately by WireCacheGCHooks so the
+// metrics adapter can be multiplexed with the structured per-tick log (#223).
+func NewDomainMetrics(reg *prometheus.Registry, o ObservabilityConfig) *domainmetrics.DomainMetrics {
+	return domainmetrics.New(reg, domainmetrics.Options{
 		Version: o.Version,
 		Commit:  o.Commit,
 	})
+}
+
+// DomainMetricsWired forces cache samplers to bind only after the selected
+// serving runtime has exposed its certified graph.
+type DomainMetricsWired struct{}
+
+func WireDomainMetrics(
+	cache *graphcache.GraphCache[string, *v1.Vertex],
+	m *domainmetrics.DomainMetrics,
+) DomainMetricsWired {
 	m.BindSampler(func() (int, int) {
 		return cache.VertexCount(), cache.EdgeCount()
 	})
@@ -682,7 +693,7 @@ func NewDomainMetrics(
 			OldestEdgeRetentionDeadline:   stats.OldestEdgeRetentionDeadline,
 		}
 	})
-	return m
+	return DomainMetricsWired{}
 }
 
 // CacheGCHooksWired is a marker returned by WireCacheGCHooks so wire can
@@ -746,8 +757,15 @@ func WireCacheGCHooks(
 	return CacheGCHooksWired{}
 }
 
-func NewListener(n NetConfig) (net.Listener, error) {
-	return net.Listen("tcp", ":"+strconv.Itoa(n.Port))
+func NewListener(n NetConfig, certified runtimeCertified) (net.Listener, func(), error) {
+	if !certified.valid {
+		return nil, nil, errors.New("serving runtime is not certified")
+	}
+	listener, err := net.Listen("tcp", ":"+strconv.Itoa(n.Port))
+	if err != nil {
+		return nil, nil, err
+	}
+	return listener, func() { _ = listener.Close() }, nil
 }
 
 // NewHealthChecker is provided by health.go and serves the
@@ -804,7 +822,7 @@ type httpMetricsServer struct {
 	logger *slog.Logger
 }
 
-func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, gate *readiness.Gate, logger *slog.Logger) MetricsServer {
+func NewMetricsServer(o ObservabilityConfig, reg *prometheus.Registry, gate *readiness.Gate, logger *slog.Logger, _ runtimeCertified) MetricsServer {
 	if o.MetricsAddr == "" {
 		return NoopMetricsServer{}
 	}

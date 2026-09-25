@@ -103,7 +103,13 @@ var descriptions = map[string]string{
 
 	"LANTERN_MUTATION_LOG_CAPACITY":          "Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds.",
 	"LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER": "Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped.",
-	"LANTERN_NODE_ID":                        "Stable 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset.",
+	"LANTERN_RECEIPT_WAL_MODE":               "Private receipt-WAL runtime mode: graph-only (default), fresh, or restart; durable modes do not enable public receipt APIs.",
+	"LANTERN_RECEIPT_WAL_PATH":               "Absolute FileWAL path for fresh/restart mode; its .clock, .tip, .generation, and stable .lease sidecars share the same ownership boundary.",
+	"LANTERN_RECEIPT_EPOCH":                  "Nonzero 32-hex-character deployment epoch required by fresh/restart mode and immutable for restart.",
+	"LANTERN_RECEIPT_RETENTION":              "Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart.",
+	"LANTERN_RECEIPT_MAX_ENTRIES":            "Positive retained-receipt entry cap required by fresh/restart mode and immutable for restart.",
+	"LANTERN_RECEIPT_MAX_BYTES":              "Positive retained-receipt logical-byte cap required by fresh/restart mode and immutable for restart.",
+	"LANTERN_NODE_ID":                        "Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes.",
 	"LANTERN_TOMBSTONE_TTL":                  "Delete-tombstone retention window (D4) and upper bound on caller-supplied expirations. A tombstone consumes one causal-identity entry until expiration; an equal/newer write can transition the same identity between live floor, Put barrier, and tombstone without consuming another slot.",
 
 	"LANTERN_PEERS":                      "Comma-separated static peer list (host:port) for the replication pump; empty = single instance.",

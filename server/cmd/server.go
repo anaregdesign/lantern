@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
-	"github.com/anaregdesign/lantern/core/hlc"
-	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/search"
 	"github.com/anaregdesign/lantern/server/backup"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
@@ -45,7 +43,7 @@ type App struct {
 	pump        *replication.Pump
 	llm         *provider.LLMEngine
 	antiEntropy *replication.AntiEntropy
-	mutationLog *provider.MutationLogRuntime
+	runtime     *service.ServingRuntime
 }
 
 func newApp(
@@ -66,7 +64,8 @@ func newApp(
 	pc provider.PeerConfig,
 	rc provider.ReplicationConfig,
 	engine *provider.LLMEngine,
-	mutationLog *provider.MutationLogRuntime,
+	runtime *service.ServingRuntime,
+	_ provider.DomainMetricsWired,
 	_ provider.CacheGCHooksWired,
 ) *App {
 	// Wire the replication snapshotter onto svc here (rather than inside
@@ -104,7 +103,7 @@ func newApp(
 		restoreReq:  bcfg.RestoreRequired,
 		pump:        pump,
 		antiEntropy: antiEntropy,
-		mutationLog: mutationLog,
+		runtime:     runtime,
 	}
 }
 
@@ -128,7 +127,7 @@ func clampU32(v int) uint32 {
 // in package service) preserves the rule that service/ has zero imports
 // from provider/.
 func newLanternService(
-	backend service.Backend,
+	runtime *service.ServingRuntime,
 	sc provider.ScanConfig,
 	src provider.SearchConfig,
 	rc provider.ReplicationConfig,
@@ -138,12 +137,10 @@ func newLanternService(
 	cc provider.CacheConfig,
 	obs provider.ObservabilityConfig,
 	logger *slog.Logger,
-	log *mutationlog.Log,
-	clock *hlc.Clock,
 	dm *domainmetrics.DomainMetrics,
 ) *service.LanternService {
 	dm.SetCapacityLimits(cc.MaxVertices, cc.MaxEdges)
-	svc := service.NewLanternService(backend).
+	svc := runtime.NewLanternService(dm.OnMutationLogAppend).
 		WithScanLimits(service.ScanLimits{
 			ScanDefaultLimit:           sc.ScanDefaultLimit,
 			ScanMaxLimit:               sc.ScanMaxLimit,
@@ -173,7 +170,6 @@ func newLanternService(
 			MaxSessionBytes: src.MaxSessionBytes,
 			AnalysisLimits:  src.AnalysisLimits,
 		}).
-		WithReplication(log, clock, dm.OnMutationLogAppend).
 		WithAppliedHook(dm.OnReplicationApplied).
 		WithReplicationApplyHook(dm.OnReplicationApply).
 		WithValidationRejectHook(dm.OnValidationRejected).
@@ -201,7 +197,7 @@ func newLanternService(
 			ScanDefaultLimit:   sc.ScanDefaultLimit,
 			ScanMaxLimit:       sc.ScanMaxLimit,
 			TLSEnabled:         tc.CertFile != "" && tc.KeyFile != "",
-			ReplicationEnabled: log != nil && clock != nil,
+			ReplicationEnabled: true,
 		})
 	// Bind the mutation-log + origin-state samplers so DomainMetrics.Run
 	// can populate lantern_mutation_log_fill_ratio,
@@ -209,11 +205,7 @@ func newLanternService(
 	// lantern_origin_states_count on its tick interval (#221). Done here
 	// because newLanternService is the only provider with access to both
 	// the log/service and the DomainMetrics instance.
-	if log != nil {
-		dm.BindMutationLogSampler(func() (int, int, uint64) {
-			return log.Len(), log.Cap(), log.Evicted()
-		})
-	}
+	dm.BindMutationLogSampler(runtime.MutationLogStats)
 	dm.BindOriginStatesSampler(svc.OriginStatesCount)
 	return svc
 }
@@ -223,25 +215,25 @@ func newLanternService(
 // here (rather than inside the service) to keep service/ free of
 // provider/metrics imports.
 func newLanternReplicationService(
-	log *mutationlog.Log,
-	backend service.Backend,
-	clock *hlc.Clock,
+	runtime *service.ServingRuntime,
 	logger *slog.Logger,
 	dm *domainmetrics.DomainMetrics,
 	svc *service.LanternService,
-) *service.LanternReplicationService {
-	return service.NewLanternReplicationService(log, backend, clock).
+) (*service.LanternReplicationService, error) {
+	replicationService, err := runtime.NewLanternReplicationService(svc)
+	if err != nil {
+		return nil, err
+	}
+	return replicationService.
 		WithMetrics(dm).
 		WithLogger(logger).
-		WithOriginStates(svc).
-		WithSearchConfig(svc)
+		WithSearchConfig(svc), nil
 }
 
 func (a *App) Run(ctx context.Context) (runErr error) {
-	// Keep one owner for the Log until every serving goroutine has stopped.
-	// An early restore failure also releases it; a future durable runtime
-	// will close its FileWAL and path lease at this same boundary.
-	defer func() { runErr = errors.Join(runErr, a.mutationLog.Close()) }()
+	// Keep one owner for the complete serving cut until every goroutine has
+	// stopped. Wire also invokes this Close path when later construction fails.
+	defer func() { runErr = errors.Join(runErr, a.runtime.Close()) }()
 	// Restore-on-startup (#770, #779) runs BEFORE any listener serves: the
 	// newest mounted dump is replayed as a baseline so the node never begins
 	// serving an empty graph. When peers exist the subsequent bootstrap
@@ -251,11 +243,13 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	// no-ops when backups are disabled or LANTERN_BACKUP_RESTORE_ON_START is
 	// false. A restore failure fails boot only when
 	// LANTERN_BACKUP_RESTORE_REQUIRED is set.
-	if _, err := a.backupper.RestoreOnStartup(ctx); err != nil {
-		if a.restoreReq {
-			return fmt.Errorf("restore-on-startup: %w", err)
+	if !a.runtime.DurableReceiptWAL() {
+		if _, err := a.backupper.RestoreOnStartup(ctx); err != nil {
+			if a.restoreReq {
+				return fmt.Errorf("restore-on-startup: %w", err)
+			}
+			a.logger.Warn("restore-on-startup failed; starting with current state", slog.Any("err", err))
 		}
-		a.logger.Warn("restore-on-startup failed; starting with current state", slog.Any("err", err))
 	}
 
 	// The overall ("") gRPC health entry is owned by the readiness Gate
@@ -351,11 +345,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	app, err := initializeApp()
+	app, cleanup, err := initializeApp()
 	if err != nil {
 		slog.Error("failed to initialize app", slog.Any("err", err))
 		os.Exit(1)
 	}
+	defer cleanup()
 
 	// Apply runtime mutex/block profile sampling rates as early as
 	// possible so any subsequent contention is captured. Both knobs are
@@ -367,6 +362,7 @@ func main() {
 		slog.Duration("default_ttl", app.cfg.Cache.TTL),
 		slog.String("metrics_addr", app.cfg.Observability.MetricsAddr),
 		slog.Bool("reflection", app.cfg.Observability.EnableReflection),
+		slog.String("receipt_wal_mode", string(app.cfg.ReceiptWAL.Mode)),
 	)
 
 	if err := app.Run(ctx); err != nil {

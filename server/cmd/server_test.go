@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
-	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
@@ -22,11 +23,18 @@ func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := mutationlog.New(mutationlog.Options{})
-	runtime := &provider.MutationLogRuntime{Log: log}
+	runtime, err := service.NewGraphOnlyServingRuntime(
+		graphcache.NewGraphCache[string, *pb.Vertex](time.Hour),
+		log,
+		hlc.New(hlc.NodeID{1}, hlc.Options{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := &App{
-		backupper:   backup.New(nil, backup.Config{RestoreOnStart: true, Dir: path}, nil, nil),
-		restoreReq:  true,
-		mutationLog: runtime,
+		backupper:  backup.New(nil, backup.Config{RestoreOnStart: true, Dir: path}, nil, nil),
+		restoreReq: true,
+		runtime:    runtime,
 	}
 	if err := app.Run(context.Background()); err == nil {
 		t.Fatal("required restore failure did not stop startup")
