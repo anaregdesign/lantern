@@ -88,12 +88,12 @@ func retiredCatalogFixture(t testing.TB) (RetiredCatalogConfig, RetiredCatalogSn
 		Epoch: Epoch{3}, Retention: 3 * time.Hour, MaxEntries: 2, MaxBytes: 4096,
 	}, highWater, []Intent{third}, [][]byte{[]byte("third")})
 	return RetiredCatalogConfig{
-			ActiveEpoch: Epoch{9}, MaxEntries: 3, MaxBytes: 4096, ClockHighWater: highWater,
-		}, RetiredCatalogSnapshot{
-			Version:              retiredCatalogSnapshotVersion,
-			ClockHighWaterMillis: highWater.UnixMilli(),
-			Epochs:               []RetiredEpochSnapshot{epochTwo, epochThree},
-		}, []Intent{first, second, third}
+		ActiveEpoch: Epoch{9}, MaxEntries: 3, MaxBytes: 4096, ClockHighWater: highWater,
+	}, RetiredCatalogSnapshot{
+		Version:              retiredCatalogSnapshotVersion,
+		ClockHighWaterMillis: highWater.UnixMilli(),
+		Epochs:               []RetiredEpochSnapshot{epochTwo, epochThree},
+	}, []Intent{first, second, third}
 }
 
 func retiredTestCatalogSnapshot(
