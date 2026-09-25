@@ -773,8 +773,8 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 | `LANTERN_AUTH_TOKENS` | _(unset)_ | Comma-separated bearer tokens arming data-plane auth; multiple entries allow zero-downtime rotation |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | TLS; the client CA enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | CORS allow-list for browser clients (the Admin needs its origin here) |
-| `LANTERN_BACKUP_*` | off | Periodic graph-only `.lbk` or private durable receipt-set production. Graph-only restore-on-boot is unchanged; durable receipt restore is not yet implemented. |
-| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Private durable runtime selection: `fresh` creates and `restart` resumes an explicitly configured receipt WAL; requires a stable explicit `LANTERN_NODE_ID`, permits backup production only with `LANTERN_BACKUP_RESTORE_ON_START=false`, and does not enable public receipt APIs. |
+| `LANTERN_BACKUP_*` | off | Periodic graph-only `.lbk` or private durable three-member receipt-set production. Restore-on-start runs before serving; durable `restart` prefers a complete current WAL and uses backup only for eligible baseline-sidecar damage, while durable `fresh` requires a new epoch for total-cluster restore. |
+| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Private durable runtime selection: `fresh` creates (and can restore into) a new epoch; `restart` resumes an explicitly configured receipt WAL and narrowly repairs eligible baseline damage. Durable modes require a stable explicit `LANTERN_NODE_ID` and do not enable public receipt APIs. |
 | `LANTERN_RATE_LIMIT_RPS` | `0` | Global token-bucket rate limit |
 | `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Page-size default and hard cap for the `Scan*` RPCs |
 | `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` | `16` / `1024` | Traversal depth / fan-out caps |

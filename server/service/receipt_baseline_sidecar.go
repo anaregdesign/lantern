@@ -175,6 +175,40 @@ func (s receiptBaselineSidecarStore) load(
 	return raw, nil
 }
 
+func (s receiptBaselineSidecarStore) quarantineCommittedDamage(
+	format ReceiptBaselineFormat,
+	digest [sha256.Size]byte,
+	size uint64,
+) (string, error) {
+	if _, err := s.load(format, digest, size); err == nil {
+		return "", errors.New("service: committed receipt baseline became valid before quarantine")
+	} else if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if !errors.Is(err, errReceiptBaselineSidecar) {
+		return "", fmt.Errorf("service: inspect damaged receipt baseline before quarantine: %w", err)
+	}
+
+	path := receiptBaselineSidecarPath(s.walPath, digest)
+	dir := filepath.Dir(s.walPath)
+	var nonce [8]byte
+	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+		return "", fmt.Errorf("service: create baseline quarantine nonce: %w", err)
+	}
+	quarantinePath := path + ".quarantine-" + hex.EncodeToString(nonce[:])
+	if _, err := os.Lstat(quarantinePath); err == nil {
+		return "", errors.New("service: receipt baseline quarantine target already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("service: inspect receipt baseline quarantine target: %w", err)
+	}
+	if err := os.Rename(path, quarantinePath); err != nil {
+		return "", fmt.Errorf("service: quarantine damaged receipt baseline: %w", err)
+	}
+	if err := syncReceiptBaselineDirectory(dir); err != nil {
+		return "", fmt.Errorf("service: persist damaged receipt baseline quarantine: %w", err)
+	}
+	return quarantinePath, nil
+}
+
 func (s receiptBaselineSidecarStore) cleanup(keep receiptBaselineReference) error {
 	if err := s.inject(receiptBaselineBeforeCleanup); err != nil {
 		return err

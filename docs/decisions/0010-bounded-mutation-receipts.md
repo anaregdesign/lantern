@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, receipt-bearing Edge Delete and Vertex Put/Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT Snapshot production/install, and manifest-last retired-aware receipt backup-set production are wired for private durable replication, but durable backup restore, capability/status RPCs, and receipt-enabled client writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, receipt-bearing Edge Delete and Vertex Put/Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT Snapshot production/install, manifest-last retired-aware receipt backup-set production, and pre-certification durable startup restore are wired for private durable replication, but capability/status RPCs and receipt-enabled client writes remain disabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116, #1393, #1394
 
@@ -198,13 +198,16 @@ omits expired rows and empty epoch members and can be validated and imported
 without an active Store.
 
 This catalog is wired into the runtime-owned slot, one-cut capture, canonical
-combined baseline, and the receipt backup set. It is not yet wired into Snapshot
-transport, service lookup routing, or startup restore. It does not choose a
-replacement epoch/generation by itself. The remaining #1394 integration must
-rebuild and publish the active Store plus catalog atomically, validate the
-selected backup against the lease-owned WAL and generation chain, and carry
-the catalog in receipt Snapshot peer transport before any retired-epoch status
-is exposed.
+combined baseline, receipt backup set, RECEIPT Snapshot transport, and durable
+startup restore. The startup layer can convert one fully validated archived
+active Snapshot into a retired member only through the constructor in
+`core/mutationreceipt`, which owns the private Snapshot versions, validates the
+source Store, and preserves its exact same-cut clock high-water and original
+policy. The deterministic destination union charges distinct raw rows against
+configured aggregate bounds before pruning expired evidence. The catalog is
+not yet wired into service lookup routing, and it does not choose a replacement
+epoch/generation by itself. That routing remains required before retired-epoch
+status is exposed.
 
 ### Bounded retention and admission
 
@@ -690,28 +693,39 @@ Once selected, an unsupported namespace or schema version, or any
 canonical-loader failure in that marker or its members, is terminal; discovery
 never scans backward to an older valid set.
 
-The later durable restore layer must consume this loader inside
-`provider.NewServingRuntime`, while holding the FileWAL lease and before
-`NewRuntimeCertified`; it must not reuse the graph-only
-`Backupper.RestoreOnStartup` path. A normal complete restart remains stronger
-than an older periodic set. A backup fallback must validate its recorded
-cut/tip, journals, and generation chain against the lease-owned WAL, then
-repair and persist its own current baseline proof before certification. A
-lost-WAL restore rotates to an operator-supplied new active epoch and
-normalizes known old receipts into the future retired catalog. None of that
-WAL-path selection, suffix proof, repair, epoch rotation, installation, or
-startup wiring is implemented by this production layer.
+The durable restore layer consumes this loader inside
+`provider.NewServingRuntime` and never reuses the graph-only
+`Backupper.RestoreOnStartup` path. Normal `restart` recovery is attempted
+first and a complete current WAL remains authoritative without reading a
+backup. Fallback is limited to a missing or damaged newest committed baseline
+sidecar. Under the FileWAL lease it validates the backup's recorded archive
+cut, exact FileWAL offset/digest/rolling chain, clock and tip journals, NodeID,
+epoch, policy, and generation at that cut; validates the complete current
+suffix; and rejects lease contention, ambiguous WAL state, mismatched
+identity/policy, or a later valid generation without fallback. It restores
+the graph, active Store, retired catalog, origins, HLC floor, Log/WAL, and
+generation coherently, then commits a fresh canonical combined baseline
+before certification.
+
+`fresh` restore is the explicit total-cluster-loss path. It still rejects any
+existing target bytes and requires an operator-configured active epoch
+different from the archive's active epoch. It restores the archived graph and
+origins, creates a new endpoint generation and empty active Store, converts
+the archived active receipt Snapshot under its original policy into retired
+evidence, and unions it with the archived retired catalog under the new
+configured aggregate bounds and effective high-water. Only still-live
+evidence is installed, and a canonical combined baseline commits before
+certification. A generation created for pending fresh restore records that
+its initial baseline is mandatory; a crash before that marker cannot later
+certify the empty target as a normal restart.
 
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
 recovery still needs an atomic installer and proof that the WAL covers the
 captured frontier or an epoch rollover. The installer
-must validate and install all sections together before serving. Total-cluster
-restore still rotates the active epoch unless a complete durable WAL proves
-the exact current frontier. The production scheduler now consumes the private
-producer's immutable three-member cut, but no startup restore path consumes
-the committed sets yet. The receipt backup set preserves active and retired
-evidence without making a rotated-epoch or same-epoch archive-restore claim.
+must validate and install all sections together before serving. Total-cluster restore still rotates the active epoch unless a complete durable
+WAL proves the exact current frontier. The production scheduler and startup
+restore both consume the private producer's immutable three-member cut.
 The internal Store can now take an optional synchronous
 `ClockHighWaterSink`: it persists each higher observed millisecond before
 Begin/Lookup changes in-memory state, and a sink error permanently faults
@@ -847,15 +861,16 @@ graph/Store/origin/Log/HLC/epoch/generation bundle before constructing either
 service, the primary listener, metrics server, or replication pump.
 Wire cleanup releases later owners before this bundle, and `App` retains the
 bundle until all serving goroutines stop. Durable mode selects receipt-set
-production from the exact certified runtime while still rejecting graph-only
-restore-on-startup because it cannot prove receipt/archive
-continuity. Graph-only mode preserves the historical `.lbk` producer, restore,
-filenames, retention, metrics, and behavior. #1394 owns the later durable-set
-startup selection and installation boundary.
+production from the exact certified runtime and performs durable restore in a
+private identity-bearing barrier before `NewRuntimeCertified`. Listener,
+metrics-server, Snapshot-installer, Pump, anti-entropy, and backup-scheduler
+construction all follow that barrier. Graph-only mode alone keeps the
+historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
+metrics, and behavior are unchanged.
 
 This runtime mode is private infrastructure only. It does not enable
-`GetReceiptCapability`, receipt status, receipt-bearing client mutations, peer
-capability negotiation, or receipt Snapshot/archive restore.
+`GetReceiptCapability`, receipt status, receipt-bearing client mutations, or
+authenticated client capability negotiation.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 

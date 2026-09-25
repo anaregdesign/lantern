@@ -70,11 +70,13 @@ type Config struct {
 	// InstanceID is the per-instance ownership token used directly by legacy
 	// filenames and hashed into receipt-set filenames. Defaults to the hostname.
 	InstanceID string
-	// RestoreOnStart is the graph-only decision to restore the newest dump on
-	// boot as a baseline. Receipt-set construction rejects it until durable
-	// restore is wired.
+	// RestoreOnStart selects startup restore. Graph-only mode replays the
+	// newest dump in App.Run; durable mode consumes one canonical receipt
+	// backup set at the runtime construction boundary.
 	RestoreOnStart bool
-	// RestoreRequired makes a restore error fail boot instead of warning.
+	// RestoreRequired makes graph-only restore errors and missing durable fresh
+	// restore evidence fail boot. An incomplete durable restart always fails
+	// when its narrowly eligible repair cannot complete.
 	RestoreRequired bool
 }
 
@@ -130,8 +132,8 @@ func New(svc Service, cfg Config, reg prometheus.Registerer, logger *slog.Logger
 
 // NewReceipt constructs a Backupper whose periodic and manual production uses
 // the private receipt whole-state source instead of the legacy graph-only RPC.
-// Startup restore deliberately remains unsupported until the receipt restore
-// layer can validate and install a complete committed set.
+// Durable startup restore is completed at the serving-runtime composition
+// boundary before this producer can be constructed.
 func NewReceipt(
 	svc Service,
 	source ReceiptSource,
@@ -142,9 +144,6 @@ func NewReceipt(
 ) (*Backupper, error) {
 	if source == nil {
 		return nil, errors.New("backup: receipt source is nil")
-	}
-	if cfg.RestoreOnStart {
-		return nil, errors.New("backup: graph-only restore-on-start is unavailable for receipt backup sets")
 	}
 	if _, err := mutationreceipt.New(policy); err != nil {
 		return nil, fmt.Errorf("backup: receipt policy: %w", err)
@@ -162,9 +161,8 @@ func NewReceipt(
 // error so RestoreRequired callers can fail boot.
 func (b *Backupper) RestoreOnStartup(ctx context.Context) (Stats, error) {
 	if b.receiptSource != nil {
-		if b.cfg.RestoreOnStart {
-			return Stats{}, errors.New("backup: receipt backup-set restore is not implemented")
-		}
+		// Durable restore is completed before this periodic producer can be
+		// constructed; App.Run must never replay receipt state.
 		return Stats{}, nil
 	}
 	if !b.cfg.RestoreOnStart {

@@ -39,7 +39,11 @@ func certifiedSnapshotInstallerRuntime(
 	if err != nil {
 		t.Fatal(err)
 	}
-	certified, err := NewRuntimeCertified(runtime, primary, replicationService)
+	restored, err := NewRuntimeRestored(runtime, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certified, err := NewRuntimeCertified(runtime, primary, replicationService, restored)
 	if err != nil {
 		t.Fatal(err)
 	}

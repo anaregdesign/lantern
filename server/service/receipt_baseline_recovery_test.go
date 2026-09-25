@@ -132,6 +132,7 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 				}
 				record := encodeReceiptRuntimeGeneration(
 					path, config.Receipt.Epoch, store.PolicyFingerprint(), config.NodeID, [16]byte{0xee},
+					false,
 				)
 				if err := os.WriteFile(path+".generation", record, 0o600); err != nil {
 					t.Fatal(err)

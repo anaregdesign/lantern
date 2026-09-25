@@ -39,6 +39,7 @@ func initializeApp() (*App, func(), error) {
 		provider.NewDomainMetrics,
 		provider.NewServingRuntime,
 		provider.NewRuntimeGraph,
+		provider.NewRuntimeRestored,
 		provider.NewRuntimeCertified,
 		provider.NewSnapshotInstallerSelection,
 		provider.WireDomainMetrics,

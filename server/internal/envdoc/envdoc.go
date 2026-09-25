@@ -129,12 +129,12 @@ var descriptions = map[string]string{
 	"LANTERN_CORS_ALLOWED_ORIGINS": "Comma-separated browser origins allowed by CORS (e.g. the admin SPA origin); empty disables CORS.",
 
 	"LANTERN_BACKUP_ENABLED":          "Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or private durable receipt sets according to runtime mode.",
-	"LANTERN_BACKUP_DIR":              "Mounted directory backup files are written to; graph-only startup restore also reads from it.",
+	"LANTERN_BACKUP_DIR":              "Mounted directory backup files are written to and startup restore reads from.",
 	"LANTERN_BACKUP_INTERVAL":         "Backup production cadence (Go duration).",
 	"LANTERN_BACKUP_RETAIN":           "How many valid backups owned by this instance to keep, newest first (0 keeps all).",
 	"LANTERN_BACKUP_INSTANCE_ID":      "Per-instance ownership token used to derive safe backup filenames; defaults to the hostname.",
-	"LANTERN_BACKUP_RESTORE_ON_START": "Graph-only: replay the newest valid dump before serving. Durable receipt-WAL mode currently requires false.",
-	"LANTERN_BACKUP_RESTORE_REQUIRED": "Graph-only: fail boot when restore-on-startup errors instead of starting with current state.",
+	"LANTERN_BACKUP_RESTORE_ON_START": "Graph-only: replay the newest valid dump. Durable fresh: restore the strict newest receipt set, with optional absence starting empty. Durable restart: use a set only for eligible current-baseline damage.",
+	"LANTERN_BACKUP_RESTORE_REQUIRED": "Require a startup backup when durable fresh restore is selected; graph-only restore errors also fail boot. An incomplete durable restart always fails when it cannot be repaired.",
 
 	"LANTERN_STRICT_CONFIG": "Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set.",
 

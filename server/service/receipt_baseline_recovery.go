@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"time"
 
@@ -15,6 +16,15 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+)
+
+// ErrDurableReceiptWALBackupFallbackEligible marks the narrow restart failure
+// class that a fully validated backup set may repair: the newest committed
+// baseline marker exists, but its content-addressed sidecar is missing or
+// damaged. All WAL, lease, identity, policy, epoch, and generation failures
+// remain ineligible.
+var ErrDurableReceiptWALBackupFallbackEligible = errors.New(
+	"service: durable receipt WAL backup fallback eligible",
 )
 
 type receiptBaselineWALScan struct {
@@ -98,6 +108,14 @@ func resumeReceiptBaselineWALCandidate(
 	sidecars := receiptBaselineSidecarStore{walPath: path}
 	raw, err := sidecars.load(scan.marker.Format, scan.marker.Digest, scan.marker.Size)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, errReceiptBaselineSidecar) {
+			return nil, nil, fmt.Errorf(
+				"%w: load committed receipt baseline at WAL seq %d: %w",
+				ErrDurableReceiptWALBackupFallbackEligible,
+				scan.markerSequence,
+				err,
+			)
+		}
 		return nil, nil, fmt.Errorf("service: load committed receipt baseline at WAL seq %d: %w", scan.markerSequence, err)
 	}
 	policy := config
@@ -119,6 +137,46 @@ func resumeReceiptBaselineWALCandidate(
 		!baseline.CutoffHLC.Equal(scan.marker.SnapshotHLC) {
 		return nil, nil, fmt.Errorf("%w: committed marker provenance differs from sidecar", errReceiptBaselineMarker)
 	}
+	receiptSnapshot, err := baseline.Receipts.Snapshot()
+	if err != nil {
+		return nil, nil, fmt.Errorf("service: read staged baseline receipts: %w", err)
+	}
+	if scan.marker.ReceiptHighWaterMillis != receiptSnapshot.ClockHighWaterMillis {
+		return nil, nil, fmt.Errorf("%w: marker and sidecar receipt high-water differ", errReceiptBaselineMarker)
+	}
+	return resumeStagedReceiptBaselineWALCandidate(
+		ctx,
+		path,
+		config,
+		now,
+		opts,
+		codec,
+		journalHighWater,
+		tip,
+		baseline,
+		scan.marker.RestoreFloor,
+		scan.markerSequence,
+	)
+}
+
+func resumeStagedReceiptBaselineWALCandidate(
+	ctx context.Context,
+	path string,
+	config mutationreceipt.Config,
+	now time.Time,
+	opts mutationlog.Options,
+	codec ReceiptBaselineArchiveCodec,
+	journalHighWater int64,
+	tip *mutationlog.FileWALTipJournal,
+	baseline *ReceiptBaselineCandidate,
+	restoreFloor hlc.Timestamp,
+	boundarySequence uint64,
+) (_ *receiptWALRecoveryCandidate, _ io.Closer, err error) {
+	if codec == nil || tip == nil || baseline == nil ||
+		baseline.Graph == nil || baseline.Receipts == nil {
+		return nil, nil, errors.New("service: staged baseline recovery requires a complete baseline, codec, and tip journal")
+	}
+	policy := clearReceiptClockHighWater(config)
 	originTracker := newOriginStateTracker()
 	originStage, err := originTracker.stageWholeState(baseline.Origins)
 	if err != nil {
@@ -130,9 +188,6 @@ func resumeReceiptBaselineWALCandidate(
 	if err != nil {
 		return nil, nil, fmt.Errorf("service: read staged baseline receipts: %w", err)
 	}
-	if scan.marker.ReceiptHighWaterMillis != receiptSnapshot.ClockHighWaterMillis {
-		return nil, nil, fmt.Errorf("%w: marker and sidecar receipt high-water differ", errReceiptBaselineMarker)
-	}
 	if baseline.Retired.ClockHighWaterMillis != receiptSnapshot.ClockHighWaterMillis {
 		return nil, nil, fmt.Errorf("%w: active and retired sidecar high-water differs", errReceiptBaselineMarker)
 	}
@@ -142,9 +197,9 @@ func resumeReceiptBaselineWALCandidate(
 		config:            policy,
 		receipts:          make(map[mutationreceipt.ID]mutationreceipt.Receipt, len(receiptSnapshot.Receipts)),
 		seenReceipts:      make(map[mutationreceipt.ID]mutationreceipt.Receipt, len(receiptSnapshot.Receipts)),
-		policyFingerprint: scan.marker.PolicyFingerprint,
-		highWater:         scan.marker.ReceiptHighWaterMillis,
-		frontier:          scan.marker.RestoreFloor,
+		policyFingerprint: baseline.Receipts.PolicyFingerprint(),
+		highWater:         receiptSnapshot.ClockHighWaterMillis,
+		frontier:          restoreFloor,
 	}
 	if now.IsZero() {
 		now = time.Now()
@@ -169,16 +224,28 @@ func resumeReceiptBaselineWALCandidate(
 
 	var liveLog *mutationlog.Log
 	var owner io.Closer
-	liveLog, owner, err = mutationlog.ResumeLogFromFileWALWithTipSuffix(
-		path,
-		opts,
-		encodeReceiptWALUnion,
-		decodeReceiptWALUnion,
-		validateReceiptWALUnionEntry,
-		replay.apply,
-		tip,
-		scan.markerSequence,
-	)
+	if boundarySequence == 0 {
+		liveLog, owner, err = mutationlog.ResumeLogFromFileWALWithTip(
+			path,
+			opts,
+			encodeReceiptWALUnion,
+			decodeReceiptWALUnion,
+			validateReceiptWALUnionEntry,
+			replay.apply,
+			tip,
+		)
+	} else {
+		liveLog, owner, err = mutationlog.ResumeLogFromFileWALWithTipSuffix(
+			path,
+			opts,
+			encodeReceiptWALUnion,
+			decodeReceiptWALUnion,
+			validateReceiptWALUnionEntry,
+			replay.apply,
+			tip,
+			boundarySequence,
+		)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

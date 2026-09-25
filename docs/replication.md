@@ -58,8 +58,10 @@ is required for either reads or writes.
 5. **No leader, no Raft, no external storage.** v1 is intentionally
    ephemeral. Single-pod loss recovers from peers; total-cluster loss is
    accepted data loss **unless snapshot backups are configured**
-   (`LANTERN_BACKUP_*`, see [backup.md](backup.md)), in which case each
-   node restores its newest dump on boot.
+   (`LANTERN_BACKUP_*`, see [backup.md](backup.md)). Graph-only nodes restore
+   their newest dump. A private durable receipt-WAL deployment instead uses
+   `fresh` with an operator-supplied new active epoch to restore the strict
+   newest three-member receipt set before runtime certification.
 6. **Rolling update safe.** One pod down → remaining pods serve → new pod
    bootstraps → ready → next. This invariant is about **cluster
    availability** (the cluster keeps accepting requests throughout). **Zero
@@ -874,9 +876,9 @@ Implementation notes:
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
   path is exercised at scale (tracked alongside #190).
   Real Connect/h2c tests cover two-node durable gap recovery through Pump and
-  anti-entropy plus tail resumption. Exhaustive multi-replica partition,
-  restart, soak, and receipt-bearing backup acceptance remains a separate
-  #1393 follow-up; #1394 owns the backup/restore continuity boundary.
+  anti-entropy plus tail resumption, while #1394 covers receipt-bearing backup
+  and startup restore continuity. Exhaustive multi-replica partition, restart,
+  and soak acceptance remains a separate #1399 follow-up.
 - Delete tombstones committed before the Snapshot cutoff cannot be re-derived
   from the Subscribe tail. Explicit tombstone frames preserve their exact D4
   deadline across bootstrap. Put causal barriers — whether born expired or
@@ -1052,7 +1054,7 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | Pod falls behind > buffer | `Subscribe` returns `FailedPrecondition` (reason `gapped`) | Pump auto re-snapshots and resumes. |
 | Search config differs across replicas | `lantern_search_config_match{peer}=0`, mismatch counter/log, readiness `NOT_SERVING` | Make every search-affecting `LANTERN_SEARCH_*` value homogeneous, then wait for the next pump/anti-entropy comparison. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
-| Total-cluster loss | every replica down | **Accepted data loss** (D1) — bring the cluster back empty, *or* run snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) so each node restores its newest dump on boot. |
+| Total-cluster loss | every replica down | **Accepted data loss** (D1) unless backups exist. Graph-only nodes restore their newest `.lbk`; private durable receipt-WAL nodes use `fresh` with a new active epoch and the strict newest receipt set, retaining archived known receipts as bounded retired evidence. |
 | NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
@@ -1076,7 +1078,10 @@ supported: leave `LANTERN_PEERS` empty, the server runs without a pump, the
 readiness gate is bypassed, and `Subscribe` still works as a CDC stream for
 downstream consumers. Cold-start data loss is expected on these platforms
 unless snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) or an
-external WAL consumer are in place.
+external WAL consumer are in place. A durable `restart` always proves its
+current WAL first and uses receipt backup only for narrowly classified
+committed-baseline sidecar damage; it never treats a backup as permission to
+replace an ambiguous or conflicting current generation.
 
 ## 13. Out of scope (v1)
 

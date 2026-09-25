@@ -154,6 +154,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewServingRuntime(",
 		"newLanternService(",
 		"newLanternReplicationService(",
+		"provider.NewRuntimeRestored(",
 		"provider.NewRuntimeCertified(",
 		"provider.NewListener(",
 		"provider.NewMetricsServer(",
