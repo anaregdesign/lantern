@@ -5,16 +5,28 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // graphAddEffectEnvelope is private evidence of the Add slots this receiver
 // actually applied. Mutation stays the original relay/Subscribe projection.
 // Every serving graph Add publication selects this envelope.
 type graphAddEffectEnvelope struct {
-	Mutation        *pb.Mutation
-	AcceptedIndexes []uint32
+	Mutation          *pb.Mutation
+	AcceptedIndexes   []uint32
+	Origin            hlc.NodeID
+	OriginSeq         uint64
+	HLC               hlc.Timestamp
+	Epoch             mutationreceipt.Epoch
+	PolicyFingerprint [32]byte
+	Original          []*pb.Edge
+	ContribIDs        []graphcache.ContribID
+	Receipts          []mutationreceipt.Receipt
 }
 
 func (e *graphAddEffectEnvelope) GraphMutation() *pb.Mutation {
@@ -22,6 +34,18 @@ func (e *graphAddEffectEnvelope) GraphMutation() *pb.Mutation {
 		return nil
 	}
 	return e.Mutation
+}
+
+func (e *graphAddEffectEnvelope) ReplicationMutation() (*pb.Mutation, error) {
+	if err := validateGraphAddEffectEnvelope(e); err != nil {
+		return nil, err
+	}
+	return proto.Clone(e.Mutation).(*pb.Mutation), nil
+}
+
+func (e *graphAddEffectEnvelope) receiptBearing() bool {
+	return e != nil && e.Mutation != nil && e.Mutation.GetOp() != nil &&
+		e.Mutation.GetOp().GetReplicatedReceiptEdgeAdd() != nil
 }
 
 // newGraphAddEffectEnvelope maps GraphCache results from compact non-nil item
@@ -72,7 +96,8 @@ func isAnyGraphAdd(m *pb.Mutation) bool {
 		return false
 	}
 	switch m.GetOp().GetOp().(type) {
-	case *pb.MutationOp_AddEdge, *pb.MutationOp_AddEdges:
+	case *pb.MutationOp_AddEdge, *pb.MutationOp_AddEdges,
+		*pb.MutationOp_ReplicatedReceiptEdgeAdd:
 		return true
 	default:
 		return false
@@ -87,14 +112,22 @@ func graphAddSlots(m *pb.Mutation) ([]bool, error) {
 	}
 	switch op := m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_AddEdge:
-		if op != nil && op.AddEdge != nil {
+		if op != nil && op.AddEdge != nil && op.AddEdge.GetReceiptContext() == nil {
 			return []bool{op.AddEdge.GetEdge() != nil}, nil
 		}
 	case *pb.MutationOp_AddEdges:
-		if op != nil && op.AddEdges != nil {
+		if op != nil && op.AddEdges != nil && op.AddEdges.GetReceiptContext() == nil {
 			slots := make([]bool, len(op.AddEdges.GetEdges()))
 			for i, edge := range op.AddEdges.GetEdges() {
 				slots[i] = edge != nil
+			}
+			return slots, nil
+		}
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		if op != nil && op.ReplicatedReceiptEdgeAdd != nil {
+			slots := make([]bool, len(op.ReplicatedReceiptEdgeAdd.GetItems()))
+			for i, item := range op.ReplicatedReceiptEdgeAdd.GetItems() {
+				slots[i] = item != nil && item.GetOriginal() != nil
 			}
 			return slots, nil
 		}
@@ -122,6 +155,16 @@ func validateGraphAddEffectEnvelope(e *graphAddEffectEnvelope) error {
 			return receiptWALUnionError("accepted graph Add index is nil, out of range, or unordered")
 		}
 		previous = index
+	}
+	if e.receiptBearing() {
+		if _, err := validateReceiptEdgeAddEnvelope(e); err != nil {
+			return err
+		}
+	} else if e.Origin != (hlc.NodeID{}) || e.OriginSeq != 0 ||
+		e.HLC != (hlc.Timestamp{}) || e.Epoch != (mutationreceipt.Epoch{}) ||
+		e.PolicyFingerprint != ([32]byte{}) || len(e.Original) != 0 ||
+		len(e.ContribIDs) != 0 || len(e.Receipts) != 0 {
+		return receiptWALUnionError("graph-only Add effect carries receipt evidence")
 	}
 	return nil
 }
@@ -184,6 +227,11 @@ func decodeGraphAddEffectWAL(body []byte) (*graphAddEffectEnvelope, error) {
 	}
 	for i := range e.AcceptedIndexes {
 		e.AcceptedIndexes[i] = binary.BigEndian.Uint32(body[graphEnd+4*i:])
+	}
+	if m.GetOp().GetReplicatedReceiptEdgeAdd() != nil {
+		if err := hydrateReceiptEdgeAddEnvelope(e); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateGraphAddEffectEnvelope(e); err != nil {
 		return nil, fmt.Errorf("graph Add effect: %w", err)

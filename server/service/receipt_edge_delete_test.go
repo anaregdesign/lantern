@@ -243,6 +243,9 @@ func bindPublicReceiptFixtureForConcurrencyTest(
 	}
 	f.service.runtime = runtime
 	f.service.receiptRetiredCatalog = retired
+	if _, err := newEdgeAddReceiptCoordinator(f.service, f.coordinator.store); err != nil {
+		t.Fatal(err)
+	}
 	return runtime
 }
 

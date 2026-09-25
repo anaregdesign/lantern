@@ -746,6 +746,10 @@ message AddEdgeRequest {
   // idempotent adds are enabled. Forwarded into contrib_ids[0] of the
   // one-element AddEdges batch this wraps.
   bytes contrib_id = 2;
+  // receipt_context enables durable exactly-once proof for this Add. It is
+  // valid only when contrib_id is an explicit non-zero 24-byte identifier.
+  // Receipt-less Add remains the separate direct-online mode above.
+  MutationReceiptContext receipt_context = 3;
 }
 
 message AddEdgeResponse {
@@ -785,6 +789,10 @@ message AddEdgesRequest {
   // server/service/apply.go contribIDFor. Golden-vector tests in all three
   // suites (#922) fail CI on any unilateral change.
   repeated bytes contrib_ids = 2;
+  // receipt_context enables durable exactly-once proof for the whole logical
+  // call. Every edge must have an index-aligned explicit non-zero contrib_id;
+  // mixed keyed/unkeyed batches are rejected rather than upgraded.
+  MutationReceiptContext receipt_context = 3;
 }
 
 message AddEdgesResponse {
@@ -1167,6 +1175,7 @@ message ReceiptResult {
     bool delete_edge_existed = 1;
     PutOutcome put_vertex_outcome = 2;
     bool delete_vertex_existed = 3;
+    float add_edge_effective_weight = 4;
   }
 }
 

@@ -63,6 +63,8 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	var receiptEnvelope receiptMutationEnvelope
 	var receiptErr error
 	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		receiptEnvelope, receiptErr = decodeReceiptEdgeAddMutation(m)
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
 		receiptEnvelope, receiptErr = decodeReceiptEdgeDeleteMutation(m)
 	case *pb.MutationOp_ReplicatedReceiptVertexPut:

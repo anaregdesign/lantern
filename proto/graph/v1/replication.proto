@@ -56,6 +56,10 @@ message MutationOp {
     // request position and the receiver-local graph projection.
     ReplicatedReceiptVertexPut replicated_receipt_vertex_put = 16;
     ReplicatedReceiptVertexDelete replicated_receipt_vertex_delete = 17;
+    // Receipt-bearing additive Edge contribution. The receipt and original
+    // ContribID remain origin-authoritative while each relay records its own
+    // accepted projection.
+    ReplicatedReceiptEdgeAdd replicated_receipt_edge_add = 18;
   }
 }
 
@@ -115,6 +119,22 @@ message ReplicatedReceiptVertexDelete {
   bytes policy_fingerprint = 2;
   google.protobuf.Timestamp tombstone_expiration = 3;
   repeated ReplicatedReceiptVertexDeleteItem items = 4;
+}
+
+// One request-index-aligned receipt-bearing Add contribution.
+message ReplicatedReceiptEdgeAddItem {
+  Edge original = 1;
+  bytes contrib_id = 2;
+  MutationReceipt receipt = 3;
+  bool causally_accepted = 4;
+}
+
+// A complete ordered additive Edge call. Effective-weight receipt results are
+// fixed by the origin; causally_accepted is recomputed by every receiver.
+message ReplicatedReceiptEdgeAdd {
+  bytes deployment_epoch = 1;
+  bytes policy_fingerprint = 2;
+  repeated ReplicatedReceiptEdgeAddItem items = 3;
 }
 
 message VertexCausalBarrier {

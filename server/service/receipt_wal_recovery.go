@@ -43,6 +43,14 @@ type receiptWALEnvelopeMetadata struct {
 
 func receiptWALEnvelopeInfo(op mutationlog.MutationOp) (receiptWALEnvelopeMetadata, bool) {
 	switch value := op.(type) {
+	case *graphAddEffectEnvelope:
+		if !value.receiptBearing() {
+			return receiptWALEnvelopeMetadata{}, false
+		}
+		return receiptWALEnvelopeMetadata{
+			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
+			policy: value.PolicyFingerprint, receipts: value.Receipts,
+		}, true
 	case *edgeDeleteReceiptEnvelope:
 		return receiptWALEnvelopeMetadata{
 			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
@@ -240,6 +248,11 @@ func replayReceiptEnvelopeGraph(
 	op mutationlog.MutationOp,
 ) error {
 	switch value := op.(type) {
+	case *graphAddEffectEnvelope:
+		if !value.receiptBearing() {
+			return fmt.Errorf("%w: graph-only Add reached receipt replay", errReceiptWALUnion)
+		}
+		return replayGraphAddEffect(graph, value)
 	case *edgeDeleteReceiptEnvelope:
 		tx, err := graph.BeginReplicatedEdgeDelete(
 			value.OriginalKeys, value.HLC, value.TombstoneExpiration,
@@ -676,6 +689,9 @@ func replayGraphAddEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effe
 			if int(index) < len(op.AddEdges.GetContribIds()) {
 				rawID = op.AddEdges.GetContribIds()[index]
 			}
+		case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+			item := op.ReplicatedReceiptEdgeAdd.GetItems()[index]
+			edge, rawID = item.GetOriginal(), item.GetContribId()
 		default:
 			return receiptWALUnionError("graph Add effect has unsupported replay arm %T", op)
 		}

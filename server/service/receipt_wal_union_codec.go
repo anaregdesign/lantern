@@ -570,6 +570,24 @@ func receiptWALGraphArm(m *pb.Mutation) (receiptWALRepeatedArm, error) {
 			}
 		}
 		return receiptWALRepeatedArm{len(items), func(i int) proto.Message { return items[i] }, func(i int) { items[i] = nil }}, nil
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		if value == nil || value.ReplicatedReceiptEdgeAdd == nil {
+			break
+		}
+		items := value.ReplicatedReceiptEdgeAdd.Items
+		for i, item := range items {
+			if item == nil || item.GetOriginal() == nil || item.GetReceipt() == nil {
+				return receiptWALRepeatedArm{}, receiptWALUnionError(
+					"replicated receipt Edge Add item %d is incomplete",
+					i,
+				)
+			}
+		}
+		return receiptWALRepeatedArm{
+			len(items),
+			func(i int) proto.Message { return items[i] },
+			func(i int) { items[i] = nil },
+		}, nil
 	default:
 		return receiptWALRepeatedArm{}, receiptWALUnionError("unknown graph mutation operation %T", m.Op.GetOp())
 	}
