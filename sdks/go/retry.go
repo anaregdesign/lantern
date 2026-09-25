@@ -176,16 +176,21 @@ func requestRetryable(req any) bool {
 		return !r.GetIfAbsent()
 	case *pb.PutVerticesRequest:
 		return !r.GetIfAbsent()
+	case *pb.DeleteEdgeRequest:
+		return r.GetReceiptContext() == nil
+	case *pb.DeleteEdgesRequest:
+		return r.GetReceiptContext() == nil
 	case *pb.GetVertexRequest, *pb.GetVerticesRequest,
 		*pb.GetEdgeRequest, *pb.GetEdgesRequest,
 		*pb.PutEdgeRequest, *pb.PutEdgesRequest,
 		*pb.DeleteVertexRequest, *pb.DeleteVerticesRequest,
-		*pb.DeleteEdgeRequest, *pb.DeleteEdgesRequest,
 		*pb.DeleteVerticesByPrefixRequest, *pb.DeleteEdgesByPrefixRequest,
 		*pb.ScanVerticesRequest, *pb.ScanVertexKeysRequest,
 		*pb.ScanEdgesRequest, *pb.CountVerticesByPrefixRequest,
 		*pb.SearchVerticesRequest, *pb.IlluminateRequest,
-		*pb.GetServerStatusRequest, *pb.GetReplicationStatusRequest:
+		*pb.GetServerStatusRequest, *pb.GetReplicationStatusRequest,
+		*pb.GetReceiptCapabilityRequest, *pb.GetReceiptStatusRequest,
+		*pb.GetReceiptStatusesRequest:
 		return true
 	}
 	return false
@@ -243,6 +248,11 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"Illuminate":             retryAlways,
 	"GetServerStatus":        retryAlways,
 	"GetReplicationStatus":   retryAlways,
+	"GetReceiptCapability":   retryAlways,
+	"GetReceiptStatus":       retryAlways,
+	"GetReceiptStatuses":     retryAlways,
+	"DeleteEdgeWithReceipt":  retryAlways,
+	"DeleteEdgesWithReceipt": retryAlways,
 	"Ping":                   retryAlways,
 	"AddEdge":                retryIfIdempotentAdds,
 	"AddEdgeAt":              retryIfIdempotentAdds,

@@ -77,6 +77,7 @@ type Failover struct {
 	// every attempt and every node is what makes a mid-flight Unavailable
 	// retry dedup-safe; a fresh id per attempt would double-count (#916).
 	contribIDs *contribIDGen
+	receiptIDs receiptIdentitySource
 }
 
 // failoverNode is the unexported endpoint contract the ring walk delegates
@@ -119,6 +120,9 @@ type failoverNode interface {
 	DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error)
 	DeleteEdge(ctx context.Context, tail, head string) (bool, error)
 	DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error)
+	GetReceiptCapability(ctx context.Context) (ReceiptCapability, error)
+	GetReceiptStatuses(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
+	DeleteEdgesWithReceipt(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
 	Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error)
 	Ping(ctx context.Context) error
 	Close() error
@@ -180,7 +184,10 @@ func NewLanternFailover(addrs []string, opts ...Option) (*Failover, error) {
 		}
 		nodes = append(nodes, l)
 	}
-	return &Failover{nodes: nodes, retry: probe.retry, idempotentAdds: probe.idempotentAdds, contribIDs: contribIDs, clock: time.Now}, nil
+	return &Failover{
+		nodes: nodes, retry: probe.retry, idempotentAdds: probe.idempotentAdds,
+		contribIDs: contribIDs, receiptIDs: defaultReceiptIdentitySource(), clock: time.Now,
+	}, nil
 }
 
 func (f *Failover) now() time.Time {
@@ -243,6 +250,10 @@ func (f *Failover) call(ctx context.Context, method string, fn func(failoverNode
 // into a misleading cursor-invalid response from another process.
 func (f *Failover) callCurrent(ctx context.Context, method string, fn func(failoverNode) error) error {
 	idx := int(f.cur.Load() % uint64(len(f.nodes)))
+	return f.callNode(ctx, idx, method, fn)
+}
+
+func (f *Failover) callNode(ctx context.Context, idx int, method string, fn func(failoverNode) error) error {
 	run := func() error { return fn(f.nodes[idx]) }
 	if f.retry == nil || !retryableMethod(method, f.idempotentAdds) {
 		return run()
@@ -577,6 +588,16 @@ func (f *Failover) nextContribIDs(n int) [][]byte {
 	return f.contribIDs.next(n)
 }
 
+// NewReceiptContext mints one caller-owned receipt context at the failover
+// layer so its identities remain stable across same-endpoint attempts.
+func (f *Failover) NewReceiptContext(capability ReceiptCapability, itemCount int) (ReceiptContext, error) {
+	source := defaultReceiptIdentitySource()
+	if f != nil {
+		source = f.receiptIDs.normalized()
+	}
+	return mintReceiptContext(capability, itemCount, source)
+}
+
 // PutEdge resolves ttl once, then forwards the same absolute expiration to
 // each endpoint's PutEdgeAt while failing over on ErrUnavailable.
 func (f *Failover) PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (PutOutcome, error) {
@@ -683,6 +704,125 @@ func (f *Failover) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error)
 		return e
 	})
 	return deleted, err
+}
+
+// GetReceiptCapability returns a capability from the first reachable
+// endpoint and sticks the failover cursor to that endpoint.
+func (f *Failover) GetReceiptCapability(ctx context.Context) (ReceiptCapability, error) {
+	var capability ReceiptCapability
+	err := f.call(ctx, "GetReceiptCapability", func(l failoverNode) error {
+		var err error
+		capability, err = l.GetReceiptCapability(ctx)
+		return err
+	})
+	return capability, err
+}
+
+// GetReceiptStatuses performs a read-only lookup and may fail over. A
+// NOT_YET_OBSERVED result from a replica is not proof of non-execution.
+func (f *Failover) GetReceiptStatuses(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error) {
+	var statuses []ReceiptStatus
+	err := f.call(ctx, "GetReceiptStatuses", func(l failoverNode) error {
+		var err error
+		statuses, err = l.GetReceiptStatuses(ctx, ids)
+		return err
+	})
+	return statuses, err
+}
+
+// GetReceiptStatus is the one-item facade over GetReceiptStatuses.
+func (f *Failover) GetReceiptStatus(ctx context.Context, id ReceiptOperationID) (ReceiptStatus, error) {
+	statuses, err := f.GetReceiptStatuses(ctx, []ReceiptOperationID{id})
+	if err != nil {
+		return ReceiptStatus{}, err
+	}
+	if len(statuses) != 1 {
+		return ReceiptStatus{}, receiptProtocolError("singular status returned %d items", len(statuses))
+	}
+	return statuses[0], nil
+}
+
+// DeleteEdgesWithReceipt locates the endpoint matching the persisted
+// continuity marker with read-only capability probes, then pins every
+// mutation attempt to that endpoint. Unlike legacy receipt-less DeleteEdges,
+// it never rotates an uncertain destructive mutation to a sibling.
+func (f *Failover) DeleteEdgesWithReceipt(
+	ctx context.Context,
+	refs []EdgeRef,
+	receiptContext ReceiptContext,
+) ([]EdgeDeleteReceiptResult, error) {
+	stableRefs := append([]EdgeRef(nil), refs...)
+	_, stableContext, err := receiptDeleteRequest(stableRefs, receiptContext)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := f.findReceiptNode(ctx, stableContext.Continuity)
+	if err != nil {
+		return nil, err
+	}
+	f.cur.Store(uint64(idx))
+
+	var results []EdgeDeleteReceiptResult
+	err = f.callNode(ctx, idx, "DeleteEdgesWithReceipt", func(l failoverNode) error {
+		var err error
+		results, err = l.DeleteEdgesWithReceipt(ctx, stableRefs, stableContext)
+		return err
+	})
+	return results, err
+}
+
+func (f *Failover) findReceiptNode(ctx context.Context, expected ReceiptContinuity) (int, error) {
+	var selected int
+	find := func() error {
+		start := int(f.cur.Load() % uint64(len(f.nodes)))
+		var unavailable error
+		for i := range f.nodes {
+			idx := (start + i) % len(f.nodes)
+			capability, err := f.nodes[idx].GetReceiptCapability(ctx)
+			if errors.Is(err, ErrUnavailable) {
+				unavailable = err
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if capability.Enabled && capability.Continuity == expected {
+				selected = idx
+				return nil
+			}
+		}
+		if unavailable != nil {
+			return unavailable
+		}
+		return &ReceiptReconciliationError{
+			Expected: expected,
+			Cause:    ErrFailedPrecondition,
+		}
+	}
+	if f.retry != nil {
+		if err := f.retry.run(ctx, find); err != nil {
+			return 0, err
+		}
+	} else if err := find(); err != nil {
+		return 0, err
+	}
+	return selected, nil
+}
+
+// DeleteEdgeWithReceipt is the one-item facade over DeleteEdgesWithReceipt.
+func (f *Failover) DeleteEdgeWithReceipt(
+	ctx context.Context,
+	tail, head string,
+	receiptContext ReceiptContext,
+) (EdgeDeleteReceiptResult, error) {
+	results, err := f.DeleteEdgesWithReceipt(ctx, []EdgeRef{{Tail: tail, Head: head}}, receiptContext)
+	if err != nil {
+		return EdgeDeleteReceiptResult{}, err
+	}
+	if len(results) != 1 {
+		return EdgeDeleteReceiptResult{}, receiptProtocolError("singular Edge Delete returned %d items", len(results))
+	}
+	return results[0], nil
 }
 
 // Illuminate forwards to the current endpoint's Illuminate, failing over on

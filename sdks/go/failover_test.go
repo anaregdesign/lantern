@@ -27,10 +27,13 @@ type fakeNode struct {
 	// failover ring actually calls for additive writes (#916); the failover
 	// AddEdge/AddEdgeAt/AddEdges methods route through these, so tests wire
 	// them to observe the contrib ids passed down.
-	addEdgeAtWithIDsFn func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
-	addEdgesWithIDsFn  func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
-	pingErr            error
-	closed             int
+	addEdgeAtWithIDsFn       func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
+	addEdgesWithIDsFn        func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
+	getReceiptCapabilityFn   func(ctx context.Context) (ReceiptCapability, error)
+	getReceiptStatusesFn     func(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
+	deleteEdgesWithReceiptFn func(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
+	pingErr                  error
+	closed                   int
 }
 
 func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) (PutOutcome, error) {
@@ -140,11 +143,151 @@ func (f *fakeNode) DeleteEdgesByPrefix(context.Context, ...DeleteEdgesByPrefixOp
 }
 func (f *fakeNode) DeleteEdge(context.Context, string, string) (bool, error) { return false, nil }
 func (f *fakeNode) DeleteEdges(context.Context, []EdgeRef) (int, error)      { return 0, nil }
+func (f *fakeNode) GetReceiptCapability(ctx context.Context) (ReceiptCapability, error) {
+	if f.getReceiptCapabilityFn != nil {
+		return f.getReceiptCapabilityFn(ctx)
+	}
+	return ReceiptCapability{}, nil
+}
+func (f *fakeNode) GetReceiptStatuses(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error) {
+	if f.getReceiptStatusesFn != nil {
+		return f.getReceiptStatusesFn(ctx, ids)
+	}
+	return nil, nil
+}
+func (f *fakeNode) DeleteEdgesWithReceipt(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error) {
+	if f.deleteEdgesWithReceiptFn != nil {
+		return f.deleteEdgesWithReceiptFn(ctx, refs, receiptContext)
+	}
+	return nil, nil
+}
 func (f *fakeNode) Illuminate(context.Context, string, ...IlluminateOption) (*Graph, error) {
 	return nil, nil
 }
 func (f *fakeNode) Ping(context.Context) error { return f.pingErr }
 func (f *fakeNode) Close() error               { f.closed++; return nil }
+
+func TestFailoverReceiptDeleteNeverRotates(t *testing.T) {
+	capability := testReceiptCapability(0x70)
+	receiptContext := testReceiptContext(t, capability, 1, 0x71)
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		deleteEdgesWithReceiptFn: func(
+			context.Context,
+			[]EdgeRef,
+			ReceiptContext,
+		) ([]EdgeDeleteReceiptResult, error) {
+			firstCalls++
+			return nil, wrapConnectErr(connect.NewError(connect.CodeUnavailable, errors.New("response lost")))
+		},
+	}
+	second := &fakeNode{deleteEdgesWithReceiptFn: func(
+		context.Context,
+		[]EdgeRef,
+		ReceiptContext,
+	) ([]EdgeDeleteReceiptResult, error) {
+		secondCalls++
+		return []EdgeDeleteReceiptResult{{Existed: true}}, nil
+	}}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(3),
+	}
+	if _, err := f.DeleteEdgeWithReceipt(context.Background(), "tail", "head", receiptContext); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("error = %v, want ErrUnavailable", err)
+	}
+	if firstCalls != 3 || secondCalls != 0 {
+		t.Fatalf("receipt attempts rotated: first=%d second=%d", firstCalls, secondCalls)
+	}
+}
+
+func TestFailoverReceiptDeleteFindsAndPinsPersistedEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x72)
+	other := testReceiptCapability(0x73)
+	receiptContext := testReceiptContext(t, capability, 1, 0x74)
+	firstCapabilityCalls, secondCapabilityCalls := 0, 0
+	firstDeleteCalls, secondDeleteCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			firstCapabilityCalls++
+			return other, nil
+		},
+		deleteEdgesWithReceiptFn: func(
+			context.Context,
+			[]EdgeRef,
+			ReceiptContext,
+		) ([]EdgeDeleteReceiptResult, error) {
+			firstDeleteCalls++
+			return nil, errors.New("wrong endpoint received mutation")
+		},
+	}
+	second := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			secondCapabilityCalls++
+			return capability, nil
+		},
+		deleteEdgesWithReceiptFn: func(
+			_ context.Context,
+			refs []EdgeRef,
+			got ReceiptContext,
+		) ([]EdgeDeleteReceiptResult, error) {
+			secondDeleteCalls++
+			if got.Continuity != receiptContext.Continuity {
+				t.Fatalf("continuity = %+v, want %+v", got.Continuity, receiptContext.Continuity)
+			}
+			if secondDeleteCalls == 1 {
+				return nil, wrapConnectErr(connect.NewError(connect.CodeUnavailable, errors.New("response lost")))
+			}
+			return []EdgeDeleteReceiptResult{{
+				Edge:        refs[0],
+				OperationID: got.OperationIDs[0],
+				Existed:     true,
+			}}, nil
+		},
+	}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(2),
+	}
+
+	result, err := f.DeleteEdgeWithReceipt(context.Background(), "tail", "head", receiptContext)
+	if err != nil || !result.Existed {
+		t.Fatalf("result = (%+v, %v)", result, err)
+	}
+	if firstCapabilityCalls != 1 || secondCapabilityCalls != 1 {
+		t.Fatalf("capability calls first=%d second=%d, want 1/1", firstCapabilityCalls, secondCapabilityCalls)
+	}
+	if firstDeleteCalls != 0 || secondDeleteCalls != 2 {
+		t.Fatalf("delete calls first=%d second=%d, want 0/2", firstDeleteCalls, secondDeleteCalls)
+	}
+}
+
+func TestFailoverReceiptDeleteRejectsMalformedContextBeforeDiscovery(t *testing.T) {
+	capabilityCalls := 0
+	node := &fakeNode{getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+		capabilityCalls++
+		return ReceiptCapability{}, nil
+	}}
+	f := &Failover{nodes: []failoverNode{node}}
+
+	if _, err := f.DeleteEdgeWithReceipt(
+		context.Background(),
+		"tail",
+		"head",
+		ReceiptContext{},
+	); !errors.Is(err, ErrInvalidReceipt) {
+		t.Fatalf("error = %v", err)
+	}
+	if capabilityCalls != 0 {
+		t.Fatalf("capability calls = %d, want 0", capabilityCalls)
+	}
+	if f.cur.Load() != 0 {
+		t.Fatalf("cursor moved to %d", f.cur.Load())
+	}
+}
 
 func TestFailoverSearchPageCursorIsEndpointSticky(t *testing.T) {
 	firstCalls, secondCalls := 0, 0

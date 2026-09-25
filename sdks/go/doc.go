@@ -48,6 +48,18 @@
 // Shared axes such as WithWeighting and WithVertexPrefix remain freely
 // composable with the one family option.
 //
+// # Mutation receipts
+//
+// Exact Edge Delete can opt into durable, status-queryable results. First call
+// GetReceiptCapability, mint a ReceiptContext with NewReceiptContext, persist
+// that context, then pass it to DeleteEdgeWithReceipt or
+// DeleteEdgesWithReceipt. Receipt-bearing calls never rotate to a different
+// failover endpoint after an uncertain response; every retry verifies the
+// same epoch, node ID, and generation. GetReceiptStatus and
+// GetReceiptStatuses are read-only reconciliation calls. Put, Add, prefix
+// Delete, and Vertex Delete are not exposed as receipt-bearing SDK operations
+// until their public wire contracts are finalized.
+//
 // # Content search
 //
 // SearchVertices, SearchVerticesPage, SearchVerticesIter, and
@@ -69,7 +81,9 @@
 //	RPC family                                   Retried?
 //	-------------------------------------------  ------------------------------
 //	Get*/Scan*/Count*/Search*/Illuminate/status  yes (reads are idempotent)
-//	Put*/Delete*/DeleteVerticesByPrefix          yes (idempotent by semantics)
+//	Put*/legacy Delete*/DeleteVerticesByPrefix   yes (idempotent by semantics)
+//	Delete*WithReceipt                           yes, but only after the same
+//	                                             endpoint continuity preflight
 //	PutVertexIfAbsent/PutVerticesIfAbsent        no (response loss changes outcome)
 //	AddEdge/AddEdgeAt/AddEdges                    only under WithIdempotentAdds
 //	                                             (or explicit ContribIDs): the
@@ -83,12 +97,14 @@
 // Unavailable; add ResourceExhausted via RetryPolicy.RetryableCodes to retry
 // through the server-side capacity cap / rate limiter.
 //
-// Under NewLanternFailover the policy drives the ring walk: each retry
+// Under NewLanternFailover the policy normally drives the ring walk: each retry
 // attempt re-runs the failover rotation, so a persistently-unavailable
 // endpoint is retried against its siblings with backoff and MaxAttempts is
 // the cross-replica budget — there is no second rotation mechanism. The
 // per-endpoint clients' own retry is neutralised so the attempt budget is
-// never squared.
+// never squared. Receipt-bearing destructive mutations are the deliberate
+// exception: every attempt remains pinned to one endpoint and verifies the
+// same epoch, node ID, and generation before sending.
 //
 // # Model definition policy
 //
