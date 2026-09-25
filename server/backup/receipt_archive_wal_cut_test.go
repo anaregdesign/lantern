@@ -70,7 +70,7 @@ func stageBoundArchive(t *testing.T, raw, manifest []byte, path string) (*receip
 		archiveWALStringDecode, archiveWALValidEntry, archive.Policy, time.Hour, nil)
 }
 
-func TestReceiptArchiveWALCutBindsExactArchiveAndFilePrefix(t *testing.T) {
+func TestReceiptArchiveWALCutBindsExactArchiveCutAndObservedTip(t *testing.T) {
 	for _, tc := range []struct {
 		cut  uint64
 		tail uint64
@@ -94,11 +94,27 @@ func TestReceiptArchiveWALCutBindsExactArchiveAndFilePrefix(t *testing.T) {
 			t.Fatalf("manifest is not deterministic: %v", err)
 		}
 		bound, err := decodeReceiptArchiveWALCut(manifest)
-		if err != nil || bound.archiveSHA256 != sha256.Sum256(raw) || bound.localSeq != tc.cut {
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected, err := mutationlog.InspectFileWALCut(path, tc.cut, archiveWALStringDecode, archiveWALValidEntry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bound.archiveSHA256 != sha256.Sum256(raw) ||
+			bound.cutSeq != tc.cut || bound.cutOffset != expected.Offset ||
+			bound.cutSHA256 != expected.SHA256 || bound.cutChainSHA256 != expected.ChainSHA256 ||
+			bound.tipSeq != tc.tail || bound.tipOffset != expected.ObservedOffset ||
+			bound.tipSHA256 != expected.ObservedSHA256 || bound.tipChainSHA256 != expected.ObservedChainSHA256 {
 			t.Fatalf("decoded manifest = %+v, %v", bound, err)
 		}
-		if tc.cut == 0 && (bound.walOffset != 8 || bound.walSHA256 != sha256.Sum256(before[:8])) {
+		if tc.cut == 0 && (bound.cutOffset != receiptArchiveWALZeroOffset ||
+			bound.cutSHA256 != sha256.Sum256(before[:receiptArchiveWALZeroOffset])) {
 			t.Fatalf("zero cut does not bind FileWAL magic: %+v", bound)
+		}
+		if tc.tail == 0 && (bound.tipOffset != receiptArchiveWALZeroOffset ||
+			bound.tipSHA256 != bound.cutSHA256 || bound.tipChainSHA256 != bound.cutChainSHA256) {
+			t.Fatalf("zero tip does not equal zero cut: %+v", bound)
 		}
 		stage, err := stageBoundArchive(t, raw, manifest, path)
 		if err != nil || stage == nil || stage.cutoffLocalSeq != tc.cut || stage.receipts == nil {
@@ -111,8 +127,8 @@ func TestReceiptArchiveWALCutBindsExactArchiveAndFilePrefix(t *testing.T) {
 	}
 }
 
-func TestReceiptArchiveWALCutAcceptsValidSuffixButNotInvalidSuffix(t *testing.T) {
-	raw, path := archiveWALFixture(t, 1, 1)
+func TestReceiptArchiveWALCutRequiresRecordedTipAndAcceptsLaterValidSuffix(t *testing.T) {
+	raw, path := archiveWALFixture(t, 1, 2)
 	manifest, err := bindReceiptArchiveFileWAL(raw, path, archiveWALStringDecode, archiveWALValidEntry)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +137,7 @@ func TestReceiptArchiveWALCutAcceptsValidSuffixButNotInvalidSuffix(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Write(mutationlog.Entry{Seq: 2, HLC: hlc.Timestamp{WallNs: 2, NodeID: hlc.NodeID{1}}, Op: "suffix"}); err != nil {
+	if err := w.Write(mutationlog.Entry{Seq: 3, HLC: hlc.Timestamp{WallNs: 3, NodeID: hlc.NodeID{1}}, Op: "suffix"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -156,6 +172,14 @@ func TestReceiptArchiveWALCutAcceptsValidSuffixButNotInvalidSuffix(t *testing.T)
 			binary.BigEndian.PutUint32(b[frameStart+4:frameStart+8], crc)
 			return b
 		}},
+		{"sequence gap in suffix", func(b []byte) []byte {
+			bodyStart := len(b) - len("suffix") - 36
+			frameStart := bodyStart - 8
+			binary.BigEndian.PutUint64(b[bodyStart:bodyStart+8], 4)
+			crc := fileWALFrameCRC(b[frameStart:frameStart+4], b[bodyStart:])
+			binary.BigEndian.PutUint32(b[frameStart+4:frameStart+8], crc)
+			return b
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := tc.edit(bytes.Clone(full))
@@ -171,24 +195,54 @@ func TestReceiptArchiveWALCutAcceptsValidSuffixButNotInvalidSuffix(t *testing.T)
 			}
 		})
 	}
-	// A prefix-only binding deliberately cannot prove a suffix observed at
-	// manifest creation was not later lost. This must not authorize serving.
 	bound, err := decodeReceiptArchiveWALCut(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Truncate(path, bound.walOffset); err != nil {
+	if err := os.Truncate(path, bound.tipOffset); err != nil {
 		t.Fatal(err)
 	}
 	if stage, err := stageBoundArchive(t, raw, manifest, path); err != nil || stage == nil {
-		t.Fatalf("prefix-only manifest unexpectedly rejected lost valid suffix: %+v, %v", stage, err)
+		t.Fatalf("exact recorded tip rejected after later suffix removal: %+v, %v", stage, err)
+	}
+	if err := os.Truncate(path, bound.cutOffset); err != nil {
+		t.Fatal(err)
+	}
+	if stage, err := stageBoundArchive(t, raw, manifest, path); err == nil || stage != nil {
+		t.Fatalf("lost recorded valid suffix produced stage: %+v, %v", stage, err)
 	}
 }
 
-func TestReceiptArchiveWALCutRejectsSubstitutionAndMalformedManifest(t *testing.T) {
-	raw, path := archiveWALFixture(t, 2, 2)
+func TestReceiptArchiveWALCutRejectsSubstitutionAndWitnessMismatch(t *testing.T) {
+	raw, path := archiveWALFixture(t, 1, 2)
 	manifest, err := bindReceiptArchiveFileWAL(raw, path, archiveWALStringDecode, archiveWALValidEntry)
 	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := decodeReceiptArchiveWALCut(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editManifest := func(edit func(*receiptArchiveWALCut)) []byte {
+		candidate := bound
+		edit(&candidate)
+		return encodeReceiptArchiveWALCut(candidate)
+	}
+	zeroCut, err := mutationlog.InspectFileWALCut(path, 0, archiveWALStringDecode, archiveWALValidEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewrittenTipPath := filepath.Join(t.TempDir(), "rewritten-tip.wal")
+	rewrittenTip, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyStart := len(rewrittenTip) - len("payload") - 36
+	frameStart := bodyStart - 8
+	copy(rewrittenTip[len(rewrittenTip)-len("payload"):], []byte("changed"))
+	crc := fileWALFrameCRC(rewrittenTip[frameStart:frameStart+4], rewrittenTip[bodyStart:])
+	binary.BigEndian.PutUint32(rewrittenTip[frameStart+4:frameStart+8], crc)
+	if err := os.WriteFile(rewrittenTipPath, rewrittenTip, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -201,14 +255,19 @@ func TestReceiptArchiveWALCutRejectsSubstitutionAndMalformedManifest(t *testing.
 		{"short manifest", raw, manifest[:len(manifest)-1], path},
 		{"long manifest", raw, append(bytes.Clone(manifest), 0), path},
 		{"changed manifest", raw, func() []byte { b := bytes.Clone(manifest); b[60] ^= 1; return b }(), path},
-		{"wrong cut", raw, func() []byte {
-			cut, err := decodeReceiptArchiveWALCut(manifest)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cut.localSeq = 1
-			return encodeReceiptArchiveWALCut(cut)
-		}(), path},
+		{"wrong archive cut", raw, editManifest(func(c *receiptArchiveWALCut) {
+			c.cutSeq = 0
+			c.cutOffset = zeroCut.Offset
+			c.cutSHA256 = zeroCut.SHA256
+			c.cutChainSHA256 = zeroCut.ChainSHA256
+		}), path},
+		{"cut offset mismatch", raw, editManifest(func(c *receiptArchiveWALCut) { c.cutOffset++ }), path},
+		{"cut digest mismatch", raw, editManifest(func(c *receiptArchiveWALCut) { c.cutSHA256[0] ^= 1 }), path},
+		{"cut chain mismatch", raw, editManifest(func(c *receiptArchiveWALCut) { c.cutChainSHA256[0] ^= 1 }), path},
+		{"tip sequence mismatch", raw, editManifest(func(c *receiptArchiveWALCut) { c.tipSeq++ }), path},
+		{"tip offset mismatch", raw, editManifest(func(c *receiptArchiveWALCut) { c.tipOffset++ }), path},
+		{"tip digest mismatch", raw, editManifest(func(c *receiptArchiveWALCut) { c.tipSHA256[0] ^= 1 }), path},
+		{"tip chain mismatch", raw, editManifest(func(c *receiptArchiveWALCut) { c.tipChainSHA256[0] ^= 1 }), path},
 		{"short WAL", raw, manifest, func() string {
 			short := filepath.Join(t.TempDir(), "short.wal")
 			if err := os.WriteFile(short, []byte("LNWAL01\n"), 0o600); err != nil {
@@ -232,34 +291,109 @@ func TestReceiptArchiveWALCutRejectsSubstitutionAndMalformedManifest(t *testing.
 			}
 			return otherPath
 		}()},
+		{"same-size recorded tip rewrite", raw, manifest, rewrittenTipPath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			archive := wholeStateArchiveFixture(t)
-			stage, err := stageReceiptWholeStateArchiveAtWALCut(context.Background(), tc.raw, tc.manifest, tc.path,
-				archiveWALStringDecode, archiveWALValidEntry, archive.Policy, time.Hour, nil)
+			stage, err := stageBoundArchive(t, tc.raw, tc.manifest, tc.path)
 			if err == nil || stage != nil {
 				t.Fatalf("substitution produced stage: %+v, %v", stage, err)
 			}
 		})
 	}
+}
+
+func TestReceiptArchiveWALCutRejectsMalformedManifest(t *testing.T) {
+	raw, path := archiveWALFixture(t, 1, 2)
+	manifest, err := bindReceiptArchiveFileWAL(raw, path, archiveWALStringDecode, archiveWALValidEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := decodeReceiptArchiveWALCut(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editManifest := func(edit func(*receiptArchiveWALCut)) []byte {
+		candidate := bound
+		edit(&candidate)
+		return encodeReceiptArchiveWALCut(candidate)
+	}
+	editRaw := func(edit func([]byte)) []byte {
+		candidate := bytes.Clone(manifest)
+		edit(candidate)
+		sum := sha256.Sum256(candidate[:receiptArchiveWALCutPayloadSize])
+		copy(candidate[receiptArchiveWALCutPayloadSize:], sum[:])
+		return candidate
+	}
 	for _, tc := range []struct {
-		name string
-		edit func([]byte)
+		name     string
+		manifest []byte
 	}{
-		{"unsupported version", func(b []byte) { binary.BigEndian.PutUint16(b[8:10], 2) }},
-		{"reserved bits", func(b []byte) { b[10] = 1 }},
-		{"offset below header", func(b []byte) { binary.BigEndian.PutUint64(b[52:60], 7) }},
-		{"nonzero cut at header offset", func(b []byte) { binary.BigEndian.PutUint64(b[52:60], 8) }},
+		{"short", manifest[:len(manifest)-1]},
+		{"long", append(bytes.Clone(manifest), 0)},
+		{"old magic", editRaw(func(b []byte) { copy(b[:8], "LRWLCUT1") })},
+		{"unsupported version", editRaw(func(b []byte) { binary.BigEndian.PutUint16(b[8:10], 1) })},
+		{"reserved bits", editRaw(func(b []byte) { b[10] = 1 })},
+		{"cut offset overflow", editRaw(func(b []byte) { binary.BigEndian.PutUint64(b[52:60], ^uint64(0)) })},
+		{"tip offset overflow", editRaw(func(b []byte) { binary.BigEndian.PutUint64(b[132:140], ^uint64(0)) })},
+		{"cut offset below header", editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = receiptArchiveWALZeroOffset - 1 })},
+		{"tip offset below header", editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = receiptArchiveWALZeroOffset - 1 })},
+		{"zero archive digest", editManifest(func(c *receiptArchiveWALCut) { c.archiveSHA256 = [sha256.Size]byte{} })},
+		{"zero cut digest", editManifest(func(c *receiptArchiveWALCut) { c.cutSHA256 = [sha256.Size]byte{} })},
+		{"zero cut chain", editManifest(func(c *receiptArchiveWALCut) { c.cutChainSHA256 = [sha256.Size]byte{} })},
+		{"zero tip digest", editManifest(func(c *receiptArchiveWALCut) { c.tipSHA256 = [sha256.Size]byte{} })},
+		{"zero tip chain", editManifest(func(c *receiptArchiveWALCut) { c.tipChainSHA256 = [sha256.Size]byte{} })},
+		{"zero cut with framed offset", editManifest(func(c *receiptArchiveWALCut) { c.cutSeq = 0 })},
+		{"nonzero cut at zero offset", editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = receiptArchiveWALZeroOffset })},
+		{"zero tip with framed offset", editManifest(func(c *receiptArchiveWALCut) { c.tipSeq = 0 })},
+		{"nonzero tip at zero offset", editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = receiptArchiveWALZeroOffset })},
+		{"cut sequence after tip", editManifest(func(c *receiptArchiveWALCut) { c.cutSeq = c.tipSeq + 1 })},
+		{"cut offset after tip", editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = c.tipOffset + 1 })},
+		{"equal sequence different witness", editManifest(func(c *receiptArchiveWALCut) { c.tipSeq = c.cutSeq })},
+		{"later sequence without offset advance", editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = c.cutOffset })},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bad := bytes.Clone(manifest)
-			tc.edit(bad)
-			sum := sha256.Sum256(bad[:len(bad)-sha256.Size])
-			copy(bad[len(bad)-sha256.Size:], sum[:])
-			if _, err := decodeReceiptArchiveWALCut(bad); !errors.Is(err, errReceiptArchiveWALCut) {
+			if _, err := decodeReceiptArchiveWALCut(tc.manifest); !errors.Is(err, errReceiptArchiveWALCut) {
 				t.Fatalf("malformed manifest decoded: %v", err)
 			}
+			stage, err := stageBoundArchive(t, raw, tc.manifest, path)
+			if !errors.Is(err, errReceiptArchiveWALCut) || stage != nil {
+				t.Fatalf("malformed manifest produced stage: %+v, %v", stage, err)
+			}
 		})
+	}
+}
+
+func TestReceiptArchiveWALCutCancellationReturnsNoStage(t *testing.T) {
+	raw, path := archiveWALFixture(t, 1, 2)
+	manifest, err := bindReceiptArchiveFileWAL(raw, path, archiveWALStringDecode, archiveWALValidEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := decodeWholeStateArchive(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stage, err := stageReceiptWholeStateArchiveAtWALCut(ctx, raw, manifest, path,
+		archiveWALStringDecode, archiveWALValidEntry, archive.Policy, time.Hour, nil)
+	if !errors.Is(err, context.Canceled) || stage != nil {
+		t.Fatalf("pre-canceled context produced stage: %+v, %v", stage, err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	calls := 0
+	stage, err = stageReceiptWholeStateArchiveAtWALCut(ctx, raw, manifest, path,
+		func(payload []byte) (mutationlog.MutationOp, error) {
+			calls++
+			if calls == 1 {
+				cancel()
+			}
+			return archiveWALStringDecode(payload)
+		},
+		archiveWALValidEntry, archive.Policy, time.Hour, nil)
+	if !errors.Is(err, context.Canceled) || stage != nil || calls == 0 {
+		t.Fatalf("mid-inspection cancellation produced stage: %+v, calls %d, %v", stage, calls, err)
 	}
 }
 
