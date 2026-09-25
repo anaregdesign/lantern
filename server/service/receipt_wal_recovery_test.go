@@ -16,6 +16,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -86,6 +87,18 @@ func auditGraphAddEffectEntry(t *testing.T, seq uint64, accepted bool) mutationl
 	}
 	entry.Op = effect
 	return entry
+}
+
+func recoveryGraphAddEffectEntry(t *testing.T, seq uint64, op *pb.MutationOp, accepted ...bool) mutationlog.Entry {
+	t.Helper()
+	m := receiptWALUnionGraphFixture(op)
+	m.Seq = seq
+	m.Hlc.Logical += uint32(seq - 1)
+	effect, err := newGraphAddEffectEnvelope(m, accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(m), Op: effect}
 }
 
 func recoveryEdgeEntry(seq uint64) mutationlog.Entry {
@@ -262,6 +275,133 @@ func TestReceiptWALRecoveryCandidateReplaysOnlyAcceptedPutEffects(t *testing.T) 
 	}
 }
 
+func TestReceiptWALRecoveryCandidateReplaysOnlyAcceptedAddEffects(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	valid := timestamppb.New(time.Now().Add(time.Hour))
+	expired := timestamppb.New(time.Now().Add(-time.Hour))
+	explicit := graphcache.ContribID{0x92}
+	op := &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{
+		Edges: []*pb.Edge{nil,
+			{Tail: "t", Head: "explicit", Weight: 2, Expiration: valid},
+			{Tail: "t", Head: "omitted", Weight: 3, Expiration: valid},
+			{Tail: "t", Head: "expired", Weight: 4, Expiration: expired},
+			nil, {Tail: "t", Head: "synthetic", Weight: 5, Expiration: valid}},
+		ContribIds: [][]byte{nil, explicit[:]},
+	}}}
+	entry := recoveryGraphAddEffectEntry(t, 1, op, true, false, true, true)
+	effect := entry.Op.(*graphAddEffectEnvelope)
+	if !reflect.DeepEqual(effect.AcceptedIndexes, []uint32{1, 3, 5}) {
+		t.Fatalf("accepted wire indexes = %v", effect.AcceptedIndexes)
+	}
+	path := writeReceiptWALAuditEntries(t, receiptEntry, entry)
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		head string
+		want float32
+		live bool
+		id   graphcache.ContribID
+	}{
+		{"explicit", 2, true, explicit},
+		{"omitted", 0, false, graphcache.ContribID{}},
+		{"expired", 0, false, graphcache.ContribID{}},
+		{"synthetic", 5, true, contribIDFor(effect.Mutation.Origin, effect.Mutation.Seq, 5)},
+	} {
+		got, ok := candidate.graph.GetWeight("t", tc.head)
+		if ok != tc.live || (ok && got != tc.want) {
+			t.Fatalf("recovered Add %s = %g, %v; want %g, %v", tc.head, got, ok, tc.want, tc.live)
+		}
+		if tc.live {
+			found := false
+			for _, edge := range candidate.graph.SnapshotReplication().Graph.Edges {
+				if edge.Tail == "t" && edge.Head == tc.head && len(edge.Contributions) == 1 && edge.Contributions[0].ContribID == tc.id {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("recovered Add %s lost original ContribID %x", tc.head, tc.id)
+			}
+		}
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 2 || len(candidate.origins.States()) != 2 {
+		t.Fatalf("recovered Add log/origin frontier = %d, %v, %+v", seq, ok, candidate.origins.States())
+	}
+	got, ok := candidate.log.RetainedEntries()[1].Op.(*graphAddEffectEnvelope)
+	if !ok || !proto.Equal(got.Mutation, effect.Mutation) || !reflect.DeepEqual(got.AcceptedIndexes, effect.AcceptedIndexes) {
+		t.Fatalf("WAL/Subscribe projection changed: %T", candidate.log.RetainedEntries()[1].Op)
+	}
+}
+
+func TestReceiptWALRecoveryCandidatePreservesAddOmissionsAcrossDelete(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	valid := timestamppb.New(time.Now().Add(time.Hour))
+	add := func(seq uint64, accepted bool) mutationlog.Entry {
+		return recoveryGraphAddEffectEntry(t, seq, &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+			Edge: &pb.Edge{Tail: "tail", Head: "present", Weight: 1, Expiration: valid},
+		}}}, accepted)
+	}
+	path := writeReceiptWALAuditEntries(t, add(1, true), receiptEntry, add(2, false))
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := candidate.graph.GetWeight("tail", "present"); ok || got != 0 {
+		t.Fatalf("omitted post-Delete Add was resurrected: %g, %v", got, ok)
+	}
+	for _, receipt := range receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts {
+		status, _, err := candidate.knownReceiptStatus(receipt.ID, time.Now())
+		if err != nil || status != mutationreceipt.Confirmed {
+			t.Fatalf("recovered original Delete result = %v, %v", status, err)
+		}
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 3 {
+		t.Fatalf("mixed Add/Delete log frontier = %d, %v", seq, ok)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsContradictoryAddEffect(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	put := recoveryEdgeEntry(1)
+	add := recoveryGraphAddEffectEntry(t, 1, &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+		Edge: &pb.Edge{Tail: "tail", Head: "present", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+	}}}, true)
+	m := add.Op.(*graphAddEffectEnvelope).Mutation
+	m.Origin = bytes.Repeat([]byte{0x32}, 16)
+	m.Hlc.NodeId = append([]byte(nil), m.Origin...)
+	m.Hlc.WallNs = put.HLC.WallNs - 1
+	add.HLC = receiptWALUnionGraphHLC(m)
+	path := writeReceiptWALAuditEntries(t, put, add)
+	if candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); candidate != nil || !errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "replayed as rejected") {
+		t.Fatalf("contradictory accepted Add = %p, %v; want no candidate", candidate, err)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsContradictoryDuplicateAddEffect(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	id := graphcache.ContribID{0xa3}
+	op := &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+		Edge:      &pb.Edge{Tail: "t", Head: "h", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		ContribId: id[:],
+	}}}
+	first := recoveryGraphAddEffectEntry(t, 1, op, true)
+	second := recoveryGraphAddEffectEntry(t, 2, op, true)
+	path := writeReceiptWALAuditEntries(t, first, second)
+	if candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); candidate != nil || !errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "replayed as rejected") {
+		t.Fatalf("contradictory duplicate Add = %p, %v; want no candidate", candidate, err)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsRepeatedAddFrameAfterAmbiguousAppend(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	entry := auditGraphAddEffectEntry(t, 1, true)
+	path := writeReceiptWALAuditEntries(t, entry, entry)
+	if candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); candidate != nil || !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("duplicate origin Add frame = %p, %v; want no candidate", candidate, err)
+	}
+}
+
 func TestReceiptWALRecoveryCandidateRejectsContradictoryPutEffect(t *testing.T) {
 	config, _ := receiptWALAuditFixture(t)
 	first := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "same"}}}})
@@ -316,7 +456,7 @@ func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testin
 		{"graph Delete accepted effect is not replayable yet", []mutationlog.Entry{auditGraphEntry(1), deleteEntry, receiptEntry}},
 		{"graph Delete after receipt remains gated", []mutationlog.Entry{auditGraphEntry(1), receiptEntry, deleteEntry}},
 		{"graph write after receipt", []mutationlog.Entry{receiptEntry, auditGraphEntry(1)}},
-		{"evidenced graph Add remains gated", []mutationlog.Entry{receiptEntry, auditGraphAddEffectEntry(t, 1, true)}},
+		{"raw graph Add after receipt", []mutationlog.Entry{receiptEntry, auditGraphAddEntry(1)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeReceiptWALAuditEntries(t, tc.entries...)

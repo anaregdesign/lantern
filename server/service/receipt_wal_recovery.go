@@ -222,18 +222,18 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // both replay passes; this function closes the resumed writer before return.
 // A graph-only exact Delete now has an absolute deadline and a private
 // accepted-index envelope, and graph Put/Add have accepted-effect envelopes.
-// Raw graph writes after a receipt and Add/Delete effect envelopes remain
+// Raw graph writes after a receipt and Delete effect envelopes remain
 // unreplayable: an omitted write could become accepted after a causal floor
 // expires. Prefix origins publish exact victim batches, not predicates.
-// Receipt Edge Deletes and evidenced graph Puts can interleave when their
-// projections are reproducible.
+// Receipt Edge Deletes and evidenced graph Puts/Adds can interleave when
+// their projections are reproducible.
 //
 // The recovered Log and FileWAL are closed before return. This read-only
 // candidate does not authorize receipt admission, an absent-ID answer, or
 // publication-fault clearing. A future full mixed-WAL format must record
 // accepted graph effects for every dependent graph write before lifting these
-// restrictions. Put effects are replayed from their receiver-local accepted
-// subset; Add and Delete effects still lack detached replay here.
+// restrictions. Put and Add effects replay only their receiver-local accepted
+// subsets; Delete effects still lack detached replay here.
 func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
 	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
 	if err != nil {
@@ -272,7 +272,11 @@ func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now t
 				return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
 			}
 		case *graphAddEffectEnvelope:
-			return fmt.Errorf("receipt WAL local seq %d: %w: graph Add effects are not replayable yet", entry.Seq, errReceiptWALUnion)
+			copy(origin[:], value.Mutation.GetOrigin())
+			seq = value.Mutation.GetSeq()
+			if err := replayGraphAddEffect(graph, value); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: graph Add effect replay: %w", entry.Seq, err)
+			}
 		case *edgeDeleteReceiptEnvelope:
 			seenReceipt = true
 			origin, seq = value.Origin, value.OriginSeq
@@ -456,6 +460,54 @@ func verifyGraphPutReplayOutcomes(accepted []graphPutAcceptedEffect, outcomes []
 			continue
 		}
 		return receiptWALUnionError("graph Put accepted effect %d at index %d replayed as %d", i, accepted[i].Index, outcome)
+	}
+	return nil
+}
+
+// replayGraphAddEffect applies only the contribution rows accepted by this
+// receiver. The original wire index, not the compact accepted-item position,
+// determines an unkeyed row's synthesized ContribID. A previously rejected
+// row must stay absent even if its causal floor has expired since commit.
+func replayGraphAddEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effect *graphAddEffectEnvelope) error {
+	if err := validateGraphAddEffectEnvelope(effect); err != nil {
+		return err
+	}
+	if len(effect.AcceptedIndexes) == 0 {
+		return nil
+	}
+	m := effect.Mutation
+	items := make([]graphcache.EdgeItem[string], len(effect.AcceptedIndexes))
+	for i, index := range effect.AcceptedIndexes {
+		var edge *pb.Edge
+		var rawID []byte
+		switch op := m.GetOp().GetOp().(type) {
+		case *pb.MutationOp_AddEdge:
+			edge, rawID = op.AddEdge.GetEdge(), op.AddEdge.GetContribId()
+		case *pb.MutationOp_AddEdges:
+			edge = op.AddEdges.GetEdges()[index]
+			if int(index) < len(op.AddEdges.GetContribIds()) {
+				rawID = op.AddEdges.GetContribIds()[index]
+			}
+		default:
+			return receiptWALUnionError("graph Add effect has unsupported replay arm %T", op)
+		}
+		if edge == nil {
+			return receiptWALUnionError("accepted graph Add has no Edge at index %d", index)
+		}
+		id := contribIDFromBytes(rawID)
+		if id.IsZero() {
+			id = contribIDFor(m.GetOrigin(), m.GetSeq(), uint16(index))
+		}
+		items[i] = graphcache.EdgeItem[string]{
+			Tail: edge.GetTail(), Head: edge.GetHead(), Weight: edge.GetWeight(),
+			Expiration: prototime.Expiration(edge.GetExpiration()), ContribID: id,
+		}
+	}
+	_, accepted, _ := graph.AddEdgesWithExpirationContribHLCResults(items, hlcFromProto(m.GetHlc()))
+	for i, applied := range accepted {
+		if !applied {
+			return receiptWALUnionError("graph Add accepted effect %d at index %d replayed as rejected", i, effect.AcceptedIndexes[i])
+		}
 	}
 	return nil
 }
