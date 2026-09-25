@@ -37,16 +37,18 @@ type ServingRuntime struct {
 }
 
 type receiptServingRuntime struct {
-	store          *mutationreceipt.Store
-	policy         mutationreceipt.Config
-	epoch          mutationreceipt.Epoch
-	generation     [16]byte
-	baselineCodec  ReceiptBaselineArchiveCodec
-	defaultTTL     time.Duration
-	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error
-	owner          *receiptWALOwnedCandidate
-	sidecarFault   func(receiptBaselineSidecarFaultPoint) error
-	installFault   func(receiptBaselineInstallFaultPoint) error
+	store                   *mutationreceipt.Store
+	policy                  mutationreceipt.Config
+	epoch                   mutationreceipt.Epoch
+	generation              [16]byte
+	committedBaselineDigest [sha256.Size]byte
+	baselineInstallGate     chan struct{}
+	baselineCodec           ReceiptBaselineArchiveCodec
+	defaultTTL              time.Duration
+	configureGraph          func(*graphcache.GraphCache[string, *pb.Vertex]) error
+	owner                   *receiptWALOwnedCandidate
+	sidecarFault            func(receiptBaselineSidecarFaultPoint) error
+	installFault            func(receiptBaselineInstallFaultPoint) error
 }
 
 const (
@@ -108,7 +110,7 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 	if err != nil {
 		return nil, errors.Join(err, candidate.Close())
 	}
-	return certifyReceiptWALServingRuntime(candidate, config, generation)
+	return certifyReceiptWALServingRuntime(candidate, config, generation, [sha256.Size]byte{})
 }
 
 // OpenDurableReceiptWALServingRuntime resumes one complete genesis WAL under
@@ -156,6 +158,7 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 		return nil, err
 	}
 	activeGeneration := generation
+	var committedBaselineDigest [sha256.Size]byte
 	if candidate.baseline.hasMarker {
 		if candidate.baseline.firstGeneration != generation {
 			return nil, errors.Join(
@@ -164,8 +167,9 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 			)
 		}
 		activeGeneration = candidate.baseline.activeGeneration
+		committedBaselineDigest = candidate.baseline.marker.Digest
 	}
-	return certifyReceiptWALServingRuntime(candidate, config, activeGeneration)
+	return certifyReceiptWALServingRuntime(candidate, config, activeGeneration, committedBaselineDigest)
 }
 
 func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfig) error {
@@ -333,6 +337,7 @@ func certifyReceiptWALServingRuntime(
 	candidate *receiptWALOwnedCandidate,
 	config DurableReceiptWALRuntimeConfig,
 	generation [16]byte,
+	committedBaselineDigest [sha256.Size]byte,
 ) (_ *ServingRuntime, err error) {
 	if candidate == nil || candidate.state == nil || candidate.state.graph == nil ||
 		candidate.state.receipts == nil || candidate.state.origins == nil ||
@@ -372,6 +377,8 @@ func certifyReceiptWALServingRuntime(
 	if err := clock.RestoreFloor(floor); err != nil {
 		return nil, fmt.Errorf("service: restore durable receipt WAL HLC frontier: %w", err)
 	}
+	baselineInstallGate := make(chan struct{}, 1)
+	baselineInstallGate <- struct{}{}
 
 	return &ServingRuntime{
 		graph:   candidate.state.graph,
@@ -379,14 +386,16 @@ func certifyReceiptWALServingRuntime(
 		clock:   clock,
 		origins: candidate.state.origins,
 		receipt: &receiptServingRuntime{
-			store:          candidate.state.receipts,
-			policy:         policy,
-			epoch:          candidate.state.receipts.Epoch(),
-			generation:     generation,
-			baselineCodec:  config.BaselineCodec,
-			defaultTTL:     config.DefaultTTL,
-			configureGraph: config.ConfigureGraph,
-			owner:          candidate,
+			store:                   candidate.state.receipts,
+			policy:                  policy,
+			epoch:                   candidate.state.receipts.Epoch(),
+			generation:              generation,
+			committedBaselineDigest: committedBaselineDigest,
+			baselineInstallGate:     baselineInstallGate,
+			baselineCodec:           config.BaselineCodec,
+			defaultTTL:              config.DefaultTTL,
+			configureGraph:          config.ConfigureGraph,
+			owner:                   candidate,
 		},
 		owner: candidate,
 	}, nil

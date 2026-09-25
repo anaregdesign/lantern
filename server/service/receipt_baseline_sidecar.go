@@ -18,8 +18,9 @@ var errReceiptBaselineSidecar = errors.New("service: invalid RECEIPT_V1 baseline
 type receiptBaselineSidecarFaultPoint string
 
 const (
-	receiptBaselineBeforeRename receiptBaselineSidecarFaultPoint = "before-sidecar-rename"
-	receiptBaselineAfterRename  receiptBaselineSidecarFaultPoint = "after-sidecar-rename"
+	receiptBaselineBeforeRename  receiptBaselineSidecarFaultPoint = "before-sidecar-rename"
+	receiptBaselineAfterRename   receiptBaselineSidecarFaultPoint = "after-sidecar-rename"
+	receiptBaselineBeforeCleanup receiptBaselineSidecarFaultPoint = "before-sidecar-cleanup"
 )
 
 type receiptBaselineSidecarStore struct {
@@ -172,6 +173,9 @@ func (s receiptBaselineSidecarStore) load(digest [sha256.Size]byte, size uint64)
 }
 
 func (s receiptBaselineSidecarStore) cleanup(keep [sha256.Size]byte) error {
+	if err := s.inject(receiptBaselineBeforeCleanup); err != nil {
+		return err
+	}
 	dir := filepath.Dir(s.walPath)
 	entries, err := os.ReadDir(dir)
 	if err != nil {

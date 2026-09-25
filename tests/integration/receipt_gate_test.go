@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +21,9 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -95,8 +99,9 @@ func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.DurableRec
 			)
 			return nil
 		},
-		NodeID: nodeID,
-		Now:    now,
+		NodeID:        nodeID,
+		Now:           now,
+		BaselineCodec: backup.ReceiptBaselineCodec{},
 	}
 }
 
@@ -313,6 +318,178 @@ func closeDurableReceiptWireRuntime(
 	server.srv.Close()
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping durable receipt gap recovery in short mode")
+	}
+	for _, recovery := range []string{"pump", "anti-entropy"} {
+		t.Run(recovery, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			sourceConfig := durableReceiptWireConfig(
+				filepath.Join(t.TempDir(), "source.wal"),
+				hlc.NodeID{0x51},
+			)
+			sourceConfig.Log.Capacity = 2
+			sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, sourceSDK := mountDurableReceiptWireRuntime(t, sourceRuntime)
+			defer closeDurableReceiptWireRuntime(t, source, sourceSDK, sourceRuntime)
+
+			const tail, head = "durable-gap-tail", "durable-gap-head"
+			if outcome, err := sourceSDK.PutEdge(ctx, tail, head, 1, time.Hour); err != nil ||
+				outcome != client.PutOutcomeAppliedAndLive {
+				t.Fatalf("seed source edge = (%v, %v)", outcome, err)
+			}
+			receiptOrigin := hlc.NodeID{0x73}
+			mutation, operationID := durableFollowerReceiptMutation(
+				t, sourceConfig.Receipt, receiptOrigin, 1, tail, head,
+			)
+			if err := source.svc.ApplyMutation(ctx, mutation); err != nil {
+				t.Fatalf("seed source receipt mutation: %v", err)
+			}
+			for i := range 8 {
+				key := fmt.Sprintf("durable-gap-%02d", i)
+				if _, err := sourceSDK.PutVertex(ctx, key, key, time.Hour); err != nil {
+					t.Fatalf("seed source vertex %q: %v", key, err)
+				}
+			}
+			if _, _, evicted := sourceRuntime.MutationLogStats(); evicted == 0 {
+				t.Fatal("source mutation log did not create a recovery gap")
+			}
+
+			targetConfig := durableReceiptWireConfig(
+				filepath.Join(t.TempDir(), "target.wal"),
+				hlc.NodeID{0x52},
+			)
+			targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, targetSDK := mountDurableReceiptWireRuntime(t, targetRuntime)
+			defer closeDurableReceiptWireRuntime(t, target, targetSDK, targetRuntime)
+
+			expectedPolicy := targetConfig.Receipt
+			expectedPolicy.ClockHighWater = time.Time{}
+			collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
+				TempDir: filepath.Dir(targetConfig.Path),
+				Limits: backup.ReceiptSnapshotCollectorLimits{
+					MaxFrameBytes: 8 << 20, MaxFrames: 128, MaxTotalBytes: 16 << 20,
+					MaxReceipts: 32, MaxOrigins: 16, MaxGraphFrames: 96,
+				},
+				ExpectedPolicy: expectedPolicy,
+				DefaultTTL:     targetConfig.DefaultTTL,
+				ConfigureGraph: targetConfig.ConfigureGraph,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installer, err := backup.NewReceiptSnapshotInstaller(collector, target.svc, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			runCtx, stop := context.WithCancel(ctx)
+			done := make(chan error, 1)
+			switch recovery {
+			case "pump":
+				pump := replication.NewPump(replication.Config{
+					NodeID: targetConfig.NodeID, Peers: []string{source.url},
+					BackoffMin: 10 * time.Millisecond, BackoffMax: 50 * time.Millisecond,
+					HTTPClient: h2cClient(), SnapshotInstaller: installer,
+					SearchConfigFingerprint: target.svc.SearchConfigFingerprint(),
+				}, target.svc, targetRuntime.GraphCache())
+				go func() { done <- pump.Run(runCtx) }()
+			case "anti-entropy":
+				antiEntropy := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+					NodeID: targetConfig.NodeID, Peers: []string{source.url},
+					Interval: 20 * time.Millisecond, SubscribeTimeout: 2 * time.Second,
+					HTTPClient: h2cClient(), SnapshotInstaller: installer,
+					SearchConfigFingerprint: target.svc.SearchConfigFingerprint(),
+				}, target.svc, target.svc, targetRuntime.GraphCache())
+				go func() { done <- antiEntropy.Run(runCtx) }()
+			default:
+				t.Fatalf("unknown recovery path %q", recovery)
+			}
+			defer func() {
+				stop()
+				select {
+				case err := <-done:
+					if err != nil && !errors.Is(err, context.Canceled) {
+						t.Errorf("%s stop: %v", recovery, err)
+					}
+				case <-time.After(2 * time.Second):
+					t.Errorf("%s did not stop", recovery)
+				}
+			}()
+
+			if !waitForVertex(t, targetRuntime.GraphCache(), "durable-gap-07", 5*time.Second) {
+				t.Fatal("durable receipt Snapshot did not publish graph state")
+			}
+			if _, _, ok := targetRuntime.GraphCache().GetEdgeDetail(tail, head); ok {
+				t.Fatal("durable receipt Snapshot did not publish the receipt tombstone")
+			}
+			if _, err := sourceSDK.PutVertex(ctx, "durable-gap-tail-resume", "tail", time.Hour); err != nil {
+				t.Fatalf("source tail write: %v", err)
+			}
+			if !waitForVertex(t, targetRuntime.GraphCache(), "durable-gap-tail-resume", 5*time.Second) {
+				t.Fatal("durable recovery did not resume the same responder tail")
+			}
+
+			stream, err := newReplicationRawClient(t, target.url).Snapshot(
+				ctx,
+				connect.NewRequest(&pb.SnapshotRequest{
+					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+				}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var header *pb.SnapshotHeader
+			var foundReceipt bool
+			for stream.Receive() {
+				frame := stream.Msg()
+				if candidate := frame.GetHeader(); candidate != nil {
+					header = candidate
+				}
+				if receipt := frame.GetReceipt(); receipt != nil &&
+					bytes.Equal(receipt.GetOperationId(), operationID) {
+					foundReceipt = true
+				}
+			}
+			if err := stream.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if header == nil || header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(receiptOrigin[:])] != 1 ||
+				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(sourceConfig.NodeID[:])] < 9 ||
+				!foundReceipt {
+				t.Fatalf(
+					"installed whole-state cut = header %+v, receipt %t",
+					header,
+					foundReceipt,
+				)
+			}
+			capability, err := graphv1connect.NewLanternServiceClient(
+				h2cClient(),
+				target.url,
+			).GetReceiptCapability(
+				ctx,
+				connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
+			)
+			if err != nil || capability.Msg.GetEnabled() {
+				t.Fatalf("public receipt capability after recovery = (%v, %v)", capability, err)
+			}
+		})
 	}
 }
 

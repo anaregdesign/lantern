@@ -62,13 +62,29 @@ func NewAntiEntropyDriver(
 	pump *replication.Pump,
 	m replication.AntiEntropyMetrics,
 	logger *slog.Logger,
+	installer *SnapshotInstallerSelection,
 ) *replication.AntiEntropy {
 	_ = pump // forces wire to construct the pump before the driver
+	cfg := newAntiEntropyReplicationConfig(pc, resolver, rc, ac, auth, svc, m, logger, installer)
+	return replication.NewAntiEntropy(cfg, svc, svc, cache)
+}
+
+func newAntiEntropyReplicationConfig(
+	pc PeerConfig,
+	resolver *PeerResolver,
+	rc ReplicationConfig,
+	ac AntiEntropyConfig,
+	auth AuthConfig,
+	svc *service.LanternService,
+	m replication.AntiEntropyMetrics,
+	logger *slog.Logger,
+	installer *SnapshotInstallerSelection,
+) replication.AntiEntropyConfig {
 	var source replication.PeerSource
 	if resolver != nil {
 		source = resolver.Source
 	}
-	return replication.NewAntiEntropy(replication.AntiEntropyConfig{
+	return replication.AntiEntropyConfig{
 		NodeID:                  rc.NodeID,
 		Peers:                   pc.Peers,
 		Source:                  source,
@@ -79,5 +95,6 @@ func NewAntiEntropyDriver(
 		Metrics:                 m,
 		AuthToken:               firstToken(auth.Tokens),
 		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
-	}, svc, svc, cache)
+		SnapshotInstaller:       installer.selected(),
+	}
 }

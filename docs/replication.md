@@ -81,12 +81,14 @@ is required for either reads or writes.
 | D6 | Cluster membership v1 | **Static `LANTERN_PEERS` env var.** v2 adds DNS-based discovery (#190). | Smallest surface that ships. Any DNS-routable platform (k8s headless Service, Compose service name, Nomad, plain DNS A-records) can populate it trivially. |
 | D7 | Supported deployment topologies | **Full HA:** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Single-instance (no HA):** any platform without stable per-instance addressing — Docker Compose single service, or any container runtime that hides/recycles instance addresses. **Not supported:** running multiple address-hidden instances as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Platforms that intentionally hide instance addresses and recycle instances fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
 
-The future bounded mutation-receipt extension is specified in
+The bounded mutation-receipt extension is specified in
 [ADR 0010](decisions/0010-bounded-mutation-receipts.md). It requires an atomic
 graph/result/receipt/log boundary and the contiguous publication work in
-#1282. Receipt RPCs remain disabled; the guarded follower, Snapshot producer,
-detached collector, and durable baseline primitives are private and are not
-wired into Pump or anti-entropy. D1 remains the current crash-persistence rule.
+#1282. Receipt RPCs and client mutation APIs remain disabled. In private
+durable receipt-WAL mode, the guarded follower, Snapshot producer, detached
+collector, and durable baseline primitive are wired into Pump and
+anti-entropy through one shared exact-`RECEIPT_V1` installer. Graph-only mode
+and D1 remain unchanged.
 
 ## 4. CRDT semantics per RPC
 
@@ -698,11 +700,12 @@ Framing contract:
 
 - The request and first header negotiate the image format. Zero request and
   zero header retain the legacy graph-only interpretation while receipt writes
-  are disabled. Current Pump and anti-entropy explicitly request
+  are disabled. Graph-only Pump and anti-entropy explicitly request
   `GRAPH_ONLY_V1` and accept zero or `GRAPH_ONLY_V1` in the first header, but
-  reject `RECEIPT_V1` before applying any frame. A future receipt receiver
-  must request `RECEIPT_V1` and reject an old server's zero/graph-only header
-  before installation. When receipt continuity is required, the responder
+  reject `RECEIPT_V1` before applying any frame. Durable receipt-WAL mode
+  instead gives both consumers one shared installer that requests exactly
+  `RECEIPT_V1` and rejects an old server's zero/graph-only header before
+  publication. When receipt continuity is required, the responder
   advertises `PeerStatus.required_snapshot_format = RECEIPT_V1`, rejects
   legacy full Subscribe before checking the retained ring, and rejects every
   graph-only Snapshot request. An opt-in receipt producer exists, but it must
@@ -711,9 +714,16 @@ Framing contract:
   serving runtime, graph backend, mutation log, HLC clock, origin tracker, and
   Store; a foreign or incomplete configuration fails before a header is sent.
   The durable production runtime configures this producer against its exact
-  certified state. A detached collector and internal durable baseline
-  installer/restart path exist, but Pump and anti-entropy do not request or
-  invoke them. No receipt write/status capability is enabled.
+  certified state. Its transport-neutral installer fully drains the stream
+  into the bounded detached collector, validates the canonical archive, and
+  invokes the exact certified durable baseline publication once. Graph,
+  receipt Store, origin vector, HLC floor, marker, and resume cutoff therefore
+  publish as one cut. Cancellation, corruption, truncation, capacity,
+  epoch/policy mismatch, and downgrade failures publish nothing. No receipt
+  write/status capability is enabled. Production bounds are 8 MiB per frame,
+  512 MiB per complete wire/canonical image, 1,048,576 total frames, 65,536
+  origin rows, and at most 1,048,574 receipt rows (further limited by the
+  configured Store entry cap).
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
   the primary's contiguous per-origin committed prefix (every prior
   mutation has been applied to the graph and published to its relay log,
@@ -818,10 +828,25 @@ Implementation notes:
   cut before sampling the cutoff; overflow fails closed. Any malformed capture
   therefore sends no partial image. The ordinary graph-only producer and wire
   behavior are unchanged.
+- Provider selection is runtime-aware. Graph-only mode passes no override and
+  retains the historical in-place `GRAPH_ONLY_V1` installer. Durable
+  receipt-WAL mode creates one bounded collector-backed installer after
+  service/runtime certification and injects that same instance into Pump and
+  anti-entropy, preventing their format policy or install serialization from
+  diverging. Live durable installs serialize sidecar creation through marker
+  publication. Success retains only the committed digest; definite
+  pre-marker rejection removes its candidate; an indeterminate marker outcome
+  or publication panic retains the candidate and fail-stops serving. A
+  post-commit cleanup error is logged without turning a committed install into
+  an apparent rejection.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,
   one-peer-at-a-time operation, so the O(N+E) overhead is acceptable.
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap
   path is exercised at scale (tracked alongside #190).
+  Real Connect/h2c tests cover two-node durable gap recovery through Pump and
+  anti-entropy plus tail resumption. Exhaustive multi-replica partition,
+  restart, soak, and receipt-bearing backup acceptance remains a separate
+  #1393 follow-up; #1394 owns the backup/restore continuity boundary.
 - Delete tombstones committed before the Snapshot cutoff cannot be re-derived
   from the Subscribe tail. Explicit tombstone frames preserve their exact D4
   deadline across bootstrap. Put causal barriers — whether born expired or

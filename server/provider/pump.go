@@ -91,8 +91,23 @@ func NewReplicationPump(
 	cache *graphcache.GraphCache[string, *v1.Vertex],
 	m replication.Metrics,
 	logger *slog.Logger,
+	installer *SnapshotInstallerSelection,
 	_ runtimeCertified,
 ) *replication.Pump {
+	cfg := newReplicationPumpConfig(pc, resolver, rc, ac, svc, m, logger, installer)
+	return replication.NewPump(cfg, svc, cache)
+}
+
+func newReplicationPumpConfig(
+	pc PeerConfig,
+	resolver *PeerResolver,
+	rc ReplicationConfig,
+	ac AuthConfig,
+	svc *service.LanternService,
+	m replication.Metrics,
+	logger *slog.Logger,
+	installer *SnapshotInstallerSelection,
+) replication.Config {
 	cfg := replication.Config{
 		NodeID:                  rc.NodeID,
 		Peers:                   pc.Peers,
@@ -103,11 +118,12 @@ func NewReplicationPump(
 		DiscoveryInterval:       pc.DiscoveryInterval,
 		AuthToken:               firstToken(ac.Tokens),
 		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
+		SnapshotInstaller:       installer.selected(),
 	}
 	if resolver != nil {
 		cfg.Source = resolver.Source
 	}
-	return replication.NewPump(cfg, svc, cache)
+	return cfg
 }
 
 // firstToken picks the client-side token when auth is enabled (#850):

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -20,21 +21,32 @@ const (
 )
 
 // InstallReceiptBaseline validates a detached RECEIPT_V1 capture and installs
-// it into this service's identity-stable runtime objects. It is an in-process
-// composition primitive for a later shared Snapshot collector; no RPC, Pump,
-// or anti-entropy path calls it in this layer.
+// it into this service's identity-stable runtime objects. It is a private
+// in-process composition primitive; no public receipt RPC calls it.
 func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture ReceiptWholeStateCapture) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if s == nil || s.runtime == nil || s.runtime.receipt == nil ||
 		s.runtime.receipt.owner == nil || s.runtime.receipt.baselineCodec == nil ||
+		s.runtime.receipt.baselineInstallGate == nil ||
 		s.cache != s.runtime.graph || s.log != s.runtime.log ||
 		s.clock != s.runtime.clock || s.origins != s.runtime.origins ||
 		s.receiptStore != s.runtime.receipt.store {
 		return errors.New("service: durable baseline install requires the exact certified runtime")
 	}
 	receiptRuntime := s.runtime.receipt
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-receiptRuntime.baselineInstallGate:
+	}
+	defer func() {
+		receiptRuntime.baselineInstallGate <- struct{}{}
+	}()
+	if err := s.withExclusiveCommittedView(func() error { return nil }); err != nil {
+		return err
+	}
 	if capture.Policy.Epoch != receiptRuntime.epoch {
 		return fmt.Errorf("%w: baseline epoch mismatch", errReceiptBaselineMarker)
 	}
@@ -74,12 +86,29 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 		walPath: receiptRuntime.owner.lease.Path(),
 		fault:   receiptRuntime.sidecarFault,
 	}
+	committedBaselineDigest := receiptRuntime.committedBaselineDigest
 	digest, _, err := sidecars.persist(raw)
 	if err != nil {
-		return err
+		return errors.Join(err, sidecars.cleanup(committedBaselineDigest))
 	}
 
-	return s.withExclusiveCommittedView(func() (installErr error) {
+	markerMayBeDurable := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if markerMayBeDurable {
+				panic(recovered)
+			}
+			if cleanupErr := sidecars.cleanup(committedBaselineDigest); cleanupErr != nil {
+				logger := s.logger
+				if logger == nil {
+					logger = slog.Default()
+				}
+				logger.Error("failed to clean rejected receipt baseline sidecar", "error", cleanupErr)
+			}
+			panic(recovered)
+		}
+	}()
+	err = s.withExclusiveCommittedView(func() (installErr error) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -155,6 +184,7 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 				panic(recovered)
 			}
 		}()
+		markerMayBeDurable = true
 		_, err = s.log.CommitBoundaryWithPostRingPublication(marker, marker.RestoreFloor, func(mutationlog.Entry) {
 			if fault := receiptRuntime.injectInstallFault(receiptBaselineAfterMarkerBeforePublish); fault != nil {
 				panic(fault)
@@ -166,8 +196,7 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 			storeStage.Commit()
 		})
 		if err != nil {
-			if errors.Is(err, mutationlog.ErrWALIndeterminate) ||
-				errors.Is(err, mutationlog.ErrPublicationInterrupted) {
+			if receiptBaselineWALFailureRequiresFailStop(err) {
 				s.markReceiptCommitFaultLocked()
 			}
 			return fmt.Errorf("service: commit receipt baseline marker: %w", err)
@@ -177,6 +206,53 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 		}
 		return nil
 	})
+	if err != nil {
+		if markerMayBeDurable && !receiptBaselineMarkerDefinitelyAbsent(err) {
+			return err
+		}
+		return errors.Join(err, sidecars.cleanup(committedBaselineDigest))
+	}
+	receiptRuntime.committedBaselineDigest = digest
+	if cleanupErr := sidecars.cleanup(digest); cleanupErr != nil {
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Error(
+			"receipt baseline committed but stale sidecar cleanup failed",
+			"baseline_digest", fmt.Sprintf("%x", digest),
+			"error", cleanupErr,
+		)
+	}
+	return nil
+}
+
+func receiptBaselineMarkerDefinitelyAbsent(err error) bool {
+	var aborted *mutationlog.DefiniteWALAbort
+	if errors.As(err, &aborted) {
+		return true
+	}
+	// Indeterminate joins take precedence in case a WAL returns one of the
+	// readiness sentinels as its underlying I/O error.
+	if errors.Is(err, mutationlog.ErrWALIndeterminate) ||
+		errors.Is(err, mutationlog.ErrPublicationInterrupted) {
+		return false
+	}
+	// CommitBoundaryWithPostRingPublication returns these only from its
+	// readiness and sequence checks, before WAL.Write.
+	return errors.Is(err, mutationlog.ErrClosed) ||
+		errors.Is(err, mutationlog.ErrSeqExhausted) ||
+		errors.Is(err, mutationlog.ErrLegacyWALUncertain)
+}
+
+func receiptBaselineWALFailureRequiresFailStop(err error) bool {
+	if !receiptBaselineMarkerDefinitelyAbsent(err) {
+		return true
+	}
+	var aborted *mutationlog.DefiniteWALAbort
+	// Legacy uncertainty predates this candidate, so discard the candidate
+	// while keeping the serving runtime fail-stopped.
+	return !errors.As(err, &aborted) && errors.Is(err, mutationlog.ErrLegacyWALUncertain)
 }
 
 func nextReceiptRuntimeGeneration(previous [16]byte) ([16]byte, error) {

@@ -8,9 +8,8 @@
 //     LanternReplicationService.Subscribe with an empty portable cursor.
 //  2. If the server replies codes.FailedPrecondition (reason "gapped" —
 //     the canonical bootstrap signal from #180), opens
-//     LanternReplicationService.Snapshot, replays the Header→Vertex→Edge
-//     frames (including causal barriers and active Delete tombstones) into the
-//     local cache, then resumes against the same responder at
+//     LanternReplicationService.Snapshot, hands the complete stream to the
+//     configured format-specific installer, then resumes against the same responder at
 //     both header origin cutoffs + 1 and header.cutoff_local_seq + 1.
 //  3. Applies every received Mutation via the local MutationApplier
 //     (LanternService.ApplyMutation). Reading B appends a newly-observed remote
@@ -318,8 +317,8 @@ func (s *snapshotReplayState) acceptHeader(header *pb.SnapshotHeader) error {
 	if s.gotHeader || s.phase != 0 || s.sawFooter {
 		return snapshotProtocolError("duplicate or out-of-order header frame")
 	}
-	// This receiver installs only graph state. A receipt format must be
-	// handled by a future staged graph+receipt installer, never by this path.
+	// This receiver installs only graph state. Receipt format is handled by
+	// the staged graph+receipt installer, never by this path.
 	if !graphOnlySnapshotFormat(header.GetFormat()) {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("graph-only receiver cannot install this Snapshot format"))
 	}

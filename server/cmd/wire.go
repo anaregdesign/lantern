@@ -40,6 +40,7 @@ func initializeApp() (*App, func(), error) {
 		provider.NewServingRuntime,
 		provider.NewRuntimeGraph,
 		provider.NewRuntimeCertified,
+		provider.NewSnapshotInstallerSelection,
 		provider.WireDomainMetrics,
 		provider.WireCacheGCHooks,
 		provider.NewReadinessGate,
