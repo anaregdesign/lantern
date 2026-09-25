@@ -504,16 +504,16 @@ func TestIdentityCDC_ReceiptEdgeDeleteTailFailsClosedAndPreservesCursor(t *testi
 		}
 	}
 
-	legacy, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	unopted, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
 	if err == nil {
-		if legacy.Receive() {
-			t.Fatalf("legacy full Subscribe received downgrade frame: %+v", legacy.Msg())
+		if unopted.Receive() {
+			t.Fatalf("receipt-less full Subscribe received downgrade frame: %+v", unopted.Msg())
 		}
-		err = legacy.Err()
-		_ = legacy.Close()
+		err = unopted.Err()
+		_ = unopted.Close()
 	}
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("legacy full Subscribe error = %v, want InvalidArgument", err)
+		t.Fatalf("receipt-less full Subscribe error = %v, want InvalidArgument", err)
 	}
 	full, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1, AcceptReceiptEnvelopes: true}))
 	if err != nil {

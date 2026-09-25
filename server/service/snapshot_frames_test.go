@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"reflect"
 	"testing"
 	"time"
 
@@ -63,7 +64,9 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 		header.GetCutoffSeqPerOrigin()[hex.EncodeToString(origin[:])] != 4 || footer.GetVertexCount() != 2 ||
 		footer.GetEdgeCount() != 1 || footer.GetVertexCausalBarrierCount() != 1 || footer.GetEdgeCausalBarrierCount() != 1 ||
 		footer.GetVertexTombstoneCount() != 1 || footer.GetEdgeTombstoneCount() != 1 ||
-		header.GetReceiptMetadata() != nil || footer.GetReceiptCount() != 0 || footer.GetReceiptOriginCount() != 0 {
+		header.GetReceiptMetadata() != nil || footer.GetActiveReceiptCount() != 0 ||
+		footer.GetRetiredEpochCount() != 0 || footer.GetRetiredReceiptCount() != 0 ||
+		footer.GetOriginCount() != 0 {
 		t.Fatalf("graph-only header/footer drift: %+v, %+v", header, footer)
 	}
 	if graphOnly.frames[1].GetVertexCausalBarrier() == nil || graphOnly.frames[2].GetEdgeCausalBarrier() == nil ||
@@ -79,10 +82,10 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 	}
 
 	privateReceipt := &snapshotFrameSink{}
-	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1, privateReceipt); err != nil {
+	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, privateReceipt); err != nil {
 		t.Fatal(err)
 	}
-	if len(privateReceipt.frames) != len(graphOnly.frames) || privateReceipt.frames[0].GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+	if len(privateReceipt.frames) != len(graphOnly.frames) || privateReceipt.frames[0].GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("private format changed graph frame shape: %+v", privateReceipt.frames)
 	}
 	for i := 1; i < len(graphOnly.frames); i++ {
@@ -148,11 +151,14 @@ func receiptSnapshotTestCapture(t *testing.T, withReceipt, withGraph bool) (Rece
 	}
 	if withGraph {
 		cut.graph.Vertices = []graphcache.SnapshotVertex[string, *pb.Vertex]{{
-			Key: "live", Value: &pb.Vertex{Key: "live"}, HLC: stamp,
+			Key: "live", Value: &pb.Vertex{
+				Key:   "live",
+				Value: &pb.Vertex_Nil{Nil: true},
+			}, HLC: stamp,
 		}}
 	}
 	graph := &snapshotFrameSink{}
-	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1, graph); err != nil {
+	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, graph); err != nil {
 		t.Fatal(err)
 	}
 	return ReceiptWholeStateCapture{
@@ -181,9 +187,92 @@ func receiptSnapshotPutEdgeFrame(tail, head string) *pb.SnapshotResponse {
 	}}}
 }
 
+func receiptSnapshotTestRetiredMember(
+	t *testing.T,
+	epoch mutationreceipt.Epoch,
+	highWater time.Time,
+	nonce byte,
+) mutationreceipt.RetiredEpochSnapshot {
+	t.Helper()
+	policy := mutationreceipt.Config{
+		Epoch: epoch, Retention: 2 * time.Hour, MaxEntries: 8, MaxBytes: 1 << 20,
+		ClockHighWater: highWater,
+	}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := mutationreceipt.NewID(epoch, highWater, [24]byte{nonce})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := mutationreceipt.Intent{
+		ID: id, Group: mutationreceipt.GroupID{nonce}, Count: 1,
+		Kind:   mutationreceipt.PutVertex,
+		Digest: mutationreceipt.IntentDigest([]byte{nonce}),
+	}
+	tx, err := store.Begin(highWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]mutationreceipt.Intent{intent}); err != nil ||
+		class != mutationreceipt.Fresh {
+		t.Fatalf("Classify retired receipt = (%v, %v)", class, err)
+	}
+	if err := tx.Reserve([][]byte{{nonce}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	state, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutationreceipt.RetiredEpochSnapshot{
+		Policy: mutationreceipt.RetiredEpochPolicy{
+			Epoch: epoch, Retention: policy.Retention,
+			MaxEntries: policy.MaxEntries, MaxBytes: policy.MaxBytes,
+		},
+		State: state,
+	}
+}
+
+func receiptSnapshotTestCaptureWithRetired(t *testing.T) (ReceiptWholeStateCapture, mutationreceipt.Config) {
+	t.Helper()
+	capture, policy := receiptSnapshotTestCapture(t, true, true)
+	highWater := capture.Receipts.ClockHighWater()
+	capture.Retired = mutationreceipt.RetiredCatalogSnapshot{
+		Version:              1,
+		ClockHighWaterMillis: capture.Receipts.ClockHighWaterMillis,
+		Epochs: []mutationreceipt.RetiredEpochSnapshot{
+			receiptSnapshotTestRetiredMember(t, mutationreceipt.Epoch{0x11}, highWater, 0x12),
+			receiptSnapshotTestRetiredMember(t, mutationreceipt.Epoch{0x41}, highWater, 0x42),
+		},
+	}
+	if _, err := mutationreceipt.NewRetiredCatalogFromSnapshot(
+		receiptSnapshotTestCatalogConfig(capture),
+		capture.Retired,
+	); err != nil {
+		t.Fatalf("retired fixture: %v", err)
+	}
+	return capture, policy
+}
+
+func receiptSnapshotTestCatalogConfig(capture ReceiptWholeStateCapture) mutationreceipt.RetiredCatalogConfig {
+	return mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch:    capture.Policy.Epoch,
+		MaxEntries:     capture.Policy.MaxEntries,
+		MaxBytes:       capture.Policy.MaxBytes,
+		ClockHighWater: capture.Receipts.ClockHighWater(),
+	}
+}
+
 func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.T) {
 	capture, policy := receiptSnapshotTestCapture(t, true, true)
-	frames, err := prepareReceiptSnapshotFrames(capture, policy)
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,10 +281,10 @@ func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.
 	}
 	header := frames[0].GetHeader()
 	metadata := header.GetReceiptMetadata()
-	wirePolicy := metadata.GetPolicy()
+	wirePolicy := metadata.GetActivePolicy()
 	row := frames[1].GetReceipt()
 	footer := frames[3].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		!bytes.Equal(wirePolicy.GetDeploymentEpoch(), capture.Receipts.Epoch[:]) ||
 		!bytes.Equal(wirePolicy.GetFingerprint(), capture.Receipts.PolicyFingerprint[:]) ||
 		wirePolicy.GetRetentionMs() != uint64(policy.Retention/time.Millisecond) ||
@@ -216,12 +305,13 @@ func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.
 		t.Fatalf("receipt row lost Store state: %+v", row)
 	}
 	if frames[2].GetVertex().GetVertex().GetKey() != "live" ||
-		footer.GetReceiptCount() != 1 || footer.GetReceiptOriginCount() != 1 ||
+		footer.GetActiveReceiptCount() != 1 || footer.GetRetiredEpochCount() != 0 ||
+		footer.GetRetiredReceiptCount() != 0 || footer.GetOriginCount() != 1 ||
 		footer.GetVertexCount() != 1 {
 		t.Fatalf("receipt body/footer drift: %+v", frames)
 	}
 
-	again, err := prepareReceiptSnapshotFrames(capture, policy)
+	again, err := PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,20 +331,180 @@ func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.
 	}
 }
 
-func TestDecodeReceiptSnapshotFramesReturnsDetachedArchiveCapture(t *testing.T) {
-	want, policy := receiptSnapshotTestCapture(t, true, true)
-	frames, err := prepareReceiptSnapshotFrames(want, policy)
+func TestReceiptSnapshotFrameCapacity(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name        string
+		graphFrames int
+		receiptRows int
+		want        int
+		wantErr     bool
+	}{
+		{name: "valid", graphFrames: 2, receiptRows: 3, want: 5},
+		{name: "exact platform maximum", graphFrames: maxInt - 1, receiptRows: 1, want: maxInt},
+		{name: "overflow", graphFrames: maxInt, receiptRows: 1, wantErr: true},
+		{name: "negative graph count", graphFrames: -1, wantErr: true},
+		{name: "negative receipt count", receiptRows: -1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := receiptSnapshotFrameCapacity(tt.graphFrames, tt.receiptRows)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("receiptSnapshotFrameCapacity() error = nil, want non-nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("receiptSnapshotFrameCapacity() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("receiptSnapshotFrameCapacity() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReceiptSnapshotRetiredCatalogRoundTrip(t *testing.T) {
+	capture, policy := receiptSnapshotTestCaptureWithRetired(t)
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := DecodeReceiptSnapshotFrames(frames)
+	metadata := frames[0].GetHeader().GetReceiptMetadata()
+	footer := frames[len(frames)-1].GetFooter()
+	if len(metadata.GetRetiredPolicies()) != 2 ||
+		!bytes.Equal(metadata.GetRetiredPolicies()[0].GetDeploymentEpoch(), capture.Retired.Epochs[0].Policy.Epoch[:]) ||
+		!bytes.Equal(metadata.GetRetiredPolicies()[1].GetDeploymentEpoch(), capture.Retired.Epochs[1].Policy.Epoch[:]) ||
+		footer.GetActiveReceiptCount() != 1 ||
+		footer.GetRetiredEpochCount() != 2 ||
+		footer.GetRetiredReceiptCount() != 2 ||
+		footer.GetOriginCount() != 1 {
+		t.Fatalf("retired receipt metadata/footer = %+v / %+v", metadata, footer)
+	}
+	var ids [][]byte
+	for _, frame := range frames[1:] {
+		if row := frame.GetReceipt(); row != nil {
+			ids = append(ids, row.GetOperationId())
+		}
+	}
+	if len(ids) != 3 ||
+		bytes.Compare(ids[0], ids[1]) >= 0 ||
+		bytes.Compare(ids[1], ids[2]) >= 0 {
+		t.Fatalf("receipt row order = %x", ids)
+	}
+	decoded, err := DecodeReceiptSnapshotFrames(
+		frames,
+		policy,
+		receiptSnapshotTestCatalogConfig(capture),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded.Retired, capture.Retired) {
+		t.Fatalf("decoded retired catalog = %+v", decoded.Retired)
+	}
+}
+
+func TestReceiptSnapshotCanonicalizesGraphOrderAndRejectsReordering(t *testing.T) {
+	capture, policy := receiptSnapshotTestCapture(t, true, true)
+	second := proto.Clone(capture.Graph[1]).(*pb.SnapshotResponse)
+	second.GetVertex().Vertex.Key = "aaa"
+	capture.Graph = insertReceiptSnapshotFrames(
+		capture.Graph,
+		len(capture.Graph)-1,
+		second,
+	)
+	capture.Graph[len(capture.Graph)-1].GetFooter().VertexCount++
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frames[2].GetVertex().GetVertex().GetKey() != "aaa" ||
+		frames[3].GetVertex().GetVertex().GetKey() != "live" {
+		t.Fatalf("canonical graph order = %+v", frames[2:4])
+	}
+	frames[2], frames[3] = frames[3], frames[2]
+	if _, err := DecodeReceiptSnapshotFrames(
+		frames,
+		policy,
+		receiptSnapshotTestCatalogConfig(capture),
+	); err == nil {
+		t.Fatal("noncanonical graph order was accepted")
+	}
+}
+
+func TestReceiptSnapshotRejectsMalformedRetiredEvidence(t *testing.T) {
+	capture, policy := receiptSnapshotTestCaptureWithRetired(t)
+	valid, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func([]*pb.SnapshotResponse)
+	}{
+		{"retired policy order", func(frames []*pb.SnapshotResponse) {
+			policies := frames[0].GetHeader().GetReceiptMetadata().RetiredPolicies
+			policies[0], policies[1] = policies[1], policies[0]
+		}},
+		{"retired row order", func(frames []*pb.SnapshotResponse) {
+			frames[1], frames[2] = frames[2], frames[1]
+		}},
+		{"retired policy fingerprint", func(frames []*pb.SnapshotResponse) {
+			frames[0].GetHeader().GetReceiptMetadata().RetiredPolicies[0].Fingerprint[0] ^= 1
+		}},
+		{"active epoch contamination", func(frames []*pb.SnapshotResponse) {
+			frames[0].GetHeader().GetReceiptMetadata().RetiredPolicies[0].DeploymentEpoch =
+				append([]byte(nil), policy.Epoch[:]...)
+		}},
+		{"duplicate retired epoch", func(frames []*pb.SnapshotResponse) {
+			frames[0].GetHeader().GetReceiptMetadata().RetiredPolicies[1] =
+				proto.Clone(frames[0].GetHeader().GetReceiptMetadata().RetiredPolicies[0]).(*pb.ReceiptPolicy)
+		}},
+		{"retired epoch count", func(frames []*pb.SnapshotResponse) {
+			frames[len(frames)-1].GetFooter().RetiredEpochCount++
+		}},
+		{"retired receipt count", func(frames []*pb.SnapshotResponse) {
+			frames[len(frames)-1].GetFooter().RetiredReceiptCount++
+		}},
+		{"unknown retired policy field", func(frames []*pb.SnapshotResponse) {
+			frames[0].GetHeader().GetReceiptMetadata().RetiredPolicies[0].ProtoReflect().
+				SetUnknown([]byte{0xa0, 0x06, 0x01})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := cloneReceiptSnapshotFrames(valid)
+			tc.mutate(frames)
+			if _, err := DecodeReceiptSnapshotFrames(
+				frames,
+				policy,
+				receiptSnapshotTestCatalogConfig(capture),
+			); err == nil {
+				t.Fatal("malformed retired receipt evidence was accepted")
+			}
+		})
+	}
+}
+
+func TestDecodeReceiptSnapshotFramesReturnsDetachedArchiveCapture(t *testing.T) {
+	want, policy := receiptSnapshotTestCapture(t, true, true)
+	frames, err := PrepareReceiptSnapshotFrames(want, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeReceiptSnapshotFrames(
+		frames,
+		policy,
+		receiptSnapshotTestCatalogConfig(want),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(decoded.Graph) != len(want.Graph) ||
 		decoded.Graph[0].GetHeader().GetReceiptMetadata() != nil ||
-		decoded.Graph[len(decoded.Graph)-1].GetFooter().GetReceiptCount() != 0 ||
-		decoded.Graph[len(decoded.Graph)-1].GetFooter().GetReceiptOriginCount() != 0 ||
+		decoded.Graph[len(decoded.Graph)-1].GetFooter().GetActiveReceiptCount() != 0 ||
+		decoded.Graph[len(decoded.Graph)-1].GetFooter().GetOriginCount() != 0 ||
 		len(decoded.Receipts.Receipts) != 1 ||
 		len(decoded.Origins) != 1 ||
 		decoded.Policy.Epoch != policy.Epoch ||
@@ -288,17 +538,21 @@ func TestPrepareReceiptSnapshotFramesReceiptOnlyAndZeroRows(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			capture, policy := receiptSnapshotTestCapture(t, tc.withReceipt, false)
-			frames, err := prepareReceiptSnapshotFrames(capture, policy)
+			frames, err := PrepareReceiptSnapshotFrames(capture, policy)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(frames) != tc.wantFrames || frames[0].GetHeader() == nil ||
-				frames[len(frames)-1].GetFooter().GetReceiptCount() != tc.wantReceipts ||
+				frames[len(frames)-1].GetFooter().GetActiveReceiptCount() != tc.wantReceipts ||
 				frames[len(frames)-1].GetFooter().GetVertexCount() != 0 ||
 				frames[len(frames)-1].GetFooter().GetEdgeCount() != 0 {
 				t.Fatalf("receipt-only stream = %+v", frames)
 			}
-			if err := validateReceiptSnapshotFrames(frames); err != nil {
+			if err := validateReceiptSnapshotFrames(
+				frames,
+				policy,
+				receiptSnapshotTestCatalogConfig(capture),
+			); err != nil {
 				t.Fatalf("valid receipt-only stream: %v", err)
 			}
 		})
@@ -307,7 +561,7 @@ func TestPrepareReceiptSnapshotFramesReceiptOnlyAndZeroRows(t *testing.T) {
 
 func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 	capture, policy := receiptSnapshotTestCapture(t, true, true)
-	valid, err := prepareReceiptSnapshotFrames(capture, policy)
+	valid, err := PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +577,7 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			return frames
 		}},
 		{"short epoch", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
-			frames[0].GetHeader().GetReceiptMetadata().GetPolicy().DeploymentEpoch = []byte{1}
+			frames[0].GetHeader().GetReceiptMetadata().GetActivePolicy().DeploymentEpoch = []byte{1}
 			return frames
 		}},
 		{"clock high-water beyond cutoff", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
@@ -336,7 +590,7 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			return frames
 		}},
 		{"unknown nested header field", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
-			frames[0].GetHeader().GetReceiptMetadata().GetPolicy().ProtoReflect().
+			frames[0].GetHeader().GetReceiptMetadata().GetActivePolicy().ProtoReflect().
 				SetUnknown([]byte{0xa0, 0x06, 0x01})
 			return frames
 		}},
@@ -354,11 +608,11 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			return frames
 		}},
 		{"receipt count", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
-			frames[len(frames)-1].GetFooter().ReceiptCount++
+			frames[len(frames)-1].GetFooter().ActiveReceiptCount++
 			return frames
 		}},
 		{"origin count", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
-			frames[len(frames)-1].GetFooter().ReceiptOriginCount++
+			frames[len(frames)-1].GetFooter().OriginCount++
 			return frames
 		}},
 		{"unknown receipt kind", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
@@ -399,6 +653,14 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 		}},
 		{"live vertex HLC beyond origin frontier", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[0].GetHeader().GetReceiptMetadata().GetOriginCutoffs()[0].GetLastHlc().WallNs--
+			return frames
+		}},
+		{"unset live vertex value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = nil
+			return frames
+		}},
+		{"false nil live vertex value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = &pb.Vertex_Nil{Nil: false}
 			return frames
 		}},
 		{"typed-nil timestamp value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
@@ -551,7 +813,11 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			frames := tc.mutate(cloneReceiptSnapshotFrames(valid))
-			if err := validateReceiptSnapshotFrames(frames); err == nil {
+			if err := validateReceiptSnapshotFrames(
+				frames,
+				policy,
+				receiptSnapshotTestCatalogConfig(capture),
+			); err == nil {
 				t.Fatal("malformed receipt Snapshot was accepted")
 			}
 		})
@@ -605,6 +871,12 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 		}},
 		{"live vertex HLC beyond origin frontier", func(c *ReceiptWholeStateCapture) {
 			c.Origins[0].LastHLC.WallNs--
+		}},
+		{"unset live vertex value", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().Value = nil
+		}},
+		{"false nil live vertex value", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().Value = &pb.Vertex_Nil{Nil: false}
 		}},
 		{"typed-nil timestamp value", func(c *ReceiptWholeStateCapture) {
 			c.Graph[1].GetVertex().GetVertex().Value = (*pb.Vertex_Timestamp)(nil)
@@ -680,8 +952,50 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 				Origins: append([]OriginState(nil), capture.Origins...),
 			}
 			tc.mutate(&bad)
-			if frames, err := prepareReceiptSnapshotFrames(bad, policy); err == nil || frames != nil {
+			if frames, err := PrepareReceiptSnapshotFrames(bad, policy); err == nil || frames != nil {
 				t.Fatalf("malformed capture produced %d frames: %v", len(frames), err)
+			}
+		})
+	}
+}
+
+func TestPrepareReceiptSnapshotFramesRejectsMalformedRetiredCapture(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ReceiptWholeStateCapture)
+	}{
+		{"high-water mismatch", func(c *ReceiptWholeStateCapture) {
+			c.Retired.ClockHighWaterMillis++
+		}},
+		{"policy fingerprint mismatch", func(c *ReceiptWholeStateCapture) {
+			c.Retired.Epochs[0].Policy.MaxBytes++
+		}},
+		{"active epoch contamination", func(c *ReceiptWholeStateCapture) {
+			c.Retired.Epochs[0].Policy.Epoch = c.Policy.Epoch
+			c.Retired.Epochs[0].State.Epoch = c.Policy.Epoch
+		}},
+		{"epoch order", func(c *ReceiptWholeStateCapture) {
+			c.Retired.Epochs[0], c.Retired.Epochs[1] =
+				c.Retired.Epochs[1], c.Retired.Epochs[0]
+		}},
+		{"duplicate receipt", func(c *ReceiptWholeStateCapture) {
+			row := c.Retired.Epochs[0].State.Receipts[0]
+			c.Retired.Epochs[0].State.Receipts =
+				append(c.Retired.Epochs[0].State.Receipts, row)
+		}},
+		{"row epoch mismatch", func(c *ReceiptWholeStateCapture) {
+			c.Retired.Epochs[0].State.Receipts[0].ID =
+				c.Retired.Epochs[1].State.Receipts[0].ID
+		}},
+		{"empty retired epoch", func(c *ReceiptWholeStateCapture) {
+			c.Retired.Epochs[0].State.Receipts = nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture, policy := receiptSnapshotTestCaptureWithRetired(t)
+			tc.mutate(&capture)
+			if frames, err := PrepareReceiptSnapshotFrames(capture, policy); err == nil || frames != nil {
+				t.Fatalf("malformed retired capture produced %d frames: %v", len(frames), err)
 			}
 		})
 	}

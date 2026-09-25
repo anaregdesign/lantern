@@ -2,29 +2,36 @@ package backup
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
+	"reflect"
+	"slices"
 
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-// ReceiptSnapshotInstaller collects and validates a complete RECEIPT_V1 cut
+// ReceiptSnapshotInstallTarget is the narrow service seam that atomically
+// publishes one fully staged RECEIPT candidate.
+type ReceiptSnapshotInstallTarget interface {
+	InstallReceiptBaseline(context.Context, service.ReceiptWholeStateCapture) error
+}
+
+// ReceiptSnapshotInstaller collects and validates a complete RECEIPT cut
 // before publishing it through the certified durable service primitive.
 type ReceiptSnapshotInstaller struct {
 	collector *ReceiptSnapshotCollector
-	target    *service.LanternService
+	target    ReceiptSnapshotInstallTarget
 	logger    *slog.Logger
 	gate      chan struct{}
 }
 
 func NewReceiptSnapshotInstaller(
 	collector *ReceiptSnapshotCollector,
-	target *service.LanternService,
+	target ReceiptSnapshotInstallTarget,
 	logger *slog.Logger,
 ) (*ReceiptSnapshotInstaller, error) {
 	if collector == nil || target == nil {
@@ -44,11 +51,22 @@ func NewReceiptSnapshotInstaller(
 }
 
 func (*ReceiptSnapshotInstaller) RequiredFormat() pb.SnapshotFormat {
-	return pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1
+	return pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
 }
 
 func (*ReceiptSnapshotInstaller) CompatibleFormat(format pb.SnapshotFormat) bool {
-	return format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1
+	return format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
+}
+
+func (i *ReceiptSnapshotInstaller) SnapshotTransportLimits() replication.SnapshotTransportLimits {
+	if i == nil || i.collector == nil {
+		return replication.SnapshotTransportLimits{}
+	}
+	limits := i.collector.config.Limits
+	return replication.SnapshotTransportLimits{
+		MaxFrameBytes:  int(limits.MaxFrameBytes),
+		MaxStreamBytes: limits.MaxTransportBytes,
+	}
 }
 
 func (i *ReceiptSnapshotInstaller) Install(
@@ -72,7 +90,7 @@ func (i *ReceiptSnapshotInstaller) Install(
 
 	candidate, err := i.collector.Collect(ctx, stream)
 	if err != nil {
-		return result, fmt.Errorf("backup: collect RECEIPT_V1 Snapshot: %w", err)
+		return result, fmt.Errorf("backup: collect RECEIPT Snapshot: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -92,10 +110,10 @@ func (i *ReceiptSnapshotInstaller) Install(
 
 	capture, err := candidate.installCapture(ctx)
 	if err != nil {
-		return result, fmt.Errorf("backup: decode validated RECEIPT_V1 candidate: %w", err)
+		return result, fmt.Errorf("backup: decode validated RECEIPT candidate: %w", err)
 	}
-	if err := i.target.InstallActiveReceiptBaselineV1(ctx, capture); err != nil {
-		return result, fmt.Errorf("backup: install RECEIPT_V1 baseline: %w", err)
+	if err := i.target.InstallReceiptBaseline(ctx, capture); err != nil {
+		return result, fmt.Errorf("backup: install RECEIPT baseline: %w", err)
 	}
 	committed = true
 
@@ -119,49 +137,86 @@ func (c *ReceiptSnapshotCandidate) installCapture(ctx context.Context) (service.
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.archive == nil {
+	if c.closed || c.spool == nil {
 		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate is closed")
 	}
 	if err := ctx.Err(); err != nil {
 		return service.ReceiptWholeStateCapture{}, err
 	}
-	if _, err := c.archive.Seek(0, io.SeekStart); err != nil {
-		return service.ReceiptWholeStateCapture{}, fmt.Errorf("backup: rewind receipt Snapshot candidate: %w", err)
-	}
-	hash := sha256.New()
-	reader := &receiptSnapshotContextReader{ctx: ctx, reader: c.archive}
-	archive, err := decodeWholeStateArchive(io.TeeReader(reader, hash))
+	digest, size, err := digestReceiptSnapshotSpool(c.spool)
 	if err != nil {
 		return service.ReceiptWholeStateCapture{}, err
 	}
-	offset, err := c.archive.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return service.ReceiptWholeStateCapture{}, fmt.Errorf("backup: inspect receipt Snapshot candidate offset: %w", err)
+	if size != c.metadata.SpoolBytes || digest != c.metadata.SpoolSHA256 {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate spool changed after validation")
 	}
-	var digest [sha256.Size]byte
-	copy(digest[:], hash.Sum(nil))
-	if offset < 0 || uint64(offset) != c.metadata.ArchiveBytes || digest != c.metadata.ArchiveSHA256 {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate archive changed after validation")
+	if _, err := c.spool.Seek(0, 0); err != nil {
+		return service.ReceiptWholeStateCapture{}, fmt.Errorf("backup: rewind receipt Snapshot candidate: %w", err)
+	}
+	frames, err := readReceiptSnapshotSpool(ctx, c.spool, c.frameCount, c.limits)
+	if err != nil {
+		return service.ReceiptWholeStateCapture{}, err
+	}
+	capture, err := service.DecodeReceiptSnapshotFrames(
+		frames,
+		c.expectedPolicy,
+		c.retiredConfig,
+	)
+	if err != nil {
+		return service.ReceiptWholeStateCapture{}, err
+	}
+	if c.stage == nil || c.stage.receiptWholeStateStage == nil ||
+		c.stage.graph == nil || c.stage.receipts == nil || c.stage.retired == nil {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate stage changed after validation")
+	}
+	active, err := c.stage.receipts.Snapshot()
+	if err != nil {
+		return service.ReceiptWholeStateCapture{}, err
+	}
+	retired, err := c.stage.retired.Snapshot(capture.Receipts.ClockHighWater())
+	if err != nil {
+		return service.ReceiptWholeStateCapture{}, err
+	}
+	if !equalReceiptSnapshotState(active, capture.Receipts) {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged active receipts differ from validated stream")
+	}
+	if !equalRetiredReceiptSnapshotState(retired, capture.Retired) {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged retired receipts differ from validated stream")
+	}
+	if !slices.Equal(c.stage.origins, capture.Origins) {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged origin vector differs from validated stream")
+	}
+	if c.stage.policy != capture.Policy {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged receipt policy differs from validated stream")
+	}
+	if c.stage.cutoffLocalSeq != capture.Graph[0].GetHeader().GetCutoffLocalSeq() {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged graph cutoff differs from validated stream")
 	}
 	if err := ctx.Err(); err != nil {
 		return service.ReceiptWholeStateCapture{}, err
 	}
-	return service.ReceiptWholeStateCapture{
-		Graph:    archive.Graph,
-		Receipts: archive.Receipts,
-		Policy:   archive.Policy,
-		Origins:  archive.Origins,
-	}, nil
+	return capture, nil
 }
 
-type receiptSnapshotContextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r *receiptSnapshotContextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
+func equalReceiptSnapshotState(left, right mutationreceipt.Snapshot) bool {
+	if len(left.Receipts) == 0 {
+		left.Receipts = nil
 	}
-	return r.reader.Read(p)
+	if len(right.Receipts) == 0 {
+		right.Receipts = nil
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func equalRetiredReceiptSnapshotState(
+	left,
+	right mutationreceipt.RetiredCatalogSnapshot,
+) bool {
+	if len(left.Epochs) == 0 {
+		left.Epochs = nil
+	}
+	if len(right.Epochs) == 0 {
+		right.Epochs = nil
+	}
+	return reflect.DeepEqual(left, right)
 }

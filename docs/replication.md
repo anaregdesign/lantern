@@ -87,7 +87,7 @@ graph/result/receipt/log boundary and the contiguous publication work in
 #1282. Receipt RPCs and client mutation APIs remain disabled. In private
 durable receipt-WAL mode, the guarded follower, Snapshot producer, detached
 collector, and durable baseline primitive are wired into Pump and
-anti-entropy through one shared exact-`RECEIPT_V1` installer. Graph-only mode
+anti-entropy through one shared exact-`RECEIPT` installer. Graph-only mode
 and D1 remain unchanged.
 
 ## 4. CRDT semantics per RPC
@@ -591,7 +591,7 @@ rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 enum SnapshotFormat {
   SNAPSHOT_FORMAT_UNSPECIFIED = 0;
   SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = 1;
-  SNAPSHOT_FORMAT_RECEIPT_V1 = 2;
+  SNAPSHOT_FORMAT_RECEIPT = 3;
 }
 
 message SnapshotRequest {
@@ -599,11 +599,12 @@ message SnapshotRequest {
 }
 
 message SnapshotReceiptMetadata {
-  // Includes the 16-byte deployment epoch, 32-byte fingerprint,
+  // Each policy includes the 16-byte deployment epoch, 32-byte fingerprint,
   // retention_ms, max_entries, and max_bytes.
-  ReceiptPolicy policy = 1;
+  ReceiptPolicy active_policy = 1;
   uint64 clock_high_water_unix_ms = 2;
   repeated OriginState origin_cutoffs = 3; // Sorted by raw origin bytes.
+  repeated ReceiptPolicy retired_policies = 4; // Strict epoch order.
 }
 
 message SnapshotResponse {
@@ -629,7 +630,7 @@ message SnapshotHeader {
   HLCTimestamp cutoff_hlc = 2;
   uint64 cutoff_local_seq = 3; // same-responder log position
   SnapshotFormat format = 4;
-  SnapshotReceiptMetadata receipt_metadata = 5; // RECEIPT_V1 only
+  SnapshotReceiptMetadata receipt_metadata = 5; // RECEIPT only
 }
 
 message SnapshotFooter {
@@ -639,8 +640,10 @@ message SnapshotFooter {
   uint64 edge_causal_barrier_count = 4;
   uint64 vertex_tombstone_count = 5;
   uint64 edge_tombstone_count = 6;
-  uint64 receipt_count = 7;
-  uint64 receipt_origin_count = 8;
+  uint64 active_receipt_count = 7;
+  uint64 origin_count = 8;
+  uint64 retired_epoch_count = 9;
+  uint64 retired_receipt_count = 10;
 }
 
 enum SnapshotReceiptKind {
@@ -699,15 +702,17 @@ message SnapshotEdgeContribution {
 Framing contract:
 
 - The request and first header negotiate the image format. Zero request and
-  zero header retain the legacy graph-only interpretation while receipt writes
-  are disabled. Graph-only Pump and anti-entropy explicitly request
+  zero header retain the graph-only interpretation while receipt writes
+  are disabled. Numeric value `2` is intentionally unassigned and unreserved:
+  it is not a legacy receipt format and is rejected as unknown. Graph-only
+  Pump and anti-entropy explicitly request
   `GRAPH_ONLY_V1` and accept zero or `GRAPH_ONLY_V1` in the first header, but
-  reject `RECEIPT_V1` before applying any frame. Durable receipt-WAL mode
+  reject `RECEIPT` before applying any frame. Durable receipt-WAL mode
   instead gives both consumers one shared installer that requests exactly
-  `RECEIPT_V1` and rejects an old server's zero/graph-only header before
+  `RECEIPT` and rejects unspecified, graph-only, or unknown formats before
   publication. When receipt continuity is required, the responder
-  advertises `PeerStatus.required_snapshot_format = RECEIPT_V1`, rejects
-  legacy full Subscribe before checking the retained ring, and rejects every
+  advertises `PeerStatus.required_snapshot_format = RECEIPT`, rejects
+  receipt-less full Subscribe before checking the retained ring, and rejects every
   graph-only Snapshot request. An opt-in receipt producer exists, but it must
   be configured with the exact service-owned atomic capture source and policy.
   The source's private identity must match the responder's primary service,
@@ -717,18 +722,20 @@ Framing contract:
   The durable production runtime configures this producer against its exact
   certified state. Its transport-neutral installer fully drains the stream
   into the bounded detached collector, validates the canonical archive, and
-  invokes the exact certified durable baseline publication once. Because
-  `RECEIPT_V1` has no retired section, its producer rejects nonempty retired
-  evidence before sending a header and its installer rejects a nonempty local
-  retired catalog before mutating live state. With an empty retired catalog,
-  graph, active receipt Store, origin vector, HLC floor, private combined
-  marker, and resume cutoff publish as one cut. Cancellation, corruption,
-  truncation, capacity, epoch/policy mismatch, and downgrade failures publish
-  nothing. No receipt write/status capability is enabled. Production bounds
+  invokes the exact certified durable baseline publication once. The incoming
+  retired evidence is deterministically unioned with the local runtime catalog;
+  exact duplicates are idempotent, while policy, row, relationship, and
+  capacity conflicts fail before publication. Graph, active receipt Store,
+  unioned retired catalog, origin vector, HLC floor, private combined baseline marker,
+  generation, and resume cutoff publish as one cut. Cancellation, corruption,
+  truncation, capacity, epoch/policy mismatch, and format downgrade failures
+  publish nothing. No receipt write/status capability is enabled. Production bounds
   are 8 MiB per frame,
   512 MiB per complete wire/canonical image, 1,048,576 total frames, 65,536
-  origin rows, and at most 1,048,574 receipt rows (further limited by the
-  configured Store entry cap).
+  origin rows, and independent nonzero caps for active receipt rows, retired
+  epochs, retired receipt rows, and graph frames. The active and retired row
+  caps are each further limited by the configured Store entry cap; the
+  complete frame cap still bounds their sum.
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
   the primary's contiguous per-origin committed prefix (every prior
   mutation has been applied to the graph and published to its relay log,
@@ -742,22 +749,40 @@ Framing contract:
   per-origin map remains the portable CDC/failover watermark.
   An empty map means the primary has not yet applied any origin
   (cold cluster); the consumer should pass an empty Subscribe cursor.
-- A `RECEIPT_V1` header additionally carries the complete immutable policy
-  (deployment epoch, fingerprint, retention, entry capacity, and byte
-  capacity), monotonic clock high-water, and sorted full origin rows with both
-  HLC and sequence. Those origin rows must exactly agree with the legacy
-  cutoff map. The clock high-water must be no later than `cutoff_hlc` at
-  millisecond precision. Receipt rows immediately follow the header, are
-  strictly sorted by operation ID, and retain Store-reconstructable identity,
-  grouping, intent, deadline, exact original result bytes, and Add
-  contribution metadata. Zero receipt rows and a receipt-only graph cut are
-  valid.
-- The **footer** is always the last frame. It reports eight separate actually
+- A `RECEIPT` header carries the complete immutable active policy and every
+  represented retired policy (deployment epoch, fingerprint, retention, entry
+  capacity, and byte capacity), the active Store's monotonic clock high-water,
+  and sorted full origin rows with both HLC and sequence. Retired policies are
+  strictly epoch-sorted, exclude the active epoch, and each have at least one
+  row. The retired catalog high-water must exactly equal the active Store's
+  high-water; that sole clock authority must be no later than `cutoff_hlc` at
+  millisecond precision. Origin rows must exactly agree with the graph cutoff
+  map. One receipt stream follows the header: active and retired rows
+  self-identify their epochs in `operation_id`, are globally strictly sorted
+  by raw operation ID, and retain Store-reconstructable identity, grouping,
+  intent, deadline, exact original result bytes, and Add contribution
+  metadata. An empty retired catalog, zero active rows, and a receipt-only
+  graph cut are valid.
+- The **footer** is always the last frame. It reports ten separate actually
   streamed counts: live vertices, live edges, vertex causal barriers, edge
-  causal barriers, vertex Delete tombstones, edge Delete tombstones, receipt
-  rows, and receipt-origin rows. Pump and anti-entropy consumers reject count
-  mismatches, duplicate/missing header/footer frames, or any out-of-order body
-  frame before advancing resume watermarks.
+  causal barriers, vertex Delete tombstones, edge Delete tombstones, active
+  receipt rows, origin rows, retired epochs, and retired receipt rows. Pump and
+  anti-entropy consumers reject count mismatches, duplicate/missing
+  header/footer frames, or any out-of-order body frame before advancing resume
+  watermarks.
+- Before sending the header, the receipt producer owns the complete detached
+  sequence and canonicalizes graph frames by phase and identity. Contributions
+  inside each edge are sorted by raw contribution ID. The receiver stages the
+  whole candidate, reconstructs both receipt stores, and compares a canonical
+  deterministic re-encoding before any serving-state mutation.
+- Pump and anti-entropy open Snapshot with a dedicated bounded Connect client.
+  Connect rejects any frame over the configured decompressed per-message limit
+  before protobuf unmarshal, and a request-local codec charges the exact
+  decompressed protobuf payload bytes, including duplicate known fields,
+  against a separate stream transport budget. The collector's deterministic
+  length-prefixed spool has its own canonical-byte limit. Its total-frame cap
+  is exactly header + footer + the independent active-row, retired-row, and
+  graph-frame maxima, so no section borrows another section's capacity.
 - Every live vertex frame is self-describing and non-nil. In particular,
   endpoint vertices auto-created by `PutEdge*` / `AddEdge*` are serialized as a
   concrete `Vertex` carrying the endpoint key, expiration, and `nil` value arm;

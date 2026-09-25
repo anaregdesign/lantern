@@ -40,6 +40,8 @@ var errReceiptCombinedBaseline = errors.New("backup: invalid combined receipt ba
 
 // ReceiptBaselineCodec is the canonical private combined baseline adapter
 // used by the durable runtime.
+// Its active member remains the reusable LANTARCH codec; the combined
+// container also carries retired evidence.
 type ReceiptBaselineCodec struct{}
 
 type retiredCatalogArchiveMetadata struct {

@@ -72,6 +72,49 @@ type retiredCatalogEpoch struct {
 	receipts    map[ID]Receipt
 }
 
+// RetiredCatalogSnapshotFromActive converts one complete active Store
+// snapshot into detached retired-epoch evidence without pruning it. A later
+// NewRetiredCatalogFromUnion call therefore charges the original raw rows
+// against the destination's aggregate bounds before applying its newer clock
+// high-water.
+func RetiredCatalogSnapshotFromActive(
+	config Config,
+	state Snapshot,
+) (RetiredCatalogSnapshot, error) {
+	store, err := NewFromSnapshot(config, state)
+	if err != nil {
+		return RetiredCatalogSnapshot{}, err
+	}
+	configuredHighWater := int64(0)
+	if !config.ClockHighWater.IsZero() {
+		configuredHighWater = config.ClockHighWater.UnixMilli()
+	}
+	if configuredHighWater != state.ClockHighWaterMillis {
+		return RetiredCatalogSnapshot{}, ErrInvalidSnapshot
+	}
+	canonical, err := store.Snapshot()
+	if err != nil {
+		return RetiredCatalogSnapshot{}, err
+	}
+	snapshot := RetiredCatalogSnapshot{
+		Version:              retiredCatalogSnapshotVersion,
+		ClockHighWaterMillis: canonical.ClockHighWaterMillis,
+	}
+	if len(canonical.Receipts) == 0 {
+		return snapshot, nil
+	}
+	snapshot.Epochs = []RetiredEpochSnapshot{{
+		Policy: RetiredEpochPolicy{
+			Epoch:      config.Epoch,
+			Retention:  config.Retention,
+			MaxEntries: config.MaxEntries,
+			MaxBytes:   config.MaxBytes,
+		},
+		State: canonical,
+	}}
+	return snapshot, nil
+}
+
 // NewRetiredCatalog returns an empty catalog. Retired evidence is installed
 // only by constructing a new catalog from a complete validated snapshot.
 func NewRetiredCatalog(config RetiredCatalogConfig) (*RetiredCatalog, error) {

@@ -109,6 +109,79 @@ func retiredTestCatalogSnapshot(
 	}
 }
 
+func TestRetiredCatalogSnapshotFromActivePreservesRawEvidence(t *testing.T) {
+	config := Config{
+		Epoch: Epoch{4}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 4096,
+	}
+	highWater := testStart.Add(10 * time.Minute)
+	first := retiredTestIntent(t, config.Epoch, 1, testStart)
+	second := retiredTestIntent(t, config.Epoch, 2, testStart.Add(time.Minute))
+	member := retiredTestMember(
+		t,
+		config,
+		highWater,
+		[]Intent{first, second},
+		[][]byte{[]byte("first"), []byte("second")},
+	)
+
+	restoreConfig := config
+	restoreConfig.ClockHighWater = highWater
+	got, err := RetiredCatalogSnapshotFromActive(restoreConfig, member.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != retiredCatalogSnapshotVersion ||
+		got.ClockHighWaterMillis != member.State.ClockHighWaterMillis ||
+		len(got.Epochs) != 1 ||
+		!reflect.DeepEqual(got.Epochs[0], member) {
+		t.Fatalf("active conversion = %+v, want %+v", got, member)
+	}
+
+	tooSmall := RetiredCatalogConfig{
+		ActiveEpoch:    Epoch{9},
+		MaxEntries:     1,
+		MaxBytes:       4096,
+		ClockHighWater: testStart.Add(2 * time.Hour),
+	}
+	if _, err := NewRetiredCatalogFromUnion(tooSmall, got); !errors.Is(err, ErrRetiredCatalogCapacity) {
+		t.Fatalf("expired raw conversion union error = %v, want %v", err, ErrRetiredCatalogCapacity)
+	}
+
+	got.Epochs[0].State.Receipts[0].Result[0] = 'X'
+	again, err := RetiredCatalogSnapshotFromActive(restoreConfig, member.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again.Epochs[0].State.Receipts[0].Result) != "first" {
+		t.Fatal("active conversion shares caller memory")
+	}
+
+	malformed := member.State
+	malformed.Version = 0
+	if _, err := RetiredCatalogSnapshotFromActive(
+		restoreConfig,
+		malformed,
+	); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("malformed active conversion error = %v, want %v", err, ErrInvalidSnapshot)
+	}
+	tooSmallActive := restoreConfig
+	tooSmallActive.MaxEntries = 1
+	if _, err := RetiredCatalogSnapshotFromActive(
+		tooSmallActive,
+		member.State,
+	); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("over-capacity active conversion error = %v, want %v", err, ErrInvalidSnapshot)
+	}
+	laterClock := restoreConfig
+	laterClock.ClockHighWater = highWater.Add(time.Minute)
+	if _, err := RetiredCatalogSnapshotFromActive(
+		laterClock,
+		member.State,
+	); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("different-cut active conversion error = %v, want %v", err, ErrInvalidSnapshot)
+	}
+}
+
 func TestRetiredCatalogUnionCanonicalExactUnion(t *testing.T) {
 	epochTwoConfig := Config{
 		Epoch: Epoch{2}, Retention: 2 * time.Hour, MaxEntries: 8, MaxBytes: 4096,

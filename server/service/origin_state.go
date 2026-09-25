@@ -67,7 +67,7 @@ func validateOriginStateDominance(source, current []OriginState) error {
 
 // stageWholeState validates and tentatively replaces the complete origin map
 // while retaining the tracker identity and write lock. The input must be in
-// strict raw-origin order, as emitted by RECEIPT_V1 capture.
+// strict raw-origin order, as emitted by receipt Snapshot capture.
 func (t *originStateTracker) stageWholeState(states []OriginState) (*originWholeStateStage, error) {
 	next := make(map[hlc.NodeID]originRow, len(states))
 	var previous hlc.NodeID

@@ -75,7 +75,7 @@ func assertReceiptCaptureCut(t *testing.T, capture ReceiptWholeStateCapture, rec
 	if counts != wantCounts {
 		t.Fatalf("capture footer counts = %v, body = %v", wantCounts, counts)
 	}
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 || header.GetCutoffLocalSeq() != localSeq ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT || header.GetCutoffLocalSeq() != localSeq ||
 		header.GetCutoffHlc() == nil || len(capture.Receipts.Receipts) != receiptCount ||
 		receiptCaptureGraphEdge(capture, "tail", "head") != edgeLive ||
 		receiptCaptureEdgeTombstone(capture, "tail", "head") != tombstone ||
@@ -308,6 +308,142 @@ func TestReceiptWholeStateCaptureReconcilesStoreClockIntoGraphCutoff(t *testing.
 	if cutoff.GetWallNs()/int64(time.Millisecond) < capture.Receipts.ClockHighWaterMillis ||
 		cutoff.GetLogical() == 0 {
 		t.Fatalf("reconciled cutoff = %+v, high-water=%d", cutoff, capture.Receipts.ClockHighWaterMillis)
+	}
+}
+
+func TestReceiptWholeStateCaptureIncludesRetiredCatalogAtActiveHighWater(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	policy := receiptCapturePolicy(f.epoch)
+	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	highWater := time.Now().UTC()
+	tx, err := f.coordinator.store.Begin(highWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Abort()
+	active, err := f.coordinator.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := mutationreceipt.RetiredCatalogSnapshot{
+		Version:              1,
+		ClockHighWaterMillis: active.ClockHighWaterMillis,
+		Epochs: []mutationreceipt.RetiredEpochSnapshot{
+			receiptSnapshotTestRetiredMember(
+				t,
+				mutationreceipt.Epoch{0x21},
+				active.ClockHighWater(),
+				0x22,
+			),
+		},
+	}
+	if _, err := source.Capture(t.Context(), policy); err != nil {
+		t.Fatal(err)
+	}
+	mustReplaceRetiredCatalog(
+		t,
+		f.service.receiptRetiredCatalog,
+		policy,
+		active.ClockHighWaterMillis,
+		state,
+	)
+	capture, err := source.Capture(t.Context(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture.Receipts.ClockHighWaterMillis != capture.Retired.ClockHighWaterMillis ||
+		!reflect.DeepEqual(capture.Retired, state) {
+		t.Fatalf("active/retired capture = %+v / %+v", capture.Receipts, capture.Retired)
+	}
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := frames[len(frames)-1].GetFooter(); got.GetRetiredEpochCount() != 1 ||
+		got.GetRetiredReceiptCount() != 1 {
+		t.Fatalf("retired capture footer = %+v", got)
+	}
+	capture.Retired.Epochs[0].State.Receipts[0].Result[0] ^= 1
+	again, err := source.Capture(t.Context(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(again.Retired, capture.Retired) {
+		t.Fatal("retired capture aliases the runtime catalog")
+	}
+}
+
+func TestReceiptWholeStateCaptureRejectsRetiredClockAheadOfActiveStore(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	policy := receiptCapturePolicy(f.epoch)
+	active, err := f.coordinator.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := newEmptyRetiredReceiptCatalogSlot(
+		policy,
+		active.ClockHighWaterMillis+1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.receiptRetiredCatalog = retired
+	f.coordinator.retired = retired
+	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture, err := source.Capture(t.Context(), policy); err == nil ||
+		!reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
+		t.Fatalf("retired clock rollback returned (%+v, %v)", capture, err)
+	}
+}
+
+func TestReceiptWholeStateBackupCaptureIncludesRetiredCatalog(t *testing.T) {
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipt.log"))
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	source, err := NewReceiptWholeStateSource(primary, runtime.receipt.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := runtime.receipt.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiredState := mutationreceipt.RetiredCatalogSnapshot{
+		Version:              1,
+		ClockHighWaterMillis: active.ClockHighWaterMillis,
+		Epochs: []mutationreceipt.RetiredEpochSnapshot{
+			receiptSnapshotTestRetiredMember(
+				t,
+				mutationreceipt.Epoch{0x22},
+				active.ClockHighWater(),
+				0x23,
+			),
+		},
+	}
+	mustReplaceRetiredCatalog(
+		t,
+		runtime.receipt.retired,
+		config.Receipt,
+		active.ClockHighWaterMillis,
+		retiredState,
+	)
+	capture, err := source.CaptureForBackup(t.Context(), config.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(capture.WholeState.Retired, retiredState) {
+		t.Fatalf("backup capture retired state = %+v, want %+v",
+			capture.WholeState.Retired, retiredState)
 	}
 }
 
@@ -594,7 +730,7 @@ func TestReceiptWholeStateBackupCaptureCannotSplitBaselineGeneration(t *testing.
 	}
 }
 
-func TestReceiptWholeStateSourceRejectsReceiptV1WithRetiredEvidence(t *testing.T) {
+func TestReceiptWholeStateSourceRejectsUnknownFormatBeforeCapture(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	config := baselineRuntimeTestConfig(path)
 	runtime, err := CreateDurableReceiptWALServingRuntime(config)
@@ -622,14 +758,13 @@ func TestReceiptWholeStateSourceRejectsReceiptV1WithRetiredEvidence(t *testing.T
 
 	recorder := &replicationSnapshotRecorder{}
 	err = replication.Snapshot(t.Context(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredFormat: pb.SnapshotFormat(99),
 	}, recorder)
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition ||
-		!errors.Is(err, errRetiredReceiptDowngrade) {
-		t.Fatalf("RECEIPT_V1 with retired evidence = %v, want fail-closed downgrade", err)
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unknown durable receipt format = %v, want InvalidArgument", err)
 	}
 	if len(recorder.frames) != 0 {
-		t.Fatalf("RECEIPT_V1 sent %d partial frames before rejecting retired evidence", len(recorder.frames))
+		t.Fatalf("unknown durable receipt format sent %d partial frames", len(recorder.frames))
 	}
 }
 

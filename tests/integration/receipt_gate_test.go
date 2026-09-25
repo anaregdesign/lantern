@@ -111,6 +111,137 @@ func durableReceiptWireConfig(path string, nodeID hlc.NodeID) service.DurableRec
 	}
 }
 
+func retiredReceiptEvidence(
+	t *testing.T,
+	active mutationreceipt.Config,
+	highWater time.Time,
+	epoch mutationreceipt.Epoch,
+	id mutationreceipt.ID,
+	retention time.Duration,
+	result []byte,
+) mutationreceipt.RetiredCatalogSnapshot {
+	t.Helper()
+	policy := mutationreceipt.Config{
+		Epoch:          epoch,
+		Retention:      retention,
+		MaxEntries:     active.MaxEntries,
+		MaxBytes:       active.MaxBytes,
+		ClockHighWater: highWater,
+	}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := mutationreceipt.Intent{
+		ID: id, Group: mutationreceipt.GroupID{0x5a}, Count: 1,
+		Kind:   mutationreceipt.PutVertex,
+		Digest: mutationreceipt.IntentDigest([]byte("retired-wire-evidence")),
+	}
+	tx, err := store.Begin(highWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]mutationreceipt.Intent{intent}); err != nil ||
+		class != mutationreceipt.Fresh {
+		t.Fatalf("retired receipt classify = (%v, %v), want fresh", class, err)
+	}
+	if err := tx.Reserve([][]byte{append([]byte(nil), result...)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	state, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutationreceipt.RetiredCatalogSnapshot{
+		Version:              1,
+		ClockHighWaterMillis: highWater.UnixMilli(),
+		Epochs: []mutationreceipt.RetiredEpochSnapshot{{
+			Policy: mutationreceipt.RetiredEpochPolicy{
+				Epoch: epoch, Retention: policy.Retention,
+				MaxEntries: policy.MaxEntries, MaxBytes: policy.MaxBytes,
+			},
+			State: state,
+		}},
+	}
+}
+
+func installRuntimeRetiredEvidence(
+	t *testing.T,
+	ctx context.Context,
+	runtime *service.ServingRuntime,
+	server *connectTestServer,
+	evidence ...mutationreceipt.RetiredCatalogSnapshot,
+) {
+	t.Helper()
+	source, policy, err := runtime.ReceiptWholeStateBackupSource(server.svc, server.rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := source.Capture(ctx, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	highWater := capture.Receipts.ClockHighWater()
+	config := mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch:    policy.Epoch,
+		MaxEntries:     policy.MaxEntries,
+		MaxBytes:       policy.MaxBytes,
+		ClockHighWater: highWater,
+	}
+	catalog, err := mutationreceipt.NewRetiredCatalogFromUnion(config, evidence...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.Retired, err = catalog.Snapshot(highWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.svc.InstallReceiptBaseline(ctx, capture); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireRuntimeRetiredReceipt(
+	t *testing.T,
+	ctx context.Context,
+	runtime *service.ServingRuntime,
+	server *connectTestServer,
+	id mutationreceipt.ID,
+	want []byte,
+) {
+	t.Helper()
+	source, policy, err := runtime.ReceiptWholeStateBackupSource(server.svc, server.rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := source.Capture(ctx, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	highWater := capture.Receipts.ClockHighWater()
+	catalog, err := mutationreceipt.NewRetiredCatalogFromSnapshot(
+		mutationreceipt.RetiredCatalogConfig{
+			ActiveEpoch:    policy.Epoch,
+			MaxEntries:     policy.MaxEntries,
+			MaxBytes:       policy.MaxBytes,
+			ClockHighWater: highWater,
+		},
+		capture.Retired,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, receipt, err := catalog.Lookup(id, highWater)
+	if err != nil || status != mutationreceipt.Confirmed || !bytes.Equal(receipt.Result, want) {
+		t.Fatalf("retired receipt proof = (%v, %x, %v), want Confirmed %x", status, receipt.Result, err, want)
+	}
+}
+
 func durableFollowerReceiptMutation(
 	t *testing.T,
 	config mutationreceipt.Config,
@@ -228,20 +359,20 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	repl := newReplicationRawClient(t, server.url)
 	status, err := repl.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
 	if err != nil ||
-		status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("production receipt PeerStatus = (%v, %v)", status, err)
 	}
 
-	legacy, err := repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
+	unopted, err := repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
 	if err == nil {
-		defer func() { _ = legacy.Close() }()
-		if legacy.Receive() {
-			t.Fatal("legacy full Subscribe emitted an entry in durable receipt mode")
+		defer func() { _ = unopted.Close() }()
+		if unopted.Receive() {
+			t.Fatal("receipt-less full Subscribe emitted an entry in durable receipt mode")
 		}
-		err = legacy.Err()
+		err = unopted.Err()
 	}
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("legacy full Subscribe = %v, want InvalidArgument", err)
+		t.Fatalf("receipt-less full Subscribe = %v, want InvalidArgument", err)
 	}
 
 	downgrade, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
@@ -259,7 +390,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	}
 
 	stream, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -295,9 +426,10 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	}
 	fingerprint := policyStore.PolicyFingerprint()
 	if header == nil ||
-		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
-		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
-		!bytes.Equal(header.GetReceiptMetadata().GetPolicy().GetFingerprint(), fingerprint[:]) {
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
+		!bytes.Equal(header.GetReceiptMetadata().GetActivePolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
+		!bytes.Equal(header.GetReceiptMetadata().GetActivePolicy().GetFingerprint(), fingerprint[:]) ||
+		len(header.GetReceiptMetadata().GetRetiredPolicies()) != 0 {
 		t.Fatalf("production receipt Snapshot header = %+v", header)
 	}
 	if receipt == nil ||
@@ -306,7 +438,9 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 		receipt.GetItemIndex() != 0 || receipt.GetItemCount() != 1 {
 		t.Fatalf("production receipt Snapshot row = %+v", receipt)
 	}
-	if footer == nil || footer.GetReceiptCount() != 1 || footer.GetEdgeTombstoneCount() != 1 ||
+	if footer == nil || footer.GetActiveReceiptCount() != 1 ||
+		footer.GetRetiredEpochCount() != 0 || footer.GetRetiredReceiptCount() != 0 ||
+		footer.GetOriginCount() != 2 || footer.GetEdgeTombstoneCount() != 1 ||
 		edgeTombstones != 1 {
 		t.Fatalf("production receipt Snapshot footer/tombstones = %+v / %d", footer, edgeTombstones)
 	}
@@ -320,6 +454,258 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 		OperationId: operationID,
 	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("production public receipt status = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestDurableReceiptSnapshot_RetiredUnionTailAndRestartRealConnectWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	sourceConfig := durableReceiptWireConfig(
+		filepath.Join(t.TempDir(), "source.wal"),
+		hlc.NodeID{0x31},
+	)
+	sourceConfig.Log.Capacity = 2
+	targetConfig := sourceConfig
+	targetConfig.Path = filepath.Join(t.TempDir(), "target.wal")
+	targetConfig.NodeID = hlc.NodeID{0x32}
+
+	highWater := sourceConfig.Receipt.ClockHighWater
+	incomingEpoch := mutationreceipt.Epoch{0x11}
+	incomingID, err := mutationreceipt.NewID(incomingEpoch, highWater, [24]byte{0x12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	incoming := retiredReceiptEvidence(
+		t,
+		sourceConfig.Receipt,
+		highWater,
+		incomingEpoch,
+		incomingID,
+		2*time.Hour,
+		[]byte("incoming"),
+	)
+	localEpoch := mutationreceipt.Epoch{0x21}
+	localID, err := mutationreceipt.NewID(localEpoch, highWater, [24]byte{0x22})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := retiredReceiptEvidence(
+		t,
+		targetConfig.Receipt,
+		highWater,
+		localEpoch,
+		localID,
+		2*time.Hour,
+		[]byte("local"),
+	)
+
+	sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, sourceSDK := mountDurableReceiptWireRuntime(t, sourceRuntime)
+	defer closeDurableReceiptWireRuntime(t, source, sourceSDK, sourceRuntime)
+	installRuntimeRetiredEvidence(t, ctx, sourceRuntime, source, incoming)
+
+	targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, targetSDK := mountDurableReceiptWireRuntime(t, targetRuntime)
+	targetClosed := false
+	defer func() {
+		if !targetClosed {
+			closeDurableReceiptWireRuntime(t, target, targetSDK, targetRuntime)
+		}
+	}()
+	installRuntimeRetiredEvidence(t, ctx, targetRuntime, target, incoming, local)
+
+	for i := range 4 {
+		key := fmt.Sprintf("retired-receipt/%d", i)
+		if _, err := sourceSDK.PutVertex(ctx, key, key, time.Hour); err != nil {
+			t.Fatalf("seed source vertex %q: %v", key, err)
+		}
+	}
+	if _, _, evicted := sourceRuntime.MutationLogStats(); evicted == 0 {
+		t.Fatal("source mutation log did not force Snapshot recovery")
+	}
+
+	stopPump := startDurableReceiptPump(
+		t,
+		ctx,
+		"retired receipt Snapshot tail",
+		targetConfig,
+		targetRuntime,
+		target,
+		source.url,
+	)
+	if !waitForVertex(t, targetRuntime.GraphCache(), "retired-receipt/3", 5*time.Second) {
+		t.Fatal("receipt Snapshot did not publish graph state")
+	}
+	if _, err := sourceSDK.PutVertex(ctx, "retired-receipt/tail", "tail", time.Hour); err != nil {
+		t.Fatalf("source tail write: %v", err)
+	}
+	if !waitForVertex(t, targetRuntime.GraphCache(), "retired-receipt/tail", 5*time.Second) {
+		t.Fatal("receipt recovery did not continue the same-responder Subscribe tail")
+	}
+	requireRuntimeRetiredReceipt(
+		t, ctx, targetRuntime, target, incomingID, []byte("incoming"),
+	)
+	requireRuntimeRetiredReceipt(t, ctx, targetRuntime, target, localID, []byte("local"))
+	stopPump()
+
+	closeDurableReceiptWireRuntime(t, target, targetSDK, targetRuntime)
+	targetClosed = true
+	targetConfig.Now = time.Now()
+	targetConfig.Receipt.ClockHighWater = targetConfig.Now
+	restartedRuntime, err := service.OpenDurableReceiptWALServingRuntime(targetConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, restartedSDK := mountDurableReceiptWireRuntime(t, restartedRuntime)
+	defer closeDurableReceiptWireRuntime(t, restarted, restartedSDK, restartedRuntime)
+	if !waitForVertex(t, restartedRuntime.GraphCache(), "retired-receipt/tail", time.Second) {
+		t.Fatal("combined-baseline restart lost the subscribed tail")
+	}
+	requireRuntimeRetiredReceipt(
+		t, ctx, restartedRuntime, restarted, incomingID, []byte("incoming"),
+	)
+	requireRuntimeRetiredReceipt(
+		t, ctx, restartedRuntime, restarted, localID, []byte("local"),
+	)
+}
+
+func TestDurableReceiptSnapshot_RetiredUnionRejectsBeforeMutationRealConnectWire(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		maxEntries      int
+		targetEpoch     mutationreceipt.Epoch
+		targetRetention time.Duration
+		targetResult    []byte
+		want            error
+	}{
+		{
+			name: "row conflict", maxEntries: 4, targetEpoch: mutationreceipt.Epoch{0x11},
+			targetRetention: 2 * time.Hour, targetResult: []byte("conflict"),
+			want: mutationreceipt.ErrInvalidRetiredCatalogSnapshot,
+		},
+		{
+			name: "policy conflict", maxEntries: 4, targetEpoch: mutationreceipt.Epoch{0x11},
+			targetRetention: 3 * time.Hour, targetResult: []byte("incoming"),
+			want: mutationreceipt.ErrInvalidRetiredCatalogSnapshot,
+		},
+		{
+			name: "aggregate capacity", maxEntries: 1, targetEpoch: mutationreceipt.Epoch{0x21},
+			targetRetention: 2 * time.Hour, targetResult: []byte("local"),
+			want: mutationreceipt.ErrRetiredCatalogCapacity,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			sourceConfig := durableReceiptWireConfig(
+				filepath.Join(t.TempDir(), "source.wal"),
+				hlc.NodeID{0x41},
+			)
+			sourceConfig.Receipt.MaxEntries = tc.maxEntries
+			targetConfig := sourceConfig
+			targetConfig.Path = filepath.Join(t.TempDir(), "target.wal")
+			targetConfig.NodeID = hlc.NodeID{0x42}
+			highWater := sourceConfig.Receipt.ClockHighWater
+
+			sourceEpoch := mutationreceipt.Epoch{0x11}
+			sourceID, err := mutationreceipt.NewID(sourceEpoch, highWater, [24]byte{0x12})
+			if err != nil {
+				t.Fatal(err)
+			}
+			incoming := retiredReceiptEvidence(
+				t,
+				sourceConfig.Receipt,
+				highWater,
+				sourceEpoch,
+				sourceID,
+				2*time.Hour,
+				[]byte("incoming"),
+			)
+			targetID := sourceID
+			if tc.targetEpoch != sourceEpoch {
+				targetID, err = mutationreceipt.NewID(tc.targetEpoch, highWater, [24]byte{0x22})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			local := retiredReceiptEvidence(
+				t,
+				targetConfig.Receipt,
+				highWater,
+				tc.targetEpoch,
+				targetID,
+				tc.targetRetention,
+				tc.targetResult,
+			)
+
+			sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, sourceSDK := mountDurableReceiptWireRuntime(t, sourceRuntime)
+			defer closeDurableReceiptWireRuntime(t, source, sourceSDK, sourceRuntime)
+			installRuntimeRetiredEvidence(t, ctx, sourceRuntime, source, incoming)
+			if _, err := sourceSDK.PutVertex(ctx, "must-not-publish", "source", time.Hour); err != nil {
+				t.Fatal(err)
+			}
+
+			targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, targetSDK := mountDurableReceiptWireRuntime(t, targetRuntime)
+			defer closeDurableReceiptWireRuntime(t, target, targetSDK, targetRuntime)
+			installRuntimeRetiredEvidence(t, ctx, targetRuntime, target, local)
+			beforeLength, _, beforeEvicted := targetRuntime.MutationLogStats()
+
+			stream, err := newReplicationRawClient(t, source.url).Snapshot(
+				ctx,
+				connect.NewRequest(&pb.SnapshotRequest{
+					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+				}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, installErr := newDurableReceiptSnapshotInstaller(
+				t,
+				targetConfig,
+				target,
+			).Install(ctx, stream)
+			_ = stream.Close()
+			if !errors.Is(installErr, tc.want) || result.Header != nil {
+				t.Fatalf("conflicting retired union = (%+v, %v), want %v", result, installErr, tc.want)
+			}
+			if _, ok := targetRuntime.GraphCache().GetVertex("must-not-publish"); ok {
+				t.Fatal("rejected retired union published graph state")
+			}
+			afterLength, _, afterEvicted := targetRuntime.MutationLogStats()
+			if afterLength != beforeLength || afterEvicted != beforeEvicted {
+				t.Fatalf(
+					"rejected retired union changed WAL boundary: before=(%d,%d) after=(%d,%d)",
+					beforeLength,
+					beforeEvicted,
+					afterLength,
+					afterEvicted,
+				)
+			}
+			requireRuntimeRetiredReceipt(
+				t,
+				ctx,
+				targetRuntime,
+				target,
+				targetID,
+				tc.targetResult,
+			)
+		})
 	}
 }
 
@@ -548,10 +934,17 @@ func newDurableReceiptSnapshotInstaller(
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
 		TempDir: filepath.Dir(config.Path),
 		Limits: backup.ReceiptSnapshotCollectorLimits{
-			MaxFrameBytes: 8 << 20, MaxFrames: 128, MaxTotalBytes: 16 << 20,
-			MaxReceipts: 32, MaxOrigins: 16, MaxGraphFrames: 96,
+			MaxFrameBytes: 8 << 20, MaxFrames: 162,
+			MaxTransportBytes: 16 << 20, MaxCanonicalSpoolBytes: 16 << 20,
+			MaxActiveReceipts: 32, MaxRetiredEpochs: 32, MaxRetiredReceipts: 32,
+			MaxOrigins: 16, MaxGraphFrames: 96,
 		},
 		ExpectedPolicy: expectedPolicy,
+		ExpectedRetiredConfig: mutationreceipt.RetiredCatalogConfig{
+			ActiveEpoch: expectedPolicy.Epoch,
+			MaxEntries:  expectedPolicy.MaxEntries,
+			MaxBytes:    expectedPolicy.MaxBytes,
+		},
 		DefaultTTL:     config.DefaultTTL,
 		ConfigureGraph: config.ConfigureGraph,
 	})
@@ -630,7 +1023,7 @@ func (p *scriptedReceiptPumpPeer) PeerStatus(
 	*connect.Request[pb.PeerStatusRequest],
 ) (*connect.Response[pb.PeerStatusResponse], error) {
 	return connect.NewResponse(&pb.PeerStatusResponse{
-		RequiredSnapshotFormat:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredSnapshotFormat:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		SearchConfigFingerprint: p.searchConfigFingerprint,
 	}), nil
 }
@@ -827,7 +1220,7 @@ func requireDurableReceiptSnapshot(
 	stream, err := newReplicationRawClient(t, server.url).Snapshot(
 		ctx,
 		connect.NewRequest(&pb.SnapshotRequest{
-			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		}),
 	)
 	if err != nil {
@@ -866,7 +1259,7 @@ func requireDurableReceiptSnapshot(
 		t.Fatalf("%s Snapshot stream: %v", name, err)
 	}
 	if headers != 1 || footers != 1 || header == nil || footer == nil ||
-		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("%s Snapshot framing = headers %d footers %d header %+v footer %+v",
 			name, headers, footers, header, footer)
 	}
@@ -882,8 +1275,9 @@ func requireDurableReceiptSnapshot(
 			}
 		}
 	}
-	if receipts != 1 || matchingRows != 1 || footer.GetReceiptCount() != 1 ||
-		footer.GetReceiptOriginCount() != uint64(len(wantCut)) {
+	if receipts != 1 || matchingRows != 1 || footer.GetActiveReceiptCount() != 1 ||
+		footer.GetRetiredEpochCount() != 0 || footer.GetRetiredReceiptCount() != 0 ||
+		footer.GetOriginCount() != uint64(len(wantCut)) {
 		t.Fatalf("%s Snapshot receipt rows = total %d matching %d footer %+v",
 			name, receipts, matchingRows, footer)
 	}
@@ -1175,7 +1569,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 
 // TestDurableReceiptWALRuntime_ThreeReplicaAcceptance supplies the remaining
 // cross-layer evidence for #1393. Public receipt writes stay disabled, so one
-// private follower envelope is injected at A; A→B tailing, A→C RECEIPT_V1
+// private follower envelope is injected at A; A→B tailing, A→C RECEIPT
 // handoff, and B→C partition recovery all traverse real Connect/h2c.
 func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 	if testing.Short() {
@@ -1298,7 +1692,10 @@ func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 			length, capacity, evicted)
 	}
 
-	cConfig := durableReceiptWireConfig(filepath.Join(t.TempDir(), "c.wal"), hlc.NodeID{0x63})
+	cConfig := aConfig
+	cConfig.Path = filepath.Join(t.TempDir(), "c.wal")
+	cConfig.NodeID = hlc.NodeID{0x63}
+	cConfig.Log.Capacity = 16
 	cRuntime, err := service.CreateDurableReceiptWALServingRuntime(cConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -1481,10 +1878,9 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 				t.Fatal("source mutation log did not create a recovery gap")
 			}
 
-			targetConfig := durableReceiptWireConfig(
-				filepath.Join(t.TempDir(), "target.wal"),
-				hlc.NodeID{0x52},
-			)
+			targetConfig := sourceConfig
+			targetConfig.Path = filepath.Join(t.TempDir(), "target.wal")
+			targetConfig.NodeID = hlc.NodeID{0x52}
 			targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
 			if err != nil {
 				t.Fatal(err)
@@ -1544,7 +1940,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 			stream, err := newReplicationRawClient(t, target.url).Snapshot(
 				ctx,
 				connect.NewRequest(&pb.SnapshotRequest{
-					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 				}),
 			)
 			if err != nil {
@@ -1568,7 +1964,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 			if err := stream.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if header == nil || header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+			if header == nil || header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(receiptOrigin[:])] != 1 ||
 				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(sourceConfig.NodeID[:])] < 9 ||
 				!foundReceipt {

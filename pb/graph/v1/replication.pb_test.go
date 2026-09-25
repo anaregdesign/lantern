@@ -1,11 +1,35 @@
 package graphv1_test
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestSnapshotFormatReceiptIsCleanReplacement(t *testing.T) {
+	t.Parallel()
+
+	if got := int32(pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT); got != 3 {
+		t.Fatalf("SNAPSHOT_FORMAT_RECEIPT = %d, want 3", got)
+	}
+	values := pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED.Descriptor().Values()
+	for i := range values.Len() {
+		name := string(values.Get(i).Name())
+		for _, obsolete := range []string{"RECEIPT_" + "V1", "RECEIPT_" + "V2"} {
+			if strings.Contains(name, obsolete) {
+				t.Fatalf("obsolete durable receipt Snapshot format remains in descriptor: %s", name)
+			}
+		}
+	}
+	if got := values.ByNumber(2); got != nil {
+		t.Fatalf("obsolete Snapshot format 2 remains in descriptor as %v", got)
+	}
+	if got := values.ByNumber(3); got == nil || got.Name() != "SNAPSHOT_FORMAT_RECEIPT" {
+		t.Fatalf("Snapshot format 3 = %v, want SNAPSHOT_FORMAT_RECEIPT", got)
+	}
+}
 
 func roundTripReplicationProto(t *testing.T, src, dst proto.Message) {
 	t.Helper()
@@ -124,9 +148,9 @@ func TestReceiptSnapshotWireRoundTrip(t *testing.T) {
 		CutoffSeqPerOrigin: map[string]uint64{"41000000000000000000000000000000": 7},
 		CutoffHlc:          &pb.HLCTimestamp{WallNs: 100, Logical: 2, NodeId: origin},
 		CutoffLocalSeq:     11,
-		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		ReceiptMetadata: &pb.SnapshotReceiptMetadata{
-			Policy: &pb.ReceiptPolicy{
+			ActivePolicy: &pb.ReceiptPolicy{
 				DeploymentEpoch: append([]byte{0x51}, make([]byte, 15)...),
 				Fingerprint:     append([]byte{0x52}, make([]byte, 31)...),
 				RetentionMs:     3_600_000,
@@ -137,6 +161,13 @@ func TestReceiptSnapshotWireRoundTrip(t *testing.T) {
 			OriginCutoffs: []*pb.OriginState{{
 				Origin: origin, LastSeq: 7,
 				LastHlc: &pb.HLCTimestamp{WallNs: 98, Logical: 1, NodeId: origin},
+			}},
+			RetiredPolicies: []*pb.ReceiptPolicy{{
+				DeploymentEpoch: append([]byte{0x61}, make([]byte, 15)...),
+				Fingerprint:     append([]byte{0x62}, make([]byte, 31)...),
+				RetentionMs:     1_800_000,
+				MaxEntries:      64,
+				MaxBytes:        1 << 19,
 			}},
 		},
 	}}}
@@ -152,7 +183,7 @@ func TestReceiptSnapshotWireRoundTrip(t *testing.T) {
 		Contribution:   &pb.SnapshotReceiptContribution{ContributionId: append([]byte{4}, make([]byte, 23)...)},
 	}}}
 	footer := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{
-		ReceiptCount: 1, ReceiptOriginCount: 1,
+		ActiveReceiptCount: 1, OriginCount: 1, RetiredEpochCount: 1,
 	}}}
 
 	for i, frame := range []*pb.SnapshotResponse{header, receipt, footer} {
@@ -163,9 +194,10 @@ func TestReceiptSnapshotWireRoundTrip(t *testing.T) {
 		}
 	}
 	metadata := header.GetHeader().GetReceiptMetadata()
-	if metadata.GetPolicy().GetMaxEntries() != 128 ||
+	if metadata.GetActivePolicy().GetMaxEntries() != 128 ||
 		metadata.GetClockHighWaterUnixMs() != 99 ||
-		metadata.GetOriginCutoffs()[0].GetLastSeq() != 7 {
+		metadata.GetOriginCutoffs()[0].GetLastSeq() != 7 ||
+		metadata.GetRetiredPolicies()[0].GetMaxEntries() != 64 {
 		t.Fatalf("receipt header getters = %+v", metadata)
 	}
 	row := receipt.GetReceipt()
@@ -174,7 +206,10 @@ func TestReceiptSnapshotWireRoundTrip(t *testing.T) {
 		row.GetOriginalResult()[0] != 0xde {
 		t.Fatalf("receipt row getters = %+v", row)
 	}
-	if footer.GetFooter().GetReceiptCount() != 1 || footer.GetFooter().GetReceiptOriginCount() != 1 {
+	if footer.GetFooter().GetActiveReceiptCount() != 1 ||
+		footer.GetFooter().GetOriginCount() != 1 ||
+		footer.GetFooter().GetRetiredEpochCount() != 1 ||
+		footer.GetFooter().GetRetiredReceiptCount() != 0 {
 		t.Fatalf("receipt footer getters = %+v", footer.GetFooter())
 	}
 	var nilResponse *pb.SnapshotResponse

@@ -2080,10 +2080,9 @@ class SubscribeResponse extends $pb.GeneratedMessage {
 }
 
 /// SnapshotRequest opens a server-streaming snapshot at a single cutoff.
-/// Legacy zero means graph-only while receipt writes are disabled. A receiver
-/// that needs receipts MUST request RECEIPT_V1 and check the first header's
-/// format before applying any body frame. An old server may ignore the new
-/// request field, so the header check is mandatory.
+/// Zero means graph-only while receipt writes are disabled. A durable receiver
+/// MUST request RECEIPT and check the first header's format before applying
+/// any body frame. The header check remains mandatory.
 class SnapshotRequest extends $pb.GeneratedMessage {
   factory SnapshotRequest({
     SnapshotFormat? requiredFormat,
@@ -2139,23 +2138,30 @@ class SnapshotRequest extends $pb.GeneratedMessage {
   void clearRequiredFormat() => $_clearField(1);
 }
 
-/// Receipt metadata for one RECEIPT_V1 publication cut. This message is
-/// required exactly when an RPC Snapshot header's format is RECEIPT_V1 and is
-/// absent from GRAPH_ONLY_V1. origin_cutoffs is sorted by raw origin bytes and
-/// must exactly match cutoff_seq_per_origin; the full rows retain each origin's
-/// HLC as well as its sequence. clock_high_water_unix_ms must not exceed
+/// Receipt metadata for one RECEIPT publication cut. This message is
+/// required exactly when an RPC Snapshot header's format is RECEIPT and is
+/// absent from GRAPH_ONLY_V1. active_policy names the writable Store epoch.
+/// retired_policies contains every represented read-only epoch, sorted strictly
+/// by raw deployment_epoch bytes; it cannot contain active_policy's epoch.
+/// Every retired policy has at least one row in the following receipt stream.
+/// origin_cutoffs is sorted by raw origin bytes and must exactly match
+/// cutoff_seq_per_origin; the full rows retain each origin's HLC as well as its
+/// sequence. clock_high_water_unix_ms is the active Store's sole clock
+/// authority, applies to every retired epoch, and must not exceed
 /// floor(SnapshotHeader.cutoff_hlc.wall_ns / 1ms).
 class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
   factory SnapshotReceiptMetadata({
-    $1.ReceiptPolicy? policy,
+    $1.ReceiptPolicy? activePolicy,
     $fixnum.Int64? clockHighWaterUnixMs,
     $core.Iterable<OriginState>? originCutoffs,
+    $core.Iterable<$1.ReceiptPolicy>? retiredPolicies,
   }) {
     final result = create();
-    if (policy != null) result.policy = policy;
+    if (activePolicy != null) result.activePolicy = activePolicy;
     if (clockHighWaterUnixMs != null)
       result.clockHighWaterUnixMs = clockHighWaterUnixMs;
     if (originCutoffs != null) result.originCutoffs.addAll(originCutoffs);
+    if (retiredPolicies != null) result.retiredPolicies.addAll(retiredPolicies);
     return result;
   }
 
@@ -2172,13 +2178,15 @@ class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'SnapshotReceiptMetadata',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..aOM<$1.ReceiptPolicy>(1, _omitFieldNames ? '' : 'policy',
+    ..aOM<$1.ReceiptPolicy>(1, _omitFieldNames ? '' : 'activePolicy',
         subBuilder: $1.ReceiptPolicy.create)
     ..a<$fixnum.Int64>(
         2, _omitFieldNames ? '' : 'clockHighWaterUnixMs', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..pPM<OriginState>(3, _omitFieldNames ? '' : 'originCutoffs',
         subBuilder: OriginState.create)
+    ..pPM<$1.ReceiptPolicy>(4, _omitFieldNames ? '' : 'retiredPolicies',
+        subBuilder: $1.ReceiptPolicy.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2202,15 +2210,15 @@ class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
   static SnapshotReceiptMetadata? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $1.ReceiptPolicy get policy => $_getN(0);
+  $1.ReceiptPolicy get activePolicy => $_getN(0);
   @$pb.TagNumber(1)
-  set policy($1.ReceiptPolicy value) => $_setField(1, value);
+  set activePolicy($1.ReceiptPolicy value) => $_setField(1, value);
   @$pb.TagNumber(1)
-  $core.bool hasPolicy() => $_has(0);
+  $core.bool hasActivePolicy() => $_has(0);
   @$pb.TagNumber(1)
-  void clearPolicy() => $_clearField(1);
+  void clearActivePolicy() => $_clearField(1);
   @$pb.TagNumber(1)
-  $1.ReceiptPolicy ensurePolicy() => $_ensure(0);
+  $1.ReceiptPolicy ensureActivePolicy() => $_ensure(0);
 
   @$pb.TagNumber(2)
   $fixnum.Int64 get clockHighWaterUnixMs => $_getI64(1);
@@ -2223,6 +2231,9 @@ class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(3)
   $pb.PbList<OriginState> get originCutoffs => $_getList(2);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<$1.ReceiptPolicy> get retiredPolicies => $_getList(3);
 }
 
 /// SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
@@ -2230,9 +2241,10 @@ class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
 /// used to materialise the snapshot.
 ///
 /// A bootstrapping graph-only peer advances the cutoffs only after a verified
-/// footer. A future RECEIPT_V1 receiver must stage and atomically install its
-/// graph, receipt, epoch, policy, and clock image before advancing these
-/// cutoffs. It then resumes Subscribe against the SAME responder with both
+/// footer. A RECEIPT receiver must stage and atomically install its graph,
+/// active Store, retired catalog, epoch policies, and clock image before
+/// advancing these cutoffs. It then resumes Subscribe against the SAME
+/// responder with both
 /// `from_seq_per_origin = {origin: seq+1 for each (origin, seq) in
 /// cutoff_seq_per_origin}` and `from_local_seq = cutoff_local_seq+1` so the
 /// snapshot and the live tail stitch without gap or overlap.
@@ -2244,7 +2256,7 @@ class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
 /// the server has not yet applied any origin (cold cluster) and the
 /// resume Subscribe should pass an empty cursor.
 ///
-/// RECEIPT_V1 is strict: every frame and recursively nested message must have
+/// RECEIPT is strict: every frame and recursively nested message must have
 /// no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
 /// HLC must be at or below cutoff_hlc and at or below the matching full origin
 /// row; a graph HLC whose origin is absent from that vector is invalid.
@@ -2342,8 +2354,8 @@ class SnapshotHeader extends $pb.GeneratedMessage {
   @$pb.TagNumber(3)
   void clearCutoffLocalSeq() => $_clearField(3);
 
-  /// Zero is a legacy graph-only image. A receipt-capable receiver must reject
-  /// zero or GRAPH_ONLY_V1 before changing any local state.
+  /// Zero selects the graph-only default. A receipt-capable receiver must
+  /// reject zero or GRAPH_ONLY_V1 before changing any local state.
   @$pb.TagNumber(4)
   SnapshotFormat get format => $_getN(3);
   @$pb.TagNumber(4)
@@ -2353,8 +2365,9 @@ class SnapshotHeader extends $pb.GeneratedMessage {
   @$pb.TagNumber(4)
   void clearFormat() => $_clearField(4);
 
-  /// Required and complete for RECEIPT_V1; absent for graph-only formats.
-  /// The deployment epoch and policy fingerprint are carried inside policy.
+  /// Required and complete for RECEIPT; absent for graph-only formats.
+  /// Deployment epochs and policy fingerprints are carried inside the active
+  /// and retired policies.
   @$pb.TagNumber(5)
   SnapshotReceiptMetadata get receiptMetadata => $_getN(4);
   @$pb.TagNumber(5)
@@ -2379,8 +2392,10 @@ class SnapshotFooter extends $pb.GeneratedMessage {
     $fixnum.Int64? edgeCausalBarrierCount,
     $fixnum.Int64? vertexTombstoneCount,
     $fixnum.Int64? edgeTombstoneCount,
-    $fixnum.Int64? receiptCount,
-    $fixnum.Int64? receiptOriginCount,
+    $fixnum.Int64? activeReceiptCount,
+    $fixnum.Int64? originCount,
+    $fixnum.Int64? retiredEpochCount,
+    $fixnum.Int64? retiredReceiptCount,
   }) {
     final result = create();
     if (vertexCount != null) result.vertexCount = vertexCount;
@@ -2393,9 +2408,12 @@ class SnapshotFooter extends $pb.GeneratedMessage {
       result.vertexTombstoneCount = vertexTombstoneCount;
     if (edgeTombstoneCount != null)
       result.edgeTombstoneCount = edgeTombstoneCount;
-    if (receiptCount != null) result.receiptCount = receiptCount;
-    if (receiptOriginCount != null)
-      result.receiptOriginCount = receiptOriginCount;
+    if (activeReceiptCount != null)
+      result.activeReceiptCount = activeReceiptCount;
+    if (originCount != null) result.originCount = originCount;
+    if (retiredEpochCount != null) result.retiredEpochCount = retiredEpochCount;
+    if (retiredReceiptCount != null)
+      result.retiredReceiptCount = retiredReceiptCount;
     return result;
   }
 
@@ -2431,10 +2449,16 @@ class SnapshotFooter extends $pb.GeneratedMessage {
         6, _omitFieldNames ? '' : 'edgeTombstoneCount', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..a<$fixnum.Int64>(
-        7, _omitFieldNames ? '' : 'receiptCount', $pb.PbFieldType.OU6,
+        7, _omitFieldNames ? '' : 'activeReceiptCount', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..a<$fixnum.Int64>(
-        8, _omitFieldNames ? '' : 'receiptOriginCount', $pb.PbFieldType.OU6,
+        8, _omitFieldNames ? '' : 'originCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        9, _omitFieldNames ? '' : 'retiredEpochCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        10, _omitFieldNames ? '' : 'retiredReceiptCount', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
@@ -2512,23 +2536,42 @@ class SnapshotFooter extends $pb.GeneratedMessage {
   void clearEdgeTombstoneCount() => $_clearField(6);
 
   @$pb.TagNumber(7)
-  $fixnum.Int64 get receiptCount => $_getI64(6);
+  $fixnum.Int64 get activeReceiptCount => $_getI64(6);
   @$pb.TagNumber(7)
-  set receiptCount($fixnum.Int64 value) => $_setInt64(6, value);
+  set activeReceiptCount($fixnum.Int64 value) => $_setInt64(6, value);
   @$pb.TagNumber(7)
-  $core.bool hasReceiptCount() => $_has(6);
+  $core.bool hasActiveReceiptCount() => $_has(6);
   @$pb.TagNumber(7)
-  void clearReceiptCount() => $_clearField(7);
+  void clearActiveReceiptCount() => $_clearField(7);
 
-  /// Cross-checks receipt_metadata.origin_cutoffs and the legacy cutoff map.
+  /// Cross-checks receipt_metadata.origin_cutoffs and the graph cutoff map.
   @$pb.TagNumber(8)
-  $fixnum.Int64 get receiptOriginCount => $_getI64(7);
+  $fixnum.Int64 get originCount => $_getI64(7);
   @$pb.TagNumber(8)
-  set receiptOriginCount($fixnum.Int64 value) => $_setInt64(7, value);
+  set originCount($fixnum.Int64 value) => $_setInt64(7, value);
   @$pb.TagNumber(8)
-  $core.bool hasReceiptOriginCount() => $_has(7);
+  $core.bool hasOriginCount() => $_has(7);
   @$pb.TagNumber(8)
-  void clearReceiptOriginCount() => $_clearField(8);
+  void clearOriginCount() => $_clearField(8);
+
+  /// Independently cross-check the represented retired policy set and rows.
+  @$pb.TagNumber(9)
+  $fixnum.Int64 get retiredEpochCount => $_getI64(8);
+  @$pb.TagNumber(9)
+  set retiredEpochCount($fixnum.Int64 value) => $_setInt64(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasRetiredEpochCount() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearRetiredEpochCount() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $fixnum.Int64 get retiredReceiptCount => $_getI64(9);
+  @$pb.TagNumber(10)
+  set retiredReceiptCount($fixnum.Int64 value) => $_setInt64(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasRetiredReceiptCount() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearRetiredReceiptCount() => $_clearField(10);
 }
 
 /// Contribution metadata is present exactly for an AddEdge receipt. Keeping
@@ -2592,9 +2635,11 @@ class SnapshotReceiptContribution extends $pb.GeneratedMessage {
   void clearContributionId() => $_clearField(1);
 }
 
-/// One unexpired Store row in a RECEIPT_V1 image. Rows are ordered strictly by
-/// operation_id. original_result is the exact opaque result bytes retained by
-/// the Store; it is not recomputed from the graph at snapshot time.
+/// One unexpired active or retired Store row in a RECEIPT image. The epoch is
+/// self-identifying inside operation_id. All rows are ordered strictly by raw
+/// operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
+/// original_result is the exact opaque result bytes retained by the Store; it
+/// is not recomputed from the graph at snapshot time.
 class SnapshotReceipt extends $pb.GeneratedMessage {
   factory SnapshotReceipt({
     $core.List<$core.int>? operationId,
@@ -3395,7 +3440,7 @@ enum SnapshotResponse_Entry {
 }
 
 /// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
-/// order is always: exactly one SnapshotHeader; for RECEIPT_V1, zero or more
+/// order is always: exactly one SnapshotHeader; for RECEIPT, zero or more
 /// SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
 /// frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
 /// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
@@ -3838,8 +3883,8 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
   void clearSearchConfigFingerprint() => $_clearField(3);
 
   /// The minimum Snapshot format needed to preserve the responder's durable
-  /// state. Old peers may ignore this field; Snapshot itself must reject a
-  /// graph-only request when RECEIPT_V1 is required.
+  /// state. Snapshot rejects an unspecified or graph-only request when
+  /// RECEIPT is required.
   @$pb.TagNumber(4)
   SnapshotFormat get requiredSnapshotFormat => $_getN(3);
   @$pb.TagNumber(4)

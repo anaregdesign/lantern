@@ -450,7 +450,10 @@ func newReceiptArchiveFixture(t *testing.T, wal mutationlog.WAL) receiptArchiveF
 	}
 	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
 	for _, key := range []string{"tail", "head"} {
-		if err := cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+		if err := cache.PutVertex(key, &pb.Vertex{
+			Key:   key,
+			Value: &pb.Vertex_Nil{Nil: true},
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -488,7 +491,7 @@ func newReceiptArchiveFixture(t *testing.T, wal mutationlog.WAL) receiptArchiveF
 func assertProducerGraphCut(t *testing.T, a wholeStateArchive, seq uint64, live, tombstone bool) {
 	t.Helper()
 	if a.Graph[0].GetHeader().GetCutoffLocalSeq() != seq || len(a.Receipts.Receipts) != 0 ||
-		a.Graph[0].GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+		a.Graph[0].GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		len(a.Origins) != int(seq) {
 		t.Fatalf("graph/receipt/origin/log cut differs: header=%+v receipts=%+v origins=%+v", a.Graph[0].GetHeader(), a.Receipts, a.Origins)
 	}

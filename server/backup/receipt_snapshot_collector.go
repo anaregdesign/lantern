@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
@@ -41,28 +42,36 @@ type ReceiptSnapshotWireStream interface {
 }
 
 // ReceiptSnapshotCollectorLimits bounds every network-controlled dimension.
+// MaxTransportBytes is the cumulative decompressed protobuf payload budget
+// enforced by production Snapshot clients before unmarshal. MaxCanonicalSpoolBytes
+// bounds the deterministic length-prefixed frames retained by this collector.
 // Callers must choose all limits explicitly; zero never means unlimited.
 type ReceiptSnapshotCollectorLimits struct {
-	MaxFrameBytes  uint64
-	MaxFrames      uint64
-	MaxTotalBytes  uint64
-	MaxReceipts    uint64
-	MaxOrigins     uint64
-	MaxGraphFrames uint64
+	MaxFrameBytes          uint64
+	MaxFrames              uint64
+	MaxTransportBytes      uint64
+	MaxCanonicalSpoolBytes uint64
+	MaxActiveReceipts      uint64
+	MaxRetiredEpochs       uint64
+	MaxRetiredReceipts     uint64
+	MaxOrigins             uint64
+	MaxGraphFrames         uint64
 }
 
 // ReceiptSnapshotCollectorConfig describes one unwired collector/stager.
-// TempDir owns only per-call temporary files; ExpectedPolicy is the local
-// immutable epoch policy the candidate must match.
+// TempDir owns only per-call temporary files. ExpectedPolicy and
+// ExpectedRetiredConfig are the local immutable active and aggregate retired
+// policies the candidate must satisfy.
 type ReceiptSnapshotCollectorConfig struct {
-	TempDir        string
-	Limits         ReceiptSnapshotCollectorLimits
-	ExpectedPolicy mutationreceipt.Config
-	DefaultTTL     time.Duration
-	ConfigureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error
+	TempDir               string
+	Limits                ReceiptSnapshotCollectorLimits
+	ExpectedPolicy        mutationreceipt.Config
+	ExpectedRetiredConfig mutationreceipt.RetiredCatalogConfig
+	DefaultTTL            time.Duration
+	ConfigureGraph        func(*graphcache.GraphCache[string, *pb.Vertex]) error
 }
 
-// ReceiptSnapshotCollector consumes RECEIPT_V1 streams into detached state.
+// ReceiptSnapshotCollector consumes RECEIPT streams into detached state.
 // It has no reference to a serving graph, Store, origin tracker, HLC, WAL,
 // generation, or subscriber and therefore cannot publish a candidate.
 type ReceiptSnapshotCollector struct {
@@ -73,23 +82,33 @@ type ReceiptSnapshotCollector struct {
 // installer. Header is cloned on return and includes the complete wire receipt
 // metadata and origin vector.
 type ReceiptSnapshotCandidateMetadata struct {
-	Header        *pb.SnapshotHeader
-	Policy        mutationreceipt.Config
-	ArchiveSHA256 [sha256.Size]byte
-	ArchiveBytes  uint64
+	Header      *pb.SnapshotHeader
+	Policy      mutationreceipt.Config
+	SpoolSHA256 [sha256.Size]byte
+	SpoolBytes  uint64
 }
 
-// ReceiptSnapshotCandidate owns one validated canonical archive temp file and
-// one unpublished staged graph/Store cut. Close removes the temporary file.
+// ReceiptSnapshotCandidate owns one validated canonical receipt frame spool and
+// one unpublished staged graph/Store/retired-catalog cut. Close removes the
+// temporary file.
 // The private stage is intentionally unavailable to production callers until
 // a separate atomic installer consumes it inside this package.
 type ReceiptSnapshotCandidate struct {
-	mu       sync.Mutex
-	archive  *os.File
-	path     string
-	metadata ReceiptSnapshotCandidateMetadata
-	stage    *receiptWholeStateStage
-	closed   bool
+	mu             sync.Mutex
+	spool          *os.File
+	path           string
+	metadata       ReceiptSnapshotCandidateMetadata
+	stage          *receiptSnapshotStage
+	frameCount     uint64
+	limits         ReceiptSnapshotCollectorLimits
+	expectedPolicy mutationreceipt.Config
+	retiredConfig  mutationreceipt.RetiredCatalogConfig
+	closed         bool
+}
+
+type receiptSnapshotStage struct {
+	*receiptWholeStateStage
+	retired *mutationreceipt.RetiredCatalog
 }
 
 // NewReceiptSnapshotCollector validates the bounded collector configuration.
@@ -105,15 +124,35 @@ func NewReceiptSnapshotCollector(config ReceiptSnapshotCollectorConfig) (*Receip
 		return nil, errors.New("backup: receipt Snapshot temporary path is not a directory")
 	}
 	limits := config.Limits
+	maxInt := uint64(^uint(0) >> 1)
 	if limits.MaxFrameBytes == 0 || limits.MaxFrameBytes > wholeStateArchiveMaxFrame ||
-		limits.MaxFrames < 2 ||
-		limits.MaxTotalBytes == 0 || limits.MaxTotalBytes > wholeStateArchiveMaxBytes ||
-		limits.MaxReceipts == 0 || limits.MaxOrigins == 0 || limits.MaxGraphFrames == 0 ||
-		limits.MaxReceipts > limits.MaxFrames || limits.MaxGraphFrames > limits.MaxFrames {
+		limits.MaxTransportBytes < limits.MaxFrameBytes ||
+		limits.MaxTransportBytes > wholeStateArchiveMaxBytes ||
+		limits.MaxCanonicalSpoolBytes < limits.MaxFrameBytes+4 ||
+		limits.MaxCanonicalSpoolBytes > wholeStateArchiveMaxBytes ||
+		limits.MaxActiveReceipts == 0 || limits.MaxRetiredEpochs == 0 ||
+		limits.MaxRetiredReceipts == 0 || limits.MaxOrigins == 0 ||
+		limits.MaxGraphFrames == 0 {
 		return nil, errors.New("backup: receipt Snapshot collector limits are invalid")
+	}
+	maxFrames, ok := receiptSnapshotFrameLimit(
+		limits.MaxActiveReceipts,
+		limits.MaxRetiredReceipts,
+		limits.MaxGraphFrames,
+	)
+	if !ok || maxFrames > maxInt || limits.MaxFrames != maxFrames {
+		return nil, errors.New("backup: receipt Snapshot frame limit does not match independent section limits")
 	}
 	if _, err := mutationreceipt.New(config.ExpectedPolicy); err != nil {
 		return nil, fmt.Errorf("backup: receipt Snapshot expected policy: %w", err)
+	}
+	retiredConfig := config.ExpectedRetiredConfig
+	if retiredConfig.ActiveEpoch != config.ExpectedPolicy.Epoch {
+		return nil, errors.New("backup: receipt Snapshot retired catalog active epoch differs from expected policy")
+	}
+	retiredConfig.ClockHighWater = time.Time{}
+	if _, err := mutationreceipt.NewRetiredCatalog(retiredConfig); err != nil {
+		return nil, fmt.Errorf("backup: receipt Snapshot expected retired catalog policy: %w", err)
 	}
 	if config.DefaultTTL <= 0 {
 		return nil, errors.New("backup: receipt Snapshot collector requires a positive default TTL")
@@ -127,7 +166,7 @@ func receiptSnapshotCollectError(format string, args ...any) error {
 
 // Collect fully receives, validates, canonicalizes, and stages one stream. No
 // candidate escapes on cancellation, receive failure, protocol error, limit
-// breach, archive failure, or detached graph/Store staging failure.
+// breach, spool failure, or detached graph/Store/catalog staging failure.
 func (c *ReceiptSnapshotCollector) Collect(
 	ctx context.Context,
 	stream ReceiptSnapshotStream,
@@ -144,19 +183,18 @@ func (c *ReceiptSnapshotCollector) Collect(
 		return nil, fmt.Errorf("backup: create receipt Snapshot spool: %w", err)
 	}
 	spoolPath := spool.Name()
+	keepSpool := false
 	defer func() {
-		_ = spool.Close()
-		_ = os.Remove(spoolPath)
+		if !keepSpool {
+			_ = spool.Close()
+			_ = os.Remove(spoolPath)
+		}
 	}()
 
 	var (
-		frameCount uint64
-		totalBytes uint64
-		receipts   uint64
-		origins    uint64
-		graph      uint64
-		sawHeader  bool
-		sawFooter  bool
+		frameCount         uint64
+		canonicalSpoolSize uint64
+		state              receiptSnapshotCollectState
 	)
 	for stream.Receive() {
 		if err := ctx.Err(); err != nil {
@@ -166,7 +204,14 @@ func (c *ReceiptSnapshotCollector) Collect(
 		if err := service.ValidateReceiptSnapshotFrame(frame); err != nil {
 			return nil, receiptSnapshotCollectError("%v", err)
 		}
-		raw, err := receiptSnapshotFrameBytes(stream, frame)
+		if size := proto.Size(frame); size <= 0 || uint64(size) > c.config.Limits.MaxFrameBytes {
+			return nil, receiptSnapshotCollectError("frame exceeds byte limit")
+		}
+		raw, err := receiptSnapshotFrameBytes(
+			stream,
+			frame,
+			c.config.Limits.MaxFrameBytes,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -177,12 +222,10 @@ func (c *ReceiptSnapshotCollector) Collect(
 			return nil, receiptSnapshotCollectError("frame count exceeds limit")
 		}
 		recordBytes := uint64(4 + len(raw))
-		if recordBytes > c.config.Limits.MaxTotalBytes-totalBytes {
-			return nil, receiptSnapshotCollectError("stream exceeds total byte limit")
+		if recordBytes > c.config.Limits.MaxCanonicalSpoolBytes-canonicalSpoolSize {
+			return nil, receiptSnapshotCollectError("stream exceeds canonical spool byte limit")
 		}
-		if err := c.acceptReceiptSnapshotFrame(
-			frame, frameCount, &sawHeader, &sawFooter, &receipts, &origins, &graph,
-		); err != nil {
+		if err := c.acceptReceiptSnapshotFrame(frame, frameCount, &state); err != nil {
 			return nil, err
 		}
 		var size [4]byte
@@ -191,7 +234,7 @@ func (c *ReceiptSnapshotCollector) Collect(
 			return nil, err
 		}
 		frameCount++
-		totalBytes += recordBytes
+		canonicalSpoolSize += recordBytes
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("backup: receive receipt Snapshot: %w", err)
@@ -199,7 +242,7 @@ func (c *ReceiptSnapshotCollector) Collect(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !sawHeader || !sawFooter {
+	if !state.sawHeader || !state.sawFooter {
 		return nil, receiptSnapshotCollectError("stream ended before complete header/footer framing")
 	}
 	if err := spool.Sync(); err != nil {
@@ -216,158 +259,248 @@ func (c *ReceiptSnapshotCollector) Collect(
 		return nil, err
 	}
 	wireHeader := proto.Clone(frames[0].GetHeader()).(*pb.SnapshotHeader)
-	capture, err := service.DecodeReceiptSnapshotFrames(frames)
+	retiredConfig := c.config.ExpectedRetiredConfig
+	retiredConfig.ClockHighWater = time.Time{}
+	capture, err := service.DecodeReceiptSnapshotFrames(
+		frames,
+		c.config.ExpectedPolicy,
+		retiredConfig,
+	)
 	if err != nil {
 		return nil, receiptSnapshotCollectError("%v", err)
 	}
-	if uint64(len(capture.Receipts.Receipts)) > c.config.Limits.MaxReceipts ||
+	var retiredReceipts uint64
+	for _, member := range capture.Retired.Epochs {
+		count := uint64(len(member.State.Receipts))
+		if count > c.config.Limits.MaxRetiredReceipts-retiredReceipts {
+			return nil, receiptSnapshotCollectError("decoded retired receipt count exceeds limit")
+		}
+		retiredReceipts += count
+	}
+	if uint64(len(capture.Receipts.Receipts)) > c.config.Limits.MaxActiveReceipts ||
+		uint64(len(capture.Retired.Epochs)) > c.config.Limits.MaxRetiredEpochs ||
+		retiredReceipts > c.config.Limits.MaxRetiredReceipts ||
 		uint64(len(capture.Origins)) > c.config.Limits.MaxOrigins ||
 		uint64(len(capture.Graph)-2) > c.config.Limits.MaxGraphFrames {
 		return nil, receiptSnapshotCollectError("decoded section count exceeds limit")
 	}
-
-	archiveFile, err := os.CreateTemp(c.config.TempDir, ".lantern-receipt-snapshot-*.archive")
+	canonicalFrames, err := service.PrepareReceiptSnapshotFrames(capture, c.config.ExpectedPolicy)
 	if err != nil {
-		return nil, fmt.Errorf("backup: create receipt Snapshot archive: %w", err)
+		return nil, receiptSnapshotCollectError("reconstruct canonical frames: %v", err)
 	}
-	archivePath := archiveFile.Name()
-	keepArchive := false
-	defer func() {
-		if !keepArchive {
-			_ = archiveFile.Close()
-			_ = os.Remove(archivePath)
+	if len(canonicalFrames) != len(frames) {
+		return nil, receiptSnapshotCollectError("canonical frame count changed after decode")
+	}
+	for i := range frames {
+		if !proto.Equal(canonicalFrames[i], frames[i]) {
+			return nil, receiptSnapshotCollectError("frame %d is not canonical", i)
 		}
-	}()
-	archive := wholeStateArchive{
-		Graph: capture.Graph, Receipts: capture.Receipts,
-		Policy: capture.Policy, Origins: capture.Origins,
 	}
-	if err := encodeWholeStateArchive(archiveFile, archive); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	digest, size, err := digestReceiptSnapshotArchive(archiveFile)
+	digest, size, err := digestReceiptSnapshotSpool(spool)
 	if err != nil {
 		return nil, err
 	}
-	if size > c.config.Limits.MaxTotalBytes {
-		return nil, receiptSnapshotCollectError("canonical archive exceeds total byte limit")
+	if size > c.config.Limits.MaxCanonicalSpoolBytes {
+		return nil, receiptSnapshotCollectError("canonical spool exceeds byte limit")
 	}
-	if _, err := archiveFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("backup: rewind receipt Snapshot archive: %w", err)
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("backup: rewind receipt Snapshot spool: %w", err)
 	}
-	stage, err := stageReceiptWholeStateArchive(
-		ctx,
-		archiveFile,
-		c.config.ExpectedPolicy,
-		c.config.DefaultTTL,
-		c.config.ConfigureGraph,
-	)
+	stage, err := c.stageReceiptSnapshot(ctx, capture)
 	if err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := archiveFile.Chmod(0o400); err != nil {
-		return nil, fmt.Errorf("backup: protect receipt Snapshot archive: %w", err)
+	if err := spool.Chmod(0o400); err != nil {
+		return nil, fmt.Errorf("backup: protect receipt Snapshot spool: %w", err)
 	}
-	if _, err := archiveFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("backup: rewind staged receipt Snapshot archive: %w", err)
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("backup: rewind staged receipt Snapshot spool: %w", err)
 	}
 
 	candidate := &ReceiptSnapshotCandidate{
-		archive: archiveFile,
-		path:    archivePath,
+		spool: spool,
+		path:  spoolPath,
 		metadata: ReceiptSnapshotCandidateMetadata{
-			Header:        wireHeader,
-			Policy:        capture.Policy,
-			ArchiveSHA256: digest,
-			ArchiveBytes:  size,
+			Header:      wireHeader,
+			Policy:      capture.Policy,
+			SpoolSHA256: digest,
+			SpoolBytes:  size,
 		},
-		stage: stage,
+		stage:          stage,
+		frameCount:     frameCount,
+		limits:         c.config.Limits,
+		expectedPolicy: c.config.ExpectedPolicy,
+		retiredConfig:  retiredConfig,
 	}
-	keepArchive = true
+	keepSpool = true
 	return candidate, nil
 }
 
 func receiptSnapshotFrameBytes(
 	stream ReceiptSnapshotStream,
 	frame *pb.SnapshotResponse,
+	maxFrameBytes uint64,
 ) ([]byte, error) {
-	var raw []byte
+	canonical, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
+	if err != nil {
+		return nil, receiptSnapshotCollectError("marshal frame: %v", err)
+	}
 	if exact, ok := stream.(ReceiptSnapshotWireStream); ok {
-		raw = bytes.Clone(exact.ReceiptSnapshotWireBytes())
-		if len(raw) == 0 {
+		wire := exact.ReceiptSnapshotWireBytes()
+		if len(wire) == 0 {
 			return nil, receiptSnapshotCollectError("wire stream omitted current frame bytes")
 		}
+		if uint64(len(wire)) > maxFrameBytes {
+			return nil, receiptSnapshotCollectError("wire frame exceeds byte limit")
+		}
+		raw := bytes.Clone(wire)
 		decoded := &pb.SnapshotResponse{}
-		if err := validateArchiveGraphFrameWire(raw); err != nil {
+		if err := validateReceiptSnapshotFrameWire(raw); err != nil {
 			return nil, receiptSnapshotCollectError("invalid frame wire: %v", err)
 		}
 		if err := proto.Unmarshal(raw, decoded); err != nil || !proto.Equal(decoded, frame) {
 			return nil, receiptSnapshotCollectError("wire frame differs from decoded message")
 		}
-		return raw, nil
+		if !bytes.Equal(raw, canonical) {
+			return nil, receiptSnapshotCollectError("wire frame is not canonically encoded")
+		}
 	}
-	var err error
-	raw, err = (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
-	if err != nil {
-		return nil, receiptSnapshotCollectError("marshal frame: %v", err)
-	}
-	if err := validateArchiveGraphFrameWire(raw); err != nil {
+	if err := validateReceiptSnapshotFrameWire(canonical); err != nil {
 		return nil, receiptSnapshotCollectError("invalid frame wire: %v", err)
 	}
-	return raw, nil
+	return canonical, nil
+}
+
+type receiptSnapshotCollectState struct {
+	sawHeader       bool
+	sawFooter       bool
+	graphStarted    bool
+	activeEpoch     mutationreceipt.Epoch
+	retiredEpochs   map[mutationreceipt.Epoch]struct{}
+	activeReceipts  uint64
+	retiredReceipts uint64
+	origins         uint64
+	graphFrames     uint64
+	previousReceipt mutationreceipt.ID
+	havePreviousRow bool
 }
 
 func (c *ReceiptSnapshotCollector) acceptReceiptSnapshotFrame(
 	frame *pb.SnapshotResponse,
 	frameIndex uint64,
-	sawHeader, sawFooter *bool,
-	receipts, origins, graph *uint64,
+	state *receiptSnapshotCollectState,
 ) error {
-	if *sawFooter {
+	if state.sawFooter {
 		return receiptSnapshotCollectError("trailing frame after footer")
 	}
 	if header := frame.GetHeader(); header != nil {
-		if frameIndex != 0 || *sawHeader {
+		if frameIndex != 0 || state.sawHeader {
 			return receiptSnapshotCollectError("duplicate or out-of-order header")
 		}
-		if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+		if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 			return receiptSnapshotCollectError("Snapshot format downgrade")
 		}
-		if header.GetReceiptMetadata() == nil || header.GetReceiptMetadata().GetPolicy() == nil {
+		metadata := header.GetReceiptMetadata()
+		if metadata == nil || metadata.GetActivePolicy() == nil {
 			return receiptSnapshotCollectError("receipt metadata is missing")
 		}
-		*origins = uint64(len(header.GetReceiptMetadata().GetOriginCutoffs()))
-		if *origins > c.config.Limits.MaxOrigins {
+		state.origins = uint64(len(metadata.GetOriginCutoffs()))
+		if state.origins > c.config.Limits.MaxOrigins {
 			return receiptSnapshotCollectError("origin count exceeds limit")
 		}
-		*sawHeader = true
+		if uint64(len(metadata.GetRetiredPolicies())) > c.config.Limits.MaxRetiredEpochs {
+			return receiptSnapshotCollectError("retired epoch count exceeds limit")
+		}
+		if !snapshotCollectorEpoch(metadata.GetActivePolicy().GetDeploymentEpoch(), &state.activeEpoch) {
+			return receiptSnapshotCollectError("active receipt epoch is invalid")
+		}
+		state.retiredEpochs = make(map[mutationreceipt.Epoch]struct{}, len(metadata.GetRetiredPolicies()))
+		for _, policy := range metadata.GetRetiredPolicies() {
+			var epoch mutationreceipt.Epoch
+			if !snapshotCollectorEpoch(policy.GetDeploymentEpoch(), &epoch) ||
+				epoch == state.activeEpoch {
+				return receiptSnapshotCollectError("retired receipt epoch is invalid")
+			}
+			if _, duplicate := state.retiredEpochs[epoch]; duplicate {
+				return receiptSnapshotCollectError("duplicate retired receipt epoch")
+			}
+			state.retiredEpochs[epoch] = struct{}{}
+		}
+		state.sawHeader = true
 		return nil
 	}
-	if !*sawHeader {
+	if !state.sawHeader {
 		return receiptSnapshotCollectError("body or footer before header")
 	}
 	if frame.GetFooter() != nil {
-		*sawFooter = true
+		state.sawFooter = true
 		return nil
 	}
-	if frame.GetReceipt() != nil {
-		if *receipts == c.config.Limits.MaxReceipts {
-			return receiptSnapshotCollectError("receipt count exceeds limit")
+	if row := frame.GetReceipt(); row != nil {
+		if state.graphStarted {
+			return receiptSnapshotCollectError("receipt row follows graph data")
 		}
-		(*receipts)++
+		id, err := mutationreceipt.DecodeID(row.GetOperationId())
+		if err != nil {
+			return receiptSnapshotCollectError("receipt operation ID is invalid")
+		}
+		if state.havePreviousRow && bytes.Compare(state.previousReceipt[:], id[:]) >= 0 {
+			return receiptSnapshotCollectError("receipt rows are not in strict epoch and ID order")
+		}
+		state.previousReceipt = id
+		state.havePreviousRow = true
+		epoch := snapshotCollectorReceiptEpoch(id)
+		if epoch == state.activeEpoch {
+			if state.activeReceipts == c.config.Limits.MaxActiveReceipts {
+				return receiptSnapshotCollectError("active receipt count exceeds limit")
+			}
+			state.activeReceipts++
+			return nil
+		}
+		if _, declared := state.retiredEpochs[epoch]; !declared {
+			return receiptSnapshotCollectError("receipt row belongs to an undeclared epoch")
+		}
+		if state.retiredReceipts == c.config.Limits.MaxRetiredReceipts {
+			return receiptSnapshotCollectError("retired receipt count exceeds limit")
+		}
+		state.retiredReceipts++
 		return nil
 	}
-	if *graph == c.config.Limits.MaxGraphFrames {
+	state.graphStarted = true
+	if state.graphFrames == c.config.Limits.MaxGraphFrames {
 		return receiptSnapshotCollectError("graph frame count exceeds limit")
 	}
-	(*graph)++
+	state.graphFrames++
 	return nil
+}
+
+func snapshotCollectorEpoch(raw []byte, epoch *mutationreceipt.Epoch) bool {
+	if len(raw) != len(*epoch) {
+		return false
+	}
+	copy(epoch[:], raw)
+	return *epoch != (mutationreceipt.Epoch{})
+}
+
+func snapshotCollectorReceiptEpoch(id mutationreceipt.ID) mutationreceipt.Epoch {
+	var epoch mutationreceipt.Epoch
+	raw := id.Bytes()
+	copy(epoch[:], raw[1:17])
+	return epoch
+}
+
+func receiptSnapshotFrameLimit(active, retired, graph uint64) (uint64, bool) {
+	total := uint64(2)
+	for _, count := range [...]uint64{active, retired, graph} {
+		if count > ^uint64(0)-total {
+			return 0, false
+		}
+		total += count
+	}
+	return total, true
 }
 
 func writeReceiptSnapshotSpool(file *os.File, chunks ...[]byte) error {
@@ -406,14 +539,15 @@ func readReceiptSnapshotSpool(
 			return nil, receiptSnapshotCollectError("truncated frame prefix: %v", err)
 		}
 		size := uint64(binary.BigEndian.Uint32(prefix[:]))
-		if size == 0 || size > limits.MaxFrameBytes || size+4 > limits.MaxTotalBytes-total {
+		if size == 0 || size > limits.MaxFrameBytes ||
+			size+4 > limits.MaxCanonicalSpoolBytes-total {
 			return nil, receiptSnapshotCollectError("invalid spooled frame length")
 		}
 		raw := make([]byte, int(size))
 		if _, err := io.ReadFull(file, raw); err != nil {
 			return nil, receiptSnapshotCollectError("truncated frame: %v", err)
 		}
-		if err := validateArchiveGraphFrameWire(raw); err != nil {
+		if err := validateReceiptSnapshotFrameWire(raw); err != nil {
 			return nil, receiptSnapshotCollectError("invalid spooled frame wire: %v", err)
 		}
 		frame := &pb.SnapshotResponse{}
@@ -436,25 +570,85 @@ func readReceiptSnapshotSpool(
 	return frames, nil
 }
 
-func digestReceiptSnapshotArchive(file *os.File) ([sha256.Size]byte, uint64, error) {
+func validateReceiptSnapshotFrameWire(raw []byte) error {
+	return validateArchiveMessageWire(
+		raw,
+		(&pb.SnapshotResponse{}).ProtoReflect().Descriptor(),
+		0,
+	)
+}
+
+func (c *ReceiptSnapshotCollector) stageReceiptSnapshot(
+	ctx context.Context,
+	capture service.ReceiptWholeStateCapture,
+) (*receiptSnapshotStage, error) {
+	stageFile, err := os.CreateTemp(c.config.TempDir, ".lantern-receipt-snapshot-*.stage")
+	if err != nil {
+		return nil, fmt.Errorf("backup: create receipt Snapshot stage: %w", err)
+	}
+	stagePath := stageFile.Name()
+	defer func() {
+		_ = stageFile.Close()
+		_ = os.Remove(stagePath)
+	}()
+	archive := wholeStateArchive{
+		Graph: capture.Graph, Receipts: capture.Receipts,
+		Policy: capture.Policy, Origins: capture.Origins,
+	}
+	if err := encodeWholeStateArchive(stageFile, archive); err != nil {
+		return nil, err
+	}
+	if _, err := stageFile.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("backup: rewind receipt Snapshot stage: %w", err)
+	}
+	wholeState, err := stageReceiptWholeStateArchive(
+		ctx,
+		stageFile,
+		c.config.ExpectedPolicy,
+		c.config.DefaultTTL,
+		c.config.ConfigureGraph,
+	)
+	if err != nil {
+		return nil, err
+	}
+	retiredConfig := c.config.ExpectedRetiredConfig
+	retiredConfig.ClockHighWater = capture.Receipts.ClockHighWater()
+	retired, err := mutationreceipt.NewRetiredCatalogFromSnapshot(retiredConfig, capture.Retired)
+	if err != nil {
+		return nil, fmt.Errorf("backup: stage retired receipt catalog: %w", err)
+	}
+	canonical, err := retired.Snapshot(capture.Receipts.ClockHighWater())
+	if err != nil {
+		return nil, fmt.Errorf("backup: snapshot staged retired receipt catalog: %w", err)
+	}
+	if !reflect.DeepEqual(canonical, capture.Retired) {
+		return nil, receiptSnapshotCollectError("staged retired receipt catalog is not lossless")
+	}
+	return &receiptSnapshotStage{
+		receiptWholeStateStage: wholeState,
+		retired:                retired,
+	}, nil
+}
+
+func digestReceiptSnapshotSpool(file *os.File) ([sha256.Size]byte, uint64, error) {
 	var digest [sha256.Size]byte
 	info, err := file.Stat()
 	if err != nil {
-		return digest, 0, fmt.Errorf("backup: stat receipt Snapshot archive: %w", err)
+		return digest, 0, fmt.Errorf("backup: stat receipt Snapshot spool: %w", err)
 	}
 	if info.Size() < 0 || uint64(info.Size()) > wholeStateArchiveMaxBytes {
-		return digest, 0, receiptSnapshotCollectError("canonical archive has invalid size")
+		return digest, 0, receiptSnapshotCollectError("canonical spool has invalid size")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return digest, 0, fmt.Errorf("backup: rewind receipt Snapshot archive: %w", err)
+		return digest, 0, fmt.Errorf("backup: rewind receipt Snapshot spool: %w", err)
 	}
 	hash := sha256.New()
 	n, err := io.Copy(hash, file)
 	if err != nil {
-		return digest, 0, fmt.Errorf("backup: hash receipt Snapshot archive: %w", err)
+		return digest, 0, fmt.Errorf("backup: hash receipt Snapshot spool: %w", err)
 	}
 	if n != info.Size() {
-		return digest, 0, receiptSnapshotCollectError("canonical archive size changed while hashing")
+		return digest, 0, receiptSnapshotCollectError("canonical spool size changed while hashing")
 	}
 	copy(digest[:], hash.Sum(nil))
 	return digest, uint64(n), nil
@@ -474,35 +668,35 @@ func (c *ReceiptSnapshotCandidate) Metadata() ReceiptSnapshotCandidateMetadata {
 	return metadata
 }
 
-// WriteArchive copies the canonical deterministic archive without exposing
-// its temporary path. The candidate remains reusable until Close.
-func (c *ReceiptSnapshotCandidate) WriteArchive(w io.Writer) error {
+// WriteSpool copies the canonical deterministic receipt frame spool without
+// exposing its temporary path. The candidate remains reusable until Close.
+func (c *ReceiptSnapshotCandidate) WriteSpool(w io.Writer) error {
 	if c == nil || w == nil {
 		return errors.New("backup: receipt Snapshot candidate or writer is nil")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.archive == nil {
+	if c.closed || c.spool == nil {
 		return errors.New("backup: receipt Snapshot candidate is closed")
 	}
-	if _, err := c.archive.Seek(0, io.SeekStart); err != nil {
+	if _, err := c.spool.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("backup: rewind receipt Snapshot candidate: %w", err)
 	}
-	n, err := io.CopyN(w, c.archive, int64(c.metadata.ArchiveBytes))
+	n, err := io.CopyN(w, c.spool, int64(c.metadata.SpoolBytes))
 	if err != nil {
 		return fmt.Errorf("backup: copy receipt Snapshot candidate: %w", err)
 	}
-	if uint64(n) != c.metadata.ArchiveBytes {
+	if uint64(n) != c.metadata.SpoolBytes {
 		return fmt.Errorf("backup: copy receipt Snapshot candidate: %w", io.ErrShortWrite)
 	}
-	_, seekErr := c.archive.Seek(0, io.SeekStart)
+	_, seekErr := c.spool.Seek(0, io.SeekStart)
 	if seekErr != nil {
 		return fmt.Errorf("backup: rewind copied receipt Snapshot candidate: %w", seekErr)
 	}
 	return nil
 }
 
-// Close discards the detached candidate and removes its temporary archive.
+// Close discards the detached candidate and removes its temporary spool.
 func (c *ReceiptSnapshotCandidate) Close() error {
 	if c == nil {
 		return nil
@@ -514,9 +708,9 @@ func (c *ReceiptSnapshotCandidate) Close() error {
 	}
 	c.closed = true
 	var err error
-	if c.archive != nil {
-		err = c.archive.Close()
-		c.archive = nil
+	if c.spool != nil {
+		err = c.spool.Close()
+		c.spool = nil
 	}
 	if c.path != "" {
 		if removeErr := os.Remove(c.path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {

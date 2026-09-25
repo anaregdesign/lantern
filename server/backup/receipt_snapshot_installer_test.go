@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -52,8 +53,10 @@ func newReceiptSnapshotInstallerFixture(
 		t.Fatal(err)
 	}
 	collector, err := NewReceiptSnapshotCollector(ReceiptSnapshotCollectorConfig{
-		TempDir: dir, Limits: limits, ExpectedPolicy: policy, DefaultTTL: time.Hour,
-		ConfigureGraph: configureGraph,
+		TempDir: dir, Limits: limits, ExpectedPolicy: policy,
+		ExpectedRetiredConfig: receiptSnapshotRetiredConfig(policy),
+		DefaultTTL:            time.Hour,
+		ConfigureGraph:        configureGraph,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +71,7 @@ func newReceiptSnapshotInstallerFixture(
 func receiptSnapshotPolicyFromHeader(t *testing.T, header *pb.SnapshotHeader) mutationreceipt.Config {
 	t.Helper()
 	metadata := header.GetReceiptMetadata()
-	wire := metadata.GetPolicy()
+	wire := metadata.GetActivePolicy()
 	var epoch mutationreceipt.Epoch
 	copy(epoch[:], wire.GetDeploymentEpoch())
 	return mutationreceipt.Config{
@@ -80,12 +83,12 @@ func receiptSnapshotPolicyFromHeader(t *testing.T, header *pb.SnapshotHeader) mu
 	}
 }
 
-func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceiptV1(t *testing.T) {
+func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceipt(t *testing.T) {
 	frames, _ := receiptSnapshotCollectorFixture(t)
 	installer, runtime := newReceiptSnapshotInstallerFixture(
 		t, frames, receiptSnapshotCollectorLimits(),
 	)
-	if got := installer.RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+	if got := installer.RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		!installer.CompatibleFormat(got) ||
 		installer.CompatibleFormat(pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1) {
 		t.Fatalf("format policy = %v", got)
@@ -98,7 +101,7 @@ func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceiptV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+	if result.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		result.Graph.Vertices != 2 || result.Graph.Edges != 1 {
 		t.Fatalf("install result = %+v", result)
 	}
@@ -110,14 +113,50 @@ func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceiptV1(t *testing.T) {
 	}
 }
 
-func TestReceiptSnapshotInstallerRejectsWhenTargetHasRetiredEvidence(t *testing.T) {
-	frames, _ := receiptSnapshotCollectorFixture(t)
+func TestReceiptSnapshotInstallerPublishesCanonicalEmptyOriginCut(t *testing.T) {
+	valid, _ := receiptSnapshotCollectorFixture(t)
+	header := cloneReceiptSnapshotCollectorFrames(valid[:1])[0]
+	footer := cloneReceiptSnapshotCollectorFrames(valid[len(valid)-1:])[0]
+	header.GetHeader().CutoffSeqPerOrigin = nil
+	header.GetHeader().GetReceiptMetadata().OriginCutoffs = nil
+	footer.GetFooter().VertexCount = 0
+	footer.GetFooter().EdgeCount = 0
+	footer.GetFooter().ActiveReceiptCount = 0
+	footer.GetFooter().OriginCount = 0
+	frames := []*pb.SnapshotResponse{header, footer}
 	installer, runtime := newReceiptSnapshotInstallerFixture(
 		t,
 		frames,
 		receiptSnapshotCollectorLimits(),
 	)
-	capture, err := service.DecodeReceiptSnapshotFrames(frames)
+
+	result, err := installer.Install(
+		t.Context(),
+		&receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Header == nil || result.Graph != (replication.SnapshotGraphCounts{}) {
+		t.Fatalf("empty-origin install result = %+v", result)
+	}
+	if length, _, evicted := runtime.MutationLogStats(); length != 0 || evicted != 1 {
+		t.Fatalf("empty-origin install log = len %d evicted %d, want 0 and 1", length, evicted)
+	}
+}
+
+func TestReceiptSnapshotInstallerPreservesTargetRetiredEvidence(t *testing.T) {
+	frames, policy := receiptSnapshotCollectorFixture(t)
+	installer, runtime := newReceiptSnapshotInstallerFixture(
+		t,
+		frames,
+		receiptSnapshotCollectorLimits(),
+	)
+	capture, err := service.DecodeReceiptSnapshotFrames(
+		frames,
+		policy,
+		receiptSnapshotRetiredConfig(policy),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,13 +175,13 @@ func TestReceiptSnapshotInstallerRejectsWhenTargetHasRetiredEvidence(t *testing.
 		t.Context(),
 		&receiptSnapshotTestStream{frames: frames, current: -1},
 	)
-	if err == nil || result.Header != nil {
-		t.Fatalf("active-only install with retired evidence = %+v, %v", result, err)
+	if err != nil || result.Header == nil {
+		t.Fatalf("receipt Snapshot install with local retired evidence = %+v, %v", result, err)
 	}
 	afterLength, _, afterEvicted := runtime.MutationLogStats()
-	if afterLength != beforeLength || afterEvicted != beforeEvicted {
+	if afterLength != beforeLength || afterEvicted != beforeEvicted+1 {
 		t.Fatalf(
-			"rejected active-only install changed WAL boundary: before=(%d,%d) after=(%d,%d)",
+			"receipt Snapshot install WAL boundary: before=(%d,%d) after=(%d,%d)",
 			beforeLength,
 			beforeEvicted,
 			afterLength,
@@ -187,9 +226,11 @@ func TestReceiptSnapshotInstallerRejectsBeforePublication(t *testing.T) {
 			frames: func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) },
 			limits: func() ReceiptSnapshotCollectorLimits {
 				limits := receiptSnapshotCollectorLimits()
-				limits.MaxFrames = uint64(len(valid) - 1)
-				limits.MaxReceipts = limits.MaxFrames
-				limits.MaxGraphFrames = limits.MaxFrames
+				limits.MaxGraphFrames = 1
+				limits.MaxFrames = 2 +
+					limits.MaxActiveReceipts +
+					limits.MaxRetiredReceipts +
+					limits.MaxGraphFrames
 				return limits
 			},
 		},
@@ -231,6 +272,26 @@ func TestReceiptSnapshotInstallerRejectsBeforePublication(t *testing.T) {
 				t.Fatalf("rejected receipt Snapshot changed log = len %d evicted %d", length, evicted)
 			}
 		})
+	}
+}
+
+func TestReceiptSnapshotInstallerPublishesRetiredEvidence(t *testing.T) {
+	frames, _ := receiptSnapshotCollectorFixtureWithRetired(t)
+	installer, runtime := newReceiptSnapshotInstallerFixture(
+		t, frames, receiptSnapshotCollectorLimits(),
+	)
+	result, err := installer.Install(
+		context.Background(),
+		&receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err != nil || result.Header == nil {
+		t.Fatalf("receipt Snapshot retired evidence install = %+v, %v", result, err)
+	}
+	if _, _, ok := runtime.GraphCache().GetEdgeDetail("tail", "head"); !ok {
+		t.Fatal("receipt Snapshot retired candidate did not publish graph")
+	}
+	if length, _, evicted := runtime.MutationLogStats(); length != 0 || evicted != 1 {
+		t.Fatalf("receipt Snapshot retired candidate log = len %d evicted %d", length, evicted)
 	}
 }
 

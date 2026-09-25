@@ -343,27 +343,31 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 
 	recorder := &replicationSnapshotRecorder{}
 	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}, recorder); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatalf("receipt Snapshot source calls = %d, want 1", calls)
 	}
-	if err := validateReceiptSnapshotFrames(recorder.frames); err != nil {
+	if err := validateReceiptSnapshotFrames(recorder.frames, policy, mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch: policy.Epoch,
+		MaxEntries:  policy.MaxEntries,
+		MaxBytes:    policy.MaxBytes,
+	}); err != nil {
 		t.Fatalf("producer emitted invalid receipt Snapshot: %v", err)
 	}
 	header := recorder.frames[0].GetHeader()
 	footer := recorder.frames[len(recorder.frames)-1].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		header.GetCutoffLocalSeq() != 1 ||
-		len(header.GetReceiptMetadata().GetPolicy().GetDeploymentEpoch()) != 16 ||
-		len(header.GetReceiptMetadata().GetPolicy().GetFingerprint()) != 32 ||
-		header.GetReceiptMetadata().GetPolicy().GetRetentionMs() != uint64(time.Hour/time.Millisecond) ||
-		header.GetReceiptMetadata().GetPolicy().GetMaxEntries() != 32 ||
-		header.GetReceiptMetadata().GetPolicy().GetMaxBytes() != 1<<20 ||
+		len(header.GetReceiptMetadata().GetActivePolicy().GetDeploymentEpoch()) != 16 ||
+		len(header.GetReceiptMetadata().GetActivePolicy().GetFingerprint()) != 32 ||
+		header.GetReceiptMetadata().GetActivePolicy().GetRetentionMs() != uint64(time.Hour/time.Millisecond) ||
+		header.GetReceiptMetadata().GetActivePolicy().GetMaxEntries() != 32 ||
+		header.GetReceiptMetadata().GetActivePolicy().GetMaxBytes() != 1<<20 ||
 		len(header.GetReceiptMetadata().GetOriginCutoffs()) != 1 ||
-		footer.GetReceiptCount() != 1 || footer.GetReceiptOriginCount() != 1 {
+		footer.GetActiveReceiptCount() != 1 || footer.GetOriginCount() != 1 {
 		t.Fatalf("receipt Snapshot metadata/footer = %+v / %+v", header, footer)
 	}
 	var receipt *pb.SnapshotReceipt
@@ -386,7 +390,7 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 		t.Fatalf("receipt/graph atomic cut = receipt %+v, live=%v tombstone=%v", receipt, liveEdge, tombstone)
 	}
 	status, err := f.replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
-	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 {
+	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("receipt PeerStatus = %+v, %v", status, err)
 	}
 
@@ -402,36 +406,14 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 			t.Fatalf("graph-only downgrade emitted frames or sampled source: frames=%d calls=%d", len(legacy.frames), calls)
 		}
 	}
-	unknown := &replicationSnapshotRecorder{}
-	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: pb.SnapshotFormat(99)}, unknown); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("unknown receipt Snapshot format = %v, want InvalidArgument", err)
-	}
-	if len(unknown.frames) != 0 || calls != 1 {
-		t.Fatalf("unknown format emitted frames or sampled source: frames=%d calls=%d", len(unknown.frames), calls)
-	}
-
-	source.capture = func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
-		calls++
-		capture, err := baseCapture(ctx, got)
-		if err != nil {
-			return ReceiptWholeStateCapture{}, err
+	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat(2), pb.SnapshotFormat(99)} {
+		unknown := &replicationSnapshotRecorder{}
+		if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, unknown); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("unknown receipt Snapshot format %d = %v, want InvalidArgument", format, err)
 		}
-		capture.Retired, _ = mustRetiredCatalogSnapshot(
-			t,
-			got,
-			capture.Receipts.ClockHighWaterMillis,
-			0x67,
-		)
-		return capture, nil
-	}
-	downgrade := &replicationSnapshotRecorder{}
-	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
-	}, downgrade); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("RECEIPT_V1 retired downgrade = %v, want FailedPrecondition", err)
-	}
-	if len(downgrade.frames) != 0 || calls != 2 {
-		t.Fatalf("RECEIPT_V1 retired downgrade emitted frames: frames=%d calls=%d", len(downgrade.frames), calls)
+		if len(unknown.frames) != 0 || calls != 1 {
+			t.Fatalf("unknown format %d emitted frames or sampled source: frames=%d calls=%d", format, len(unknown.frames), calls)
+		}
 	}
 }
 
@@ -445,7 +427,7 @@ func TestLanternReplicationService_ReceiptSnapshotConfigurationFailsClosed(t *te
 		for _, format := range []pb.SnapshotFormat{
 			pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
 			pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
-			pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		} {
 			recorder := &replicationSnapshotRecorder{}
 			err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, recorder)
@@ -517,7 +499,7 @@ func TestLanternReplicationService_ReceiptSnapshotRejectsMalformedCutBeforeHeade
 		mutate func(*ReceiptWholeStateCapture)
 	}{
 		{"receipt footer count", func(capture *ReceiptWholeStateCapture) {
-			capture.Graph[len(capture.Graph)-1].GetFooter().ReceiptCount = 1
+			capture.Graph[len(capture.Graph)-1].GetFooter().ActiveReceiptCount = 1
 		}},
 		{"invalid graph payload", func(capture *ReceiptWholeStateCapture) {
 			capture.Graph[len(capture.Graph)-1].GetFooter().VertexCount = 1
@@ -552,7 +534,7 @@ func TestLanternReplicationService_ReceiptSnapshotRejectsMalformedCutBeforeHeade
 			}
 			recorder := &replicationSnapshotRecorder{}
 			err = f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			}, recorder)
 			if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
 				t.Fatalf("malformed cut = %v, frames=%d", err, len(recorder.frames))

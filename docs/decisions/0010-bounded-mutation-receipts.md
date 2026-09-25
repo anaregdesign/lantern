@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT_V1 Snapshot production/install, and manifest-last retired-aware receipt backup-set production are wired for private durable replication, but durable backup restore, receipt Snapshot peer transport, capability/status RPCs, and receipt-enabled client writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, receipt-bearing Edge Delete and Vertex Put/Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT Snapshot production/install, and manifest-last retired-aware receipt backup-set production are wired for private durable replication, but durable backup restore, capability/status RPCs, and receipt-enabled client writes remain disabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116, #1393, #1394
 
@@ -458,62 +458,77 @@ continuity, or an absent-ID status.
 The guarded full Subscribe projection carries receipt-bearing entries as one
 `ReplicatedReceiptEdgeDelete` mutation arm. A full-stream consumer without
 `accept_receipt_envelopes` receives `INVALID_ARGUMENT` before that frame;
-an old peer that receives the unknown oneof rejects the operation before
+a receiver that did not opt in rejects the unknown oneof before
 advancing its origin watermark. Identity-only Subscribe emits DeleteEdge
 keys only for causally accepted items, and an all-rejected call emits a final
 zero-key `RECEIPT_ONLY` marker to advance its cursor without invalidation.
 Graph-only Pump does not opt in, and graph-only remote apply rejects the arm.
 This remains an internal wire prerequisite, not a supported receipt CDC
 contract. In durable receipt-WAL mode, Pump and anti-entropy now opt in only
-after the runtime is certified; they require `RECEIPT_V1`, so an evicted
+after the runtime is certified; they require `RECEIPT`, so an evicted
 receipt entry cannot fall through to a graph-only Snapshot. The shared
 installer refuses a zero or graph-only header before publication.
 The `SnapshotFormat` request/header and
 `PeerStatus.required_snapshot_format` fields establish this downgrade
 boundary. `WithReceiptSnapshotRequired` is a lifetime service latch: when set,
-a legacy full Subscribe is rejected before the ring is inspected, and
-graph-only Snapshot requests fail closed. The opt-in `RECEIPT_V1` producer is
+a receipt-less full Subscribe is rejected before the ring is inspected, and
+graph-only Snapshot requests fail closed. The opt-in `RECEIPT` producer is
 configured separately with the exact service-owned
-`ReceiptWholeStateSource` and immutable Store policy. The source carries a
-private owner identity; configuration rejects a source unless its primary
-service, runtime, graph backend, mutation log, HLC clock, origin tracker, and
-Store are the exact state owned by the replication responder. It calls that
-source once, preflights the complete detached image before sending its header,
-and streams the epoch, policy fingerprint/retention/capacity, clock high-water,
-sorted unexpired receipt rows with original result and Add contribution
-metadata, full origin HLC/sequence rows, local cutoff, graph frames, and a
-counted footer. A receipt-only cut is valid. Missing, malformed, reordered,
-count-mismatched, oversized, recursively unknown-field-bearing, or typed-nil
-oneof metadata produces no header. The same preflight validates graph payload
-identities, timestamps/HLCs, Add contribution IDs, duplicate/overlapping state,
-causal floors, and edge endpoints before the first frame is sent. Every
-nonzero graph HLC must be bounded by both the global cutoff and its matching
-origin row; an unknown origin is invalid. The receipt clock high-water must not
-exceed the cutoff's wall time at millisecond precision.
+`ReceiptWholeStateSource`, immutable active Store policy, and runtime-owned
+retired catalog. The source carries a private owner identity; configuration
+rejects a source unless its primary service, runtime, graph backend, mutation
+log, HLC clock, origin tracker, active Store, and retired catalog are the exact
+state owned by the replication responder. It calls that source once. The
+active Store is the sole clock authority; the retired catalog must snapshot at
+exactly that high-water under the same publication cut.
+The producer materializes and preflights the complete detached sequence before
+sending its header. Metadata carries the active policy, sorted retired
+policies, shared clock high-water, and full origin HLC/sequence rows. One
+receipt stream carries active and retired rows in strict global raw
+OperationID order, followed by canonical graph frames and a footer that
+independently counts active receipts, retired epochs, retired receipts, and
+origins. A receipt-only cut and an empty retired catalog are valid. Missing,
+malformed, reordered, count-mismatched, oversized, recursively
+unknown-field-bearing, or typed-nil oneof metadata produces no header. The
+same preflight validates policy fingerprints, epoch ownership, graph payload
+identities, timestamps/HLCs, Add contribution IDs, duplicate/overlapping
+state, causal floors, and edge endpoints. Every nonzero graph HLC must be
+bounded by both the global cutoff and its matching origin row; an unknown
+origin is invalid. The shared receipt clock high-water must not exceed the
+cutoff's wall time at millisecond precision.
 `WithReceiptSnapshotRequired` without that configured source still fails
 closed.
 The production provider selects Snapshot behavior from the runtime mode.
 Graph-only mode retains the existing in-place `GRAPH_ONLY_V1` installer.
 Durable receipt-WAL mode constructs one transport-neutral receipt installer
 after runtime certification and passes that exact instance to both Pump and
-anti-entropy. It requires `RECEIPT_V1`, drains the complete bounded stream
-through `ReceiptSnapshotCollector`, revalidates the canonical archive, and
-then calls the certified durable baseline install once. A cancellation,
-receive error, malformed/truncated stream, count or capacity breach,
-epoch/policy mismatch, or format downgrade returns before live publication.
-This wiring does not enable receipt writes, public status, or capability.
+anti-entropy. It requires `RECEIPT`, drains the complete bounded stream
+through `ReceiptSnapshotCollector`, retains and revalidates the canonical receipt
+frame spool, and stages the graph, active Store, and retired catalog without
+touching serving state. Installation unions incoming retired evidence with
+the runtime catalog: exact duplicates are idempotent and any policy, row,
+group-position, contribution, or high-water conflict fails closed. It then
+calls the runtime's combined atomic baseline install once. A cancellation,
+receive error, malformed/truncated stream, independent count or capacity
+breach, epoch/policy mismatch, candidate tampering, or format downgrade
+returns before live publication. This wiring does not enable receipt writes,
+public status, or capability.
 The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
-is a separate format from `.lbk`. It requires a `RECEIPT_V1` graph Snapshot
-header, receipt Store snapshot and policy, clock high-water, and origin HLC
-cutoffs; bounded records and a counted SHA-256 footer reject incomplete or
-damaged containers. The digest detects corruption, not malicious tampering or
-an inconsistent source cut. The codec checks graph frame wire fields, order,
+is the active-epoch-only LANTARCH codec (internal format version 1), separate
+from both `.lbk` and the RECEIPT transport. Its graph section carries the
+current receipt-format tag but no transport receipt metadata; separate archive
+records carry the active Store snapshot/policy, clock high-water, and origin
+HLC cutoffs. It does not carry retired evidence; the backup-set member
+replacement is separate work.
+Bounded records and a counted SHA-256 footer reject incomplete or damaged
+containers. The digest detects corruption, not malicious tampering or an
+inconsistent source cut. The codec checks graph frame wire fields, order,
 counts, payload semantics, and causal relationships, but not whether graph,
 receipts, and origin cutoffs were captured under one publication cut. Its
 wire-field validation rejects unknown fields, ambiguous duplicates, and
 malformed encodings without comparing bytes from a particular protobuf
-runtime; field and map-entry order remain semantically irrelevant. The v1 codec
-pins the reachable graph schema and rejects unreviewed proto changes. The
+runtime; field and map-entry order remain semantically irrelevant. The v1
+codec pins the reachable graph schema and rejects unreviewed proto changes. The
 private [whole-state capture](../../server/service/receipt_snapshot_capture.go)
 copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local log
 seq, and an HLC frontier under one exclusive service publication cut.
@@ -545,7 +560,7 @@ Store even with matching policy; a misconfigured first binding therefore
 fails closed on later construction.
 Direct Core Store access remains outside the service publication gate.
 The private [archive staging path](../../server/backup/receipt_archive_stage.go)
-decodes the complete `RECEIPT_V1` container before reconstructing a fresh,
+decodes the complete LANTARCH container before reconstructing a fresh,
 unpublished GraphCache and receipt Store. It prepares the identity prefix/head
 index before replay, allows the caller to configure an optional search index,
 rejects any graph configurator that leaves physical or hidden state, and
@@ -562,25 +577,36 @@ after complete validation; the existing graph-only Snapshot receiver's
 in-place overlay remains separate and cannot certify receipt continuity.
 The private bounded
 [Snapshot collector](../../server/backup/receipt_snapshot_collector.go)
-consumes a transport-neutral `RECEIPT_V1` stream into that detached archive
-and stage. Every frame, section count, and total byte dimension has an explicit
-positive limit; a task-owned spool is removed on every outcome, while a
-successful candidate owns a read-only canonical archive until `Close`.
-The candidate exposes cloned header/policy metadata, the canonical archive
-digest/size, and a copying writer; its detached GraphCache and Store remain
-private until the receipt installer asks the certified service to publish the
-decoded canonical cut. A decoded Connect client stream does not
-expose its original protobuf bytes, so the collector treats that incoming
-encoding as non-authoritative: it recursively validates the parsed message,
-including unknown fields and typed-nil oneofs, then deterministically
-re-encodes it. Raw-observing stream adapters may additionally supply exact
-frame bytes, in which case ambiguous duplicate fields and nonminimal wire
-encodings are rejected before staging. Production durable mode shares one
+consumes a transport-neutral `RECEIPT` stream into a canonical
+length-prefixed frame spool and detached graph, active Store, and retired
+catalog stage. Active receipt rows, retired epochs, retired receipt rows,
+origins, graph frames, total frames, per-frame bytes, decompressed transport
+payload bytes, and canonical spool bytes each have an explicit positive
+limit. The total frame limit must equal header + footer + the three independent
+active-row, retired-row, and graph-frame maxima, so one section cannot consume
+another section's budget. A task-owned spool is removed on every outcome,
+while a successful candidate owns a read-only digest-bound spool until
+`Close`. The candidate exposes cloned header/policy metadata, the canonical
+spool digest/size, and a copying writer; its detached state remains private
+until the receipt installer asks the certified service to publish the decoded
+canonical cut. Production Pump and anti-entropy Snapshot clients enforce the
+per-frame limit in Connect before unmarshal and charge the exact decompressed
+protobuf payload presented to the codec against the stream transport budget;
+compression and duplicate known fields therefore cannot hide received work.
+A decoded Connect client stream does not expose those bytes to the collector,
+so its spool remains a separate deterministic canonical-byte contract: the
+collector recursively validates the parsed message, including unknown fields
+and typed-nil oneofs, then deterministically re-encodes it. Raw-observing
+stream adapters may additionally supply exact frame bytes, in which case
+ambiguous duplicate fields and nonminimal wire encodings are rejected before
+staging. Production durable mode shares one
 collector-backed installer across Pump and anti-entropy; graph-only mode never
-constructs it. The production collector caps each frame at 8 MiB, the complete
-wire/canonical image at 512 MiB, total frames at 1,048,576, origin rows at
-65,536, and receipt rows at the smaller of the configured Store entry cap and
-1,048,574.
+constructs it. The production collector caps each frame at 8 MiB, decompressed
+transport payloads and the canonical spool independently at 512 MiB, graph
+frames at 1,048,576, origin rows at 65,536, and active receipt rows, retired
+epochs, and retired receipt rows independently at the configured Store entry
+cap. Its total frame cap is derived exactly from those independent row and
+graph limits plus the header and footer.
 The private [FileWAL cut manifest](../../server/backup/receipt_archive_wal_cut.go)
 binds complete archive bytes to both the original WAL frame bytes through the
 archive's local sequence and the exact complete valid FileWAL tip observed at
@@ -811,7 +837,7 @@ outcome.
 The sole production composition boundary selects
 `LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the
 default and preserves the historical in-memory graph, NopWAL-backed Log, HLC,
-and legacy graph-only backup restore. `fresh` and `restart` require an absolute
+and graph-only backup restore. `fresh` and `restart` require an absolute
 `LANTERN_RECEIPT_WAL_PATH`, a nonzero `LANTERN_RECEIPT_EPOCH`, and explicit
 immutable retention, entry-cap, and logical-byte-cap policy. They also require
 an explicitly configured, nonzero `LANTERN_NODE_ID`; graph-only mode retains
@@ -821,8 +847,8 @@ graph/Store/origin/Log/HLC/epoch/generation bundle before constructing either
 service, the primary listener, metrics server, or replication pump.
 Wire cleanup releases later owners before this bundle, and `App` retains the
 bundle until all serving goroutines stop. Durable mode selects receipt-set
-production from the exact certified runtime while still rejecting legacy
-graph-only restore-on-startup because it cannot prove receipt/archive
+production from the exact certified runtime while still rejecting graph-only
+restore-on-startup because it cannot prove receipt/archive
 continuity. Graph-only mode preserves the historical `.lbk` producer, restore,
 filenames, retention, metrics, and behavior. #1394 owns the later durable-set
 startup selection and installation boundary.
@@ -851,14 +877,11 @@ view until a checked Core read API or equivalent fail-stop gate exists.
 The private production provider installs the staged graph, Store, origin
 tracker, retired-catalog slot, Log, restored HLC, epoch, and generation as one
 certified serving bundle and binds the receipt Snapshot producer and one
-shared installer to those exact identities. `RECEIPT_V1` remains active-only:
-its producer rejects nonempty retired evidence before sending a header, and
-its installer rejects nonempty local retired evidence before publication.
-Durable Pump and anti-entropy can therefore use it only while the retired
-catalog is empty. Graph-only mode and `BackupSnapshot` restore remain
-graph-only and cannot certify receipt continuity. Public enablement still
-requires the later capability/status and receipt-bearing client mutation
-slice. `Store.Begin` advances clock high-water
+shared installer to those exact identities. Durable Pump and anti-entropy
+request and atomically install `RECEIPT`; graph-only mode and
+`BackupSnapshot` restore remain graph-only and cannot certify receipt
+continuity. Public enablement still requires the later capability/status and
+receipt-bearing client mutation slice. `Store.Begin` advances clock high-water
 and expires already-dead receipts even if the new mutation later aborts; only
 newly staged receipts roll back. Recovery persists that monotonic metadata
 through the bound clock journal or the committed baseline marker; losing or

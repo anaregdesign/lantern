@@ -18,6 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 type receiptSnapshotTestStream struct {
@@ -142,9 +143,9 @@ func receiptSnapshotCollectorFixture(
 			CutoffSeqPerOrigin: map[string]uint64{"35000000000000000000000000000000": 7},
 			CutoffHlc:          wireHLC(),
 			CutoffLocalSeq:     11,
-			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			ReceiptMetadata: &pb.SnapshotReceiptMetadata{
-				Policy: &pb.ReceiptPolicy{
+				ActivePolicy: &pb.ReceiptPolicy{
 					DeploymentEpoch: append([]byte(nil), policy.Epoch[:]...),
 					Fingerprint:     append([]byte(nil), fingerprint[:]...),
 					RetentionMs:     uint64(policy.Retention / time.Millisecond),
@@ -173,10 +174,16 @@ func receiptSnapshotCollectorFixture(
 			},
 		}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{
-			Vertex: &pb.Vertex{Key: "tail"}, Hlc: wireHLC(),
+			Vertex: &pb.Vertex{
+				Key:   "head",
+				Value: &pb.Vertex_Nil{Nil: true},
+			}, Hlc: wireHLC(),
 		}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{
-			Vertex: &pb.Vertex{Key: "head"}, Hlc: wireHLC(),
+			Vertex: &pb.Vertex{
+				Key:   "tail",
+				Value: &pb.Vertex_Nil{Nil: true},
+			}, Hlc: wireHLC(),
 		}}},
 		{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
 			Tail: "tail", Head: "head",
@@ -186,9 +193,128 @@ func receiptSnapshotCollectorFixture(
 			}},
 		}}},
 		{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{
-			VertexCount: 2, EdgeCount: 1, ReceiptCount: 1, ReceiptOriginCount: 1,
+			VertexCount: 2, EdgeCount: 1, ActiveReceiptCount: 1, OriginCount: 1,
 		}}},
 	}, policy
+}
+
+func appendReceiptSnapshotTestRow(
+	t *testing.T,
+	store *mutationreceipt.Store,
+	epoch mutationreceipt.Epoch,
+	highWater time.Time,
+	nonce byte,
+) {
+	t.Helper()
+	id, err := mutationreceipt.NewID(epoch, highWater, [24]byte{nonce})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := mutationreceipt.Intent{
+		ID: id, Group: mutationreceipt.GroupID{nonce}, Count: 1,
+		Kind:   mutationreceipt.PutVertex,
+		Digest: mutationreceipt.IntentDigest([]byte{nonce}),
+	}
+	tx, err := store.Begin(highWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]mutationreceipt.Intent{intent}); err != nil ||
+		class != mutationreceipt.Fresh {
+		t.Fatalf("Classify test receipt = (%v, %v)", class, err)
+	}
+	if err := tx.Reserve([][]byte{{nonce}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+}
+
+func receiptSnapshotCollectorFixtureWithTwoActive(
+	t *testing.T,
+) ([]*pb.SnapshotResponse, mutationreceipt.Config) {
+	t.Helper()
+	frames, policy := receiptSnapshotCollectorFixture(t)
+	retiredConfig := mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch: policy.Epoch, MaxEntries: policy.MaxEntries, MaxBytes: policy.MaxBytes,
+	}
+	capture, err := service.DecodeReceiptSnapshotFrames(frames, policy, retiredConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := mutationreceipt.NewFromSnapshot(capture.Policy, capture.Receipts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendReceiptSnapshotTestRow(
+		t,
+		store,
+		policy.Epoch,
+		capture.Receipts.ClockHighWater(),
+		0x36,
+	)
+	capture.Receipts, err = store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.Policy.ClockHighWater = capture.Receipts.ClockHighWater()
+	capture.Retired.ClockHighWaterMillis = capture.Receipts.ClockHighWaterMillis
+	frames, err = service.PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frames, policy
+}
+
+func receiptSnapshotCollectorFixtureWithRetired(
+	t *testing.T,
+) ([]*pb.SnapshotResponse, mutationreceipt.Config) {
+	t.Helper()
+	frames, policy := receiptSnapshotCollectorFixture(t)
+	retiredConfig := mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch: policy.Epoch, MaxEntries: policy.MaxEntries, MaxBytes: policy.MaxBytes,
+	}
+	capture, err := service.DecodeReceiptSnapshotFrames(frames, policy, retiredConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	highWater := capture.Receipts.ClockHighWater()
+	for _, item := range []struct {
+		epoch mutationreceipt.Epoch
+		nonce byte
+	}{
+		{mutationreceipt.Epoch{0x11}, 0x12},
+		{mutationreceipt.Epoch{0x21}, 0x22},
+	} {
+		memberPolicy := mutationreceipt.Config{
+			Epoch: item.epoch, Retention: 2 * time.Hour,
+			MaxEntries: 8, MaxBytes: 1 << 20, ClockHighWater: highWater,
+		}
+		store, err := mutationreceipt.New(memberPolicy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendReceiptSnapshotTestRow(t, store, item.epoch, highWater, item.nonce)
+		state, err := store.Snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		capture.Retired.Epochs = append(capture.Retired.Epochs, mutationreceipt.RetiredEpochSnapshot{
+			Policy: mutationreceipt.RetiredEpochPolicy{
+				Epoch: item.epoch, Retention: memberPolicy.Retention,
+				MaxEntries: memberPolicy.MaxEntries, MaxBytes: memberPolicy.MaxBytes,
+			},
+			State: state,
+		})
+	}
+	frames, err = service.PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frames, policy
 }
 
 func cloneReceiptSnapshotCollectorFrames(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
@@ -203,12 +329,30 @@ func cloneReceiptSnapshotCollectorFrames(frames []*pb.SnapshotResponse) []*pb.Sn
 
 func receiptSnapshotCollectorLimits() ReceiptSnapshotCollectorLimits {
 	return ReceiptSnapshotCollectorLimits{
-		MaxFrameBytes:  1 << 20,
-		MaxFrames:      32,
-		MaxTotalBytes:  4 << 20,
-		MaxReceipts:    8,
-		MaxOrigins:     8,
-		MaxGraphFrames: 16,
+		MaxFrameBytes:          1 << 20,
+		MaxFrames:              34,
+		MaxTransportBytes:      4 << 20,
+		MaxCanonicalSpoolBytes: 4 << 20,
+		MaxActiveReceipts:      8,
+		MaxRetiredEpochs:       8,
+		MaxRetiredReceipts:     8,
+		MaxOrigins:             8,
+		MaxGraphFrames:         16,
+	}
+}
+
+func deriveReceiptSnapshotTestFrameLimit(limits *ReceiptSnapshotCollectorLimits) {
+	limits.MaxFrames = 2 +
+		limits.MaxActiveReceipts +
+		limits.MaxRetiredReceipts +
+		limits.MaxGraphFrames
+}
+
+func receiptSnapshotRetiredConfig(policy mutationreceipt.Config) mutationreceipt.RetiredCatalogConfig {
+	return mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch: policy.Epoch,
+		MaxEntries:  policy.MaxEntries,
+		MaxBytes:    policy.MaxBytes,
 	}
 }
 
@@ -220,7 +364,9 @@ func newReceiptSnapshotTestCollector(
 ) *ReceiptSnapshotCollector {
 	t.Helper()
 	collector, err := NewReceiptSnapshotCollector(ReceiptSnapshotCollectorConfig{
-		TempDir: dir, Limits: limits, ExpectedPolicy: policy, DefaultTTL: time.Hour,
+		TempDir: dir, Limits: limits, ExpectedPolicy: policy,
+		ExpectedRetiredConfig: receiptSnapshotRetiredConfig(policy),
+		DefaultTTL:            time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -259,12 +405,12 @@ func TestReceiptSnapshotCollectorReturnsCanonicalDetachedCandidate(t *testing.T)
 	}()
 
 	metadata := candidate.Metadata()
-	if metadata.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+	if metadata.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		metadata.Header.GetCutoffLocalSeq() != 11 ||
 		len(metadata.Header.GetReceiptMetadata().GetOriginCutoffs()) != 1 ||
 		metadata.Policy.Epoch != policy.Epoch ||
-		metadata.ArchiveBytes == 0 ||
-		metadata.ArchiveSHA256 == ([sha256.Size]byte{}) {
+		metadata.SpoolBytes == 0 ||
+		metadata.SpoolSHA256 == ([sha256.Size]byte{}) {
 		t.Fatalf("candidate metadata = %+v", metadata)
 	}
 	metadata.Header.CutoffLocalSeq++
@@ -272,25 +418,25 @@ func TestReceiptSnapshotCollectorReturnsCanonicalDetachedCandidate(t *testing.T)
 		t.Fatal("candidate metadata header aliases caller")
 	}
 	var first, second bytes.Buffer
-	if err := candidate.WriteArchive(&first); err != nil {
+	if err := candidate.WriteSpool(&first); err != nil {
 		t.Fatal(err)
 	}
-	if err := candidate.WriteArchive(&second); err != nil {
+	if err := candidate.WriteSpool(&second); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(first.Bytes(), second.Bytes()) ||
-		sha256.Sum256(first.Bytes()) != candidate.Metadata().ArchiveSHA256 {
-		t.Fatal("candidate archive is not deterministic or digest-bound")
+		sha256.Sum256(first.Bytes()) != candidate.Metadata().SpoolSHA256 {
+		t.Fatal("candidate spool is not deterministic or digest-bound")
 	}
-	archive, err := decodeWholeStateArchive(bytes.NewReader(first.Bytes()))
+	capture, err := candidate.installCapture(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(archive.Receipts.Receipts) != 1 || len(archive.Origins) != 1 ||
-		len(archive.Graph) != 5 ||
-		archive.Graph[0].GetHeader().GetReceiptMetadata() != nil ||
-		archive.Graph[len(archive.Graph)-1].GetFooter().GetReceiptCount() != 0 {
-		t.Fatalf("canonical archive lost split state: %+v", archive)
+	if len(capture.Receipts.Receipts) != 1 || len(capture.Origins) != 1 ||
+		len(capture.Graph) != 5 || len(capture.Retired.Epochs) != 0 ||
+		capture.Graph[0].GetHeader().GetReceiptMetadata() != nil ||
+		capture.Graph[len(capture.Graph)-1].GetFooter().GetActiveReceiptCount() != 0 {
+		t.Fatalf("canonical candidate lost split state: %+v", capture)
 	}
 	if candidate.stage == nil || candidate.stage.graph == nil ||
 		candidate.stage.receipts == nil ||
@@ -308,7 +454,7 @@ func TestReceiptSnapshotCollectorReturnsCanonicalDetachedCandidate(t *testing.T)
 		t.Fatal(err)
 	}
 	assertReceiptSnapshotTempDirEmpty(t, dir)
-	if err := candidate.WriteArchive(io.Discard); err == nil {
+	if err := candidate.WriteSpool(io.Discard); err == nil {
 		t.Fatal("closed candidate remained readable")
 	}
 }
@@ -329,12 +475,79 @@ func TestReceiptSnapshotCollectorCanonicalizesDecodedTransportMessages(t *testin
 		t.Fatal(err)
 	}
 	defer candidate.Close()
-	var archive bytes.Buffer
-	if err := candidate.WriteArchive(&archive); err != nil {
+	var spool bytes.Buffer
+	if err := candidate.WriteSpool(&spool); err != nil {
 		t.Fatal(err)
 	}
-	if sha256.Sum256(archive.Bytes()) != candidate.Metadata().ArchiveSHA256 {
-		t.Fatal("decoded transport did not produce a digest-bound canonical archive")
+	if sha256.Sum256(spool.Bytes()) != candidate.Metadata().SpoolSHA256 {
+		t.Fatal("decoded transport did not produce a digest-bound canonical spool")
+	}
+}
+
+func TestReceiptSnapshotCollectorRetainsRetiredEvidence(t *testing.T) {
+	frames, policy := receiptSnapshotCollectorFixtureWithRetired(t)
+	dir := t.TempDir()
+	collector := newReceiptSnapshotTestCollector(
+		t, dir, policy, receiptSnapshotCollectorLimits(),
+	)
+	candidate, err := collector.Collect(
+		context.Background(),
+		&receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Close()
+	capture, err := candidate.installCapture(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.Retired.Epochs) != 2 ||
+		candidate.stage == nil || candidate.stage.retired == nil {
+		t.Fatalf("retired candidate = %+v", capture.Retired)
+	}
+	row := capture.Retired.Epochs[0].State.Receipts[0]
+	status, got, err := candidate.stage.retired.Lookup(row.ID, capture.Receipts.ClockHighWater())
+	if err != nil || status != mutationreceipt.Confirmed || !reflect.DeepEqual(got, row) {
+		t.Fatalf("staged retired lookup = (%v, %+v, %v)", status, got, err)
+	}
+}
+
+func TestReceiptSnapshotCollectorAcceptsIndependentSectionMaxima(t *testing.T) {
+	frames, policy := receiptSnapshotCollectorFixtureWithRetired(t)
+	header := frames[0].GetHeader()
+	footer := frames[len(frames)-1].GetFooter()
+	graphFrames := footer.GetVertexCount() +
+		footer.GetEdgeCount() +
+		footer.GetVertexCausalBarrierCount() +
+		footer.GetEdgeCausalBarrierCount() +
+		footer.GetVertexTombstoneCount() +
+		footer.GetEdgeTombstoneCount()
+	limits := receiptSnapshotCollectorLimits()
+	limits.MaxActiveReceipts = footer.GetActiveReceiptCount()
+	limits.MaxRetiredEpochs = footer.GetRetiredEpochCount()
+	limits.MaxRetiredReceipts = footer.GetRetiredReceiptCount()
+	limits.MaxOrigins = footer.GetOriginCount()
+	limits.MaxGraphFrames = graphFrames
+	limits.MaxFrames = 2 +
+		limits.MaxActiveReceipts +
+		limits.MaxRetiredReceipts +
+		limits.MaxGraphFrames
+
+	dir := t.TempDir()
+	collector := newReceiptSnapshotTestCollector(t, dir, policy, limits)
+	candidate, err := collector.Collect(
+		context.Background(),
+		&receiptSnapshotTestStream{
+			frames: cloneReceiptSnapshotCollectorFrames(frames), current: -1,
+		},
+	)
+	if err != nil {
+		t.Fatalf("collect exact independent maxima: %v", err)
+	}
+	defer candidate.Close()
+	if candidate.Metadata().Header.GetCutoffLocalSeq() != header.GetCutoffLocalSeq() {
+		t.Fatal("exact independent maxima changed the accepted candidate")
 	}
 }
 
@@ -369,6 +582,10 @@ func TestReceiptSnapshotCollectorRejectsMalformedStreamsWithoutArtifacts(t *test
 			frames[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
 			return frames
 		}, nil, nil},
+		{"removed numeric format", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[0].GetHeader().Format = pb.SnapshotFormat(2)
+			return frames
+		}, nil, nil},
 		{"missing receipt metadata", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[0].GetHeader().ReceiptMetadata = nil
 			return frames
@@ -382,7 +599,7 @@ func TestReceiptSnapshotCollectorRejectsMalformedStreamsWithoutArtifacts(t *test
 			return frames
 		}, nil, nil},
 		{"policy fingerprint drift", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
-			frames[0].GetHeader().GetReceiptMetadata().GetPolicy().Fingerprint[0] ^= 1
+			frames[0].GetHeader().GetReceiptMetadata().GetActivePolicy().Fingerprint[0] ^= 1
 			return frames
 		}, nil, nil},
 		{"expected epoch mismatch", nil, nil, func(config mutationreceipt.Config) mutationreceipt.Config {
@@ -507,6 +724,14 @@ func TestReceiptSnapshotCollectorRejectsWireAmbiguity(t *testing.T) {
 
 func TestReceiptSnapshotCollectorEnforcesEveryBound(t *testing.T) {
 	valid, policy := receiptSnapshotCollectorFixture(t)
+	twoActive, _ := receiptSnapshotCollectorFixtureWithTwoActive(t)
+	withRetired, _ := receiptSnapshotCollectorFixtureWithRetired(t)
+	var maxCanonicalFrameBytes uint64
+	for _, frame := range valid {
+		if size := uint64(proto.Size(frame)); size > maxCanonicalFrameBytes {
+			maxCanonicalFrameBytes = size
+		}
+	}
 	tests := []struct {
 		name   string
 		frames func() []*pb.SnapshotResponse
@@ -516,25 +741,29 @@ func TestReceiptSnapshotCollectorEnforcesEveryBound(t *testing.T) {
 			l.MaxFrameBytes = 8
 			return l
 		}},
-		{"frame count", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
-			l.MaxFrames = uint64(len(valid) - 1)
-			l.MaxReceipts = l.MaxFrames
-			l.MaxGraphFrames = l.MaxFrames
+		{"canonical spool bytes", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
+			l.MaxFrameBytes = maxCanonicalFrameBytes
+			l.MaxCanonicalSpoolBytes = maxCanonicalFrameBytes + 4
 			return l
 		}},
-		{"total bytes", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
-			l.MaxTotalBytes = 64
-			return l
-		}},
-		{"receipt count", func() []*pb.SnapshotResponse {
-			frames := cloneReceiptSnapshotCollectorFrames(valid)
-			frames = append(frames[:2], append([]*pb.SnapshotResponse{
-				proto.Clone(frames[1]).(*pb.SnapshotResponse),
-			}, frames[2:]...)...)
-			frames[len(frames)-1].GetFooter().ReceiptCount++
-			return frames
+		{"active receipt count", func() []*pb.SnapshotResponse {
+			return cloneReceiptSnapshotCollectorFrames(twoActive)
 		}, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
-			l.MaxReceipts = 1
+			l.MaxActiveReceipts = 1
+			deriveReceiptSnapshotTestFrameLimit(&l)
+			return l
+		}},
+		{"retired epoch count", func() []*pb.SnapshotResponse {
+			return cloneReceiptSnapshotCollectorFrames(withRetired)
+		}, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
+			l.MaxRetiredEpochs = 1
+			return l
+		}},
+		{"retired receipt count", func() []*pb.SnapshotResponse {
+			return cloneReceiptSnapshotCollectorFrames(withRetired)
+		}, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
+			l.MaxRetiredReceipts = 1
+			deriveReceiptSnapshotTestFrameLimit(&l)
 			return l
 		}},
 		{"origin count", func() []*pb.SnapshotResponse {
@@ -551,6 +780,7 @@ func TestReceiptSnapshotCollectorEnforcesEveryBound(t *testing.T) {
 		}},
 		{"graph count", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
 			l.MaxGraphFrames = 2
+			deriveReceiptSnapshotTestFrameLimit(&l)
 			return l
 		}},
 	}
@@ -607,7 +837,9 @@ func TestReceiptSnapshotCollectorCancellationCleansEveryPhase(t *testing.T) {
 	dir := t.TempDir()
 	collector, err := NewReceiptSnapshotCollector(ReceiptSnapshotCollectorConfig{
 		TempDir: dir, Limits: receiptSnapshotCollectorLimits(),
-		ExpectedPolicy: policy, DefaultTTL: time.Hour,
+		ExpectedPolicy:        policy,
+		ExpectedRetiredConfig: receiptSnapshotRetiredConfig(policy),
+		DefaultTTL:            time.Hour,
 		ConfigureGraph: func(*graphcache.GraphCache[string, *pb.Vertex]) error {
 			cancel()
 			return nil
@@ -632,7 +864,9 @@ func TestNewReceiptSnapshotCollectorRejectsUnboundedConfiguration(t *testing.T) 
 	_, policy := receiptSnapshotCollectorFixture(t)
 	valid := ReceiptSnapshotCollectorConfig{
 		TempDir: t.TempDir(), Limits: receiptSnapshotCollectorLimits(),
-		ExpectedPolicy: policy, DefaultTTL: time.Hour,
+		ExpectedPolicy:        policy,
+		ExpectedRetiredConfig: receiptSnapshotRetiredConfig(policy),
+		DefaultTTL:            time.Hour,
 	}
 	tests := []struct {
 		name   string
@@ -640,12 +874,27 @@ func TestNewReceiptSnapshotCollectorRejectsUnboundedConfiguration(t *testing.T) 
 	}{
 		{"temporary directory", func(c *ReceiptSnapshotCollectorConfig) { c.TempDir = "" }},
 		{"frame bytes", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrameBytes = 0 }},
-		{"frame count", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrames = 1 }},
-		{"total bytes", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxTotalBytes = 0 }},
-		{"receipts", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxReceipts = 0 }},
+		{"frame count below derived limit", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrames-- }},
+		{"frame count above derived limit", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrames++ }},
+		{"derived frame count overflow", func(c *ReceiptSnapshotCollectorConfig) {
+			c.Limits.MaxActiveReceipts = ^uint64(0)
+		}},
+		{"transport bytes", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxTransportBytes = 0 }},
+		{"canonical spool bytes", func(c *ReceiptSnapshotCollectorConfig) {
+			c.Limits.MaxCanonicalSpoolBytes = 0
+		}},
+		{"active receipts", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxActiveReceipts = 0 }},
+		{"retired epochs", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxRetiredEpochs = 0 }},
+		{"retired receipts", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxRetiredReceipts = 0 }},
 		{"origins", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxOrigins = 0 }},
 		{"graph frames", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxGraphFrames = 0 }},
 		{"policy", func(c *ReceiptSnapshotCollectorConfig) { c.ExpectedPolicy.MaxBytes = 0 }},
+		{"retired policy", func(c *ReceiptSnapshotCollectorConfig) {
+			c.ExpectedRetiredConfig.MaxBytes = 0
+		}},
+		{"retired active epoch", func(c *ReceiptSnapshotCollectorConfig) {
+			c.ExpectedRetiredConfig.ActiveEpoch[0]++
+		}},
 		{"default TTL", func(c *ReceiptSnapshotCollectorConfig) { c.DefaultTTL = 0 }},
 	}
 	for _, test := range tests {
@@ -659,7 +908,7 @@ func TestNewReceiptSnapshotCollectorRejectsUnboundedConfiguration(t *testing.T) 
 	}
 }
 
-func TestReceiptSnapshotCandidateMetadataAndArchiveAreOwned(t *testing.T) {
+func TestReceiptSnapshotCandidateMetadataAndSpoolAreOwned(t *testing.T) {
 	frames, policy := receiptSnapshotCollectorFixture(t)
 	dir := t.TempDir()
 	collector := newReceiptSnapshotTestCollector(
@@ -678,5 +927,26 @@ func TestReceiptSnapshotCandidateMetadataAndArchiveAreOwned(t *testing.T) {
 	after := candidate.Metadata()
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("candidate metadata aliased stream: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestReceiptSnapshotCandidateRejectsSpoolTampering(t *testing.T) {
+	frames, policy := receiptSnapshotCollectorFixture(t)
+	dir := t.TempDir()
+	collector := newReceiptSnapshotTestCollector(
+		t, dir, policy, receiptSnapshotCollectorLimits(),
+	)
+	candidate, err := collector.Collect(context.Background(), &receiptSnapshotTestStream{
+		frames: cloneReceiptSnapshotCollectorFrames(frames), current: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Close()
+	if _, err := candidate.spool.WriteAt([]byte{0xff}, int64(candidate.metadata.SpoolBytes-1)); err != nil {
+		t.Fatal(err)
+	}
+	if capture, err := candidate.installCapture(context.Background()); err == nil {
+		t.Fatalf("tampered candidate decoded as %+v", capture)
 	}
 }
