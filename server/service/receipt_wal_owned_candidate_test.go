@@ -35,6 +35,27 @@ func writeReceiptWALClockJournal(t *testing.T, path string, config mutationrecei
 	}
 }
 
+func writeReceiptWALTipJournal(t *testing.T, path string, config mutationreceipt.Config) {
+	t.Helper()
+	lease, err := mutationlog.AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip, err := mutationlog.CreateFileWALTipJournal(lease.Path(), receiptWALTipBinding(config.Epoch, store.PolicyFingerprint()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tip.Close()
+	if err := tip.VerifyAndCatchUp(lease.Path(), decodeReceiptWALUnion, validateReceiptWALUnionEntry); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func ownedReceiptWALFixture(t *testing.T) (string, mutationreceipt.Config, mutationlog.Entry) {
 	t.Helper()
 	config, receiptEntry := receiptWALAuditFixture(t)
@@ -54,6 +75,7 @@ func TestOpenLeasedReceiptWALCandidateKeepsClockAndPath(t *testing.T) {
 	// its historical commit bytes, and the wall clock rolled backward.
 	forward := receipt.DeadlineMillis + 1
 	writeReceiptWALClockJournal(t, path, config, forward)
+	writeReceiptWALTipJournal(t, path, config)
 	now := time.UnixMilli(receipt.DeadlineMillis - 1)
 	owner, err := openLeasedReceiptWALCandidate(path, config, now, mutationlog.Options{Capacity: 2}, time.Hour,
 		func(*graphcache.GraphCache[string, *pb.Vertex]) error { return nil })
@@ -66,6 +88,9 @@ func TestOpenLeasedReceiptWALCandidateKeepsClockAndPath(t *testing.T) {
 	}
 	if got := owner.journal.HighWaterMillis(); got < forward {
 		t.Fatalf("recovered journal moved backward: %d", got)
+	}
+	if seq, _, verified := owner.tip.Frontier(); !verified || seq != 2 {
+		t.Fatalf("recovered WAL tip = %d, verified %v", seq, verified)
 	}
 	// An aborted Begin never reaches the WAL, yet its clock transition must
 	// survive another restart through the newly attached journal sink.
@@ -128,6 +153,10 @@ func TestOpenLeasedReceiptWALCandidateRejectsMissingOrInvalidJournal(t *testing.
 		t.Fatal(err)
 	}
 	writeReceiptWALClockJournal(t, path, config, time.Now().UnixMilli())
+	if owner, err := openLeasedReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour, configure); owner != nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing tip candidate = %p, %v", owner, err)
+	}
+	writeReceiptWALTipJournal(t, path, config)
 	wrong := config
 	wrong.Epoch = mutationreceipt.Epoch{0x61}
 	if owner, err := openLeasedReceiptWALCandidate(path, wrong, time.Now(), mutationlog.Options{}, time.Hour, configure); owner != nil || !errors.Is(err, mutationreceipt.ErrClockJournalBinding) {
@@ -144,6 +173,7 @@ func TestOpenLeasedReceiptWALCandidateRejectsLegacyEffectsAndReleasesOwner(t *te
 	config, receiptEntry := receiptWALAuditFixture(t)
 	path := writeReceiptWALAuditEntries(t, auditGraphEntry(1), receiptEntry)
 	writeReceiptWALClockJournal(t, path, config, time.Now().UnixMilli())
+	writeReceiptWALTipJournal(t, path, config)
 	owner, err := openLeasedReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour,
 		func(*graphcache.GraphCache[string, *pb.Vertex]) error { return nil })
 	if owner != nil || !errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "accepted-effect evidence") {
@@ -154,6 +184,55 @@ func TestOpenLeasedReceiptWALCandidateRejectsLegacyEffectsAndReleasesOwner(t *te
 		t.Fatalf("failed replay leaked path lease: %v", err)
 	}
 	defer lease.Close()
+}
+
+func TestOpenLeasedReceiptWALCandidateRejectsTipBindingAndLostSuffix(t *testing.T) {
+	configure := func(*graphcache.GraphCache[string, *pb.Vertex]) error { return nil }
+	for _, tc := range []struct {
+		name string
+		edit func(*mutationreceipt.Config)
+	}{
+		{"wrong tip epoch", func(c *mutationreceipt.Config) { c.Epoch = mutationreceipt.Epoch{0x62} }},
+		{"wrong tip policy", func(c *mutationreceipt.Config) { c.Retention = 2 * time.Hour }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, config, _ := ownedReceiptWALFixture(t)
+			writeReceiptWALClockJournal(t, path, config, time.Now().UnixMilli())
+			wrong := config
+			tc.edit(&wrong)
+			writeReceiptWALTipJournal(t, path, wrong)
+			owner, err := openLeasedReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour, configure)
+			if owner != nil || !errors.Is(err, mutationlog.ErrFileWALTipBinding) {
+				t.Fatalf("wrong tip binding = %p, %v", owner, err)
+			}
+			lease, err := mutationlog.AcquireFileWALLease(path)
+			if err != nil {
+				t.Fatalf("wrong binding leaked lease: %v", err)
+			}
+			defer lease.Close()
+		})
+	}
+	t.Run("valid prefix loses committed suffix", func(t *testing.T) {
+		path, config, _ := ownedReceiptWALFixture(t)
+		writeReceiptWALClockJournal(t, path, config, time.Now().UnixMilli())
+		writeReceiptWALTipJournal(t, path, config)
+		cut, err := mutationlog.InspectFileWALCut(path, 1, decodeReceiptWALUnion, validateReceiptWALUnionEntry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(path, cut.Offset); err != nil {
+			t.Fatal(err)
+		}
+		owner, err := openLeasedReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour, configure)
+		if owner != nil || !errors.Is(err, mutationlog.ErrFileWALCutUnavailable) {
+			t.Fatalf("lost suffix candidate = %p, %v", owner, err)
+		}
+		lease, err := mutationlog.AcquireFileWALLease(path)
+		if err != nil {
+			t.Fatalf("lost suffix leaked lease: %v", err)
+		}
+		defer lease.Close()
+	})
 }
 
 func TestMatchingReceiptWALLogTailRejectsPayloadDrift(t *testing.T) {
