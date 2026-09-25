@@ -23,7 +23,8 @@ import (
 // compaction or whole-file capacity policy.
 // It provides durable bytes, not application recovery: a restored server must
 // replay the complete mutation envelope into graph, receipts, origin state,
-// and the in-memory Log before serving. Production does not wire FileWAL yet.
+// and the in-memory Log before serving. Production receipt runtimes retain the
+// exact leased FileWAL and must not reopen its mutating path for live evidence.
 // The caller must ensure no other process writes the path. A production owner
 // can hold AcquireFileWALLease across all audit, replay, and append passes.
 type FileWAL struct {

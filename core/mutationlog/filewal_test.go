@@ -282,6 +282,22 @@ func TestFileWALTipProvenancePinsLogWALAndPath(t *testing.T) {
 		t.Fatalf("wrong-path provenance = %+v, %v", witness, err)
 	}
 	log.mu.Lock()
+	log.unusableErr = ErrWALIndeterminate
+	log.mu.Unlock()
+	if witness, err := provenance.TipWitness(lease.Path()); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrWALIndeterminate) {
+		t.Fatalf("unusable Log provenance = %+v, %v", witness, err)
+	}
+	log.mu.Lock()
+	log.unusableErr = nil
+	log.legacyWALUncertain = true
+	log.mu.Unlock()
+	if witness, err := provenance.TipWitness(lease.Path()); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrLegacyWALUncertain) {
+		t.Fatalf("legacy-uncertain Log provenance = %+v, %v", witness, err)
+	}
+	log.mu.Lock()
+	log.legacyWALUncertain = false
 	log.lastSeq++
 	log.mu.Unlock()
 	if witness, err := provenance.TipWitness(lease.Path()); witness != (FileWALTipWitness{}) ||

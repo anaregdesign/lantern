@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -86,6 +87,20 @@ func assertReceiptCaptureCut(t *testing.T, capture ReceiptWholeStateCapture, rec
 	} else if len(capture.Origins) != 1 || capture.Origins[0].LastSeq != 1 || len(header.GetCutoffSeqPerOrigin()) != 1 ||
 		header.GetCutoffSeqPerOrigin()[hex.EncodeToString(capture.Origins[0].Origin[:])] != 1 {
 		t.Fatalf("new cut lost origin frontier: %+v, %+v", capture.Origins, header)
+	}
+}
+
+func assertReceiptBackupWitnessMatchesCut(
+	t *testing.T,
+	witness mutationlog.FileWALTipWitness,
+	cut mutationlog.FileWALCut,
+) {
+	t.Helper()
+	if witness.Seq != cut.Seq ||
+		witness.Offset != cut.Offset ||
+		witness.SHA256 != cut.SHA256 ||
+		witness.ChainSHA256 != cut.ChainSHA256 {
+		t.Fatalf("WAL witness = %#v, want inspected cut %#v", witness, cut)
 	}
 }
 
@@ -275,6 +290,429 @@ func TestReceiptWholeStateCaptureCopiesUncommittedClockAdvance(t *testing.T) {
 			capture.Receipts.ClockHighWaterMillis {
 		t.Fatalf("uncommitted high-water missing from coherent capture: %+v", capture)
 	}
+}
+
+func TestReceiptWholeStateBackupCaptureTracksFreshAndResumedWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.log")
+	config := durableRuntimeTestConfig(path)
+	policy := config.Receipt
+
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	source, err := NewReceiptWholeStateSource(primary, runtime.receipt.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	zero, err := source.CaptureForBackup(t.Context(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := zero.WholeState.Graph[0].GetHeader().GetCutoffLocalSeq(); got != 0 {
+		t.Fatalf("fresh graph cutoff = %d, want 0", got)
+	}
+	if zero.WALTip.Seq != 0 {
+		t.Fatalf("fresh WAL witness seq = %d, want 0", zero.WALTip.Seq)
+	}
+
+	call := receiptDeleteCall(t, config.Receipt.Epoch, graphcache.EdgeKey[string]{Tail: "fresh-tail", Head: "fresh-head"})
+	if _, err := primary.receiptEdgeDeleteCoordinator.Commit(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := source.CaptureForBackup(t.Context(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fresh.WholeState.Graph[0].GetHeader().GetCutoffLocalSeq(); got != 1 {
+		t.Fatalf("fresh appended graph cutoff = %d, want 1", got)
+	}
+	if fresh.WALTip.Seq != 1 {
+		t.Fatalf("fresh appended WAL witness seq = %d, want 1", fresh.WALTip.Seq)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	freshCuts, err := mutationlog.InspectFileWALCuts(
+		path,
+		[]uint64{0, 1},
+		decodeReceiptWALUnion,
+		validateReceiptWALUnionEntry,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReceiptBackupWitnessMatchesCut(t, zero.WALTip, freshCuts[0])
+	assertReceiptBackupWitnessMatchesCut(t, fresh.WALTip, freshCuts[1])
+
+	config.Now = time.Now().Add(time.Second)
+	config.Receipt.ClockHighWater = config.Now
+	policy = config.Receipt
+	resumedRuntime, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumedRuntime.Close() })
+	resumedPrimary := resumedRuntime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	resumedSource, err := NewReceiptWholeStateSource(resumedPrimary, resumedRuntime.receipt.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := resumedSource.CaptureForBackup(t.Context(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resumed.WholeState.Graph[0].GetHeader().GetCutoffLocalSeq(); got != 1 {
+		t.Fatalf("resumed graph cutoff = %d, want 1", got)
+	}
+	assertReceiptBackupWitnessMatchesCut(t, resumed.WALTip, freshCuts[1])
+}
+
+func TestReceiptWholeStateBackupCaptureFailsClosed(t *testing.T) {
+	t.Run("graph-only runtime", func(t *testing.T) {
+		f := newReceiptEdgeDeleteFixture(t, nil)
+		source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := source.CaptureForBackup(t.Context(), receiptCapturePolicy(f.epoch))
+		if err == nil {
+			t.Fatal("CaptureForBackup succeeded for graph-only runtime")
+		}
+		if !reflect.DeepEqual(got, ReceiptWholeStateBackupCapture{}) {
+			t.Fatalf("CaptureForBackup returned partial graph-only result: %#v", got)
+		}
+	})
+
+	t.Run("closed durable runtime", func(t *testing.T) {
+		config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipt.log"))
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+		source, err := NewReceiptWholeStateSource(primary, runtime.receipt.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.Close(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := source.CaptureForBackup(t.Context(), config.Receipt)
+		if err == nil {
+			t.Fatal("CaptureForBackup succeeded for closed runtime")
+		}
+		if !reflect.DeepEqual(got, ReceiptWholeStateBackupCapture{}) {
+			t.Fatalf("CaptureForBackup returned partial closed-runtime result: %#v", got)
+		}
+	})
+
+	t.Run("foreign runtime owner", func(t *testing.T) {
+		config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipt.log"))
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+		source, err := NewReceiptWholeStateSource(primary, runtime.receipt.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		originalOwner := runtime.receipt.owner
+		runtime.receipt.owner = &receiptWALOwnedCandidate{}
+		t.Cleanup(func() { runtime.receipt.owner = originalOwner })
+
+		got, err := source.CaptureForBackup(t.Context(), config.Receipt)
+		if err == nil {
+			t.Fatal("CaptureForBackup succeeded for foreign runtime owner")
+		}
+		if !reflect.DeepEqual(got, ReceiptWholeStateBackupCapture{}) {
+			t.Fatalf("CaptureForBackup returned partial foreign-owner result: %#v", got)
+		}
+	})
+
+	t.Run("canceled", func(t *testing.T) {
+		config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipt.log"))
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+		source, err := NewReceiptWholeStateSource(primary, runtime.receipt.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		got, err := source.CaptureForBackup(ctx, config.Receipt)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CaptureForBackup error = %v, want context.Canceled", err)
+		}
+		if !reflect.DeepEqual(got, ReceiptWholeStateBackupCapture{}) {
+			t.Fatalf("CaptureForBackup returned partial canceled result: %#v", got)
+		}
+	})
+}
+
+func TestReceiptWholeStateBackupCaptureRejectsServicePublicationFaults(t *testing.T) {
+	tests := []struct {
+		name  string
+		fault func(*LanternService)
+	}{
+		{
+			name: "publication fault",
+			fault: func(primary *LanternService) {
+				primary.publicationFaultCount++
+			},
+		},
+		{
+			name: "receipt commit fault",
+			fault: func(primary *LanternService) {
+				primary.receiptCommitFaulted = true
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipt.log"))
+			runtime, err := CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = runtime.Close() })
+			primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+			source, err := NewReceiptWholeStateSource(primary, runtime.receipt.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := source.CaptureForBackup(t.Context(), config.Receipt); err != nil {
+				t.Fatalf("healthy CaptureForBackup failed: %v", err)
+			}
+
+			tt.fault(primary)
+			got, err := source.CaptureForBackup(t.Context(), config.Receipt)
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("faulted CaptureForBackup error = %v, want FailedPrecondition", err)
+			}
+			if !reflect.DeepEqual(got, ReceiptWholeStateBackupCapture{}) {
+				t.Fatalf("faulted CaptureForBackup returned partial result: %#v", got)
+			}
+		})
+	}
+}
+
+func TestReceiptWholeStateBackupCaptureCannotSplitCommittedView(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.log")
+	policy := receiptCapturePolicy(mutationreceipt.Epoch{0x74})
+	localOrigin := hlc.NodeID{0x76}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := mutationlog.AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockNext := make(chan struct{}, 1)
+	encoderEntered := make(chan struct{})
+	releaseEncoder := make(chan struct{})
+	encoder := func(op mutationlog.MutationOp) ([]byte, error) {
+		select {
+		case <-blockNext:
+			close(encoderEntered)
+			<-releaseEncoder
+		default:
+		}
+		return encodeReceiptWALUnion(op)
+	}
+	wal, err := mutationlog.CreateFileWAL(lease.Path(), encoder)
+	if err != nil {
+		_ = lease.Close()
+		t.Fatal(err)
+	}
+	tip, err := mutationlog.CreateFileWALTipJournal(
+		lease.Path(),
+		receiptWALTipBinding(policy.Epoch, store.PolicyFingerprint()),
+	)
+	if err != nil {
+		_ = wal.Close()
+		_ = lease.Close()
+		t.Fatal(err)
+	}
+	if err := tip.VerifyAndCatchUp(lease.Path(), decodeReceiptWALUnion, validateReceiptWALUnionEntry); err != nil {
+		_ = tip.Close()
+		_ = wal.Close()
+		_ = lease.Close()
+		t.Fatal(err)
+	}
+	if err := wal.BindTipJournal(tip); err != nil {
+		_ = tip.Close()
+		_ = wal.Close()
+		_ = lease.Close()
+		t.Fatal(err)
+	}
+
+	log := mutationlog.New(mutationlog.Options{
+		Capacity:         32,
+		SubscriberBuffer: 32,
+		WAL:              wal,
+	})
+	t.Cleanup(func() {
+		select {
+		case <-releaseEncoder:
+		default:
+			close(releaseEncoder)
+		}
+		_ = log.Close()
+		_ = tip.Close()
+		_ = wal.Close()
+		_ = lease.Close()
+	})
+	provenance, err := log.FileWALTipProvenance(lease.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	clock := hlc.New(localOrigin, hlc.Options{})
+	primary := NewLanternService(cache).
+		WithReplication(log, clock, nil).
+		WithTombstoneTTL(time.Hour)
+	owner := &receiptWALOwnedCandidate{
+		state: &receiptWALRecoveryCandidate{
+			graph:    cache,
+			receipts: store,
+			origins:  primary.origins,
+			log:      log,
+		},
+		tip:           tip,
+		lease:         lease,
+		walProvenance: provenance,
+	}
+	runtime := &ServingRuntime{
+		graph:   cache,
+		log:     log,
+		clock:   clock,
+		origins: primary.origins,
+		receipt: &receiptServingRuntime{
+			store: store,
+			owner: owner,
+		},
+		owner: owner,
+	}
+	primary.runtime = runtime
+	source, err := NewReceiptWholeStateSource(primary, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tail, head := "atomic-tail", "atomic-head"
+	if _, err := primary.PutEdge(t.Context(), &pb.PutEdgeRequest{
+		Edge: &pb.Edge{Tail: tail, Head: head, Weight: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := log.LastSeq(); !ok || got != 1 {
+		t.Fatalf("precondition log seq = %d, present = %t, want 1, true", got, ok)
+	}
+
+	deleteCall := receiptDeleteCall(t, policy.Epoch, graphcache.EdgeKey[string]{Tail: tail, Head: head})
+	blockNext <- struct{}{}
+	type commitResult struct {
+		response *pb.DeleteEdgesResponse
+		err      error
+	}
+	commitDone := make(chan commitResult, 1)
+	go func() {
+		response, err := primary.receiptEdgeDeleteCoordinator.Commit(t.Context(), deleteCall)
+		commitDone <- commitResult{response: response, err: err}
+	}()
+	waitReceiptTest(t, "blocked WAL encoder", encoderEntered)
+
+	captureStarted := make(chan struct{})
+	type captureResult struct {
+		capture ReceiptWholeStateBackupCapture
+		err     error
+	}
+	captureDone := make(chan captureResult, 1)
+	go func() {
+		close(captureStarted)
+		capture, err := source.CaptureForBackup(t.Context(), policy)
+		captureDone <- captureResult{capture: capture, err: err}
+	}()
+	waitReceiptTest(t, "backup capture start", captureStarted)
+	select {
+	case early := <-captureDone:
+		t.Fatalf("backup capture escaped staged commit: %#v, err=%v", early.capture, early.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseEncoder)
+	committed := waitReceiptTest(t, "receipt commit", commitDone)
+	if committed.err != nil {
+		t.Fatal(committed.err)
+	}
+	if committed.response == nil ||
+		len(committed.response.GetExisted()) != 1 ||
+		!committed.response.GetExisted()[0] {
+		t.Fatalf("receipt commit response = %#v, want one existing edge", committed.response)
+	}
+	captured := waitReceiptTest(t, "backup capture", captureDone)
+	if captured.err != nil {
+		t.Fatal(captured.err)
+	}
+
+	header := captured.capture.WholeState.Graph[0].GetHeader()
+	if header == nil {
+		t.Fatal("backup capture is missing graph header")
+	}
+	if got := header.GetCutoffLocalSeq(); got != 2 {
+		t.Fatalf("graph cutoff = %d, want 2", got)
+	}
+	if captured.capture.WALTip.Seq != 2 {
+		t.Fatalf("WAL witness seq = %d, want 2", captured.capture.WALTip.Seq)
+	}
+	if len(captured.capture.WholeState.Receipts.Receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(captured.capture.WholeState.Receipts.Receipts))
+	}
+	if header.GetCutoffHlc() == nil ||
+		header.GetCutoffHlc().GetWallNs()/int64(time.Millisecond) <
+			captured.capture.WholeState.Receipts.ClockHighWaterMillis ||
+		captured.capture.WholeState.Policy.ClockHighWater.UnixMilli() !=
+			captured.capture.WholeState.Receipts.ClockHighWaterMillis {
+		t.Fatalf("captured HLC/receipt high-water mismatch: header=%+v capture=%+v", header, captured.capture.WholeState)
+	}
+	if receiptCaptureGraphEdge(captured.capture.WholeState, tail, head) {
+		t.Fatal("captured graph still contains the deleted edge")
+	}
+	if !receiptCaptureEdgeTombstone(captured.capture.WholeState, tail, head) {
+		t.Fatal("captured graph is missing the deleted edge tombstone")
+	}
+	if len(captured.capture.WholeState.Origins) != 1 ||
+		captured.capture.WholeState.Origins[0].Origin != localOrigin ||
+		captured.capture.WholeState.Origins[0].LastSeq != 2 {
+		t.Fatalf("captured origins = %#v, want local origin at seq 2", captured.capture.WholeState.Origins)
+	}
+
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tip.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cut, err := mutationlog.InspectFileWALCut(path, 2, decodeReceiptWALUnion, validateReceiptWALUnionEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReceiptBackupWitnessMatchesCut(t, captured.capture.WALTip, cut)
 }
 
 func TestReceiptWholeStateCaptureFailsClosed(t *testing.T) {

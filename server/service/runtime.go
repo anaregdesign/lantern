@@ -413,12 +413,17 @@ func (r *ServingRuntime) DurableReceiptWAL() bool {
 	return r != nil && r.receipt != nil
 }
 
-// ReceiptWALTipWitness returns the exact synced FileWAL tip at this runtime's
-// current Log frontier. It is private durable provenance for later one-cut
-// backup composition; it does not enable any receipt RPC or backup schedule.
-func (r *ServingRuntime) ReceiptWALTipWitness() (mutationlog.FileWALTipWitness, error) {
+func (r *ServingRuntime) receiptWALTipWitness(
+	primary *LanternService,
+	expectedSeq uint64,
+) (mutationlog.FileWALTipWitness, error) {
 	if r == nil || r.receipt == nil || r.receipt.owner == nil {
 		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness is unavailable")
+	}
+	if primary == nil || primary.runtime != r || primary.cache != r.graph ||
+		primary.log != r.log || primary.clock != r.clock ||
+		primary.origins != r.origins || primary.receiptStore != r.receipt.store {
+		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness service differs from runtime")
 	}
 	owner, ok := r.owner.(*receiptWALOwnedCandidate)
 	if !ok || owner != r.receipt.owner || owner.state == nil ||
@@ -435,6 +440,14 @@ func (r *ServingRuntime) ReceiptWALTipWitness() (mutationlog.FileWALTipWitness, 
 	})
 	if err != nil {
 		return mutationlog.FileWALTipWitness{}, fmt.Errorf("service: durable receipt WAL witness: %w", err)
+	}
+	if witness.Seq != expectedSeq {
+		return mutationlog.FileWALTipWitness{}, fmt.Errorf(
+			"service: durable receipt WAL witness: %w: captured seq %d differs from WAL seq %d",
+			mutationlog.ErrFileWALSequence,
+			expectedSeq,
+			witness.Seq,
+		)
 	}
 	return witness, nil
 }
