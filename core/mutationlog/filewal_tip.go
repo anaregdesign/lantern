@@ -80,11 +80,7 @@ func CreateFileWALTipJournal(walPath string, binding [sha256.Size]byte) (*FileWA
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("mutationlog: sync FileWAL tip header: %w", err)
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return nil, fmt.Errorf("mutationlog: open FileWAL tip directory: %w", err)
-	}
-	if err := errors.Join(dir.Sync(), dir.Close()); err != nil {
+	if err := syncFileWALDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("mutationlog: sync FileWAL tip directory: %w", err)
 	}
 	keep = true

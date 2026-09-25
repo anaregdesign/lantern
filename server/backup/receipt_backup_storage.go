@@ -325,18 +325,21 @@ func (b *Backupper) writeReceiptBackupExclusive(
 	if !created || file == nil {
 		return created, errors.New("backup: exclusive receipt backup create returned no owned file")
 	}
-	writeErr := writeAllReceiptBackupBytes(file, raw)
-	if writeErr == nil {
-		writeErr = ctx.Err()
+	defer func() {
+		closeErr := file.Close()
+		if err == nil {
+			err = ctx.Err()
+		}
+		err = errors.Join(err, closeErr)
+	}()
+	err = writeAllReceiptBackupBytes(file, raw)
+	if err == nil {
+		err = ctx.Err()
 	}
-	if writeErr == nil {
-		writeErr = file.Sync()
+	if err == nil {
+		err = file.Sync()
 	}
-	closeErr := file.Close()
-	if writeErr == nil {
-		writeErr = ctx.Err()
-	}
-	return created, errors.Join(writeErr, closeErr)
+	return created, err
 }
 
 func writeAllReceiptBackupBytes(w io.Writer, raw []byte) error {

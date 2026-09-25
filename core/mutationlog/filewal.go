@@ -115,17 +115,8 @@ func CreateFileWAL(path string, encode func(MutationOp) ([]byte, error)) (*FileW
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("mutationlog: sync FileWAL header: %w", err)
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return nil, fmt.Errorf("mutationlog: open FileWAL directory: %w", err)
-	}
-	dirSyncErr := dir.Sync()
-	dirCloseErr := dir.Close()
-	if dirSyncErr != nil {
-		return nil, fmt.Errorf("mutationlog: sync FileWAL directory: %w", dirSyncErr)
-	}
-	if dirCloseErr != nil {
-		return nil, fmt.Errorf("mutationlog: close FileWAL directory: %w", dirCloseErr)
+	if err := syncFileWALDirectory(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("mutationlog: sync FileWAL directory: %w", err)
 	}
 	closeOnError = false
 	return &FileWAL{

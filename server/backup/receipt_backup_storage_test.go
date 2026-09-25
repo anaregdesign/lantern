@@ -22,6 +22,7 @@ type receiptBackupFaultPlan struct {
 	after             bool
 	cancel            context.CancelFunc
 	crash             bool
+	openFiles         int
 	mu                sync.Mutex
 }
 
@@ -45,10 +46,29 @@ func (p *receiptBackupFaultPlan) inject(operation, path string, after bool) erro
 	return errInjectedReceiptBackupFS
 }
 
+func (p *receiptBackupFaultPlan) openedFile() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.openFiles++
+}
+
+func (p *receiptBackupFaultPlan) closedFile() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.openFiles--
+}
+
+func (p *receiptBackupFaultPlan) openFileCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.openFiles
+}
+
 type receiptBackupFaultFile struct {
 	receiptBackupSyncFile
-	path string
-	plan *receiptBackupFaultPlan
+	path   string
+	plan   *receiptBackupFaultPlan
+	closed bool
 }
 
 func (f *receiptBackupFaultFile) Write(raw []byte) (int, error) {
@@ -75,6 +95,10 @@ func (f *receiptBackupFaultFile) Sync() error {
 
 func (f *receiptBackupFaultFile) Close() error {
 	err := f.receiptBackupSyncFile.Close()
+	if !f.closed {
+		f.closed = true
+		f.plan.closedFile()
+	}
 	if err == nil {
 		err = f.plan.inject("close", f.path, true)
 	}
@@ -101,6 +125,7 @@ func installReceiptBackupFaultPlan(b *Backupper, plan *receiptBackupFaultPlan) {
 			_ = file.Close()
 			return nil, created, err
 		}
+		plan.openedFile()
 		return &receiptBackupFaultFile{receiptBackupSyncFile: file, path: path, plan: plan}, created, nil
 	}
 	b.fs.renameExclusive = func(oldPath, newPath string) (bool, error) {
@@ -257,6 +282,9 @@ func TestReceiptBackupSetFaultsAndCancellationNeverCommitPartialSet(t *testing.T
 			}
 			if source.calls.Load() != 1 {
 				t.Fatalf("faulted backup source calls = %d, want 1", source.calls.Load())
+			}
+			if open := plan.openFileCount(); open != 0 {
+				t.Fatalf("open staged files after failed backup = %d, want 0", open)
 			}
 			sets, collectErr := b.collectReceiptBackupSets()
 			if collectErr != nil || len(sets) != 0 {
@@ -455,6 +483,9 @@ func TestReceiptBackupSetCrashBoundariesNeverExposeMixedSet(t *testing.T) {
 			}()
 			if recovered == nil || plan.seen < tc.occurrence {
 				t.Fatalf("simulated crash was not reached: recovered=%v seen=%d", recovered, plan.seen)
+			}
+			if open := plan.openFileCount(); open != 0 {
+				t.Fatalf("open staged files after simulated crash = %d, want 0", open)
 			}
 
 			evidence, err := LoadLatestReceiptBackupSet(b.cfg.Dir, b.cfg.InstanceID)
