@@ -96,6 +96,419 @@ func retiredCatalogFixture(t testing.TB) (RetiredCatalogConfig, RetiredCatalogSn
 	}, []Intent{first, second, third}
 }
 
+func retiredTestCatalogSnapshot(
+	highWater time.Time,
+	members ...RetiredEpochSnapshot,
+) RetiredCatalogSnapshot {
+	return RetiredCatalogSnapshot{
+		Version:              retiredCatalogSnapshotVersion,
+		ClockHighWaterMillis: highWater.UnixMilli(),
+		Epochs:               members,
+	}
+}
+
+func TestRetiredCatalogUnionCanonicalExactUnion(t *testing.T) {
+	epochTwoConfig := Config{
+		Epoch: Epoch{2}, Retention: 2 * time.Hour, MaxEntries: 8, MaxBytes: 4096,
+	}
+	epochThreeConfig := Config{
+		Epoch: Epoch{3}, Retention: 3 * time.Hour, MaxEntries: 8, MaxBytes: 4096,
+	}
+	early := retiredTestIntent(t, Epoch{2}, 3, testStart)
+	later := retiredTestIntent(t, Epoch{2}, 1, testStart.Add(time.Minute))
+	otherEpoch := retiredTestIntent(t, Epoch{3}, 2, testStart.Add(2*time.Minute))
+	earlyClock := testStart.Add(5 * time.Minute)
+	laterClock := testStart.Add(10 * time.Minute)
+	otherClock := testStart.Add(15 * time.Minute)
+	earlyState := retiredTestCatalogSnapshot(
+		earlyClock,
+		retiredTestMember(t, epochTwoConfig, earlyClock, []Intent{early}, [][]byte{[]byte("early")}),
+	)
+	laterState := retiredTestCatalogSnapshot(
+		laterClock,
+		retiredTestMember(t, epochTwoConfig, laterClock, []Intent{later}, [][]byte{[]byte("later")}),
+	)
+	otherState := retiredTestCatalogSnapshot(
+		otherClock,
+		retiredTestMember(t, epochThreeConfig, otherClock, []Intent{otherEpoch}, [][]byte{[]byte("other")}),
+	)
+	duplicateState := cloneRetiredCatalogSnapshot(earlyState)
+	duplicateState.ClockHighWaterMillis = laterClock.UnixMilli()
+	duplicateState.Epochs[0].State.ClockHighWaterMillis = laterClock.UnixMilli()
+	config := RetiredCatalogConfig{
+		ActiveEpoch:    Epoch{9},
+		MaxEntries:     3,
+		MaxBytes:       4096,
+		ClockHighWater: testStart.Add(20 * time.Minute),
+	}
+
+	catalog, err := NewRetiredCatalogFromUnion(
+		config,
+		otherState,
+		laterState,
+		duplicateState,
+		earlyState,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := catalog.Snapshot(config.ClockHighWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClockHighWaterMillis != config.ClockHighWater.UnixMilli() ||
+		len(got.Epochs) != 2 ||
+		got.Epochs[0].Policy.Epoch != (Epoch{2}) ||
+		got.Epochs[1].Policy.Epoch != (Epoch{3}) {
+		t.Fatalf("union epoch order = %+v", got)
+	}
+	epochTwoRows := got.Epochs[0].State.Receipts
+	if len(epochTwoRows) != 2 ||
+		epochTwoRows[0].ID != early.ID ||
+		epochTwoRows[1].ID != later.ID ||
+		string(epochTwoRows[0].Result) != "early" ||
+		string(epochTwoRows[1].Result) != "later" {
+		t.Fatalf("union receipt order = %+v", epochTwoRows)
+	}
+	if rows := got.Epochs[1].State.Receipts; len(rows) != 1 ||
+		rows[0].ID != otherEpoch.ID || string(rows[0].Result) != "other" {
+		t.Fatalf("disjoint epoch union = %+v", rows)
+	}
+
+	reordered, err := NewRetiredCatalogFromUnion(
+		config,
+		earlyState,
+		duplicateState,
+		laterState,
+		otherState,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reorderedState, err := reordered.Snapshot(config.ClockHighWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reorderedState, got) {
+		t.Fatalf("input order changed union:\nfirst:  %+v\nsecond: %+v", got, reorderedState)
+	}
+
+	canonical := cloneRetiredCatalogSnapshot(got)
+	laterState.Epochs[0].Policy.Retention = time.Hour
+	laterState.Epochs[0].State.Receipts[0].Result[0] = 'X'
+	got.Epochs[0].State.Receipts[0].Result[0] = 'Y'
+	again, err := catalog.Snapshot(config.ClockHighWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(again, canonical) {
+		t.Fatalf("union shares caller memory: %+v", again)
+	}
+	restored, err := NewRetiredCatalogFromSnapshot(config, canonical)
+	if err != nil {
+		t.Fatalf("union did not round trip through snapshot import: %v", err)
+	}
+	roundTrip, err := restored.Snapshot(config.ClockHighWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip, canonical) {
+		t.Fatalf("union round trip = %+v, want %+v", roundTrip, canonical)
+	}
+}
+
+func TestRetiredCatalogUnionRejectsEvidenceAndRelationshipConflicts(t *testing.T) {
+	highWater := testStart.Add(10 * time.Minute)
+	policy := Config{
+		Epoch: Epoch{2}, Retention: 2 * time.Hour, MaxEntries: 8, MaxBytes: 4096,
+	}
+	config := RetiredCatalogConfig{
+		ActiveEpoch: Epoch{9}, MaxEntries: 8, MaxBytes: 8192, ClockHighWater: highWater,
+	}
+	baseIntent := retiredTestIntent(t, policy.Epoch, 1, testStart)
+	base := retiredTestCatalogSnapshot(
+		highWater,
+		retiredTestMember(t, policy, highWater, []Intent{baseIntent}, [][]byte{[]byte("base")}),
+	)
+	resultConflict := cloneRetiredCatalogSnapshot(base)
+	resultConflict.Epochs[0].State.Receipts[0].Result = []byte("changed")
+	intentConflict := cloneRetiredCatalogSnapshot(base)
+	intentConflict.Epochs[0].State.Receipts[0].Digest[0] ^= 1
+	deadlineConflict := cloneRetiredCatalogSnapshot(base)
+	deadlineConflict.Epochs[0].State.Receipts[0].DeadlineMillis++
+	groupConflict := cloneRetiredCatalogSnapshot(base)
+	groupConflict.Epochs[0].State.Receipts[0].Group = GroupID{99}
+	countConflict := cloneRetiredCatalogSnapshot(base)
+	countConflict.Epochs[0].State.Receipts[0].Count = 2
+	indexBase := cloneRetiredCatalogSnapshot(base)
+	indexBase.Epochs[0].State.Receipts[0].Count = 2
+	indexConflict := cloneRetiredCatalogSnapshot(indexBase)
+	indexConflict.Epochs[0].State.Receipts[0].Index = 1
+	hasContribConflict := cloneRetiredCatalogSnapshot(base)
+	hasContribConflict.Epochs[0].State.Receipts[0].Kind = AddEdge
+	hasContribConflict.Epochs[0].State.Receipts[0].HasContrib = true
+	hasContribConflict.Epochs[0].State.Receipts[0].ContribID = ContribID{98}
+	contribIDBase := cloneRetiredCatalogSnapshot(hasContribConflict)
+	contribIDConflict := cloneRetiredCatalogSnapshot(contribIDBase)
+	contribIDConflict.Epochs[0].State.Receipts[0].ContribID = ContribID{97}
+
+	otherPolicy := policy
+	otherPolicy.Retention = 3 * time.Hour
+	otherPolicyIntent := retiredTestIntent(t, policy.Epoch, 2, testStart.Add(time.Minute))
+	policyConflict := retiredTestCatalogSnapshot(
+		highWater,
+		retiredTestMember(
+			t,
+			otherPolicy,
+			highWater,
+			[]Intent{otherPolicyIntent},
+			[][]byte{[]byte("other policy")},
+		),
+	)
+
+	groupLeft := retiredTestIntent(t, policy.Epoch, 3, testStart.Add(2*time.Minute))
+	groupRight := retiredTestIntent(t, policy.Epoch, 4, testStart.Add(3*time.Minute))
+	groupRight.Group = groupLeft.Group
+	groupLeftState := retiredTestCatalogSnapshot(
+		highWater,
+		retiredTestMember(t, policy, highWater, []Intent{groupLeft}, [][]byte{[]byte("left")}),
+	)
+	groupRightState := retiredTestCatalogSnapshot(
+		highWater,
+		retiredTestMember(t, policy, highWater, []Intent{groupRight}, [][]byte{[]byte("right")}),
+	)
+
+	contribLeft := retiredTestIntent(t, policy.Epoch, 5, testStart.Add(4*time.Minute))
+	contribLeft.Kind, contribLeft.HasContrib, contribLeft.ContribID = AddEdge, true, ContribID{42}
+	contribRight := retiredTestIntent(t, policy.Epoch, 6, testStart.Add(5*time.Minute))
+	contribRight.Kind, contribRight.HasContrib, contribRight.ContribID = AddEdge, true, ContribID{42}
+	contribLeftState := retiredTestCatalogSnapshot(
+		highWater,
+		retiredTestMember(t, policy, highWater, []Intent{contribLeft}, [][]byte{[]byte("left")}),
+	)
+	contribRightState := retiredTestCatalogSnapshot(
+		highWater,
+		retiredTestMember(t, policy, highWater, []Intent{contribRight}, [][]byte{[]byte("right")}),
+	)
+
+	cases := []struct {
+		name             string
+		states           []RetiredCatalogSnapshot
+		wantStoreInvalid bool
+	}{
+		{"same ID result", []RetiredCatalogSnapshot{base, resultConflict}, false},
+		{"same ID intent", []RetiredCatalogSnapshot{base, intentConflict}, false},
+		{"same ID deadline", []RetiredCatalogSnapshot{base, deadlineConflict}, true},
+		{"same ID group", []RetiredCatalogSnapshot{base, groupConflict}, false},
+		{"same ID index", []RetiredCatalogSnapshot{indexBase, indexConflict}, false},
+		{"same ID count", []RetiredCatalogSnapshot{base, countConflict}, false},
+		{"same ID contribution presence", []RetiredCatalogSnapshot{base, hasContribConflict}, false},
+		{"same ID contribution ID", []RetiredCatalogSnapshot{contribIDBase, contribIDConflict}, false},
+		{"same epoch policy", []RetiredCatalogSnapshot{base, policyConflict}, false},
+		{"group index", []RetiredCatalogSnapshot{groupLeftState, groupRightState}, true},
+		{"contribution ID", []RetiredCatalogSnapshot{contribLeftState, contribRightState}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, err := NewRetiredCatalogFromUnion(config, tc.states...)
+			if catalog != nil || !errors.Is(err, ErrInvalidRetiredCatalogSnapshot) {
+				t.Fatalf("union = %p, %v, want nil and invalid retired snapshot", catalog, err)
+			}
+			if tc.wantStoreInvalid && !errors.Is(err, ErrInvalidSnapshot) {
+				t.Fatalf("union error = %v, want authoritative Store snapshot error", err)
+			}
+		})
+	}
+}
+
+func TestRetiredCatalogUnionRejectsInvalidInputs(t *testing.T) {
+	highWater := testStart.Add(10 * time.Minute)
+	policy := Config{
+		Epoch: Epoch{2}, Retention: 2 * time.Hour, MaxEntries: 4, MaxBytes: 4096,
+	}
+	first := retiredTestIntent(t, policy.Epoch, 1, testStart)
+	second := retiredTestIntent(t, policy.Epoch, 2, testStart.Add(time.Minute))
+	state := retiredTestCatalogSnapshot(
+		highWater,
+		retiredTestMember(
+			t,
+			policy,
+			highWater,
+			[]Intent{first, second},
+			[][]byte{[]byte("first"), []byte("second")},
+		),
+	)
+	config := RetiredCatalogConfig{
+		ActiveEpoch: Epoch{9}, MaxEntries: 2, MaxBytes: 4096, ClockHighWater: highWater,
+	}
+	malformed := cloneRetiredCatalogSnapshot(state)
+	malformed.Epochs[0].State.Version++
+	active := config
+	active.ActiveEpoch = policy.Epoch
+	rollback := config
+	rollback.ClockHighWater = highWater.Add(-time.Millisecond)
+	overCapacity := config
+	overCapacity.MaxEntries = 1
+
+	cases := []struct {
+		name   string
+		config RetiredCatalogConfig
+		state  RetiredCatalogSnapshot
+		want   error
+	}{
+		{"active epoch", active, state, ErrActiveEpochReceipt},
+		{"malformed snapshot", config, malformed, ErrInvalidRetiredCatalogSnapshot},
+		{"clock rollback", rollback, state, ErrRetiredCatalogClockRollback},
+		{"individual capacity", overCapacity, state, ErrRetiredCatalogCapacity},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, err := NewRetiredCatalogFromUnion(tc.config, tc.state)
+			if catalog != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("union = %p, %v, want nil and %v", catalog, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRetiredCatalogUnionChecksRawCapacityBeforeExpiryPruning(t *testing.T) {
+	inputClock := testStart.Add(30 * time.Minute)
+	effectiveClock := testStart.Add(2 * time.Hour)
+	policy := Config{
+		Epoch: Epoch{2}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 4096,
+	}
+	first := retiredTestIntent(t, policy.Epoch, 1, testStart)
+	second := retiredTestIntent(t, policy.Epoch, 2, testStart.Add(time.Minute))
+	firstState := retiredTestCatalogSnapshot(
+		inputClock,
+		retiredTestMember(t, policy, inputClock, []Intent{first}, [][]byte{[]byte("same")}),
+	)
+	secondState := retiredTestCatalogSnapshot(
+		inputClock,
+		retiredTestMember(t, policy, inputClock, []Intent{second}, [][]byte{[]byte("same")}),
+	)
+	firstCost := firstState.Epochs[0].State.Receipts[0].cost()
+	secondCost := secondState.Epochs[0].State.Receipts[0].cost()
+
+	entryLimited := RetiredCatalogConfig{
+		ActiveEpoch:    Epoch{9},
+		MaxEntries:     1,
+		MaxBytes:       firstCost + secondCost,
+		ClockHighWater: effectiveClock,
+	}
+	if catalog, err := NewRetiredCatalogFromUnion(entryLimited, firstState, secondState); catalog != nil ||
+		!errors.Is(err, ErrRetiredCatalogCapacity) {
+		t.Fatalf("raw entry overflow = %p, %v", catalog, err)
+	}
+	byteLimited := entryLimited
+	byteLimited.MaxEntries = 2
+	byteLimited.MaxBytes = firstCost
+	if catalog, err := NewRetiredCatalogFromUnion(byteLimited, firstState, secondState); catalog != nil ||
+		!errors.Is(err, ErrRetiredCatalogCapacity) {
+		t.Fatalf("raw byte overflow = %p, %v", catalog, err)
+	}
+
+	roomy := byteLimited
+	roomy.MaxBytes = firstCost + secondCost
+	catalog, err := NewRetiredCatalogFromUnion(roomy, firstState, secondState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := catalog.Snapshot(effectiveClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Epochs) != 0 {
+		t.Fatalf("expired raw union was not pruned: %+v", state)
+	}
+}
+
+func TestRetiredCatalogUnionUsesEffectiveClockFloor(t *testing.T) {
+	policy := Config{
+		Epoch: Epoch{2}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 4096,
+	}
+	expired := retiredTestIntent(t, policy.Epoch, 1, testStart)
+	live := retiredTestIntent(t, policy.Epoch, 2, testStart.Add(45*time.Minute))
+	expiredClock := testStart.Add(10 * time.Minute)
+	liveClock := testStart.Add(50 * time.Minute)
+	expiredState := retiredTestCatalogSnapshot(
+		expiredClock,
+		retiredTestMember(t, policy, expiredClock, []Intent{expired}, [][]byte{[]byte("expired")}),
+	)
+	liveState := retiredTestCatalogSnapshot(
+		liveClock,
+		retiredTestMember(t, policy, liveClock, []Intent{live}, [][]byte{[]byte("live")}),
+	)
+	effectiveClock := testStart.Add(75 * time.Minute)
+	config := RetiredCatalogConfig{
+		ActiveEpoch: Epoch{9}, MaxEntries: 2, MaxBytes: 4096, ClockHighWater: effectiveClock,
+	}
+	catalog, err := NewRetiredCatalogFromUnion(config, expiredState, liveState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := catalog.Snapshot(effectiveClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ClockHighWaterMillis != effectiveClock.UnixMilli() ||
+		len(state.Epochs) != 1 ||
+		state.Epochs[0].State.ClockHighWaterMillis != effectiveClock.UnixMilli() ||
+		len(state.Epochs[0].State.Receipts) != 1 ||
+		state.Epochs[0].State.Receipts[0].ID != live.ID {
+		t.Fatalf("effective-clock union = %+v", state)
+	}
+	if status, _, err := catalog.Lookup(expired.ID, effectiveClock); err != nil ||
+		status != NoLongerProvable {
+		t.Fatalf("expired union lookup = %v, %v", status, err)
+	}
+	if status, receipt, err := catalog.Lookup(live.ID, effectiveClock); err != nil ||
+		status != Confirmed || string(receipt.Result) != "live" {
+		t.Fatalf("live union lookup = %v, %+v, %v", status, receipt, err)
+	}
+	if _, err := NewRetiredCatalogFromSnapshot(config, state); err != nil {
+		t.Fatalf("effective-clock union did not round trip: %v", err)
+	}
+}
+
+func TestRetiredCatalogUnionEmptyInputs(t *testing.T) {
+	effectiveClock := testStart.Add(20 * time.Minute)
+	config := RetiredCatalogConfig{
+		ActiveEpoch: Epoch{9}, MaxEntries: 2, MaxBytes: 4096, ClockHighWater: effectiveClock,
+	}
+	withoutInputs, err := NewRetiredCatalogFromUnion(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyInputs, err := NewRetiredCatalogFromUnion(
+		config,
+		RetiredCatalogSnapshot{Version: retiredCatalogSnapshotVersion},
+		RetiredCatalogSnapshot{
+			Version:              retiredCatalogSnapshotVersion,
+			ClockHighWaterMillis: testStart.Add(10 * time.Minute).UnixMilli(),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := withoutInputs.Snapshot(effectiveClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := emptyInputs.Snapshot(effectiveClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want.ClockHighWaterMillis != effectiveClock.UnixMilli() ||
+		len(want.Epochs) != 0 ||
+		!reflect.DeepEqual(got, want) {
+		t.Fatalf("empty union = %+v, want %+v", got, want)
+	}
+	if _, err := NewRetiredCatalogFromSnapshot(config, got); err != nil {
+		t.Fatalf("empty union did not round trip: %v", err)
+	}
+}
+
 func TestRetiredCatalogMultiEpochRoundTripAndCopySafety(t *testing.T) {
 	config, state, intents := retiredCatalogFixture(t)
 	canonical := cloneRetiredCatalogSnapshot(state)

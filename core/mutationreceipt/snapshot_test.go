@@ -368,3 +368,57 @@ func TestSnapshotRestoreRejectsCorruptOrIncompatibleState(t *testing.T) {
 		t.Fatalf("corrupt expired binding = %v", err)
 	}
 }
+
+func TestSnapshotRestoreBoundsRelationshipsByEntryCapacity(t *testing.T) {
+	config := Config{
+		Epoch:          Epoch{1},
+		Retention:      time.Hour,
+		MaxEntries:     1,
+		MaxBytes:       1000,
+		ClockHighWater: testStart,
+	}
+	store, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := func(count int) Snapshot {
+		state := cloneSnapshot(empty)
+		state.Receipts = make([]Receipt, count)
+		for i := range state.Receipts {
+			intent := numberedIntent(t, uint32(i+1), testStart)
+			state.Receipts[i] = Receipt{
+				Intent:         intent,
+				DeadlineMillis: testStart.Add(time.Hour).UnixMilli(),
+			}
+		}
+		state.Receipts[len(state.Receipts)-1].Group = state.Receipts[0].Group
+		return state
+	}
+	small := oversized(2)
+	large := oversized(128)
+	for name, state := range map[string]Snapshot{"small": small, "large": large} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewFromSnapshot(config, state); !errors.Is(err, ErrInvalidSnapshot) {
+				t.Fatalf("entry overflow = %v, want invalid snapshot", err)
+			}
+		})
+	}
+
+	smallAllocs := testing.AllocsPerRun(10, func() {
+		_, _ = NewFromSnapshot(config, small)
+	})
+	largeAllocs := testing.AllocsPerRun(10, func() {
+		_, _ = NewFromSnapshot(config, large)
+	})
+	if largeAllocs > smallAllocs+1 {
+		t.Fatalf(
+			"oversized relationship validation allocations grew with input: small=%v large=%v",
+			smallAllocs,
+			largeAllocs,
+		)
+	}
+}
