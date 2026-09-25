@@ -13,8 +13,8 @@ import (
 // graphPutEffectEnvelope is private FileWAL evidence for the Put effects this
 // receiver actually accepted. Mutation remains the original relay/Subscribe
 // projection; an omitted slot was rejected locally and must not be retried
-// against a later, possibly expired causal floor. No serving writer selects
-// this envelope and no recovery path applies it yet.
+// against a later, possibly expired causal floor. Every serving graph Put
+// publication selects this envelope.
 type graphPutEffectEnvelope struct {
 	Mutation *pb.Mutation
 	Accepted []graphPutAcceptedEffect

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -682,17 +683,154 @@ func TestReplayGraphDeleteEffectPreservesExpiredDeadline(t *testing.T) {
 	}
 }
 
-func TestReplayGraphDeleteEffectRejectsCapacityBeforePartialGraphChange(t *testing.T) {
+func TestReplayGraphDeleteEffectConvergesBeyondLocalCapacity(t *testing.T) {
 	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
 	graph.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
 	entry := recoveryGraphDeleteEffectEntry(t, 0x6c, 1, time.Now().UnixNano(), &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
 		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "t", Head: "a"}, {Tail: "t", Head: "b"}}},
 	}}, time.Now().Add(time.Hour), 0, 1)
-	if err := replayGraphDeleteEffect(graph, entry.Op.(*graphDeleteEffectEnvelope)); !errors.Is(err, errReceiptWALUnion) {
-		t.Fatalf("over-budget Delete replay = %v, want fail-closed", err)
+	if err := replayGraphDeleteEffect(graph, entry.Op.(*graphDeleteEffectEnvelope)); err != nil {
+		t.Fatalf("over-budget certified Delete replay: %v", err)
 	}
-	if len(graph.SnapshotReplication().Tombstones.Edges) != 0 {
-		t.Fatal("over-budget Delete partially changed causal state")
+	stats := graph.CausalMetadataStats()
+	if stats.EdgeEntries != 2 || !stats.EdgeOverLimit || stats.EdgeRejected != 0 {
+		t.Fatalf("over-budget certified Delete stats = %+v", stats)
+	}
+	if got := len(graph.SnapshotReplication().Tombstones.Edges); got != 2 {
+		t.Fatalf("over-budget certified Delete tombstones = %d, want 2", got)
+	}
+}
+
+func TestStageEffectCompleteReceiptWALCandidateReplaysRemoteEffectsBeyondLocalCapacity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "over-capacity.wal")
+	wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 16, WAL: wal})
+	limits := graphcache.CausalMetadataLimits{MaxVertexEntries: 1, MaxEdgeEntries: 1}
+	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	graph.SetCausalMetadataLimits(limits)
+	local, remote := bytes16("local-capacity"), bytes16("remote-capacity")
+	svc := NewLanternService(graph).WithTombstoneTTL(time.Hour).
+		WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+	base := time.Now()
+	future := timestamppb.New(base.Add(time.Hour))
+	past := timestamppb.New(base.Add(-time.Minute))
+	deleteDeadline := timestamppb.New(base.Add(30 * time.Minute))
+	operations := []*pb.MutationOp{
+		{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: "vertex-barrier", Expiration: past},
+		}}},
+		{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: "vertex-live", Expiration: future},
+		}}},
+		{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "vertex-absent"}}},
+		{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+			Edge: &pb.Edge{Tail: "edge", Head: "barrier", Weight: 1, Expiration: past},
+		}}},
+		{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+			Edge: &pb.Edge{Tail: "edge", Head: "live", Weight: 2, Expiration: future},
+		}}},
+		{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "edge", Head: "absent"}}},
+	}
+	for i, op := range operations {
+		mutation := &pb.Mutation{
+			Origin: remote[:],
+			Seq:    uint64(i + 1),
+			Hlc: &pb.HLCTimestamp{
+				NodeId: remote[:],
+				WallNs: base.Add(time.Duration(i) * time.Nanosecond).UnixNano(),
+			},
+			Op: op,
+		}
+		switch op.GetOp().(type) {
+		case *pb.MutationOp_DeleteVertex, *pb.MutationOp_DeleteEdge:
+			mutation.TombstoneExpiration = deleteDeadline
+		}
+		if err := svc.ApplyMutation(t.Context(), mutation); err != nil {
+			t.Fatalf("remote mutation %d: %v", i+1, err)
+		}
+	}
+	stats := graph.CausalMetadataStats()
+	if stats.VertexEntries != 3 || stats.EdgeEntries != 3 ||
+		!stats.VertexOverLimit || !stats.EdgeOverLimit {
+		t.Fatalf("remote commit did not cross local limits: %+v", stats)
+	}
+	beforeSeq, _ := log.LastSeq()
+	if _, err := svc.PutVertex(t.Context(), &pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "local-vertex-rejected", Expiration: future},
+	}); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("local Vertex admission = %v, want ResourceExhausted", err)
+	}
+	if _, err := svc.PutEdge(t.Context(), &pb.PutEdgeRequest{
+		Edge: &pb.Edge{Tail: "local", Head: "edge-rejected", Weight: 1, Expiration: future},
+	}); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("local Edge admission = %v, want ResourceExhausted", err)
+	}
+	if afterSeq, _ := log.LastSeq(); afterSeq != beforeSeq {
+		t.Fatalf("rejected local admission advanced WAL %d -> %d", beforeSeq, afterSeq)
+	}
+	if _, ok := graph.GetVertex("local-vertex-rejected"); ok {
+		t.Fatal("rejected local Vertex admission changed graph")
+	}
+	if _, ok := graph.GetWeight("local", "edge-rejected"); ok {
+		t.Fatal("rejected local Edge admission changed graph")
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := mutationlog.AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	config := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{1}, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+	}
+	candidate, err := stageEffectCompleteReceiptWALCandidate(
+		lease, config, time.Now(), mutationlog.Options{Capacity: 16}, time.Hour,
+		func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+			graph.SetCausalMetadataLimits(limits)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("strict same-policy restart: %v", err)
+	}
+	recovered := candidate.graph.CausalMetadataStats()
+	if recovered.VertexEntries != 3 || recovered.EdgeEntries != 3 ||
+		!recovered.VertexOverLimit || !recovered.EdgeOverLimit ||
+		recovered.VertexRejected != 0 || recovered.EdgeRejected != 0 {
+		t.Fatalf("recovered causal limits = %+v", recovered)
+	}
+	if vertex, ok := candidate.graph.GetVertex("vertex-live"); !ok || vertex.GetKey() != "vertex-live" {
+		t.Fatalf("recovered live Vertex = %v, %v", vertex, ok)
+	}
+	if weight, ok := candidate.graph.GetWeight("edge", "live"); !ok || weight != 2 {
+		t.Fatalf("recovered live Edge = %v, %v", weight, ok)
+	}
+	snapshot := candidate.graph.SnapshotReplication()
+	var vertexBarrier, vertexDelete, edgeBarrier, edgeDelete bool
+	for _, barrier := range snapshot.Barriers.Vertices {
+		vertexBarrier = vertexBarrier || barrier.Key == "vertex-barrier"
+	}
+	for _, tombstone := range snapshot.Tombstones.Vertices {
+		vertexDelete = vertexDelete || tombstone.Key == "vertex-absent"
+	}
+	for _, barrier := range snapshot.Barriers.Edges {
+		edgeBarrier = edgeBarrier || barrier.Tail == "edge" && barrier.Head == "barrier"
+	}
+	for _, tombstone := range snapshot.Tombstones.Edges {
+		edgeDelete = edgeDelete || tombstone.Tail == "edge" && tombstone.Head == "absent"
+	}
+	if !vertexBarrier || !vertexDelete || !edgeBarrier || !edgeDelete {
+		t.Fatalf("recovered certified effects: vertex barrier=%v delete=%v edge barrier=%v delete=%v",
+			vertexBarrier, vertexDelete, edgeBarrier, edgeDelete)
 	}
 }
 

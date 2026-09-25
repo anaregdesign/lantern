@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +14,9 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type failOncePublicationWAL struct{ writes int }
@@ -95,6 +99,10 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	if svc.pendingLocalMutation == nil || svc.pendingLocalMutation.mutation.GetSeq() != 1 {
 		t.Fatalf("pending local mutation = %v, want seq 1", svc.pendingLocalMutation)
 	}
+	pendingEffect := svc.pendingLocalMutation.walOp
+	if _, ok := pendingEffect.(*graphPutEffectEnvelope); !ok {
+		t.Fatalf("pending local WAL evidence = %T, want graph Put effect", pendingEffect)
+	}
 	if got := svc.LocalSeq(origin); got != 0 {
 		t.Fatalf("fault advanced origin seq to %d", got)
 	}
@@ -138,7 +146,11 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 		t.Fatal(err)
 	}
 	defer func() { _ = cancel() }()
-	mutation := (<-entries).Op.(*pb.Mutation)
+	repairedEntry := <-entries
+	if repairedEntry.Op != pendingEffect {
+		t.Fatal("repair replaced the exact retained WAL envelope")
+	}
+	mutation := mustGraphMutation(t, repairedEntry.Op)
 	live := mutation.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetLive()
 	if mutation.GetSeq() != 1 || live.GetKey() != "first" || live.GetString_() != "original" {
 		t.Fatalf("repaired original mutation = %v", mutation)
@@ -174,7 +186,7 @@ func TestPublishLocalDeleteRepairKeepsOriginalDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cancel()
-	repaired := (<-entries).Op.(*pb.Mutation)
+	repaired := mustGraphMutation(t, (<-entries).Op)
 	if repaired.GetSeq() != 1 || !repaired.GetTombstoneExpiration().AsTime().Equal(tombstones[0].Expiration) {
 		t.Fatalf("repaired Delete renewed deadline: %v", repaired)
 	}
@@ -210,11 +222,11 @@ func TestPublishLocalMutation_BornExpiredPutKeepsBarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = cancel() }()
-	first := (<-entries).Op.(*pb.Mutation)
+	first := mustGraphMutation(t, (<-entries).Op)
 	if first.GetSeq() != 1 || first.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetCausalBarrier().GetKey() != "expired" {
 		t.Fatalf("repaired born-expired mutation = %v", first)
 	}
-	second := (<-entries).Op.(*pb.Mutation)
+	second := mustGraphMutation(t, (<-entries).Op)
 	if second.GetSeq() != 2 || second.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetLive().GetKey() != "next" {
 		t.Fatalf("next mutation = %v", second)
 	}
@@ -245,6 +257,14 @@ func TestPublishRemoteMutation_FailedAppendRetriesWithoutDoubleApply(t *testing.
 	if weight := cache.edges["a"]["b"]; weight != 2 {
 		t.Fatalf("first graph apply weight = %v, want 2", weight)
 	}
+	pending := svc.pendingMutations[origin][1]
+	if pending == nil {
+		t.Fatal("failed remote append did not retain pending mutation")
+	}
+	pendingEffect := pending.walOp
+	if _, ok := pendingEffect.(*graphAddEffectEnvelope); !ok {
+		t.Fatalf("pending remote WAL evidence = %T, want graph Add effect", pendingEffect)
+	}
 	if err := svc.ApplyMutation(context.Background(), m); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -256,6 +276,226 @@ func TestPublishRemoteMutation_FailedAppendRetriesWithoutDoubleApply(t *testing.
 	}
 	if weight := cache.edges["a"]["b"]; weight != 2 {
 		t.Fatalf("retry applied Add twice: weight=%v", weight)
+	}
+	if entry := mustMutationLogEntry(t, log, 1); entry.Op != pendingEffect {
+		t.Fatal("remote retry replaced the exact retained WAL envelope")
+	}
+}
+
+func TestLocalGraphWritesPublishEffectCompleteEnvelopes(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 16})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := bytes16("local-effects")
+	svc := NewLanternService(cache).WithTombstoneTTL(time.Hour).
+		WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	ctx := context.Background()
+	future := timestamppb.New(time.Now().Add(time.Hour))
+	past := timestamppb.New(time.Now().Add(-time.Hour))
+
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "vertex-duplicate", Expiration: future},
+		{Key: "vertex-duplicate", Expiration: past},
+	}}); err != nil {
+		t.Fatalf("PutVertices: %v", err)
+	}
+	if _, err := svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "put", Head: "duplicate", Weight: 1, Expiration: future},
+		{Tail: "put", Head: "duplicate", Weight: 1, Expiration: past},
+	}}); err != nil {
+		t.Fatalf("PutEdges: %v", err)
+	}
+	add, err := svc.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "add-0", Head: "head", Weight: 1, Expiration: future},
+		nil,
+		{Tail: "add-2", Head: "head", Weight: 2, Expiration: future},
+	}})
+	if err != nil {
+		t.Fatalf("AddEdges: %v", err)
+	}
+	if add.GetWritten() != 2 || !slices.Equal(add.GetEffectiveWeights(), []float32{1, 0, 2}) {
+		t.Fatalf("nil-slot Add response = %+v", add)
+	}
+	if _, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"absent", "absent"}}); err != nil {
+		t.Fatalf("DeleteVertices: %v", err)
+	}
+	if _, err := svc.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{
+		{Tail: "missing", Head: "edge"}, {Tail: "missing", Head: "edge"},
+	}}); err != nil {
+		t.Fatalf("DeleteEdges: %v", err)
+	}
+
+	for seq, want := range []struct {
+		kind     string
+		indexes  []uint32
+		putKinds []graphPutEffectKind
+	}{
+		{"put", []uint32{0, 1}, []graphPutEffectKind{graphPutEffectLive, graphPutEffectBarrier}},
+		{"put", []uint32{0, 1}, []graphPutEffectKind{graphPutEffectLive, graphPutEffectBarrier}},
+		{"add", []uint32{0, 2}, nil},
+		{"delete", []uint32{0, 1}, nil},
+		{"delete", []uint32{0, 1}, nil},
+	} {
+		entry := mustMutationLogEntry(t, log, uint64(seq+1))
+		var got []uint32
+		switch effect := entry.Op.(type) {
+		case *graphPutEffectEnvelope:
+			if want.kind != "put" {
+				t.Fatalf("entry %d = %T, want %s effect", seq+1, entry.Op, want.kind)
+			}
+			for _, accepted := range effect.Accepted {
+				got = append(got, accepted.Index)
+			}
+			kinds := make([]graphPutEffectKind, len(effect.Accepted))
+			for i, accepted := range effect.Accepted {
+				kinds[i] = accepted.Kind
+			}
+			if !slices.Equal(kinds, want.putKinds) {
+				t.Fatalf("entry %d Put effect kinds = %v, want %v", seq+1, kinds, want.putKinds)
+			}
+		case *graphAddEffectEnvelope:
+			if want.kind != "add" {
+				t.Fatalf("entry %d = %T, want %s effect", seq+1, entry.Op, want.kind)
+			}
+			got = effect.AcceptedIndexes
+		case *graphDeleteEffectEnvelope:
+			if want.kind != "delete" {
+				t.Fatalf("entry %d = %T, want %s effect", seq+1, entry.Op, want.kind)
+			}
+			got = effect.AcceptedIndexes
+		default:
+			t.Fatalf("entry %d = %T, want effect-complete envelope", seq+1, entry.Op)
+		}
+		if !slices.Equal(got, want.indexes) {
+			t.Fatalf("entry %d accepted indexes = %v, want %v", seq+1, got, want.indexes)
+		}
+	}
+
+	var addZero, addTwo bool
+	for _, edge := range cache.SnapshotEdges() {
+		if len(edge.Contributions) != 1 {
+			continue
+		}
+		switch edge.Tail {
+		case "add-0":
+			addZero = edge.Contributions[0].ContribID == contribIDFor(origin[:], 3, 0)
+		case "add-2":
+			addTwo = edge.Contributions[0].ContribID == contribIDFor(origin[:], 3, 2)
+		}
+	}
+	if !addZero || !addTwo {
+		t.Fatal("local Add nil-slot synthesis did not retain original wire indexes")
+	}
+}
+
+func TestProductionGraphPublicationStrictRestartWithoutTombstones(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publication.wal")
+	wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32, WAL: wal})
+	local := bytes16("local-restart")
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+	ctx := context.Background()
+	future := timestamppb.New(time.Now().Add(time.Hour))
+
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "keep", Expiration: future}, {Key: "remove", Expiration: future},
+	}}); err != nil {
+		t.Fatalf("local Put: %v", err)
+	}
+	if _, err := svc.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{{
+		Tail: "local-add", Head: "head", Weight: 2, Expiration: future,
+	}}}); err != nil {
+		t.Fatalf("local Add: %v", err)
+	}
+	if _, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"remove"}}); err != nil {
+		t.Fatalf("local Delete: %v", err)
+	}
+
+	remote := bytes16("remote-restart")
+	remoteOps := []*pb.MutationOp{
+		{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+			Edge: &pb.Edge{Tail: "remote-put", Head: "head", Weight: 3, Expiration: future},
+		}}},
+		{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+			Edge: &pb.Edge{Tail: "remote-add", Head: "head", Weight: 4, Expiration: future},
+		}}},
+		{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "remote-put", Head: "head"}}},
+	}
+	for i, op := range remoteOps {
+		seq := uint64(i + 1)
+		if err := svc.ApplyMutation(ctx, &pb.Mutation{
+			Origin: remote[:], Seq: seq,
+			Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano() + int64(seq), NodeId: remote[:]},
+			Op:  op,
+		}); err != nil {
+			t.Fatalf("remote mutation %d: %v", seq, err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows int
+	if err := mutationlog.ReplayFileWAL(path, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
+		rows++
+		switch entry.Op.(type) {
+		case *graphPutEffectEnvelope, *graphAddEffectEnvelope, *graphDeleteEffectEnvelope:
+			return nil
+		default:
+			return errors.New("production graph publication wrote a raw WAL row")
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 6 {
+		t.Fatalf("WAL rows = %d, want 6", rows)
+	}
+
+	lease, err := mutationlog.AcquireFileWALLease(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	config := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{1}, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+	}
+	candidate, err := stageEffectCompleteReceiptWALCandidate(
+		lease, config, time.Now(), mutationlog.Options{Capacity: 32}, time.Hour,
+		func(*graphcache.GraphCache[string, *pb.Vertex]) error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("strict restart: %v", err)
+	}
+	if last, ok := candidate.log.LastSeq(); !ok || last != 6 {
+		t.Fatalf("strict restart log frontier = %d, %v", last, ok)
+	}
+	if got := candidate.origins.LocalSeq(local); got != 3 {
+		t.Fatalf("strict restart local origin = %d, want 3", got)
+	}
+	if got := candidate.origins.LocalSeq(remote); got != 3 {
+		t.Fatalf("strict restart remote origin = %d, want 3", got)
+	}
+	if _, ok := candidate.graph.GetVertex("keep"); !ok {
+		t.Fatal("strict restart lost accepted local Put")
+	}
+	if _, ok := candidate.graph.GetVertex("remove"); ok {
+		t.Fatal("strict restart lost local physical Delete")
+	}
+	if weight, ok := candidate.graph.GetWeight("local-add", "head"); !ok || weight != 2 {
+		t.Fatalf("strict restart local Add = %v, %v", weight, ok)
+	}
+	if _, ok := candidate.graph.GetWeight("remote-put", "head"); ok {
+		t.Fatal("strict restart lost remote physical Delete")
+	}
+	if weight, ok := candidate.graph.GetWeight("remote-add", "head"); !ok || weight != 4 {
+		t.Fatalf("strict restart remote Add = %v, %v", weight, ok)
 	}
 }
 

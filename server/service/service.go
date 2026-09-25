@@ -702,23 +702,6 @@ func (s *LanternService) CompleteSearchIndexRecovery() error {
 	return nil
 }
 
-// appendLocalMutationAtLocked assigns an origin-local seq independently of
-// the relay log's Entry.Seq. Caller holds replicationCutMu. Log-first AddEdges
-// uses this path; graph-first writes use publishLocalGraphMutationLocked.
-func (s *LanternService) appendLocalMutationAtLocked(op *pb.MutationOp, ts hlc.Timestamp) (uint64, error) {
-	if s.log == nil || s.clock == nil {
-		return 0, nil
-	}
-	if err := s.prepareLocalMutationLocked(); err != nil {
-		return 0, err
-	}
-	mutation := s.newLocalMutationLocked(op, ts)
-	if err := s.appendPreparedLocalMutationLocked(mutation); err != nil {
-		return 0, err
-	}
-	return mutation.GetSeq(), nil
-}
-
 // Caller holds replicationCutMu and has completed prepareLocalMutationLocked.
 func (s *LanternService) newLocalMutationLocked(op *pb.MutationOp, ts hlc.Timestamp) *pb.Mutation {
 	origin := s.clock.NodeID()
@@ -738,11 +721,15 @@ func (s *LanternService) newLocalMutationLocked(op *pb.MutationOp, ts hlc.Timest
 }
 
 // appendPreparedLocalMutationLocked never reapplies graph effects. Its owned
-// Mutation is reused verbatim after a graph-first WAL failure.
-func (s *LanternService) appendPreparedLocalMutationLocked(mutation *pb.Mutation) error {
+// effect envelope is reused verbatim after a graph-first WAL failure.
+func (s *LanternService) appendPreparedLocalMutationLocked(effect mutationlog.MutationOp) error {
+	mutation, err := graphEffectMutation(effect)
+	if err != nil {
+		return err
+	}
 	origin := s.clock.NodeID()
 	ts := hlcFromProto(mutation.GetHlc())
-	_, err := s.log.Append(mutation, ts)
+	_, err = s.log.Append(effect, ts)
 	if err != nil {
 		return err
 	}
@@ -1132,6 +1119,9 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 				return nil, err
 			}
 			ts := s.clock.Now()
+			if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
+				return nil, err
+			}
 			_, outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentHLCOutcomesChecked(items, ts)
 			if err != nil {
 				return nil, searchIndexWriteError(err)
@@ -1144,7 +1134,7 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			// mutation. Splitting by outcome reorders duplicate keys and can make
 			// a peer commit a different final state than the origin.
 			if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
-				if err := s.publishLocalGraphMutationLocked(mutation, ts); err != nil {
+				if err := s.publishLocalGraphPutLocked(mutation, ts, acceptedPutOutcomes(outcomes)); err != nil {
 					return nil, err
 				}
 			}
@@ -1182,6 +1172,9 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			return nil, err
 		}
 		ts := s.clock.Now()
+		if err := s.preflightLocalGraphPutVerticesLocked(in, ts); err != nil {
+			return nil, err
+		}
 		outcomes, err := s.cache.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
 		if err != nil {
 			return nil, searchIndexWriteError(err)
@@ -1191,7 +1184,7 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			return nil, err
 		}
 		if mutation := replicatedPutVerticesMutation(in, outcomes); mutation != nil {
-			if err := s.publishLocalGraphMutationLocked(mutation, ts); err != nil {
+			if err := s.publishLocalGraphPutLocked(mutation, ts, acceptedPutOutcomes(outcomes)); err != nil {
 				return nil, err
 			}
 		}
@@ -1263,6 +1256,57 @@ func replicatedPutEdgesMutation(in []*pb.Edge, outcomes []graphcache.PutOutcome)
 	return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: entries}}}
 }
 
+func acceptedPutOutcomes(outcomes []graphcache.PutOutcome) []graphcache.PutOutcome {
+	accepted := make([]graphcache.PutOutcome, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome == graphcache.PutOutcomeAppliedAndLive || outcome == graphcache.PutOutcomeExpired {
+			accepted = append(accepted, outcome)
+		}
+	}
+	return accepted
+}
+
+func (s *LanternService) preflightLocalGraphPutVerticesLocked(in []*pb.Vertex, ts hlc.Timestamp) error {
+	outcomes := make([]graphcache.PutOutcome, len(in))
+	for i := range outcomes {
+		outcomes[i] = graphcache.PutOutcomeAppliedAndLive
+	}
+	op := replicatedPutVerticesMutation(in, outcomes)
+	if op == nil {
+		return nil
+	}
+	if err := validateGraphEffectPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("PutVertices publication shape: %w", err))
+	}
+	return nil
+}
+
+func (s *LanternService) preflightLocalGraphPutEdgesLocked(in []*pb.Edge, ts hlc.Timestamp) error {
+	outcomes := make([]graphcache.PutOutcome, len(in))
+	for i := range outcomes {
+		outcomes[i] = graphcache.PutOutcomeAppliedAndLive
+	}
+	op := replicatedPutEdgesMutation(in, outcomes)
+	if op == nil {
+		return nil
+	}
+	if err := validateGraphEffectPublicationShape(s.newLocalMutationLocked(op, ts)); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("PutEdges publication shape: %w", err))
+	}
+	return nil
+}
+
+func (s *LanternService) preflightLocalGraphDeleteLocked(op *pb.MutationOp, ts hlc.Timestamp, expiration time.Time) error {
+	mutation := s.newLocalMutationLocked(op, ts)
+	if !expiration.IsZero() {
+		mutation.TombstoneExpiration = timestamppb.New(expiration)
+	}
+	if err := validateGraphEffectPublicationShape(mutation); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("Delete publication shape: %w", err))
+	}
+	return nil
+}
+
 func writeError(err error) error {
 	var capacity *graphcache.CausalMetadataCapacityError
 	if errors.As(err, &capacity) {
@@ -1327,6 +1371,11 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		if err != nil {
 			return nil, err
 		}
+		mutationOp := &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}
+		if err := s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp); err != nil {
+			return nil, err
+		}
+		var accepted []int
 		if s.tombstoneTTL > 0 {
 			// Replicated path: sample the commit HLC ONCE and stamp BOTH the
 			// tombstone and the logged mutation with it. Sampling clock.Now()
@@ -1335,18 +1384,19 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 			// would lose to the delete on peers but beat the tombstone on the
 			// origin — divergence. Local expiration is best-effort wall clock.
 			var err error
-			outcomes, err = s.cache.DeleteVerticesHLCOutcomesChecked(in.GetKeys(), ts, tombExp)
+			outcomes, accepted, err = s.cache.DeleteVerticesHLCDecisionsChecked(in.GetKeys(), ts, tombExp)
 			if err != nil {
 				return nil, writeError(err)
 			}
 		} else {
 			outcomes = s.cache.DeleteVerticesOutcomes(in.GetKeys())
+			accepted = allAcceptedIndexes(len(in.GetKeys()))
 		}
 		deleted, err := checkedDeleteOutcomes(outcomes, len(in.GetKeys()))
 		if err != nil {
 			return nil, err
 		}
-		if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: in}}, ts, tombExp); err != nil {
+		if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, accepted); err != nil {
 			return nil, err
 		}
 		return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil
@@ -1438,7 +1488,11 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	s.metrics.OnBatch("AddEdges", len(in))
 	contribIDs := request.GetContribIds()
 	items := make([]graphcache.EdgeItem[string], 0, len(in))
+	wireIndexes := make([]int, 0, len(in))
 	for i, e := range in {
+		if e == nil {
+			continue
+		}
 		expiration := prototime.Expiration(e.GetExpiration())
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
@@ -1458,6 +1512,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 			item.ContribID = contribIDFromBytes(contribIDs[i])
 		}
 		items = append(items, item)
+		wireIndexes = append(wireIndexes, i)
 	}
 	// Aggregate capacity soft caps (#848): every edge item writes one bucket
 	// and can auto-create up to two endpoint vertices, so both caps are
@@ -1475,24 +1530,27 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	// on the origin exactly as it is on every peer. The non-replicated path
 	// (clock nil) keeps the cheaper tombstone-free method.
 	var deduped int
-	var effective []float32
+	effective := make([]float32, len(in))
 	if s.clock != nil {
 		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
 		if err := s.prepareLocalMutationLocked(); err != nil {
-			s.replicationCutMu.Unlock()
 			return nil, err
 		}
-		if err := validateSyntheticAddIDs(s.origins.LocalSeq(s.clock.NodeID())+1, len(in), contribIDs); err != nil {
-			s.replicationCutMu.Unlock()
+		seq := s.origins.LocalSeq(s.clock.NodeID()) + 1
+		if err := validateSyntheticAddIDs(seq, len(in), contribIDs); err != nil {
 			if errors.Is(err, errSyntheticContribSequence) {
 				return nil, connect.NewError(connect.CodeResourceExhausted, err)
 			}
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		ts := s.clock.Now()
-		// Log FIRST so the per-origin seq this mutation commits under is
-		// known, then synthesize a (origin, seq, idx) ContribID for every
-		// edge the client left unkeyed BEFORE applying it locally. This
+		mutation := s.newLocalMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
+		if err := validateGraphEffectPublicationShape(mutation); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("AddEdges publication shape: %w", err))
+		}
+		// Reserve the origin seq before apply, then synthesize a
+		// (origin, seq, wire-index) ContribID for every unkeyed edge. This
 		// makes the origin's own graphcache carry the SAME ContribID a peer
 		// synthesizes in ApplyMutation (contribIDFor), so the contribution
 		// is a G-Set element (§4/§6 of docs/replication.md) on every
@@ -1500,21 +1558,26 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		// emits it verbatim, and a re-pulled snapshot re-adds it additively
 		// — doubling edge weight without bound on a gapped follower (#733).
 		// Mirrors the once-sampled HLC discipline PutVertices uses for LWW.
-		seq, err := s.appendLocalMutationAtLocked(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
-		if err != nil {
-			s.replicationCutMu.Unlock()
-			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("AddEdges mutation log append: %w", err))
-		}
 		for i := range items {
 			if items[i].ContribID.IsZero() {
-				items[i].ContribID = contribIDFor(s.origin, seq, uint16(i))
+				items[i].ContribID = contribIDFor(s.origin, seq, uint16(wireIndexes[i]))
 			}
 		}
-		effective, deduped = s.cache.AddEdgesWithExpirationContribHLC(items, ts)
-		s.replicationCutMu.Unlock()
+		compactEffective, accepted, noWeight := s.cache.AddEdgesWithExpirationContribHLCResults(items, ts)
+		deduped = noWeight
+		for i, wireIndex := range wireIndexes {
+			effective[wireIndex] = compactEffective[i]
+		}
+		if err := s.publishLocalGraphAddLocked(mutation, accepted); err != nil {
+			return nil, err
+		}
 		s.metrics.OnEdgeContribDeduped(deduped)
 	} else {
-		effective, deduped = s.cache.AddEdgesWithExpirationContrib(items)
+		compactEffective, count := s.cache.AddEdgesWithExpirationContrib(items)
+		deduped = count
+		for i, wireIndex := range wireIndexes {
+			effective[wireIndex] = compactEffective[i]
+		}
 		s.metrics.OnEdgeContribDeduped(deduped)
 	}
 	// effective is the index-aligned post-accumulation live weight of each
@@ -1578,6 +1641,9 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			return nil, err
 		}
 		ts := s.clock.Now()
+		if err := s.preflightLocalGraphPutEdgesLocked(in, ts); err != nil {
+			return nil, err
+		}
 		outcomes, err := s.cache.PutEdgesWithExpirationHLCOutcomesChecked(items, ts)
 		if err != nil {
 			return nil, writeError(err)
@@ -1587,7 +1653,7 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			return nil, err
 		}
 		if mutation := replicatedPutEdgesMutation(in, outcomes); mutation != nil {
-			if err := s.publishLocalGraphMutationLocked(mutation, ts); err != nil {
+			if err := s.publishLocalGraphPutLocked(mutation, ts, acceptedPutOutcomes(outcomes)); err != nil {
 				return nil, err
 			}
 		}
@@ -1636,22 +1702,28 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		if err != nil {
 			return nil, err
 		}
+		mutationOp := &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}
+		if err := s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp); err != nil {
+			return nil, err
+		}
+		var accepted []int
 		if s.tombstoneTTL > 0 {
 			// Share one commit HLC between the tombstone and the logged
 			// mutation (see DeleteVertices for the divergence this closes).
 			var err error
-			outcomes, err = s.cache.DeleteEdgesHLCOutcomesChecked(keys, ts, tombExp)
+			outcomes, accepted, err = s.cache.DeleteEdgesHLCDecisionsChecked(keys, ts, tombExp)
 			if err != nil {
 				return nil, writeError(err)
 			}
 		} else {
 			outcomes = s.cache.DeleteEdgesOutcomes(keys)
+			accepted = allAcceptedIndexes(len(keys))
 		}
 		deleted, err := checkedDeleteOutcomes(outcomes, len(keys))
 		if err != nil {
 			return nil, err
 		}
-		if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: in}}, ts, tombExp); err != nil {
+		if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, accepted); err != nil {
 			return nil, err
 		}
 		return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: outcomes}, nil

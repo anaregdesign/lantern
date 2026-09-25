@@ -261,8 +261,8 @@ func TestLanternService_OriginSeqIndependentOfRelayLogPosition(t *testing.T) {
 	for i, want := range wantOriginSeq {
 		select {
 		case entry := <-entries:
-			mutation, ok := entry.Op.(*pb.Mutation)
-			if !ok || entry.Seq != uint64(i+1) || mutation.GetSeq() != want.seq || !slices.Equal(mutation.GetOrigin(), want.origin[:]) {
+			mutation := mustGraphMutation(t, entry.Op)
+			if entry.Seq != uint64(i+1) || mutation.GetSeq() != want.seq || !slices.Equal(mutation.GetOrigin(), want.origin[:]) {
 				t.Fatalf("mixed log entry %d = %+v, want origin %x seq %d", i+1, entry, want.origin, want.seq)
 			}
 		case <-time.After(time.Second):
@@ -325,12 +325,10 @@ func TestLanternService_LocalOriginSeqExhaustionRejectsBeforeAppend(t *testing.T
 		t.Fatal("failed to seed exhausted origin cursor")
 	}
 	svc.replicationCutMu.Lock()
-	seq, err := svc.appendLocalMutationAtLocked(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{
-		PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "unpublished"}},
-	}}, clock.Now())
+	err := svc.prepareLocalMutationLocked()
 	svc.replicationCutMu.Unlock()
-	if connect.CodeOf(err) != connect.CodeResourceExhausted || seq != 0 {
-		t.Fatalf("exhausted origin append = (%d,%v), want (0,ResourceExhausted)", seq, err)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("exhausted origin preparation = %v, want ResourceExhausted", err)
 	}
 	if got := log.Len(); got != 0 {
 		t.Fatalf("exhausted origin appended %d entries", got)
@@ -1596,10 +1594,7 @@ func TestLanternService_MutationLog_BurstAppendsMonotone(t *testing.T) {
 				t.Fatalf("entry[%d] seq = %d, want %d", i, e.Seq, prev+1)
 			}
 			prev = e.Seq
-			mu, ok := e.Op.(*pb.Mutation)
-			if !ok {
-				t.Fatalf("entry[%d] op type = %T, want *pb.Mutation", i, e.Op)
-			}
+			mu := mustGraphMutation(t, e.Op)
 			if got := mu.GetOp().GetReplicatedPutVertices(); got == nil || len(got.GetEntries()) != 1 || got.GetEntries()[0].GetLive() == nil {
 				t.Fatalf("entry[%d] missing replicated live PutVertex entry", i)
 			}
@@ -1688,7 +1683,7 @@ func TestLanternService_PutVertices_BornExpiredReplicatesDeleteLikeOutcome(t *te
 		}
 		select {
 		case e := <-ch:
-			mu := e.Op.(*pb.Mutation)
+			mu := mustGraphMutation(t, e.Op)
 			got := mu.GetOp().GetReplicatedPutVertices().GetEntries()
 			if len(got) != 3 || got[0].GetCausalBarrier().GetKey() != "dead1" || got[1].GetLive().GetKey() != "live" || got[2].GetCausalBarrier().GetKey() != "dead2" {
 				t.Fatalf("ordered replicated entries = %v, want barrier/live/barrier", got)
@@ -1716,7 +1711,7 @@ func TestLanternService_PutVertices_BornExpiredReplicatesDeleteLikeOutcome(t *te
 		}
 		select {
 		case e := <-ch:
-			mu := e.Op.(*pb.Mutation)
+			mu := mustGraphMutation(t, e.Op)
 			if got := mu.GetOp().GetReplicatedPutVertices().GetEntries(); len(got) != 2 || got[0].GetLive().GetKey() != "x" || got[1].GetLive().GetKey() != "y" {
 				t.Fatalf("ordered replicated entries = %v, want two live entries", got)
 			}
@@ -1751,7 +1746,7 @@ func TestLanternService_PutVertices_BornExpiredReplicatesDeleteLikeOutcome(t *te
 		}
 		select {
 		case e := <-ch:
-			mu := e.Op.(*pb.Mutation)
+			mu := mustGraphMutation(t, e.Op)
 			if got := mu.GetOp().GetReplicatedPutVertices().GetEntries(); len(got) != 2 || got[0].GetCausalBarrier().GetKey() != "dead" || got[1].GetLive().GetKey() != "fresh" {
 				t.Fatalf("ordered replicated entries = %v, want barrier then live", got)
 			}
@@ -1791,7 +1786,7 @@ func TestLanternService_OrderedPutMutationConvergesDuplicateIdentities(t *testin
 			}
 			defer cancel()
 			entry := <-ch
-			mutation := entry.Op.(*pb.Mutation)
+			mutation := mustGraphMutation(t, entry.Op)
 			if len(mutation.GetOp().GetReplicatedPutVertices().GetEntries()) == 0 {
 				t.Fatal("origin did not log ordered replicated Put entries")
 			}
@@ -1833,7 +1828,7 @@ func TestLanternService_OrderedPutMutationConvergesDuplicateIdentities(t *testin
 				t.Fatal(err)
 			}
 			defer cancel()
-			mutation := (<-ch).Op.(*pb.Mutation)
+			mutation := mustGraphMutation(t, (<-ch).Op)
 			if len(mutation.GetOp().GetReplicatedPutEdges().GetEntries()) != 2 {
 				t.Fatalf("ordered edge entries = %v, want 2", mutation.GetOp().GetReplicatedPutEdges().GetEntries())
 			}

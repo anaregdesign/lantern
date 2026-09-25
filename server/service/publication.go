@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -27,6 +29,7 @@ const (
 
 type pendingMutation struct {
 	mutation *pb.Mutation
+	walOp    mutationlog.MutationOp
 	size     int
 	applied  bool // graph committed; retry the log append without applying twice
 	faulted  bool // relay WAL failed after graph apply; all CDC streams are gapped
@@ -110,7 +113,7 @@ func (s *LanternService) prepareLocalMutationLocked() error {
 		return publicationGapError()
 	}
 	if pending := s.pendingLocalMutation; pending != nil {
-		if err := s.appendPreparedLocalMutationLocked(pending.mutation); err != nil {
+		if err := s.appendPreparedLocalMutationLocked(pending.walOp); err != nil {
 			return connect.NewError(connect.CodeUnavailable,
 				fmt.Errorf("local mutation publication repair: %w", err))
 		}
@@ -137,23 +140,47 @@ func (s *LanternService) prepareLocalMutationLocked() error {
 // publishLocalGraphMutationLocked runs after a successful local graph apply
 // while the caller still holds replicationCutMu. A failed WAL append leaves
 // one owned, exact mutation for append-only repair and poisons CDC until then.
-func (s *LanternService) publishLocalGraphMutationLocked(op *pb.MutationOp, ts hlc.Timestamp) error {
-	return s.publishLocalGraphMutationWithTombstoneLocked(op, ts, time.Time{})
+func (s *LanternService) publishLocalGraphPutLocked(op *pb.MutationOp, ts hlc.Timestamp, outcomes []graphcache.PutOutcome) error {
+	mutation := s.newLocalMutationLocked(op, ts)
+	effect, err := newGraphPutEffectEnvelope(mutation, outcomes)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("local Put publication evidence: %w", err))
+	}
+	return s.publishLocalGraphEffectLocked(effect)
 }
 
-// publishLocalGraphMutationWithTombstoneLocked preserves the deadline that
-// the caller already used for the graph Delete. A failed append retains this
-// exact mutation for repair; it must never sample a fresh deadline.
-func (s *LanternService) publishLocalGraphMutationWithTombstoneLocked(op *pb.MutationOp, ts hlc.Timestamp, expiration time.Time) error {
-	if op == nil || s.log == nil || s.clock == nil {
-		return nil
-	}
+// publishLocalGraphDeleteLocked preserves the exact accepted indexes and
+// deadline returned by the same GraphCache application lock.
+func (s *LanternService) publishLocalGraphDeleteLocked(op *pb.MutationOp, ts hlc.Timestamp, expiration time.Time, acceptedIndexes []int) error {
 	mutation := s.newLocalMutationLocked(op, ts)
 	if !expiration.IsZero() {
 		mutation.TombstoneExpiration = timestamppb.New(expiration)
 	}
-	if err := s.appendPreparedLocalMutationLocked(mutation); err != nil {
-		pending := &pendingMutation{mutation: cloneQueuedMutation(mutation), size: proto.Size(mutation), applied: true}
+	effect, err := newGraphDeleteEffectEnvelope(mutation, acceptedIndexes)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("local Delete publication evidence: %w", err))
+	}
+	return s.publishLocalGraphEffectLocked(effect)
+}
+
+func (s *LanternService) publishLocalGraphAddLocked(mutation *pb.Mutation, accepted []bool) error {
+	effect, err := newGraphAddEffectEnvelope(mutation, accepted)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("local Add publication evidence: %w", err))
+	}
+	return s.publishLocalGraphEffectLocked(effect)
+}
+
+func (s *LanternService) publishLocalGraphEffectLocked(effect mutationlog.MutationOp) error {
+	if effect == nil || s.log == nil || s.clock == nil {
+		return nil
+	}
+	mutation, err := graphEffectMutation(effect)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if err := s.appendPreparedLocalMutationLocked(effect); err != nil {
+		pending := &pendingMutation{mutation: mutation, walOp: effect, size: proto.Size(mutation), applied: true}
 		s.pendingLocalMutation = pending
 		s.markPublicationFault(pending)
 		logger := s.logger
@@ -165,6 +192,91 @@ func (s *LanternService) publishLocalGraphMutationWithTombstoneLocked(op *pb.Mut
 			fmt.Errorf("local mutation log append (graph effect is ambiguous): %w", err))
 	}
 	return nil
+}
+
+func graphEffectMutation(op mutationlog.MutationOp) (*pb.Mutation, error) {
+	switch effect := op.(type) {
+	case *graphPutEffectEnvelope:
+		if effect != nil && effect.GraphMutation() != nil {
+			return effect.GraphMutation(), nil
+		}
+	case *graphAddEffectEnvelope:
+		if effect != nil && effect.GraphMutation() != nil {
+			return effect.GraphMutation(), nil
+		}
+	case *graphDeleteEffectEnvelope:
+		if effect != nil && effect.GraphMutation() != nil {
+			return effect.GraphMutation(), nil
+		}
+	}
+	return nil, fmt.Errorf("graph publication requires an effect-complete envelope, got %T", op)
+}
+
+// validateGraphEffectPublicationShape proves before graph apply that the
+// mutation and the largest possible accepted-effect sidecar fit the private
+// durable union. Actual accepted effects are still captured from GraphCache's
+// final application lock; this preflight never predicts which effects win.
+func validateGraphEffectPublicationShape(m *pb.Mutation) error {
+	var effect mutationlog.MutationOp
+	switch {
+	case isAnyGraphPut(m):
+		slots, err := graphPutSlots(m)
+		if err != nil {
+			return err
+		}
+		outcomes := make([]graphcache.PutOutcome, 0, len(slots))
+		for _, slot := range slots {
+			switch slot {
+			case graphPutSlotNil:
+				continue
+			case graphPutSlotBarrier:
+				outcomes = append(outcomes, graphcache.PutOutcomeExpired)
+			default:
+				outcomes = append(outcomes, graphcache.PutOutcomeAppliedAndLive)
+			}
+		}
+		effect, err = newGraphPutEffectEnvelope(m, outcomes)
+		if err != nil {
+			return err
+		}
+	case isAnyGraphAdd(m):
+		slots, err := graphAddSlots(m)
+		if err != nil {
+			return err
+		}
+		accepted := make([]bool, 0, len(slots))
+		for _, present := range slots {
+			if present {
+				accepted = append(accepted, true)
+			}
+		}
+		effect, err = newGraphAddEffectEnvelope(m, accepted)
+		if err != nil {
+			return err
+		}
+	case isAnyGraphDelete(m):
+		count, ok := graphDeleteRequestCount(m)
+		if !ok {
+			return receiptWALUnionError("graph Delete publication requires an exact Delete arm")
+		}
+		var err error
+		effect, err = newGraphDeleteEffectEnvelope(m, allAcceptedIndexes(count))
+		if err != nil {
+			return err
+		}
+	default:
+		return receiptWALUnionError("unsupported graph publication arm")
+	}
+	_, err := encodeReceiptWALUnion(effect)
+	return err
+}
+
+func allAcceptedIndexes(count int) []int {
+	indexes := make([]int, count)
+	for i := range indexes {
+		indexes[i] = i
+	}
+	return indexes
 }
 
 // publishRemoteMutation runs under replicationCutMu. The watermark is a
@@ -304,19 +416,20 @@ func (s *LanternService) drainRemoteOrigin(ctx context.Context, origin hlc.NodeI
 		}
 		m := pending.mutation
 		if !pending.applied {
-			opName, err := s.applyMutationGraph(m)
+			result, err := s.applyMutationGraph(m)
 			if err != nil {
 				return err
 			}
-			if opName == "" {
+			if result.opName == "" {
 				s.dropPending(origin, seq)
 				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: mutation origin %x seq %d has no applicable op", origin, seq))
 			}
 			pending.applied = true
-			pending.opName = opName
+			pending.opName = result.opName
+			pending.walOp = result.walOp
 		}
 		if s.log != nil {
-			if _, err := s.log.Append(m, hlcFromProto(m.GetHlc())); err != nil {
+			if _, err := s.log.Append(pending.walOp, hlcFromProto(m.GetHlc())); err != nil {
 				s.markPublicationFault(pending)
 				return connect.NewError(connect.CodeUnavailable, fmt.Errorf("replication: relay log append for origin %x seq %d: %w", origin, seq, err))
 			}

@@ -11,7 +11,7 @@ import (
 
 // graphAddEffectEnvelope is private evidence of the Add slots this receiver
 // actually applied. Mutation stays the original relay/Subscribe projection.
-// No serving writer selects this envelope and recovery does not replay it.
+// Every serving graph Add publication selects this envelope.
 type graphAddEffectEnvelope struct {
 	Mutation        *pb.Mutation
 	AcceptedIndexes []uint32

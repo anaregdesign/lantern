@@ -218,6 +218,16 @@ func (c *GraphCache[S, T]) DeleteVerticesHLCOutcomesChecked(keys []S, ts hlc.Tim
 	return outcomes, err
 }
 
+// DeleteVerticesHLCDecisions returns both the public Existed observation and
+// the causally accepted request indexes without enforcing the local-origin
+// metadata budget. Replication uses this path because an already-committed
+// remote mutation must converge even when it takes the receiver over its
+// local admission limit.
+func (c *GraphCache[S, T]) DeleteVerticesHLCDecisions(keys []S, ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int) {
+	_, existed, acceptedIndexes, _ = c.deleteVerticesHLC(keys, ts, expiration, false, false, true)
+	return existed, acceptedIndexes
+}
+
 // DeleteVerticesHLCDecisionsChecked returns both the public Existed observation
 // and the causally accepted request indexes from one graph lock. An accepted
 // absent key has Existed=false but still appears in acceptedIndexes; a rejected
@@ -328,6 +338,13 @@ func (c *GraphCache[S, T]) DeleteEdgesHLCChecked(keys []EdgeKey[S], ts hlc.Times
 func (c *GraphCache[S, T]) DeleteEdgesHLCOutcomesChecked(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time) ([]bool, error) {
 	_, outcomes, _, err := c.deleteEdgesHLC(keys, ts, expiration, true, true)
 	return outcomes, err
+}
+
+// DeleteEdgesHLCDecisions is the replication-safe, non-strict sibling of
+// DeleteEdgesHLCDecisionsChecked.
+func (c *GraphCache[S, T]) DeleteEdgesHLCDecisions(keys []EdgeKey[S], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int) {
+	_, existed, acceptedIndexes, _ = c.deleteEdgesHLC(keys, ts, expiration, false, true)
+	return existed, acceptedIndexes
 }
 
 // DeleteEdgesHLCDecisionsChecked is the edge sibling of

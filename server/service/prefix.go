@@ -201,9 +201,9 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 		}
 		deleted = len(keys)
 		if len(keys) > 0 {
-			if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+			if err := s.publishLocalGraphDeleteLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
 				DeleteVertices: &pb.DeleteVerticesRequest{Keys: keys},
-			}}, ts, tombExp); err != nil {
+			}}, ts, tombExp, allAcceptedIndexes(len(keys))); err != nil {
 				return nil, err
 			}
 		}
@@ -286,9 +286,9 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 			for i, key := range keys {
 				edges[i] = &pb.EdgeKey{Tail: key.Tail, Head: key.Head}
 			}
-			if err := s.publishLocalGraphMutationWithTombstoneLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+			if err := s.publishLocalGraphDeleteLocked(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
 				DeleteEdges: &pb.DeleteEdgesRequest{Edges: edges},
-			}}, ts, tombExp); err != nil {
+			}}, ts, tombExp, allAcceptedIndexes(len(edges))); err != nil {
 				return nil, err
 			}
 		}

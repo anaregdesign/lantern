@@ -9,6 +9,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 
@@ -69,6 +70,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if _, err := s.validateIncomingTombstoneExpiration(m); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
+	if err := validateGraphEffectPublicationShape(m); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication publication shape: %w", err))
+	}
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
 	if s.receiptCommitFaulted {
@@ -79,7 +83,12 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 
 // applyMutationGraph runs exactly one sequenced mutation against the graph.
 // Caller holds replicationCutMu and publishes only after this succeeds.
-func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
+type graphApplyResult struct {
+	opName string
+	walOp  mutationlog.MutationOp
+}
+
+func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) {
 	ts := hlcFromProto(m.GetHlc())
 	origin := m.GetOrigin()
 	seq := m.GetSeq()
@@ -89,7 +98,7 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 	useTomb := s.tombstoneTTL > 0
 	tombExp, err := s.validateIncomingTombstoneExpiration(m)
 	if err != nil {
-		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
+		return graphApplyResult{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
 
 	// opName is set by each case after it commits to a backend call so
@@ -104,13 +113,20 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 	case *pb.MutationOp_PutVertex:
 		v := op.PutVertex.GetVertex()
 		if v == nil {
-			return "", nil
+			return graphApplyResult{}, nil
 		}
-		applied := s.cache.PutVertexWithExpirationHLC(v.GetKey(), v, prototime.Expiration(v.GetExpiration()), ts)
-		if !applied && useTomb && s.onTombstoneClampReject != nil {
+		outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes([]graphcache.VertexItem[string, *pb.Vertex]{{
+			Key: v.GetKey(), Value: v, Expiration: prototime.Expiration(v.GetExpiration()),
+		}}, ts)
+		if outcomes[0] == graphcache.PutOutcomeSuperseded && useTomb && s.onTombstoneClampReject != nil {
 			s.onTombstoneClampReject()
 		}
 		opName = "PutVertex"
+		effect, err := newGraphPutEffectEnvelope(m, outcomes)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Put evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_PutVertices:
 		// Route the whole batch through the single-lock batch method (#840):
@@ -132,13 +148,20 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 				Expiration: prototime.Expiration(v.GetExpiration()),
 			})
 		}
-		rejected := s.cache.PutVerticesWithExpirationHLC(items, ts)
+		outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes(items, ts)
 		if useTomb && s.onTombstoneClampReject != nil {
-			for i := 0; i < rejected; i++ {
-				s.onTombstoneClampReject()
+			for _, outcome := range outcomes {
+				if outcome == graphcache.PutOutcomeSuperseded {
+					s.onTombstoneClampReject()
+				}
 			}
 		}
 		opName = "PutVertices"
+		effect, err := newGraphPutEffectEnvelope(m, outcomes)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Put evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_ReplicatedPutVertices:
 		// Each entry is an origin-authoritative outcome. Replay the full
@@ -149,53 +172,78 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 		items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(entries))
 		for _, entry := range entries {
 			if entry == nil {
-				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex entry"))
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex entry"))
 			}
 			switch outcome := entry.GetOutcome().(type) {
 			case *pb.ReplicatedPutVertex_Live:
 				v := outcome.Live
 				if v == nil {
-					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex live payload"))
+					return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex live payload"))
 				}
 				items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: v.GetKey(), Value: v, Expiration: prototime.Expiration(v.GetExpiration())})
 			case *pb.ReplicatedPutVertex_CausalBarrier:
 				barrier := outcome.CausalBarrier
 				if barrier == nil {
-					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex causal barrier"))
+					return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutVertex causal barrier"))
 				}
 				items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: barrier.GetKey(), CausalBarrier: true})
 			default:
-				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutVertex entry has no outcome"))
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutVertex entry has no outcome"))
 			}
 		}
-		rejected := s.cache.PutVerticesWithExpirationHLC(items, ts)
+		outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes(items, ts)
 		if useTomb && s.onTombstoneClampReject != nil {
-			for i := 0; i < rejected; i++ {
-				s.onTombstoneClampReject()
+			for _, outcome := range outcomes {
+				if outcome == graphcache.PutOutcomeSuperseded {
+					s.onTombstoneClampReject()
+				}
 			}
 		}
 		opName = "ReplicatedPutVertices"
+		effect, err := newGraphPutEffectEnvelope(m, outcomes)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Put evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_DeleteVertex:
 		if useTomb {
-			s.cache.DeleteVertexHLC(op.DeleteVertex.GetKey(), ts, tombExp)
+			_, accepted := s.cache.DeleteVerticesHLCDecisions([]string{op.DeleteVertex.GetKey()}, ts, tombExp)
+			effect, err := newGraphDeleteEffectEnvelope(m, accepted)
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteVertex", walOp: effect}, nil
 		} else {
 			s.cache.DeleteVertices([]string{op.DeleteVertex.GetKey()})
+			effect, err := newGraphDeleteEffectEnvelope(m, []int{0})
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteVertex", walOp: effect}, nil
 		}
-		opName = "DeleteVertex"
 
 	case *pb.MutationOp_DeleteVertices:
 		if useTomb {
-			s.cache.DeleteVerticesHLC(op.DeleteVertices.GetKeys(), ts, tombExp)
+			_, accepted := s.cache.DeleteVerticesHLCDecisions(op.DeleteVertices.GetKeys(), ts, tombExp)
+			effect, err := newGraphDeleteEffectEnvelope(m, accepted)
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteVertices", walOp: effect}, nil
 		} else {
 			s.cache.DeleteVertices(op.DeleteVertices.GetKeys())
+			effect, err := newGraphDeleteEffectEnvelope(m, allAcceptedIndexes(len(op.DeleteVertices.GetKeys())))
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteVertices", walOp: effect}, nil
 		}
-		opName = "DeleteVertices"
 
 	case *pb.MutationOp_AddEdge:
 		e := op.AddEdge.GetEdge()
 		if e == nil {
-			return "", nil
+			return graphApplyResult{}, nil
 		}
 		// Prefer a client-supplied ContribID carried on the wire (#588) so a
 		// retried idempotent Add dedups identically on every replica; fall
@@ -204,12 +252,19 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 		if cID.IsZero() {
 			cID = contribIDFor(origin, seq, 0)
 		}
-		applied := s.cache.AddEdgeWithExpirationContribHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
-			prototime.Expiration(e.GetExpiration()), cID, ts)
-		if !applied && useTomb && s.onTombstoneClampReject != nil {
+		_, accepted, noWeight := s.cache.AddEdgesWithExpirationContribHLCResults([]graphcache.EdgeItem[string]{{
+			Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(),
+			Expiration: prototime.Expiration(e.GetExpiration()), ContribID: cID,
+		}}, ts)
+		if noWeight != 0 && useTomb && s.onTombstoneClampReject != nil {
 			s.onTombstoneClampReject()
 		}
 		opName = "AddEdge"
+		effect, err := newGraphAddEffectEnvelope(m, accepted)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Add evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_AddEdges:
 		// Batch-routed (#840): one lock cycle for the whole mutation. The
@@ -246,25 +301,37 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 		// contributions. The batch return counts every item that added no
 		// weight; only expose that through the tombstone-specific hook when D4
 		// is enabled.
-		_, noWeight := s.cache.AddEdgesWithExpirationContribHLC(items, ts)
+		_, accepted, noWeight := s.cache.AddEdgesWithExpirationContribHLCResults(items, ts)
 		if useTomb && s.onTombstoneClampReject != nil {
 			for i := 0; i < noWeight; i++ {
 				s.onTombstoneClampReject()
 			}
 		}
 		opName = "AddEdges"
+		effect, err := newGraphAddEffectEnvelope(m, accepted)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Add evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_PutEdge:
 		e := op.PutEdge.GetEdge()
 		if e == nil {
-			return "", nil
+			return graphApplyResult{}, nil
 		}
-		applied := s.cache.PutEdgeWithExpirationHLC(e.GetTail(), e.GetHead(), e.GetWeight(),
-			prototime.Expiration(e.GetExpiration()), ts)
-		if !applied && useTomb && s.onTombstoneClampReject != nil {
+		outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes([]graphcache.EdgeItem[string]{{
+			Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(),
+			Expiration: prototime.Expiration(e.GetExpiration()),
+		}}, ts)
+		if outcomes[0] == graphcache.PutOutcomeSuperseded && useTomb && s.onTombstoneClampReject != nil {
 			s.onTombstoneClampReject()
 		}
 		opName = "PutEdge"
+		effect, err := newGraphPutEffectEnvelope(m, outcomes)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Put evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_PutEdges:
 		// Batch-routed (#840): one lock cycle; rejected counts tombstone-
@@ -282,54 +349,77 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 				Expiration: prototime.Expiration(e.GetExpiration()),
 			})
 		}
-		rejected := s.cache.PutEdgesWithExpirationHLC(items, ts)
+		outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, ts)
 		if useTomb && s.onTombstoneClampReject != nil {
-			for i := 0; i < rejected; i++ {
-				s.onTombstoneClampReject()
+			for _, outcome := range outcomes {
+				if outcome == graphcache.PutOutcomeSuperseded {
+					s.onTombstoneClampReject()
+				}
 			}
 		}
 		opName = "PutEdges"
+		effect, err := newGraphPutEffectEnvelope(m, outcomes)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Put evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_ReplicatedPutEdges:
 		entries := op.ReplicatedPutEdges.GetEntries()
 		items := make([]graphcache.EdgeItem[string], 0, len(entries))
 		for _, entry := range entries {
 			if entry == nil {
-				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge entry"))
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge entry"))
 			}
 			switch outcome := entry.GetOutcome().(type) {
 			case *pb.ReplicatedPutEdge_Live:
 				e := outcome.Live
 				if e == nil {
-					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge live payload"))
+					return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge live payload"))
 				}
 				items = append(items, graphcache.EdgeItem[string]{Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(), Expiration: prototime.Expiration(e.GetExpiration())})
 			case *pb.ReplicatedPutEdge_CausalBarrier:
 				barrier := outcome.CausalBarrier
 				if barrier == nil {
-					return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge causal barrier"))
+					return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge causal barrier"))
 				}
 				items = append(items, graphcache.EdgeItem[string]{Tail: barrier.GetTail(), Head: barrier.GetHead(), CausalBarrier: true})
 			default:
-				return "", connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutEdge entry has no outcome"))
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutEdge entry has no outcome"))
 			}
 		}
-		rejected := s.cache.PutEdgesWithExpirationHLC(items, ts)
+		outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, ts)
 		if useTomb && s.onTombstoneClampReject != nil {
-			for i := 0; i < rejected; i++ {
-				s.onTombstoneClampReject()
+			for _, outcome := range outcomes {
+				if outcome == graphcache.PutOutcomeSuperseded {
+					s.onTombstoneClampReject()
+				}
 			}
 		}
 		opName = "ReplicatedPutEdges"
+		effect, err := newGraphPutEffectEnvelope(m, outcomes)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Put evidence: %w", err))
+		}
+		return graphApplyResult{opName: opName, walOp: effect}, nil
 
 	case *pb.MutationOp_DeleteEdge:
 		k := op.DeleteEdge
 		if useTomb {
-			s.cache.DeleteEdgeHLC(k.GetTail(), k.GetHead(), ts, tombExp)
+			_, accepted := s.cache.DeleteEdgesHLCDecisions([]graphcache.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}}, ts, tombExp)
+			effect, err := newGraphDeleteEffectEnvelope(m, accepted)
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteEdge", walOp: effect}, nil
 		} else {
 			s.cache.DeleteEdges([]graphcache.EdgeKey[string]{{Tail: k.GetTail(), Head: k.GetHead()}})
+			effect, err := newGraphDeleteEffectEnvelope(m, []int{0})
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteEdge", walOp: effect}, nil
 		}
-		opName = "DeleteEdge"
 
 	case *pb.MutationOp_DeleteEdges:
 		in := op.DeleteEdges.GetEdges()
@@ -338,15 +428,24 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (string, error) {
 			keys = append(keys, graphcache.EdgeKey[string]{Tail: e.GetTail(), Head: e.GetHead()})
 		}
 		if useTomb {
-			s.cache.DeleteEdgesHLC(keys, ts, tombExp)
+			_, accepted := s.cache.DeleteEdgesHLCDecisions(keys, ts, tombExp)
+			effect, err := newGraphDeleteEffectEnvelope(m, accepted)
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteEdges", walOp: effect}, nil
 		} else {
 			s.cache.DeleteEdges(keys)
+			effect, err := newGraphDeleteEffectEnvelope(m, allAcceptedIndexes(len(keys)))
+			if err != nil {
+				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+			}
+			return graphApplyResult{opName: "DeleteEdges", walOp: effect}, nil
 		}
-		opName = "DeleteEdges"
 
 	}
 
-	return opName, nil
+	return graphApplyResult{opName: opName}, nil
 }
 
 // validateIncomingTombstoneExpiration bounds a peer's Delete deadline by both

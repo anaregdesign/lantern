@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -186,11 +187,7 @@ func TestApplyMutation_CausalMetadataCapacityConvergesAcrossReplicas(t *testing.
 			if entry.Seq != seq {
 				t.Fatalf("latest log entry seq = %d, want %d", entry.Seq, seq)
 			}
-			mutation, ok := entry.Op.(*pb.Mutation)
-			if !ok {
-				t.Fatalf("latest log entry type = %T, want *pb.Mutation", entry.Op)
-			}
-			return proto.Clone(mutation).(*pb.Mutation)
+			return proto.Clone(mustGraphMutation(t, entry.Op)).(*pb.Mutation)
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out reading mutation %d", seq)
 			return nil
@@ -205,6 +202,134 @@ func TestApplyMutation_CausalMetadataCapacityConvergesAcrossReplicas(t *testing.
 		clock := hlc.New(hlc.NodeID{node}, hlc.Options{})
 		return cache, log, NewLanternService(cache).WithReplication(log, clock, nil)
 	}
+
+	t.Run("effect-complete envelope for every graph arm", func(t *testing.T) {
+		now := time.Now()
+		future := timestamppb.New(now.Add(time.Hour))
+		past := timestamppb.New(now.Add(-time.Hour))
+		type effectKind uint8
+		const (
+			putEffect effectKind = iota + 1
+			addEffect
+			deleteEffect
+		)
+		tests := []struct {
+			name    string
+			op      *pb.MutationOp
+			kind    effectKind
+			indexes []uint32
+		}{
+			{"put vertex", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: "pv", Expiration: future},
+			}}}, putEffect, []uint32{0}},
+			{"put vertices with nil slot", &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{
+				Vertices: []*pb.Vertex{{Key: "pvs-live", Expiration: future}, nil, {Key: "pvs-dead", Expiration: past}},
+			}}}, putEffect, []uint32{0, 2}},
+			{"replicated put vertices", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{
+				Entries: []*pb.ReplicatedPutVertex{
+					{Outcome: &pb.ReplicatedPutVertex_Live{Live: &pb.Vertex{Key: "rpv", Expiration: future}}},
+					{Outcome: &pb.ReplicatedPutVertex_CausalBarrier{CausalBarrier: &pb.VertexCausalBarrier{Key: "rpv-dead"}}},
+				},
+			}}}, putEffect, []uint32{0, 1}},
+			{"add edge", &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+				Edge: &pb.Edge{Tail: "ae-t", Head: "ae-h", Weight: 1, Expiration: future},
+			}}}, addEffect, []uint32{0}},
+			{"add edges with nil slot", &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{
+				Edges: []*pb.Edge{{Tail: "aes-0", Head: "h", Weight: 1, Expiration: future}, nil, {Tail: "aes-2", Head: "h", Weight: 2, Expiration: future}},
+			}}}, addEffect, []uint32{0, 2}},
+			{"put edge", &pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+				Edge: &pb.Edge{Tail: "pe-t", Head: "pe-h", Weight: 1, Expiration: future},
+			}}}, putEffect, []uint32{0}},
+			{"put edges with nil slot", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{
+				Edges: []*pb.Edge{{Tail: "pes-0", Head: "h", Weight: 1, Expiration: future}, nil, {Tail: "pes-2", Head: "h", Weight: 2, Expiration: past}},
+			}}}, putEffect, []uint32{0, 2}},
+			{"replicated put edges", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{
+				Entries: []*pb.ReplicatedPutEdge{
+					{Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "rpe", Head: "live", Weight: 1, Expiration: future}}},
+					{Outcome: &pb.ReplicatedPutEdge_CausalBarrier{CausalBarrier: &pb.EdgeCausalBarrier{Tail: "rpe", Head: "dead"}}},
+				},
+			}}}, putEffect, []uint32{0, 1}},
+			{"delete vertex", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "dv"}}}, deleteEffect, []uint32{0}},
+			{"delete vertices duplicate absent", &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: &pb.DeleteVerticesRequest{
+				Keys: []string{"dvs", "dvs"},
+			}}}, deleteEffect, []uint32{0, 1}},
+			{"delete edge", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "de", Head: "h"}}}, deleteEffect, []uint32{0}},
+			{"delete edges duplicate absent", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{
+				Edges: []*pb.EdgeKey{{Tail: "des", Head: "h"}, {Tail: "des", Head: "h"}},
+			}}}, deleteEffect, []uint32{0, 1}},
+		}
+		for i, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+				log := mutationlog.New(mutationlog.Options{Capacity: 4, SubscriberBuffer: 4})
+				t.Cleanup(func() { _ = log.Close() })
+				local, remote := bytes16("local"), bytes16(fmt.Sprintf("remote-%d", i))
+				svc := NewLanternService(cache).WithTombstoneTTL(time.Hour).
+					WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+				mutation := &pb.Mutation{
+					Origin: remote[:], Seq: 1,
+					Hlc: &pb.HLCTimestamp{WallNs: now.UnixNano(), NodeId: remote[:]},
+					Op:  tc.op,
+				}
+				if tc.kind == deleteEffect {
+					mutation.TombstoneExpiration = timestamppb.New(now.Add(30 * time.Minute))
+				}
+				if err := svc.ApplyMutation(context.Background(), mutation); err != nil {
+					t.Fatalf("ApplyMutation: %v", err)
+				}
+				entry := mustMutationLogEntry(t, log, 1)
+				if projected := mustGraphMutation(t, entry.Op); !proto.Equal(projected, mutation) {
+					t.Fatalf("CDC projection changed:\n got %v\nwant %v", projected, mutation)
+				}
+				var got []uint32
+				switch effect := entry.Op.(type) {
+				case *graphPutEffectEnvelope:
+					if tc.kind != putEffect {
+						t.Fatalf("WAL effect = %T, want kind %d", entry.Op, tc.kind)
+					}
+					for _, accepted := range effect.Accepted {
+						got = append(got, accepted.Index)
+					}
+				case *graphAddEffectEnvelope:
+					if tc.kind != addEffect {
+						t.Fatalf("WAL effect = %T, want kind %d", entry.Op, tc.kind)
+					}
+					got = effect.AcceptedIndexes
+				case *graphDeleteEffectEnvelope:
+					if tc.kind != deleteEffect {
+						t.Fatalf("WAL effect = %T, want kind %d", entry.Op, tc.kind)
+					}
+					got = effect.AcceptedIndexes
+				default:
+					t.Fatalf("WAL op = %T, want effect-complete envelope", entry.Op)
+				}
+				if !slices.Equal(got, tc.indexes) {
+					t.Fatalf("accepted indexes = %v, want %v", got, tc.indexes)
+				}
+			})
+		}
+	})
+
+	t.Run("unpublishable shape rejected before graph effect", func(t *testing.T) {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		remote := bytes16("remote")
+		svc := NewLanternService(cache)
+		mutation := &pb.Mutation{
+			Origin: remote[:], Seq: 1, Hlc: newHLC(time.Now().UnixNano(), remote),
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: "must-not-apply"}, IfAbsent: true,
+			}}},
+		}
+		if err := svc.ApplyMutation(context.Background(), mutation); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("conditional relay error = %v, want InvalidArgument", err)
+		}
+		if _, ok := cache.GetVertex("must-not-apply"); ok {
+			t.Fatal("unpublishable conditional relay changed graph")
+		}
+		if got := svc.LocalSeq(remote); got != 0 {
+			t.Fatalf("unpublishable conditional relay advanced origin to %d", got)
+		}
+	})
 
 	t.Run("vertices", func(t *testing.T) {
 		cacheA, logA, svcA := newPeer(t, 0xA1, graphcache.CausalMetadataLimits{MaxVertexEntries: 1})
@@ -751,8 +876,8 @@ func TestApplyMutation_ContiguousPublicationAfterReverseRelay(t *testing.T) {
 	for seq := uint64(1); seq <= 4; seq++ {
 		select {
 		case entry := <-entries:
-			mu, ok := entry.Op.(*pb.Mutation)
-			if !ok || mu.GetSeq() != seq || entry.Seq != seq {
+			mu := mustGraphMutation(t, entry.Op)
+			if mu.GetSeq() != seq || entry.Seq != seq {
 				t.Fatalf("relay entry %d = %+v, want origin/local seq %d", seq, entry, seq)
 			}
 		case <-time.After(time.Second):
