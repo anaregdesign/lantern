@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"hash/crc32"
 	"io"
 	"math"
@@ -22,19 +23,22 @@ import (
 // compaction or whole-file capacity policy.
 // It provides durable bytes, not application recovery: a restored server must
 // replay the complete mutation envelope into graph, receipts, origin state,
-// and the in-memory Log before serving. Production does not wire FileWAL yet.
+// and the in-memory Log before serving. Production receipt runtimes retain the
+// exact leased FileWAL and must not reopen its mutating path for live evidence.
 // The caller must ensure no other process writes the path. A production owner
 // can hold AcquireFileWALLease across all audit, replay, and append passes.
 type FileWAL struct {
-	mu       sync.Mutex
-	file     fileWALWriter
-	encode   func(MutationOp) ([]byte, error)
-	tip      *FileWALTipJournal
-	chain    [sha256.Size]byte
-	lastSeq  uint64
-	offset   int64
-	unusable bool
-	closed   bool
+	mu        sync.Mutex
+	file      fileWALWriter
+	encode    func(MutationOp) ([]byte, error)
+	tip       *FileWALTipJournal
+	path      string
+	rawPrefix hash.Hash
+	chain     [sha256.Size]byte
+	lastSeq   uint64
+	offset    int64
+	unusable  bool
+	closed    bool
 }
 
 type fileWALWriter interface {
@@ -53,13 +57,32 @@ const (
 var fileWALCRC = crc32.MakeTable(crc32.Castagnoli)
 
 var (
-	ErrFileWALCorrupt  = errors.New("mutationlog: FileWAL is corrupt")
-	ErrFileWALTornTail = errors.New("mutationlog: FileWAL has a torn tail")
-	ErrFileWALSequence = errors.New("mutationlog: FileWAL sequence is not contiguous")
-	ErrFileWALTooLarge = errors.New("mutationlog: FileWAL record exceeds size limit")
-	ErrFileWALUnusable = errors.New("mutationlog: FileWAL write result is indeterminate")
-	ErrFileWALClosed   = errors.New("mutationlog: FileWAL is closed")
+	ErrFileWALCorrupt    = errors.New("mutationlog: FileWAL is corrupt")
+	ErrFileWALTornTail   = errors.New("mutationlog: FileWAL has a torn tail")
+	ErrFileWALSequence   = errors.New("mutationlog: FileWAL sequence is not contiguous")
+	ErrFileWALTooLarge   = errors.New("mutationlog: FileWAL record exceeds size limit")
+	ErrFileWALUnusable   = errors.New("mutationlog: FileWAL write result is indeterminate")
+	ErrFileWALClosed     = errors.New("mutationlog: FileWAL is closed")
+	ErrFileWALProvenance = errors.New("mutationlog: FileWAL provenance differs")
 )
+
+// FileWALTipWitness is an immutable exact digest of one live, synced WAL tip.
+// It is returned only while the WAL, its verified tip journal, and the owning
+// Log agree on the same local sequence.
+type FileWALTipWitness struct {
+	Seq         uint64
+	Offset      int64
+	SHA256      [sha256.Size]byte
+	ChainSHA256 [sha256.Size]byte
+}
+
+// FileWALTipProvenance binds one Log to the exact FileWAL object and canonical
+// path installed at construction. It exposes no append surface.
+type FileWALTipProvenance struct {
+	log  *Log
+	wal  *FileWAL
+	path string
+}
 
 // CreateFileWAL creates a brand-new file; it never resumes an existing one.
 // A successful call syncs both the version header and its parent directory,
@@ -69,6 +92,10 @@ var (
 func CreateFileWAL(path string, encode func(MutationOp) ([]byte, error)) (*FileWAL, error) {
 	if encode == nil {
 		return nil, errors.New("mutationlog: FileWAL encoder is nil")
+	}
+	canonicalPath, err := canonicalFileWALPath(path)
+	if err != nil {
+		return nil, err
 	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -101,7 +128,14 @@ func CreateFileWAL(path string, encode func(MutationOp) ([]byte, error)) (*FileW
 		return nil, fmt.Errorf("mutationlog: close FileWAL directory: %w", dirCloseErr)
 	}
 	closeOnError = false
-	return &FileWAL{file: f, encode: encode, chain: fileWALChainSeed(), offset: int64(len(fileWALMagic))}, nil
+	return &FileWAL{
+		file:      f,
+		encode:    encode,
+		path:      canonicalPath,
+		rawPrefix: newFileWALPrefixHash(),
+		chain:     fileWALChainSeed(),
+		offset:    int64(len(fileWALMagic)),
+	}, nil
 }
 
 // ResumeFileWAL opens an existing, exclusively owned file for append only
@@ -124,6 +158,10 @@ func ResumeFileWAL(path string, encode func(MutationOp) ([]byte, error), decode 
 	if encode == nil || decode == nil || visit == nil {
 		return nil, errors.New("mutationlog: FileWAL encoder, decoder, and visitor are required")
 	}
+	canonicalPath, err := canonicalFileWALPath(path)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
 	if err != nil {
 		return nil, err
@@ -141,7 +179,7 @@ func ResumeFileWAL(path string, encode func(MutationOp) ([]byte, error), decode 
 	if !initial.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: not a regular file", ErrFileWALCorrupt)
 	}
-	lastSeq, offset, chain, err := replayOpenedFileWAL(f, decode, visit)
+	lastSeq, offset, rawPrefix, chain, err := replayOpenedFileWAL(f, decode, visit)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +191,15 @@ func ResumeFileWAL(path string, encode func(MutationOp) ([]byte, error), decode 
 		return nil, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
 	}
 	closeOnError = false
-	return &FileWAL{file: f, encode: encode, chain: chain, lastSeq: lastSeq, offset: offset}, nil
+	return &FileWAL{
+		file:      f,
+		encode:    encode,
+		path:      canonicalPath,
+		rawPrefix: rawPrefix,
+		chain:     chain,
+		lastSeq:   lastSeq,
+		offset:    offset,
+	}, nil
 }
 
 // BindTipJournal installs a verified journal at this WAL's exact full replay
@@ -165,11 +211,109 @@ func (w *FileWAL) BindTipJournal(journal *FileWALTipJournal) error {
 	if journal == nil || w.tip != nil || w.closed || w.unusable {
 		return ErrFileWALUnusable
 	}
-	if err := journal.bind(w.lastSeq, w.chain); err != nil {
+	if err := journal.bind(w.path, w.lastSeq, w.chain); err != nil {
 		return err
 	}
 	w.tip = journal
 	return nil
+}
+
+// TipWitness returns the exact current durable WAL prefix without reopening
+// or inspecting the mutating path. expectedSeq must equal the live FileWAL
+// frontier, and the bound tip journal must still certify the same path,
+// sequence, and rolling chain.
+func (w *FileWAL) TipWitness(expectedSeq uint64) (FileWALTipWitness, error) {
+	if w == nil {
+		return FileWALTipWitness{}, ErrFileWALUnusable
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return FileWALTipWitness{}, ErrFileWALClosed
+	}
+	if w.unusable || w.rawPrefix == nil || w.path == "" {
+		return FileWALTipWitness{}, ErrFileWALUnusable
+	}
+	if w.tip == nil {
+		return FileWALTipWitness{}, ErrFileWALTipUnverified
+	}
+	if expectedSeq != w.lastSeq {
+		return FileWALTipWitness{}, fmt.Errorf(
+			"%w: requested tip %d differs from current %d",
+			ErrFileWALSequence,
+			expectedSeq,
+			w.lastSeq,
+		)
+	}
+	if err := w.tip.certifyBound(w.path, w.lastSeq, w.chain); err != nil {
+		return FileWALTipWitness{}, err
+	}
+	return FileWALTipWitness{
+		Seq:         w.lastSeq,
+		Offset:      w.offset,
+		SHA256:      digestFileWALPrefix(w.rawPrefix),
+		ChainSHA256: w.chain,
+	}, nil
+}
+
+// FileWALTipProvenance captures the exact FileWAL installed in this Log after
+// proving that the Log, WAL, canonical path, and durable tip all agree.
+func (l *Log) FileWALTipProvenance(walPath string) (*FileWALTipProvenance, error) {
+	if l == nil {
+		return nil, ErrFileWALProvenance
+	}
+	canonicalPath, err := canonicalFileWALPath(walPath)
+	if err != nil {
+		return nil, err
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	wal, ok := l.wal.(*FileWAL)
+	if !ok || wal == nil || wal.path != canonicalPath {
+		return nil, errors.Join(ErrFileWALProvenance, ErrFileWALTipBinding)
+	}
+	provenance := &FileWALTipProvenance{log: l, wal: wal, path: canonicalPath}
+	if _, err := provenance.witnessLocked(canonicalPath); err != nil {
+		return nil, err
+	}
+	return provenance, nil
+}
+
+// TipWitness samples the owning Log and FileWAL under their normal lock
+// order. The caller supplies its currently leased canonical path, preventing
+// a provenance handle from being reused for another lease owner.
+func (p *FileWALTipProvenance) TipWitness(walPath string) (FileWALTipWitness, error) {
+	if p == nil || p.log == nil || p.wal == nil {
+		return FileWALTipWitness{}, ErrFileWALProvenance
+	}
+	canonicalPath, err := canonicalFileWALPath(walPath)
+	if err != nil {
+		return FileWALTipWitness{}, err
+	}
+	p.log.mu.RLock()
+	defer p.log.mu.RUnlock()
+	return p.witnessLocked(canonicalPath)
+}
+
+func (p *FileWALTipProvenance) witnessLocked(canonicalPath string) (FileWALTipWitness, error) {
+	if p.log.closed {
+		return FileWALTipWitness{}, ErrClosed
+	}
+	if p.log.unusableErr != nil {
+		return FileWALTipWitness{}, p.log.unusableErr
+	}
+	if p.log.legacyWALUncertain {
+		return FileWALTipWitness{}, ErrLegacyWALUncertain
+	}
+	wal, ok := p.log.wal.(*FileWAL)
+	if !ok || wal != p.wal || p.path != canonicalPath || p.wal.path != canonicalPath {
+		return FileWALTipWitness{}, ErrFileWALProvenance
+	}
+	expectedSeq := uint64(0)
+	if p.log.hasEntries {
+		expectedSeq = p.log.lastSeq
+	}
+	return p.wal.TipWitness(expectedSeq)
 }
 
 // Write implements WAL. A nil return means the full frame and file have been
@@ -219,6 +363,7 @@ func (w *FileWAL) Write(entry Entry) error {
 			return fmt.Errorf("%w: record FileWAL tip: %w", ErrFileWALUnusable, err)
 		}
 	}
+	_, _ = w.rawPrefix.Write(frame)
 	w.lastSeq = entry.Seq
 	w.chain = nextChain
 	w.offset += int64(len(frame))
@@ -272,47 +417,67 @@ func ReplayFileWAL(path string, decode func([]byte) (MutationOp, error), visit f
 		return err
 	}
 	defer f.Close()
-	_, _, _, err = replayOpenedFileWAL(f, decode, visit)
+	_, _, _, _, err = replayOpenedFileWAL(f, decode, visit)
 	return err
 }
 
-func replayOpenedFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, int64, [sha256.Size]byte, error) {
+func replayOpenedFileWAL(f *os.File, decode func([]byte) (MutationOp, error), visit func(Entry) error) (uint64, int64, hash.Hash, [sha256.Size]byte, error) {
 	if _, err := scanFileWAL(f, nil, nil); err != nil {
-		return 0, 0, [sha256.Size]byte{}, err
+		return 0, 0, nil, [sha256.Size]byte{}, err
 	}
 	validatedOffset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return 0, 0, [sha256.Size]byte{}, err
+		return 0, 0, nil, [sha256.Size]byte{}, err
 	}
 	if _, err := scanFileWAL(f, decode, nil); err != nil {
-		return 0, 0, [sha256.Size]byte{}, err
+		return 0, 0, nil, [sha256.Size]byte{}, err
 	}
 	decodedOffset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return 0, 0, [sha256.Size]byte{}, err
+		return 0, 0, nil, [sha256.Size]byte{}, err
 	}
 	if decodedOffset != validatedOffset {
-		return 0, 0, [sha256.Size]byte{}, fmt.Errorf("%w: file size changed during decode", ErrFileWALCorrupt)
+		return 0, 0, nil, [sha256.Size]byte{}, fmt.Errorf("%w: file size changed during decode", ErrFileWALCorrupt)
 	}
+	rawPrefix := newFileWALPrefixHash()
 	chain := fileWALChainSeed()
 	lastSeq, err := scanFileWALFrames(f, decode, visit, func(_ Entry, header, body []byte) error {
+		_, _ = rawPrefix.Write(header)
+		_, _ = rawPrefix.Write(body)
 		chain = fileWALChainNext(chain, header, body)
 		return nil
 	})
 	if err != nil {
-		return 0, 0, [sha256.Size]byte{}, err
+		return 0, 0, nil, [sha256.Size]byte{}, err
 	}
 	restoredOffset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return 0, 0, [sha256.Size]byte{}, err
+		return 0, 0, nil, [sha256.Size]byte{}, err
 	}
 	if restoredOffset != validatedOffset {
-		return 0, 0, [sha256.Size]byte{}, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
+		return 0, 0, nil, [sha256.Size]byte{}, fmt.Errorf("%w: file size changed during restore", ErrFileWALCorrupt)
 	}
-	return lastSeq, restoredOffset, chain, nil
+	return lastSeq, restoredOffset, rawPrefix, chain, nil
 }
 
 func fileWALChainSeed() [sha256.Size]byte { return sha256.Sum256([]byte(fileWALMagic)) }
+
+func newFileWALPrefixHash() hash.Hash {
+	h := sha256.New()
+	_, _ = h.Write([]byte(fileWALMagic))
+	return h
+}
+
+func canonicalFileWALPath(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("mutationlog: FileWAL path is empty")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("mutationlog: resolve FileWAL path: %w", err)
+	}
+	return filepath.Clean(abs), nil
+}
 
 func fileWALChainNext(previous [sha256.Size]byte, header, body []byte) [sha256.Size]byte {
 	h := sha256.New()

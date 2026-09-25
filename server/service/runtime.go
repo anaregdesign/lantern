@@ -341,7 +341,8 @@ func certifyReceiptWALServingRuntime(
 ) (_ *ServingRuntime, err error) {
 	if candidate == nil || candidate.state == nil || candidate.state.graph == nil ||
 		candidate.state.receipts == nil || candidate.state.origins == nil ||
-		candidate.state.log == nil || generation == ([16]byte{}) {
+		candidate.state.log == nil || candidate.walProvenance == nil ||
+		candidate.lease == nil || generation == ([16]byte{}) {
 		if candidate != nil {
 			_ = candidate.Close()
 		}
@@ -410,6 +411,45 @@ func (r *ServingRuntime) GraphCache() *graphcache.GraphCache[string, *pb.Vertex]
 // It does not imply that public receipt capability or status is enabled.
 func (r *ServingRuntime) DurableReceiptWAL() bool {
 	return r != nil && r.receipt != nil
+}
+
+func (r *ServingRuntime) receiptWALTipWitness(
+	primary *LanternService,
+	expectedSeq uint64,
+) (mutationlog.FileWALTipWitness, error) {
+	if r == nil || r.receipt == nil || r.receipt.owner == nil {
+		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness is unavailable")
+	}
+	if primary == nil || primary.runtime != r || primary.cache != r.graph ||
+		primary.log != r.log || primary.clock != r.clock ||
+		primary.origins != r.origins || primary.receiptStore != r.receipt.store {
+		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness service differs from runtime")
+	}
+	owner, ok := r.owner.(*receiptWALOwnedCandidate)
+	if !ok || owner != r.receipt.owner || owner.state == nil ||
+		owner.state.graph != r.graph || owner.state.log != r.log ||
+		owner.state.origins != r.origins || owner.state.receipts != r.receipt.store ||
+		owner.walProvenance == nil || owner.lease == nil {
+		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness provenance differs from runtime")
+	}
+	var witness mutationlog.FileWALTipWitness
+	err := owner.lease.WithPath(func(canonicalPath string) error {
+		var witnessErr error
+		witness, witnessErr = owner.walProvenance.TipWitness(canonicalPath)
+		return witnessErr
+	})
+	if err != nil {
+		return mutationlog.FileWALTipWitness{}, fmt.Errorf("service: durable receipt WAL witness: %w", err)
+	}
+	if witness.Seq != expectedSeq {
+		return mutationlog.FileWALTipWitness{}, fmt.Errorf(
+			"service: durable receipt WAL witness: %w: captured seq %d differs from WAL seq %d",
+			mutationlog.ErrFileWALSequence,
+			expectedSeq,
+			witness.Seq,
+		)
+	}
+	return witness, nil
 }
 
 // MutationLogStats samples the exact Log installed into both service surfaces.

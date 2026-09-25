@@ -21,12 +21,13 @@ import (
 // installs it only after binding endpoint-generation metadata and restoring
 // the HLC; a matching tip still cannot certify an archive cut on its own.
 type receiptWALOwnedCandidate struct {
-	state    *receiptWALRecoveryCandidate
-	logOwner io.Closer
-	journal  *mutationreceipt.ClockJournal
-	tip      *mutationlog.FileWALTipJournal
-	lease    *mutationlog.FileWALLease
-	baseline receiptBaselineWALScan
+	state         *receiptWALRecoveryCandidate
+	logOwner      io.Closer
+	journal       *mutationreceipt.ClockJournal
+	tip           *mutationlog.FileWALTipJournal
+	lease         *mutationlog.FileWALLease
+	walProvenance *mutationlog.FileWALTipProvenance
+	baseline      receiptBaselineWALScan
 }
 
 // Close stops appends, closes both journals, then releases path ownership.
@@ -207,6 +208,10 @@ func openLeasedReceiptWALCandidateInternal(
 		}
 		state.log = liveLog
 	}
+	walProvenance, err := state.log.FileWALTipProvenance(lease.Path())
+	if err != nil {
+		return nil, fmt.Errorf("receipt WAL live provenance: %w", err)
+	}
 	if codec != nil {
 		err = lease.WithPath(func(canonicalPath string) error {
 			return (receiptBaselineSidecarStore{walPath: canonicalPath}).cleanup(baseline.marker.Digest)
@@ -216,7 +221,8 @@ func openLeasedReceiptWALCandidateInternal(
 		}
 	}
 	return &receiptWALOwnedCandidate{
-		state: state, logOwner: logOwner, journal: journal, tip: tip, lease: lease, baseline: baseline,
+		state: state, logOwner: logOwner, journal: journal, tip: tip, lease: lease,
+		walProvenance: walProvenance, baseline: baseline,
 	}, nil
 }
 

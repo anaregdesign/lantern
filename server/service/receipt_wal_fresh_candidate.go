@@ -104,12 +104,16 @@ func createLeasedReceiptWALCandidate(
 	}
 	opts.WAL = wal
 	log = mutationlog.New(opts)
+	walProvenance, err := log.FileWALTipProvenance(lease.Path())
+	if err != nil {
+		return nil, fmt.Errorf("receipt WAL fresh provenance: %w", err)
+	}
 	state := &receiptWALRecoveryCandidate{
 		graph: graph, receipts: receipts, origins: newOriginStateTracker(), log: log,
 	}
 	return &receiptWALOwnedCandidate{
 		state: state, logOwner: &receiptFreshWALLogOwner{log: log, wal: wal},
-		journal: journal, tip: tip, lease: lease,
+		journal: journal, tip: tip, lease: lease, walProvenance: walProvenance,
 	}, nil
 }
 

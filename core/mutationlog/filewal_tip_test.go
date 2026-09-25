@@ -179,6 +179,64 @@ func TestFileWALTipJournalFailurePoisonsWAL(t *testing.T) {
 	if _, _, verified := journal.Frontier(); verified {
 		t.Fatal("failed journal remains verified")
 	}
+	if witness, err := wal.TipWitness(0); witness != (FileWALTipWitness{}) ||
+		!errors.Is(err, ErrFileWALUnusable) {
+		t.Fatalf("failed journal exposed witness = %+v, %v", witness, err)
+	}
+}
+
+func TestFileWALTipJournalRejectsDifferentWALBinding(t *testing.T) {
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "a.wal")
+	pathB := filepath.Join(dir, "b.wal")
+	leaseA, err := AcquireFileWALLease(pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaseA.Close()
+	leaseB, err := AcquireFileWALLease(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaseB.Close()
+	walA, err := CreateFileWAL(leaseA.Path(), fileWALStringEncode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer walA.Close()
+	walB, err := CreateFileWAL(leaseB.Path(), fileWALStringEncode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer walB.Close()
+	binding := sha256.Sum256([]byte("same epoch and policy"))
+	tipA, err := CreateFileWALTipJournal(leaseA.Path(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tipA.Close()
+	tipB, err := CreateFileWALTipJournal(leaseB.Path(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tipB.Close()
+	for path, tip := range map[string]*FileWALTipJournal{
+		leaseA.Path(): tipA,
+		leaseB.Path(): tipB,
+	} {
+		if err := tip.VerifyAndCatchUp(path, fileWALStringDecode, fileWALCutValidEntry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := walA.BindTipJournal(tipB); !errors.Is(err, ErrFileWALTipBinding) {
+		t.Fatalf("different-path tip binding = %v", err)
+	}
+	if err := walA.BindTipJournal(tipA); err != nil {
+		t.Fatalf("own-path tip binding after rejection: %v", err)
+	}
+	if witness, err := walA.TipWitness(0); err != nil || witness.Seq != 0 {
+		t.Fatalf("own-path witness = %+v, %v", witness, err)
+	}
 }
 
 func TestFileWALTipJournalFailurePreventsLogPublication(t *testing.T) {
