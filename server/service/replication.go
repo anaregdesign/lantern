@@ -102,6 +102,22 @@ func graphMutationFromLog(op mutationlog.MutationOp) (*pb.Mutation, bool) {
 	}
 }
 
+func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
+	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
+		_, err := acceptedReceiptEdgeDeleteKeys(m)
+		return true, err
+	case *pb.MutationOp_ReplicatedReceiptVertexPut:
+		_, err := acceptedReceiptVertexPutKeys(m)
+		return true, err
+	case *pb.MutationOp_ReplicatedReceiptVertexDelete:
+		_, err := acceptedReceiptVertexDeleteKeys(m)
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
 // SearchConfigFingerprintProvider supplies the search contract carried by
 // PeerStatus. *LanternService satisfies it with the same fingerprint exposed
 // through GetServerStatus.
@@ -364,12 +380,12 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				return connect.NewError(connect.CodeInternal, fmt.Errorf(
 					"replication: malformed mutation log entry at seq=%d", entry.Seq))
 			}
-			if _, receipt := mu.GetOp().GetOp().(*pb.MutationOp_ReplicatedReceiptEdgeDelete); receipt {
+			if receipt, err := validateSubscribeReceiptEnvelope(mu); receipt {
 				if !req.GetAcceptReceiptEnvelopes() {
 					return connect.NewError(connect.CodeInvalidArgument,
 						errors.New("full Subscribe consumer must accept receipt envelopes before receiving them"))
 				}
-				if _, err := acceptedReceiptEdgeDeleteKeys(mu); err != nil {
+				if err != nil {
 					return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: malformed receipt envelope at seq=%d: %w", entry.Seq, err))
 				}
 			}

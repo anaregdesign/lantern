@@ -83,6 +83,43 @@ func committedTestReceipts(intents []Intent, results [][]byte, retention time.Du
 	return receipts
 }
 
+func TestStoreReplaceReservedResults(t *testing.T) {
+	s := testStore(t, 2, 1000)
+	group := GroupID{0x44}
+	intents := []Intent{
+		testIntent(t, 1, testStart, group, 0, 2),
+		testIntent(t, 2, testStart, group, 1, 2),
+	}
+	tx, err := s.Begin(testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if classification, _, err := tx.Classify(intents); err != nil || classification != Fresh {
+		t.Fatalf("Classify = (%v, %v), want Fresh", classification, err)
+	}
+	if err := tx.Reserve([][]byte{{0}, {0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.ReplaceReservedResults([][]byte{{1}, {2}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.ReplaceReservedResults([][]byte{{1}, {2, 3}}); !errors.Is(err, ErrInvalidBatch) {
+		t.Fatalf("length-changing replacement = %v, want ErrInvalidBatch", err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	receipts, err := tx.StagedReceipts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(receipts[0].Result) != string([]byte{1}) || string(receipts[1].Result) != string([]byte{2}) {
+		t.Fatalf("staged results = %v, want [[1] [2]]", receipts)
+	}
+	tx.Commit()
+}
+
 func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {
 	s := testStore(t, 2, 1000)
 	group := GroupID{8}

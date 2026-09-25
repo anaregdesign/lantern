@@ -119,6 +119,12 @@ func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store)
 	retired := s.receiptRetiredCatalog
 	coordinator.retired = retired
 	s.replicationCutMu.Unlock()
+	if _, err := newVertexPutReceiptCoordinator(s, store); err != nil {
+		return nil, err
+	}
+	if _, err := newVertexDeleteReceiptCoordinator(s, store); err != nil {
+		return nil, err
+	}
 	return &ReceiptWholeStateSource{
 		owner:         s,
 		store:         store,

@@ -1124,6 +1124,8 @@ enum MutationReceiptState {
 message ReceiptResult {
   oneof result {
     bool delete_edge_existed = 1;
+    PutOutcome put_vertex_outcome = 2;
+    bool delete_vertex_existed = 3;
   }
 }
 

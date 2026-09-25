@@ -98,9 +98,11 @@ type LanternService struct {
 	// receiptStore binds the private receipt coordinator and archive source to
 	// one Store instance. Protected by replicationCutMu; a second Store with
 	// the same policy still cannot substitute an incomplete receipt image.
-	receiptStore                 *mutationreceipt.Store
-	receiptRetiredCatalog        *retiredReceiptCatalogSlot
-	receiptEdgeDeleteCoordinator *edgeDeleteReceiptCoordinator
+	receiptStore                   *mutationreceipt.Store
+	receiptRetiredCatalog          *retiredReceiptCatalogSlot
+	receiptEdgeDeleteCoordinator   *edgeDeleteReceiptCoordinator
+	receiptVertexPutCoordinator    *vertexPutReceiptCoordinator
+	receiptVertexDeleteCoordinator *vertexDeleteReceiptCoordinator
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the

@@ -57,18 +57,25 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}
-	var receiptEnvelope *edgeDeleteReceiptEnvelope
-	if _, receipt := m.GetOp().GetOp().(*pb.MutationOp_ReplicatedReceiptEdgeDelete); receipt {
-		var err error
-		receiptEnvelope, err = decodeReceiptEdgeDeleteMutation(m)
-		if err != nil {
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication receipt envelope: %w", err))
-		}
-	} else if s.receiptStore != nil {
+	var receiptEnvelope receiptMutationEnvelope
+	var receiptErr error
+	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
+		receiptEnvelope, receiptErr = decodeReceiptEdgeDeleteMutation(m)
+	case *pb.MutationOp_ReplicatedReceiptVertexPut:
+		receiptEnvelope, receiptErr = decodeReceiptVertexPutMutation(m)
+	case *pb.MutationOp_ReplicatedReceiptVertexDelete:
+		receiptEnvelope, receiptErr = decodeReceiptVertexDeleteMutation(m)
+	}
+	if receiptErr != nil {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("replication receipt envelope: %w", receiptErr))
+	}
+	if receiptEnvelope == nil && s.receiptStore != nil {
 		if err := s.validateDurableGraphMutationPreflight(m); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication durable preflight: %w", err))
 		}
-	} else {
+	} else if receiptEnvelope == nil {
 		if err := validateSyntheticAddMutationBounds(m); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 		}

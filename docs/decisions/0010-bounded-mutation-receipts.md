@@ -288,7 +288,10 @@ adds a versioned kind discriminator for graph-only `Mutation`, private
 [graph Delete effect](../../server/service/graph_delete_effect_wal.go) and
 [graph Put effect](../../server/service/graph_put_effect_wal.go) and
 [graph Add effect](../../server/service/graph_add_effect_wal.go) envelopes,
-or the receipt Edge Delete envelope. Its ordinary graph kind
+the receipt Edge Delete envelope, or the private receipt Vertex Put and exact
+Vertex Delete envelopes. Each Vertex receipt envelope carries the complete
+ordered original intent and immutable request-index-aligned result separately
+from the receiver-local accepted graph projection. Its ordinary graph kind
 encodes protobuf plus an ordered sidecar for nil repeated-message slots,
 which protobuf otherwise turns into empty messages on decode. The decoder
 checks the exact kind, version, lengths, sidecar indexes, supported oneof
@@ -315,7 +318,7 @@ CDC payloads, and nil-slot wire indexes do not expose this private durability
 representation. This boundary does not enable a receipt write, receipt status,
 or receipt capability.
 
-Union version 3 retains `Mutation.tombstone_expiration` when graph tombstone
+Union version 4 retains `Mutation.tombstone_expiration` when graph tombstone
 retention is enabled: each graph-only exact Vertex or Edge Delete then carries
 the origin's absolute D4 deadline. Origin handlers use one sampled deadline
 for the graph effect and published mutation; follower apply uses that value
@@ -335,14 +338,15 @@ Subscribe/relay projection and stores strictly increasing accepted request
 indexes separately. `Existed=false` is insufficient: an accepted absent-key
 tombstone and a Delete rejected by newer causal state both report false.
 Prefix origins already publish only exact accepted victims, so the sidecar
-indexes refer to that exact batch, never a predicate. The decoder rejects
-old version 2 graph Deletes and version 3 ordinary-graph-kind Deletes without
-this sidecar. An expired absolute deadline remains valid historical evidence
-and is never replaced with `now + D4` during decode. The checked GraphCache batch APIs return response outcomes and accepted
-indexes from one lock. Every enabled local and remote graph Delete path now
-publishes this private kind; singular facades, plural operations, and prefix
-operations all retain exact request positions. A WAL failure keeps the same
-immutable envelope for append-only repair without reapplying graph effects.
+indexes refer to that exact batch, never a predicate. The version 4 decoder
+rejects all version 2 and version 3 union payloads outright; there is no dual
+reader or fallback path. An expired absolute deadline remains valid historical
+evidence and is never replaced with `now + D4` during decode. The checked
+GraphCache batch APIs return response outcomes and accepted indexes from one
+lock. Every enabled local and remote graph Delete path now publishes this
+private kind; singular facades, plural operations, and prefix operations all
+retain exact request positions. A WAL failure keeps the same immutable envelope
+for append-only repair without reapplying graph effects.
 The detached
 recovery candidate replays only accepted exact Vertex/Edge identities in
 request order, preserving duplicates, accepted absent-key floors, and the
@@ -398,17 +402,17 @@ kind, but it authorizes neither durable offline Add nor an absent-ID status
 answer.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
-replay. The receipt kind retains the existing LRED validation and its 8 MiB
-body cap under the FileWAL frame's
-32 MiB bound. The `FileWAL` payload decoder cannot see frame metadata, so a
+replay. Each receipt kind retains strict envelope validation and an 8 MiB body
+cap under the FileWAL frame's 32 MiB bound. The `FileWAL` payload decoder cannot
+see frame metadata, so a
 replay/restore visitor must additionally validate the frame HLC against the
 decoded graph or receipt HLC before applying state. The union is bound only to
 the opt-in durable runtime; public receipt capability remains disabled.
-Production activation still needs a WAL schema migration policy across future
-protobuf changes. The private graph kind pins the reachable `Mutation` schema
-and rejects an unreviewed field change under union v3. A production migration
-must retain a decoder for prior WAL versions before any schema change is
-allowed on a receipt-enabled node.
+Before v1, a private WAL schema change replaces the union version: the graph
+kind pins the reachable `Mutation` schema, rejects an unreviewed field change
+under union v4, and old union versions fail closed rather than gaining aliases,
+dual readers, or compatibility fallback. Any future compatibility policy is a
+v1 activation decision, not a prerequisite for changing this private format.
 The private [read-only mixed-WAL audit](../../server/service/receipt_wal_recovery.go)
 checks a complete, genesis-based FileWAL for frame/payload HLC agreement,
 contiguous per-origin sequences, one configured epoch/policy, and a bounded

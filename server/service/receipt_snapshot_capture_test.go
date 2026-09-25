@@ -177,6 +177,103 @@ func TestReceiptWholeStateCaptureBlocksHeldWALAndCopiesReceipts(t *testing.T) {
 	}
 }
 
+func TestReceiptWholeStateCapturePreservesVertexReceiptKindsAndOpaqueResults(t *testing.T) {
+	policy := receiptCapturePolicy(mutationreceipt.Epoch{0x61})
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+	type receiptCase struct {
+		kind   mutationreceipt.Kind
+		result []byte
+		seed   byte
+	}
+	cases := []receiptCase{
+		{kind: mutationreceipt.PutVertex, result: []byte{1, 0, 0xff, 7}, seed: 0x11},
+		{kind: mutationreceipt.DeleteVertex, result: []byte{0, 0xfe, 9}, seed: 0x12},
+	}
+	for _, tc := range cases {
+		id, err := mutationreceipt.NewID(policy.Epoch, issued, [24]byte{tc.seed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		intent := mutationreceipt.Intent{
+			ID: id, Group: mutationreceipt.GroupID{tc.seed}, Count: 1,
+			Kind: tc.kind, Digest: mutationreceipt.IntentDigest([]byte{tc.seed}),
+		}
+		tx, err := store.Begin(issued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		classification, _, err := tx.Classify([]mutationreceipt.Intent{intent})
+		if err != nil || classification != mutationreceipt.Fresh {
+			tx.Abort()
+			t.Fatalf("classify %v = %v, %v", tc.kind, classification, err)
+		}
+		if err := tx.Reserve([][]byte{tc.result}); err != nil {
+			tx.Abort()
+			t.Fatal(err)
+		}
+		if err := tx.Stage(); err != nil {
+			tx.Abort()
+			t.Fatal(err)
+		}
+		tx.Commit()
+	}
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 4})
+	t.Cleanup(func() { _ = log.Close() })
+	service := NewLanternService(cache).
+		WithReplication(log, hlc.New(hlc.NodeID{0x62}, hlc.Options{}), nil).
+		WithTombstoneTTL(time.Hour)
+	source, err := NewReceiptWholeStateSource(service, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := source.Capture(context.Background(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.Receipts.Receipts) != len(cases) {
+		t.Fatalf("captured receipt rows = %d, want %d", len(capture.Receipts.Receipts), len(cases))
+	}
+	byKind := make(map[mutationreceipt.Kind][]byte, len(cases))
+	for _, receipt := range capture.Receipts.Receipts {
+		byKind[receipt.Kind] = receipt.Result
+	}
+	for _, tc := range cases {
+		if got := byKind[tc.kind]; !bytes.Equal(got, tc.result) {
+			t.Fatalf("captured %v result = %x, want %x", tc.kind, got, tc.result)
+		}
+	}
+	restored, err := mutationreceipt.NewFromSnapshot(capture.Policy, capture.Receipts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := restored.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, receipt := range roundTrip.Receipts {
+		if want := byKind[receipt.Kind]; !bytes.Equal(receipt.Result, want) {
+			t.Fatalf("restored %v result = %x, want %x", receipt.Kind, receipt.Result, want)
+		}
+	}
+	capture.Receipts.Receipts[0].Result[0] ^= 0xff
+	again, err := source.Capture(context.Background(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, receipt := range again.Receipts.Receipts {
+		for _, tc := range cases {
+			if receipt.Kind == tc.kind && !bytes.Equal(receipt.Result, tc.result) {
+				t.Fatalf("captured %v result aliases previous Snapshot: %x", tc.kind, receipt.Result)
+			}
+		}
+	}
+}
+
 func TestReceiptWholeStateCaptureReconcilesStoreClockIntoGraphCutoff(t *testing.T) {
 	const cutoffMillis int64 = 1_000
 	policy := mutationreceipt.Config{

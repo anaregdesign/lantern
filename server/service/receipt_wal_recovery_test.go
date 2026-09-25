@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"os"
@@ -173,6 +174,139 @@ func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("Vertex receipt families", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "vertex-receipts.wal")
+		config := mutationreceipt.Config{
+			Epoch: mutationreceipt.Epoch{0x72}, Retention: time.Hour,
+			MaxEntries: 16, MaxBytes: 1 << 20,
+		}
+		store, err := mutationreceipt.New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log := mutationlog.New(mutationlog.Options{Capacity: 16, SubscriberBuffer: 4, WAL: wal})
+		graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+		service := NewLanternService(graph).
+			WithReplication(log, hlc.New(hlc.NodeID{0x73}, hlc.Options{}), nil).
+			WithTombstoneTTL(time.Hour)
+		putCoordinator, err := newVertexPutReceiptCoordinator(service, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deleteCoordinator, err := newVertexDeleteReceiptCoordinator(service, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		put := receiptVertexPutTestCall(t, config.Epoch, 0x11, false,
+			&pb.Vertex{
+				Key: "live", Value: &pb.Vertex_String_{String_: "value"},
+				Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+			},
+			&pb.Vertex{
+				Key: "born-expired", Value: &pb.Vertex_String_{String_: "expired"},
+				Expiration: timestamppb.New(time.Now().Add(-time.Minute)),
+			},
+		)
+		if _, err := putCoordinator.Commit(context.Background(), put); err != nil {
+			t.Fatal(err)
+		}
+		receiptOnly := receiptVertexPutTestCall(t, config.Epoch, 0x12, true,
+			&pb.Vertex{Key: "live", Value: &pb.Vertex_String_{String_: "blocked"}})
+		if response, err := putCoordinator.Commit(context.Background(), receiptOnly); err != nil ||
+			!reflect.DeepEqual(response.GetOutcomes(),
+				[]pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET}) {
+			t.Fatalf("receipt-only Put = (%v, %v)", response, err)
+		}
+		deleteCall := receiptVertexDeleteTestCall(t, config.Epoch, 0x13, "live", "absent")
+		if response, err := deleteCoordinator.Commit(context.Background(), deleteCall); err != nil ||
+			!reflect.DeepEqual(response.GetExisted(), []bool{true, false}) {
+			t.Fatalf("exact Delete = (%v, %v)", response, err)
+		}
+		before := log.RetainedEntries()
+		if len(before) != 3 ||
+			len(before[1].Op.(*vertexPutReceiptEnvelope).Accepted) != 0 {
+			t.Fatalf("origin WAL did not retain receipt-only position: %+v", before)
+		}
+		deleteHLC := before[2].HLC
+		wantReceipts := append([]mutationreceipt.Receipt{},
+			before[0].Op.(*vertexPutReceiptEnvelope).Receipts...)
+		wantReceipts = append(wantReceipts,
+			before[1].Op.(*vertexPutReceiptEnvelope).Receipts...)
+		wantReceipts = append(wantReceipts,
+			before[2].Op.(*vertexDeleteReceiptEnvelope).Receipts...)
+		if err := log.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		candidate, err := resumeReceiptWALCandidate(
+			path, config, time.Now(), mutationlog.Options{Capacity: 16}, time.Hour,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireReceiptWALEvidence(t, candidate, wantReceipts)
+		state, err := candidate.receipts.Snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantKinds := []mutationreceipt.Kind{
+			mutationreceipt.PutVertex, mutationreceipt.PutVertex, mutationreceipt.PutVertex,
+			mutationreceipt.DeleteVertex, mutationreceipt.DeleteVertex,
+		}
+		if len(state.Receipts) != len(wantKinds) {
+			t.Fatalf("recovered receipt rows = %d, want %d", len(state.Receipts), len(wantKinds))
+		}
+		kindByID := make(map[mutationreceipt.ID]mutationreceipt.Kind, len(state.Receipts))
+		for _, receipt := range state.Receipts {
+			kindByID[receipt.ID] = receipt.Kind
+		}
+		for i, receipt := range wantReceipts {
+			if got := kindByID[receipt.ID]; got != wantKinds[i] {
+				t.Fatalf("recovered receipt kind %d = %v, want %v", i, got, wantKinds[i])
+			}
+		}
+		if _, live := candidate.graph.GetVertex("live"); live {
+			t.Fatal("recovery resurrected an exactly deleted Vertex")
+		}
+		if _, live := candidate.graph.GetVertex("born-expired"); live {
+			t.Fatal("recovery resurrected a born-expired Vertex")
+		}
+		replication := candidate.graph.SnapshotReplication()
+		if len(replication.Barriers.Vertices) != 1 ||
+			replication.Barriers.Vertices[0].Key != "born-expired" {
+			t.Fatalf("recovered Vertex Put barriers = %+v", replication.Barriers.Vertices)
+		}
+		tombstoneKeys := make(map[string]bool)
+		for _, tombstone := range replication.Tombstones.Vertices {
+			tombstoneKeys[tombstone.Key] = true
+		}
+		if !tombstoneKeys["live"] || !tombstoneKeys["absent"] {
+			t.Fatalf("recovered exact Delete tombstones = %+v", replication.Tombstones.Vertices)
+		}
+		states := candidate.origins.States()
+		if len(states) != 1 || states[0].LastSeq != 3 ||
+			!states[0].LastHLC.Equal(deleteHLC) || !candidate.hlcFrontier.Equal(deleteHLC) {
+			t.Fatalf("recovered origin/HLC frontier = %+v / %+v", states, candidate.hlcFrontier)
+		}
+		entries := candidate.log.RetainedEntries()
+		if len(entries) != 3 {
+			t.Fatalf("recovered WAL entries = %d, want 3", len(entries))
+		}
+		if _, ok := entries[0].Op.(*vertexPutReceiptEnvelope); !ok {
+			t.Fatalf("entry 0 = %T, want Vertex Put receipt envelope", entries[0].Op)
+		}
+		if envelope, ok := entries[1].Op.(*vertexPutReceiptEnvelope); !ok || len(envelope.Accepted) != 0 {
+			t.Fatalf("entry 1 = %T %+v, want receipt-only Vertex Put", entries[1].Op, entries[1].Op)
+		}
+		if _, ok := entries[2].Op.(*vertexDeleteReceiptEnvelope); !ok {
+			t.Fatalf("entry 2 = %T, want Vertex Delete receipt envelope", entries[2].Op)
+		}
+	})
 	if got, ok := candidate.graph.GetVertex("graph-only"); !ok || got.GetKey() != "graph-only" {
 		t.Fatalf("recovered vertex = %v, %v", got, ok)
 	}

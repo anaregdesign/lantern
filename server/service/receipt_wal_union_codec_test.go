@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -57,10 +58,29 @@ func receiptWALUnionRawGraphProto(protobuf []byte, repeatedCount uint32) []byte 
 	return raw
 }
 
+func TestReceiptWALUnionCodecRejectsSupersededVersions(t *testing.T) {
+	mutation := receiptWALUnionGraphFixture(&pb.MutationOp{
+		Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{}},
+	})
+	current, err := encodeReceiptWALUnion(mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []byte{2, 3} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			old := append([]byte(nil), current...)
+			old[4] = version
+			if _, err := decodeReceiptWALUnion(old); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("superseded WAL union v%d decoded: %v", version, err)
+			}
+		})
+	}
+}
+
 func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
-	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV3 {
-		t.Fatalf("WAL union v3 graph schema changed to %s; review replay and migration", got)
+	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV4 {
+		t.Fatalf("WAL union v4 graph schema changed to %s; review replay and migration", got)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -90,8 +110,8 @@ func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV3 {
-				t.Fatal("new graph mutation field did not invalidate WAL union v3 schema")
+			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV4 {
+				t.Fatal("new graph mutation field did not invalidate WAL union v4 schema")
 			}
 		})
 	}
@@ -337,11 +357,6 @@ func TestReceiptWALUnionCodecDeleteDeadlineAndPhysicalDecisionFailClosed(t *test
 	envelope.Mutation.TombstoneExpiration = &timestamppb.Timestamp{Seconds: 253402300800}
 	if _, err := encodeReceiptWALUnion(envelope); !errors.Is(err, errReceiptWALUnion) {
 		t.Fatalf("invalid Delete deadline encoded: %v", err)
-	}
-	// The previous union version has no certified accepted projection.
-	raw[4] = 2
-	if _, err := decodeReceiptWALUnion(raw); !errors.Is(err, errReceiptWALUnion) {
-		t.Fatalf("old WAL union version decoded: %v", err)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"sort"
 	"time"
 
@@ -255,42 +254,15 @@ func (r *receiptBaselineSuffixReplay) apply(entry mutationlog.Entry) error {
 	}
 	var origin hlc.NodeID
 	var originSequence uint64
-	switch value := entry.Op.(type) {
-	case *pb.Mutation:
-		return fmt.Errorf("receipt WAL local seq %d: %w: raw graph mutation after baseline", entry.Seq, errReceiptWALUnion)
-	case *graphDeleteEffectEnvelope:
-		copy(origin[:], value.Mutation.GetOrigin())
-		originSequence = value.Mutation.GetSeq()
-		if err := replayGraphDeleteEffect(r.graph, value); err != nil {
-			return fmt.Errorf("receipt WAL local seq %d: graph Delete effect replay: %w", entry.Seq, err)
-		}
-	case *graphPutEffectEnvelope:
-		copy(origin[:], value.Mutation.GetOrigin())
-		originSequence = value.Mutation.GetSeq()
-		if err := replayGraphPutEffect(r.graph, value); err != nil {
-			return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
-		}
-	case *graphAddEffectEnvelope:
-		copy(origin[:], value.Mutation.GetOrigin())
-		originSequence = value.Mutation.GetSeq()
-		if err := replayGraphAddEffect(r.graph, value); err != nil {
-			return fmt.Errorf("receipt WAL local seq %d: graph Add effect replay: %w", entry.Seq, err)
-		}
-	case *edgeDeleteReceiptEnvelope:
-		origin, originSequence = value.Origin, value.OriginSeq
-		if value.Epoch != r.config.Epoch || value.PolicyFingerprint != r.policyFingerprint {
+	if envelope, ok := receiptWALEnvelopeInfo(entry.Op); ok {
+		origin, originSequence = envelope.origin, envelope.originSeq
+		if envelope.epoch != r.config.Epoch || envelope.policy != r.policyFingerprint {
 			return fmt.Errorf("receipt WAL local seq %d: %w: receipt policy or epoch mismatch", entry.Seq, errReceiptWALUnion)
 		}
-		tx, err := r.graph.BeginReplicatedEdgeDelete(value.OriginalKeys, value.HLC, value.TombstoneExpiration)
-		if err != nil {
+		if err := replayReceiptEnvelopeGraph(r.graph, entry.Op); err != nil {
 			return fmt.Errorf("receipt WAL local seq %d: receipt graph replay: %w", entry.Seq, err)
 		}
-		if !slices.Equal(tx.Result().Accepted, value.Accepted) {
-			tx.Abort()
-			return fmt.Errorf("receipt WAL local seq %d: %w: accepted Edge Delete projection drift", entry.Seq, errReceiptWALUnion)
-		}
-		tx.Commit()
-		for _, receipt := range value.Receipts {
+		for _, receipt := range envelope.receipts {
 			issued := int64(binary.BigEndian.Uint64(receipt.ID[17:25]))
 			if receipt.DeadlineMillis-issued != r.config.Retention.Milliseconds() {
 				return fmt.Errorf("receipt WAL local seq %d: %w: retention differs from policy", entry.Seq, errReceiptWALUnion)
@@ -312,10 +284,33 @@ func (r *receiptBaselineSuffixReplay) apply(entry mutationlog.Entry) error {
 			r.receipts[receipt.ID] = receipt
 			r.receiptBytes += cost
 		}
-	case receiptBaselineMarker:
-		return fmt.Errorf("receipt WAL local seq %d: %w: later baseline escaped marker selection", entry.Seq, errReceiptBaselineMarker)
-	default:
-		return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
+	} else {
+		switch value := entry.Op.(type) {
+		case *pb.Mutation:
+			return fmt.Errorf("receipt WAL local seq %d: %w: raw graph mutation after baseline", entry.Seq, errReceiptWALUnion)
+		case *graphDeleteEffectEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			originSequence = value.Mutation.GetSeq()
+			if err := replayGraphDeleteEffect(r.graph, value); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: graph Delete effect replay: %w", entry.Seq, err)
+			}
+		case *graphPutEffectEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			originSequence = value.Mutation.GetSeq()
+			if err := replayGraphPutEffect(r.graph, value); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
+			}
+		case *graphAddEffectEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			originSequence = value.Mutation.GetSeq()
+			if err := replayGraphAddEffect(r.graph, value); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: graph Add effect replay: %w", entry.Seq, err)
+			}
+		case receiptBaselineMarker:
+			return fmt.Errorf("receipt WAL local seq %d: %w: later baseline escaped marker selection", entry.Seq, errReceiptBaselineMarker)
+		default:
+			return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
+		}
 	}
 	if !r.origins.Record(origin, originSequence, entry.HLC) {
 		return fmt.Errorf("receipt WAL local seq %d: %w: origin frontier drift", entry.Seq, errReceiptWALUnion)

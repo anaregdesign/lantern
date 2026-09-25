@@ -672,6 +672,25 @@ func (tx *Tx) Reserve(results [][]byte) error {
 	return nil
 }
 
+// ReplaceReservedResults fills an already capacity-reserved batch without
+// changing any result length or allocating. Coordinators with graph-derived
+// one-byte results use this after capacity admission but before graph staging
+// is made durable.
+func (tx *Tx) ReplaceReservedResults(results [][]byte) error {
+	if tx.closed || tx.mode != txReserved || len(results) != len(tx.staged) {
+		return ErrTransactionState
+	}
+	for i, result := range results {
+		if len(result) != len(tx.staged[i].Result) {
+			return ErrInvalidBatch
+		}
+	}
+	for i, result := range results {
+		copy(tx.staged[i].Result, result)
+	}
+	return nil
+}
+
 // Stage inserts all new receipts into the private, locked state before an
 // external WAL commit. It may allocate; no Store reader can see the rows while
 // the transaction holds mu. A failed WAL call must be followed by Abort.
