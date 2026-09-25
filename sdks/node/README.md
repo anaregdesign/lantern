@@ -521,6 +521,24 @@ error hierarchy, and option types as the Node entrypoint; only the
 transport differs. CORS preflights must be allowed on the Lantern
 server via `LANTERN_CORS_ALLOWED_ORIGINS`.
 
+## Candidate package check
+
+Before publishing, build and check the same archive selection npm would
+publish, without uploading it:
+
+```bash
+bun run build
+bun test
+bun run verify:package
+```
+
+`verify:package` creates a temporary `npm pack` tarball and checks its
+packaged manifest and contents: both entrypoints must include every declared
+ESM, CJS, and type target; only `dist/`, `README.md`, `LICENSE`, and
+`package.json` may be shipped. Tests require the build first so the bundle
+isolation check cannot silently pass without compiled bundles. CI runs this
+gate on Node 20 and 22 and repeats it before tag publication.
+
 ## High availability
 
 Both `connect` and `connectWeb` dial a **single** endpoint. Unlike the Go

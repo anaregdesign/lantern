@@ -53,6 +53,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify:package": "node scripts/verify-package.mjs",
     "test": "bun test"
   },
   "dependencies": {

@@ -113,6 +113,8 @@ jobs:
         run: bun run typecheck
       - name: Typecheck maintained example
         run: bun run example:typecheck
+      - name: Build
+        run: bun run build
       - name: Test
         run: bun test
         env:
@@ -121,8 +123,8 @@ jobs:
           LANTERN_NODE_SEARCH_POSITIONS_DISABLED_ENDPOINT: http://127.0.0.1:6382
           LANTERN_NODE_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
           LANTERN_NODE_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
-      - name: Build
-        run: bun run build
+      - name: Verify npm pack candidate
+        run: bun run verify:package
 
       - name: Stop production search conformance servers
         if: always()
@@ -168,6 +170,8 @@ jobs:
         run: bun run codegen
       - name: Build
         run: bun run build
+      - name: Verify npm pack candidate
+        run: bun run verify:package
       - name: Publish to npm (Trusted Publishing / OIDC)
         run: npm publish --access public
         # No NODE_AUTH_TOKEN: npm CLI exchanges the GitHub OIDC token for a
