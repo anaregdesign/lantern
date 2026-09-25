@@ -594,6 +594,45 @@ func TestReceiptWholeStateBackupCaptureCannotSplitBaselineGeneration(t *testing.
 	}
 }
 
+func TestReceiptWholeStateSourceRejectsReceiptV1WithRetiredEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallation(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	highWater := runtime.receipt.store.Stats().HighWaterMillis
+	retired, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x6a)
+	mustReplaceRetiredCatalog(
+		t,
+		runtime.receipt.retired,
+		runtime.receipt.policy,
+		highWater,
+		retired,
+	)
+
+	recorder := &replicationSnapshotRecorder{}
+	err = replication.Snapshot(t.Context(), &pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}, recorder)
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition ||
+		!errors.Is(err, errRetiredReceiptDowngrade) {
+		t.Fatalf("RECEIPT_V1 with retired evidence = %v, want fail-closed downgrade", err)
+	}
+	if len(recorder.frames) != 0 {
+		t.Fatalf("RECEIPT_V1 sent %d partial frames before rejecting retired evidence", len(recorder.frames))
+	}
+}
+
 func TestReceiptWholeStateBackupCaptureFailsClosed(t *testing.T) {
 	t.Run("graph-only runtime", func(t *testing.T) {
 		f := newReceiptEdgeDeleteFixture(t, nil)

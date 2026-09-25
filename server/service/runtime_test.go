@@ -158,8 +158,10 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	if err := fresh.CertifyInstallation(primary, replication); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("durable installation without tombstone policy = %v, want failed precondition", err)
 	}
-	if primary.receiptEdgeDeleteCoordinator != nil {
-		t.Fatal("failed certification bound the receipt follower coordinator")
+	if primary.receiptEdgeDeleteCoordinator != nil ||
+		primary.receiptVertexPutCoordinator != nil ||
+		primary.receiptVertexDeleteCoordinator != nil {
+		t.Fatal("failed certification bound a receipt follower coordinator")
 	}
 	if replication.receiptSnapshotRequired || replication.receiptSnapshotSource != nil {
 		t.Fatal("failed certification partially activated receipt Snapshot")
@@ -173,7 +175,11 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		primary.receiptRetiredCatalog != fresh.receipt.retired ||
 		primary.runtime != fresh || primary.receiptEdgeDeleteCoordinator == nil ||
 		primary.receiptEdgeDeleteCoordinator.store != fresh.receipt.store ||
-		primary.receiptEdgeDeleteCoordinator.retired != fresh.receipt.retired {
+		primary.receiptEdgeDeleteCoordinator.retired != fresh.receipt.retired ||
+		primary.receiptVertexPutCoordinator == nil ||
+		primary.receiptVertexPutCoordinator.store != fresh.receipt.store ||
+		primary.receiptVertexDeleteCoordinator == nil ||
+		primary.receiptVertexDeleteCoordinator.store != fresh.receipt.store {
 		t.Fatal("primary service did not receive the certified durable bundle")
 	}
 	if replication.backend != fresh.graph || replication.log != fresh.log ||

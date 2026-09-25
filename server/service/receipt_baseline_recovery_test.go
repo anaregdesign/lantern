@@ -543,10 +543,15 @@ func TestReceiptBaselineSuffixReplaysReplicatedDeletePastLocalCausalLimit(t *tes
 	}
 }
 
-func TestReceiptBaselineSuffixReplaysVertexReceiptFamilies(t *testing.T) {
+func TestReceiptBaselineSuffixReplaysVertexReceiptFamiliesWithRetiredState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	config := baselineRuntimeTestConfig(path)
 	image := newReceiptBaselineTestImage(t, config)
+	highWater := image.capture.Receipts.ClockHighWaterMillis
+	retiredState, retiredID := mustRetiredCatalogSnapshot(
+		t, config.Receipt, highWater, 0x94,
+	)
+	setReceiptBaselineTestRetired(&image, retiredState)
 	config.BaselineCodec = image.codec
 	runtime, err := CreateDurableReceiptWALServingRuntime(config)
 	if err != nil {
@@ -582,6 +587,9 @@ func TestReceiptBaselineSuffixReplaysVertexReceiptFamilies(t *testing.T) {
 	if _, live := restarted.graph.GetVertex("suffix-expired"); live {
 		t.Fatal("baseline suffix recovery resurrected expired Vertex Put")
 	}
+	if _, live := restarted.graph.GetVertex("suffix-origin-only"); live {
+		t.Fatal("baseline suffix recovery applied an omitted receiver-local Vertex Put")
+	}
 	replication := restarted.graph.SnapshotReplication()
 	if len(replication.Barriers.Vertices) != 1 ||
 		replication.Barriers.Vertices[0].Key != "suffix-expired" {
@@ -598,8 +606,8 @@ func TestReceiptBaselineSuffixReplaysVertexReceiptFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Receipts) != 5 {
-		t.Fatalf("baseline plus suffix receipt count = %d, want 5", len(snapshot.Receipts))
+	if len(snapshot.Receipts) != 6 {
+		t.Fatalf("baseline plus suffix receipt count = %d, want 6", len(snapshot.Receipts))
 	}
 	results := make(map[mutationreceipt.ID]mutationreceipt.Receipt, len(snapshot.Receipts))
 	for _, receipt := range snapshot.Receipts {
@@ -615,6 +623,39 @@ func TestReceiptBaselineSuffixReplaysVertexReceiptFamilies(t *testing.T) {
 			got.Group != receipt.Group || got.Index != receipt.Index {
 			t.Fatalf("baseline suffix receipt = %+v, %v; want %+v", got, ok, receipt)
 		}
+	}
+	retiredSnapshot, _, err := restarted.receipt.retired.snapshot(
+		restarted.receipt.policy,
+		snapshot.ClockHighWaterMillis,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retiredSnapshot.ClockHighWaterMillis != snapshot.ClockHighWaterMillis {
+		t.Fatalf(
+			"retired high-water = %d, want active high-water %d",
+			retiredSnapshot.ClockHighWaterMillis,
+			snapshot.ClockHighWaterMillis,
+		)
+	}
+	retiredConfig, _, err := retiredCatalogConfig(
+		restarted.receipt.policy,
+		snapshot.ClockHighWaterMillis,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := mutationreceipt.NewRetiredCatalogFromSnapshot(retiredConfig, retiredSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, receipt, err := retired.Lookup(
+		retiredID,
+		time.UnixMilli(snapshot.ClockHighWaterMillis),
+	)
+	if err != nil || status != mutationreceipt.Confirmed ||
+		!reflect.DeepEqual(receipt.Result, []byte{0x94, 4}) {
+		t.Fatalf("retired receipt after suffix restart = %v, %+v, %v", status, receipt, err)
 	}
 	var foundOrigin bool
 	for _, state := range restarted.origins.States() {
@@ -654,10 +695,15 @@ func receiptBaselineVertexPutSuffixEnvelope(
 			Key: "suffix-expired", Value: &pb.Vertex_String_{String_: "expired"},
 			Expiration: timestamppb.New(time.Now().Add(-time.Hour)),
 		},
+		{
+			Key: "suffix-origin-only", Value: &pb.Vertex_String_{String_: "not accepted locally"},
+			Expiration: timestamppb.New(issued.Add(time.Hour)),
+		},
 	}
 	outcomes := []pb.PutOutcome{
 		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
 		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
 	}
 	group := mutationreceipt.GroupID{0xb1}
 	receipts := make([]mutationreceipt.Receipt, len(original))
