@@ -394,9 +394,10 @@ type receiptWALRepeatedArm struct {
 	clear func(int)
 }
 
-// Every current MutationOp arm is explicit here. The six repeated-message
-// arms can contain nil slots, which protobuf normalizes to empty messages on
-// unmarshal. The sidecar restores those exact slots for graph replay.
+// Every current MutationOp arm is explicit here. Ordinary Put/Add batches can
+// contain nil slots, which protobuf normalizes to empty messages on unmarshal.
+// The sidecar restores those exact slots for graph replay. Replicated Put
+// batches are stricter: serving apply rejects missing entries and outcomes.
 func receiptWALGraphArm(m *pb.Mutation) (receiptWALRepeatedArm, error) {
 	if m == nil || m.Op == nil {
 		return receiptWALRepeatedArm{}, receiptWALUnionError("missing graph mutation operation")
@@ -463,12 +464,22 @@ func receiptWALGraphArm(m *pb.Mutation) (receiptWALRepeatedArm, error) {
 			break
 		}
 		items := value.ReplicatedPutVertices.Entries
+		for i, item := range items {
+			if item == nil || item.GetOutcome() == nil {
+				return receiptWALRepeatedArm{}, receiptWALUnionError("replicated Vertex Put entry %d has no outcome", i)
+			}
+		}
 		return receiptWALRepeatedArm{len(items), func(i int) proto.Message { return items[i] }, func(i int) { items[i] = nil }}, nil
 	case *pb.MutationOp_ReplicatedPutEdges:
 		if value == nil || value.ReplicatedPutEdges == nil {
 			break
 		}
 		items := value.ReplicatedPutEdges.Entries
+		for i, item := range items {
+			if item == nil || item.GetOutcome() == nil {
+				return receiptWALRepeatedArm{}, receiptWALUnionError("replicated Edge Put entry %d has no outcome", i)
+			}
+		}
 		return receiptWALRepeatedArm{len(items), func(i int) proto.Message { return items[i] }, func(i int) { items[i] = nil }}, nil
 	default:
 		return receiptWALRepeatedArm{}, receiptWALUnionError("unknown graph mutation operation %T", m.Op.GetOp())

@@ -63,7 +63,6 @@ func TestGraphPutEffectWALRoundTripPreservesReceiverDecision(t *testing.T) {
 			Entries: []*pb.ReplicatedPutVertex{
 				{Outcome: &pb.ReplicatedPutVertex_Live{Live: vertex("v", future)}},
 				{Outcome: &pb.ReplicatedPutVertex_CausalBarrier{CausalBarrier: &pb.VertexCausalBarrier{Key: "old"}}},
-				nil,
 			},
 		}}}, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive, graphcache.PutOutcomeExpired},
 			[]graphPutAcceptedEffect{{0, graphPutEffectLive}, {1, graphPutEffectBarrier}}},
@@ -277,6 +276,26 @@ func TestGraphPutEffectWALRejectsMalformedEvidence(t *testing.T) {
 		{"nil replicated live payload", func(m *pb.Mutation) {
 			m.Op = &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{
 				Entries: []*pb.ReplicatedPutVertex{{Outcome: &pb.ReplicatedPutVertex_Live{}}},
+			}}}
+		}, 1},
+		{"nil replicated Vertex entry", func(m *pb.Mutation) {
+			m.Op = &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{
+				Entries: []*pb.ReplicatedPutVertex{nil},
+			}}}
+		}, 0},
+		{"missing replicated Vertex outcome", func(m *pb.Mutation) {
+			m.Op = &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{
+				Entries: []*pb.ReplicatedPutVertex{{}},
+			}}}
+		}, 1},
+		{"nil replicated Edge entry", func(m *pb.Mutation) {
+			m.Op = &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{
+				Entries: []*pb.ReplicatedPutEdge{nil},
+			}}}
+		}, 0},
+		{"missing replicated Edge outcome", func(m *pb.Mutation) {
+			m.Op = &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{
+				Entries: []*pb.ReplicatedPutEdge{{}},
 			}}}
 		}, 1},
 	} {
