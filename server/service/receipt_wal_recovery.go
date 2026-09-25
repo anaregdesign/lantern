@@ -234,9 +234,25 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // restrictions. Put, Add, and Delete effects replay only their receiver-local
 // accepted subsets.
 func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
+	return resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, false)
+}
+
+// stageEffectCompleteReceiptWALCandidate is the stricter prerequisite for a
+// future serving restore. Legacy graph Put/Add rows have no receiver-local
+// accepted-effect evidence, even if a detached replay happens to produce a
+// plausible graph. The returned candidate remains read-only: effect evidence
+// alone cannot certify the Store clock, active epoch, or publication cut.
+func stageEffectCompleteReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
+	return resumeReceiptWALCandidateWithEffectPolicy(path, config, now, opts, defaultTTL, true)
+}
+
+func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration, requireCompleteEffects bool) (*receiptWALRecoveryCandidate, error) {
 	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
 	if err != nil {
 		return nil, err
+	}
+	if requireCompleteEffects && (audit.unprovenGraphPutRows != 0 || audit.unprovenGraphAddRows != 0) {
+		return nil, fmt.Errorf("%w: graph Put/Add rows lack receiver-local accepted-effect evidence", errReceiptWALUnion)
 	}
 	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](defaultTTL)
 	origins := newOriginStateTracker()

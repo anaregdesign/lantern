@@ -207,6 +207,42 @@ func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T)
 	}
 }
 
+func TestStageEffectCompleteReceiptWALCandidate(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	seed := recoveryGraphPutEffectEntry(t, 0x72, receiptEntry.HLC.WallNs-1,
+		&pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+			Edge: &pb.Edge{Tail: "tail", Head: "present", Weight: 1,
+				Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		}}})
+	path := writeReceiptWALAuditEntries(t, seed, receiptEntry)
+	candidate, err := stageEffectCompleteReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if err != nil || candidate == nil {
+		t.Fatalf("effect-complete candidate = %p, %v", candidate, err)
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 2 {
+		t.Fatalf("effect-complete Log frontier = %d, %v", seq, ok)
+	}
+	if _, err := candidate.log.Append(&pb.Mutation{}, receiptEntry.HLC); !errors.Is(err, mutationlog.ErrClosed) {
+		t.Fatalf("effect-complete candidate opened serving Log: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		legacy mutationlog.Entry
+	}{
+		{"raw Put before receipt", auditGraphEntry(1)},
+		{"raw Add before receipt", auditGraphAddEntry(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeReceiptWALAuditEntries(t, tc.legacy, receiptEntry)
+			if got, err := stageEffectCompleteReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); got != nil ||
+				!errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "accepted-effect evidence") {
+				t.Fatalf("legacy graph candidate = %p, %v; want fail-closed", got, err)
+			}
+		})
+	}
+}
+
 func TestReceiptWALRecoveryCandidateReplaysOnlyAcceptedPutEffects(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
 	future := timestamppb.New(time.Now().Add(time.Hour))

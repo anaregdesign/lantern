@@ -320,6 +320,11 @@ candidate replays only the accepted subset, preserving live/barrier decisions
 and allowing a live value to expire by recovery time. A contradictory accepted
 decision fails the candidate. The kind remains unwired to the serving writer;
 this detached replay enables neither Store admission nor an absent-ID answer.
+The stricter effect-complete staging path rejects even pre-receipt raw Put/Add
+rows before replay. It is a prerequisite for future serving recovery, not a
+serving certificate: Store clock high-water, epoch continuity, and atomic
+publication remain unproven. An original Delete receipt result cannot be
+recomputed from a later graph view because its former Edge may have expired.
 The graph Add kind records an ordered subset of receiver-local accepted wire
 indexes, including nil-slot position preservation for synthesized ContribIDs.
 Rejected, deduplicated, and causally fenced Adds are omitted. GraphCache's
