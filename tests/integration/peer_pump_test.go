@@ -342,6 +342,20 @@ func waitForEdge(t *testing.T, cache *graphcache.GraphCache[string, *pb.Vertex],
 	return w, ok
 }
 
+// waitForLogSeq polls until the log reaches or exceeds the expected
+// frontier, returning the final observation for strict caller checks.
+func waitForLogSeq(t *testing.T, log *mutationlog.Log, want uint64, timeout time.Duration) (uint64, bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if last, ok := log.LastSeq(); ok && last >= want {
+			return last, true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return log.LastSeq()
+}
+
 // waitForWireEdge is the real Connect/h2c sibling used by gap-recovery tests
 // whose contract is externally observable through GetEdge. NotFound and a
 // publication gap during an in-flight Snapshot install are transient; a gap
@@ -449,14 +463,18 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 	// at most once on every replica, so the monotonic LastSeq is
 	// exactly the count of distinct cluster mutations.
 	const wantClusterWrites = 4
-	if last, ok := a.log.LastSeq(); !ok || last != wantClusterWrites {
-		t.Errorf("a.log.LastSeq=%d ok=%v want %d (leaderless Subscribe contract)", last, ok, wantClusterWrites)
-	}
-	if last, ok := b.log.LastSeq(); !ok || last != wantClusterWrites {
-		t.Errorf("b.log.LastSeq=%d ok=%v want %d", last, ok, wantClusterWrites)
-	}
-	if last, ok := c.log.LastSeq(); !ok || last != wantClusterWrites {
-		t.Errorf("c.log.LastSeq=%d ok=%v want %d", last, ok, wantClusterWrites)
+	const logConvergenceTimeout = 3 * time.Second
+	for _, node := range []struct {
+		name string
+		log  *mutationlog.Log
+	}{
+		{"a", a.log},
+		{"b", b.log},
+		{"c", c.log},
+	} {
+		if last, ok := waitForLogSeq(t, node.log, wantClusterWrites, logConvergenceTimeout); !ok || last != wantClusterWrites {
+			t.Errorf("%s.log.LastSeq=%d ok=%v want exactly %d within %s (leaderless Subscribe contract)", node.name, last, ok, wantClusterWrites, logConvergenceTimeout)
+		}
 	}
 	waitForSearchConvergence(t, ctx, "from", nil, a.raw, b.raw, c.raw)
 }
