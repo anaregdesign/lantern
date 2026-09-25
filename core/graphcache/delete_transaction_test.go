@@ -64,6 +64,46 @@ func TestEdgeDeleteTransactionResultAndCommit(t *testing.T) {
 	}
 }
 
+func TestEdgeDeleteTransactionPrepareDoesNotApply(t *testing.T) {
+	c := NewGraphCacheWithStaging[string, string](time.Hour)
+	c.EnablePrefixIndex(func(key string) string { return key })
+	expiration := time.Now().Add(time.Hour)
+	key := EdgeKey[string]{Tail: "tail", Head: "head"}
+	c.AddEdgeWithExpiration(key.Tail, key.Head, 1, expiration)
+
+	tx, err := c.PrepareEdgeDelete(
+		[]EdgeKey[string]{key},
+		hlc.Timestamp{WallNs: 20},
+		expiration,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if tx.stage.applied {
+		t.Fatal("prepared transaction applied graph state")
+	}
+	if c.edges.edgeCount != 1 || len(c.edgeTombstones) != 0 ||
+		len(c.edgeCausalBarriers) != 0 || len(c.edgeCausalUsage) != 0 {
+		t.Fatalf(
+			"prepared transaction changed graph or causal state: edges=%d tombstones=%d barriers=%d usage=%d",
+			c.edges.edgeCount,
+			len(c.edgeTombstones),
+			len(c.edgeCausalBarriers),
+			len(c.edgeCausalUsage),
+		)
+	}
+
+	tx.Apply()
+	if !tx.stage.applied {
+		t.Fatal("Apply left the prepared transaction unapplied")
+	}
+	tx.Commit()
+	if _, ok := c.GetWeight(key.Tail, key.Head); ok {
+		t.Fatal("committed prepared Delete left the edge visible")
+	}
+}
+
 func TestEdgeDeleteTransactionAbortRestoresState(t *testing.T) {
 	c := NewGraphCacheWithStaging[string, string](time.Hour)
 	c.EnablePrefixIndex(func(key string) string { return key })

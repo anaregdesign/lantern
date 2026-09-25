@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -294,6 +296,80 @@ func TestPublicReceiptDeleteEdgesValidatesBeforeMutationAndCapacity(t *testing.T
 	}
 	if _, _, ok := runtime.graph.GetEdgeDetail("second", "edge"); !ok {
 		t.Fatal("stale endpoint mutated the edge")
+	}
+}
+
+func TestPublicReceiptDeleteEdgesRejectsUnrepresentableWALBeforeState(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	ctx := context.Background()
+	tail := strings.Repeat("t", 500)
+	const head = "edge"
+	if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: tail, Head: head, Weight: 1,
+		Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	const count = 10_000
+	edges := make([]*pb.EdgeKey, count)
+	nodeID := runtime.clock.NodeID()
+	receiptContext := &pb.MutationReceiptContext{
+		OperationIds:  make([][]byte, count),
+		LogicalCallId: []byte{0x79, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+		Endpoint: &pb.ReceiptEndpoint{
+			NodeId:     append([]byte(nil), nodeID[:]...),
+			Generation: append([]byte(nil), runtime.receipt.generation[:]...),
+		},
+	}
+	issued := time.Now().Add(-time.Second)
+	for i := range edges {
+		edges[i] = &pb.EdgeKey{Tail: tail, Head: head}
+		var random [24]byte
+		binary.BigEndian.PutUint64(random[:8], uint64(i+1))
+		id, err := mutationreceipt.NewID(runtime.receipt.epoch, issued, random)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receiptContext.OperationIds[i] = id.Bytes()
+	}
+	request := &pb.DeleteEdgesRequest{
+		Edges: edges, ReceiptContext: receiptContext,
+	}
+	beforeGraph := runtime.graph.SnapshotReplication()
+	beforeReceipts := runtime.receipt.store.Stats()
+	beforeSeq := svc.LocalSeq(runtime.clock.NodeID())
+	beforeLog := runtime.log.Len()
+
+	var firstError string
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := svc.DeleteEdges(ctx, request)
+		if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
+			t.Fatalf("oversize attempt %d = %v, want stable ResourceExhausted", attempt+1, err)
+		}
+		if attempt == 0 {
+			firstError = err.Error()
+		} else if err.Error() != firstError {
+			t.Fatalf("oversize retry error changed: %q -> %q", firstError, err)
+		}
+	}
+
+	afterGraph := runtime.graph.SnapshotReplication()
+	if !reflect.DeepEqual(afterGraph, beforeGraph) {
+		t.Fatal("oversize receipt request changed graph, index, or causal state")
+	}
+	if got := runtime.receipt.store.Stats(); got != beforeReceipts {
+		t.Fatalf("oversize receipt request changed Store state: before=%+v after=%+v", beforeReceipts, got)
+	}
+	if got := svc.LocalSeq(runtime.clock.NodeID()); got != beforeSeq {
+		t.Fatalf("oversize receipt request changed origin sequence: %d -> %d", beforeSeq, got)
+	}
+	if got := runtime.log.Len(); got != beforeLog {
+		t.Fatalf("oversize receipt request changed WAL/log state: %d -> %d", beforeLog, got)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail(tail, head); !ok {
+		t.Fatal("oversize receipt request deleted the seed edge")
 	}
 }
 

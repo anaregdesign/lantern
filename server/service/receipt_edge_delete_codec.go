@@ -31,10 +31,45 @@ const (
 	receiptEdgeDeleteWALAcceptSize = 4 + 4 + 4
 )
 
-var errReceiptEdgeDeleteWAL = errors.New("service: invalid receipt Edge Delete WAL payload")
+var (
+	errReceiptEdgeDeleteWAL         = errors.New("service: invalid receipt Edge Delete WAL payload")
+	errReceiptEdgeDeleteWALCapacity = errors.New("service: receipt Edge Delete WAL payload exceeds capacity")
+)
 
 func receiptEdgeDeleteWALError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errReceiptEdgeDeleteWAL, fmt.Sprintf(format, args...))
+}
+
+func receiptEdgeDeleteWALCapacityError() error {
+	return errors.Join(
+		errReceiptEdgeDeleteWAL,
+		errReceiptEdgeDeleteWALCapacity,
+	)
+}
+
+// validateReceiptEdgeDeleteWALRequestCapacity proves that even the largest
+// receiver-local accepted projection (every request position accepted) fits
+// the private WAL format. This bound depends only on validated request bytes,
+// so every replica makes the same admission decision before touching state.
+func validateReceiptEdgeDeleteWALRequestCapacity(keys []graphcache.EdgeKey[string]) error {
+	if len(keys) == 0 ||
+		len(keys) > (receiptEdgeDeleteWALMaxBytes-receiptEdgeDeleteWALHeaderSize)/
+			(receiptEdgeDeleteWALItemSize+receiptEdgeDeleteWALAcceptSize) {
+		return receiptEdgeDeleteWALCapacityError()
+	}
+	size := receiptEdgeDeleteWALHeaderSize +
+		len(keys)*(receiptEdgeDeleteWALItemSize+receiptEdgeDeleteWALAcceptSize)
+	for _, key := range keys {
+		if err := validateReceiptEdgeDeleteWALKey(key); err != nil {
+			return err
+		}
+		keyBytes := len(key.Tail) + len(key.Head)
+		if keyBytes > (receiptEdgeDeleteWALMaxBytes-size)/2 {
+			return receiptEdgeDeleteWALCapacityError()
+		}
+		size += 2 * keyBytes
+	}
+	return nil
 }
 
 // encodeReceiptEdgeDeleteWAL matches FileWAL's payload encoder signature.
@@ -191,6 +226,9 @@ func validateReceiptEdgeDeleteWALEnvelope(e *edgeDeleteReceiptEnvelope) (int, er
 		len(e.OriginalKeys) != count || len(e.Accepted) > count {
 		return 0, receiptEdgeDeleteWALError("invalid request alignment or item count")
 	}
+	if err := validateReceiptEdgeDeleteWALRequestCapacity(e.OriginalKeys); err != nil {
+		return 0, err
+	}
 	size := receiptEdgeDeleteWALHeaderSize + count*receiptEdgeDeleteWALItemSize + len(e.Accepted)*receiptEdgeDeleteWALAcceptSize
 	group := e.Receipts[0].Group
 	if group == (mutationreceipt.GroupID{}) {
@@ -204,7 +242,7 @@ func validateReceiptEdgeDeleteWALEnvelope(e *edgeDeleteReceiptEnvelope) (int, er
 			return 0, err
 		}
 		if size > receiptEdgeDeleteWALMaxBytes-len(key.Tail)-len(key.Head) {
-			return 0, receiptEdgeDeleteWALError("payload exceeds size limit")
+			return 0, receiptEdgeDeleteWALCapacityError()
 		}
 		size += len(key.Tail) + len(key.Head)
 		if _, duplicate := seen[receipt.ID]; duplicate {
@@ -240,12 +278,15 @@ func validateReceiptEdgeDeleteWALEnvelope(e *edgeDeleteReceiptEnvelope) (int, er
 		previous = item.Index
 		key := item.Key
 		if size > receiptEdgeDeleteWALMaxBytes-len(key.Tail)-len(key.Head) {
-			return 0, receiptEdgeDeleteWALError("payload exceeds size limit")
+			return 0, receiptEdgeDeleteWALCapacityError()
 		}
 		size += len(key.Tail) + len(key.Head)
 	}
-	if size > receiptEdgeDeleteWALMaxBytes || !proto.Equal(e.Mutation, receiptEdgeDeleteWALMutation(e)) {
-		return 0, receiptEdgeDeleteWALError("payload too large or graph projection drift")
+	if size > receiptEdgeDeleteWALMaxBytes {
+		return 0, receiptEdgeDeleteWALCapacityError()
+	}
+	if !proto.Equal(e.Mutation, receiptEdgeDeleteWALMutation(e)) {
+		return 0, receiptEdgeDeleteWALError("graph projection drift")
 	}
 	return size, nil
 }

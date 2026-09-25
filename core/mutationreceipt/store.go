@@ -730,6 +730,17 @@ func (tx *Tx) ReplaceReservedResults(results [][]byte) error {
 	return nil
 }
 
+// ReservedReceipts returns owned copies after exact capacity reservation but
+// before Stage mutates the Store's hidden maps. Durable coordinators use this
+// to prove their complete WAL envelope is representable before applying any
+// receipt or domain mutation.
+func (tx *Tx) ReservedReceipts() ([]Receipt, error) {
+	if tx == nil || tx.closed || tx.mode != txReserved || tx.applied != 0 {
+		return nil, ErrTransactionState
+	}
+	return cloneReceipts(tx.staged), nil
+}
+
 // Stage inserts all new receipts into the private, locked state before an
 // external WAL commit. It may allocate; no Store reader can see the rows while
 // the transaction holds mu. A failed WAL call must be followed by Abort.
@@ -768,11 +779,15 @@ func (tx *Tx) StagedReceipts() ([]Receipt, error) {
 	if tx.closed || tx.mode != txStaged || tx.applied != len(tx.staged) {
 		return nil, ErrTransactionState
 	}
-	result := make([]Receipt, len(tx.staged))
-	for i, receipt := range tx.staged {
+	return cloneReceipts(tx.staged), nil
+}
+
+func cloneReceipts(receipts []Receipt) []Receipt {
+	result := make([]Receipt, len(receipts))
+	for i, receipt := range receipts {
 		result[i] = cloneReceipt(receipt)
 	}
-	return result, nil
+	return result
 }
 
 // Commit has no Store mutation or allocation: releasing mu makes all staged

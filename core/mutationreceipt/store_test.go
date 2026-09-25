@@ -182,6 +182,34 @@ func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {
 	}
 }
 
+func TestStoreReservedReceiptsAreDetachedAndNotVisible(t *testing.T) {
+	s := testStore(t, 1, 1000)
+	intent := testIntent(t, 1, testStart, GroupID{8}, 0, 1)
+	tx, err := s.Begin(testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]Intent{intent}); err != nil || class != Fresh {
+		t.Fatalf("Classify = %v, %v", class, err)
+	}
+	if err := tx.Reserve([][]byte{{1}}); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := tx.ReservedReceipts()
+	if err != nil || len(reserved) != 1 || !bytes.Equal(reserved[0].Result, []byte{1}) {
+		t.Fatalf("ReservedReceipts = %+v, %v", reserved, err)
+	}
+	reserved[0].Result[0] = 0
+	if tx.applied != 0 || len(s.receipts) != 0 || s.bytes != 0 {
+		t.Fatal("reserved receipts became visible before Stage")
+	}
+	again, err := tx.ReservedReceipts()
+	if err != nil || !bytes.Equal(again[0].Result, []byte{1}) {
+		t.Fatalf("caller mutation changed reserved receipt = %+v, %v", again, err)
+	}
+}
+
 func TestStoreObserveManyIsAlignedAndAllOrNothing(t *testing.T) {
 	s := testStore(t, 2, 1000)
 	group := GroupID{8}

@@ -254,6 +254,9 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err != nil {
 		return nil, err
 	}
+	if err := validateReceiptEdgeDeleteWALRequestCapacity(keys); err != nil {
+		return nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
 	s := c.service
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
@@ -300,7 +303,7 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err != nil {
 		return nil, err
 	}
-	graphTx, err := c.cache.BeginEdgeDelete(keys, ts, expiration)
+	graphTx, err := c.cache.PrepareEdgeDelete(keys, ts, expiration)
 	if err != nil {
 		return nil, writeError(err)
 	}
@@ -321,10 +324,7 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err := tx.Reserve(results); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	if err := tx.Stage(); err != nil {
-		return nil, receiptStoreError(err)
-	}
-	receipts, err := tx.StagedReceipts()
+	receipts, err := tx.ReservedReceipts()
 	if err != nil {
 		return nil, receiptStoreError(err)
 	}
@@ -348,6 +348,12 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		Accepted:            append([]graphcache.IndexedEdgeDelete[string](nil), result.Accepted...),
 		Receipts:            receipts,
 	}
+	if _, err := validateReceiptEdgeDeleteWALEnvelope(envelope); err != nil {
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("receipt Edge Delete could not stage contiguous origin seq"))
@@ -356,6 +362,10 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	if err := tx.Stage(); err != nil {
+		return nil, receiptStoreError(err)
+	}
+	graphTx.Apply()
 	walAttempted = true
 	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
 		// The ring/seq now contain the matching entry, but log readers
@@ -373,6 +383,9 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 			s.markReceiptCommitFaultLocked()
 		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}
 		return nil, connect.NewError(connect.CodeUnavailable, err)
@@ -450,11 +463,7 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if err != nil {
 		return receiptStoreError(err)
 	}
-	if err := tx.Stage(); err != nil {
-		return receiptStoreError(err)
-	}
-
-	graphTx, err := c.cache.BeginReplicatedEdgeDelete(e.OriginalKeys, ts, e.TombstoneExpiration)
+	graphTx, err := c.cache.PrepareReplicatedEdgeDelete(e.OriginalKeys, ts, e.TombstoneExpiration)
 	if err != nil {
 		return writeError(err)
 	}
@@ -477,6 +486,9 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	}
 	localEnvelope.Mutation = receiptEdgeDeleteWALMutation(localEnvelope)
 	if _, err := validateReceiptEdgeDeleteWALEnvelope(localEnvelope); err != nil {
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
+			return connect.NewError(connect.CodeResourceExhausted, err)
+		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt relay envelope: %w", err))
 	}
 	if prior, ok := pending.receiptWAL.(*edgeDeleteReceiptEnvelope); ok &&
@@ -492,6 +504,10 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
+	if err := tx.Stage(); err != nil {
+		return receiptStoreError(err)
+	}
+	graphTx.Apply()
 
 	// Retain the exact receiver-local evidence before entering the WAL. On an
 	// indeterminate return this is the recovery identity while the service
@@ -510,6 +526,9 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 			s.markReceiptCommitFaultLocked()
 		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
+			return connect.NewError(connect.CodeResourceExhausted, err)
+		}
+		if errors.Is(err, errReceiptEdgeDeleteWALCapacity) {
 			return connect.NewError(connect.CodeResourceExhausted, err)
 		}
 		return connect.NewError(connect.CodeUnavailable, err)
