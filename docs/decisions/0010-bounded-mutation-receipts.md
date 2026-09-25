@@ -476,6 +476,13 @@ rejecting torn or incompatible metadata. Its caller must hold the same WAL
 lease through journal Close. Neither path binding nor the journal alone
 attests the WAL bytes, their archive/suffix cut, or a complete serving state;
 no production provider owns this journal or enables receipt recovery yet.
+A private owned recovery candidate now holds the same lease while reading the
+journal frontier, staging the effect-complete WAL graph/Store/origins, binding
+the Store to the journal, and resuming an appendable Log whose bounded tail
+matches the detached replay. It closes Log, journal, and lease together on
+discard. It is deliberately unpublished: an apparently valid WAL prefix can
+still omit a later durable suffix, and no provider has installed an epoch or
+endpoint generation at a trusted serving cut.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
