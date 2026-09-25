@@ -104,7 +104,7 @@ func TestReceiptWholeStateArchiveStageReconstructsCausalGraphAndIndexes(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := product.bytes()
+	raw, _, _ := product.bytes()
 	configure := func(c *graphcache.GraphCache[string, *pb.Vertex]) error {
 		c.EnableSearchIndex(func(key string, _ *pb.Vertex) search.Document { return search.Text(key) }, strings.Compare)
 		return nil

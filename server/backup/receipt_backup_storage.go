@@ -19,13 +19,14 @@ type receiptBackupSyncFile interface {
 }
 
 type receiptBackupFS struct {
-	mkdirAll      func(string, os.FileMode) error
-	openExclusive func(string, int, os.FileMode) (receiptBackupSyncFile, bool, error)
-	remove        func(string) error
-	readDir       func(string) ([]os.DirEntry, error)
-	readFile      func(string, int64) ([]byte, error)
-	lstat         func(string) (os.FileInfo, error)
-	syncDir       func(string) error
+	mkdirAll        func(string, os.FileMode) error
+	openExclusive   func(string, int, os.FileMode) (receiptBackupSyncFile, bool, error)
+	renameExclusive func(string, string) (bool, error)
+	remove          func(string) error
+	readDir         func(string) ([]os.DirEntry, error)
+	readFile        func(string, int64) ([]byte, error)
+	lstat           func(string) (os.FileInfo, error)
+	syncDir         func(string) error
 }
 
 func newReceiptBackupFS() receiptBackupFS {
@@ -35,8 +36,9 @@ func newReceiptBackupFS() receiptBackupFS {
 			file, err := os.OpenFile(path, flag, perm)
 			return file, err == nil, err
 		},
-		remove:  os.Remove,
-		readDir: os.ReadDir,
+		renameExclusive: renameReceiptBackupExclusive,
+		remove:          os.Remove,
+		readDir:         os.ReadDir,
 		readFile: func(path string, limit int64) ([]byte, error) {
 			f, err := os.Open(path)
 			if err != nil {
@@ -77,8 +79,8 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 		b.failed()
 		return Stats{}, err
 	}
-	archiveRaw, walCutRaw := product.bytes()
-	if len(archiveRaw) == 0 || len(walCutRaw) == 0 {
+	archiveRaw, walCutRaw, retiredRaw := product.bytes()
+	if len(archiveRaw) == 0 || len(walCutRaw) == 0 || len(retiredRaw) == 0 {
 		b.failed()
 		return Stats{}, errors.New("backup: receipt archive producer returned an empty product")
 	}
@@ -102,6 +104,7 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 		product,
 		archiveRaw,
 		walCutRaw,
+		retiredRaw,
 	)
 	if err != nil {
 		b.failed()
@@ -121,6 +124,7 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 		manifestRaw,
 		archiveRaw,
 		walCutRaw,
+		retiredRaw,
 	)
 	if err != nil {
 		b.failed()
@@ -129,7 +133,7 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 
 	stats := product.stats
 	stats.Members = len(manifest.Members)
-	stats.Bytes = int64(len(archiveRaw) + len(walCutRaw) + len(manifestRaw))
+	stats.Bytes = int64(len(archiveRaw) + len(walCutRaw) + len(retiredRaw) + len(manifestRaw))
 	finished := b.now()
 	took := finished.Sub(start)
 	if took < 0 {
@@ -165,26 +169,40 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 
 type receiptBackupAttempt struct {
 	manifestFinal string
+	manifestTemp  string
 	memberFinals  []string
+	memberTemps   []string
 	owned         map[string]bool
 }
 
-// Final names are written directly because O_EXCL is available on supported
-// mounted backends while atomic no-replace rename and hard links are not. A set
-// commits only when the manifest written last passes full validation.
+// Members are staged, file-synced, and renamed before their directory entries
+// are synced. The manifest follows the same protocol only after every member
+// is durable; its final rename is the sole set commit point.
 func (b *Backupper) persistReceiptBackupSet(
 	ctx context.Context,
 	setID uint64,
 	nodeID hlc.NodeID,
 	generation [16]byte,
 	manifest receiptBackupSetManifest,
-	manifestRaw, archiveRaw, walCutRaw []byte,
+	manifestRaw, archiveRaw, walCutRaw, retiredRaw []byte,
 ) (manifestPath string, err error) {
-	if manifest.SetID != receiptBackupSetIDString(setID) {
+	manifestSetID, validateErr := validateReceiptBackupSetPublication(
+		manifest,
+		manifestRaw,
+		archiveRaw,
+		walCutRaw,
+		retiredRaw,
+		nodeID,
+		generation,
+	)
+	if validateErr != nil {
+		return "", fmt.Errorf("backup: validate receipt backup-set publication: %w", validateErr)
+	}
+	if manifestSetID != setID {
 		return "", errors.New("backup: receipt backup-set persistence ID mismatch")
 	}
-	if err := validateReceiptBackupSetManifestIdentity(manifest, nodeID, generation); err != nil {
-		return "", err
+	if manifest.Instance != b.cfg.InstanceID {
+		return "", errors.New("backup: receipt backup-set persistence instance mismatch")
 	}
 	base := receiptBackupSetBase(b.cfg.InstanceID, setID)
 	attempt := receiptBackupAttempt{
@@ -192,12 +210,19 @@ func (b *Backupper) persistReceiptBackupSet(
 		memberFinals: []string{
 			filepath.Join(b.cfg.Dir, manifest.Members[0].Name),
 			filepath.Join(b.cfg.Dir, manifest.Members[1].Name),
+			filepath.Join(b.cfg.Dir, manifest.Members[2].Name),
 		},
-		owned: make(map[string]bool, 3),
+		owned: make(map[string]bool, 8),
+	}
+	attempt.manifestTemp = attempt.manifestFinal + receiptBackupSetTempSuffix
+	attempt.memberTemps = make([]string, len(attempt.memberFinals))
+	for i := range attempt.memberFinals {
+		attempt.memberTemps[i] = attempt.memberFinals[i] + receiptBackupSetTempSuffix
 	}
 	for _, path := range append(
-		append([]string(nil), attempt.memberFinals...),
-		attempt.manifestFinal,
+		append(append(append([]string(nil), attempt.memberFinals...), attempt.memberTemps...),
+			attempt.manifestFinal),
+		attempt.manifestTemp,
 	) {
 		if _, statErr := b.fs.lstat(path); statErr == nil {
 			return "", fmt.Errorf("backup: receipt backup set path already exists: %s", path)
@@ -211,18 +236,31 @@ func (b *Backupper) persistReceiptBackupSet(
 		}
 	}()
 
-	members := [][]byte{archiveRaw, walCutRaw}
+	members := [][]byte{archiveRaw, walCutRaw, retiredRaw}
 	for i, raw := range members {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
-		created, writeErr := b.writeReceiptBackupExclusive(ctx, attempt.memberFinals[i], raw)
+		created, writeErr := b.writeReceiptBackupExclusive(ctx, attempt.memberTemps[i], raw)
 		if created {
-			attempt.owned[attempt.memberFinals[i]] = true
+			attempt.owned[attempt.memberTemps[i]] = true
 		}
 		if writeErr != nil {
-			return "", fmt.Errorf("backup: write receipt backup member %s: %w", attempt.memberFinals[i], writeErr)
+			return "", fmt.Errorf("backup: write receipt backup member %s: %w", attempt.memberTemps[i], writeErr)
 		}
+		renamed, renameErr := b.fs.renameExclusive(attempt.memberTemps[i], attempt.memberFinals[i])
+		if renamed {
+			attempt.owned[attempt.memberFinals[i]] = true
+		}
+		if renameErr != nil {
+			return "", fmt.Errorf(
+				"backup: rename receipt backup member %s to %s: %w",
+				attempt.memberTemps[i],
+				attempt.memberFinals[i],
+				renameErr,
+			)
+		}
+		delete(attempt.owned, attempt.memberTemps[i])
 	}
 	if syncErr := b.fs.syncDir(b.cfg.Dir); syncErr != nil {
 		return "", fmt.Errorf("backup: sync receipt backup directory after members: %w", syncErr)
@@ -231,18 +269,38 @@ func (b *Backupper) persistReceiptBackupSet(
 		return "", ctxErr
 	}
 
-	created, writeErr := b.writeReceiptBackupExclusive(ctx, attempt.manifestFinal, manifestRaw)
+	created, writeErr := b.writeReceiptBackupExclusive(ctx, attempt.manifestTemp, manifestRaw)
 	if created {
-		attempt.owned[attempt.manifestFinal] = true
+		attempt.owned[attempt.manifestTemp] = true
 	}
 	if writeErr != nil {
-		return "", fmt.Errorf("backup: write receipt backup-set manifest %s: %w", attempt.manifestFinal, writeErr)
+		return "", fmt.Errorf("backup: write receipt backup-set manifest %s: %w", attempt.manifestTemp, writeErr)
 	}
+	renamed, renameErr := b.fs.renameExclusive(attempt.manifestTemp, attempt.manifestFinal)
+	if renamed {
+		attempt.owned[attempt.manifestFinal] = true
+	}
+	if renameErr != nil {
+		return "", fmt.Errorf(
+			"backup: rename receipt backup-set manifest %s to %s: %w",
+			attempt.manifestTemp,
+			attempt.manifestFinal,
+			renameErr,
+		)
+	}
+	delete(attempt.owned, attempt.manifestTemp)
 	if syncErr := b.fs.syncDir(b.cfg.Dir); syncErr != nil {
 		return "", fmt.Errorf("backup: sync receipt backup directory after manifest: %w", syncErr)
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
+	}
+	loaded, loadErr := b.loadReceiptBackupSet(attempt.manifestFinal)
+	if loadErr != nil {
+		return "", fmt.Errorf("backup: verify committed receipt backup set: %w", loadErr)
+	}
+	if loaded.id != setID {
+		return "", errors.New("backup: verified receipt backup-set ID differs")
 	}
 	return attempt.manifestFinal, nil
 }
@@ -311,7 +369,10 @@ func (b *Backupper) cleanupReceiptBackupAttempt(attempt receiptBackupAttempt) er
 	}
 
 	membersRemoved := false
-	for _, path := range attempt.memberFinals {
+	for _, path := range append(
+		append(append([]string(nil), attempt.memberFinals...), attempt.memberTemps...),
+		attempt.manifestTemp,
+	) {
 		if !attempt.owned[path] {
 			continue
 		}

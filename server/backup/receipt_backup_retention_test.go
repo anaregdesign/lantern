@@ -48,7 +48,7 @@ func TestReceiptBackupSetRetentionIsolationOrphansAndMonotonicIDs(t *testing.T) 
 			t.Fatal(err)
 		}
 		if len(entries) != 3*(receiptBackupSetExpectedMemberCount+1) {
-			t.Fatalf("shared directory file count = %d, want 9", len(entries))
+			t.Fatalf("shared directory file count = %d, want %d", len(entries), 3*(receiptBackupSetExpectedMemberCount+1))
 		}
 	})
 
@@ -80,6 +80,7 @@ func TestReceiptBackupSetRetentionIsolationOrphansAndMonotonicIDs(t *testing.T) 
 		invalidMembers := []string{
 			strings.TrimSuffix(invalid, receiptBackupSetManifestSuffix) + receiptBackupSetArchiveSuffix,
 			strings.TrimSuffix(invalid, receiptBackupSetManifestSuffix) + receiptBackupSetWALCutSuffix,
+			strings.TrimSuffix(invalid, receiptBackupSetManifestSuffix) + receiptBackupSetRetiredCatalogSuffix,
 		}
 		if err := os.MkdirAll(b.cfg.Dir, receiptBackupSetDirectoryPerms); err != nil {
 			t.Fatal(err)
@@ -121,7 +122,9 @@ func TestReceiptBackupSetRetentionIsolationOrphansAndMonotonicIDs(t *testing.T) 
 		ownPaths := []string{
 			ownBase + receiptBackupSetArchiveSuffix,
 			ownBase + receiptBackupSetWALCutSuffix,
+			ownBase + receiptBackupSetRetiredCatalogSuffix,
 			ownBase + receiptBackupSetArchiveSuffix + receiptBackupSetTempSuffix,
+			ownBase + receiptBackupSetRetiredCatalogSuffix + receiptBackupSetTempSuffix,
 			ownBase + receiptBackupSetManifestSuffix + receiptBackupSetTempSuffix,
 		}
 		foreignPaths := []string{
@@ -213,12 +216,13 @@ func TestReceiptBackupSetRetentionRemovesMarkerBeforeMembers(t *testing.T) {
 	if err := b.pruneReceiptBackupSets(); err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 5 ||
+	if len(events) != 6 ||
 		!strings.HasSuffix(events[0], receiptBackupSetManifestSuffix) ||
 		events[1] != "directory-sync" ||
 		!strings.HasSuffix(events[2], receiptBackupSetArchiveSuffix) ||
 		!strings.HasSuffix(events[3], receiptBackupSetWALCutSuffix) ||
-		events[4] != "directory-sync" {
+		!strings.HasSuffix(events[4], receiptBackupSetRetiredCatalogSuffix) ||
+		events[5] != "directory-sync" {
 		t.Fatalf("retention durability order = %v", events)
 	}
 	sets, err := b.collectReceiptBackupSets()

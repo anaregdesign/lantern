@@ -169,7 +169,7 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if stats.Members != 2 || stats.Bytes <= 0 {
+		if stats.Members != 3 || stats.Bytes <= 0 {
 			t.Fatalf("durable receipt backup stats = %+v", stats)
 		}
 		entries, err := os.ReadDir(dir)
@@ -185,8 +185,8 @@ func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
 				t.Fatalf("durable receipt backup emitted legacy or temporary file %q", entry.Name())
 			}
 		}
-		if len(entries) != 3 || manifests != 1 {
-			t.Fatalf("durable receipt backup files = %+v, want two members and one manifest", entries)
+		if len(entries) != 4 || manifests != 1 {
+			t.Fatalf("durable receipt backup files = %+v, want three members and one manifest", entries)
 		}
 	})
 }

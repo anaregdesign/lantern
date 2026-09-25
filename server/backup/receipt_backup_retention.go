@@ -46,6 +46,7 @@ const (
 	receiptBackupSetUnknownFile receiptBackupSetFileKind = iota
 	receiptBackupSetArchiveFile
 	receiptBackupSetWALCutFile
+	receiptBackupSetRetiredCatalogFile
 	receiptBackupSetManifestFile
 	receiptBackupSetTempFile
 )
@@ -63,9 +64,11 @@ func parseOwnReceiptBackupSetName(
 	}{
 		{receiptBackupSetArchiveSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
 		{receiptBackupSetWALCutSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
+		{receiptBackupSetRetiredCatalogSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
 		{receiptBackupSetManifestSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
 		{receiptBackupSetArchiveSuffix, receiptBackupSetArchiveFile},
 		{receiptBackupSetWALCutSuffix, receiptBackupSetWALCutFile},
+		{receiptBackupSetRetiredCatalogSuffix, receiptBackupSetRetiredCatalogFile},
 		{receiptBackupSetManifestSuffix, receiptBackupSetManifestFile},
 	}
 	for _, candidate := range suffixes {
