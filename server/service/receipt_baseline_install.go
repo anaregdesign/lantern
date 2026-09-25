@@ -196,7 +196,7 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 			storeStage.Commit()
 		})
 		if err != nil {
-			if !isDefiniteReceiptBaselineWALAbort(err) {
+			if receiptBaselineWALFailureRequiresFailStop(err) {
 				s.markReceiptCommitFaultLocked()
 			}
 			return fmt.Errorf("service: commit receipt baseline marker: %w", err)
@@ -207,7 +207,7 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 		return nil
 	})
 	if err != nil {
-		if markerMayBeDurable && !isDefiniteReceiptBaselineWALAbort(err) {
+		if markerMayBeDurable && !receiptBaselineMarkerDefinitelyAbsent(err) {
 			return err
 		}
 		return errors.Join(err, sidecars.cleanup(committedBaselineDigest))
@@ -227,9 +227,32 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 	return nil
 }
 
-func isDefiniteReceiptBaselineWALAbort(err error) bool {
+func receiptBaselineMarkerDefinitelyAbsent(err error) bool {
 	var aborted *mutationlog.DefiniteWALAbort
-	return errors.As(err, &aborted)
+	if errors.As(err, &aborted) {
+		return true
+	}
+	// Indeterminate joins take precedence in case a WAL returns one of the
+	// readiness sentinels as its underlying I/O error.
+	if errors.Is(err, mutationlog.ErrWALIndeterminate) ||
+		errors.Is(err, mutationlog.ErrPublicationInterrupted) {
+		return false
+	}
+	// CommitBoundaryWithPostRingPublication returns these only from its
+	// readiness and sequence checks, before WAL.Write.
+	return errors.Is(err, mutationlog.ErrClosed) ||
+		errors.Is(err, mutationlog.ErrSeqExhausted) ||
+		errors.Is(err, mutationlog.ErrLegacyWALUncertain)
+}
+
+func receiptBaselineWALFailureRequiresFailStop(err error) bool {
+	if !receiptBaselineMarkerDefinitelyAbsent(err) {
+		return true
+	}
+	var aborted *mutationlog.DefiniteWALAbort
+	// Legacy uncertainty predates this candidate, so discard the candidate
+	// while keeping the serving runtime fail-stopped.
+	return !errors.As(err, &aborted) && errors.Is(err, mutationlog.ErrLegacyWALUncertain)
 }
 
 func nextReceiptRuntimeGeneration(previous [16]byte) ([16]byte, error) {

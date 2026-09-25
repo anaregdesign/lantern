@@ -875,6 +875,106 @@ func TestInstallReceiptBaselineWALFailureRollsBackStore(t *testing.T) {
 	}
 }
 
+func TestInstallReceiptBaselineClosedLogCleansRejectedCandidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil)
+
+	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	committedDigest := runtime.receipt.committedBaselineDigest
+	committedGeneration := runtime.receipt.generation
+	committedSidecars := receiptBaselineSidecars(t, path)
+	if len(committedSidecars) != 1 {
+		t.Fatalf("committed sidecars = %v, want one", committedSidecars)
+	}
+	if err := runtime.log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	image.codec.raw = []byte("candidate-rejected-by-closed-log")
+	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); !errors.Is(err, mutationlog.ErrClosed) {
+		t.Fatalf("closed-log baseline error = %v, want ErrClosed", err)
+	}
+	if primary.receiptCommitFaulted {
+		t.Fatal("definite closed-log rejection faulted receipt publication")
+	}
+	if runtime.receipt.committedBaselineDigest != committedDigest {
+		t.Fatal("closed-log rejection changed committed digest")
+	}
+	if runtime.receipt.generation != committedGeneration {
+		t.Fatal("closed-log rejection rotated generation")
+	}
+	if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 ||
+		sidecars[0] != committedSidecars[0] {
+		t.Fatalf("closed-log rejection sidecars = %v, want %v", sidecars, committedSidecars)
+	}
+}
+
+func TestInstallReceiptBaselineLegacyWALUncertaintyCleansRejectedCandidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil)
+
+	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	committedDigest := runtime.receipt.committedBaselineDigest
+	committedGeneration := runtime.receipt.generation
+	committedSidecars := receiptBaselineSidecars(t, path)
+	if len(committedSidecars) != 1 {
+		t.Fatalf("committed sidecars = %v, want one", committedSidecars)
+	}
+
+	originalLog := runtime.log
+	uncertainLog := mutationlog.New(mutationlog.Options{
+		Capacity: 8,
+		WAL: receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
+			return errors.New("injected legacy WAL uncertainty")
+		}),
+	})
+	runtime.log = uncertainLog
+	defer func() {
+		runtime.log = originalLog
+		_ = uncertainLog.Close()
+	}()
+	if _, err := uncertainLog.Append("legacy", image.cutoff); err == nil {
+		t.Fatal("legacy append unexpectedly succeeded")
+	}
+	primary = runtime.NewLanternService(nil)
+
+	image.codec.raw = []byte("candidate-rejected-by-legacy-uncertainty")
+	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); !errors.Is(err, mutationlog.ErrLegacyWALUncertain) {
+		t.Fatalf("legacy-uncertain baseline error = %v, want ErrLegacyWALUncertain", err)
+	}
+	assertReceiptBaselinePublicationFault(t, primary)
+	if runtime.receipt.committedBaselineDigest != committedDigest {
+		t.Fatal("legacy-uncertain rejection changed committed digest")
+	}
+	if runtime.receipt.generation != committedGeneration {
+		t.Fatal("legacy-uncertain rejection rotated generation")
+	}
+	if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 ||
+		sidecars[0] != committedSidecars[0] {
+		t.Fatalf("legacy-uncertain rejection sidecars = %v, want %v", sidecars, committedSidecars)
+	}
+}
+
 func TestInstallReceiptBaselineBoundsLiveSidecarRetention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	config := baselineRuntimeTestConfig(path)
