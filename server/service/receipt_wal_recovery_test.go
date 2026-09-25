@@ -48,6 +48,27 @@ func writeReceiptWALAuditEntries(t *testing.T, entries ...mutationlog.Entry) str
 	return path
 }
 
+func requireReceiptWALEvidence(t *testing.T, candidate *receiptWALRecoveryCandidate, want []mutationreceipt.Receipt) {
+	t.Helper()
+	state, err := candidate.receipts.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Receipts) != len(want) {
+		t.Fatalf("recovered receipt evidence count = %d, want %d", len(state.Receipts), len(want))
+	}
+	byID := make(map[mutationreceipt.ID]mutationreceipt.Receipt, len(state.Receipts))
+	for _, receipt := range state.Receipts {
+		byID[receipt.ID] = receipt
+	}
+	for i, receipt := range want {
+		got, ok := byID[receipt.ID]
+		if !ok || !reflect.DeepEqual(got.Result, receipt.Result) || got.Index != receipt.Index || got.Group != receipt.Group {
+			t.Fatalf("receipt evidence %d = %+v, %v; want %+v", i, got, ok, receipt)
+		}
+	}
+}
+
 func auditGraphEntry(seq uint64) mutationlog.Entry {
 	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{
 		PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "graph-only"}},
@@ -191,20 +212,44 @@ func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T)
 		t.Fatalf("recovered Store high-water = %d, before replay time %d", highWater, recoveryTime.UnixMilli())
 	}
 	want := receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts
-	for i, receipt := range want {
-		status, got, err := candidate.knownReceiptStatus(receipt.ID, time.Now())
-		if err != nil || status != mutationreceipt.Confirmed || !reflect.DeepEqual(got.Result, receipt.Result) {
-			t.Fatalf("receipt %d = %v, %+v, %v; want original %+v", i, status, got, err, receipt)
-		}
-	}
+	requireReceiptWALEvidence(t, candidate, want)
 	if want[0].Result[0] != 1 || want[1].Result[0] != 0 || want[2].Result[0] != 0 {
 		t.Fatalf("fixture lacks original true/false outcomes: %+v", want)
 	}
-	absent := want[0].ID
-	absent[len(absent)-1] ^= 1
-	status, got, err := candidate.knownReceiptStatus(absent, time.Now())
-	if err != nil || status != mutationreceipt.NoLongerProvable || !reflect.DeepEqual(got, mutationreceipt.Receipt{}) {
-		t.Fatalf("absent WAL ID = %v, %+v, %v; want UNKNOWN", status, got, err)
+}
+
+func TestReceiptWALRecoveryCandidateCannotCertifyStatusAfterClockRollback(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	want := receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts
+	base, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := base.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ClockHighWaterMillis = time.Now().UnixMilli()
+	state.Receipts = want
+	previous, err := mutationreceipt.NewFromSnapshot(config, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forward := time.UnixMilli(want[0].DeadlineMillis + 1)
+	if status, _, err := previous.Lookup(want[0].ID, forward); err != nil || status != mutationreceipt.NoLongerProvable {
+		t.Fatalf("original Store after forward clock = %v, %v; want expired", status, err)
+	}
+	// This clock advance had no WAL frame. With a rolled-back wall clock,
+	// detached replay can retain the same committed bytes again. They are
+	// evidence of the original result, not a certified status or horizon.
+	path := writeReceiptWALAuditEntries(t, receiptEntry)
+	candidate, err := resumeReceiptWALCandidate(path, config, time.UnixMilli(want[0].DeadlineMillis-1), mutationlog.Options{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireReceiptWALEvidence(t, candidate, want)
+	if recovered := candidate.receipts.Stats().HighWaterMillis; recovered >= forward.UnixMilli() {
+		t.Fatalf("detached Store unexpectedly recovered unlogged clock high-water %d", recovered)
 	}
 }
 
@@ -453,12 +498,7 @@ func TestReceiptWALRecoveryCandidatePreservesAddOmissionsAcrossDelete(t *testing
 	if got, ok := candidate.graph.GetWeight("tail", "present"); ok || got != 0 {
 		t.Fatalf("omitted post-Delete Add was resurrected: %g, %v", got, ok)
 	}
-	for _, receipt := range receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts {
-		status, _, err := candidate.knownReceiptStatus(receipt.ID, time.Now())
-		if err != nil || status != mutationreceipt.Confirmed {
-			t.Fatalf("recovered original Delete result = %v, %v", status, err)
-		}
-	}
+	requireReceiptWALEvidence(t, candidate, receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts)
 	if seq, ok := candidate.log.LastSeq(); !ok || seq != 3 {
 		t.Fatalf("mixed Add/Delete log frontier = %d, %v", seq, ok)
 	}
@@ -586,12 +626,7 @@ func TestReceiptWALRecoveryCandidateReplaysAcceptedEdgeDeleteEffects(t *testing.
 	if seq, ok := candidate.log.LastSeq(); !ok || seq != 5 || len(candidate.origins.States()) != 5 {
 		t.Fatalf("Edge Delete log/origin frontier = %d, %v, %+v", seq, ok, candidate.origins.States())
 	}
-	for _, receipt := range receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts {
-		status, _, err := candidate.knownReceiptStatus(receipt.ID, time.Now())
-		if err != nil || status != mutationreceipt.Confirmed {
-			t.Fatalf("interleaved receipt = %v, %v", status, err)
-		}
-	}
+	requireReceiptWALEvidence(t, candidate, receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts)
 }
 
 func TestReceiptWALRecoveryCandidateReplaysZeroAcceptedDeleteEffect(t *testing.T) {

@@ -197,24 +197,9 @@ func receiptWALDecisionCost(receipt mutationreceipt.Receipt) uint64 {
 type receiptWALRecoveryCandidate struct {
 	graph       *graphcache.GraphCache[string, *pb.Vertex]
 	receipts    *mutationreceipt.Store
-	knownIDs    map[mutationreceipt.ID]struct{}
 	origins     *originStateTracker
 	log         *mutationlog.Log
 	hlcFrontier hlc.Timestamp // evidence for a future restored Clock, not a live Clock
-}
-
-// knownReceiptStatus can confirm an exact retained result. An absent ID is
-// always UNKNOWN after restart, including an otherwise fresh ID in the old
-// epoch; WAL rows alone cannot prove the previous Store clock high-water.
-func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, now time.Time) (mutationreceipt.Status, mutationreceipt.Receipt, error) {
-	if _, known := c.knownIDs[id]; !known {
-		return mutationreceipt.NoLongerProvable, mutationreceipt.Receipt{}, nil
-	}
-	status, receipt, err := c.receipts.Lookup(id, now)
-	if status == mutationreceipt.NotYetObserved {
-		return mutationreceipt.NoLongerProvable, mutationreceipt.Receipt{}, nil
-	}
-	return status, receipt, err
 }
 
 // resumeReceiptWALCandidate validates a complete genesis WAL before making
@@ -367,10 +352,6 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 	if err := graph.CompleteSearchIndexRecovery(); err != nil {
 		_ = closer.Close()
 		return nil, fmt.Errorf("receipt WAL search rebuild: %w", err)
-	}
-	candidate.knownIDs = make(map[mutationreceipt.ID]struct{}, len(audit.knownReceipts))
-	for _, receipt := range audit.knownReceipts {
-		candidate.knownIDs[receipt.ID] = struct{}{}
 	}
 	if err := closer.Close(); err != nil {
 		return nil, fmt.Errorf("receipt WAL close after detached replay: %w", err)
