@@ -479,23 +479,33 @@ malformed encodings without comparing bytes from a particular protobuf
 runtime; field and map-entry order remain semantically irrelevant. The v1 codec
 pins the reachable graph schema and rejects unreviewed proto changes. The
 private [whole-state capture](../../server/service/receipt_snapshot_capture.go)
-now copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local
-log seq, and an HLC frontier under one exclusive service publication cut. It
-clones mutable Vertex protobuf values before releasing that cut and rejects a
-publication fault or incomplete Store export. Before sampling the cutoff, it
-restores the service clock floor from the captured Store high-water under that
-same cut; an unrepresentable high-water fails closed. The opt-in replication Snapshot
+copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local log
+seq, and an HLC frontier under one exclusive service publication cut.
+`ReceiptWholeStateSource.Capture` returns that detached in-memory cut only.
+`ReceiptWholeStateSource.CaptureForBackup` acquires the service's exclusive
+committed view exactly once and, before releasing it, captures the same
+graph/Store/origins/HLC/local-seq cut together with the owned runtime's live
+FileWAL witness for that exact local sequence. It returns those values as one
+detached result after validation. It rejects a graph-only runtime, a closed or
+foreign runtime owner, a publication or receipt-commit fault, cancellation,
+and unusable, legacy-uncertain, sequence-mismatched, or otherwise uncertified
+Log/FileWAL state. Every failure returns neither a partial whole-state image
+nor a witness.
+Both capture paths clone mutable Vertex protobuf values before releasing the
+cut. Before sampling the cutoff, they restore the service clock floor from the
+captured Store high-water under that same cut; an incomplete Store export or
+unrepresentable high-water fails closed. The opt-in replication Snapshot
 producer and the private
 [archive producer](../../server/backup/receipt_archive_producer.go) each call
-this read-only source once and encode only that detached capture. The archive
-producer also decodes the complete archive before returning bytes. The
-replication producer is bound to the durable runtime and consumed only by its
-private peers; the archive producer remains outside the production backup
-scheduler. Neither producer alone certifies a durable recovery frontier. The
-service binds the first private
-coordinator's
-Store pointer, rejecting a different Store even with matching policy; a
-misconfigured first binding therefore fails closed on later construction.
+only `Capture` once and encode only that detached capture; neither consumes
+`CaptureForBackup` or its witness. The archive producer also decodes the
+complete archive before returning bytes. The replication producer is bound to
+the durable runtime and consumed only by its private peers; the archive
+producer remains outside the production backup scheduler. Neither producer
+alone certifies a durable recovery frontier. The service binds the first
+private coordinator's Store pointer, rejecting a different Store even with
+matching policy; a misconfigured first binding therefore fails closed on later
+construction.
 Direct Core Store access remains outside the service publication gate.
 The private [archive staging path](../../server/backup/receipt_archive_stage.go)
 decodes the complete `RECEIPT_V1` container before reconstructing a fresh,
@@ -546,14 +556,18 @@ recorded tip. This byte pairing does not prove that the archive source used
 that FileWAL, that commits after the recorded tip were retained, or that the
 runtime tip journal belongs to the archive. The caller must own a non-mutating
 WAL path during each inspection; no production path creates or consumes the
-manifest.
+manifest. This stable-path, two-pass inspection helper remains separate from
+the lease-owned live witness: it does not inspect a mutating FileWAL and is not
+part of `CaptureForBackup`.
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
 recovery still needs an atomic installer and proof that the WAL covers the
 captured frontier or an epoch rollover. The installer
 must validate and install all sections together before serving. Total-cluster
 restore still rotates the active epoch unless a complete durable WAL proves
-the exact current frontier.
+the exact current frontier. The archive producer, production backup scheduler,
+and restore paths do not consume `CaptureForBackup` or its live witness yet;
+this prerequisite therefore makes no same-epoch archive-restore claim.
 The internal Store can now take an optional synchronous
 `ClockHighWaterSink`: it persists each higher observed millisecond before
 Begin/Lookup changes in-memory state, and a sink error permanently faults
@@ -572,17 +586,30 @@ success. On restart it verifies the complete attested prefix and rejects a
 valid-looking WAL truncation or changed frame; a fully validated extra suffix
 may be attested before serving, since the previous process may have crashed
 between WAL fsync and tip publication. The caller must bind the journal to
-the active epoch/policy and keep it under the same path lease.
+the active epoch/policy and keep it under the same path lease. The owned
+FileWAL also maintains the SHA-256 of its exact raw byte prefix across fresh
+creation, each successful synced write, and resume. Once both the WAL and its
+bound verified tip journal are synced at the same frontier, it can return an
+immutable live witness containing local sequence, byte offset, raw-prefix
+SHA-256, and rolling chain digest. A WAL or tip-journal failure leaves the
+FileWAL unusable and cannot expose a success-shaped witness.
 A private owned recovery candidate requires both clock and tip journals under
 that lease, stages the effect-complete WAL graph/Store/origins, binds the Store
 to the clock journal, and resumes a tip-certified appendable Log whose bounded
 tail matches the detached replay. It closes Log, both journals, and lease on
-discard. A matching tip does not certify the archive cut. The private
-production runtime adds a fixed-size checksummed `.generation` sidecar bound
-to the canonical WAL path, epoch, policy fingerprint, and stable replication
-NodeID. Fresh mode creates one opaque nonzero generation with exclusive file
-creation; restart requires that exact sidecar and rejects missing, corrupt,
-zero, or mismatched metadata, including a changed NodeID.
+discard. The candidate retains opaque provenance for the exact Log, FileWAL,
+and canonical path. The runtime can sample it only through that candidate's
+active lease and rejects a different runtime/service owner, Log or FileWAL,
+path, sequence, closed or unusable Log, or legacy-WAL uncertainty. A matching
+tip or standalone live witness still does not certify an archive cut;
+`CaptureForBackup` is the service-owned composition seam that binds the
+witness to one committed in-memory cut, and no archive or restore path
+consumes that combined result yet. The private production runtime adds a
+fixed-size checksummed `.generation` sidecar bound to the canonical WAL path,
+epoch, policy fingerprint, and stable replication NodeID. Fresh mode creates
+one opaque nonzero generation with exclusive file creation; restart requires
+that exact sidecar and rejects missing, corrupt, zero, or mismatched metadata,
+including a changed NodeID.
 A companion private fresh candidate checks an empty staged GraphCache and
 search/index policy before creating any files, then creates WAL, tip, and
 clock journal under one lease and binds the empty Store and appendable Log.
