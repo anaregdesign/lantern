@@ -1527,6 +1527,14 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 }
 
 func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
+	if request == nil {
+		request = &pb.AddEdgeRequest{}
+	}
+	if request.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(request.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	batch := &pb.AddEdgesRequest{
 		Edges:          []*pb.Edge{request.GetEdge()},
 		ReceiptContext: request.GetReceiptContext(),

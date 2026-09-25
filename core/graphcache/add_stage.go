@@ -36,16 +36,25 @@ func (c *GraphCache[S, T]) planStagedEdgeAddLocked(
 ) ([]*stagedEdgeAddPlan[S], []float32, []bool, error) {
 	plans := make([]*stagedEdgeAddPlan[S], 0, len(items))
 	byKey := make(map[EdgeKey[S]]*stagedEdgeAddPlan[S], len(items))
+	var rejectedEffective map[EdgeKey[S]]float32
 	effective := make([]float32, len(items))
 	accepted := make([]bool, len(items))
 
 	for i, item := range items {
 		key := EdgeKey[S]{Tail: item.Tail, Head: item.Head}
 		if !c.edgeAddWriteAllowedLocked(item.Tail, item.Head, ts) {
+			if cached, ok := rejectedEffective[key]; ok {
+				effective[i] = cached
+				continue
+			}
 			if before := c.edges.bucket(item.Tail, item.Head); before != nil {
 				after := cloneWeightForStaging(before)
 				effective[i], _, _ = after.snapshotAt(now)
 			}
+			if rejectedEffective == nil {
+				rejectedEffective = make(map[EdgeKey[S]]float32)
+			}
+			rejectedEffective[key] = effective[i]
 			continue
 		}
 		plan := byKey[key]

@@ -2,12 +2,12 @@ package service
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"math"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -20,15 +20,39 @@ func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID) ([32]by
 	if edge == nil || contribID.IsZero() {
 		return [32]byte{}, fmt.Errorf("nil Edge or zero ContribID")
 	}
-	item := &pb.ReplicatedReceiptEdgeAddItem{
-		Original:  proto.Clone(edge).(*pb.Edge),
-		ContribId: append([]byte(nil), contribID[:]...),
+	if edge.GetTail() == "" || edge.GetHead() == "" ||
+		!utf8.ValidString(edge.GetTail()) || !utf8.ValidString(edge.GetHead()) ||
+		len(edge.GetTail()) > receiptVertexWALMaxBytes ||
+		len(edge.GetHead()) > receiptVertexWALMaxBytes {
+		return [32]byte{}, fmt.Errorf("Edge Add identity must be nonempty bounded UTF-8")
 	}
-	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(item)
-	if err != nil {
-		return [32]byte{}, err
+	weight := float64(edge.GetWeight())
+	if math.IsNaN(weight) || math.IsInf(weight, 0) {
+		return [32]byte{}, fmt.Errorf("Edge Add weight must be finite")
 	}
-	return sha256.Sum256(raw), nil
+	if edge.GetExpiration() != nil && edge.GetExpiration().CheckValid() != nil {
+		return [32]byte{}, fmt.Errorf("Edge Add expiration is invalid")
+	}
+	if err := rejectProtoUnknownFields(edge.ProtoReflect()); err != nil {
+		return [32]byte{}, fmt.Errorf("Edge Add %w", err)
+	}
+	canonical := make([]byte, 0, 66+len(edge.GetTail())+len(edge.GetHead()))
+	canonical = append(canonical, byte(mutationreceipt.AddEdge))
+	canonical = appendReceiptCanonicalString(canonical, edge.GetTail())
+	canonical = appendReceiptCanonicalString(canonical, edge.GetHead())
+	canonical = binary.BigEndian.AppendUint32(canonical, math.Float32bits(edge.GetWeight()))
+	if edge.GetExpiration() == nil {
+		canonical = append(canonical, 0)
+	} else {
+		canonical = append(canonical, 1)
+		canonical = appendReceiptCanonicalTime(
+			canonical,
+			edge.GetExpiration().GetSeconds(),
+			edge.GetExpiration().GetNanos(),
+		)
+	}
+	canonical = appendReceiptCanonicalBytes(canonical, contribID[:])
+	return mutationreceipt.IntentDigest(canonical), nil
 }
 
 func receiptEdgeAddMutation(e *graphAddEffectEnvelope) *pb.Mutation {

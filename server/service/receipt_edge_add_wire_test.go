@@ -1,14 +1,91 @@
 package service
 
 import (
+	"encoding/hex"
+	"math"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func TestReceiptEdgeAddDigestCanonical(t *testing.T) {
+	var contribID graphcache.ContribID
+	for i := range contribID {
+		contribID[i] = byte(i + 1)
+	}
+	edge := &pb.Edge{
+		Tail: "tail", Head: "head", Weight: -2.5,
+		Expiration: &timestamppb.Timestamp{Seconds: 1700000000, Nanos: 123456789},
+	}
+	digest, err := receiptEdgeAddDigest(edge, contribID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "f464e5c4ad38ff70f3b0ff038f04d29ac3f248f99e54ab48704081754c6ba19e"
+	if got := hex.EncodeToString(digest[:]); got != want {
+		t.Fatalf("canonical Add digest = %s, want %s", got, want)
+	}
+
+	for _, mutate := range []func(*pb.Edge, *graphcache.ContribID){
+		func(edge *pb.Edge, _ *graphcache.ContribID) { edge.Tail = "tail-2" },
+		func(edge *pb.Edge, _ *graphcache.ContribID) { edge.Head = "head-2" },
+		func(edge *pb.Edge, _ *graphcache.ContribID) {
+			edge.Weight = math.Float32frombits(math.Float32bits(edge.Weight) ^ 1)
+		},
+		func(edge *pb.Edge, _ *graphcache.ContribID) { edge.Expiration.Nanos++ },
+		func(_ *pb.Edge, contribID *graphcache.ContribID) { contribID[0] ^= 1 },
+	} {
+		changedEdge := proto.Clone(edge).(*pb.Edge)
+		changedContribID := contribID
+		mutate(changedEdge, &changedContribID)
+		changed, err := receiptEdgeAddDigest(changedEdge, changedContribID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed == digest {
+			t.Fatal("semantic Add intent change preserved the digest")
+		}
+	}
+}
+
+func TestReceiptEdgeAddDigestRejectsInvalidIntent(t *testing.T) {
+	valid := &pb.Edge{Tail: "tail", Head: "head", Weight: 1}
+	unknown := proto.Clone(valid).(*pb.Edge)
+	unknown.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+	for _, tc := range []struct {
+		name      string
+		edge      *pb.Edge
+		contribID graphcache.ContribID
+	}{
+		{name: "nil Edge", contribID: graphcache.ContribID{1}},
+		{name: "zero ContribID", edge: valid},
+		{name: "empty tail", edge: &pb.Edge{Head: "head", Weight: 1}, contribID: graphcache.ContribID{1}},
+		{name: "empty head", edge: &pb.Edge{Tail: "tail", Weight: 1}, contribID: graphcache.ContribID{1}},
+		{name: "NaN", edge: &pb.Edge{Tail: "tail", Head: "head", Weight: float32(math.NaN())}, contribID: graphcache.ContribID{1}},
+		{name: "infinity", edge: &pb.Edge{Tail: "tail", Head: "head", Weight: float32(math.Inf(1))}, contribID: graphcache.ContribID{1}},
+		{
+			name: "invalid expiration",
+			edge: &pb.Edge{
+				Tail: "tail", Head: "head", Weight: 1,
+				Expiration: &timestamppb.Timestamp{Seconds: 253402300800},
+			},
+			contribID: graphcache.ContribID{1},
+		},
+		{name: "unknown field", edge: unknown, contribID: graphcache.ContribID{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := receiptEdgeAddDigest(tc.edge, tc.contribID); err == nil {
+				t.Fatal("invalid Add intent was hashed")
+			}
+		})
+	}
+}
 
 func committedReceiptEdgeAddEnvelope(
 	t *testing.T,

@@ -132,6 +132,30 @@ func TestValidationInterceptor_RejectHookFiresPerReason(t *testing.T) {
 	}
 }
 
+func TestValidationInterceptorValidatesSingularAddEdge(t *testing.T) {
+	v := NewValidationInterceptor(ValidationLimits{MaxKeyLen: 4, MaxBatchSize: 2})
+	for _, tc := range []struct {
+		name string
+		edge *pb.Edge
+	}{
+		{name: "nil"},
+		{name: "empty tail", edge: &pb.Edge{Head: "b", Weight: 1}},
+		{name: "empty head", edge: &pb.Edge{Tail: "a", Weight: 1}},
+		{name: "long key", edge: &pb.Edge{Tail: "abcde", Head: "b", Weight: 1}},
+		{name: "NaN", edge: &pb.Edge{Tail: "a", Head: "b", Weight: float32(math.NaN())}},
+		{name: "infinity", edge: &pb.Edge{Tail: "a", Head: "b", Weight: float32(math.Inf(1))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := connectCallValidator(t, v, &pb.AddEdgeRequest{Edge: tc.edge}); err == nil {
+				t.Fatal("invalid singular AddEdge passed validation")
+			}
+		})
+	}
+	connectCallValidatorOK(t, v, &pb.AddEdgeRequest{
+		Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 1},
+	})
+}
+
 func TestValidationInterceptorReceiptStatusBatchUsesLowerEffectiveLimit(t *testing.T) {
 	id := make([]byte, 49)
 	tests := []struct {

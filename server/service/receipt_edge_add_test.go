@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -213,6 +214,47 @@ func TestPublicReceiptAddEdgeForwardsOneReceiptItem(t *testing.T) {
 	}
 	if weight, live := runtime.graph.GetWeight("singular", "edge"); !live || weight != 2.5 {
 		t.Fatalf("singular duplicate changed graph = (%v, %v)", weight, live)
+	}
+}
+
+func TestPublicReceiptAddEdgeRejectsInvalidEdge(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	for i, edge := range []*pb.Edge{
+		nil,
+		{Head: "head", Weight: 1},
+		{Tail: "tail", Weight: 1},
+		{Tail: "tail", Head: "head", Weight: float32(math.NaN())},
+		{Tail: "tail", Head: "head", Weight: float32(math.Inf(1))},
+	} {
+		batch := publicReceiptEdgeAddRequest(t, runtime, byte(0x48+i), &pb.Edge{
+			Tail: "valid", Head: "valid", Weight: 1,
+		})
+		request := &pb.AddEdgeRequest{
+			Edge:           edge,
+			ContribId:      batch.GetContribIds()[0],
+			ReceiptContext: batch.GetReceiptContext(),
+		}
+		if _, err := svc.AddEdge(t.Context(), request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("invalid singular receipt Add %d = %v, want InvalidArgument", i, err)
+		}
+	}
+	unknown := publicReceiptEdgeAddRequest(t, runtime, 0x4f, &pb.Edge{
+		Tail: "unknown", Head: "field", Weight: 1,
+	})
+	request := &pb.AddEdgeRequest{
+		Edge:           unknown.GetEdges()[0],
+		ContribId:      unknown.GetContribIds()[0],
+		ReceiptContext: unknown.GetReceiptContext(),
+	}
+	request.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x01})
+	if _, err := svc.AddEdge(t.Context(), request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unknown singular receipt Add = %v, want InvalidArgument", err)
+	}
+	if svc.log.Len() != 0 || runtime.receipt.store.Stats().Entries != 0 {
+		t.Fatal("invalid singular receipt Adds changed the log or Store")
+	}
+	if _, live := runtime.graph.GetWeight("unknown", "field"); live {
+		t.Fatal("unknown singular receipt Add changed the graph")
 	}
 }
 
@@ -662,7 +704,7 @@ func TestReceiptEdgeAddRetiredEpochStatusContinuity(t *testing.T) {
 	}
 }
 
-func TestPublicReceiptEdgeAddBornExpiredResultIsStable(t *testing.T) {
+func TestPublicReceiptEdgeAddBornExpiredLiveResultIsStable(t *testing.T) {
 	runtime, svc, _ := newActivatedReceiptService(t, 8)
 	request := publicReceiptEdgeAddRequest(t, runtime, 0x7d, &pb.Edge{
 		Tail: "expired", Head: "edge", Weight: 11,
@@ -672,21 +714,21 @@ func TestPublicReceiptEdgeAddBornExpiredResultIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.GetEffectiveWeights()) != 1 || response.GetEffectiveWeights()[0] != 11 {
-		t.Fatalf("born-expired Add result = %+v, want original effective weight 11", response)
+	if len(response.GetEffectiveWeights()) != 1 || response.GetEffectiveWeights()[0] != 0 {
+		t.Fatalf("born-expired Add result = %+v, want live effective weight 0", response)
 	}
 	if _, live := runtime.graph.GetWeight("expired", "edge"); live {
 		t.Fatal("born-expired Add became graph-visible")
 	}
 	duplicate, err := svc.AddEdges(t.Context(), proto.Clone(request).(*pb.AddEdgesRequest))
-	if err != nil || duplicate.GetEffectiveWeights()[0] != 11 {
+	if err != nil || duplicate.GetEffectiveWeights()[0] != 0 {
 		t.Fatalf("born-expired duplicate = %+v, %v", duplicate, err)
 	}
 	status, err := svc.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{
 		OperationId: request.GetReceiptContext().GetOperationIds()[0],
 	})
 	if err != nil ||
-		status.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != 11 {
+		status.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != 0 {
 		t.Fatalf("born-expired status = %+v, %v", status, err)
 	}
 }
