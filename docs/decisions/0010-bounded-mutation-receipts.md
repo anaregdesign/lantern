@@ -440,9 +440,8 @@ must own a non-mutating WAL path during each inspection; no production path
 creates or consumes the manifest.
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
-recovery still needs an
-atomic installer, proof that the WAL covers the captured frontier or an epoch
-rollover, and accepted-effect evidence for graph-only Deletes. The installer
+recovery still needs an atomic installer and proof that the WAL covers the
+captured frontier or an epoch rollover. The installer
 must validate and install all sections together before serving. Total-cluster
 restore still rotates the active epoch unless a complete durable WAL proves
 the exact current frontier.
