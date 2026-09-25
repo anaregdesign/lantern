@@ -170,6 +170,112 @@ func NewRetiredCatalogFromSnapshot(config RetiredCatalogConfig, state RetiredCat
 	return catalog, nil
 }
 
+// NewRetiredCatalogFromUnion returns the exact union of complete retired
+// catalog snapshots. Exact duplicate rows are idempotent; conflicting
+// policies, receipt evidence, group positions, or contribution bindings fail
+// closed. Aggregate capacity is charged to the distinct raw union before the
+// caller's clock high-water prunes expired rows. Inputs and existing catalogs
+// remain detached and unchanged.
+func NewRetiredCatalogFromUnion(
+	config RetiredCatalogConfig,
+	states ...RetiredCatalogSnapshot,
+) (*RetiredCatalog, error) {
+	empty, err := NewRetiredCatalog(config)
+	if err != nil {
+		return nil, err
+	}
+	for _, state := range states {
+		if _, err := NewRetiredCatalogFromSnapshot(config, state); err != nil {
+			return nil, err
+		}
+	}
+
+	union := make(map[Epoch]*retiredCatalogEpoch)
+	entries := 0
+	byteCount := uint64(0)
+	for _, state := range states {
+		for _, member := range state.Epochs {
+			epoch := member.Policy.Epoch
+			merged := union[epoch]
+			if merged == nil {
+				merged = &retiredCatalogEpoch{
+					policy:      member.Policy,
+					fingerprint: member.State.PolicyFingerprint,
+					receipts:    make(map[ID]Receipt),
+				}
+				union[epoch] = merged
+			} else if merged.policy != member.Policy {
+				return nil, ErrInvalidRetiredCatalogSnapshot
+			}
+
+			for _, receipt := range member.State.Receipts {
+				if existing, ok := merged.receipts[receipt.ID]; ok {
+					if !sameRetiredReceipt(existing, receipt) {
+						return nil, ErrInvalidRetiredCatalogSnapshot
+					}
+					continue
+				}
+				if entries == empty.maxEntries {
+					return nil, ErrRetiredCatalogCapacity
+				}
+				cost := receipt.cost()
+				if cost > empty.maxBytes || byteCount > empty.maxBytes-cost {
+					return nil, ErrRetiredCatalogCapacity
+				}
+				entries++
+				byteCount += cost
+				owned := cloneReceipt(receipt)
+				merged.receipts[owned.ID] = owned
+			}
+		}
+	}
+
+	epochs := make([]Epoch, 0, len(union))
+	for epoch := range union {
+		epochs = append(epochs, epoch)
+	}
+	sortEpochs(epochs)
+	canonical := RetiredCatalogSnapshot{
+		Version:              retiredCatalogSnapshotVersion,
+		ClockHighWaterMillis: empty.highWaterMS,
+		Epochs:               make([]RetiredEpochSnapshot, 0, len(epochs)),
+	}
+	for _, epoch := range epochs {
+		merged := union[epoch]
+		raw := make([]Receipt, 0, len(merged.receipts))
+		for _, receipt := range merged.receipts {
+			raw = append(raw, receipt)
+		}
+		sort.Slice(raw, func(i, j int) bool {
+			return bytes.Compare(raw[i].ID[:], raw[j].ID[:]) < 0
+		})
+		if err := validateSnapshotRelationships(raw); err != nil {
+			return nil, errors.Join(ErrInvalidRetiredCatalogSnapshot, err)
+		}
+
+		live := make([]Receipt, 0, len(raw))
+		for _, receipt := range raw {
+			if receipt.DeadlineMillis > empty.highWaterMS {
+				live = append(live, receipt)
+			}
+		}
+		if len(live) == 0 {
+			continue
+		}
+		canonical.Epochs = append(canonical.Epochs, RetiredEpochSnapshot{
+			Policy: merged.policy,
+			State: Snapshot{
+				Version:              snapshotVersion,
+				Epoch:                epoch,
+				PolicyFingerprint:    merged.fingerprint,
+				ClockHighWaterMillis: empty.highWaterMS,
+				Receipts:             live,
+			},
+		})
+	}
+	return NewRetiredCatalogFromSnapshot(config, canonical)
+}
+
 // Lookup returns Confirmed only for an exact known receipt that remains live
 // at the supplied nondecreasing clock high-water. Every absent or expired
 // retired ID is NoLongerProvable. Active-epoch IDs must be routed elsewhere.
@@ -287,4 +393,10 @@ func sortEpochs(epochs []Epoch) {
 	sort.Slice(epochs, func(i, j int) bool {
 		return bytes.Compare(epochs[i][:], epochs[j][:]) < 0
 	})
+}
+
+func sameRetiredReceipt(left, right Receipt) bool {
+	return left.Intent == right.Intent &&
+		left.DeadlineMillis == right.DeadlineMillis &&
+		bytes.Equal(left.Result, right.Result)
 }

@@ -51,9 +51,9 @@ type storeSnapshotState struct {
 
 // Snapshot returns receipt rows sorted by operation ID so equivalent Store
 // states have a deterministic representation. Result bytes are copied; the
-// caller may retain or mutate the returned value after this call. Until a
-// retired-epoch archive shape exists, a known old-epoch receipt fails the
-// whole export instead of creating an incomplete backup.
+// caller may retain or mutate the returned value after this call. Store
+// snapshots intentionally remain active-epoch-only; a known old-epoch receipt
+// fails the whole export instead of creating an incomplete backup.
 func (s *Store) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,9 +119,13 @@ func NewFromSnapshot(config Config, state Snapshot) (*Store, error) {
 	if state.ClockHighWaterMillis > s.highWaterMS {
 		s.highWaterMS = state.ClockHighWaterMillis
 	}
+	if len(state.Receipts) > s.maxEntries {
+		return nil, ErrInvalidSnapshot
+	}
+	if err := validateSnapshotRelationships(state.Receipts); err != nil {
+		return nil, err
+	}
 	snapshotBytes := uint64(0)
-	seenContributions := make(map[ContribID]struct{})
-	seenGroups := make(map[GroupID]*groupReceiptRows)
 	for i, receipt := range state.Receipts {
 		if i != 0 && bytes.Compare(state.Receipts[i-1].ID[:], receipt.ID[:]) >= 0 {
 			return nil, ErrInvalidSnapshot
@@ -130,27 +134,10 @@ func NewFromSnapshot(config Config, state Snapshot) (*Store, error) {
 			return nil, err
 		}
 		cost := receipt.cost()
-		if i >= s.maxEntries || cost > s.maxBytes-snapshotBytes {
+		if cost > s.maxBytes-snapshotBytes {
 			return nil, ErrInvalidSnapshot
 		}
 		snapshotBytes += cost
-		if receipt.HasContrib {
-			if _, exists := seenContributions[receipt.ContribID]; exists {
-				return nil, ErrInvalidSnapshot
-			}
-			seenContributions[receipt.ContribID] = struct{}{}
-		}
-		group := seenGroups[receipt.Group]
-		if group == nil {
-			group = &groupReceiptRows{count: receipt.Count, items: make(map[uint32]ID)}
-			seenGroups[receipt.Group] = group
-		} else if group.count != receipt.Count {
-			return nil, ErrInvalidSnapshot
-		}
-		if _, duplicate := group.items[receipt.Index]; duplicate {
-			return nil, ErrInvalidSnapshot
-		}
-		group.items[receipt.Index] = receipt.ID
 		// Expiry caused by a newer caller-owned clock is safe to apply during
 		// restore. The old ID remains non-executable because the high-water is
 		// retained even after its bytes are removed.
@@ -172,6 +159,31 @@ func NewFromSnapshot(config Config, state Snapshot) (*Store, error) {
 		s.bytes += owned.cost()
 	}
 	return s, nil
+}
+
+func validateSnapshotRelationships(receipts []Receipt) error {
+	seenContributions := make(map[ContribID]struct{})
+	seenGroups := make(map[GroupID]*groupReceiptRows)
+	for _, receipt := range receipts {
+		if receipt.HasContrib {
+			if _, exists := seenContributions[receipt.ContribID]; exists {
+				return ErrInvalidSnapshot
+			}
+			seenContributions[receipt.ContribID] = struct{}{}
+		}
+		group := seenGroups[receipt.Group]
+		if group == nil {
+			group = &groupReceiptRows{count: receipt.Count, items: make(map[uint32]ID)}
+			seenGroups[receipt.Group] = group
+		} else if group.count != receipt.Count {
+			return ErrInvalidSnapshot
+		}
+		if _, duplicate := group.items[receipt.Index]; duplicate {
+			return ErrInvalidSnapshot
+		}
+		group.items[receipt.Index] = receipt.ID
+	}
+	return nil
 }
 
 // BeginSnapshotInstall validates a complete same-epoch, same-policy snapshot
