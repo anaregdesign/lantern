@@ -291,7 +291,13 @@ adds a versioned kind discriminator for graph-only `Mutation`, private
 the receipt Edge Delete envelope, or the private receipt Vertex Put and exact
 Vertex Delete envelopes. Each Vertex receipt envelope carries the complete
 ordered original intent and immutable request-index-aligned result separately
-from the receiver-local accepted graph projection. Its ordinary graph kind
+from the receiver-local accepted graph projection. A relaying Vertex Put
+reconstructs the origin-authoritative effect from that original result rather
+than forwarding the relay's local projection. Live accepted values must match
+the original canonical intent bit-for-bit (including floating-point NaN
+payloads); only a live result with a finite absolute expiration may later be
+recorded as a barrier. A permanent live value cannot become a barrier. Its
+ordinary graph kind
 encodes protobuf plus an ordered sidecar for nil repeated-message slots,
 which protobuf otherwise turns into empty messages on decode. The decoder
 checks the exact kind, version, lengths, sidecar indexes, supported oneof
@@ -403,7 +409,10 @@ answer.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
 replay. Each receipt kind retains strict envelope validation and an 8 MiB body
-cap under the FileWAL frame's 32 MiB bound. The `FileWAL` payload decoder cannot
+cap under the FileWAL frame's 32 MiB bound. Vertex receipt decoders scan the
+raw protobuf framing and count item fields before unmarshalling; their
+10,000-item hard cap is the lower of the minimum-canonical-item byte ceiling
+and the default plural-RPC batch limit. The `FileWAL` payload decoder cannot
 see frame metadata, so a
 replay/restore visitor must additionally validate the frame HLC against the
 decoded graph or receipt HLC before applying state. The union is bound only to

@@ -8,8 +8,6 @@ import (
 	"sort"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -256,15 +254,33 @@ func replayReceiptEnvelopeGraph(
 		tx.Commit()
 		return nil
 	case *vertexDeleteReceiptEnvelope:
+		keys := make([]string, len(value.Accepted))
+		previous := -1
+		for i, accepted := range value.Accepted {
+			if accepted.Index <= previous || accepted.Index < 0 ||
+				accepted.Index >= len(value.OriginalKeys) ||
+				accepted.Key != value.OriginalKeys[accepted.Index] {
+				return fmt.Errorf("%w: accepted Vertex Delete projection is invalid", errReceiptWALUnion)
+			}
+			keys[i] = accepted.Key
+			previous = accepted.Index
+		}
 		tx, err := graph.BeginReplicatedVertexDelete(
-			value.OriginalKeys, value.HLC, value.TombstoneExpiration,
+			keys, value.HLC, value.TombstoneExpiration,
 		)
 		if err != nil {
 			return err
 		}
-		if !slices.Equal(tx.Result().Accepted, value.Accepted) {
+		replayed := tx.Result().Accepted
+		if len(replayed) != len(keys) {
 			tx.Abort()
 			return fmt.Errorf("%w: accepted Vertex Delete projection drift", errReceiptWALUnion)
+		}
+		for i, accepted := range replayed {
+			if accepted.Index != i || accepted.Key != keys[i] {
+				tx.Abort()
+				return fmt.Errorf("%w: accepted Vertex Delete projection drift", errReceiptWALUnion)
+			}
 		}
 		tx.Commit()
 		return nil
@@ -308,10 +324,17 @@ func vertexPutReplayProjectionMatches(
 		switch left.Outcome {
 		case graphcache.PutOutcomeAppliedAndLive:
 			if right.Outcome == graphcache.PutOutcomeExpired {
+				if left.Item.Value == nil {
+					return false
+				}
+				expiration := left.Item.Value.GetExpiration()
+				if expiration == nil || expiration.CheckValid() != nil {
+					return false
+				}
 				continue
 			}
 			if right.Outcome != graphcache.PutOutcomeAppliedAndLive ||
-				!proto.Equal(left.Item.Value, right.Item.Value) ||
+				!sameVertexPutCanonicalValue(left.Item.Value, right.Item.Value) ||
 				!left.Item.Expiration.Equal(right.Item.Expiration) {
 				return false
 			}

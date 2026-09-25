@@ -187,6 +187,20 @@ func TestVertexDeleteReceiptCoordinatorReceiptOnlyPublication(t *testing.T) {
 }
 
 func TestVertexDeleteReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
+	t.Run("Hard batch limit", func(t *testing.T) {
+		f := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x80}, 1, nil)
+		call := receiptVertexDeleteCall{
+			Group: mutationreceipt.GroupID{0x50},
+			Items: make([]receiptVertexDeleteItem, receiptVertexWALMaxItems+1),
+		}
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("batch-limit rejection = %v, want InvalidArgument", err)
+		}
+		if f.log.Len() != 0 || f.store.Stats().Entries != 0 {
+			t.Fatal("batch-limit rejection changed log or Store")
+		}
+	})
+
 	t.Run("Store capacity", func(t *testing.T) {
 		f := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x83}, 1, nil)
 		if err := f.cache.PutVertexWithExpiration("one", &pb.Vertex{Key: "one"}, time.Now().Add(time.Hour)); err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -788,6 +789,127 @@ func TestReceiptWALRecoveryCandidateReplaysAcceptedVertexDeleteEffects(t *testin
 	}
 	if seq, ok := candidate.log.LastSeq(); !ok || seq != 3 || len(candidate.origins.States()) != 3 {
 		t.Fatalf("Vertex Delete log/origin frontier = %d, %v, %+v", seq, ok, candidate.origins.States())
+	}
+}
+
+func TestReceiptWALRecoveryDoesNotReapplyOmittedVertexDeleteAfterBlockerExpires(t *testing.T) {
+	now := time.Now()
+	config := mutationreceipt.Config{
+		Epoch:      mutationreceipt.Epoch{0xd0},
+		Retention:  24 * time.Hour,
+		MaxEntries: 8,
+		MaxBytes:   1 << 20,
+	}
+	oldWall := now.Add(-3 * time.Hour).Truncate(time.Millisecond)
+	blocker := recoveryGraphDeleteEffectEntry(
+		t,
+		0xd1,
+		1,
+		oldWall.Add(time.Minute).UnixNano(),
+		&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+			DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"blocked"}},
+		}},
+		now.Add(-time.Hour),
+		0,
+	)
+	omitted := receiptVertexDeleteRecoveryEnvelope(
+		t,
+		config,
+		0xd2,
+		1,
+		oldWall.UnixNano(),
+		now.Add(time.Hour),
+		[]string{"blocked"},
+	)
+	path := writeReceiptWALAuditEntries(t, blocker, mutationlog.Entry{
+		HLC: omitted.HLC,
+		Op:  omitted,
+	})
+	candidate, err := resumeReceiptWALCandidate(
+		path,
+		config,
+		now,
+		mutationlog.Options{Capacity: 4},
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tombstone := range candidate.graph.SnapshotReplication().Tombstones.Vertices {
+		if tombstone.Key == "blocked" {
+			t.Fatalf("omitted older Vertex Delete was reapplied after blocker expiration: %+v", tombstone)
+		}
+	}
+	requireReceiptWALEvidence(t, candidate, omitted.Receipts)
+}
+
+func TestVertexPutReplayProjectionMatchesCanonicalEffects(t *testing.T) {
+	expiration := time.Now().Add(-time.Hour)
+	finite := &pb.Vertex{
+		Key:        "finite",
+		Value:      &pb.Vertex_String_{String_: "value"},
+		Expiration: timestamppb.New(expiration),
+	}
+	if !vertexPutReplayProjectionMatches(
+		[]graphcache.IndexedVertexPut[string, *pb.Vertex]{{
+			Index: 0, Outcome: graphcache.PutOutcomeAppliedAndLive,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: "finite", Value: finite, Expiration: expiration,
+			},
+		}},
+		[]graphcache.IndexedVertexPut[string, *pb.Vertex]{{
+			Index: 0, Outcome: graphcache.PutOutcomeExpired,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: "finite", CausalBarrier: true,
+			},
+		}},
+	) {
+		t.Fatal("finite live effect could not replay as an expired barrier")
+	}
+
+	permanent := &pb.Vertex{Key: "permanent"}
+	if vertexPutReplayProjectionMatches(
+		[]graphcache.IndexedVertexPut[string, *pb.Vertex]{{
+			Index: 0, Outcome: graphcache.PutOutcomeAppliedAndLive,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: "permanent", Value: permanent,
+			},
+		}},
+		[]graphcache.IndexedVertexPut[string, *pb.Vertex]{{
+			Index: 0, Outcome: graphcache.PutOutcomeExpired,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: "permanent", CausalBarrier: true,
+			},
+		}},
+	) {
+		t.Fatal("permanent live effect replayed as a barrier")
+	}
+
+	left := &pb.Vertex{
+		Key: "nan",
+		Value: &pb.Vertex_Float64{
+			Float64: math.Float64frombits(0x7ff8000000000001),
+		},
+	}
+	right := proto.Clone(left).(*pb.Vertex)
+	right.Value = &pb.Vertex_Float64{
+		Float64: math.Float64frombits(0x7ff8000000000002),
+	}
+	if vertexPutReplayProjectionMatches(
+		[]graphcache.IndexedVertexPut[string, *pb.Vertex]{{
+			Index: 0, Outcome: graphcache.PutOutcomeAppliedAndLive,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: "nan", Value: left,
+			},
+		}},
+		[]graphcache.IndexedVertexPut[string, *pb.Vertex]{{
+			Index: 0, Outcome: graphcache.PutOutcomeAppliedAndLive,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: "nan", Value: right,
+			},
+		}},
+	) {
+		t.Fatal("replay treated distinct NaN payload bits as equal")
 	}
 }
 

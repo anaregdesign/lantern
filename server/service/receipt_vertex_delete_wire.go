@@ -93,12 +93,13 @@ func decodeReceiptVertexDeleteMutation(m *pb.Mutation) (*vertexDeleteReceiptEnve
 		m.GetHlc() == nil || m.GetHlc().GetWallNs() <= 0 ||
 		len(m.GetHlc().GetNodeId()) != len(hlc.NodeID{}) ||
 		!bytes.Equal(m.GetOrigin(), m.GetHlc().GetNodeId()) ||
-		m.GetTombstoneExpiration() != nil || proto.Size(m) > receiptVertexWALMaxBytes ||
+		m.GetTombstoneExpiration() != nil ||
+		len(call.GetItems()) == 0 || len(call.GetItems()) > receiptVertexWALMaxItems ||
+		proto.Size(m) > receiptVertexWALMaxBytes ||
 		len(call.GetDeploymentEpoch()) != len(mutationreceipt.Epoch{}) ||
 		len(call.GetPolicyFingerprint()) != 32 ||
 		call.GetTombstoneExpiration() == nil ||
-		call.GetTombstoneExpiration().CheckValid() != nil ||
-		len(call.GetItems()) == 0 || len(call.GetItems()) > receiptVertexWALMaxBytes {
+		call.GetTombstoneExpiration().CheckValid() != nil {
 		return nil, receiptVertexDeleteWALError("invalid wire envelope header")
 	}
 	e := &vertexDeleteReceiptEnvelope{
@@ -173,6 +174,14 @@ func decodeReceiptVertexDeleteWAL(raw []byte) (mutationlog.MutationOp, error) {
 	if len(raw) == 0 || len(raw) > receiptVertexWALMaxBytes {
 		return nil, receiptVertexDeleteWALError("invalid payload size %d", len(raw))
 	}
+	itemCount, err := preflightReceiptVertexWAL(
+		raw,
+		receiptVertexDeleteMutationArm,
+		"graph.v1.ReplicatedReceiptVertexDelete",
+	)
+	if err != nil {
+		return nil, receiptVertexDeleteWALError("preflight: %v", err)
+	}
 	var mutation pb.Mutation
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(raw, &mutation); err != nil {
 		return nil, receiptVertexDeleteWALError("unmarshal: %v", err)
@@ -180,6 +189,9 @@ func decodeReceiptVertexDeleteWAL(raw []byte) (mutationlog.MutationOp, error) {
 	envelope, err := decodeReceiptVertexDeleteMutation(&mutation)
 	if err != nil {
 		return nil, err
+	}
+	if len(envelope.Receipts) != itemCount {
+		return nil, receiptVertexDeleteWALError("preflight item count drift")
 	}
 	canonical, err := encodeReceiptVertexDeleteWAL(envelope)
 	if err != nil {
@@ -218,7 +230,7 @@ func validateReceiptVertexDeleteWALEnvelope(e *vertexDeleteReceiptEnvelope) (int
 		return 0, receiptVertexDeleteWALError("invalid tombstone expiration")
 	}
 	count := len(e.Receipts)
-	if count == 0 || count > receiptVertexWALMaxBytes ||
+	if count == 0 || count > receiptVertexWALMaxItems ||
 		len(e.OriginalKeys) != count || len(e.Accepted) > count {
 		return 0, receiptVertexDeleteWALError("invalid request alignment or item count")
 	}

@@ -8,7 +8,9 @@ import (
 	"math"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -18,7 +20,24 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
-const receiptVertexWALMaxBytes = 8 << 20
+const (
+	receiptVertexWALMaxBytes = 8 << 20
+	// A valid canonical Delete item consumes at least 121 bytes on the wire
+	// (Put consumes at least 123). Keep the hard item cap below both the byte
+	// ceiling and the production default plural-RPC limit.
+	receiptVertexWALMinCanonicalItemBytes = 121
+	receiptVertexProductionBatchMaxItems  = 10_000
+	receiptVertexWALMaxItems              = min(
+		receiptVertexWALMaxBytes/receiptVertexWALMinCanonicalItemBytes,
+		receiptVertexProductionBatchMaxItems,
+	)
+)
+
+const (
+	receiptVertexPutMutationArm    protoreflect.FieldNumber = 16
+	receiptVertexDeleteMutationArm protoreflect.FieldNumber = 17
+	receiptVertexItemsField        protoreflect.FieldNumber = 4
+)
 
 var errReceiptVertexPutWAL = errors.New("service: invalid receipt Vertex Put WAL payload")
 
@@ -129,10 +148,11 @@ func decodeReceiptVertexPutMutation(m *pb.Mutation) (*vertexPutReceiptEnvelope, 
 		m.GetHlc() == nil || m.GetHlc().GetWallNs() <= 0 ||
 		len(m.GetHlc().GetNodeId()) != len(hlc.NodeID{}) ||
 		!bytes.Equal(m.GetOrigin(), m.GetHlc().GetNodeId()) ||
-		m.GetTombstoneExpiration() != nil || proto.Size(m) > receiptVertexWALMaxBytes ||
+		m.GetTombstoneExpiration() != nil ||
+		len(call.GetItems()) == 0 || len(call.GetItems()) > receiptVertexWALMaxItems ||
+		proto.Size(m) > receiptVertexWALMaxBytes ||
 		len(call.GetDeploymentEpoch()) != len(mutationreceipt.Epoch{}) ||
-		len(call.GetPolicyFingerprint()) != 32 ||
-		len(call.GetItems()) == 0 || len(call.GetItems()) > receiptVertexWALMaxBytes {
+		len(call.GetPolicyFingerprint()) != 32 {
 		return nil, receiptVertexPutWALError("invalid wire envelope header")
 	}
 	e := &vertexPutReceiptEnvelope{
@@ -230,6 +250,14 @@ func decodeReceiptVertexPutWAL(raw []byte) (mutationlog.MutationOp, error) {
 	if len(raw) == 0 || len(raw) > receiptVertexWALMaxBytes {
 		return nil, receiptVertexPutWALError("invalid payload size %d", len(raw))
 	}
+	itemCount, err := preflightReceiptVertexWAL(
+		raw,
+		receiptVertexPutMutationArm,
+		"graph.v1.ReplicatedReceiptVertexPut",
+	)
+	if err != nil {
+		return nil, receiptVertexPutWALError("preflight: %v", err)
+	}
 	var mutation pb.Mutation
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(raw, &mutation); err != nil {
 		return nil, receiptVertexPutWALError("unmarshal: %v", err)
@@ -237,6 +265,9 @@ func decodeReceiptVertexPutWAL(raw []byte) (mutationlog.MutationOp, error) {
 	envelope, err := decodeReceiptVertexPutMutation(&mutation)
 	if err != nil {
 		return nil, err
+	}
+	if len(envelope.Receipts) != itemCount {
+		return nil, receiptVertexPutWALError("preflight item count drift")
 	}
 	canonical, err := encodeReceiptVertexPutWAL(envelope)
 	if err != nil {
@@ -270,7 +301,7 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 		return 0, receiptVertexPutWALError("invalid origin, HLC, epoch, or policy metadata")
 	}
 	count := len(e.Receipts)
-	if count == 0 || count > receiptVertexWALMaxBytes ||
+	if count == 0 || count > receiptVertexWALMaxItems ||
 		len(e.Original) != count || len(e.Accepted) > count {
 		return 0, receiptVertexPutWALError("invalid request alignment or item count")
 	}
@@ -321,9 +352,10 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 		originalOutcome := pb.PutOutcome(e.Receipts[accepted.Index].Result[0])
 		switch accepted.Outcome {
 		case graphcache.PutOutcomeAppliedAndLive:
-			if originalOutcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
-				accepted.Item.CausalBarrier || accepted.Item.Value == nil ||
-				!proto.Equal(accepted.Item.Value, e.Original[accepted.Index]) ||
+			acceptedDigest, err := vertexPutDigest(accepted.Item.Value, e.IfAbsent)
+			if err != nil || originalOutcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
+				accepted.Item.CausalBarrier ||
+				acceptedDigest != e.Receipts[accepted.Index].Digest ||
 				!accepted.Item.Expiration.Equal(prototime.Expiration(e.Original[accepted.Index].GetExpiration())) {
 				return 0, receiptVertexPutWALError("accepted live effect drift at item %d", i)
 			}
@@ -331,6 +363,10 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 			if originalOutcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE &&
 				originalOutcome != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
 				return 0, receiptVertexPutWALError("accepted barrier result drift at item %d", i)
+			}
+			if originalOutcome == pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE &&
+				e.Original[accepted.Index].GetExpiration() == nil {
+				return 0, receiptVertexPutWALError("permanent live result became a barrier at item %d", i)
 			}
 			if !accepted.Item.CausalBarrier || accepted.Item.Value != nil ||
 				!accepted.Item.Expiration.IsZero() {
@@ -341,7 +377,7 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 		}
 	}
 	expectedGraph := receiptVertexPutGraphMutation(e)
-	if !proto.Equal(e.Mutation, expectedGraph) {
+	if !sameReceiptVertexPutGraphMutation(e.Mutation, expectedGraph) {
 		return 0, receiptVertexPutWALError("graph projection drift")
 	}
 	size := proto.Size(receiptVertexPutReplicationMutation(e))
@@ -349,6 +385,141 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 		return 0, receiptVertexPutWALError("payload exceeds size limit")
 	}
 	return size, nil
+}
+
+func sameReceiptVertexPutGraphMutation(left, right *pb.Mutation) bool {
+	options := proto.MarshalOptions{Deterministic: true}
+	leftRaw, leftErr := options.Marshal(left)
+	rightRaw, rightErr := options.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftRaw, rightRaw)
+}
+
+type receiptVertexWALPreflight struct {
+	expectedArm  protoreflect.FieldNumber
+	expectedCall protoreflect.FullName
+	itemCount    int
+}
+
+func preflightReceiptVertexWAL(
+	raw []byte,
+	expectedArm protoreflect.FieldNumber,
+	expectedCall protoreflect.FullName,
+) (int, error) {
+	scan := receiptVertexWALPreflight{
+		expectedArm:  expectedArm,
+		expectedCall: expectedCall,
+	}
+	if err := scan.message(raw, (&pb.Mutation{}).ProtoReflect().Descriptor(), 0); err != nil {
+		return 0, err
+	}
+	if scan.itemCount == 0 {
+		return 0, errors.New("receipt Vertex envelope has no items")
+	}
+	return scan.itemCount, nil
+}
+
+func (s *receiptVertexWALPreflight) message(
+	raw []byte,
+	descriptor protoreflect.MessageDescriptor,
+	depth int,
+) error {
+	if depth > 32 {
+		return errors.New("protobuf message nesting exceeds limit")
+	}
+	var oneofs map[protoreflect.FullName]struct{}
+	var opCount, armCount int
+	for len(raw) != 0 {
+		number, wireType, tagBytes := protowire.ConsumeTag(raw)
+		if tagBytes < 0 {
+			return errors.New("malformed protobuf tag")
+		}
+		raw = raw[tagBytes:]
+		field := descriptor.Fields().ByNumber(number)
+		if field == nil {
+			return fmt.Errorf("unknown protobuf field %d in %s", number, descriptor.FullName())
+		}
+		if !receiptVertexWireTypeAllowed(field, wireType) {
+			return fmt.Errorf("protobuf field %s has wrong wire type", field.FullName())
+		}
+		if descriptor.FullName() == "graph.v1.Mutation" && number == 4 {
+			opCount++
+			if opCount != 1 {
+				return errors.New("duplicate outer Mutation.op field")
+			}
+		}
+		if descriptor.FullName() == "graph.v1.MutationOp" {
+			armCount++
+			if armCount != 1 || number != s.expectedArm {
+				return errors.New("unexpected or duplicate receipt Vertex operation arm")
+			}
+		}
+		if descriptor.FullName() == s.expectedCall && number == receiptVertexItemsField {
+			s.itemCount++
+			if s.itemCount > receiptVertexWALMaxItems {
+				return fmt.Errorf("receipt Vertex item count exceeds %d", receiptVertexWALMaxItems)
+			}
+		}
+		if oneof := field.ContainingOneof(); oneof != nil {
+			if oneofs == nil {
+				oneofs = make(map[protoreflect.FullName]struct{})
+			}
+			if _, duplicate := oneofs[oneof.FullName()]; duplicate {
+				return fmt.Errorf("duplicate protobuf oneof arm in %s", descriptor.FullName())
+			}
+			oneofs[oneof.FullName()] = struct{}{}
+		}
+		if field.Kind() == protoreflect.MessageKind {
+			value, valueBytes := protowire.ConsumeBytes(raw)
+			if valueBytes < 0 {
+				return fmt.Errorf("malformed protobuf message field %s", field.FullName())
+			}
+			if err := s.message(value, field.Message(), depth+1); err != nil {
+				return err
+			}
+			raw = raw[valueBytes:]
+			continue
+		}
+		valueBytes := protowire.ConsumeFieldValue(number, wireType, raw)
+		if valueBytes < 0 {
+			return fmt.Errorf("malformed protobuf field %s", field.FullName())
+		}
+		raw = raw[valueBytes:]
+	}
+	if descriptor.FullName() == "graph.v1.Mutation" && opCount != 1 {
+		return errors.New("Mutation.op must occur exactly once")
+	}
+	if descriptor.FullName() == "graph.v1.MutationOp" && armCount != 1 {
+		return errors.New("MutationOp must contain exactly one receipt Vertex arm")
+	}
+	return nil
+}
+
+func receiptVertexWireTypeAllowed(
+	field protoreflect.FieldDescriptor,
+	wireType protowire.Type,
+) bool {
+	if field.IsList() && field.IsPacked() && wireType == protowire.BytesType {
+		return true
+	}
+	switch field.Kind() {
+	case protoreflect.BoolKind,
+		protoreflect.EnumKind,
+		protoreflect.Int32Kind,
+		protoreflect.Sint32Kind,
+		protoreflect.Int64Kind,
+		protoreflect.Sint64Kind,
+		protoreflect.Uint32Kind,
+		protoreflect.Uint64Kind:
+		return wireType == protowire.VarintType
+	case protoreflect.Fixed32Kind, protoreflect.Sfixed32Kind, protoreflect.FloatKind:
+		return wireType == protowire.Fixed32Type
+	case protoreflect.Fixed64Kind, protoreflect.Sfixed64Kind, protoreflect.DoubleKind:
+		return wireType == protowire.Fixed64Type
+	case protoreflect.StringKind, protoreflect.BytesKind, protoreflect.MessageKind:
+		return wireType == protowire.BytesType
+	default:
+		return false
+	}
 }
 
 func validateReceiptVertexRow(

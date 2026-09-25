@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +209,43 @@ func TestReceiptVertexDeleteWireProducerAndCanonicalCodecFailClosed(t *testing.T
 	}
 	if _, err := decodeReceiptVertexDeleteWAL(make([]byte, receiptVertexWALMaxBytes+1)); err == nil {
 		t.Fatal("oversized WAL payload decoded")
+	}
+}
+
+func TestReceiptVertexDeleteWALPreflightBoundsItems(t *testing.T) {
+	tooMany := receiptVertexWALItemsWire(
+		protowire.Number(receiptVertexDeleteMutationArm),
+		receiptVertexWALMaxItems+1,
+		nil,
+	)
+	if _, err := decodeReceiptVertexDeleteWAL(tooMany); err == nil ||
+		!strings.Contains(err.Error(), "item count exceeds") {
+		t.Fatalf("excessive item preflight = %v, want item-count rejection", err)
+	}
+	malformed := receiptVertexWALMalformedItemWire(
+		protowire.Number(receiptVertexDeleteMutationArm),
+	)
+	if _, err := decodeReceiptVertexDeleteWAL(malformed); err == nil ||
+		!strings.Contains(err.Error(), "preflight") {
+		t.Fatalf("malformed item preflight = %v, want framing rejection", err)
+	}
+	truncated := append(
+		protowire.AppendTag(nil, 4, protowire.BytesType),
+		0x80,
+	)
+	if _, err := decodeReceiptVertexDeleteWAL(truncated); err == nil ||
+		!strings.Contains(err.Error(), "preflight") {
+		t.Fatalf("truncated outer preflight = %v, want framing rejection", err)
+	}
+
+	wire, err := wireReceiptVertexDeleteFixture(t).ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire.GetOp().GetReplicatedReceiptVertexDelete().Items =
+		make([]*pb.ReplicatedReceiptVertexDeleteItem, receiptVertexWALMaxItems+1)
+	if _, err := decodeReceiptVertexDeleteMutation(wire); err == nil {
+		t.Fatal("decoded-message item cap was not enforced")
 	}
 }
 

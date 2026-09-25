@@ -209,7 +209,7 @@ func prepareVertexPutReceiptCall(
 	s *LanternService,
 	call receiptVertexPutCall,
 ) ([]*pb.Vertex, []graphcache.VertexItem[string, *pb.Vertex], []mutationreceipt.Intent, error) {
-	if s == nil || len(call.Items) == 0 || len(call.Items) > math.MaxInt32 ||
+	if s == nil || len(call.Items) == 0 || len(call.Items) > receiptVertexWALMaxItems ||
 		call.Group == (mutationreceipt.GroupID{}) {
 		return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, mutationreceipt.ErrInvalidBatch)
 	}
@@ -643,8 +643,17 @@ func sameVertexPutAccepted(
 		return left.Index == right.Index && left.Outcome == right.Outcome &&
 			left.Item.Key == right.Item.Key && left.Item.Expiration.Equal(right.Item.Expiration) &&
 			left.Item.CausalBarrier == right.Item.CausalBarrier &&
-			proto.Equal(left.Item.Value, right.Item.Value)
+			sameVertexPutCanonicalValue(left.Item.Value, right.Item.Value)
 	})
+}
+
+func sameVertexPutCanonicalValue(left, right *pb.Vertex) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	leftDigest, leftErr := vertexPutDigest(left, false)
+	rightDigest, rightErr := vertexPutDigest(right, false)
+	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
 }
 
 func sameReceiptVertexPutIntent(a, b *vertexPutReceiptEnvelope) bool {
@@ -655,7 +664,7 @@ func sameReceiptVertexPutIntent(a, b *vertexPutReceiptEnvelope) bool {
 		return false
 	}
 	for i := range a.Original {
-		if !proto.Equal(a.Original[i], b.Original[i]) {
+		if !sameVertexPutCanonicalValue(a.Original[i], b.Original[i]) {
 			return false
 		}
 		ar, br := a.Receipts[i], b.Receipts[i]

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -89,7 +88,7 @@ func vertexDeleteDigest(key string) [32]byte {
 func prepareVertexDeleteReceiptCall(
 	call receiptVertexDeleteCall,
 ) ([]string, []mutationreceipt.Intent, error) {
-	if len(call.Items) == 0 || len(call.Items) > math.MaxInt32 ||
+	if len(call.Items) == 0 || len(call.Items) > receiptVertexWALMaxItems ||
 		call.Group == (mutationreceipt.GroupID{}) {
 		return nil, nil, connect.NewError(connect.CodeInvalidArgument, mutationreceipt.ErrInvalidBatch)
 	}

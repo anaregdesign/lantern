@@ -171,6 +171,20 @@ func TestVertexPutReceiptCoordinatorPreservesExactOutcomesAndRetry(t *testing.T)
 }
 
 func TestVertexPutReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
+	t.Run("Hard batch limit", func(t *testing.T) {
+		f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x70}, 1, nil)
+		call := receiptVertexPutCall{
+			Group: mutationreceipt.GroupID{0x20},
+			Items: make([]receiptVertexPutItem, receiptVertexWALMaxItems+1),
+		}
+		if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("batch-limit rejection = %v, want InvalidArgument", err)
+		}
+		if f.log.Len() != 0 || f.store.Stats().Entries != 0 {
+			t.Fatal("batch-limit rejection changed log or Store")
+		}
+	})
+
 	t.Run("Store capacity", func(t *testing.T) {
 		f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x74}, 1, nil)
 		call := receiptVertexPutTestCall(t, f.epoch, 0x21, false,

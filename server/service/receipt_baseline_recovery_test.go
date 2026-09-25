@@ -668,6 +668,78 @@ func TestReceiptBaselineSuffixReplaysVertexReceiptFamiliesWithRetiredState(t *te
 	}
 }
 
+func TestReceiptBaselineSuffixDoesNotReapplyOmittedVertexDeleteAfterBlockerExpires(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	now := time.Now()
+	config.Receipt.ClockHighWater = now.Add(-3 * time.Hour).Truncate(time.Millisecond)
+	config.Receipt.Retention = 24 * time.Hour
+	config.Now = config.Receipt.ClockHighWater
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWall := image.cutoff.WallNs + int64(time.Millisecond)
+	blocker := recoveryGraphDeleteEffectEntry(
+		t,
+		0xd3,
+		1,
+		oldWall+int64(time.Millisecond),
+		&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+			DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"blocked"}},
+		}},
+		now.Add(-time.Hour),
+		0,
+	)
+	omitted := receiptVertexDeleteRecoveryEnvelope(
+		t,
+		config.Receipt,
+		0xd4,
+		1,
+		oldWall,
+		now.Add(time.Hour),
+		[]string{"blocked"},
+	)
+	if _, err := runtime.log.Append(blocker.Op, blocker.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.log.Append(omitted, omitted.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	for _, tombstone := range restarted.graph.SnapshotReplication().Tombstones.Vertices {
+		if tombstone.Key == "blocked" {
+			t.Fatalf("baseline suffix reapplied omitted older Vertex Delete: %+v", tombstone)
+		}
+	}
+	snapshot, err := restarted.receipt.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, receipt := range snapshot.Receipts {
+		found = found || receipt.ID == omitted.Receipts[0].ID
+	}
+	if !found {
+		t.Fatal("baseline suffix lost omitted Vertex Delete receipt")
+	}
+}
+
 func receiptBaselineVertexPutSuffixEnvelope(
 	t *testing.T,
 	config mutationreceipt.Config,

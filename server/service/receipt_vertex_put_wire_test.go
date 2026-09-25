@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -245,6 +247,148 @@ func TestReceiptVertexPutWireProducerAndCanonicalCodecFailClosed(t *testing.T) {
 	}
 }
 
+func TestReceiptVertexPutWALPreflightBoundsItems(t *testing.T) {
+	tooMany := receiptVertexWALItemsWire(
+		protowire.Number(receiptVertexPutMutationArm),
+		receiptVertexWALMaxItems+1,
+		nil,
+	)
+	if _, err := decodeReceiptVertexPutWAL(tooMany); err == nil ||
+		!strings.Contains(err.Error(), "item count exceeds") {
+		t.Fatalf("excessive item preflight = %v, want item-count rejection", err)
+	}
+	malformed := receiptVertexWALMalformedItemWire(
+		protowire.Number(receiptVertexPutMutationArm),
+	)
+	if _, err := decodeReceiptVertexPutWAL(malformed); err == nil ||
+		!strings.Contains(err.Error(), "preflight") {
+		t.Fatalf("malformed item preflight = %v, want framing rejection", err)
+	}
+	truncated := append(
+		protowire.AppendTag(nil, 4, protowire.BytesType),
+		0x80,
+	)
+	if _, err := decodeReceiptVertexPutWAL(truncated); err == nil ||
+		!strings.Contains(err.Error(), "preflight") {
+		t.Fatalf("truncated outer preflight = %v, want framing rejection", err)
+	}
+
+	wire, err := wireReceiptVertexPutFixture(t).ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire.GetOp().GetReplicatedReceiptVertexPut().Items =
+		make([]*pb.ReplicatedReceiptVertexPutItem, receiptVertexWALMaxItems+1)
+	if _, err := decodeReceiptVertexPutMutation(wire); err == nil {
+		t.Fatal("decoded-message item cap was not enforced")
+	}
+}
+
+func TestReceiptVertexPutWireRequiresCanonicalAcceptedEffects(t *testing.T) {
+	t.Run("permanent live cannot become barrier", func(t *testing.T) {
+		envelope := wireReceiptVertexPutFixture(t)
+		envelope.Original[0].Expiration = nil
+		envelope.Accepted[0].Item.Value = proto.Clone(envelope.Original[0]).(*pb.Vertex)
+		envelope.Accepted[0].Item.Expiration = time.Time{}
+		envelope.Receipts[0].Digest, _ = vertexPutDigest(envelope.Original[0], envelope.IfAbsent)
+		envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+		wire, err := envelope.ReplicationMutation()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		envelope.Accepted[0] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+			Index: 0, Outcome: graphcache.PutOutcomeExpired,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: envelope.Original[0].GetKey(), CausalBarrier: true,
+			},
+		}
+		envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+		if _, err := validateReceiptVertexPutWALEnvelope(envelope); err == nil {
+			t.Fatal("in-memory permanent-to-barrier effect validated")
+		}
+
+		item := wire.GetOp().GetReplicatedReceiptVertexPut().Items[0]
+		item.Accepted = &pb.ReplicatedPutVertex{
+			Outcome: &pb.ReplicatedPutVertex_CausalBarrier{
+				CausalBarrier: &pb.VertexCausalBarrier{Key: item.GetOriginal().GetKey()},
+			},
+		}
+		if _, err := decodeReceiptVertexPutMutation(wire); err == nil {
+			t.Fatal("wire permanent-to-barrier effect decoded")
+		}
+		raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeReceiptVertexPutWAL(raw); err == nil {
+			t.Fatal("raw WAL permanent-to-barrier effect decoded")
+		}
+	})
+
+	t.Run("finite live may become barrier", func(t *testing.T) {
+		envelope := wireReceiptVertexPutFixture(t)
+		envelope.Accepted[0] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+			Index: 0, Outcome: graphcache.PutOutcomeExpired,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: envelope.Original[0].GetKey(), CausalBarrier: true,
+			},
+		}
+		envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+		raw, err := encodeReceiptVertexPutWAL(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := decodeReceiptVertexPutWAL(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := decoded.(*vertexPutReceiptEnvelope)
+		if len(got.Accepted) != 1 ||
+			got.Accepted[0].Outcome != graphcache.PutOutcomeExpired ||
+			!got.Accepted[0].Item.CausalBarrier {
+			t.Fatalf("finite live barrier round trip = %#v", got.Accepted)
+		}
+	})
+
+	t.Run("NaN payload bits are exact", func(t *testing.T) {
+		const originalBits = uint64(0x7ff8000000000001)
+		const acceptedBits = uint64(0x7ff8000000000002)
+		envelope := wireReceiptVertexPutFixture(t)
+		envelope.Original[0].Value = &pb.Vertex_Float64{
+			Float64: math.Float64frombits(originalBits),
+		}
+		envelope.Accepted[0].Item.Value = proto.Clone(envelope.Original[0]).(*pb.Vertex)
+		envelope.Receipts[0].Digest, _ = vertexPutDigest(envelope.Original[0], envelope.IfAbsent)
+		envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+		wire, err := envelope.ReplicationMutation()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		envelope.Accepted[0].Item.Value.Value = &pb.Vertex_Float64{
+			Float64: math.Float64frombits(acceptedBits),
+		}
+		envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+		if _, err := validateReceiptVertexPutWALEnvelope(envelope); err == nil {
+			t.Fatal("in-memory distinct NaN payload bits validated")
+		}
+
+		wire.GetOp().GetReplicatedReceiptVertexPut().Items[0].Accepted.GetLive().Value =
+			&pb.Vertex_Float64{Float64: math.Float64frombits(acceptedBits)}
+		if _, err := decodeReceiptVertexPutMutation(wire); err == nil {
+			t.Fatal("wire distinct NaN payload bits decoded")
+		}
+		raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeReceiptVertexPutWAL(raw); err == nil {
+			t.Fatal("raw WAL distinct NaN payload bits decoded")
+		}
+	})
+}
+
 func TestDecodeReceiptVertexPutMutationOwnsWire(t *testing.T) {
 	wire, err := wireReceiptVertexPutFixture(t).ReplicationMutation()
 	if err != nil {
@@ -285,4 +429,92 @@ func TestReceiptVertexPutApplyRejectsMixedGroupsWithoutMutation(t *testing.T) {
 		remote.store.Stats().Entries != 0 {
 		t.Fatal("mixed-group ApplyMutation changed log, origin, or Store")
 	}
+}
+
+func TestReceiptVertexPutApplyEnforcesCanonicalAcceptedEffects(t *testing.T) {
+	t.Run("finite origin live expires at receiver", func(t *testing.T) {
+		origin := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0xc1}, 8, nil)
+		remote := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0xc2}, 8, nil)
+		call := receiptVertexPutTestCall(t, origin.epoch, 0x81, false, &pb.Vertex{
+			Key: "expired-in-flight", Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		})
+		if _, err := origin.coordinator.Commit(context.Background(), call); err != nil {
+			t.Fatal(err)
+		}
+		envelope := origin.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+		envelope.Original[0].Expiration = timestamppb.New(time.Now().Add(-time.Second))
+		envelope.Receipts[0].Digest, _ = vertexPutDigest(envelope.Original[0], envelope.IfAbsent)
+		envelope.Accepted[0] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+			Index: 0, Outcome: graphcache.PutOutcomeExpired,
+			Item: graphcache.VertexItem[string, *pb.Vertex]{
+				Key: "expired-in-flight", CausalBarrier: true,
+			},
+		}
+		envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+		wire, err := envelope.ReplicationMutation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := remote.service.ApplyMutation(context.Background(), wire); err != nil {
+			t.Fatal(err)
+		}
+		local := remote.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
+		if len(local.Accepted) != 1 ||
+			local.Accepted[0].Outcome != graphcache.PutOutcomeExpired ||
+			!local.Accepted[0].Item.CausalBarrier {
+			t.Fatalf("receiver-local finite-expiry effect = %#v", local.Accepted)
+		}
+	})
+
+	t.Run("permanent barrier is rejected before publication", func(t *testing.T) {
+		origin := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0xc3}, 8, nil)
+		remote := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0xc4}, 8, nil)
+		call := receiptVertexPutTestCall(t, origin.epoch, 0x82, false,
+			&pb.Vertex{Key: "permanent"})
+		if _, err := origin.coordinator.Commit(context.Background(), call); err != nil {
+			t.Fatal(err)
+		}
+		wire, err := origin.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope).ReplicationMutation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := wire.GetOp().GetReplicatedReceiptVertexPut().Items[0]
+		item.Accepted = &pb.ReplicatedPutVertex{
+			Outcome: &pb.ReplicatedPutVertex_CausalBarrier{
+				CausalBarrier: &pb.VertexCausalBarrier{Key: item.GetOriginal().GetKey()},
+			},
+		}
+		if err := remote.service.ApplyMutation(context.Background(), wire); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("permanent-barrier ApplyMutation = %v, want InvalidArgument", err)
+		}
+		if remote.log.Len() != 0 || remote.store.Stats().Entries != 0 {
+			t.Fatal("permanent-barrier ApplyMutation published state")
+		}
+	})
+
+	t.Run("distinct NaN bits are rejected before publication", func(t *testing.T) {
+		origin := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0xc5}, 8, nil)
+		remote := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0xc6}, 8, nil)
+		call := receiptVertexPutTestCall(t, origin.epoch, 0x83, false, &pb.Vertex{
+			Key: "nan",
+			Value: &pb.Vertex_Float64{
+				Float64: math.Float64frombits(0x7ff8000000000001),
+			},
+		})
+		if _, err := origin.coordinator.Commit(context.Background(), call); err != nil {
+			t.Fatal(err)
+		}
+		wire, err := origin.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope).ReplicationMutation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire.GetOp().GetReplicatedReceiptVertexPut().Items[0].Accepted.GetLive().Value =
+			&pb.Vertex_Float64{Float64: math.Float64frombits(0x7ff8000000000002)}
+		if err := remote.service.ApplyMutation(context.Background(), wire); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("NaN-bit ApplyMutation = %v, want InvalidArgument", err)
+		}
+		if remote.log.Len() != 0 || remote.store.Stats().Entries != 0 {
+			t.Fatal("NaN-bit ApplyMutation published state")
+		}
+	})
 }
