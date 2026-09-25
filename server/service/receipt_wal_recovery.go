@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
 // receiptWALDecisionAudit is a read-only inventory of known, unexpired
@@ -220,19 +221,19 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // any state externally visible. The caller must own path exclusively through
 // both replay passes; this function closes the resumed writer before return.
 // A graph-only exact Delete now has an absolute deadline and a private
-// accepted-index envelope, and graph Put/Add have accepted-effect envelopes,
-// but this candidate cannot safely replay them yet:
-// a later graph Put/Add may have been rejected by a floor that has since
-// expired. Predicate-shaped prefix Delete is still unrepresentable; prefix
-// origins publish exact victim batches instead. Graph writes after the first
-// receipt Delete remain refused for the same historical-acceptance reason.
-// Receipt Edge Deletes can form a suffix when their projection is reproducible.
+// accepted-index envelope, and graph Put/Add have accepted-effect envelopes.
+// Raw graph writes after a receipt and Add/Delete effect envelopes remain
+// unreplayable: an omitted write could become accepted after a causal floor
+// expires. Prefix origins publish exact victim batches, not predicates.
+// Receipt Edge Deletes and evidenced graph Puts can interleave when their
+// projections are reproducible.
 //
 // The recovered Log and FileWAL are closed before return. This read-only
 // candidate does not authorize receipt admission, an absent-ID answer, or
 // publication-fault clearing. A future full mixed-WAL format must record
 // accepted graph effects for every dependent graph write before lifting these
-// restrictions.
+// restrictions. Put effects are replayed from their receiver-local accepted
+// subset; Add and Delete effects still lack detached replay here.
 func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
 	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
 	if err != nil {
@@ -261,9 +262,15 @@ func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now t
 			}
 		case *graphDeleteEffectEnvelope:
 			// The indexed sidecar preserves the origin's decision, but this
-			// candidate has no historical-time/effect replay for later graph
-			// Put/Add. Never turn a private codec seam into serving recovery.
+			// candidate has no detached Delete effect replay. Never turn a
+			// private codec seam into serving recovery.
 			return fmt.Errorf("receipt WAL local seq %d: %w: graph Delete effects are not replayable yet", entry.Seq, errReceiptWALUnion)
+		case *graphPutEffectEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			seq = value.Mutation.GetSeq()
+			if err := replayGraphPutEffect(graph, value); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
+			}
 		case *graphAddEffectEnvelope:
 			return fmt.Errorf("receipt WAL local seq %d: %w: graph Add effects are not replayable yet", entry.Seq, errReceiptWALUnion)
 		case *edgeDeleteReceiptEnvelope:
@@ -339,4 +346,116 @@ func receiptWALGraphRecoverable(m *pb.Mutation) bool {
 	default:
 		return false
 	}
+}
+
+// replayGraphPutEffect applies only the receiver-local accepted subset. An
+// omitted slot must stay omitted even if its original causal fence expired
+// before recovery. A formerly live accepted value may now be an expired
+// barrier, but an accepted barrier must never become live or be rejected.
+func replayGraphPutEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effect *graphPutEffectEnvelope) error {
+	if err := validateGraphPutEffectEnvelope(effect); err != nil {
+		return err
+	}
+	if len(effect.Accepted) == 0 {
+		return nil
+	}
+	ts := hlcFromProto(effect.Mutation.GetHlc())
+	op := effect.Mutation.GetOp()
+	switch op.GetOp().(type) {
+	case *pb.MutationOp_PutVertex, *pb.MutationOp_PutVertices, *pb.MutationOp_ReplicatedPutVertices:
+		items := make([]graphcache.VertexItem[string, *pb.Vertex], len(effect.Accepted))
+		for i, accepted := range effect.Accepted {
+			item, err := graphPutReplayVertexItem(op, accepted)
+			if err != nil {
+				return err
+			}
+			items[i] = item
+		}
+		outcomes, err := graph.PutVerticesWithExpirationHLCOutcomesChecked(items, ts)
+		if err != nil {
+			return err
+		}
+		return verifyGraphPutReplayOutcomes(effect.Accepted, outcomes)
+	case *pb.MutationOp_PutEdge, *pb.MutationOp_PutEdges, *pb.MutationOp_ReplicatedPutEdges:
+		items := make([]graphcache.EdgeItem[string], len(effect.Accepted))
+		for i, accepted := range effect.Accepted {
+			item, err := graphPutReplayEdgeItem(op, accepted)
+			if err != nil {
+				return err
+			}
+			items[i] = item
+		}
+		outcomes, err := graph.PutEdgesWithExpirationHLCOutcomesChecked(items, ts)
+		if err != nil {
+			return err
+		}
+		return verifyGraphPutReplayOutcomes(effect.Accepted, outcomes)
+	default:
+		return receiptWALUnionError("graph Put effect has unsupported replay arm %T", op)
+	}
+}
+
+func graphPutReplayVertexItem(op *pb.MutationOp, accepted graphPutAcceptedEffect) (graphcache.VertexItem[string, *pb.Vertex], error) {
+	index := int(accepted.Index)
+	var value *pb.Vertex
+	var barrier *pb.VertexCausalBarrier
+	switch source := op.GetOp().(type) {
+	case *pb.MutationOp_PutVertex:
+		value = source.PutVertex.GetVertex()
+	case *pb.MutationOp_PutVertices:
+		value = source.PutVertices.Vertices[index]
+	case *pb.MutationOp_ReplicatedPutVertices:
+		entry := source.ReplicatedPutVertices.Entries[index]
+		value, barrier = entry.GetLive(), entry.GetCausalBarrier()
+	}
+	item := graphcache.VertexItem[string, *pb.Vertex]{CausalBarrier: accepted.Kind == graphPutEffectBarrier}
+	if value != nil {
+		item.Key, item.Value, item.Expiration = value.GetKey(), value, prototime.Expiration(value.GetExpiration())
+	} else if barrier != nil {
+		item.Key = barrier.GetKey()
+	} else {
+		return item, receiptWALUnionError("accepted graph Vertex Put has no identity at index %d", index)
+	}
+	return item, nil
+}
+
+func graphPutReplayEdgeItem(op *pb.MutationOp, accepted graphPutAcceptedEffect) (graphcache.EdgeItem[string], error) {
+	index := int(accepted.Index)
+	var value *pb.Edge
+	var barrier *pb.EdgeCausalBarrier
+	switch source := op.GetOp().(type) {
+	case *pb.MutationOp_PutEdge:
+		value = source.PutEdge.GetEdge()
+	case *pb.MutationOp_PutEdges:
+		value = source.PutEdges.Edges[index]
+	case *pb.MutationOp_ReplicatedPutEdges:
+		entry := source.ReplicatedPutEdges.Entries[index]
+		value, barrier = entry.GetLive(), entry.GetCausalBarrier()
+	}
+	item := graphcache.EdgeItem[string]{CausalBarrier: accepted.Kind == graphPutEffectBarrier}
+	if value != nil {
+		item.Tail, item.Head, item.Weight = value.GetTail(), value.GetHead(), value.GetWeight()
+		item.Expiration = prototime.Expiration(value.GetExpiration())
+	} else if barrier != nil {
+		item.Tail, item.Head = barrier.GetTail(), barrier.GetHead()
+	} else {
+		return item, receiptWALUnionError("accepted graph Edge Put has no identity at index %d", index)
+	}
+	return item, nil
+}
+
+func verifyGraphPutReplayOutcomes(accepted []graphPutAcceptedEffect, outcomes []graphcache.PutOutcome) error {
+	if len(outcomes) != len(accepted) {
+		return receiptWALUnionError("graph Put replay outcome count drift")
+	}
+	for i, outcome := range outcomes {
+		if outcome == graphcache.PutOutcomeAppliedAndLive && accepted[i].Kind == graphPutEffectLive {
+			continue
+		}
+		if outcome == graphcache.PutOutcomeExpired {
+			continue
+		}
+		return receiptWALUnionError("graph Put accepted effect %d at index %d replayed as %d", i, accepted[i].Index, outcome)
+	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"os"
@@ -164,6 +165,138 @@ func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T)
 	}
 }
 
+func TestReceiptWALRecoveryCandidateReplaysOnlyAcceptedPutEffects(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	future := timestamppb.New(time.Now().Add(time.Hour))
+	past := timestamppb.New(time.Now().Add(-time.Hour))
+	cases := []struct {
+		name     string
+		op       *pb.MutationOp
+		outcomes []graphcache.PutOutcome
+		live     string
+		barriers []string
+		omitted  string
+	}{
+		{"Vertex mixed and expired since commit", &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{
+			Vertices: []*pb.Vertex{nil, {Key: "live", Expiration: future}, {Key: "barrier", Expiration: past},
+				{Key: "omitted", Expiration: future}, {Key: "since-expired", Expiration: past}},
+		}}}, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive, graphcache.PutOutcomeExpired,
+			graphcache.PutOutcomeSuperseded, graphcache.PutOutcomeAppliedAndLive}, "live", []string{"barrier", "since-expired"}, "omitted"},
+		{"Edge mixed", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{
+			Edges: []*pb.Edge{nil, {Tail: "t", Head: "live", Weight: 2, Expiration: future},
+				{Tail: "t", Head: "barrier", Weight: 3, Expiration: past}, {Tail: "t", Head: "omitted", Weight: 4, Expiration: future}},
+		}}}, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive, graphcache.PutOutcomeExpired,
+			graphcache.PutOutcomeSuperseded}, "live", []string{"barrier"}, "omitted"},
+		{"Vertex zero accepted", &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: "omitted", Expiration: future},
+		}}}, []graphcache.PutOutcome{graphcache.PutOutcomeSuperseded}, "", nil, "omitted"},
+		{"replicated Vertex live and barrier", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{
+			Entries: []*pb.ReplicatedPutVertex{{Outcome: &pb.ReplicatedPutVertex_Live{Live: &pb.Vertex{Key: "live", Expiration: future}}},
+				{Outcome: &pb.ReplicatedPutVertex_CausalBarrier{CausalBarrier: &pb.VertexCausalBarrier{Key: "barrier"}}}},
+		}}}, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive, graphcache.PutOutcomeExpired}, "live", []string{"barrier"}, ""},
+		{"replicated Edge live and barrier", &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{
+			Entries: []*pb.ReplicatedPutEdge{{Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "t", Head: "live", Weight: 2, Expiration: future}}},
+				{Outcome: &pb.ReplicatedPutEdge_CausalBarrier{CausalBarrier: &pb.EdgeCausalBarrier{Tail: "t", Head: "barrier"}}}},
+		}}}, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive, graphcache.PutOutcomeExpired}, "live", []string{"barrier"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mutation := receiptWALUnionGraphFixture(tc.op)
+			mutation.Seq = 1
+			effect, err := newGraphPutEffectEnvelope(mutation, tc.outcomes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeReceiptWALAuditEntries(t, mutationlog.Entry{HLC: receiptWALUnionGraphHLC(mutation), Op: effect})
+			candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			isEdge := strings.Contains(tc.name, "Edge")
+			if tc.live != "" {
+				if isEdge {
+					if got, ok := candidate.graph.GetWeight("t", tc.live); !ok || got != 2 {
+						t.Fatalf("recovered live Edge = %g, %v", got, ok)
+					}
+				} else if got, ok := candidate.graph.GetVertex(tc.live); !ok || got.GetKey() != tc.live {
+					t.Fatalf("recovered live Vertex = %v, %v", got, ok)
+				}
+			}
+			if tc.omitted != "" {
+				if isEdge {
+					if _, ok := candidate.graph.GetWeight("t", tc.omitted); ok {
+						t.Fatal("omitted Edge Put was resurrected without its expired floor")
+					}
+				} else if _, ok := candidate.graph.GetVertex(tc.omitted); ok {
+					t.Fatal("omitted Vertex Put was resurrected without its expired floor")
+				}
+			}
+			barriers := candidate.graph.SnapshotReplication().Barriers
+			for _, key := range tc.barriers {
+				found := false
+				if isEdge {
+					for _, barrier := range barriers.Edges {
+						found = found || barrier.Tail == "t" && barrier.Head == key
+					}
+				} else {
+					for _, barrier := range barriers.Vertices {
+						found = found || barrier.Key == key
+					}
+				}
+				if !found {
+					t.Fatalf("accepted Put barrier %q was lost", key)
+				}
+			}
+			entries := candidate.log.RetainedEntries()
+			if len(entries) != 1 || entries[0].Seq != 1 {
+				t.Fatalf("recovered log positions = %+v", entries)
+			}
+			if _, ok := entries[0].Op.(*graphPutEffectEnvelope); !ok {
+				t.Fatalf("recovered log lost the original effect envelope: %T", entries[0].Op)
+			}
+		})
+	}
+	path := writeReceiptWALAuditEntries(t, receiptEntry, auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeAppliedAndLive))
+	if candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); err != nil || candidate == nil {
+		t.Fatalf("evidenced graph Put after receipt = %p, %v", candidate, err)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsContradictoryPutEffect(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	first := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "same"}}}})
+	first.Seq = 1
+	firstEffect, err := newGraphPutEffectEnvelope(first, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "same"}}}})
+	second.Seq = 1
+	second.Origin = bytes.Repeat([]byte{0x32}, 16)
+	second.Hlc.NodeId = append([]byte(nil), second.Origin...)
+	second.Hlc.WallNs--
+	secondEffect, err := newGraphPutEffectEnvelope(second, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeReceiptWALAuditEntries(t,
+		mutationlog.Entry{HLC: receiptWALUnionGraphHLC(first), Op: firstEffect},
+		mutationlog.Entry{HLC: receiptWALUnionGraphHLC(second), Op: secondEffect})
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if candidate != nil || !errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "replayed as") {
+		t.Fatalf("contradictory accepted Put = %p, %v; want no candidate", candidate, err)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsRepeatedPutFrameAfterAmbiguousAppend(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	entry := auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeAppliedAndLive)
+	path := writeReceiptWALAuditEntries(t, entry, entry)
+	if candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); candidate != nil || !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("duplicate origin Put frame = %p, %v; want no candidate", candidate, err)
+	}
+}
+
 func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
 	deleteGraph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
@@ -183,7 +316,6 @@ func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testin
 		{"graph Delete accepted effect is not replayable yet", []mutationlog.Entry{auditGraphEntry(1), deleteEntry, receiptEntry}},
 		{"graph Delete after receipt remains gated", []mutationlog.Entry{auditGraphEntry(1), receiptEntry, deleteEntry}},
 		{"graph write after receipt", []mutationlog.Entry{receiptEntry, auditGraphEntry(1)}},
-		{"evidenced graph Put remains gated", []mutationlog.Entry{receiptEntry, auditGraphPutEffectEntry(t, 1, graphcache.PutOutcomeAppliedAndLive)}},
 		{"evidenced graph Add remains gated", []mutationlog.Entry{receiptEntry, auditGraphAddEffectEntry(t, 1, true)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
