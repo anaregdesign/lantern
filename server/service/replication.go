@@ -427,7 +427,7 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // Flow:
 //  1. GRAPH_ONLY_V1 captures the per-origin/local-log cutoffs, cutoff_hlc,
 //     causal floors, vertices, and edges in one Snapshot cut.
-//  2. An explicitly configured RECEIPT_V2 producer instead calls its
+//  2. An explicitly configured RECEIPT producer instead calls its
 //     service-owned source once and preflights the complete detached receipt,
 //     graph, clock, and cutoff image before sending anything.
 //  3. Send SnapshotHeader first, each owned body frame in phase order, and a
@@ -445,7 +445,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		switch req.GetRequiredFormat() {
 		case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is required"))
-		case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2:
+		case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT:
 		default:
 			return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
 		}
@@ -472,7 +472,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 	}
 	switch req.GetRequiredFormat() {
 	case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
-	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2:
+	case pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT:
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot is not configured"))
 	default:
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("unknown Snapshot format"))
@@ -561,7 +561,7 @@ func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerSt
 	}
 	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}
 	if s.receiptSnapshotRequired {
-		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2
+		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
 	} else {
 		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
 	}

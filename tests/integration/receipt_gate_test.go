@@ -228,7 +228,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	repl := newReplicationRawClient(t, server.url)
 	status, err := repl.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
 	if err != nil ||
-		status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+		status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("production receipt PeerStatus = (%v, %v)", status, err)
 	}
 
@@ -259,7 +259,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	}
 
 	stream, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireSnapshotActivation(t *testing.T
 	}
 	fingerprint := policyStore.PolicyFingerprint()
 	if header == nil ||
-		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		!bytes.Equal(header.GetReceiptMetadata().GetActivePolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
 		!bytes.Equal(header.GetReceiptMetadata().GetActivePolicy().GetFingerprint(), fingerprint[:]) ||
 		len(header.GetReceiptMetadata().GetRetiredPolicies()) != 0 {
@@ -639,7 +639,7 @@ func (p *scriptedReceiptPumpPeer) PeerStatus(
 	*connect.Request[pb.PeerStatusRequest],
 ) (*connect.Response[pb.PeerStatusResponse], error) {
 	return connect.NewResponse(&pb.PeerStatusResponse{
-		RequiredSnapshotFormat:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		RequiredSnapshotFormat:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		SearchConfigFingerprint: p.searchConfigFingerprint,
 	}), nil
 }
@@ -836,7 +836,7 @@ func requireDurableReceiptSnapshot(
 	stream, err := newReplicationRawClient(t, server.url).Snapshot(
 		ctx,
 		connect.NewRequest(&pb.SnapshotRequest{
-			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		}),
 	)
 	if err != nil {
@@ -875,7 +875,7 @@ func requireDurableReceiptSnapshot(
 		t.Fatalf("%s Snapshot stream: %v", name, err)
 	}
 	if headers != 1 || footers != 1 || header == nil || footer == nil ||
-		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+		header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("%s Snapshot framing = headers %d footers %d header %+v footer %+v",
 			name, headers, footers, header, footer)
 	}
@@ -1185,7 +1185,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 
 // TestDurableReceiptWALRuntime_ThreeReplicaAcceptance supplies the remaining
 // cross-layer evidence for #1393. Public receipt writes stay disabled, so one
-// private follower envelope is injected at A; A→B tailing, A→C RECEIPT_V2
+// private follower envelope is injected at A; A→B tailing, A→C RECEIPT
 // handoff, and B→C partition recovery all traverse real Connect/h2c.
 func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 	if testing.Short() {
@@ -1308,7 +1308,10 @@ func TestDurableReceiptWALRuntime_ThreeReplicaAcceptance(t *testing.T) {
 			length, capacity, evicted)
 	}
 
-	cConfig := durableReceiptWireConfig(filepath.Join(t.TempDir(), "c.wal"), hlc.NodeID{0x63})
+	cConfig := aConfig
+	cConfig.Path = filepath.Join(t.TempDir(), "c.wal")
+	cConfig.NodeID = hlc.NodeID{0x63}
+	cConfig.Log.Capacity = 16
 	cRuntime, err := service.CreateDurableReceiptWALServingRuntime(cConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -1491,10 +1494,9 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 				t.Fatal("source mutation log did not create a recovery gap")
 			}
 
-			targetConfig := durableReceiptWireConfig(
-				filepath.Join(t.TempDir(), "target.wal"),
-				hlc.NodeID{0x52},
-			)
+			targetConfig := sourceConfig
+			targetConfig.Path = filepath.Join(t.TempDir(), "target.wal")
+			targetConfig.NodeID = hlc.NodeID{0x52}
 			targetRuntime, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
 			if err != nil {
 				t.Fatal(err)
@@ -1554,7 +1556,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 			stream, err := newReplicationRawClient(t, target.url).Snapshot(
 				ctx,
 				connect.NewRequest(&pb.SnapshotRequest{
-					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+					RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 				}),
 			)
 			if err != nil {
@@ -1578,7 +1580,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 			if err := stream.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if header == nil || header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+			if header == nil || header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(receiptOrigin[:])] != 1 ||
 				header.GetCutoffSeqPerOrigin()[hex.EncodeToString(sourceConfig.NodeID[:])] < 9 ||
 				!foundReceipt {

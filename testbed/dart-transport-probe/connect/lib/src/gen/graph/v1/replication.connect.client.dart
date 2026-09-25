@@ -49,7 +49,7 @@ extension type LanternReplicationServiceClient (connect.Transport _transport) {
   }
 
   /// Snapshot streams a point-in-time, causally-consistent dump of every
-  /// live vertex and edge to a bootstrapping peer. RECEIPT_V2 additionally
+  /// live vertex and edge to a bootstrapping peer. RECEIPT additionally
   /// carries the active receipt policy/rows, every bounded retired epoch policy
   /// and row, the active Store clock high-water, and full origin cutoffs from
   /// the same publication cut. The first frame is a SnapshotHeader; the last

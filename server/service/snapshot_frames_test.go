@@ -82,10 +82,10 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 	}
 
 	privateReceipt := &snapshotFrameSink{}
-	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2, privateReceipt); err != nil {
+	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, privateReceipt); err != nil {
 		t.Fatal(err)
 	}
-	if len(privateReceipt.frames) != len(graphOnly.frames) || privateReceipt.frames[0].GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+	if len(privateReceipt.frames) != len(graphOnly.frames) || privateReceipt.frames[0].GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("private format changed graph frame shape: %+v", privateReceipt.frames)
 	}
 	for i := 1; i < len(graphOnly.frames); i++ {
@@ -155,7 +155,7 @@ func receiptSnapshotTestCapture(t *testing.T, withReceipt, withGraph bool) (Rece
 		}}
 	}
 	graph := &snapshotFrameSink{}
-	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2, graph); err != nil {
+	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, graph); err != nil {
 		t.Fatal(err)
 	}
 	return ReceiptWholeStateCapture{
@@ -281,7 +281,7 @@ func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.
 	wirePolicy := metadata.GetActivePolicy()
 	row := frames[1].GetReceipt()
 	footer := frames[3].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		!bytes.Equal(wirePolicy.GetDeploymentEpoch(), capture.Receipts.Epoch[:]) ||
 		!bytes.Equal(wirePolicy.GetFingerprint(), capture.Receipts.PolicyFingerprint[:]) ||
 		wirePolicy.GetRetentionMs() != uint64(policy.Retention/time.Millisecond) ||
@@ -328,7 +328,7 @@ func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.
 	}
 }
 
-func TestReceiptSnapshotV2RetiredCatalogRoundTrip(t *testing.T) {
+func TestReceiptSnapshotRetiredCatalogRoundTrip(t *testing.T) {
 	capture, policy := receiptSnapshotTestCaptureWithRetired(t)
 	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {
@@ -369,7 +369,7 @@ func TestReceiptSnapshotV2RetiredCatalogRoundTrip(t *testing.T) {
 	}
 }
 
-func TestReceiptSnapshotV2CanonicalizesGraphOrderAndRejectsReordering(t *testing.T) {
+func TestReceiptSnapshotCanonicalizesGraphOrderAndRejectsReordering(t *testing.T) {
 	capture, policy := receiptSnapshotTestCapture(t, true, true)
 	second := proto.Clone(capture.Graph[1]).(*pb.SnapshotResponse)
 	second.GetVertex().Vertex.Key = "aaa"
@@ -397,7 +397,7 @@ func TestReceiptSnapshotV2CanonicalizesGraphOrderAndRejectsReordering(t *testing
 	}
 }
 
-func TestReceiptSnapshotV2RejectsMalformedRetiredEvidence(t *testing.T) {
+func TestReceiptSnapshotRejectsMalformedRetiredEvidence(t *testing.T) {
 	capture, policy := receiptSnapshotTestCaptureWithRetired(t)
 	valid, err := PrepareReceiptSnapshotFrames(capture, policy)
 	if err != nil {

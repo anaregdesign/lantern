@@ -63,7 +63,7 @@ type LanternReplicationServiceClient interface {
 	// peer nodes, never directly from browsers).
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest]) (*connect.ServerStreamForClient[v1.SubscribeResponse], error)
 	// Snapshot streams a point-in-time, causally-consistent dump of every
-	// live vertex and edge to a bootstrapping peer. RECEIPT_V2 additionally
+	// live vertex and edge to a bootstrapping peer. RECEIPT additionally
 	// carries the active receipt policy/rows, every bounded retired epoch policy
 	// and row, the active Store clock high-water, and full origin cutoffs from
 	// the same publication cut. The first frame is a SnapshotHeader; the last
@@ -172,7 +172,7 @@ type LanternReplicationServiceHandler interface {
 	// peer nodes, never directly from browsers).
 	Subscribe(context.Context, *connect.Request[v1.SubscribeRequest], *connect.ServerStream[v1.SubscribeResponse]) error
 	// Snapshot streams a point-in-time, causally-consistent dump of every
-	// live vertex and edge to a bootstrapping peer. RECEIPT_V2 additionally
+	// live vertex and edge to a bootstrapping peer. RECEIPT additionally
 	// carries the active receipt policy/rows, every bounded retired epoch policy
 	// and row, the active Store clock high-water, and full origin cutoffs from
 	// the same publication cut. The first frame is a SnapshotHeader; the last

@@ -87,7 +87,7 @@ graph/result/receipt/log boundary and the contiguous publication work in
 #1282. Receipt RPCs and client mutation APIs remain disabled. In private
 durable receipt-WAL mode, the guarded follower, Snapshot producer, detached
 collector, and durable baseline primitive are wired into Pump and
-anti-entropy through one shared exact-`RECEIPT_V2` installer. Graph-only mode
+anti-entropy through one shared exact-`RECEIPT` installer. Graph-only mode
 and D1 remain unchanged.
 
 ## 4. CRDT semantics per RPC
@@ -591,7 +591,7 @@ rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 enum SnapshotFormat {
   SNAPSHOT_FORMAT_UNSPECIFIED = 0;
   SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = 1;
-  SNAPSHOT_FORMAT_RECEIPT_V2 = 2;
+  SNAPSHOT_FORMAT_RECEIPT = 3;
 }
 
 message SnapshotRequest {
@@ -630,7 +630,7 @@ message SnapshotHeader {
   HLCTimestamp cutoff_hlc = 2;
   uint64 cutoff_local_seq = 3; // same-responder log position
   SnapshotFormat format = 4;
-  SnapshotReceiptMetadata receipt_metadata = 5; // RECEIPT_V2 only
+  SnapshotReceiptMetadata receipt_metadata = 5; // RECEIPT only
 }
 
 message SnapshotFooter {
@@ -705,11 +705,11 @@ Framing contract:
   zero header retain the graph-only interpretation while receipt writes
   are disabled. Graph-only Pump and anti-entropy explicitly request
   `GRAPH_ONLY_V1` and accept zero or `GRAPH_ONLY_V1` in the first header, but
-  reject `RECEIPT_V2` before applying any frame. Durable receipt-WAL mode
+  reject `RECEIPT` before applying any frame. Durable receipt-WAL mode
   instead gives both consumers one shared installer that requests exactly
-  `RECEIPT_V2` and rejects unspecified, graph-only, or unknown formats before
+  `RECEIPT` and rejects unspecified, graph-only, or unknown formats before
   publication. When receipt continuity is required, the responder
-  advertises `PeerStatus.required_snapshot_format = RECEIPT_V2`, rejects
+  advertises `PeerStatus.required_snapshot_format = RECEIPT`, rejects
   receipt-less full Subscribe before checking the retained ring, and rejects every
   graph-only Snapshot request. An opt-in receipt producer exists, but it must
   be configured with the exact service-owned atomic capture source and policy.
@@ -747,7 +747,7 @@ Framing contract:
   per-origin map remains the portable CDC/failover watermark.
   An empty map means the primary has not yet applied any origin
   (cold cluster); the consumer should pass an empty Subscribe cursor.
-- A `RECEIPT_V2` header carries the complete immutable active policy and every
+- A `RECEIPT` header carries the complete immutable active policy and every
   represented retired policy (deployment epoch, fingerprint, retention, entry
   capacity, and byte capacity), the active Store's monotonic clock high-water,
   and sorted full origin rows with both HLC and sequence. Retired policies are
@@ -768,7 +768,7 @@ Framing contract:
   anti-entropy consumers reject count mismatches, duplicate/missing
   header/footer frames, or any out-of-order body frame before advancing resume
   watermarks.
-- Before sending the header, the V2 producer owns the complete detached
+- Before sending the header, the receipt producer owns the complete detached
   sequence and canonicalizes graph frames by phase and identity. Contributions
   inside each edge are sorted by raw contribution ID. The receiver stages the
   whole candidate, reconstructs both receipt stores, and compares a canonical

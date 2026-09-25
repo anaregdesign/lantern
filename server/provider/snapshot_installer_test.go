@@ -86,7 +86,7 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 				t.Fatalf("selected installer = %T, want durable %t", selection.selected(), tc.durable)
 			}
 			if tc.durable {
-				if got := selection.selected().RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+				if got := selection.selected().RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 					t.Fatalf("required format = %v", got)
 				}
 			}

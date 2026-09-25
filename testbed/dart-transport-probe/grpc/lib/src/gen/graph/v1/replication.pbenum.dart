@@ -86,7 +86,7 @@ class IdentityOperation extends $pb.ProtobufEnum {
 
 /// Snapshot format is an explicit compatibility boundary. A graph-only image
 /// cannot prove mutation-receipt continuity, even when its origin cutoffs are
-/// ahead of every retained log entry. RECEIPT_V2 carries one atomic graph,
+/// ahead of every retained log entry. RECEIPT carries one atomic graph,
 /// active receipt Store, retired receipt catalog, clock, and origin cut. A
 /// receiver that cannot install that complete format must reject its header
 /// before applying any body frame.
@@ -95,17 +95,17 @@ class SnapshotFormat extends $pb.ProtobufEnum {
       SnapshotFormat._(0, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_UNSPECIFIED');
   static const SnapshotFormat SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = SnapshotFormat._(
       1, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_GRAPH_ONLY_V1');
-  static const SnapshotFormat SNAPSHOT_FORMAT_RECEIPT_V2 =
-      SnapshotFormat._(2, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_RECEIPT_V2');
+  static const SnapshotFormat SNAPSHOT_FORMAT_RECEIPT =
+      SnapshotFormat._(3, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_RECEIPT');
 
   static const $core.List<SnapshotFormat> values = <SnapshotFormat>[
     SNAPSHOT_FORMAT_UNSPECIFIED,
     SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
-    SNAPSHOT_FORMAT_RECEIPT_V2,
+    SNAPSHOT_FORMAT_RECEIPT,
   ];
 
   static final $core.List<SnapshotFormat?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 2);
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
   static SnapshotFormat? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

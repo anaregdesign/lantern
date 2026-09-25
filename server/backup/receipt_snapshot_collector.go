@@ -67,7 +67,7 @@ type ReceiptSnapshotCollectorConfig struct {
 	ConfigureGraph        func(*graphcache.GraphCache[string, *pb.Vertex]) error
 }
 
-// ReceiptSnapshotCollector consumes RECEIPT_V2 streams into detached state.
+// ReceiptSnapshotCollector consumes RECEIPT streams into detached state.
 // It has no reference to a serving graph, Store, origin tracker, HLC, WAL,
 // generation, or subscriber and therefore cannot publish a candidate.
 type ReceiptSnapshotCollector struct {
@@ -84,7 +84,7 @@ type ReceiptSnapshotCandidateMetadata struct {
 	SpoolBytes  uint64
 }
 
-// ReceiptSnapshotCandidate owns one validated canonical V2 frame spool and
+// ReceiptSnapshotCandidate owns one validated canonical receipt frame spool and
 // one unpublished staged graph/Store/retired-catalog cut. Close removes the
 // temporary file.
 // The private stage is intentionally unavailable to production callers until
@@ -94,7 +94,7 @@ type ReceiptSnapshotCandidate struct {
 	spool          *os.File
 	path           string
 	metadata       ReceiptSnapshotCandidateMetadata
-	stage          *receiptSnapshotV2Stage
+	stage          *receiptSnapshotStage
 	frameCount     uint64
 	limits         ReceiptSnapshotCollectorLimits
 	expectedPolicy mutationreceipt.Config
@@ -102,7 +102,7 @@ type ReceiptSnapshotCandidate struct {
 	closed         bool
 }
 
-type receiptSnapshotV2Stage struct {
+type receiptSnapshotStage struct {
 	*receiptWholeStateStage
 	retired *mutationreceipt.RetiredCatalog
 }
@@ -379,7 +379,7 @@ func (c *ReceiptSnapshotCollector) acceptReceiptSnapshotFrame(
 		if frameIndex != 0 || state.sawHeader {
 			return receiptSnapshotCollectError("duplicate or out-of-order header")
 		}
-		if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+		if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 			return receiptSnapshotCollectError("Snapshot format downgrade")
 		}
 		metadata := header.GetReceiptMetadata()
@@ -548,7 +548,7 @@ func validateReceiptSnapshotFrameWire(raw []byte) error {
 func (c *ReceiptSnapshotCollector) stageReceiptSnapshot(
 	ctx context.Context,
 	capture service.ReceiptWholeStateCapture,
-) (*receiptSnapshotV2Stage, error) {
+) (*receiptSnapshotStage, error) {
 	stageFile, err := os.CreateTemp(c.config.TempDir, ".lantern-receipt-snapshot-*.stage")
 	if err != nil {
 		return nil, fmt.Errorf("backup: create receipt Snapshot stage: %w", err)
@@ -591,7 +591,7 @@ func (c *ReceiptSnapshotCollector) stageReceiptSnapshot(
 	if !reflect.DeepEqual(canonical, capture.Retired) {
 		return nil, receiptSnapshotCollectError("staged retired receipt catalog is not lossless")
 	}
-	return &receiptSnapshotV2Stage{
+	return &receiptSnapshotStage{
 		receiptWholeStateStage: wholeState,
 		retired:                retired,
 	}, nil
@@ -635,7 +635,7 @@ func (c *ReceiptSnapshotCandidate) Metadata() ReceiptSnapshotCandidateMetadata {
 	return metadata
 }
 
-// WriteSpool copies the canonical deterministic V2 frame spool without
+// WriteSpool copies the canonical deterministic receipt frame spool without
 // exposing its temporary path. The candidate remains reusable until Close.
 func (c *ReceiptSnapshotCandidate) WriteSpool(w io.Writer) error {
 	if c == nil || w == nil {

@@ -1,11 +1,35 @@
 package graphv1_test
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestSnapshotFormatReceiptIsCleanReplacement(t *testing.T) {
+	t.Parallel()
+
+	if got := int32(pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT); got != 3 {
+		t.Fatalf("SNAPSHOT_FORMAT_RECEIPT = %d, want 3", got)
+	}
+	values := pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED.Descriptor().Values()
+	for i := range values.Len() {
+		name := string(values.Get(i).Name())
+		for _, obsolete := range []string{"RECEIPT_" + "V1", "RECEIPT_" + "V2"} {
+			if strings.Contains(name, obsolete) {
+				t.Fatalf("obsolete durable receipt Snapshot format remains in descriptor: %s", name)
+			}
+		}
+	}
+	if got := values.ByNumber(2); got != nil {
+		t.Fatalf("obsolete Snapshot format 2 remains in descriptor as %v", got)
+	}
+	if got := values.ByNumber(3); got == nil || got.Name() != "SNAPSHOT_FORMAT_RECEIPT" {
+		t.Fatalf("Snapshot format 3 = %v, want SNAPSHOT_FORMAT_RECEIPT", got)
+	}
+}
 
 func roundTripReplicationProto(t *testing.T, src, dst proto.Message) {
 	t.Helper()
@@ -124,7 +148,7 @@ func TestReceiptSnapshotWireRoundTrip(t *testing.T) {
 		CutoffSeqPerOrigin: map[string]uint64{"41000000000000000000000000000000": 7},
 		CutoffHlc:          &pb.HLCTimestamp{WallNs: 100, Logical: 2, NodeId: origin},
 		CutoffLocalSeq:     11,
-		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		ReceiptMetadata: &pb.SnapshotReceiptMetadata{
 			ActivePolicy: &pb.ReceiptPolicy{
 				DeploymentEpoch: append([]byte{0x51}, make([]byte, 15)...),

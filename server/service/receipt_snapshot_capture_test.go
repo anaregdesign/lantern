@@ -75,7 +75,7 @@ func assertReceiptCaptureCut(t *testing.T, capture ReceiptWholeStateCapture, rec
 	if counts != wantCounts {
 		t.Fatalf("capture footer counts = %v, body = %v", wantCounts, counts)
 	}
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 || header.GetCutoffLocalSeq() != localSeq ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT || header.GetCutoffLocalSeq() != localSeq ||
 		header.GetCutoffHlc() == nil || len(capture.Receipts.Receipts) != receiptCount ||
 		receiptCaptureGraphEdge(capture, "tail", "head") != edgeLive ||
 		receiptCaptureEdgeTombstone(capture, "tail", "head") != tombstone ||

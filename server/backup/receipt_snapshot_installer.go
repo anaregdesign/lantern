@@ -13,12 +13,12 @@ import (
 )
 
 // ReceiptSnapshotInstallTarget is the narrow service seam that atomically
-// publishes one fully staged RECEIPT_V2 candidate.
+// publishes one fully staged RECEIPT candidate.
 type ReceiptSnapshotInstallTarget interface {
 	InstallReceiptBaseline(context.Context, service.ReceiptWholeStateCapture) error
 }
 
-// ReceiptSnapshotInstaller collects and validates a complete RECEIPT_V2 cut
+// ReceiptSnapshotInstaller collects and validates a complete RECEIPT cut
 // before publishing it through the certified durable service primitive.
 type ReceiptSnapshotInstaller struct {
 	collector *ReceiptSnapshotCollector
@@ -49,11 +49,11 @@ func NewReceiptSnapshotInstaller(
 }
 
 func (*ReceiptSnapshotInstaller) RequiredFormat() pb.SnapshotFormat {
-	return pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2
+	return pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
 }
 
 func (*ReceiptSnapshotInstaller) CompatibleFormat(format pb.SnapshotFormat) bool {
-	return format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2
+	return format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
 }
 
 func (i *ReceiptSnapshotInstaller) Install(
@@ -77,7 +77,7 @@ func (i *ReceiptSnapshotInstaller) Install(
 
 	candidate, err := i.collector.Collect(ctx, stream)
 	if err != nil {
-		return result, fmt.Errorf("backup: collect RECEIPT_V2 Snapshot: %w", err)
+		return result, fmt.Errorf("backup: collect RECEIPT Snapshot: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -97,10 +97,10 @@ func (i *ReceiptSnapshotInstaller) Install(
 
 	capture, err := candidate.installCapture(ctx)
 	if err != nil {
-		return result, fmt.Errorf("backup: decode validated RECEIPT_V2 candidate: %w", err)
+		return result, fmt.Errorf("backup: decode validated RECEIPT candidate: %w", err)
 	}
 	if err := i.target.InstallReceiptBaseline(ctx, capture); err != nil {
-		return result, fmt.Errorf("backup: install RECEIPT_V2 baseline: %w", err)
+		return result, fmt.Errorf("backup: install RECEIPT baseline: %w", err)
 	}
 	committed = true
 

@@ -343,7 +343,7 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 
 	recorder := &replicationSnapshotRecorder{}
 	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}, recorder); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 	}
 	header := recorder.frames[0].GetHeader()
 	footer := recorder.frames[len(recorder.frames)-1].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		header.GetCutoffLocalSeq() != 1 ||
 		len(header.GetReceiptMetadata().GetActivePolicy().GetDeploymentEpoch()) != 16 ||
 		len(header.GetReceiptMetadata().GetActivePolicy().GetFingerprint()) != 32 ||
@@ -390,7 +390,7 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 		t.Fatalf("receipt/graph atomic cut = receipt %+v, live=%v tombstone=%v", receipt, liveEdge, tombstone)
 	}
 	status, err := f.replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
-	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("receipt PeerStatus = %+v, %v", status, err)
 	}
 
@@ -425,7 +425,7 @@ func TestLanternReplicationService_ReceiptSnapshotConfigurationFailsClosed(t *te
 		for _, format := range []pb.SnapshotFormat{
 			pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
 			pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
-			pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+			pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		} {
 			recorder := &replicationSnapshotRecorder{}
 			err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, recorder)
@@ -532,7 +532,7 @@ func TestLanternReplicationService_ReceiptSnapshotRejectsMalformedCutBeforeHeade
 			}
 			recorder := &replicationSnapshotRecorder{}
 			err = f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			}, recorder)
 			if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
 				t.Fatalf("malformed cut = %v, frames=%d", err, len(recorder.frames))

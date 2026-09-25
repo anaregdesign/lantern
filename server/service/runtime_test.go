@@ -193,12 +193,12 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		t.Fatal("replication service did not receive the certified durable bundle")
 	}
 	status, err := replication.PeerStatus(context.Background(), &pb.PeerStatusRequest{})
-	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+	if err != nil || status.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("durable runtime PeerStatus = (%v, %v)", status, err)
 	}
 	recorder := &replicationSnapshotRecorder{}
 	if err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}, recorder); err != nil {
 		t.Fatalf("durable runtime receipt Snapshot: %v", err)
 	}

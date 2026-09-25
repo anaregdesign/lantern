@@ -66,7 +66,7 @@ func wholeStateArchiveFixtureAt(t *testing.T, issued time.Time) wholeStateArchiv
 		{Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
 			CutoffSeqPerOrigin: map[string]uint64{hex.EncodeToString(origin[:]): 7},
 			CutoffLocalSeq:     11, CutoffHlc: frameHLC,
-			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: &pb.Vertex{Key: "tail"}, Hlc: frameHLC}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: &pb.Vertex{Key: "head"}, Hlc: frameHLC}}},

@@ -72,7 +72,7 @@ func TestPumpReceiptIncompatibilityDoesNotSnapshot(t *testing.T) {
 }
 
 func TestPumpRejectsReceiptSnapshotRequirementBeforeSubscribe(t *testing.T) {
-	peer := &receiptIncompatiblePeer{requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2}
+	peer := &receiptIncompatiblePeer{requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT}
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
 	srv := httptest.NewUnstartedServer(mux)
@@ -97,18 +97,18 @@ func TestPumpRejectsReceiptSnapshotRequirementBeforeSubscribe(t *testing.T) {
 
 func TestPumpUsesInjectedSnapshotInstaller(t *testing.T) {
 	header := &pb.SnapshotHeader{
-		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		CutoffSeqPerOrigin: map[string]uint64{"origin-a": 7},
 		CutoffLocalSeq:     20,
 	}
 	peer := &installerTestPeer{
-		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		header:            header,
 		gapFirstSubscribe: true,
 	}
 	server := startInstallerTestPeer(t, peer)
 	installer := &scriptedSnapshotInstaller{
-		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}
 	pump := NewPump(Config{
 		HTTPClient:        defaultH2CClient(),
@@ -125,8 +125,8 @@ func TestPumpUsesInjectedSnapshotInstaller(t *testing.T) {
 	}
 	subscribes, snapshots := peer.requests()
 	if len(snapshots) != 1 ||
-		snapshots[0].GetRequiredFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
-		t.Fatalf("Snapshot requests = %+v, want one RECEIPT_V2 request", snapshots)
+		snapshots[0].GetRequiredFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
+		t.Fatalf("Snapshot requests = %+v, want one RECEIPT request", snapshots)
 	}
 	if len(subscribes) != 2 {
 		t.Fatalf("Subscribe requests = %d, want 2", len(subscribes))
@@ -162,14 +162,14 @@ func TestPumpInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testing.T) {
 		},
 		{
 			name:           "legacy header is rejected before installer",
-			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
 			wantSubscribes: 1,
 			wantSnapshots:  1,
 		},
 		{
 			name:           "graph header is rejected before installer",
-			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 			wantSubscribes: 1,
 			wantSnapshots:  1,
@@ -177,9 +177,9 @@ func TestPumpInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			installer := &scriptedSnapshotInstaller{
-				required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+				required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 				// Even a permissive implementation cannot weaken the driver's
-				// exact RECEIPT_V2 downgrade boundary.
+				// exact RECEIPT downgrade boundary.
 				compatible: func(pb.SnapshotFormat) bool { return true },
 			}
 			peer := &installerTestPeer{
@@ -261,7 +261,7 @@ func (r *recoveryRecordingApplier) BeginSearchIndexRecovery()          { r.begin
 func (r *recoveryRecordingApplier) CompleteSearchIndexRecovery() error { return nil }
 
 func TestSnapshotFormatMismatchKeepsSearchIndexReady(t *testing.T) {
-	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2, pb.SnapshotFormat(99)} {
+	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, pb.SnapshotFormat(99)} {
 		t.Run(format.String(), func(t *testing.T) {
 			peer := &incompatibleSnapshotHeaderPeer{format: format}
 			mux := http.NewServeMux()
@@ -878,7 +878,7 @@ func TestSnapshotReplayStateFormatBeforeBody(t *testing.T) {
 	}{
 		{"legacy graph header", pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, connect.Code(0)},
 		{"versioned graph header", pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, connect.Code(0)},
-		{"graph receiver rejects receipt header", pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2, connect.CodeFailedPrecondition},
+		{"graph receiver rejects receipt header", pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, connect.CodeFailedPrecondition},
 		{"unknown header", pb.SnapshotFormat(99), connect.CodeFailedPrecondition},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -59,15 +59,15 @@ const SnapshotFormat$json = {
   '2': [
     {'1': 'SNAPSHOT_FORMAT_UNSPECIFIED', '2': 0},
     {'1': 'SNAPSHOT_FORMAT_GRAPH_ONLY_V1', '2': 1},
-    {'1': 'SNAPSHOT_FORMAT_RECEIPT_V2', '2': 2},
+    {'1': 'SNAPSHOT_FORMAT_RECEIPT', '2': 3},
   ],
 };
 
 /// Descriptor for `SnapshotFormat`. Decode as a `google.protobuf.EnumDescriptorProto`.
 final $typed_data.Uint8List snapshotFormatDescriptor = $convert.base64Decode(
     'Cg5TbmFwc2hvdEZvcm1hdBIfChtTTkFQU0hPVF9GT1JNQVRfVU5TUEVDSUZJRUQQABIhCh1TTk'
-    'FQU0hPVF9GT1JNQVRfR1JBUEhfT05MWV9WMRABEh4KGlNOQVBTSE9UX0ZPUk1BVF9SRUNFSVBU'
-    'X1YyEAI=');
+    'FQU0hPVF9GT1JNQVRfR1JBUEhfT05MWV9WMRABEhsKF1NOQVBTSE9UX0ZPUk1BVF9SRUNFSVBU'
+    'EAM=');
 
 @$core.Deprecated('Use snapshotReceiptKindDescriptor instead')
 const SnapshotReceiptKind$json = {

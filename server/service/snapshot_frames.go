@@ -35,7 +35,7 @@ type replicationSnapshotCut struct {
 }
 
 // sendSnapshotFrames projects a detached graph cut into graph frames. A
-// RECEIPT_V2 capture uses these frames as an intermediate representation;
+// RECEIPT capture uses these frames as an intermediate representation;
 // PrepareReceiptSnapshotFrames adds the receipt metadata and rows before the
 // public producer sends anything.
 func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format pb.SnapshotFormat, stream Sender[pb.SnapshotResponse]) error {
@@ -194,7 +194,7 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 }
 
 // PrepareReceiptSnapshotFrames converts one detached publication cut into a
-// complete RECEIPT_V2 stream. It validates and owns the full frame sequence
+// complete RECEIPT stream. It validates and owns the full frame sequence
 // before the caller sends the header, so malformed source data cannot expose a
 // success-shaped partial image.
 func PrepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mutationreceipt.Config) ([]*pb.SnapshotResponse, error) {
@@ -401,7 +401,7 @@ func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		header.GetReceiptMetadata() != nil ||
 		footer.GetActiveReceiptCount() != 0 || footer.GetRetiredEpochCount() != 0 ||
 		footer.GetRetiredReceiptCount() != 0 || footer.GetOriginCount() != 0 {
@@ -868,7 +868,7 @@ func validateReceiptSnapshotFrames(
 	return err
 }
 
-// DecodeReceiptSnapshotFrames validates one complete RECEIPT_V2 stream and
+// DecodeReceiptSnapshotFrames validates one complete RECEIPT stream and
 // converts it into the detached capture shape consumed by the private
 // whole-state archive/staging layer. The returned graph stream owns cloned
 // frames and has receipt metadata/counts split back out of its header/footer.
@@ -891,7 +891,7 @@ func DecodeReceiptSnapshotFrames(
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		header.GetReceiptMetadata() == nil || header.GetReceiptMetadata().GetActivePolicy() == nil {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot header metadata is missing")
 	}

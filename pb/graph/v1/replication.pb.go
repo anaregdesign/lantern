@@ -137,7 +137,7 @@ func (IdentityOperation) EnumDescriptor() ([]byte, []int) {
 
 // Snapshot format is an explicit compatibility boundary. A graph-only image
 // cannot prove mutation-receipt continuity, even when its origin cutoffs are
-// ahead of every retained log entry. RECEIPT_V2 carries one atomic graph,
+// ahead of every retained log entry. RECEIPT carries one atomic graph,
 // active receipt Store, retired receipt catalog, clock, and origin cut. A
 // receiver that cannot install that complete format must reject its header
 // before applying any body frame.
@@ -146,7 +146,7 @@ type SnapshotFormat int32
 const (
 	SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED   SnapshotFormat = 0
 	SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 SnapshotFormat = 1
-	SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2    SnapshotFormat = 2
+	SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT       SnapshotFormat = 3
 )
 
 // Enum value maps for SnapshotFormat.
@@ -154,12 +154,12 @@ var (
 	SnapshotFormat_name = map[int32]string{
 		0: "SNAPSHOT_FORMAT_UNSPECIFIED",
 		1: "SNAPSHOT_FORMAT_GRAPH_ONLY_V1",
-		2: "SNAPSHOT_FORMAT_RECEIPT_V2",
+		3: "SNAPSHOT_FORMAT_RECEIPT",
 	}
 	SnapshotFormat_value = map[string]int32{
 		"SNAPSHOT_FORMAT_UNSPECIFIED":   0,
 		"SNAPSHOT_FORMAT_GRAPH_ONLY_V1": 1,
-		"SNAPSHOT_FORMAT_RECEIPT_V2":    2,
+		"SNAPSHOT_FORMAT_RECEIPT":       3,
 	}
 )
 
@@ -1882,7 +1882,7 @@ func (*SubscribeResponse_IdentityChunk) isSubscribeResponse_Event() {}
 
 // SnapshotRequest opens a server-streaming snapshot at a single cutoff.
 // Zero means graph-only while receipt writes are disabled. A durable receiver
-// MUST request RECEIPT_V2 and check the first header's format before applying
+// MUST request RECEIPT and check the first header's format before applying
 // any body frame. The header check remains mandatory.
 type SnapshotRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -1928,8 +1928,8 @@ func (x *SnapshotRequest) GetRequiredFormat() SnapshotFormat {
 	return SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED
 }
 
-// Receipt metadata for one RECEIPT_V2 publication cut. This message is
-// required exactly when an RPC Snapshot header's format is RECEIPT_V2 and is
+// Receipt metadata for one RECEIPT publication cut. This message is
+// required exactly when an RPC Snapshot header's format is RECEIPT and is
 // absent from GRAPH_ONLY_V1. active_policy names the writable Store epoch.
 // retired_policies contains every represented read-only epoch, sorted strictly
 // by raw deployment_epoch bytes; it cannot contain active_policy's epoch.
@@ -2012,7 +2012,7 @@ func (x *SnapshotReceiptMetadata) GetRetiredPolicies() []*ReceiptPolicy {
 // used to materialise the snapshot.
 //
 // A bootstrapping graph-only peer advances the cutoffs only after a verified
-// footer. A RECEIPT_V2 receiver must stage and atomically install its graph,
+// footer. A RECEIPT receiver must stage and atomically install its graph,
 // active Store, retired catalog, epoch policies, and clock image before
 // advancing these cutoffs. It then resumes Subscribe against the SAME
 // responder with both
@@ -2027,7 +2027,7 @@ func (x *SnapshotReceiptMetadata) GetRetiredPolicies() []*ReceiptPolicy {
 // the server has not yet applied any origin (cold cluster) and the
 // resume Subscribe should pass an empty cursor.
 //
-// RECEIPT_V2 is strict: every frame and recursively nested message must have
+// RECEIPT is strict: every frame and recursively nested message must have
 // no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
 // HLC must be at or below cutoff_hlc and at or below the matching full origin
 // row; a graph HLC whose origin is absent from that vector is invalid.
@@ -2042,7 +2042,7 @@ type SnapshotHeader struct {
 	// Zero selects the graph-only default. A receipt-capable receiver must
 	// reject zero or GRAPH_ONLY_V1 before changing any local state.
 	Format SnapshotFormat `protobuf:"varint,4,opt,name=format,proto3,enum=graph.v1.SnapshotFormat" json:"format,omitempty"`
-	// Required and complete for RECEIPT_V2; absent for graph-only formats.
+	// Required and complete for RECEIPT; absent for graph-only formats.
 	// Deployment epochs and policy fingerprints are carried inside the active
 	// and retired policies.
 	ReceiptMetadata *SnapshotReceiptMetadata `protobuf:"bytes,5,opt,name=receipt_metadata,json=receiptMetadata,proto3" json:"receipt_metadata,omitempty"`
@@ -2284,7 +2284,7 @@ func (x *SnapshotReceiptContribution) GetContributionId() []byte {
 	return nil
 }
 
-// One unexpired active or retired Store row in a RECEIPT_V2 image. The epoch is
+// One unexpired active or retired Store row in a RECEIPT image. The epoch is
 // self-identifying inside operation_id. All rows are ordered strictly by raw
 // operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
 // original_result is the exact opaque result bytes retained by the Store; it
@@ -2858,7 +2858,7 @@ func (x *SnapshotEdgeTombstone) GetExpiration() *timestamppb.Timestamp {
 }
 
 // SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
-// order is always: exactly one SnapshotHeader; for RECEIPT_V2, zero or more
+// order is always: exactly one SnapshotHeader; for RECEIPT, zero or more
 // SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
 // frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
 // SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
@@ -3179,7 +3179,7 @@ type PeerStatusResponse struct {
 	SearchConfigFingerprint string `protobuf:"bytes,3,opt,name=search_config_fingerprint,json=searchConfigFingerprint,proto3" json:"search_config_fingerprint,omitempty"`
 	// The minimum Snapshot format needed to preserve the responder's durable
 	// state. Snapshot rejects an unspecified or graph-only request when
-	// RECEIPT_V2 is required.
+	// RECEIPT is required.
 	RequiredSnapshotFormat SnapshotFormat `protobuf:"varint,4,opt,name=required_snapshot_format,json=requiredSnapshotFormat,proto3,enum=graph.v1.SnapshotFormat" json:"required_snapshot_format,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
@@ -3474,11 +3474,11 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x1bIDENTITY_OPERATION_ADD_EDGE\x10\x03\x12\x1f\n" +
 	"\x1bIDENTITY_OPERATION_PUT_EDGE\x10\x04\x12\"\n" +
 	"\x1eIDENTITY_OPERATION_DELETE_EDGE\x10\x05\x12#\n" +
-	"\x1fIDENTITY_OPERATION_RECEIPT_ONLY\x10\x06*t\n" +
+	"\x1fIDENTITY_OPERATION_RECEIPT_ONLY\x10\x06*q\n" +
 	"\x0eSnapshotFormat\x12\x1f\n" +
 	"\x1bSNAPSHOT_FORMAT_UNSPECIFIED\x10\x00\x12!\n" +
-	"\x1dSNAPSHOT_FORMAT_GRAPH_ONLY_V1\x10\x01\x12\x1e\n" +
-	"\x1aSNAPSHOT_FORMAT_RECEIPT_V2\x10\x02*\xfa\x01\n" +
+	"\x1dSNAPSHOT_FORMAT_GRAPH_ONLY_V1\x10\x01\x12\x1b\n" +
+	"\x17SNAPSHOT_FORMAT_RECEIPT\x10\x03*\xfa\x01\n" +
 	"\x13SnapshotReceiptKind\x12%\n" +
 	"!SNAPSHOT_RECEIPT_KIND_UNSPECIFIED\x10\x00\x12$\n" +
 	" SNAPSHOT_RECEIPT_KIND_PUT_VERTEX\x10\x01\x12\"\n" +

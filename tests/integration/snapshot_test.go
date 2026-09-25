@@ -166,7 +166,7 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 	if !graphStream.Receive() || graphStream.Msg().GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
 		t.Fatalf("graph Snapshot header = (%v, %v)", graphStream.Msg(), graphStream.Err())
 	}
-	for _, required := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2, pb.SnapshotFormat(99)} {
+	for _, required := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, pb.SnapshotFormat(99)} {
 		stream, err := graphPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{RequiredFormat: required}))
 		if err == nil {
 			defer func() { _ = stream.Close() }()
@@ -203,7 +203,7 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 		t.Fatalf("receipt fixture was not evicted: %+v", retained)
 	}
 	status, err = receiptPeer.repl.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
-	if err != nil || status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 {
+	if err != nil || status.Msg.GetRequiredSnapshotFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 		t.Fatalf("receipt-mode PeerStatus = (%v, %v)", status, err)
 	}
 	unoptedTail, err := receiptPeer.repl.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
@@ -366,7 +366,7 @@ func TestReceiptSnapshotProducer_RealConnectWire(t *testing.T) {
 	}
 
 	stream, err := repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -388,7 +388,7 @@ func TestReceiptSnapshotProducer_RealConnectWire(t *testing.T) {
 	vertex := frames[3].GetVertex()
 	footer := frames[4].GetFooter()
 	fingerprint := store.PolicyFingerprint()
-	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		header.GetCutoffLocalSeq() != 2 ||
 		header.GetReceiptMetadata().GetActivePolicy().GetRetentionMs() != uint64(time.Hour/time.Millisecond) ||
 		header.GetReceiptMetadata().GetActivePolicy().GetMaxEntries() != 16 ||
@@ -579,7 +579,7 @@ func TestReceiptSnapshotCollector_RealConnectWireDetachedAndFailClosed(t *testin
 	beforeGraph := peer.cache.SnapshotReplication()
 
 	stream, err := peer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +595,7 @@ func TestReceiptSnapshotCollector_RealConnectWireDetachedAndFailClosed(t *testin
 	if err := candidate.WriteSpool(&canonical); err != nil {
 		t.Fatal(err)
 	}
-	if metadata.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if metadata.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		metadata.Header.GetCutoffLocalSeq() != 1 ||
 		metadata.SpoolBytes != uint64(canonical.Len()) ||
 		metadata.SpoolSHA256 != sha256.Sum256(canonical.Bytes()) {
@@ -607,7 +607,7 @@ func TestReceiptSnapshotCollector_RealConnectWireDetachedAndFailClosed(t *testin
 	assertReceiptSnapshotIntegrationTempDirEmpty(t, dir)
 
 	validStream, err := peer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -646,7 +646,7 @@ func TestReceiptSnapshotCollector_RealConnectWireDetachedAndFailClosed(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			client := newScriptedReceiptSnapshotClient(t, test.frames(), nil)
 			stream, err := client.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			}))
 			if err != nil {
 				t.Fatal(err)

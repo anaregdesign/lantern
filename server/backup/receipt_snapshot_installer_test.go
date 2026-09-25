@@ -87,7 +87,7 @@ func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceiptV2(t *testing.T) {
 	installer, runtime := newReceiptSnapshotInstallerFixture(
 		t, frames, receiptSnapshotCollectorLimits(),
 	)
-	if got := installer.RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if got := installer.RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		!installer.CompatibleFormat(got) ||
 		installer.CompatibleFormat(pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1) {
 		t.Fatalf("format policy = %v", got)
@@ -100,7 +100,7 @@ func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceiptV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if result.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		result.Graph.Vertices != 2 || result.Graph.Edges != 1 {
 		t.Fatalf("install result = %+v", result)
 	}
@@ -143,12 +143,12 @@ func TestReceiptSnapshotInstallerPreservesTargetRetiredEvidence(t *testing.T) {
 		&receiptSnapshotTestStream{frames: frames, current: -1},
 	)
 	if err != nil || result.Header == nil {
-		t.Fatalf("receipt V2 install with local retired evidence = %+v, %v", result, err)
+		t.Fatalf("receipt Snapshot install with local retired evidence = %+v, %v", result, err)
 	}
 	afterLength, _, afterEvicted := runtime.MutationLogStats()
 	if afterLength != beforeLength || afterEvicted != beforeEvicted+1 {
 		t.Fatalf(
-			"receipt V2 install WAL boundary: before=(%d,%d) after=(%d,%d)",
+			"receipt Snapshot install WAL boundary: before=(%d,%d) after=(%d,%d)",
 			beforeLength,
 			beforeEvicted,
 			afterLength,
@@ -252,13 +252,13 @@ func TestReceiptSnapshotInstallerPublishesRetiredEvidence(t *testing.T) {
 		&receiptSnapshotTestStream{frames: frames, current: -1},
 	)
 	if err != nil || result.Header == nil {
-		t.Fatalf("receipt V2 retired evidence install = %+v, %v", result, err)
+		t.Fatalf("receipt Snapshot retired evidence install = %+v, %v", result, err)
 	}
 	if _, _, ok := runtime.GraphCache().GetEdgeDetail("tail", "head"); !ok {
-		t.Fatal("receipt V2 retired candidate did not publish graph")
+		t.Fatal("receipt Snapshot retired candidate did not publish graph")
 	}
 	if length, _, evicted := runtime.MutationLogStats(); length != 0 || evicted != 1 {
-		t.Fatalf("receipt V2 retired candidate log = len %d evicted %d", length, evicted)
+		t.Fatalf("receipt Snapshot retired candidate log = len %d evicted %d", length, evicted)
 	}
 }
 

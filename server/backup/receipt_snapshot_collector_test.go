@@ -143,7 +143,7 @@ func receiptSnapshotCollectorFixture(
 			CutoffSeqPerOrigin: map[string]uint64{"35000000000000000000000000000000": 7},
 			CutoffHlc:          wireHLC(),
 			CutoffLocalSeq:     11,
-			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2,
+			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			ReceiptMetadata: &pb.SnapshotReceiptMetadata{
 				ActivePolicy: &pb.ReceiptPolicy{
 					DeploymentEpoch: append([]byte(nil), policy.Epoch[:]...),
@@ -391,7 +391,7 @@ func TestReceiptSnapshotCollectorReturnsCanonicalDetachedCandidate(t *testing.T)
 	}()
 
 	metadata := candidate.Metadata()
-	if metadata.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2 ||
+	if metadata.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		metadata.Header.GetCutoffLocalSeq() != 11 ||
 		len(metadata.Header.GetReceiptMetadata().GetOriginCutoffs()) != 1 ||
 		metadata.Policy.Epoch != policy.Epoch ||

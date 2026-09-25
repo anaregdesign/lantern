@@ -2081,7 +2081,7 @@ class SubscribeResponse extends $pb.GeneratedMessage {
 
 /// SnapshotRequest opens a server-streaming snapshot at a single cutoff.
 /// Zero means graph-only while receipt writes are disabled. A durable receiver
-/// MUST request RECEIPT_V2 and check the first header's format before applying
+/// MUST request RECEIPT and check the first header's format before applying
 /// any body frame. The header check remains mandatory.
 class SnapshotRequest extends $pb.GeneratedMessage {
   factory SnapshotRequest({
@@ -2138,8 +2138,8 @@ class SnapshotRequest extends $pb.GeneratedMessage {
   void clearRequiredFormat() => $_clearField(1);
 }
 
-/// Receipt metadata for one RECEIPT_V2 publication cut. This message is
-/// required exactly when an RPC Snapshot header's format is RECEIPT_V2 and is
+/// Receipt metadata for one RECEIPT publication cut. This message is
+/// required exactly when an RPC Snapshot header's format is RECEIPT and is
 /// absent from GRAPH_ONLY_V1. active_policy names the writable Store epoch.
 /// retired_policies contains every represented read-only epoch, sorted strictly
 /// by raw deployment_epoch bytes; it cannot contain active_policy's epoch.
@@ -2241,7 +2241,7 @@ class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
 /// used to materialise the snapshot.
 ///
 /// A bootstrapping graph-only peer advances the cutoffs only after a verified
-/// footer. A RECEIPT_V2 receiver must stage and atomically install its graph,
+/// footer. A RECEIPT receiver must stage and atomically install its graph,
 /// active Store, retired catalog, epoch policies, and clock image before
 /// advancing these cutoffs. It then resumes Subscribe against the SAME
 /// responder with both
@@ -2256,7 +2256,7 @@ class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
 /// the server has not yet applied any origin (cold cluster) and the
 /// resume Subscribe should pass an empty cursor.
 ///
-/// RECEIPT_V2 is strict: every frame and recursively nested message must have
+/// RECEIPT is strict: every frame and recursively nested message must have
 /// no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
 /// HLC must be at or below cutoff_hlc and at or below the matching full origin
 /// row; a graph HLC whose origin is absent from that vector is invalid.
@@ -2365,7 +2365,7 @@ class SnapshotHeader extends $pb.GeneratedMessage {
   @$pb.TagNumber(4)
   void clearFormat() => $_clearField(4);
 
-  /// Required and complete for RECEIPT_V2; absent for graph-only formats.
+  /// Required and complete for RECEIPT; absent for graph-only formats.
   /// Deployment epochs and policy fingerprints are carried inside the active
   /// and retired policies.
   @$pb.TagNumber(5)
@@ -2635,7 +2635,7 @@ class SnapshotReceiptContribution extends $pb.GeneratedMessage {
   void clearContributionId() => $_clearField(1);
 }
 
-/// One unexpired active or retired Store row in a RECEIPT_V2 image. The epoch is
+/// One unexpired active or retired Store row in a RECEIPT image. The epoch is
 /// self-identifying inside operation_id. All rows are ordered strictly by raw
 /// operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
 /// original_result is the exact opaque result bytes retained by the Store; it
@@ -3440,7 +3440,7 @@ enum SnapshotResponse_Entry {
 }
 
 /// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
-/// order is always: exactly one SnapshotHeader; for RECEIPT_V2, zero or more
+/// order is always: exactly one SnapshotHeader; for RECEIPT, zero or more
 /// SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
 /// frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
 /// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
@@ -3884,7 +3884,7 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
 
   /// The minimum Snapshot format needed to preserve the responder's durable
   /// state. Snapshot rejects an unspecified or graph-only request when
-  /// RECEIPT_V2 is required.
+  /// RECEIPT is required.
   @$pb.TagNumber(4)
   SnapshotFormat get requiredSnapshotFormat => $_getN(3);
   @$pb.TagNumber(4)

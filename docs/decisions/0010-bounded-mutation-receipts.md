@@ -465,14 +465,14 @@ zero-key `RECEIPT_ONLY` marker to advance its cursor without invalidation.
 Graph-only Pump does not opt in, and graph-only remote apply rejects the arm.
 This remains an internal wire prerequisite, not a supported receipt CDC
 contract. In durable receipt-WAL mode, Pump and anti-entropy now opt in only
-after the runtime is certified; they require `RECEIPT_V2`, so an evicted
+after the runtime is certified; they require `RECEIPT`, so an evicted
 receipt entry cannot fall through to a graph-only Snapshot. The shared
 installer refuses a zero or graph-only header before publication.
 The `SnapshotFormat` request/header and
 `PeerStatus.required_snapshot_format` fields establish this downgrade
 boundary. `WithReceiptSnapshotRequired` is a lifetime service latch: when set,
 a receipt-less full Subscribe is rejected before the ring is inspected, and
-graph-only Snapshot requests fail closed. The opt-in `RECEIPT_V2` producer is
+graph-only Snapshot requests fail closed. The opt-in `RECEIPT` producer is
 configured separately with the exact service-owned
 `ReceiptWholeStateSource`, immutable active Store policy, and runtime-owned
 retired catalog. The source carries a private owner identity; configuration
@@ -502,8 +502,8 @@ The production provider selects Snapshot behavior from the runtime mode.
 Graph-only mode retains the existing in-place `GRAPH_ONLY_V1` installer.
 Durable receipt-WAL mode constructs one transport-neutral receipt installer
 after runtime certification and passes that exact instance to both Pump and
-anti-entropy. It requires `RECEIPT_V2`, drains the complete bounded stream
-through `ReceiptSnapshotCollector`, retains and revalidates the canonical V2
+anti-entropy. It requires `RECEIPT`, drains the complete bounded stream
+through `ReceiptSnapshotCollector`, retains and revalidates the canonical receipt
 frame spool, and stages the graph, active Store, and retired catalog without
 touching serving state. Installation unions incoming retired evidence with
 the runtime catalog: exact duplicates are idempotent and any policy, row,
@@ -515,7 +515,7 @@ returns before live publication. This wiring does not enable receipt writes,
 public status, or capability.
 The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
 is the active-epoch-only LANTARCH codec (internal format version 1), separate
-from both `.lbk` and the RECEIPT_V2 transport. Its graph section carries the
+from both `.lbk` and the RECEIPT transport. Its graph section carries the
 current receipt-format tag but no transport receipt metadata; separate archive
 records carry the active Store snapshot/policy, clock high-water, and origin
 HLC cutoffs. It does not carry retired evidence; the backup-set member
@@ -577,7 +577,7 @@ after complete validation; the existing graph-only Snapshot receiver's
 in-place overlay remains separate and cannot certify receipt continuity.
 The private bounded
 [Snapshot collector](../../server/backup/receipt_snapshot_collector.go)
-consumes a transport-neutral `RECEIPT_V2` stream into a canonical
+consumes a transport-neutral `RECEIPT` stream into a canonical
 length-prefixed frame spool and detached graph, active Store, and retired
 catalog stage. Active receipt rows, retired epochs, retired receipt rows,
 origins, graph frames, total frames, per-frame bytes, and total bytes each
@@ -871,7 +871,7 @@ The private production provider installs the staged graph, Store, origin
 tracker, retired-catalog slot, Log, restored HLC, epoch, and generation as one
 certified serving bundle and binds the receipt Snapshot producer and one
 shared installer to those exact identities. Durable Pump and anti-entropy
-request and atomically install `RECEIPT_V2`; graph-only mode and
+request and atomically install `RECEIPT`; graph-only mode and
 `BackupSnapshot` restore remain graph-only and cannot certify receipt
 continuity. Public enablement still requires the later capability/status and
 receipt-bearing client mutation slice. `Store.Begin` advances clock high-water

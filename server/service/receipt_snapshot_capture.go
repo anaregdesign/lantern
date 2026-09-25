@@ -20,8 +20,8 @@ import (
 
 // ReceiptWholeStateCapture is only a detached, healthy in-process publication
 // cut. Its graph frames and active Store state feed both the private archive
-// codec and the opt-in RECEIPT_V2 Snapshot producer; Retired is transported
-// only by RECEIPT_V2. It is not proof that a WAL has the current frontier and
+// codec and the opt-in RECEIPT Snapshot producer; Retired is transported
+// only by RECEIPT. It is not proof that a WAL has the current frontier and
 // does not enable receipt writes or installation.
 type ReceiptWholeStateCapture struct {
 	Graph    []*pb.SnapshotResponse
@@ -288,7 +288,7 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 	}
 
 	collector := &receiptSnapshotFrameCollector{}
-	if err := sendSnapshotFrames(ctx, image, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V2, collector); err != nil {
+	if err := sendSnapshotFrames(ctx, image, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, collector); err != nil {
 		return ReceiptWholeStateBackupCapture{}, err
 	}
 	wholeState := ReceiptWholeStateCapture{
