@@ -82,6 +82,18 @@ noncanonical, trailing, digest-mismatched, or size-mismatched data. Its fully
 validated result owns the archive bytes and parsed WAL cut/tip witnesses so a
 later restore layer does not need to reopen either member or the live WAL.
 
+Startup restore discovery is deliberately stricter than retention collection.
+`LoadLatestReceiptBackupSet` enumerates only the configured backup directory,
+recognizes canonical current-format `.set.json` names in the requested
+instance scope, chooses the highest recognized nonzero 20-digit set ID once,
+and then delegates to the canonical set loader. If no such marker exists it
+returns `ErrReceiptBackupSetNotFound`. Once a newest marker is selected, any
+marker or member validation error fails closed; discovery never scans backward
+to an older valid set. Foreign scopes, unrecognized names, temporary files, and
+orphan members are not committed-set candidates. Discovery is read-only and
+returns validated evidence only; it does not install that evidence into a
+runtime.
+
 Persistence orders durability as follows: create each final member with
 `O_CREATE|O_EXCL`; write all bytes, file-sync, and close it; directory-sync;
 then create the final manifest with `O_CREATE|O_EXCL`, write/file-sync/close it
@@ -105,7 +117,8 @@ the common production signals. Durable sets additionally publish
 retain the existing `backup: wrote dump` event and add set, identity, member,
 and byte fields.
 
-**Durable receipt backup restore is not implemented in this layer.**
+**Durable receipt backup installation and startup wiring are not implemented
+in this layer.**
 `LANTERN_BACKUP_RESTORE_ON_START` must be `false` in durable receipt-WAL mode;
 the legacy graph-only replay path remains rejected because it cannot certify
 receipt continuity. Receipt capability/status and receipt-enabled client
