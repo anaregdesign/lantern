@@ -88,6 +88,10 @@ func TestAntiEntropyInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testi
 			statusFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 		},
 		{
+			name:         "removed numeric PeerStatus is not receipt compatible",
+			statusFormat: pb.SnapshotFormat(2),
+		},
+		{
 			name:           "legacy header is rejected before installer",
 			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
@@ -98,6 +102,13 @@ func TestAntiEntropyInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testi
 			name:           "graph header is rejected before installer",
 			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			wantSubscribes: 1,
+			wantSnapshots:  1,
+		},
+		{
+			name:           "removed numeric header is rejected before installer",
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+			headerFormat:   pb.SnapshotFormat(2),
 			wantSubscribes: 1,
 			wantSnapshots:  1,
 		},

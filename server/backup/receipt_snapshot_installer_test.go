@@ -82,7 +82,7 @@ func receiptSnapshotPolicyFromHeader(t *testing.T, header *pb.SnapshotHeader) mu
 	}
 }
 
-func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceiptV2(t *testing.T) {
+func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceipt(t *testing.T) {
 	frames, _ := receiptSnapshotCollectorFixture(t)
 	installer, runtime := newReceiptSnapshotInstallerFixture(
 		t, frames, receiptSnapshotCollectorLimits(),
@@ -193,11 +193,11 @@ func TestReceiptSnapshotInstallerRejectsBeforePublication(t *testing.T) {
 			frames: func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) },
 			limits: func() ReceiptSnapshotCollectorLimits {
 				limits := receiptSnapshotCollectorLimits()
-				limits.MaxFrames = uint64(len(valid) - 1)
-				limits.MaxActiveReceipts = limits.MaxFrames
-				limits.MaxRetiredEpochs = limits.MaxFrames
-				limits.MaxRetiredReceipts = limits.MaxFrames
-				limits.MaxGraphFrames = limits.MaxFrames
+				limits.MaxGraphFrames = 1
+				limits.MaxFrames = 2 +
+					limits.MaxActiveReceipts +
+					limits.MaxRetiredReceipts +
+					limits.MaxGraphFrames
 				return limits
 			},
 		},

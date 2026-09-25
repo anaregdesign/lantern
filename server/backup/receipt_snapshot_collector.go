@@ -42,16 +42,20 @@ type ReceiptSnapshotWireStream interface {
 }
 
 // ReceiptSnapshotCollectorLimits bounds every network-controlled dimension.
+// MaxTransportBytes is the cumulative decompressed protobuf payload budget
+// enforced by production Snapshot clients before unmarshal. MaxCanonicalSpoolBytes
+// bounds the deterministic length-prefixed frames retained by this collector.
 // Callers must choose all limits explicitly; zero never means unlimited.
 type ReceiptSnapshotCollectorLimits struct {
-	MaxFrameBytes      uint64
-	MaxFrames          uint64
-	MaxTotalBytes      uint64
-	MaxActiveReceipts  uint64
-	MaxRetiredEpochs   uint64
-	MaxRetiredReceipts uint64
-	MaxOrigins         uint64
-	MaxGraphFrames     uint64
+	MaxFrameBytes          uint64
+	MaxFrames              uint64
+	MaxTransportBytes      uint64
+	MaxCanonicalSpoolBytes uint64
+	MaxActiveReceipts      uint64
+	MaxRetiredEpochs       uint64
+	MaxRetiredReceipts     uint64
+	MaxOrigins             uint64
+	MaxGraphFrames         uint64
 }
 
 // ReceiptSnapshotCollectorConfig describes one unwired collector/stager.
@@ -122,17 +126,22 @@ func NewReceiptSnapshotCollector(config ReceiptSnapshotCollectorConfig) (*Receip
 	limits := config.Limits
 	maxInt := uint64(^uint(0) >> 1)
 	if limits.MaxFrameBytes == 0 || limits.MaxFrameBytes > wholeStateArchiveMaxFrame ||
-		limits.MaxFrames < 2 ||
-		limits.MaxFrames > maxInt ||
-		limits.MaxTotalBytes == 0 || limits.MaxTotalBytes > wholeStateArchiveMaxBytes ||
+		limits.MaxTransportBytes < limits.MaxFrameBytes ||
+		limits.MaxTransportBytes > wholeStateArchiveMaxBytes ||
+		limits.MaxCanonicalSpoolBytes < limits.MaxFrameBytes+4 ||
+		limits.MaxCanonicalSpoolBytes > wholeStateArchiveMaxBytes ||
 		limits.MaxActiveReceipts == 0 || limits.MaxRetiredEpochs == 0 ||
 		limits.MaxRetiredReceipts == 0 || limits.MaxOrigins == 0 ||
-		limits.MaxGraphFrames == 0 ||
-		limits.MaxActiveReceipts > limits.MaxFrames ||
-		limits.MaxRetiredEpochs > limits.MaxFrames ||
-		limits.MaxRetiredReceipts > limits.MaxFrames ||
-		limits.MaxGraphFrames > limits.MaxFrames {
+		limits.MaxGraphFrames == 0 {
 		return nil, errors.New("backup: receipt Snapshot collector limits are invalid")
+	}
+	maxFrames, ok := receiptSnapshotFrameLimit(
+		limits.MaxActiveReceipts,
+		limits.MaxRetiredReceipts,
+		limits.MaxGraphFrames,
+	)
+	if !ok || maxFrames > maxInt || limits.MaxFrames != maxFrames {
+		return nil, errors.New("backup: receipt Snapshot frame limit does not match independent section limits")
 	}
 	if _, err := mutationreceipt.New(config.ExpectedPolicy); err != nil {
 		return nil, fmt.Errorf("backup: receipt Snapshot expected policy: %w", err)
@@ -183,9 +192,9 @@ func (c *ReceiptSnapshotCollector) Collect(
 	}()
 
 	var (
-		frameCount uint64
-		totalBytes uint64
-		state      receiptSnapshotCollectState
+		frameCount         uint64
+		canonicalSpoolSize uint64
+		state              receiptSnapshotCollectState
 	)
 	for stream.Receive() {
 		if err := ctx.Err(); err != nil {
@@ -195,7 +204,14 @@ func (c *ReceiptSnapshotCollector) Collect(
 		if err := service.ValidateReceiptSnapshotFrame(frame); err != nil {
 			return nil, receiptSnapshotCollectError("%v", err)
 		}
-		raw, err := receiptSnapshotFrameBytes(stream, frame)
+		if size := proto.Size(frame); size <= 0 || uint64(size) > c.config.Limits.MaxFrameBytes {
+			return nil, receiptSnapshotCollectError("frame exceeds byte limit")
+		}
+		raw, err := receiptSnapshotFrameBytes(
+			stream,
+			frame,
+			c.config.Limits.MaxFrameBytes,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -206,8 +222,8 @@ func (c *ReceiptSnapshotCollector) Collect(
 			return nil, receiptSnapshotCollectError("frame count exceeds limit")
 		}
 		recordBytes := uint64(4 + len(raw))
-		if recordBytes > c.config.Limits.MaxTotalBytes-totalBytes {
-			return nil, receiptSnapshotCollectError("stream exceeds total byte limit")
+		if recordBytes > c.config.Limits.MaxCanonicalSpoolBytes-canonicalSpoolSize {
+			return nil, receiptSnapshotCollectError("stream exceeds canonical spool byte limit")
 		}
 		if err := c.acceptReceiptSnapshotFrame(frame, frameCount, &state); err != nil {
 			return nil, err
@@ -218,7 +234,7 @@ func (c *ReceiptSnapshotCollector) Collect(
 			return nil, err
 		}
 		frameCount++
-		totalBytes += recordBytes
+		canonicalSpoolSize += recordBytes
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("backup: receive receipt Snapshot: %w", err)
@@ -284,8 +300,8 @@ func (c *ReceiptSnapshotCollector) Collect(
 	if err != nil {
 		return nil, err
 	}
-	if size > c.config.Limits.MaxTotalBytes {
-		return nil, receiptSnapshotCollectError("canonical spool exceeds total byte limit")
+	if size > c.config.Limits.MaxCanonicalSpoolBytes {
+		return nil, receiptSnapshotCollectError("canonical spool exceeds byte limit")
 	}
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("backup: rewind receipt Snapshot spool: %w", err)
@@ -326,16 +342,21 @@ func (c *ReceiptSnapshotCollector) Collect(
 func receiptSnapshotFrameBytes(
 	stream ReceiptSnapshotStream,
 	frame *pb.SnapshotResponse,
+	maxFrameBytes uint64,
 ) ([]byte, error) {
 	canonical, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
 	if err != nil {
 		return nil, receiptSnapshotCollectError("marshal frame: %v", err)
 	}
 	if exact, ok := stream.(ReceiptSnapshotWireStream); ok {
-		raw := bytes.Clone(exact.ReceiptSnapshotWireBytes())
-		if len(raw) == 0 {
+		wire := exact.ReceiptSnapshotWireBytes()
+		if len(wire) == 0 {
 			return nil, receiptSnapshotCollectError("wire stream omitted current frame bytes")
 		}
+		if uint64(len(wire)) > maxFrameBytes {
+			return nil, receiptSnapshotCollectError("wire frame exceeds byte limit")
+		}
+		raw := bytes.Clone(wire)
 		decoded := &pb.SnapshotResponse{}
 		if err := validateReceiptSnapshotFrameWire(raw); err != nil {
 			return nil, receiptSnapshotCollectError("invalid frame wire: %v", err)
@@ -471,6 +492,17 @@ func snapshotCollectorReceiptEpoch(id mutationreceipt.ID) mutationreceipt.Epoch 
 	return epoch
 }
 
+func receiptSnapshotFrameLimit(active, retired, graph uint64) (uint64, bool) {
+	total := uint64(2)
+	for _, count := range [...]uint64{active, retired, graph} {
+		if count > ^uint64(0)-total {
+			return 0, false
+		}
+		total += count
+	}
+	return total, true
+}
+
 func writeReceiptSnapshotSpool(file *os.File, chunks ...[]byte) error {
 	for _, chunk := range chunks {
 		for len(chunk) != 0 {
@@ -507,7 +539,8 @@ func readReceiptSnapshotSpool(
 			return nil, receiptSnapshotCollectError("truncated frame prefix: %v", err)
 		}
 		size := uint64(binary.BigEndian.Uint32(prefix[:]))
-		if size == 0 || size > limits.MaxFrameBytes || size+4 > limits.MaxTotalBytes-total {
+		if size == 0 || size > limits.MaxFrameBytes ||
+			size+4 > limits.MaxCanonicalSpoolBytes-total {
 			return nil, receiptSnapshotCollectError("invalid spooled frame length")
 		}
 		raw := make([]byte, int(size))

@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	receiptSnapshotInstallerMaxFrameBytes = 8 << 20
-	receiptSnapshotInstallerMaxFrames     = 1 << 20
-	receiptSnapshotInstallerMaxTotalBytes = 512 << 20
-	receiptSnapshotInstallerMaxOrigins    = 1 << 16
+	receiptSnapshotInstallerMaxFrameBytes          = 8 << 20
+	receiptSnapshotInstallerMaxTransportBytes      = 512 << 20
+	receiptSnapshotInstallerMaxCanonicalSpoolBytes = 512 << 20
+	receiptSnapshotInstallerMaxOrigins             = 1 << 16
+	receiptSnapshotInstallerMaxGraphFrames         = 1 << 20
 )
 
 // SnapshotInstallerSelection owns the one format policy and receipt installer
@@ -54,20 +55,23 @@ func NewSnapshotInstallerSelection(
 	}
 
 	maxReceipts := uint64(config.MaxEntries)
-	if maxReceipts > receiptSnapshotInstallerMaxFrames-2 {
-		maxReceipts = receiptSnapshotInstallerMaxFrames - 2
+	maxInt := uint64(^uint(0) >> 1)
+	if maxReceipts > (maxInt-2-receiptSnapshotInstallerMaxGraphFrames)/2 {
+		return nil, errors.New("receipt Snapshot independent section limits exceed platform frame capacity")
 	}
+	maxFrames := 2 + maxReceipts + maxReceipts + receiptSnapshotInstallerMaxGraphFrames
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
 		TempDir: filepath.Dir(config.Path),
 		Limits: backup.ReceiptSnapshotCollectorLimits{
-			MaxFrameBytes:      receiptSnapshotInstallerMaxFrameBytes,
-			MaxFrames:          receiptSnapshotInstallerMaxFrames,
-			MaxTotalBytes:      receiptSnapshotInstallerMaxTotalBytes,
-			MaxActiveReceipts:  maxReceipts,
-			MaxRetiredEpochs:   maxReceipts,
-			MaxRetiredReceipts: maxReceipts,
-			MaxOrigins:         receiptSnapshotInstallerMaxOrigins,
-			MaxGraphFrames:     receiptSnapshotInstallerMaxFrames - 2,
+			MaxFrameBytes:          receiptSnapshotInstallerMaxFrameBytes,
+			MaxFrames:              maxFrames,
+			MaxTransportBytes:      receiptSnapshotInstallerMaxTransportBytes,
+			MaxCanonicalSpoolBytes: receiptSnapshotInstallerMaxCanonicalSpoolBytes,
+			MaxActiveReceipts:      maxReceipts,
+			MaxRetiredEpochs:       maxReceipts,
+			MaxRetiredReceipts:     maxReceipts,
+			MaxOrigins:             receiptSnapshotInstallerMaxOrigins,
+			MaxGraphFrames:         receiptSnapshotInstallerMaxGraphFrames,
 		},
 		ExpectedPolicy: config.receiptConfig(time.Time{}),
 		ExpectedRetiredConfig: mutationreceipt.RetiredCatalogConfig{

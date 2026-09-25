@@ -703,7 +703,9 @@ Framing contract:
 
 - The request and first header negotiate the image format. Zero request and
   zero header retain the graph-only interpretation while receipt writes
-  are disabled. Graph-only Pump and anti-entropy explicitly request
+  are disabled. Numeric value `2` is intentionally unassigned and unreserved:
+  it is not a legacy receipt format and is rejected as unknown. Graph-only
+  Pump and anti-entropy explicitly request
   `GRAPH_ONLY_V1` and accept zero or `GRAPH_ONLY_V1` in the first header, but
   reject `RECEIPT` before applying any frame. Durable receipt-WAL mode
   instead gives both consumers one shared installer that requests exactly
@@ -773,6 +775,14 @@ Framing contract:
   inside each edge are sorted by raw contribution ID. The receiver stages the
   whole candidate, reconstructs both receipt stores, and compares a canonical
   deterministic re-encoding before any serving-state mutation.
+- Pump and anti-entropy open Snapshot with a dedicated bounded Connect client.
+  Connect rejects any frame over the configured decompressed per-message limit
+  before protobuf unmarshal, and a request-local codec charges the exact
+  decompressed protobuf payload bytes, including duplicate known fields,
+  against a separate stream transport budget. The collector's deterministic
+  length-prefixed spool has its own canonical-byte limit. Its total-frame cap
+  is exactly header + footer + the independent active-row, retired-row, and
+  graph-frame maxima, so no section borrows another section's capacity.
 - Every live vertex frame is self-describing and non-nil. In particular,
   endpoint vertices auto-created by `PutEdge*` / `AddEdge*` are serialized as a
   concrete `Vertex` carrying the endpoint key, expiration, and `nil` value arm;

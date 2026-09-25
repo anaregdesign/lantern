@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"reflect"
 
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
@@ -54,6 +55,17 @@ func (*ReceiptSnapshotInstaller) RequiredFormat() pb.SnapshotFormat {
 
 func (*ReceiptSnapshotInstaller) CompatibleFormat(format pb.SnapshotFormat) bool {
 	return format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
+}
+
+func (i *ReceiptSnapshotInstaller) SnapshotTransportLimits() replication.SnapshotTransportLimits {
+	if i == nil || i.collector == nil {
+		return replication.SnapshotTransportLimits{}
+	}
+	limits := i.collector.config.Limits
+	return replication.SnapshotTransportLimits{
+		MaxFrameBytes:  int(limits.MaxFrameBytes),
+		MaxStreamBytes: limits.MaxTransportBytes,
+	}
 }
 
 func (i *ReceiptSnapshotInstaller) Install(
@@ -164,15 +176,46 @@ func (c *ReceiptSnapshotCandidate) installCapture(ctx context.Context) (service.
 	if err != nil {
 		return service.ReceiptWholeStateCapture{}, err
 	}
-	if !reflect.DeepEqual(active, capture.Receipts) ||
-		!reflect.DeepEqual(retired, capture.Retired) ||
-		!reflect.DeepEqual(c.stage.origins, capture.Origins) ||
-		c.stage.policy != capture.Policy ||
-		c.stage.cutoffLocalSeq != capture.Graph[0].GetHeader().GetCutoffLocalSeq() {
-		return service.ReceiptWholeStateCapture{}, errors.New("backup: receipt Snapshot candidate stage differs from validated stream")
+	if !equalReceiptSnapshotState(active, capture.Receipts) {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged active receipts differ from validated stream")
+	}
+	if !equalRetiredReceiptSnapshotState(retired, capture.Retired) {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged retired receipts differ from validated stream")
+	}
+	if !reflect.DeepEqual(c.stage.origins, capture.Origins) {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged origin vector differs from validated stream")
+	}
+	if c.stage.policy != capture.Policy {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged receipt policy differs from validated stream")
+	}
+	if c.stage.cutoffLocalSeq != capture.Graph[0].GetHeader().GetCutoffLocalSeq() {
+		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged graph cutoff differs from validated stream")
 	}
 	if err := ctx.Err(); err != nil {
 		return service.ReceiptWholeStateCapture{}, err
 	}
 	return capture, nil
+}
+
+func equalReceiptSnapshotState(left, right mutationreceipt.Snapshot) bool {
+	if len(left.Receipts) == 0 {
+		left.Receipts = nil
+	}
+	if len(right.Receipts) == 0 {
+		right.Receipts = nil
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func equalRetiredReceiptSnapshotState(
+	left,
+	right mutationreceipt.RetiredCatalogSnapshot,
+) bool {
+	if len(left.Epochs) == 0 {
+		left.Epochs = nil
+	}
+	if len(right.Epochs) == 0 {
+		right.Epochs = nil
+	}
+	return reflect.DeepEqual(left, right)
 }

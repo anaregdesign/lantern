@@ -323,15 +323,23 @@ func cloneReceiptSnapshotCollectorFrames(frames []*pb.SnapshotResponse) []*pb.Sn
 
 func receiptSnapshotCollectorLimits() ReceiptSnapshotCollectorLimits {
 	return ReceiptSnapshotCollectorLimits{
-		MaxFrameBytes:      1 << 20,
-		MaxFrames:          32,
-		MaxTotalBytes:      4 << 20,
-		MaxActiveReceipts:  8,
-		MaxRetiredEpochs:   8,
-		MaxRetiredReceipts: 8,
-		MaxOrigins:         8,
-		MaxGraphFrames:     16,
+		MaxFrameBytes:          1 << 20,
+		MaxFrames:              34,
+		MaxTransportBytes:      4 << 20,
+		MaxCanonicalSpoolBytes: 4 << 20,
+		MaxActiveReceipts:      8,
+		MaxRetiredEpochs:       8,
+		MaxRetiredReceipts:     8,
+		MaxOrigins:             8,
+		MaxGraphFrames:         16,
 	}
+}
+
+func deriveReceiptSnapshotTestFrameLimit(limits *ReceiptSnapshotCollectorLimits) {
+	limits.MaxFrames = 2 +
+		limits.MaxActiveReceipts +
+		limits.MaxRetiredReceipts +
+		limits.MaxGraphFrames
 }
 
 func receiptSnapshotRetiredConfig(policy mutationreceipt.Config) mutationreceipt.RetiredCatalogConfig {
@@ -499,6 +507,44 @@ func TestReceiptSnapshotCollectorRetainsRetiredEvidence(t *testing.T) {
 	}
 }
 
+func TestReceiptSnapshotCollectorAcceptsIndependentSectionMaxima(t *testing.T) {
+	frames, policy := receiptSnapshotCollectorFixtureWithRetired(t)
+	header := frames[0].GetHeader()
+	footer := frames[len(frames)-1].GetFooter()
+	graphFrames := footer.GetVertexCount() +
+		footer.GetEdgeCount() +
+		footer.GetVertexCausalBarrierCount() +
+		footer.GetEdgeCausalBarrierCount() +
+		footer.GetVertexTombstoneCount() +
+		footer.GetEdgeTombstoneCount()
+	limits := receiptSnapshotCollectorLimits()
+	limits.MaxActiveReceipts = footer.GetActiveReceiptCount()
+	limits.MaxRetiredEpochs = footer.GetRetiredEpochCount()
+	limits.MaxRetiredReceipts = footer.GetRetiredReceiptCount()
+	limits.MaxOrigins = footer.GetOriginCount()
+	limits.MaxGraphFrames = graphFrames
+	limits.MaxFrames = 2 +
+		limits.MaxActiveReceipts +
+		limits.MaxRetiredReceipts +
+		limits.MaxGraphFrames
+
+	dir := t.TempDir()
+	collector := newReceiptSnapshotTestCollector(t, dir, policy, limits)
+	candidate, err := collector.Collect(
+		context.Background(),
+		&receiptSnapshotTestStream{
+			frames: cloneReceiptSnapshotCollectorFrames(frames), current: -1,
+		},
+	)
+	if err != nil {
+		t.Fatalf("collect exact independent maxima: %v", err)
+	}
+	defer candidate.Close()
+	if candidate.Metadata().Header.GetCutoffLocalSeq() != header.GetCutoffLocalSeq() {
+		t.Fatal("exact independent maxima changed the accepted candidate")
+	}
+}
+
 func TestReceiptSnapshotCollectorRejectsMalformedStreamsWithoutArtifacts(t *testing.T) {
 	valid, policy := receiptSnapshotCollectorFixture(t)
 	streamFailure := errors.New("injected receive failure")
@@ -528,6 +574,10 @@ func TestReceiptSnapshotCollectorRejectsMalformedStreamsWithoutArtifacts(t *test
 		}, nil, nil},
 		{"format downgrade", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+			return frames
+		}, nil, nil},
+		{"removed numeric format", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[0].GetHeader().Format = pb.SnapshotFormat(2)
 			return frames
 		}, nil, nil},
 		{"missing receipt metadata", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
@@ -670,6 +720,12 @@ func TestReceiptSnapshotCollectorEnforcesEveryBound(t *testing.T) {
 	valid, policy := receiptSnapshotCollectorFixture(t)
 	twoActive, _ := receiptSnapshotCollectorFixtureWithTwoActive(t)
 	withRetired, _ := receiptSnapshotCollectorFixtureWithRetired(t)
+	var maxCanonicalFrameBytes uint64
+	for _, frame := range valid {
+		if size := uint64(proto.Size(frame)); size > maxCanonicalFrameBytes {
+			maxCanonicalFrameBytes = size
+		}
+	}
 	tests := []struct {
 		name   string
 		frames func() []*pb.SnapshotResponse
@@ -679,22 +735,16 @@ func TestReceiptSnapshotCollectorEnforcesEveryBound(t *testing.T) {
 			l.MaxFrameBytes = 8
 			return l
 		}},
-		{"frame count", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
-			l.MaxFrames = uint64(len(valid) - 1)
-			l.MaxActiveReceipts = l.MaxFrames
-			l.MaxRetiredEpochs = l.MaxFrames
-			l.MaxRetiredReceipts = l.MaxFrames
-			l.MaxGraphFrames = l.MaxFrames
-			return l
-		}},
-		{"total bytes", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
-			l.MaxTotalBytes = 64
+		{"canonical spool bytes", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
+			l.MaxFrameBytes = maxCanonicalFrameBytes
+			l.MaxCanonicalSpoolBytes = maxCanonicalFrameBytes + 4
 			return l
 		}},
 		{"active receipt count", func() []*pb.SnapshotResponse {
 			return cloneReceiptSnapshotCollectorFrames(twoActive)
 		}, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
 			l.MaxActiveReceipts = 1
+			deriveReceiptSnapshotTestFrameLimit(&l)
 			return l
 		}},
 		{"retired epoch count", func() []*pb.SnapshotResponse {
@@ -707,6 +757,7 @@ func TestReceiptSnapshotCollectorEnforcesEveryBound(t *testing.T) {
 			return cloneReceiptSnapshotCollectorFrames(withRetired)
 		}, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
 			l.MaxRetiredReceipts = 1
+			deriveReceiptSnapshotTestFrameLimit(&l)
 			return l
 		}},
 		{"origin count", func() []*pb.SnapshotResponse {
@@ -723,6 +774,7 @@ func TestReceiptSnapshotCollectorEnforcesEveryBound(t *testing.T) {
 		}},
 		{"graph count", func() []*pb.SnapshotResponse { return cloneReceiptSnapshotCollectorFrames(valid) }, func(l ReceiptSnapshotCollectorLimits) ReceiptSnapshotCollectorLimits {
 			l.MaxGraphFrames = 2
+			deriveReceiptSnapshotTestFrameLimit(&l)
 			return l
 		}},
 	}
@@ -816,8 +868,15 @@ func TestNewReceiptSnapshotCollectorRejectsUnboundedConfiguration(t *testing.T) 
 	}{
 		{"temporary directory", func(c *ReceiptSnapshotCollectorConfig) { c.TempDir = "" }},
 		{"frame bytes", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrameBytes = 0 }},
-		{"frame count", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrames = 1 }},
-		{"total bytes", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxTotalBytes = 0 }},
+		{"frame count below derived limit", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrames-- }},
+		{"frame count above derived limit", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxFrames++ }},
+		{"derived frame count overflow", func(c *ReceiptSnapshotCollectorConfig) {
+			c.Limits.MaxActiveReceipts = ^uint64(0)
+		}},
+		{"transport bytes", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxTransportBytes = 0 }},
+		{"canonical spool bytes", func(c *ReceiptSnapshotCollectorConfig) {
+			c.Limits.MaxCanonicalSpoolBytes = 0
+		}},
 		{"active receipts", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxActiveReceipts = 0 }},
 		{"retired epochs", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxRetiredEpochs = 0 }},
 		{"retired receipts", func(c *ReceiptSnapshotCollectorConfig) { c.Limits.MaxRetiredReceipts = 0 }},

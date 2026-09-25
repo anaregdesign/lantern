@@ -580,26 +580,33 @@ The private bounded
 consumes a transport-neutral `RECEIPT` stream into a canonical
 length-prefixed frame spool and detached graph, active Store, and retired
 catalog stage. Active receipt rows, retired epochs, retired receipt rows,
-origins, graph frames, total frames, per-frame bytes, and total bytes each
-have an explicit positive limit. A retired flood cannot consume the active
-row budget or vice versa. A task-owned spool is removed on every outcome,
+origins, graph frames, total frames, per-frame bytes, decompressed transport
+payload bytes, and canonical spool bytes each have an explicit positive
+limit. The total frame limit must equal header + footer + the three independent
+active-row, retired-row, and graph-frame maxima, so one section cannot consume
+another section's budget. A task-owned spool is removed on every outcome,
 while a successful candidate owns a read-only digest-bound spool until
 `Close`. The candidate exposes cloned header/policy metadata, the canonical
 spool digest/size, and a copying writer; its detached state remains private
 until the receipt installer asks the certified service to publish the decoded
-canonical cut. A decoded Connect client stream does not
-expose its original protobuf bytes, so the collector treats that incoming
-encoding as non-authoritative: it recursively validates the parsed message,
-including unknown fields and typed-nil oneofs, then deterministically
-re-encodes it. Raw-observing stream adapters may additionally supply exact
-frame bytes, in which case ambiguous duplicate fields and nonminimal wire
-encodings are rejected before staging. Production durable mode shares one
+canonical cut. Production Pump and anti-entropy Snapshot clients enforce the
+per-frame limit in Connect before unmarshal and charge the exact decompressed
+protobuf payload presented to the codec against the stream transport budget;
+compression and duplicate known fields therefore cannot hide received work.
+A decoded Connect client stream does not expose those bytes to the collector,
+so its spool remains a separate deterministic canonical-byte contract: the
+collector recursively validates the parsed message, including unknown fields
+and typed-nil oneofs, then deterministically re-encodes it. Raw-observing
+stream adapters may additionally supply exact frame bytes, in which case
+ambiguous duplicate fields and nonminimal wire encodings are rejected before
+staging. Production durable mode shares one
 collector-backed installer across Pump and anti-entropy; graph-only mode never
-constructs it. The production collector caps each frame at 8 MiB, the complete
-wire/canonical image at 512 MiB, total frames at 1,048,576, origin rows at
-65,536, and each of active receipt rows, retired epochs, and retired receipt
-rows independently at the smaller of the configured Store entry cap and the
-overall frame budget.
+constructs it. The production collector caps each frame at 8 MiB, decompressed
+transport payloads and the canonical spool independently at 512 MiB, graph
+frames at 1,048,576, origin rows at 65,536, and active receipt rows, retired
+epochs, and retired receipt rows independently at the configured Store entry
+cap. Its total frame cap is derived exactly from those independent row and
+graph limits plus the header and footer.
 The private [FileWAL cut manifest](../../server/backup/receipt_archive_wal_cut.go)
 binds complete archive bytes to both the original WAL frame bytes through the
 archive's local sequence and the exact complete valid FileWAL tip observed at

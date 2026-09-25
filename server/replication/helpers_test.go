@@ -23,6 +23,7 @@ type scriptedSnapshotInstaller struct {
 	compatible     func(pb.SnapshotFormat) bool
 	installs       int
 	searchIndexErr error
+	transport      SnapshotTransportLimits
 }
 
 func (i *scriptedSnapshotInstaller) RequiredFormat() pb.SnapshotFormat {
@@ -34,6 +35,10 @@ func (i *scriptedSnapshotInstaller) CompatibleFormat(format pb.SnapshotFormat) b
 		return i.compatible(format)
 	}
 	return format == i.required
+}
+
+func (i *scriptedSnapshotInstaller) SnapshotTransportLimits() SnapshotTransportLimits {
+	return i.transport
 }
 
 func (i *scriptedSnapshotInstaller) Install(_ context.Context, stream SnapshotStream) (SnapshotInstallResult, error) {

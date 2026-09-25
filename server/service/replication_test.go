@@ -406,12 +406,14 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 			t.Fatalf("graph-only downgrade emitted frames or sampled source: frames=%d calls=%d", len(legacy.frames), calls)
 		}
 	}
-	unknown := &replicationSnapshotRecorder{}
-	if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: pb.SnapshotFormat(99)}, unknown); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("unknown receipt Snapshot format = %v, want InvalidArgument", err)
-	}
-	if len(unknown.frames) != 0 || calls != 1 {
-		t.Fatalf("unknown format emitted frames or sampled source: frames=%d calls=%d", len(unknown.frames), calls)
+	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat(2), pb.SnapshotFormat(99)} {
+		unknown := &replicationSnapshotRecorder{}
+		if err := f.replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, unknown); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("unknown receipt Snapshot format %d = %v, want InvalidArgument", format, err)
+		}
+		if len(unknown.frames) != 0 || calls != 1 {
+			t.Fatalf("unknown format %d emitted frames or sampled source: frames=%d calls=%d", format, len(unknown.frames), calls)
+		}
 	}
 }
 

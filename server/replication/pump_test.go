@@ -2,7 +2,9 @@ package replication
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -161,6 +164,10 @@ func TestPumpInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testing.T) {
 			statusFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 		},
 		{
+			name:         "removed numeric PeerStatus is not receipt compatible",
+			statusFormat: pb.SnapshotFormat(2),
+		},
+		{
 			name:           "legacy header is rejected before installer",
 			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
@@ -171,6 +178,13 @@ func TestPumpInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testing.T) {
 			name:           "graph header is rejected before installer",
 			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 			headerFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			wantSubscribes: 1,
+			wantSnapshots:  1,
+		},
+		{
+			name:           "removed numeric header is rejected before installer",
+			statusFormat:   pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+			headerFormat:   pb.SnapshotFormat(2),
 			wantSubscribes: 1,
 			wantSnapshots:  1,
 		},
@@ -261,7 +275,11 @@ func (r *recoveryRecordingApplier) BeginSearchIndexRecovery()          { r.begin
 func (r *recoveryRecordingApplier) CompleteSearchIndexRecovery() error { return nil }
 
 func TestSnapshotFormatMismatchKeepsSearchIndexReady(t *testing.T) {
-	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, pb.SnapshotFormat(99)} {
+	for _, format := range []pb.SnapshotFormat{
+		pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+		pb.SnapshotFormat(2),
+		pb.SnapshotFormat(99),
+	} {
 		t.Run(format.String(), func(t *testing.T) {
 			peer := &incompatibleSnapshotHeaderPeer{format: format}
 			mux := http.NewServeMux()
@@ -274,23 +292,187 @@ func TestSnapshotFormatMismatchKeepsSearchIndexReady(t *testing.T) {
 			defer srv.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			cli := graphv1connect.NewLanternReplicationServiceClient(defaultH2CClient(), srv.URL)
 			snap := &recoveryRecordingApplier{}
 			pump := NewPump(Config{HTTPClient: defaultH2CClient()}, nil, snap)
-			if _, err := pump.snapshot(ctx, cli, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			if _, err := pump.snapshot(ctx, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatalf("pump Snapshot mismatch = %v", err)
 			}
 			if snap.begins != 0 {
 				t.Fatalf("pump marked search index incomplete %d times", snap.begins)
 			}
 			anti := NewAntiEntropy(AntiEntropyConfig{HTTPClient: defaultH2CClient()}, nil, nil, snap)
-			if err := anti.snapshotFrom(ctx, srv.URL, cli); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			if err := anti.snapshotFrom(ctx, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatalf("anti-entropy Snapshot mismatch = %v", err)
 			}
 			if snap.begins != 0 {
 				t.Fatalf("anti-entropy marked search index incomplete %d times", snap.begins)
 			}
 		})
+	}
+}
+
+type rawSnapshotEnvelope struct {
+	payload    []byte
+	compressed bool
+}
+
+func startRawSnapshotH2CServer(
+	t *testing.T,
+	envelopes []rawSnapshotEnvelope,
+) *httptest.Server {
+	t.Helper()
+	var body bytes.Buffer
+	compressed := false
+	for _, envelope := range envelopes {
+		payload := envelope.payload
+		flag := byte(0)
+		if envelope.compressed {
+			compressed = true
+			var zipped bytes.Buffer
+			writer := gzip.NewWriter(&zipped)
+			if _, err := writer.Write(payload); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			payload = zipped.Bytes()
+			flag = 1
+		}
+		var prefix [5]byte
+		prefix[0] = flag
+		binary.BigEndian.PutUint32(prefix[1:], uint32(len(payload)))
+		body.Write(prefix[:])
+		body.Write(payload)
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != graphv1connect.LanternReplicationServiceSnapshotProcedure {
+			http.NotFound(w, request)
+			return
+		}
+		w.Header().Set("Content-Type", "application/connect+proto")
+		if compressed {
+			w.Header().Set("Connect-Content-Encoding", "gzip")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body.Bytes())
+	})
+	server := httptest.NewUnstartedServer(handler)
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	server.Config.Protocols = protocols
+	server.Start()
+	t.Cleanup(server.Close)
+	return server
+}
+
+func marshalSnapshotTransportFrame(t *testing.T, frame *pb.SnapshotResponse) []byte {
+	t.Helper()
+	payload, err := proto.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func TestSnapshotClientsEnforceTransportLimitsBeforeInstall(t *testing.T) {
+	header := marshalSnapshotTransportFrame(t, &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
+			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+		}},
+	})
+	oversized := marshalSnapshotTransportFrame(t, &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
+			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+			CutoffSeqPerOrigin: map[string]uint64{
+				strings.Repeat("x", 512): 1,
+			},
+		}},
+	})
+	duplicate := bytes.Repeat(header, 64)
+
+	tests := []struct {
+		name      string
+		envelopes []rawSnapshotEnvelope
+		limits    SnapshotTransportLimits
+		wantCode  connect.Code
+		wantText  string
+	}{
+		{
+			name:      "oversized",
+			envelopes: []rawSnapshotEnvelope{{payload: oversized}},
+			limits: SnapshotTransportLimits{
+				MaxFrameBytes: 64, MaxStreamBytes: 1 << 20,
+			},
+			wantCode: connect.CodeResourceExhausted,
+			wantText: "larger than configured max",
+		},
+		{
+			name:      "compressed oversized",
+			envelopes: []rawSnapshotEnvelope{{payload: oversized, compressed: true}},
+			limits: SnapshotTransportLimits{
+				MaxFrameBytes: 64, MaxStreamBytes: 1 << 20,
+			},
+			wantCode: connect.CodeResourceExhausted,
+			wantText: "larger than configured max",
+		},
+		{
+			name: "duplicate known field transport budget",
+			envelopes: []rawSnapshotEnvelope{
+				{payload: header},
+				{payload: duplicate},
+			},
+			limits: SnapshotTransportLimits{
+				MaxFrameBytes:  len(duplicate),
+				MaxStreamBytes: uint64(len(header) + len(duplicate) - 1),
+			},
+			wantCode: connect.CodeInvalidArgument,
+			wantText: "exceeds remaining stream budget",
+		},
+	}
+	for _, test := range tests {
+		for _, driver := range []string{"pump", "anti-entropy"} {
+			t.Run(test.name+"/"+driver, func(t *testing.T) {
+				server := startRawSnapshotH2CServer(t, test.envelopes)
+				installer := &scriptedSnapshotInstaller{
+					required:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+					transport: test.limits,
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+
+				var err error
+				switch driver {
+				case "pump":
+					pump := NewPump(Config{
+						HTTPClient:        defaultH2CClient(),
+						SnapshotInstaller: installer,
+					}, nil, nil)
+					_, err = pump.snapshot(ctx, server.URL)
+				case "anti-entropy":
+					driver := NewAntiEntropy(AntiEntropyConfig{
+						HTTPClient:        defaultH2CClient(),
+						SnapshotInstaller: installer,
+					}, nil, nil, nil)
+					err = driver.snapshotFrom(ctx, server.URL)
+				}
+				if err == nil {
+					t.Fatal("malicious Snapshot transport succeeded")
+				}
+				if connect.CodeOf(err) != test.wantCode ||
+					!strings.Contains(err.Error(), test.wantText) {
+					t.Fatalf(
+						"malicious Snapshot transport = %v, want %v containing %q",
+						err,
+						test.wantCode,
+						test.wantText,
+					)
+				}
+				if got := installer.installCount(); got != 0 {
+					t.Fatalf("installer published %d candidates after transport rejection", got)
+				}
+			})
+		}
 	}
 }
 

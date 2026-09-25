@@ -37,6 +37,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -112,6 +113,92 @@ type SnapshotInstaller interface {
 	RequiredFormat() pb.SnapshotFormat
 	CompatibleFormat(pb.SnapshotFormat) bool
 	Install(context.Context, SnapshotStream) (SnapshotInstallResult, error)
+}
+
+// SnapshotTransportLimits bound decoded Snapshot payloads before they reach an
+// installer. Connect enforces MaxFrameBytes while reading/decompressing and
+// before protobuf unmarshal. MaxStreamBytes counts the exact decompressed
+// protobuf payload bytes supplied to the codec, including duplicate fields
+// discarded by protobuf normalization.
+type SnapshotTransportLimits struct {
+	MaxFrameBytes  int
+	MaxStreamBytes uint64
+}
+
+type snapshotTransportLimiter interface {
+	SnapshotTransportLimits() SnapshotTransportLimits
+}
+
+const (
+	defaultSnapshotMaxFrameBytes  = 32 << 20
+	defaultSnapshotMaxStreamBytes = 512 << 20
+)
+
+func snapshotTransportLimitsFor(installer SnapshotInstaller) SnapshotTransportLimits {
+	limits := SnapshotTransportLimits{
+		MaxFrameBytes:  defaultSnapshotMaxFrameBytes,
+		MaxStreamBytes: defaultSnapshotMaxStreamBytes,
+	}
+	if configured, ok := installer.(snapshotTransportLimiter); ok {
+		candidate := configured.SnapshotTransportLimits()
+		if candidate.MaxFrameBytes > 0 && candidate.MaxFrameBytes <= limits.MaxFrameBytes {
+			limits.MaxFrameBytes = candidate.MaxFrameBytes
+		}
+		if candidate.MaxStreamBytes > 0 && candidate.MaxStreamBytes <= limits.MaxStreamBytes {
+			limits.MaxStreamBytes = candidate.MaxStreamBytes
+		}
+	}
+	return limits
+}
+
+type boundedSnapshotProtoCodec struct {
+	mu        sync.Mutex
+	remaining uint64
+}
+
+func (*boundedSnapshotProtoCodec) Name() string { return "proto" }
+
+func (*boundedSnapshotProtoCodec) Marshal(message any) ([]byte, error) {
+	value, ok := message.(proto.Message)
+	if !ok {
+		return nil, fmt.Errorf("snapshot transport: %T is not a protobuf message", message)
+	}
+	return proto.Marshal(value)
+}
+
+func (c *boundedSnapshotProtoCodec) Unmarshal(data []byte, message any) error {
+	value, ok := message.(proto.Message)
+	if !ok {
+		return fmt.Errorf("snapshot transport: %T is not a protobuf message", message)
+	}
+	size := uint64(len(data))
+	c.mu.Lock()
+	if size > c.remaining {
+		remaining := c.remaining
+		c.mu.Unlock()
+		return fmt.Errorf(
+			"snapshot transport: decompressed payload size %d exceeds remaining stream budget %d",
+			size,
+			remaining,
+		)
+	}
+	c.remaining -= size
+	c.mu.Unlock()
+	return proto.Unmarshal(data, value)
+}
+
+func newBoundedSnapshotClient(
+	httpClient connect.HTTPClient,
+	addr string,
+	installer SnapshotInstaller,
+) graphv1connect.LanternReplicationServiceClient {
+	limits := snapshotTransportLimitsFor(installer)
+	return graphv1connect.NewLanternReplicationServiceClient(
+		httpClient,
+		peerBaseURL(addr),
+		connect.WithReadMaxBytes(limits.MaxFrameBytes),
+		connect.WithCodec(&boundedSnapshotProtoCodec{remaining: limits.MaxStreamBytes}),
+	)
 }
 
 type searchIndexRecovery interface {
@@ -960,7 +1047,7 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_start"),
 			slog.String("reason", "gapped"))
-		header, sErr := p.snapshot(ctx, cli, addr)
+		header, sErr := p.snapshot(ctx, addr)
 		if sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")
 			log.Warn("replication pump: peer transition",
@@ -1039,7 +1126,8 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 // The returned header supplies the exact per-origin resume cursor and local
 // watermark cut for the live tail. Replaying those cutoffs before Subscribe
 // prevents both duplicate application and an infinite gapped-snapshot loop.
-func (p *Pump) snapshot(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string) (*pb.SnapshotHeader, error) {
+func (p *Pump) snapshot(ctx context.Context, addr string) (*pb.SnapshotHeader, error) {
+	cli := newBoundedSnapshotClient(p.cfg.HTTPClient, addr, p.installer)
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
 		RequiredFormat: p.installer.RequiredFormat(),
 	}))

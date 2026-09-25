@@ -166,7 +166,11 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 	if !graphStream.Receive() || graphStream.Msg().GetHeader().GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
 		t.Fatalf("graph Snapshot header = (%v, %v)", graphStream.Msg(), graphStream.Err())
 	}
-	for _, required := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, pb.SnapshotFormat(99)} {
+	for _, required := range []pb.SnapshotFormat{
+		pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+		pb.SnapshotFormat(2),
+		pb.SnapshotFormat(99),
+	} {
 		stream, err := graphPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{RequiredFormat: required}))
 		if err == nil {
 			defer func() { _ = stream.Close() }()
@@ -176,7 +180,7 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 			err = stream.Err()
 		}
 		want := connect.CodeFailedPrecondition
-		if required == pb.SnapshotFormat(99) {
+		if required != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
 			want = connect.CodeInvalidArgument
 		}
 		if connect.CodeOf(err) != want {
@@ -217,16 +221,30 @@ func TestSnapshotFormatNegotiation_RealConnectWire(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("receipt-less full Subscribe = %v, want InvalidArgument", err)
 	}
-	unspecifiedSnapshot, err := receiptPeer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
-	if err == nil {
-		defer func() { _ = unspecifiedSnapshot.Close() }()
-		if unspecifiedSnapshot.Receive() {
-			t.Fatal("unspecified Snapshot emitted a graph-only frame in receipt mode")
+	for _, required := range []pb.SnapshotFormat{
+		pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
+		pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		pb.SnapshotFormat(2),
+		pb.SnapshotFormat(99),
+	} {
+		stream, snapshotErr := receiptPeer.repl.Snapshot(
+			ctx,
+			connect.NewRequest(&pb.SnapshotRequest{RequiredFormat: required}),
+		)
+		if snapshotErr == nil {
+			defer func() { _ = stream.Close() }()
+			if stream.Receive() {
+				t.Fatalf("unsupported receipt Snapshot format %v emitted a frame", required)
+			}
+			snapshotErr = stream.Err()
 		}
-		err = unspecifiedSnapshot.Err()
-	}
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("unspecified Snapshot = %v, want FailedPrecondition", err)
+		want := connect.CodeFailedPrecondition
+		if required == pb.SnapshotFormat(2) || required == pb.SnapshotFormat(99) {
+			want = connect.CodeInvalidArgument
+		}
+		if connect.CodeOf(snapshotErr) != want {
+			t.Fatalf("unsupported receipt Snapshot format %v = %v, want %v", required, snapshotErr, want)
+		}
 	}
 }
 
@@ -490,14 +508,15 @@ func receiptSnapshotIntegrationCollector(
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
 		TempDir: dir,
 		Limits: backup.ReceiptSnapshotCollectorLimits{
-			MaxFrameBytes:      1 << 20,
-			MaxFrames:          64,
-			MaxTotalBytes:      4 << 20,
-			MaxActiveReceipts:  16,
-			MaxRetiredEpochs:   16,
-			MaxRetiredReceipts: 16,
-			MaxOrigins:         16,
-			MaxGraphFrames:     32,
+			MaxFrameBytes:          1 << 20,
+			MaxFrames:              66,
+			MaxTransportBytes:      4 << 20,
+			MaxCanonicalSpoolBytes: 4 << 20,
+			MaxActiveReceipts:      16,
+			MaxRetiredEpochs:       16,
+			MaxRetiredReceipts:     16,
+			MaxOrigins:             16,
+			MaxGraphFrames:         32,
 		},
 		ExpectedPolicy: policy,
 		ExpectedRetiredConfig: mutationreceipt.RetiredCatalogConfig{
@@ -639,6 +658,14 @@ func TestReceiptSnapshotCollector_RealConnectWireDetachedAndFailClosed(t *testin
 				frames[i] = proto.Clone(frame).(*pb.SnapshotResponse)
 			}
 			frames[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+			return frames
+		}},
+		{"removed numeric format", func() []*pb.SnapshotResponse {
+			frames := make([]*pb.SnapshotResponse, len(validFrames))
+			for i, frame := range validFrames {
+				frames[i] = proto.Clone(frame).(*pb.SnapshotResponse)
+			}
+			frames[0].GetHeader().Format = pb.SnapshotFormat(2)
 			return frames
 		}},
 	}
