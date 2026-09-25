@@ -331,6 +331,40 @@ func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.
 	}
 }
 
+func TestReceiptSnapshotFrameCapacity(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name        string
+		graphFrames int
+		receiptRows int
+		want        int
+		wantErr     bool
+	}{
+		{name: "valid", graphFrames: 2, receiptRows: 3, want: 5},
+		{name: "exact platform maximum", graphFrames: maxInt - 1, receiptRows: 1, want: maxInt},
+		{name: "overflow", graphFrames: maxInt, receiptRows: 1, wantErr: true},
+		{name: "negative graph count", graphFrames: -1, wantErr: true},
+		{name: "negative receipt count", receiptRows: -1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := receiptSnapshotFrameCapacity(tt.graphFrames, tt.receiptRows)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("receiptSnapshotFrameCapacity() error = nil, want non-nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("receiptSnapshotFrameCapacity() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("receiptSnapshotFrameCapacity() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReceiptSnapshotRetiredCatalogRoundTrip(t *testing.T) {
 	capture, policy := receiptSnapshotTestCaptureWithRetired(t)
 	frames, err := PrepareReceiptSnapshotFrames(capture, policy)

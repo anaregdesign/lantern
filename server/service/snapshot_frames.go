@@ -246,7 +246,11 @@ func PrepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mu
 		return bytes.Compare(rows[i].ID[:], rows[j].ID[:]) < 0
 	})
 
-	frames := make([]*pb.SnapshotResponse, 0, len(capture.Graph)+len(rows))
+	frameCapacity, err := receiptSnapshotFrameCapacity(len(capture.Graph), len(rows))
+	if err != nil {
+		return nil, err
+	}
+	frames := make([]*pb.SnapshotResponse, 0, frameCapacity)
 	frames = append(frames, headerFrame)
 	for _, receipt := range rows {
 		row, err := receiptSnapshotRow(receipt)
@@ -285,6 +289,14 @@ func PrepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mu
 		return nil, err
 	}
 	return frames, nil
+}
+
+func receiptSnapshotFrameCapacity(graphFrames, receiptRows int) (int, error) {
+	if graphFrames < 0 || receiptRows < 0 ||
+		graphFrames > int(^uint(0)>>1)-receiptRows {
+		return 0, fmt.Errorf("receipt Snapshot frame count exceeds platform capacity")
+	}
+	return graphFrames + receiptRows, nil
 }
 
 func receiptSnapshotPolicy(config mutationreceipt.Config, fingerprint [32]byte) *pb.ReceiptPolicy {
