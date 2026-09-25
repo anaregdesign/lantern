@@ -297,8 +297,8 @@ batch APIs can return response outcomes and accepted indexes from one lock,
 but no serving producer selects the new kind: a future producer must retain
 the same sidecar across an ambiguous WAL append and publication repair,
 including for remote relay and singular Delete mutations. The detached
-recovery candidate still rejects graph Delete envelopes, raw graph writes and
-Add effect envelopes after receipt envelopes. A later Put/Add rejected while
+recovery candidate still rejects graph Delete envelopes and raw graph writes
+after receipt envelopes. A later Put/Add rejected while
 a tombstone was live can become accepted on naive replay after it expires;
 Delete evidence alone cannot certify a complete graph/receipt restore.
 The graph Put kind records the original Mutation and a strictly ordered subset
@@ -321,9 +321,14 @@ indexes, including nil-slot position preservation for synthesized ContribIDs.
 Rejected, deduplicated, and causally fenced Adds are omitted. GraphCache's
 private result path captures each accepted decision under its application lock
 without allocating an outcome slice in the ordinary serving path. Older raw
-Add rows after receipt evidence fail the read-only audit. This kind also stays
-unwired to serving writes and unreplayable by the detached candidate; it does
-not authorize durable offline Add or any receipt status claim.
+Add rows after receipt evidence fail the read-only audit. The detached
+candidate replays only accepted original wire indexes, using the original
+explicit or synthesized ContribID for each row; omitted, nil, deduplicated,
+and causally fenced rows stay absent even if their old floor has expired.
+A recorded accepted Add that now conflicts with recovered causal state rejects
+the whole candidate. This remains read-only evidence: no serving writer emits
+this kind, and it authorizes neither durable offline Add nor an absent-ID
+status answer.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
 replay. The receipt kind retains the existing LRED validation and its 8 MiB
