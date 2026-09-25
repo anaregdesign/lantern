@@ -96,6 +96,11 @@ per-item outcomes are unknown; replay evaluates the condition again and can
 return `"conditionNotMet"` for an originally applied item. Reconcile current
 state before explicitly retrying that suffix.
 
+The existing `deleteEdge` / `deleteEdges` methods are also intentionally
+receipt-less online operations. They are idempotent with respect to current
+graph state, but a replay cannot recover the first attempt's exact `existed`
+result. Use the opt-in receipt API below when that original result matters.
+
 ```ts
 import { BatchError } from "lantern-sdk";
 
@@ -109,6 +114,76 @@ try {
   }
 }
 ```
+
+## Receipt-safe Edge Delete
+
+Receipt-bearing Edge Delete lets an application mint and durably retain the
+wire identity of one logical call before sending it. It uses one `GroupID` and
+one index-aligned `OperationID` per edge. The receipt call is not automatically
+chunked because splitting it would change that logical-call boundary.
+
+```ts
+import {
+  ReceiptMutationUncertainError,
+  ReceiptReconciliationError,
+  connect,
+  mintReceiptOperationContext,
+  parseReceiptOperationContext,
+} from "lantern-sdk";
+
+const client = connect("https://lantern.example");
+const edges = [
+  { tail: "session:123", head: "member:a" },
+  { tail: "session:123", head: "member:b" },
+];
+
+const capability = await client.getReceiptCapability();
+if (!capability.enabled) {
+  throw new Error("this endpoint cannot accept receipt-bearing mutations");
+}
+
+const context = mintReceiptOperationContext(capability, edges.length);
+const persisted = JSON.stringify(context);
+// Durably store `persisted` before the first mutation send.
+
+try {
+  const result = await client.deleteEdgesWithReceipt(edges, context);
+  for (const item of result.results) {
+    console.log(item.operationId, item.existed); // exact original result
+  }
+} catch (error) {
+  if (error instanceof ReceiptMutationUncertainError) {
+    // Lookup is read-only: it never executes or retries the Delete.
+    const statuses = await client.getReceiptStatuses(error.context.operationIds);
+    console.log(statuses);
+  } else if (error instanceof ReceiptReconciliationError) {
+    // The endpoint epoch, policy, NodeID, or generation could not be proven.
+    console.error(error.reason);
+  } else {
+    throw error;
+  }
+}
+
+// After process restart, validate and canonicalize the persisted identity.
+const restored = parseReceiptOperationContext(JSON.parse(persisted));
+```
+
+`deleteEdgeWithReceipt(tail, head, oneItemContext)` and
+`getReceiptStatus(operationId)` are thin singular facades over the plural
+methods. A receipt status is one of:
+
+- `"confirmed"` — carries the exact original Edge Delete `existed` result.
+- `"notYetObserved"` — no matching receipt is currently observed; if the
+  application retries, it must reuse the exact refs and persisted context.
+- `"noLongerProvable"` — retention no longer permits an authoritative answer;
+  do not mint a replacement identity or blindly repeat the destructive action.
+
+Every receipt-bearing retry first probes the same configured endpoint and
+compares the deployment epoch, policy fingerprint, NodeID, and generation from
+the persisted context. A mismatch or unavailable capability raises
+`ReceiptReconciliationError` before the Delete is sent. Rotating the bearer
+token does not change receipt identity. The Node SDK remains single-endpoint
+and does not rotate or fail over receipt calls.
 
 ## Conditional writes (SET NX)
 

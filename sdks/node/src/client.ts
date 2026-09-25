@@ -29,7 +29,14 @@
  * descriptor `LanternService`).
  */
 
-import { type Client, type Interceptor, type Transport, createClient } from "@connectrpc/connect";
+import {
+  Code,
+  ConnectError,
+  type Client,
+  type Interceptor,
+  type Transport,
+  createClient,
+} from "@connectrpc/connect";
 import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 
 import {
@@ -57,6 +64,8 @@ import {
   InvalidArgumentError,
   LanternError,
   NotFoundError,
+  ReceiptMutationUncertainError,
+  ReceiptReconciliationError,
   SearchContinuationLimitedError,
   wrapConnectError,
 } from "./errors.js";
@@ -161,6 +170,23 @@ import {
   type IdentityFrame,
   type IdentitySubscribeOptions,
 } from "./changes.js";
+import {
+  normalizeReceiptEdgeRefs,
+  operationIDToBytes,
+  parseOperationID,
+  receiptCapabilityFromWire,
+  receiptContextForItemCount,
+  receiptContextToWire,
+  receiptContinuityDifference,
+  receiptStatusesFromWire,
+  RECEIPT_STATUS_MAX_ITEMS,
+  type EdgeDeleteReceiptBatchResult,
+  type EdgeDeleteReceiptResult,
+  type OperationID,
+  type ReceiptCapability,
+  type ReceiptOperationContext,
+  type ReceiptStatus,
+} from "./receipts.js";
 
 /**
  * Upper bound for the auto-chunk size. Contrib-ID idempotency keys (#895)
@@ -170,6 +196,18 @@ import {
  * (mirrors the Go SDK's maxBatchChunkSize).
  */
 const MAX_BATCH_CHUNK_SIZE = 1 << 16;
+
+function isDefiniteReceiptMutationRejection(error: unknown): boolean {
+  if (!(error instanceof ConnectError)) return false;
+  switch (error.code) {
+    case Code.InvalidArgument:
+    case Code.Unauthenticated:
+    case Code.PermissionDenied:
+      return true;
+    default:
+      return false;
+  }
+}
 
 /** Maps the SDK's string match mode onto the wire enum. */
 function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
@@ -916,6 +954,21 @@ export class Lantern {
     });
   }
 
+  /**
+   * Receipt-bearing singular Edge Delete. The caller must mint and persist a
+   * one-item context before the first send. This is a thin facade over
+   * {@link deleteEdgesWithReceipt}; the plural RPC is the canonical path.
+   */
+  async deleteEdgeWithReceipt(
+    tail: string,
+    head: string,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeDeleteReceiptResult> {
+    const response = await this.deleteEdgesWithReceipt([{ tail, head }], context, signal);
+    return response.results[0]!;
+  }
+
   async getEdges(
     refs: readonly { tail: string; head: string }[],
     signal?: AbortSignal,
@@ -1047,6 +1100,69 @@ export class Lantern {
       total += resp.deleted;
     });
     return total;
+  }
+
+  /**
+   * Delete an index-aligned Edge batch with durable original-result receipts.
+   *
+   * The context is explicit so callers can persist it before the first send
+   * and reuse exactly the same bytes after response loss. Every attempt first
+   * verifies the current deployment epoch, policy, NodeID, and generation.
+   * Changed or unavailable continuity throws {@link ReceiptReconciliationError}
+   * without sending the mutation.
+   */
+  async deleteEdgesWithReceipt(
+    refs: readonly { tail: string; head: string }[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeDeleteReceiptBatchResult> {
+    const edges = normalizeReceiptEdgeRefs(refs);
+    const normalizedContext = receiptContextForItemCount(context, edges.length);
+    await this.requireReceiptContinuity(normalizedContext, signal);
+    const receiptContext = receiptContextToWire(normalizedContext);
+
+    try {
+      const response = await this.client.deleteEdges(
+        {
+          edges: edges.map((edge) => ({ tail: edge.tail, head: edge.head })),
+          receiptContext,
+        },
+        this.callOpts(signal),
+      );
+      if (response.existed.length !== edges.length) {
+        throw new LanternError(
+          `server returned ${response.existed.length} Edge Delete outcomes for ${edges.length} items`,
+        );
+      }
+      const deleted = response.existed.filter(Boolean).length;
+      if (response.deleted !== deleted) {
+        throw new LanternError(
+          `server returned deleted=${response.deleted} for ${deleted} true Edge Delete outcomes`,
+        );
+      }
+      return Object.freeze({
+        context: normalizedContext,
+        deleted,
+        results: Object.freeze(
+          edges.map((edge, index) =>
+            Object.freeze({
+              tail: edge.tail,
+              head: edge.head,
+              operationId: normalizedContext.operationIds[index]!,
+              existed: response.existed[index]!,
+            }),
+          ),
+        ),
+      });
+    } catch (error) {
+      if (error instanceof ConnectError && error.code === Code.FailedPrecondition) {
+        throw await this.receiptPreconditionError(normalizedContext, error, signal);
+      }
+      if (isDefiniteReceiptMutationRejection(error)) {
+        throw wrapConnectError(error);
+      }
+      throw new ReceiptMutationUncertainError(normalizedContext, edges, wrapConnectError(error));
+    }
   }
 
   async scanEdges(
@@ -1234,6 +1350,50 @@ export class Lantern {
    */
   async getReplicationStatus(signal?: AbortSignal): Promise<GetReplicationStatusResponse> {
     return this.invoke(() => this.client.getReplicationStatus({}, this.callOpts(signal)));
+  }
+
+  /**
+   * Discover whether the current authenticated endpoint can accept
+   * receipt-bearing mutations and, when enabled, its exact continuity marker.
+   */
+  async getReceiptCapability(signal?: AbortSignal): Promise<ReceiptCapability> {
+    return this.invoke(async () => {
+      const response = await this.client.getReceiptCapability({}, this.callOpts(signal));
+      return receiptCapabilityFromWire(response);
+    });
+  }
+
+  /**
+   * Read original receipt results without executing or retrying a mutation.
+   * Results are request-index-aligned, including duplicate operation IDs.
+   */
+  async getReceiptStatuses(
+    operationIds: readonly OperationID[],
+    signal?: AbortSignal,
+  ): Promise<readonly ReceiptStatus[]> {
+    if (!Array.isArray(operationIds) || operationIds.length === 0) {
+      throw new InvalidArgumentError("receipt status requires at least one operationId");
+    }
+    if (operationIds.length > RECEIPT_STATUS_MAX_ITEMS) {
+      throw new InvalidArgumentError(
+        `receipt status supports at most ${RECEIPT_STATUS_MAX_ITEMS} operation IDs`,
+      );
+    }
+    const normalized = Object.freeze(operationIds.map(parseOperationID));
+    return this.invoke(async () => {
+      const response = await this.client.getReceiptStatuses(
+        {
+          operationIds: normalized.map((operationId) => operationIDToBytes(operationId)),
+        },
+        this.callOpts(signal),
+      );
+      return receiptStatusesFromWire(response.statuses, normalized);
+    });
+  }
+
+  /** Thin one-item facade over {@link getReceiptStatuses}. */
+  async getReceiptStatus(operationId: OperationID, signal?: AbortSignal): Promise<ReceiptStatus> {
+    return (await this.getReceiptStatuses([operationId], signal))[0]!;
   }
 
   /**
@@ -1466,6 +1626,73 @@ export class Lantern {
     } catch (err) {
       throw wrapConnectError(err);
     }
+  }
+
+  private async requireReceiptContinuity(
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let capability: ReceiptCapability;
+    try {
+      capability = await this.getReceiptCapability(signal);
+    } catch (error) {
+      throw new ReceiptReconciliationError(
+        "capabilityUnavailable",
+        context,
+        "receipt capability is unavailable; status reconciliation is safe but mutation replay is not",
+        { cause: error },
+      );
+    }
+    if (!capability.enabled) {
+      throw new ReceiptReconciliationError(
+        "capabilityDisabled",
+        context,
+        "receipt capability is disabled; status reconciliation is safe but mutation replay is not",
+      );
+    }
+    const difference = receiptContinuityDifference(context.continuity, capability.continuity);
+    if (difference !== null) {
+      throw new ReceiptReconciliationError(
+        difference,
+        context,
+        `receipt continuity changed (${difference}); status reconciliation is required`,
+      );
+    }
+  }
+
+  private async receiptPreconditionError(
+    context: ReceiptOperationContext,
+    rejection: ConnectError,
+    signal?: AbortSignal,
+  ): Promise<ReceiptReconciliationError> {
+    let capability: ReceiptCapability;
+    try {
+      capability = await this.getReceiptCapability(signal);
+    } catch {
+      return new ReceiptReconciliationError(
+        "capabilityUnavailable",
+        context,
+        "receipt mutation was rejected and endpoint capability is now unavailable",
+        { cause: rejection },
+      );
+    }
+    if (!capability.enabled) {
+      return new ReceiptReconciliationError(
+        "capabilityDisabled",
+        context,
+        "receipt mutation was rejected and endpoint capability is now disabled",
+        { cause: rejection },
+      );
+    }
+    const difference = receiptContinuityDifference(context.continuity, capability.continuity);
+    return new ReceiptReconciliationError(
+      difference ?? "continuityRejected",
+      context,
+      difference === null
+        ? "receipt mutation was rejected because endpoint continuity could not be certified"
+        : `receipt mutation was rejected after continuity changed (${difference})`,
+      { cause: rejection },
+    );
   }
 
   private chunkSize(): number {

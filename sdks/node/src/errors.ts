@@ -23,6 +23,11 @@
 
 import { ConnectError } from "@connectrpc/connect";
 import { SearchErrorDetailSchema, SearchErrorReason } from "./gen/graph/v1/graph_pb.js";
+import type {
+  ReceiptEdgeRef,
+  ReceiptOperationContext,
+  ReceiptReconciliationReason,
+} from "./receipts.js";
 
 export class LanternError extends Error {
   override readonly cause?: unknown;
@@ -101,6 +106,48 @@ export class OverflowError extends LanternError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "OverflowError";
+  }
+}
+
+/**
+ * A receipt-bearing mutation may not be sent because endpoint continuity
+ * cannot be proven. Status lookup remains safe; automatic mutation replay
+ * does not.
+ */
+export class ReceiptReconciliationError extends LanternError {
+  readonly reason: ReceiptReconciliationReason;
+  readonly context: ReceiptOperationContext;
+
+  constructor(
+    reason: ReceiptReconciliationReason,
+    context: ReceiptOperationContext,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "ReceiptReconciliationError";
+    this.reason = reason;
+    this.context = context;
+  }
+}
+
+/**
+ * The receipt-bearing mutation was sent but its exact response was not
+ * observed. Persist `context` and `edges`, reconcile by status, or pass the
+ * same values back to the receipt method; never mint replacement IDs.
+ */
+export class ReceiptMutationUncertainError extends ReceiptReconciliationError {
+  readonly edges: readonly ReceiptEdgeRef[];
+
+  constructor(context: ReceiptOperationContext, edges: readonly ReceiptEdgeRef[], cause: unknown) {
+    super(
+      "mutationOutcomeUnknown",
+      context,
+      "receipt Edge Delete response was not observed; reconcile status before any new operation",
+      { cause },
+    );
+    this.name = "ReceiptMutationUncertainError";
+    this.edges = edges;
   }
 }
 
