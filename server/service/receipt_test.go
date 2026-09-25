@@ -82,44 +82,6 @@ func commitReceiptForStatus(
 	tx.Commit()
 }
 
-func installRetiredReceiptsForStatus(
-	t *testing.T,
-	runtime *ServingRuntime,
-	state mutationreceipt.RetiredCatalogSnapshot,
-) {
-	t.Helper()
-	highWaterMillis := runtime.receipt.store.Stats().HighWaterMillis
-	config, _, err := retiredCatalogConfig(runtime.receipt.policy, highWaterMillis)
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := mutationreceipt.NewRetiredCatalogFromSnapshot(config, state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	canonical, err := catalog.Snapshot(time.UnixMilli(highWaterMillis))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, revision, err := runtime.receipt.retired.snapshot(
-		runtime.receipt.policy,
-		highWaterMillis,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stage, err := runtime.receipt.retired.beginReplace(
-		runtime.receipt.policy,
-		revision,
-		highWaterMillis,
-		canonical,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stage.Commit()
-}
-
 func TestReceiptReadSurfaceDisabled(t *testing.T) {
 	svc := NewLanternService(nil)
 	id := validReceiptOperationIDForTest(t, 0x01)
