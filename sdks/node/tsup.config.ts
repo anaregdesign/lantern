@@ -6,7 +6,7 @@ import { defineConfig } from "tsup";
 //     `@connectrpc/connect-node` via `transport-node.ts`.
 //   - `dist/web.{js,cjs}`    — Browser entry (`lantern-sdk/web`). Pulls
 //     in `@connectrpc/connect-web` via `transport-web.ts`. Verified by
-//     `test/web-bundle.test.ts` to NOT reference `@connectrpc/connect-node`.
+//     `test/bundle-isolation.test.ts` to NOT reference `@connectrpc/connect-node`.
 //
 // tsup's `splitting: false` produces a single self-contained chunk per
 // entrypoint so a bundler can tree-shake at the entry boundary
