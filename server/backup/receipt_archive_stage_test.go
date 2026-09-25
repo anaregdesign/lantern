@@ -100,10 +100,11 @@ func TestReceiptWholeStateArchiveStageReconstructsCausalGraphAndIndexes(t *testi
 		!f.cache.AddEdgeWithExpirationContribHLC("put-tail", "put-head", 5, future, graphcache.ContribID{4}, stamp(10)) {
 		t.Fatal("failed to seed live Put plus newer Add")
 	}
-	raw, err := produceReceiptWholeStateArchive(context.Background(), f.source, f.policy)
+	product, err := produceReceiptWholeStateArchive(context.Background(), f.backupSource, f.policy)
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw, _ := product.bytes()
 	configure := func(c *graphcache.GraphCache[string, *pb.Vertex]) error {
 		c.EnableSearchIndex(func(key string, _ *pb.Vertex) search.Document { return search.Text(key) }, strings.Compare)
 		return nil
