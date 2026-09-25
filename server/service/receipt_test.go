@@ -99,6 +99,15 @@ func TestReceiptReadSurfaceDisabled(t *testing.T) {
 	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("plural disabled status = %v, want FailedPrecondition", err)
 	}
+	oversized := make([][]byte, MaxReceiptStatusBatchSize+1)
+	for i := range oversized {
+		oversized[i] = id
+	}
+	if _, err := svc.GetReceiptStatuses(context.Background(), &pb.GetReceiptStatusesRequest{
+		OperationIds: oversized,
+	}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("oversized disabled status = %v, want InvalidArgument", err)
+	}
 }
 
 func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {

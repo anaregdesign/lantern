@@ -59,6 +59,7 @@ import (
 // CodeInternal — the equivalent of the grpc-middleware recovery
 // interceptor.
 func connectHandlerOptions(
+	netCfg NetConfig,
 	val *ValidationInterceptor,
 	rl *RateLimitInterceptor,
 	auth *AuthInterceptor,
@@ -87,6 +88,8 @@ func connectHandlerOptions(
 		ints = append(ints, slow.ConnectInterceptor())
 	}
 	opts := []connect.HandlerOption{
+		connect.WithReadMaxBytes(netCfg.MaxRecvMsgBytes),
+		connect.WithSendMaxBytes(netCfg.MaxSendMsgBytes),
 		connect.WithRecover(func(ctx context.Context, _ connect.Spec, _ http.Header, p any) error {
 			logger.ErrorContext(ctx, "connect handler panic", slog.Any("panic", p))
 			return connect.NewError(connect.CodeInternal, errors.New("internal server error"))
@@ -144,10 +147,8 @@ func (l *LanternListener) TLSEnabled() bool { return l.tls }
 // (so tests can substitute bufconn) and consumed by LanternServer.Run.
 //
 //   - Net is unused for the bind itself (lis owns that) but supplies
-//     per-RPC message size caps. The Connect handlers honour these
-//     implicitly via http2 default frame caps; they remain on Config
-//     for documentation continuity and are slated for explicit wiring
-//     in #342.
+//     per-message request and response size caps enforced by every generated
+//     Connect handler.
 //   - tlsCfg switches Serve → ServeTLS.
 //   - svc / rep are the wire bindings to the in-process services.
 //   - val / rl / log / met / slow are the Connect interceptors.
@@ -163,7 +164,7 @@ func (l *LanternListener) TLSEnabled() bool { return l.tls }
 // h2c.NewHandler wrapper pattern.
 func NewLanternListener(
 	lis net.Listener,
-	_ NetConfig,
+	netCfg NetConfig,
 	tlsCfg TLSConfig,
 	obs ObservabilityConfig,
 	cors CORSConfig,
@@ -178,7 +179,10 @@ func NewLanternListener(
 	hc *HealthChecker,
 	logger *slog.Logger,
 ) (*LanternListener, error) {
-	handlerOpts := connectHandlerOptions(val, rl, auth, logInt, met, slow, logger)
+	if netCfg.MaxRecvMsgBytes < 0 || netCfg.MaxSendMsgBytes < 0 {
+		return nil, errors.New("connect message size limits must be zero (unlimited) or positive")
+	}
+	handlerOpts := connectHandlerOptions(netCfg, val, rl, auth, logInt, met, slow, logger)
 
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternServiceHandler(

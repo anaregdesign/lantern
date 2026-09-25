@@ -167,6 +167,8 @@ func (v *ValidationInterceptor) validate(req any) error {
 		return v.validateEdges(r.GetEdges())
 	case *pb.PutEdgesRequest:
 		return v.validateEdges(r.GetEdges())
+	case *pb.GetReceiptStatusesRequest:
+		return v.checkBatchLimit(len(r.GetOperationIds()), v.receiptStatusBatchLimit())
 	case *pb.IlluminateRequest:
 		if err := v.checkKey("seed", r.GetSeed()); err != nil {
 			return err
@@ -230,13 +232,24 @@ func (v *ValidationInterceptor) checkKey(field, value string) error {
 }
 
 func (v *ValidationInterceptor) checkBatch(n int) error {
+	return v.checkBatchLimit(n, v.limits.MaxBatchSize)
+}
+
+func (v *ValidationInterceptor) checkBatchLimit(n, maxBatchSize int) error {
 	if n == 0 {
 		return v.reject("empty_batch", "request batch must not be empty")
 	}
-	if v.limits.MaxBatchSize > 0 && n > v.limits.MaxBatchSize {
-		return v.reject("batch_too_large", "batch size %d exceeds max %d", n, v.limits.MaxBatchSize)
+	if maxBatchSize > 0 && n > maxBatchSize {
+		return v.reject("batch_too_large", "batch size %d exceeds max %d", n, maxBatchSize)
 	}
 	return nil
+}
+
+func (v *ValidationInterceptor) receiptStatusBatchLimit() int {
+	if v.limits.MaxBatchSize > 0 && v.limits.MaxBatchSize < service.MaxReceiptStatusBatchSize {
+		return v.limits.MaxBatchSize
+	}
+	return service.MaxReceiptStatusBatchSize
 }
 
 // ---------------------------------------------------------------------------

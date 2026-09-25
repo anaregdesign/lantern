@@ -41,6 +41,22 @@ func authedReceiptRequest[T any](msg *T) *connect.Request[T] {
 	return req
 }
 
+func receiptRequestWithToken[T any](msg *T, token string) *connect.Request[T] {
+	req := connect.NewRequest(msg)
+	if token != "" {
+		req.Header().Set("Authorization", "Bearer "+token)
+	}
+	return req
+}
+
+func oversizedReceiptStatusIDs(id []byte) [][]byte {
+	ids := make([][]byte, service.MaxReceiptStatusBatchSize+1)
+	for i := range ids {
+		ids[i] = id
+	}
+	return ids
+}
+
 // TestReceiptReadSurface_RealConnectWire keeps the dormant capability/status
 // surface honest: authentication precedes receipt inspection, and a server
 // without an atomic receipt engine cannot fabricate an absent result.
@@ -71,6 +87,11 @@ func TestReceiptReadSurface_RealConnectWire(t *testing.T) {
 	if _, err := raw.GetReceiptStatuses(ctx, authedReceiptRequest(&pb.GetReceiptStatusesRequest{OperationIds: [][]byte{operationID}})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("disabled plural status = %v, want FailedPrecondition", err)
 	}
+	if _, err := raw.GetReceiptStatuses(ctx, authedReceiptRequest(&pb.GetReceiptStatusesRequest{
+		OperationIds: oversizedReceiptStatusIDs(operationID),
+	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("oversized authenticated disabled status = %v, want InvalidArgument", err)
+	}
 
 	// Auth can be disabled for ordinary Lantern deployments. The dormant
 	// preflight still cannot expose a continuity marker in that configuration.
@@ -82,6 +103,11 @@ func TestReceiptReadSurface_RealConnectWire(t *testing.T) {
 	}
 	if _, err := openRaw.GetReceiptStatus(ctx, connect.NewRequest(&pb.GetReceiptStatusRequest{OperationId: operationID})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("unauthenticated deployment status = %v, want FailedPrecondition", err)
+	}
+	if _, err := openRaw.GetReceiptStatuses(ctx, connect.NewRequest(&pb.GetReceiptStatusesRequest{
+		OperationIds: oversizedReceiptStatusIDs(operationID),
+	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("oversized auth-disabled status = %v, want InvalidArgument", err)
 	}
 }
 
@@ -2361,14 +2387,6 @@ func TestDurableReceiptWALRuntime_RealConnectWireRecovery(t *testing.T) {
 	}
 }
 
-func receiptRequestWithToken[T any](msg *T, token string) *connect.Request[T] {
-	req := connect.NewRequest(msg)
-	if token != "" {
-		req.Header().Set("Authorization", "Bearer "+token)
-	}
-	return req
-}
-
 type publicReceiptWireServer struct {
 	runtime *service.ServingRuntime
 	server  *connectTestServer
@@ -2455,6 +2473,24 @@ func publicReceiptCapability(
 		t.Fatalf("public receipt capability = %+v, %v", response, err)
 	}
 	return response.Msg
+}
+
+func TestReceiptStatusBatchLimit_RealConnectWire(t *testing.T) {
+	wire := newPublicReceiptWireServer(t, hlc.NodeID{0x43}, 32, testToken)
+	capability := publicReceiptCapability(t, wire, testToken)
+	receiptContext := publicReceiptWireContext(t, capability, 0x44, 1, time.Now())
+	_, err := wire.raw.GetReceiptStatuses(
+		context.Background(),
+		authedReceiptRequest(&pb.GetReceiptStatusesRequest{
+			OperationIds: oversizedReceiptStatusIDs(receiptContext.GetOperationIds()[0]),
+		}),
+	)
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("oversized enabled status = %v, want InvalidArgument", err)
+	}
+	if stats := wire.runtime.ReceiptStats(); stats.Entries != 0 {
+		t.Fatalf("oversized status touched receipt Store: %+v", stats)
+	}
 }
 
 func publicReceiptWireContext(

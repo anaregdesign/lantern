@@ -48,14 +48,14 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_LLM_PROVIDER` | string | `disabled` | LLM backend for server-side features (#828): disabled (default) | openai | anthropic | gemini. disabled composes the server without any LLM. |
 | `LANTERN_LOG_FORMAT` | string | `json` | Log output format: json or text. |
 | `LANTERN_LOG_LEVEL` | level | `info` | Structured-log level: debug, info, warn, or error. |
-| `LANTERN_MAX_BATCH_SIZE` | int | `10000` | Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms). |
+| `LANTERN_MAX_BATCH_SIZE` | int | `10000` | Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms and receipt status lookups). Receipt status lookups retain a hard 10,000-item ceiling when this value is higher or unlimited. |
 | `LANTERN_MAX_CONCURRENT_STREAMS` | uint32 | `1024` | HTTP/2 max concurrent streams per connection (0 = unlimited). |
 | `LANTERN_MAX_EDGES` | int | `0` | Soft local-admission cap on the conservative edge footprint: live edges plus retained Put barriers (0 = unlimited). A live additive edge coexisting with a barrier counts twice, and charging born-expired Put barriers prevents a cap bypass. This intentionally overlaps the separate causal-identity budget; replication apply and backup restore bypass it. |
 | `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | int | `0` | Hard atomic local-origin admission budget over the exact retained edge causal-identity union (live HLC floor, Put barrier, or Delete tombstone); 0 = unlimited. Replication apply bypasses the limit for convergence and can report over-limit. |
 | `LANTERN_MAX_KEY_LEN` | int | `1024` | Maximum accepted vertex-key length in bytes. |
-| `LANTERN_MAX_RECV_MSG_BYTES` | int | `16777216` | Maximum accepted request message size in bytes. |
+| `LANTERN_MAX_RECV_MSG_BYTES` | int | `16777216` | Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited). |
 | `LANTERN_MAX_REPLICATION_LAG` | int | `10000` | Readiness gate: maximum tolerated replication lag (entries) before /readyz reports not ready. |
-| `LANTERN_MAX_SEND_MSG_BYTES` | int | `16777216` | Maximum produced response message size in bytes. |
+| `LANTERN_MAX_SEND_MSG_BYTES` | int | `16777216` | Maximum produced response size per Protobuf message, enforced by every generated Connect handler (0 = unlimited). |
 | `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` | int | `0` | Hard atomic local-origin admission budget over the exact retained vertex causal-identity union (live HLC floor, Put barrier, or Delete tombstone); 0 = unlimited. Replication apply bypasses the limit for convergence and can report over-limit. |
 | `LANTERN_MAX_VERTICES` | int | `0` | Soft local-admission cap on the conservative vertex footprint: live vertices plus retained Put barriers (0 = unlimited). Charging born-expired Put barriers prevents a cap bypass. This intentionally overlaps the separate causal-identity budget; replication apply and backup restore bypass it, and edge admission conservatively assumes both endpoints may be new. |
 | `LANTERN_METRICS_ADDR` | string | `:9090` | host:port for the /metrics + /healthz + /readyz HTTP listener (empty disables it). |

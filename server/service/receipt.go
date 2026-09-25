@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"connectrpc.com/connect"
@@ -12,6 +11,11 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+// MaxReceiptStatusBatchSize is the handler-private ceiling for status
+// amplification. Production validation may impose a lower configured batch
+// limit, but no interceptor configuration can raise this bound.
+const MaxReceiptStatusBatchSize = 10_000
 
 var (
 	errReceiptsDisabled   = errors.New("mutation receipts are not enabled on this server")
@@ -114,7 +118,7 @@ func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetRece
 		return nil, invalidReceiptRequest(err)
 	}
 	rawIDs := req.GetOperationIds()
-	if len(rawIDs) == 0 || len(rawIDs) > math.MaxInt32 {
+	if len(rawIDs) == 0 || len(rawIDs) > MaxReceiptStatusBatchSize {
 		return nil, invalidReceiptRequest(mutationreceipt.ErrInvalidBatch)
 	}
 	ids := make([]mutationreceipt.ID, len(rawIDs))
