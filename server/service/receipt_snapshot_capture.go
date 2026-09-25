@@ -36,6 +36,8 @@ type ReceiptWholeStateCapture struct {
 type ReceiptWholeStateBackupCapture struct {
 	WholeState ReceiptWholeStateCapture
 	WALTip     mutationlog.FileWALTipWitness
+	NodeID     hlc.NodeID
+	Generation [16]byte
 }
 
 // ReceiptWholeStateSource is the read-only source shared by the private archive
@@ -94,11 +96,11 @@ func (s *ReceiptWholeStateSource) belongsTo(replication *LanternReplicationServi
 }
 
 // NewReceiptWholeStateSource exposes only the coordinator's detached capture,
-// never its commit or status operations. It is deliberately absent from the
-// production DI graph; callers may explicitly configure the replication
-// Snapshot producer, but this does not enable receipt admission or restore.
-// The service binds its first Store pointer and rejects a different one, even
-// when the replacement has the same epoch and policy.
+// never its commit or status operations. Runtime certification constructs the
+// production instance shared by replication Snapshot and backup; direct
+// callers do not gain receipt admission or restore authority. The service
+// binds its first Store pointer and rejects a different one, even when the
+// replacement has the same epoch and policy.
 func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store) (*ReceiptWholeStateSource, error) {
 	coordinator, err := newEdgeDeleteReceiptCoordinator(s, store)
 	if err != nil {
@@ -166,6 +168,8 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 	var receipts mutationreceipt.Snapshot
 	var origins []OriginState
 	var walTip mutationlog.FileWALTipWitness
+	var nodeID hlc.NodeID
+	var generation [16]byte
 	err = s.withExclusiveCommittedView(func() error {
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
@@ -213,12 +217,17 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 		}
 		image.barriers, image.tombstones, image.graph = graph.Barriers, graph.Tombstones, graph.Graph
 		if includeWALTip {
-			if s.runtime == nil {
+			if s.runtime == nil || s.runtime.receipt == nil {
 				return errors.New("receipt whole-state backup capture requires a durable serving runtime")
 			}
 			walTip, captureErr = s.runtime.receiptWALTipWitness(s, image.cutoffLocalSeq)
 			if captureErr != nil {
 				return captureErr
+			}
+			nodeID = s.clock.NodeID()
+			generation = s.runtime.receipt.generation
+			if nodeID == (hlc.NodeID{}) || generation == ([16]byte{}) {
+				return errors.New("receipt whole-state backup capture has an invalid runtime identity")
 			}
 		}
 		if err := ctx.Err(); err != nil {
@@ -265,7 +274,12 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 			)
 		}
 	}
-	return ReceiptWholeStateBackupCapture{WholeState: wholeState, WALTip: walTip}, nil
+	return ReceiptWholeStateBackupCapture{
+		WholeState: wholeState,
+		WALTip:     walTip,
+		NodeID:     nodeID,
+		Generation: generation,
+	}, nil
 }
 
 type receiptSnapshotFrameCollector struct{ frames []*pb.SnapshotResponse }

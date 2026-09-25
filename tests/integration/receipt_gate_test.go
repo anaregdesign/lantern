@@ -29,6 +29,7 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -336,6 +337,203 @@ func closeDurableReceiptWireRuntime(
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "receipts.wal")
+	backupDir := t.TempDir()
+	t.Setenv("LANTERN_STRICT_CONFIG", "false")
+	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "fresh")
+	t.Setenv("LANTERN_RECEIPT_WAL_PATH", walPath)
+	t.Setenv("LANTERN_RECEIPT_EPOCH", strings.Repeat("42", 16))
+	t.Setenv("LANTERN_RECEIPT_RETENTION", "1h")
+	t.Setenv("LANTERN_RECEIPT_MAX_ENTRIES", "32")
+	t.Setenv("LANTERN_RECEIPT_MAX_BYTES", "1048576")
+	t.Setenv("LANTERN_NODE_ID", strings.Repeat("31", 16))
+	t.Setenv("LANTERN_BACKUP_ENABLED", "true")
+	t.Setenv("LANTERN_BACKUP_DIR", backupDir)
+	t.Setenv("LANTERN_BACKUP_INTERVAL", "20ms")
+	t.Setenv("LANTERN_BACKUP_RETAIN", "1")
+	t.Setenv("LANTERN_BACKUP_INSTANCE_ID", "receipt-wire-owner")
+	t.Setenv("LANTERN_BACKUP_RESTORE_ON_START", "false")
+
+	cfg, err := provider.NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Backup.Enabled || cfg.Backup.RestoreOnStart {
+		t.Fatalf("durable backup config = %+v", cfg.Backup)
+	}
+
+	t.Run("restore on start remains rejected", func(t *testing.T) {
+		invalid := cfg.Backup
+		invalid.RestoreOnStart = true
+		runtime, cleanup, err := provider.NewServingRuntime(
+			cfg.ReceiptWAL,
+			cfg.Cache,
+			cfg.Search,
+			cfg.MutationLog,
+			cfg.Replication,
+			invalid,
+			nil,
+		)
+		if runtime != nil || cleanup != nil || err == nil ||
+			!strings.Contains(err.Error(), "LANTERN_BACKUP_RESTORE_ON_START must be disabled") {
+			t.Fatalf("durable restore-on-start runtime = (%v, cleanup nil=%t, %v)", runtime, cleanup == nil, err)
+		}
+	})
+
+	runtime, cleanup, err := provider.NewServingRuntime(
+		cfg.ReceiptWAL,
+		cfg.Cache,
+		cfg.Search,
+		cfg.MutationLog,
+		cfg.Replication,
+		cfg.Backup,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanup()
+	})
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
+	replicationService, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certified, err := provider.NewRuntimeCertified(runtime, primary, replicationService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupper, err := provider.NewBackupper(
+		cfg.Backup,
+		cfg.ReceiptWAL,
+		runtime,
+		primary,
+		certified,
+		prometheus.NewRegistry(),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newConnectTestServer(t, primary, replicationService)
+	sdk := newConnectClientFor(t, server.url)
+
+	runCtx, stop := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- backupper.Run(runCtx)
+	}()
+	t.Cleanup(func() {
+		stop()
+		select {
+		case err := <-runDone:
+			if err != nil {
+				t.Errorf("stop durable backup scheduler: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("durable backup scheduler did not stop")
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if outcome, err := sdk.PutVertex(ctx, "durable/backup-wire", "persisted", time.Hour); err != nil ||
+		outcome != client.PutOutcomeAppliedAndLive {
+		t.Fatalf("wire PutVertex = (%v, %v)", outcome, err)
+	}
+	source, policy, err := runtime.ReceiptWholeStateBackupSource(primary, replicationService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := source.CaptureForBackup(ctx, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expected.WALTip.Seq == 0 {
+		t.Fatal("wire mutation did not advance the durable WAL")
+	}
+
+	evidence, manifestPath := waitForDurableReceiptBackupSet(
+		t,
+		ctx,
+		backupDir,
+		cfg.Backup.InstanceID,
+	)
+	if evidence.NodeID != expected.NodeID ||
+		evidence.Generation != expected.Generation ||
+		evidence.WALCut != expected.WALTip {
+		t.Fatalf(
+			"loaded durable evidence identity/cut = %x/%x/%+v, want %x/%x/%+v",
+			evidence.NodeID,
+			evidence.Generation,
+			evidence.WALCut,
+			expected.NodeID,
+			expected.Generation,
+			expected.WALTip,
+		)
+	}
+	if evidence.SetID == 0 || evidence.BackupTimestamp.IsZero() ||
+		evidence.Stats.Vertices != 1 || evidence.Stats.Members != 2 ||
+		evidence.Stats.Bytes <= 0 || len(evidence.Archive) == 0 {
+		t.Fatalf("loaded durable backup evidence = %+v", evidence)
+	}
+	for _, entry := range mustReadDir(t, backupDir) {
+		if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("durable scheduler emitted legacy/temporary path %q", entry.Name())
+		}
+	}
+	if filepath.Ext(manifestPath) != ".json" {
+		t.Fatalf("loaded manifest path = %q", manifestPath)
+	}
+}
+
+func waitForDurableReceiptBackupSet(
+	t *testing.T,
+	ctx context.Context,
+	dir, instance string,
+) (backup.ReceiptBackupSetEvidence, string) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".set.json") {
+					continue
+				}
+				manifestPath := filepath.Join(dir, entry.Name())
+				evidence, loadErr := backup.LoadReceiptBackupSet(dir, instance, manifestPath)
+				if loadErr == nil && evidence.Stats.Vertices == 1 {
+					return evidence, manifestPath
+				}
+				if loadErr != nil {
+					lastErr = loadErr
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for complete durable receipt backup set: %v (last validation: %v)", ctx.Err(), lastErr)
+		case <-ticker.C:
+		}
+	}
+}
+
+func mustReadDir(t *testing.T, path string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
 }
 
 func newDurableReceiptSnapshotInstaller(

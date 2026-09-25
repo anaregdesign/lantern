@@ -1,8 +1,15 @@
 package provider
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/service"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TestLoadBackupConfig covers the LANTERN_BACKUP_* resolution. The headline
@@ -98,4 +105,131 @@ func TestLoadBackupConfig(t *testing.T) {
 			t.Errorf("InstanceID = %q, want node-x", cfg.InstanceID)
 		}
 	})
+}
+
+func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
+	t.Run("graph-only behavior remains lbk", func(t *testing.T) {
+		receiptConfig := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+		runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
+		dir := t.TempDir()
+		backupper, err := NewBackupper(
+			backup.Config{
+				Enabled: true, Dir: dir, Interval: time.Hour,
+				Retain: 1, InstanceID: "graph-owner", RestoreOnStart: true,
+			},
+			receiptConfig,
+			runtime,
+			primary,
+			certified,
+			prometheus.NewRegistry(),
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stats, err := backupper.BackupNow(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Members != 0 || stats.Receipts != 0 || stats.Origins != 0 {
+			t.Fatalf("graph-only backup emitted receipt-set stats: %+v", stats)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".lbk") {
+			t.Fatalf("graph-only backup files = %+v, want one .lbk", entries)
+		}
+	})
+
+	t.Run("durable mode produces a committed set", func(t *testing.T) {
+		receiptConfig := validReceiptWALProviderConfig(
+			filepath.Join(t.TempDir(), "receipts.wal"),
+			ReceiptWALModeFresh,
+		)
+		runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
+		dir := t.TempDir()
+		backupper, err := NewBackupper(
+			backup.Config{
+				Enabled: true, Dir: dir, Interval: time.Hour,
+				Retain: 1, InstanceID: "receipt-owner",
+			},
+			receiptConfig,
+			runtime,
+			primary,
+			certified,
+			prometheus.NewRegistry(),
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stats, err := backupper.BackupNow(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Members != 2 || stats.Bytes <= 0 {
+			t.Fatalf("durable receipt backup stats = %+v", stats)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifests int
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".set.json") {
+				manifests++
+			}
+			if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
+				t.Fatalf("durable receipt backup emitted legacy or temporary file %q", entry.Name())
+			}
+		}
+		if len(entries) != 3 || manifests != 1 {
+			t.Fatalf("durable receipt backup files = %+v, want two members and one manifest", entries)
+		}
+	})
+}
+
+func TestNewBackupperRejectsForeignCertification(t *testing.T) {
+	receiptConfig := validReceiptWALProviderConfig(
+		filepath.Join(t.TempDir(), "receipts-a.wal"),
+		ReceiptWALModeFresh,
+	)
+	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
+
+	foreignConfig := validReceiptWALProviderConfig(
+		filepath.Join(t.TempDir(), "receipts-b.wal"),
+		ReceiptWALModeFresh,
+	)
+	foreignRuntime, foreignPrimary, _ := certifiedSnapshotInstallerRuntime(t, foreignConfig)
+	cfg := backup.Config{
+		Enabled: true, Dir: t.TempDir(), Interval: time.Hour,
+		Retain: 1, InstanceID: "receipt-owner",
+	}
+	for _, tc := range []struct {
+		name    string
+		runtime *service.ServingRuntime
+		primary *service.LanternService
+		marker  runtimeCertified
+	}{
+		{"foreign runtime", foreignRuntime, primary, certified},
+		{"foreign primary", runtime, foreignPrimary, certified},
+		{"foreign marker", runtime, primary, runtimeCertified{valid: true, runtime: foreignRuntime, primary: foreignPrimary}},
+		{"uncertified", runtime, primary, runtimeCertified{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := NewBackupper(
+				cfg,
+				receiptConfig,
+				tc.runtime,
+				tc.primary,
+				tc.marker,
+				prometheus.NewRegistry(),
+				nil,
+			); got != nil || err == nil {
+				t.Fatalf("foreign backupper = %v, %v", got, err)
+			}
+		})
+	}
 }

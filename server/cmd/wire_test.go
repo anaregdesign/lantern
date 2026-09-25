@@ -160,6 +160,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewSnapshotInstallerSelection(",
 		"provider.NewReplicationPump(",
 		"provider.NewAntiEntropyDriver(",
+		"provider.NewBackupper(",
 	}
 	previous := -1
 	for _, needle := range ordered {
@@ -179,6 +180,64 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		!strings.Contains(text, "logger, snapshotInstallerSelection, runtimeCertified)") ||
 		!strings.Contains(text, "logger, snapshotInstallerSelection)") {
 		t.Fatal("generated injector does not share one Snapshot installer selection across Pump and anti-entropy")
+	}
+}
+
+func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) {
+	probe, port := reserveRuntimeTestPort(t)
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "receipts.wal")
+	backupDir := filepath.Join(root, "backups")
+	setDurableRuntimeEnv(t, "fresh", path, port)
+	t.Setenv("LANTERN_BACKUP_ENABLED", "true")
+	t.Setenv("LANTERN_BACKUP_DIR", backupDir)
+	t.Setenv("LANTERN_BACKUP_INSTANCE_ID", "production-receipt")
+	t.Setenv("LANTERN_BACKUP_RESTORE_ON_START", "false")
+	envconfig.ResetForTesting()
+
+	app, cleanup, err := initializeApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	stats, err := app.backupper.BackupNow(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Members != 2 || stats.Bytes <= 0 {
+		t.Fatalf("production receipt backup stats = %+v", stats)
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifests int
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".set.json") {
+			manifests++
+		}
+		if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("production durable backup emitted legacy or temporary file %q", entry.Name())
+		}
+	}
+	if len(entries) != 3 || manifests != 1 {
+		t.Fatalf("production durable backup files = %+v, want two members and one manifest", entries)
+	}
+	capability, err := app.svc.GetReceiptCapability(t.Context(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability.GetEnabled() {
+		t.Fatal("durable backup production enabled public receipt capability")
+	}
+	if _, err := app.svc.GetReceiptStatus(
+		t.Context(),
+		&pb.GetReceiptStatusRequest{},
+	); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("durable backup production receipt status = %v, want FailedPrecondition", err)
 	}
 }
 

@@ -15,6 +15,10 @@ type metrics struct {
 	duration      prometheus.Gauge
 	vertices      prometheus.Gauge
 	edges         prometheus.Gauge
+	receipts      prometheus.Gauge
+	origins       prometheus.Gauge
+	setMembers    prometheus.Gauge
+	setBytes      prometheus.Gauge
 	failures      prometheus.Counter
 	restoreVtx    prometheus.Gauge
 	restoreEdges  prometheus.Gauge
@@ -39,6 +43,22 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Name: "lantern_backup_edges",
 			Help: "Edges written by the last successful backup.",
 		}),
+		receipts: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_backup_receipts",
+			Help: "Receipt rows written by the last successful durable receipt backup set.",
+		}),
+		origins: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_backup_origins",
+			Help: "Origin cutoff rows written by the last successful durable receipt backup set.",
+		}),
+		setMembers: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_backup_set_members",
+			Help: "Data members written by the last successful durable receipt backup set.",
+		}),
+		setBytes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_backup_set_bytes",
+			Help: "Total bytes written by the last successful durable receipt backup set, including its commit manifest.",
+		}),
 		failures: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lantern_backup_failures_total",
 			Help: "Total periodic backups that failed to write.",
@@ -58,7 +78,8 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 	}
 	if reg != nil {
 		reg.MustRegister(
-			m.lastSuccess, m.duration, m.vertices, m.edges, m.failures,
+			m.lastSuccess, m.duration, m.vertices, m.edges,
+			m.receipts, m.origins, m.setMembers, m.setBytes, m.failures,
 			m.restoreVtx, m.restoreEdges, m.restoreLastTS,
 		)
 	}
@@ -70,6 +91,10 @@ func (m *metrics) observeBackup(s Stats, took time.Duration, at time.Time) {
 	m.duration.Set(took.Seconds())
 	m.vertices.Set(float64(s.Vertices))
 	m.edges.Set(float64(s.Edges))
+	m.receipts.Set(float64(s.Receipts))
+	m.origins.Set(float64(s.Origins))
+	m.setMembers.Set(float64(s.Members))
+	m.setBytes.Set(float64(s.Bytes))
 }
 
 func (m *metrics) observeRestore(s Stats, at time.Time) {

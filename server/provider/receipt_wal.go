@@ -105,8 +105,8 @@ func validateReceiptWALConfig(
 	if _, err := mutationreceipt.New(config.receiptConfig(time.Time{})); err != nil {
 		return fmt.Errorf("durable receipt WAL policy: %w", err)
 	}
-	if backups.Enabled || backups.RestoreOnStart {
-		return errors.New("LANTERN_BACKUP_ENABLED and graph-only restore must be disabled in durable receipt WAL mode")
+	if backups.RestoreOnStart {
+		return errors.New("LANTERN_BACKUP_RESTORE_ON_START must be disabled in durable receipt WAL mode until receipt backup-set restore is implemented")
 	}
 	return nil
 }

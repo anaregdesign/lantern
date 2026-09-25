@@ -18,13 +18,13 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS` | int | `30000` | Per-peer anti-entropy catch-up subscribe timeout in milliseconds. |
 | `LANTERN_AUTH_EXEMPT_REFLECTION` | bool | `true` | Keep gRPC server reflection reachable without a token when auth is enabled (schema discovery is not data access). Set false to require the bearer token for reflection too. |
 | `LANTERN_AUTH_TOKENS` | string | (empty) | Comma-separated bearer tokens arming data-plane auth (empty = open, the default). Requests must send 'Authorization: Bearer <token>' matching any entry (constant-time compare); multiple entries allow zero-downtime rotation (add new on all servers -> switch clients -> drop old). Health checks are always exempt. Pair with TLS outside trusted networks - bearer tokens over plaintext h2c are sniffable. |
-| `LANTERN_BACKUP_DIR` | string | (empty) | Mounted directory dumps are written to and restored from. |
-| `LANTERN_BACKUP_ENABLED` | bool | `false` | Enable the periodic whole-graph dump loop (requires LANTERN_BACKUP_DIR). |
-| `LANTERN_BACKUP_INSTANCE_ID` | string | (empty) | Per-instance dump filename token for shared storage; defaults to the hostname. |
-| `LANTERN_BACKUP_INTERVAL` | duration | `5m0s` | Dump cadence (Go duration). |
-| `LANTERN_BACKUP_RESTORE_ON_START` | bool | `true` | Replay the newest valid dump as a baseline before serving. |
-| `LANTERN_BACKUP_RESTORE_REQUIRED` | bool | `false` | Fail boot when restore-on-startup errors instead of starting with current state. |
-| `LANTERN_BACKUP_RETAIN` | int | `3` | How many of this instance's own dumps to keep, newest first (0 keeps all). |
+| `LANTERN_BACKUP_DIR` | string | (empty) | Mounted directory backup files are written to; graph-only startup restore also reads from it. |
+| `LANTERN_BACKUP_ENABLED` | bool | `false` | Enable periodic backup production (requires LANTERN_BACKUP_DIR): graph-only .lbk files or private durable receipt sets according to runtime mode. |
+| `LANTERN_BACKUP_INSTANCE_ID` | string | (empty) | Per-instance ownership token used to derive safe backup filenames; defaults to the hostname. |
+| `LANTERN_BACKUP_INTERVAL` | duration | `5m0s` | Backup production cadence (Go duration). |
+| `LANTERN_BACKUP_RESTORE_ON_START` | bool | `true` | Graph-only: replay the newest valid dump before serving. Durable receipt-WAL mode currently requires false. |
+| `LANTERN_BACKUP_RESTORE_REQUIRED` | bool | `false` | Graph-only: fail boot when restore-on-startup errors instead of starting with current state. |
+| `LANTERN_BACKUP_RETAIN` | int | `3` | How many valid backups owned by this instance to keep, newest first (0 keeps all). |
 | `LANTERN_BLOCK_PROFILE_RATE` | int | `0` | runtime.SetBlockProfileRate in nanoseconds between samples (0 = disabled). |
 | `LANTERN_COMMIT` | string | (empty) | Overrides the commit label reported in lantern_build_info. |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | string | (empty) | Comma-separated browser origins allowed by CORS (e.g. the admin SPA origin); empty disables CORS. |
