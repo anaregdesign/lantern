@@ -199,8 +199,12 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 // before the caller sends the header, so malformed source data cannot expose a
 // success-shaped partial image.
 func prepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mutationreceipt.Config) ([]*pb.SnapshotResponse, error) {
-	if len(capture.Retired.Epochs) != 0 {
-		return nil, errRetiredReceiptDowngrade
+	if err := validateActiveOnlyRetiredSnapshot(
+		capture.Policy,
+		capture.Receipts,
+		capture.Retired,
+	); err != nil {
+		return nil, err
 	}
 	if err := validateReceiptSnapshotCapture(capture, requested); err != nil {
 		return nil, err
@@ -250,6 +254,29 @@ func prepareReceiptSnapshotFrames(capture ReceiptWholeStateCapture, requested mu
 		return nil, err
 	}
 	return frames, nil
+}
+
+// validateActiveOnlyRetiredSnapshot rejects any retired state that an
+// active-only format cannot represent without changing the captured clock cut.
+func validateActiveOnlyRetiredSnapshot(
+	policy mutationreceipt.Config,
+	active mutationreceipt.Snapshot,
+	retired mutationreceipt.RetiredCatalogSnapshot,
+) error {
+	if retired.ClockHighWaterMillis != active.ClockHighWaterMillis {
+		return fmt.Errorf("%w: active and retired clock high-water differ", errRetiredReceiptDowngrade)
+	}
+	config, _, err := retiredCatalogConfig(policy, active.ClockHighWaterMillis)
+	if err != nil {
+		return fmt.Errorf("active-only receipt format has invalid retired catalog policy: %w", err)
+	}
+	if _, err := mutationreceipt.NewRetiredCatalogFromSnapshot(config, retired); err != nil {
+		return fmt.Errorf("active-only receipt format has invalid retired catalog state: %w", err)
+	}
+	if len(retired.Epochs) != 0 {
+		return errRetiredReceiptDowngrade
+	}
+	return nil
 }
 
 func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested mutationreceipt.Config) error {

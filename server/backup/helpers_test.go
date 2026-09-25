@@ -109,6 +109,28 @@ func producerRetiredSnapshot(
 	}
 }
 
+func producerEmptyRetiredSnapshot(
+	t testing.TB,
+	active mutationreceipt.Config,
+	highWaterMillis int64,
+) mutationreceipt.RetiredCatalogSnapshot {
+	t.Helper()
+	catalog, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch:    active.Epoch,
+		MaxEntries:     active.MaxEntries,
+		MaxBytes:       active.MaxBytes,
+		ClockHighWater: time.UnixMilli(highWaterMillis),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := catalog.Snapshot(time.UnixMilli(highWaterMillis))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
 func producerBackupCapture(a wholeStateArchive) service.ReceiptWholeStateBackupCapture {
 	var seq uint64
 	var nodeID hlc.NodeID

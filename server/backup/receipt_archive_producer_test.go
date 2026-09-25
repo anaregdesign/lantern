@@ -173,6 +173,20 @@ func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 			bad.WholeState.Policy.MaxEntries = 0
 			return bad, nil
 		})},
+		{"zero retired catalog", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+			bad := producerBackupCapture(wholeStateArchiveFixture(t))
+			bad.WholeState.Retired = mutationreceipt.RetiredCatalogSnapshot{}
+			return bad, nil
+		})},
+		{"lower retired high-water", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+			bad := producerBackupCapture(wholeStateArchiveFixture(t))
+			bad.WholeState.Retired = producerEmptyRetiredSnapshot(
+				t,
+				bad.WholeState.Policy,
+				bad.WholeState.Receipts.ClockHighWaterMillis-1,
+			)
+			return bad, nil
+		})},
 		{"retired evidence", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.WholeState.Retired = producerRetiredSnapshot(

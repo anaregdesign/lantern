@@ -75,6 +75,44 @@ func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReceiptBaselineCodecRejectsCanonicalRetiredStateFromDifferentCut(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	differentHighWater := archive.Receipts.ClockHighWaterMillis + 1
+	for _, tc := range []struct {
+		name  string
+		state mutationreceipt.RetiredCatalogSnapshot
+	}{
+		{
+			name:  "empty",
+			state: producerEmptyRetiredSnapshot(t, archive.Policy, differentHighWater),
+		},
+		{
+			name: "nonempty",
+			state: producerRetiredSnapshot(
+				t,
+				archive.Policy,
+				differentHighWater,
+				0x74,
+			),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := encodeRetiredCatalogArchive(archive.Policy, tc.state); err != nil {
+				t.Fatalf("retired fixture is not internally canonical: %v", err)
+			}
+			capture := producerCapture(archive)
+			capture.Retired = tc.state
+			raw, err := (ReceiptBaselineCodec{}).EncodeCombinedReceiptBaseline(
+				t.Context(),
+				capture,
+			)
+			if raw != nil || !errors.Is(err, errReceiptCombinedBaseline) {
+				t.Fatalf("cross-cut retired state encoded %d bytes: %v", len(raw), err)
+			}
+		})
+	}
+}
+
 func TestReceiptBaselineCodecRejectsNoncanonicalAndMismatchedPolicy(t *testing.T) {
 	archive := wholeStateArchiveFixture(t)
 	raw := encodedWholeStateArchive(t, archive)

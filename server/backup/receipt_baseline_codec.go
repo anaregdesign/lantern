@@ -56,6 +56,9 @@ func (ReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if capture.Retired.ClockHighWaterMillis != capture.Receipts.ClockHighWaterMillis {
+		return nil, fmt.Errorf("%w: active and retired high-water differ", errReceiptCombinedBaseline)
+	}
 	archive := wholeStateArchive{
 		Graph:    capture.Graph,
 		Receipts: capture.Receipts,

@@ -560,10 +560,23 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 
 func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 	capture, policy := receiptSnapshotTestCapture(t, true, true)
+	lowerRetired, err := newEmptyRetiredCatalogSnapshot(
+		capture.Policy,
+		capture.Receipts.ClockHighWaterMillis-1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*ReceiptWholeStateCapture)
 	}{
+		{"zero retired catalog", func(c *ReceiptWholeStateCapture) {
+			c.Retired = mutationreceipt.RetiredCatalogSnapshot{}
+		}},
+		{"lower retired high-water", func(c *ReceiptWholeStateCapture) {
+			c.Retired = lowerRetired
+		}},
 		{"missing footer", func(c *ReceiptWholeStateCapture) { c.Graph = c.Graph[:len(c.Graph)-1] }},
 		{"graph footer count", func(c *ReceiptWholeStateCapture) { c.Graph[len(c.Graph)-1].GetFooter().VertexCount++ }},
 		{"graph receipt metadata", func(c *ReceiptWholeStateCapture) {
@@ -663,7 +676,8 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bad := ReceiptWholeStateCapture{
 				Graph: cloneReceiptSnapshotFrames(capture.Graph), Receipts: capture.Receipts,
-				Policy: capture.Policy, Origins: append([]OriginState(nil), capture.Origins...),
+				Retired: capture.Retired, Policy: capture.Policy,
+				Origins: append([]OriginState(nil), capture.Origins...),
 			}
 			tc.mutate(&bad)
 			if frames, err := prepareReceiptSnapshotFrames(bad, policy); err == nil || frames != nil {
