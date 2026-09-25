@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,6 +38,10 @@ const (
 	receiptBackupSetDirectoryPerms      = 0o755
 	receiptBackupSetExpectedMemberCount = 2
 )
+
+// ErrReceiptBackupSetNotFound reports that no committed receipt backup-set
+// manifest exists for the requested instance.
+var ErrReceiptBackupSetNotFound = errors.New("backup: receipt backup set not found")
 
 type receiptBackupSetMember struct {
 	Role    string `json:"role"`
@@ -107,6 +112,28 @@ func LoadReceiptBackupSet(
 	if err != nil {
 		return ReceiptBackupSetEvidence{}, err
 	}
+	return receiptBackupSetEvidence(loaded), nil
+}
+
+// LoadLatestReceiptBackupSet loads the highest-ID committed receipt backup set
+// recognized for instance. Once selected, an invalid newest set fails closed;
+// the loader never falls back to an older set.
+func LoadLatestReceiptBackupSet(dir, instance string) (ReceiptBackupSetEvidence, error) {
+	if err := validateReceiptBackupSetInstance(instance); err != nil {
+		return ReceiptBackupSetEvidence{}, err
+	}
+	b := &Backupper{
+		cfg: Config{Dir: dir, InstanceID: instance},
+		fs:  newReceiptBackupFS(),
+	}
+	loaded, err := b.loadLatestReceiptBackupSet()
+	if err != nil {
+		return ReceiptBackupSetEvidence{}, err
+	}
+	return receiptBackupSetEvidence(loaded), nil
+}
+
+func receiptBackupSetEvidence(loaded loadedReceiptBackupSet) ReceiptBackupSetEvidence {
 	return ReceiptBackupSetEvidence{
 		SetID:           loaded.id,
 		BackupTimestamp: loaded.createdAt,
@@ -120,7 +147,71 @@ func LoadReceiptBackupSet(
 		},
 		Stats:   loaded.stats,
 		Archive: loaded.archiveRaw,
-	}, nil
+	}
+}
+
+func (b *Backupper) loadLatestReceiptBackupSet() (loadedReceiptBackupSet, error) {
+	entries, err := b.fs.readDir(b.cfg.Dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return loadedReceiptBackupSet{}, ErrReceiptBackupSetNotFound
+		}
+		return loadedReceiptBackupSet{}, fmt.Errorf(
+			"backup: read receipt backup directory %s: %w",
+			b.cfg.Dir,
+			err,
+		)
+	}
+
+	seenNames := make(map[string]struct{})
+	seenIDs := make(map[uint64]string)
+	var selectedID uint64
+	var selectedName string
+	for _, entry := range entries {
+		id, _, kind, ok := parseOwnReceiptBackupSetName(entry.Name(), b.cfg.InstanceID)
+		if !ok || kind != receiptBackupSetManifestFile {
+			continue
+		}
+		if _, duplicate := seenNames[entry.Name()]; duplicate {
+			return loadedReceiptBackupSet{}, fmt.Errorf(
+				"backup: duplicate receipt backup-set manifest name %q",
+				entry.Name(),
+			)
+		}
+		seenNames[entry.Name()] = struct{}{}
+		if previous, duplicate := seenIDs[id]; duplicate {
+			return loadedReceiptBackupSet{}, fmt.Errorf(
+				"backup: duplicate receipt backup-set manifest ID %s in %q and %q",
+				receiptBackupSetIDString(id),
+				previous,
+				entry.Name(),
+			)
+		}
+		seenIDs[id] = entry.Name()
+		if id > selectedID {
+			selectedID = id
+			selectedName = entry.Name()
+		}
+	}
+	if selectedName == "" {
+		return loadedReceiptBackupSet{}, ErrReceiptBackupSetNotFound
+	}
+
+	selectedPath := filepath.Join(b.cfg.Dir, selectedName)
+	loaded, err := b.loadReceiptBackupSet(selectedPath)
+	if err != nil {
+		return loadedReceiptBackupSet{}, fmt.Errorf(
+			"backup: load latest receipt backup set %s: %w",
+			selectedPath,
+			err,
+		)
+	}
+	if loaded.id != selectedID {
+		return loadedReceiptBackupSet{}, errors.New(
+			"backup: latest receipt backup-set filename and manifest IDs differ",
+		)
+	}
+	return loaded, nil
 }
 
 func newReceiptBackupSetManifest(

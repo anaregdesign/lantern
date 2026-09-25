@@ -616,6 +616,14 @@ untouched. `retain=0` keeps all. Periodic,
 manual, and final-shutdown attempts serialize, while per-instance IDs remain
 unique and increasing across repeated/backward clocks and process restarts.
 
+The backup package exposes read-only strict newest-marker discovery as a
+prerequisite for startup restore. It recognizes only canonical current-format
+manifest names in one configured instance scope, selects the highest
+recognized set ID before loading it, and returns an explicit not-found
+sentinel when no marker exists. Once selected, any canonical-loader failure in
+that marker or its members is terminal; discovery never scans backward to an
+older valid set.
+
 The later durable restore layer must consume this loader inside
 `provider.NewServingRuntime`, while holding the FileWAL lease and before
 `NewRuntimeCertified`; it must not reuse the graph-only
@@ -625,8 +633,8 @@ cut/tip, journals, and generation chain against the lease-owned WAL, then
 repair and persist its own current baseline proof before certification. A
 lost-WAL restore rotates to an operator-supplied new active epoch and
 normalizes known old receipts into the future retired catalog. None of that
-selection, suffix-proof, repair, catalog, or installation behavior is
-implemented by this production layer.
+WAL-path selection, suffix-proof, repair, catalog, installation, or startup
+wiring is implemented by this production layer.
 
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
@@ -682,8 +690,9 @@ canonicalizes only its detached whole-state image, and builds the paired WAL-cut
 manifest directly from the captured witness without reopening the live WAL path.
 That pair represents only the active epoch and is persisted by the production
 scheduler as a versioned manifest-last backup set; it does not retain
-retired-epoch receipts. Startup selection/install, the bounded retired-epoch
-catalog, and same-epoch continuity certification remain unwired and unproven.
+retired-epoch receipts. Provider startup reconciliation/install, the bounded
+retired-epoch catalog, and same-epoch continuity certification remain unwired
+and unproven.
 The private production runtime adds a
 fixed-size checksummed `.generation` sidecar bound to the canonical WAL path,
 epoch, policy fingerprint, and stable replication NodeID. Fresh mode creates
