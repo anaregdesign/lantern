@@ -506,6 +506,22 @@ its retained floor. A failed decode, apply, or index rebuild discards the whole
 candidate. No production provider or restore path consumes this candidate;
 the existing graph-only Snapshot receiver's in-place overlay is not an
 atomic receipt installer.
+The private bounded
+[Snapshot collector](../../server/backup/receipt_snapshot_collector.go)
+consumes a transport-neutral `RECEIPT_V1` stream into that detached archive
+and stage. Every frame, section count, and total byte dimension has an explicit
+positive limit; a task-owned spool is removed on every outcome, while a
+successful candidate owns a read-only canonical archive until `Close`.
+The candidate exposes cloned header/policy metadata, the canonical archive
+digest/size, and a copying writer; its detached GraphCache and Store remain
+private for a later atomic installer. A decoded Connect client stream does not
+expose its original protobuf bytes, so the collector treats that incoming
+encoding as non-authoritative: it recursively validates the parsed message,
+including unknown fields and typed-nil oneofs, then deterministically
+re-encodes it. Raw-observing stream adapters may additionally supply exact
+frame bytes, in which case ambiguous duplicate fields and nonminimal wire
+encodings are rejected before staging. The collector is not wired into Pump,
+anti-entropy, providers, or installation.
 The private [FileWAL cut manifest](../../server/backup/receipt_archive_wal_cut.go)
 binds complete archive bytes to both the original WAL frame bytes through the
 archive's local sequence and the exact complete valid FileWAL tip observed at
