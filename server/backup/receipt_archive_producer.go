@@ -10,20 +10,24 @@ import (
 	"github.com/anaregdesign/lantern/server/service"
 )
 
+type receiptWholeStateCapturer interface {
+	Capture(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error)
+}
+
 // produceReceiptWholeStateArchive is an unwired in-process prerequisite for a
 // receipt-aware backup. Its sole source call returns a detached publication
 // cut; every archive section comes from that value, never a later live read.
 // The complete bytes are decoded before return so capture, policy, size, and
 // codec failures cannot yield a partial archive. A checksum and a coherent
 // in-process cut do not prove a durable WAL frontier or authorize restore.
-func produceReceiptWholeStateArchive(ctx context.Context, source service.ReceiptWholeStateSource, policy mutationreceipt.Config) ([]byte, error) {
+func produceReceiptWholeStateArchive(ctx context.Context, source receiptWholeStateCapturer, policy mutationreceipt.Config) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if source == nil {
 		return nil, errors.New("backup: receipt whole-state source is nil")
 	}
-	capture, err := source(ctx, policy)
+	capture, err := source.Capture(ctx, policy)
 	if err != nil {
 		return nil, fmt.Errorf("backup: capture receipt whole-state: %w", err)
 	}

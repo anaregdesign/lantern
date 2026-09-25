@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -16,8 +18,9 @@ import (
 )
 
 // ReceiptWholeStateCapture is only a detached, healthy in-process publication
-// cut. Its RECEIPT_V1 graph frames are an input to the private archive codec,
-// not a supported Snapshot RPC or proof that a WAL has the current frontier.
+// cut. Its graph frames and Store state feed both the private archive codec and
+// the opt-in RECEIPT_V1 Snapshot producer. It is not proof that a WAL has the
+// current frontier and does not enable receipt writes or installation.
 type ReceiptWholeStateCapture struct {
 	Graph    []*pb.SnapshotResponse
 	Receipts mutationreceipt.Snapshot
@@ -25,22 +28,63 @@ type ReceiptWholeStateCapture struct {
 	Origins  []OriginState
 }
 
-// ReceiptWholeStateSource is a read-only source for the private archive
-// producer. One call returns all sections from one publication cut; callers
-// must not assemble an archive by sampling the service again.
-type ReceiptWholeStateSource func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error)
+// ReceiptWholeStateSource is the read-only source shared by the private archive
+// and opt-in replication Snapshot producers. Its private owner identity keeps a
+// replication service from accepting a cut from a different primary or serving
+// runtime. One Capture call returns all sections from one publication cut;
+// callers must not assemble an image by sampling the service again.
+type ReceiptWholeStateSource struct {
+	owner   *LanternService
+	store   *mutationreceipt.Store
+	cache   *graphcache.GraphCache[string, *pb.Vertex]
+	capture func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error)
+}
+
+// Capture returns one detached publication cut.
+func (s *ReceiptWholeStateSource) Capture(
+	ctx context.Context,
+	policy mutationreceipt.Config,
+) (ReceiptWholeStateCapture, error) {
+	if s == nil || s.capture == nil {
+		return ReceiptWholeStateCapture{}, errors.New("receipt whole-state source is nil")
+	}
+	return s.capture(ctx, policy)
+}
+
+func (s *ReceiptWholeStateSource) belongsTo(replication *LanternReplicationService) bool {
+	if s == nil || s.owner == nil || s.store == nil || s.cache == nil || s.capture == nil ||
+		replication == nil {
+		return false
+	}
+	backend, backendOK := replication.backend.(*graphcache.GraphCache[string, *pb.Vertex])
+	ownerBackend, ownerBackendOK := s.owner.cache.(*graphcache.GraphCache[string, *pb.Vertex])
+	originOwner, originOwnerOK := replication.origins.(*LanternService)
+	return backendOK && ownerBackendOK && originOwnerOK &&
+		s.cache == backend && s.cache == ownerBackend &&
+		s.owner == originOwner &&
+		s.owner.log == replication.log &&
+		s.owner.clock == replication.clock &&
+		s.owner.runtime == replication.runtime &&
+		s.owner.receiptStore == s.store
+}
 
 // NewReceiptWholeStateSource exposes only the coordinator's detached capture,
 // never its commit or status operations. It is deliberately absent from the
-// production DI graph and does not enable receipt admission or restore. The
-// service binds its first Store pointer and rejects a different one, even
+// production DI graph; callers may explicitly configure the replication
+// Snapshot producer, but this does not enable receipt admission or restore.
+// The service binds its first Store pointer and rejects a different one, even
 // when the replacement has the same epoch and policy.
-func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store) (ReceiptWholeStateSource, error) {
+func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store) (*ReceiptWholeStateSource, error) {
 	coordinator, err := newEdgeDeleteReceiptCoordinator(s, store)
 	if err != nil {
 		return nil, err
 	}
-	return coordinator.captureReceiptWholeState, nil
+	return &ReceiptWholeStateSource{
+		owner:   s,
+		store:   store,
+		cache:   coordinator.cache,
+		capture: coordinator.captureReceiptWholeState,
+	}, nil
 }
 
 // captureReceiptWholeState copies the graph, receipts, origin vector, local
@@ -107,6 +151,16 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeState(ctx context.Cont
 			image.cutoffPerOrigin[hex.EncodeToString(origin.Origin[:])] = origin.LastSeq
 		}
 		image.cutoffLocalSeq, _ = s.log.LastSeq()
+		if receipts.ClockHighWaterMillis < 0 ||
+			receipts.ClockHighWaterMillis > math.MaxInt64/int64(time.Millisecond) {
+			return errors.New("receipt whole-state capture clock high-water exceeds the HLC wall range")
+		}
+		if err := s.clock.RestoreFloor(hlc.Timestamp{
+			WallNs: receipts.ClockHighWaterMillis * int64(time.Millisecond),
+			NodeID: s.clock.NodeID(),
+		}); err != nil {
+			return fmt.Errorf("restore receipt clock high-water into HLC: %w", err)
+		}
 		image.cutoffHLC = s.clock.Now()
 		if image.cutoffHLC.WallNs <= 0 || image.cutoffHLC.NodeID == (hlc.NodeID{}) {
 			return errors.New("receipt whole-state capture has an invalid HLC frontier")
@@ -119,6 +173,12 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeState(ctx context.Cont
 	}
 	if !policy.ClockHighWater.IsZero() && policy.ClockHighWater.UnixMilli() > receipts.ClockHighWaterMillis {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt whole-state capture: policy high-water exceeds Store: %w", mutationreceipt.ErrInvalidSnapshot)
+	}
+	if receipts.ClockHighWaterMillis > image.cutoffHLC.WallNs/int64(time.Millisecond) {
+		return ReceiptWholeStateCapture{}, fmt.Errorf(
+			"receipt whole-state capture: Store clock high-water exceeds graph cutoff: %w",
+			mutationreceipt.ErrInvalidSnapshot,
+		)
 	}
 	policy.ClockHighWater = receipts.ClockHighWater()
 	if _, err := mutationreceipt.NewFromSnapshot(policy, receipts); err != nil {

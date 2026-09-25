@@ -1721,6 +1721,92 @@ class SnapshotRequest extends $pb.GeneratedMessage {
   void clearRequiredFormat() => $_clearField(1);
 }
 
+/// Receipt metadata for one RECEIPT_V1 publication cut. This message is
+/// required exactly when an RPC Snapshot header's format is RECEIPT_V1 and is
+/// absent from GRAPH_ONLY_V1. origin_cutoffs is sorted by raw origin bytes and
+/// must exactly match cutoff_seq_per_origin; the full rows retain each origin's
+/// HLC as well as its sequence. clock_high_water_unix_ms must not exceed
+/// floor(SnapshotHeader.cutoff_hlc.wall_ns / 1ms).
+class SnapshotReceiptMetadata extends $pb.GeneratedMessage {
+  factory SnapshotReceiptMetadata({
+    $1.ReceiptPolicy? policy,
+    $fixnum.Int64? clockHighWaterUnixMs,
+    $core.Iterable<OriginState>? originCutoffs,
+  }) {
+    final result = create();
+    if (policy != null) result.policy = policy;
+    if (clockHighWaterUnixMs != null)
+      result.clockHighWaterUnixMs = clockHighWaterUnixMs;
+    if (originCutoffs != null) result.originCutoffs.addAll(originCutoffs);
+    return result;
+  }
+
+  SnapshotReceiptMetadata._();
+
+  factory SnapshotReceiptMetadata.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotReceiptMetadata.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotReceiptMetadata',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$1.ReceiptPolicy>(1, _omitFieldNames ? '' : 'policy',
+        subBuilder: $1.ReceiptPolicy.create)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'clockHighWaterUnixMs', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..pPM<OriginState>(3, _omitFieldNames ? '' : 'originCutoffs',
+        subBuilder: OriginState.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceiptMetadata clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceiptMetadata copyWith(
+          void Function(SnapshotReceiptMetadata) updates) =>
+      super.copyWith((message) => updates(message as SnapshotReceiptMetadata))
+          as SnapshotReceiptMetadata;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceiptMetadata create() => SnapshotReceiptMetadata._();
+  @$core.override
+  SnapshotReceiptMetadata createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceiptMetadata getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotReceiptMetadata>(create);
+  static SnapshotReceiptMetadata? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $1.ReceiptPolicy get policy => $_getN(0);
+  @$pb.TagNumber(1)
+  set policy($1.ReceiptPolicy value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasPolicy() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearPolicy() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $1.ReceiptPolicy ensurePolicy() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get clockHighWaterUnixMs => $_getI64(1);
+  @$pb.TagNumber(2)
+  set clockHighWaterUnixMs($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasClockHighWaterUnixMs() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearClockHighWaterUnixMs() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $pb.PbList<OriginState> get originCutoffs => $_getList(2);
+}
+
 /// SnapshotHeader is always the FIRST SnapshotResponse on the wire. It
 /// freezes the per-origin watermark and the snapshot-open HLC the server
 /// used to materialise the snapshot.
@@ -1739,6 +1825,11 @@ class SnapshotRequest extends $pb.GeneratedMessage {
 /// from each origin when the snapshot started. An empty map indicates
 /// the server has not yet applied any origin (cold cluster) and the
 /// resume Subscribe should pass an empty cursor.
+///
+/// RECEIPT_V1 is strict: every frame and recursively nested message must have
+/// no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
+/// HLC must be at or below cutoff_hlc and at or below the matching full origin
+/// row; a graph HLC whose origin is absent from that vector is invalid.
 class SnapshotHeader extends $pb.GeneratedMessage {
   factory SnapshotHeader({
     $core.Iterable<$core.MapEntry<$core.String, $fixnum.Int64>>?
@@ -1746,6 +1837,7 @@ class SnapshotHeader extends $pb.GeneratedMessage {
     HLCTimestamp? cutoffHlc,
     $fixnum.Int64? cutoffLocalSeq,
     SnapshotFormat? format,
+    SnapshotReceiptMetadata? receiptMetadata,
   }) {
     final result = create();
     if (cutoffSeqPerOrigin != null)
@@ -1753,6 +1845,7 @@ class SnapshotHeader extends $pb.GeneratedMessage {
     if (cutoffHlc != null) result.cutoffHlc = cutoffHlc;
     if (cutoffLocalSeq != null) result.cutoffLocalSeq = cutoffLocalSeq;
     if (format != null) result.format = format;
+    if (receiptMetadata != null) result.receiptMetadata = receiptMetadata;
     return result;
   }
 
@@ -1782,6 +1875,8 @@ class SnapshotHeader extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..aE<SnapshotFormat>(4, _omitFieldNames ? '' : 'format',
         enumValues: SnapshotFormat.values)
+    ..aOM<SnapshotReceiptMetadata>(5, _omitFieldNames ? '' : 'receiptMetadata',
+        subBuilder: SnapshotReceiptMetadata.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1839,6 +1934,19 @@ class SnapshotHeader extends $pb.GeneratedMessage {
   $core.bool hasFormat() => $_has(3);
   @$pb.TagNumber(4)
   void clearFormat() => $_clearField(4);
+
+  /// Required and complete for RECEIPT_V1; absent for graph-only formats.
+  /// The deployment epoch and policy fingerprint are carried inside policy.
+  @$pb.TagNumber(5)
+  SnapshotReceiptMetadata get receiptMetadata => $_getN(4);
+  @$pb.TagNumber(5)
+  set receiptMetadata(SnapshotReceiptMetadata value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasReceiptMetadata() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearReceiptMetadata() => $_clearField(5);
+  @$pb.TagNumber(5)
+  SnapshotReceiptMetadata ensureReceiptMetadata() => $_ensure(4);
 }
 
 /// SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -1853,6 +1961,8 @@ class SnapshotFooter extends $pb.GeneratedMessage {
     $fixnum.Int64? edgeCausalBarrierCount,
     $fixnum.Int64? vertexTombstoneCount,
     $fixnum.Int64? edgeTombstoneCount,
+    $fixnum.Int64? receiptCount,
+    $fixnum.Int64? receiptOriginCount,
   }) {
     final result = create();
     if (vertexCount != null) result.vertexCount = vertexCount;
@@ -1865,6 +1975,9 @@ class SnapshotFooter extends $pb.GeneratedMessage {
       result.vertexTombstoneCount = vertexTombstoneCount;
     if (edgeTombstoneCount != null)
       result.edgeTombstoneCount = edgeTombstoneCount;
+    if (receiptCount != null) result.receiptCount = receiptCount;
+    if (receiptOriginCount != null)
+      result.receiptOriginCount = receiptOriginCount;
     return result;
   }
 
@@ -1898,6 +2011,12 @@ class SnapshotFooter extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..a<$fixnum.Int64>(
         6, _omitFieldNames ? '' : 'edgeTombstoneCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        7, _omitFieldNames ? '' : 'receiptCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        8, _omitFieldNames ? '' : 'receiptOriginCount', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
@@ -1973,6 +2092,249 @@ class SnapshotFooter extends $pb.GeneratedMessage {
   $core.bool hasEdgeTombstoneCount() => $_has(5);
   @$pb.TagNumber(6)
   void clearEdgeTombstoneCount() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $fixnum.Int64 get receiptCount => $_getI64(6);
+  @$pb.TagNumber(7)
+  set receiptCount($fixnum.Int64 value) => $_setInt64(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasReceiptCount() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearReceiptCount() => $_clearField(7);
+
+  /// Cross-checks receipt_metadata.origin_cutoffs and the legacy cutoff map.
+  @$pb.TagNumber(8)
+  $fixnum.Int64 get receiptOriginCount => $_getI64(7);
+  @$pb.TagNumber(8)
+  set receiptOriginCount($fixnum.Int64 value) => $_setInt64(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasReceiptOriginCount() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearReceiptOriginCount() => $_clearField(8);
+}
+
+/// Contribution metadata is present exactly for an AddEdge receipt. Keeping
+/// it in a message preserves presence and leaves room for later contribution
+/// metadata without changing the receipt row's identity fields.
+class SnapshotReceiptContribution extends $pb.GeneratedMessage {
+  factory SnapshotReceiptContribution({
+    $core.List<$core.int>? contributionId,
+  }) {
+    final result = create();
+    if (contributionId != null) result.contributionId = contributionId;
+    return result;
+  }
+
+  SnapshotReceiptContribution._();
+
+  factory SnapshotReceiptContribution.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotReceiptContribution.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotReceiptContribution',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'contributionId', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceiptContribution clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceiptContribution copyWith(
+          void Function(SnapshotReceiptContribution) updates) =>
+      super.copyWith(
+              (message) => updates(message as SnapshotReceiptContribution))
+          as SnapshotReceiptContribution;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceiptContribution create() =>
+      SnapshotReceiptContribution._();
+  @$core.override
+  SnapshotReceiptContribution createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceiptContribution getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotReceiptContribution>(create);
+  static SnapshotReceiptContribution? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get contributionId => $_getN(0);
+  @$pb.TagNumber(1)
+  set contributionId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasContributionId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearContributionId() => $_clearField(1);
+}
+
+/// One unexpired Store row in a RECEIPT_V1 image. Rows are ordered strictly by
+/// operation_id. original_result is the exact opaque result bytes retained by
+/// the Store; it is not recomputed from the graph at snapshot time.
+class SnapshotReceipt extends $pb.GeneratedMessage {
+  factory SnapshotReceipt({
+    $core.List<$core.int>? operationId,
+    $core.List<$core.int>? logicalCallId,
+    $core.int? itemIndex,
+    $core.int? itemCount,
+    SnapshotReceiptKind? kind,
+    $core.List<$core.int>? intentSha256,
+    $fixnum.Int64? deadlineUnixMs,
+    $core.List<$core.int>? originalResult,
+    SnapshotReceiptContribution? contribution,
+  }) {
+    final result = create();
+    if (operationId != null) result.operationId = operationId;
+    if (logicalCallId != null) result.logicalCallId = logicalCallId;
+    if (itemIndex != null) result.itemIndex = itemIndex;
+    if (itemCount != null) result.itemCount = itemCount;
+    if (kind != null) result.kind = kind;
+    if (intentSha256 != null) result.intentSha256 = intentSha256;
+    if (deadlineUnixMs != null) result.deadlineUnixMs = deadlineUnixMs;
+    if (originalResult != null) result.originalResult = originalResult;
+    if (contribution != null) result.contribution = contribution;
+    return result;
+  }
+
+  SnapshotReceipt._();
+
+  factory SnapshotReceipt.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotReceipt.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotReceipt',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'operationId', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'logicalCallId', $pb.PbFieldType.OY)
+    ..aI(3, _omitFieldNames ? '' : 'itemIndex', fieldType: $pb.PbFieldType.OU3)
+    ..aI(4, _omitFieldNames ? '' : 'itemCount', fieldType: $pb.PbFieldType.OU3)
+    ..aE<SnapshotReceiptKind>(5, _omitFieldNames ? '' : 'kind',
+        enumValues: SnapshotReceiptKind.values)
+    ..a<$core.List<$core.int>>(
+        6, _omitFieldNames ? '' : 'intentSha256', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(
+        7, _omitFieldNames ? '' : 'deadlineUnixMs', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$core.List<$core.int>>(
+        8, _omitFieldNames ? '' : 'originalResult', $pb.PbFieldType.OY)
+    ..aOM<SnapshotReceiptContribution>(9, _omitFieldNames ? '' : 'contribution',
+        subBuilder: SnapshotReceiptContribution.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceipt clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceipt copyWith(void Function(SnapshotReceipt) updates) =>
+      super.copyWith((message) => updates(message as SnapshotReceipt))
+          as SnapshotReceipt;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceipt create() => SnapshotReceipt._();
+  @$core.override
+  SnapshotReceipt createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceipt getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotReceipt>(create);
+  static SnapshotReceipt? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get operationId => $_getN(0);
+  @$pb.TagNumber(1)
+  set operationId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOperationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOperationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get logicalCallId => $_getN(1);
+  @$pb.TagNumber(2)
+  set logicalCallId($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasLogicalCallId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearLogicalCallId() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.int get itemIndex => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set itemIndex($core.int value) => $_setUnsignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasItemIndex() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearItemIndex() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.int get itemCount => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set itemCount($core.int value) => $_setUnsignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasItemCount() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearItemCount() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  SnapshotReceiptKind get kind => $_getN(4);
+  @$pb.TagNumber(5)
+  set kind(SnapshotReceiptKind value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasKind() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearKind() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.List<$core.int> get intentSha256 => $_getN(5);
+  @$pb.TagNumber(6)
+  set intentSha256($core.List<$core.int> value) => $_setBytes(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasIntentSha256() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearIntentSha256() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $fixnum.Int64 get deadlineUnixMs => $_getI64(6);
+  @$pb.TagNumber(7)
+  set deadlineUnixMs($fixnum.Int64 value) => $_setInt64(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasDeadlineUnixMs() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearDeadlineUnixMs() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.List<$core.int> get originalResult => $_getN(7);
+  @$pb.TagNumber(8)
+  set originalResult($core.List<$core.int> value) => $_setBytes(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasOriginalResult() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearOriginalResult() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  SnapshotReceiptContribution get contribution => $_getN(8);
+  @$pb.TagNumber(9)
+  set contribution(SnapshotReceiptContribution value) => $_setField(9, value);
+  @$pb.TagNumber(9)
+  $core.bool hasContribution() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearContribution() => $_clearField(9);
+  @$pb.TagNumber(9)
+  SnapshotReceiptContribution ensureContribution() => $_ensure(8);
 }
 
 /// SnapshotVertex is the snapshot-time representation of a single live
@@ -2610,16 +2972,18 @@ enum SnapshotResponse_Entry {
   edgeCausalBarrier,
   vertexTombstone,
   edgeTombstone,
+  receipt,
   notSet
 }
 
 /// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
-/// order is always: exactly one SnapshotHeader, then zero or more
-/// SnapshotVertexCausalBarrier frames, zero or more SnapshotEdgeCausalBarrier
-/// frames, zero or more SnapshotVertexTombstone frames, zero or more
-/// SnapshotEdgeTombstone frames, zero or more SnapshotVertex frames, zero or
-/// more SnapshotEdge frames, then exactly one SnapshotFooter. Receivers MUST
-/// treat any other order as a protocol violation.
+/// order is always: exactly one SnapshotHeader; for RECEIPT_V1, zero or more
+/// SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
+/// frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
+/// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
+/// zero or more SnapshotVertex frames, zero or more SnapshotEdge frames; then
+/// exactly one SnapshotFooter. Receivers MUST treat any other order as a
+/// protocol violation.
 class SnapshotResponse extends $pb.GeneratedMessage {
   factory SnapshotResponse({
     SnapshotHeader? header,
@@ -2630,6 +2994,7 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     SnapshotEdgeCausalBarrier? edgeCausalBarrier,
     SnapshotVertexTombstone? vertexTombstone,
     SnapshotEdgeTombstone? edgeTombstone,
+    SnapshotReceipt? receipt,
   }) {
     final result = create();
     if (header != null) result.header = header;
@@ -2641,6 +3006,7 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     if (edgeCausalBarrier != null) result.edgeCausalBarrier = edgeCausalBarrier;
     if (vertexTombstone != null) result.vertexTombstone = vertexTombstone;
     if (edgeTombstone != null) result.edgeTombstone = edgeTombstone;
+    if (receipt != null) result.receipt = receipt;
     return result;
   }
 
@@ -2663,13 +3029,14 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     6: SnapshotResponse_Entry.edgeCausalBarrier,
     7: SnapshotResponse_Entry.vertexTombstone,
     8: SnapshotResponse_Entry.edgeTombstone,
+    9: SnapshotResponse_Entry.receipt,
     0: SnapshotResponse_Entry.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SnapshotResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9])
     ..aOM<SnapshotHeader>(1, _omitFieldNames ? '' : 'header',
         subBuilder: SnapshotHeader.create)
     ..aOM<SnapshotVertex>(2, _omitFieldNames ? '' : 'vertex',
@@ -2688,6 +3055,8 @@ class SnapshotResponse extends $pb.GeneratedMessage {
         subBuilder: SnapshotVertexTombstone.create)
     ..aOM<SnapshotEdgeTombstone>(8, _omitFieldNames ? '' : 'edgeTombstone',
         subBuilder: SnapshotEdgeTombstone.create)
+    ..aOM<SnapshotReceipt>(9, _omitFieldNames ? '' : 'receipt',
+        subBuilder: SnapshotReceipt.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2717,6 +3086,7 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   @$pb.TagNumber(6)
   @$pb.TagNumber(7)
   @$pb.TagNumber(8)
+  @$pb.TagNumber(9)
   SnapshotResponse_Entry whichEntry() =>
       _SnapshotResponse_EntryByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
@@ -2727,6 +3097,7 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   @$pb.TagNumber(6)
   @$pb.TagNumber(7)
   @$pb.TagNumber(8)
+  @$pb.TagNumber(9)
   void clearEntry() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -2818,6 +3189,17 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   void clearEdgeTombstone() => $_clearField(8);
   @$pb.TagNumber(8)
   SnapshotEdgeTombstone ensureEdgeTombstone() => $_ensure(7);
+
+  @$pb.TagNumber(9)
+  SnapshotReceipt get receipt => $_getN(8);
+  @$pb.TagNumber(9)
+  set receipt(SnapshotReceipt value) => $_setField(9, value);
+  @$pb.TagNumber(9)
+  $core.bool hasReceipt() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearReceipt() => $_clearField(9);
+  @$pb.TagNumber(9)
+  SnapshotReceipt ensureReceipt() => $_ensure(8);
 }
 
 /// PeerStatusRequest is intentionally empty — the responder always

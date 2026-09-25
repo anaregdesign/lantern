@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -108,7 +110,7 @@ func TestReceiptWholeStateCaptureBlocksHeldWALAndCopiesReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := source(context.Background(), policy)
+	before, err := source.Capture(context.Background(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +130,7 @@ func TestReceiptWholeStateCaptureBlocksHeldWALAndCopiesReceipts(t *testing.T) {
 	captureDone := make(chan result, 1)
 	go func() {
 		close(captureStarted)
-		got, err := source(context.Background(), policy)
+		got, err := source.Capture(context.Background(), policy)
 		captureDone <- result{got, err}
 	}()
 	<-captureStarted
@@ -151,9 +153,74 @@ func TestReceiptWholeStateCaptureBlocksHeldWALAndCopiesReceipts(t *testing.T) {
 	}
 	// The returned receipt result is owned by the capture, not the Store.
 	after.capture.Receipts.Receipts[0].Result[0] = 0
-	again, err := source(context.Background(), policy)
+	again, err := source.Capture(context.Background(), policy)
 	if err != nil || again.Receipts.Receipts[0].Result[0] != 1 {
 		t.Fatalf("capture result aliased Store: %+v, %v", again.Receipts, err)
+	}
+}
+
+func TestReceiptWholeStateCaptureReconcilesStoreClockIntoGraphCutoff(t *testing.T) {
+	const cutoffMillis int64 = 1_000
+	policy := mutationreceipt.Config{
+		Epoch:          mutationreceipt.Epoch{0x51},
+		Retention:      time.Hour,
+		MaxEntries:     32,
+		MaxBytes:       1 << 20,
+		ClockHighWater: time.UnixMilli(cutoffMillis + 1),
+	}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0x52}, hlc.Options{
+		Now: func() int64 { return cutoffMillis * int64(time.Millisecond) },
+	})
+	svc := NewLanternService(cache).
+		WithReplication(log, clock, nil).
+		WithTombstoneTTL(time.Hour)
+	source, err := NewReceiptWholeStateSource(svc, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := source.Capture(context.Background(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff := capture.Graph[0].GetHeader().GetCutoffHlc()
+	if cutoff.GetWallNs()/int64(time.Millisecond) < capture.Receipts.ClockHighWaterMillis ||
+		cutoff.GetLogical() == 0 {
+		t.Fatalf("reconciled cutoff = %+v, high-water=%d", cutoff, capture.Receipts.ClockHighWaterMillis)
+	}
+}
+
+func TestReceiptWholeStateCaptureRejectsUnrepresentableClockHighWater(t *testing.T) {
+	policy := mutationreceipt.Config{
+		Epoch:          mutationreceipt.Epoch{0x53},
+		Retention:      time.Hour,
+		MaxEntries:     32,
+		MaxBytes:       1 << 20,
+		ClockHighWater: time.UnixMilli(math.MaxInt64),
+	}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 32, SubscriberBuffer: 32})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0x54}, hlc.Options{})
+	svc := NewLanternService(cache).
+		WithReplication(log, clock, nil).
+		WithTombstoneTTL(time.Hour)
+	source, err := NewReceiptWholeStateSource(svc, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Capture(context.Background(), policy); err == nil {
+		t.Fatal("unrepresentable Store high-water produced a Snapshot cut")
 	}
 }
 
@@ -203,8 +270,10 @@ func TestReceiptWholeStateCaptureCopiesUncommittedClockAdvance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if capture.Receipts.ClockHighWaterMillis < lookupAt.UnixMilli() ||
-		capture.Policy.ClockHighWater.UnixMilli() != capture.Receipts.ClockHighWaterMillis {
-		t.Fatalf("uncommitted high-water missing from capture: %+v", capture.Receipts)
+		capture.Policy.ClockHighWater.UnixMilli() != capture.Receipts.ClockHighWaterMillis ||
+		capture.Graph[0].GetHeader().GetCutoffHlc().GetWallNs()/int64(time.Millisecond) <
+			capture.Receipts.ClockHighWaterMillis {
+		t.Fatalf("uncommitted high-water missing from coherent capture: %+v", capture)
 	}
 }
 

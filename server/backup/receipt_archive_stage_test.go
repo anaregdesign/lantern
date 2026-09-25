@@ -38,6 +38,12 @@ func TestReceiptWholeStateArchiveStageKeepsDetachedReceiptAndCut(t *testing.T) {
 	if got, _, ok := stage.graph.GetEdgeDetail("tail", "head"); !ok || got != 1.5 {
 		t.Fatalf("staged Add contribution = %v, %t", got, ok)
 	}
+	stagedGraph := stage.graph.SnapshotReplication()
+	if len(stagedGraph.Graph.Edges) != 1 ||
+		len(stagedGraph.Graph.Edges[0].Contributions) != 1 ||
+		!stagedGraph.Graph.Edges[0].Contributions[0].Expiration.IsZero() {
+		t.Fatalf("permanent Add contribution gained an expiration: %+v", stagedGraph.Graph.Edges)
+	}
 	if got := stage.graph.CountByPrefix(""); got != 2 {
 		t.Fatalf("staged prefix index count = %d, want 2", got)
 	}
@@ -63,6 +69,17 @@ func TestReceiptWholeStateArchiveStageReconstructsCausalGraphAndIndexes(t *testi
 	base := time.Now().Add(-time.Minute).UnixNano()
 	origin := hlc.NodeID{0x92}
 	stamp := func(n int64) hlc.Timestamp { return hlc.Timestamp{WallNs: base + n, NodeID: origin} }
+	frontier := stamp(10)
+	if err := f.service.ApplyMutation(context.Background(), &pb.Mutation{
+		Seq: 1, Origin: origin[:], Hlc: &pb.HLCTimestamp{
+			WallNs: frontier.WallNs, Logical: frontier.Logical, NodeId: frontier.NodeID[:],
+		},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: "frontier", Expiration: timestamppb.New(future)},
+		}}},
+	}); err != nil {
+		t.Fatalf("seed origin frontier: %v", err)
+	}
 	if !f.cache.PutVertexWithExpirationHLC("barrier-endpoint", &pb.Vertex{Key: "barrier-endpoint"}, past, stamp(1)) {
 		t.Fatal("failed to seed vertex barrier")
 	}
@@ -278,21 +295,12 @@ func TestReceiptWholeStateArchiveStageRejectsLostOrInconsistentFloors(t *testing
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++
 		}},
 		{"live vertex newer than barrier", func(a *wholeStateArchive) {
-			stamp := a.Graph[0].GetHeader().GetCutoffHlc()
+			stamp := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			stamp.WallNs--
 			a.Graph = append(a.Graph[:1], append([]*pb.SnapshotResponse{{Entry: &pb.SnapshotResponse_VertexCausalBarrier{
 				VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "tail", Hlc: stamp},
 			}}}, a.Graph[1:]...)...)
-			newer := proto.Clone(stamp).(*pb.HLCTimestamp)
-			newer.WallNs++
-			a.Graph[2].GetVertex().Hlc = newer
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
-		}},
-		{"live vertex HLC survives tombstone", func(a *wholeStateArchive) {
-			a.Graph = append(a.Graph[:1], append([]*pb.SnapshotResponse{{Entry: &pb.SnapshotResponse_VertexTombstone{
-				VertexTombstone: &pb.SnapshotVertexTombstone{Key: "tail", Hlc: a.Graph[0].GetHeader().GetCutoffHlc(),
-					Expiration: timestamppb.New(time.Now().Add(time.Hour))},
-			}}}, a.Graph[1:]...)...)
-			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

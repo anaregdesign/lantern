@@ -202,6 +202,12 @@ func TestWholeStateArchiveRejectsInconsistentCut(t *testing.T) {
 			a.Graph[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
 		}},
 		{"unknown graph format", func(a *wholeStateArchive) { a.Graph[0].GetHeader().Format = pb.SnapshotFormat(99) }},
+		{"RPC receipt metadata", func(a *wholeStateArchive) {
+			a.Graph[0].GetHeader().ReceiptMetadata = &pb.SnapshotReceiptMetadata{}
+		}},
+		{"RPC receipt footer count", func(a *wholeStateArchive) {
+			a.Graph[len(a.Graph)-1].GetFooter().ReceiptCount = 1
+		}},
 		{"receipt policy", func(a *wholeStateArchive) { a.Policy.MaxBytes++ }},
 		{"missing origin", func(a *wholeStateArchive) { a.Origins = nil }},
 		{"origin cutoff drift", func(a *wholeStateArchive) { a.Origins[0].LastSeq++ }},
@@ -303,9 +309,11 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount += 2
 		}},
 		{"vertex older than its barrier", "live vertex is older than its causal barrier", func(a *wholeStateArchive) {
-			newer := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
-			newer.WallNs++
-			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "tail", Hlc: newer}}})
+			barrier := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			older := proto.Clone(barrier).(*pb.HLCTimestamp)
+			older.WallNs--
+			a.Graph[1].GetVertex().Hlc = older
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "tail", Hlc: barrier}}})
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
 		}},
 		{"invalid edge barrier", "invalid edge causal barrier", func(a *wholeStateArchive) {
@@ -313,9 +321,11 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount++
 		}},
 		{"edge floor differs from barrier", "live edge Put floor differs from its causal barrier", func(a *wholeStateArchive) {
-			newer := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
-			newer.WallNs++
-			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head", Hlc: newer}}})
+			barrier := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			floor := proto.Clone(barrier).(*pb.HLCTimestamp)
+			floor.WallNs--
+			a.Graph[3].GetEdge().Hlc = floor
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head", Hlc: barrier}}})
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount++
 		}},
 		{"edge floor lacks barrier", "live edge Put floor lacks a causal barrier", func(a *wholeStateArchive) {
@@ -334,6 +344,17 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 				&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{VertexTombstone: &pb.SnapshotVertexTombstone{Key: "dead", Hlc: stamp, Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))}}},
 			)
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
+			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
+		}},
+		{"explicit vertex and tombstone overlap", "live vertex and tombstone overlap", func(a *wholeStateArchive) {
+			stamp := a.Graph[0].GetHeader().GetCutoffHlc()
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexTombstone{
+				VertexTombstone: &pb.SnapshotVertexTombstone{
+					Key:        "tail",
+					Hlc:        stamp,
+					Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)),
+				},
+			}})
 			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
 		}},
 		{"invalid edge tombstone", "invalid edge tombstone", func(a *wholeStateArchive) {

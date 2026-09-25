@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, and guarded receipt-tail wire prerequisites exist, but capability/status RPCs remain disabled and no receipt-enabled write RPC is enabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, and an opt-in RECEIPT_V1 Snapshot producer exist, but receiver/install, capability/status RPCs, and receipt-enabled writes remain disabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116
 
@@ -432,17 +432,35 @@ error and fall back to a graph-only Snapshot. Production enablement therefore
 requires authenticated PeerStatus capability/version negotiation and a
 receipt-aware Snapshot install gate that refuses a graph-only downgrade,
 including a real-wire test with an evicted receipt entry.
-The staged `SnapshotFormat` request/header and `PeerStatus.required_snapshot_format`
-fields establish this downgrade boundary without producing a receipt image.
-`WithReceiptSnapshotRequired` is a lifetime service latch: when set, a legacy
-full Subscribe is rejected before the ring is inspected, and every Snapshot
-request fails closed until the receipt-bearing producer exists. Current Pump
-and anti-entropy request graph-only format and reject a receipt format header
-before applying a frame; a future receipt receiver must request and require
-`RECEIPT_V1`. No production provider sets the latch or enables receipt writes.
-The follow-up producer must tie the latch to receipt admission and then stage,
-validate, and atomically install graph, receipts, epoch, policy, clock, and
-cutoffs before allowing status or resumed Subscribe.
+The `SnapshotFormat` request/header and
+`PeerStatus.required_snapshot_format` fields establish this downgrade
+boundary. `WithReceiptSnapshotRequired` is a lifetime service latch: when set,
+a legacy full Subscribe is rejected before the ring is inspected, and
+graph-only Snapshot requests fail closed. The opt-in `RECEIPT_V1` producer is
+configured separately with the exact service-owned
+`ReceiptWholeStateSource` and immutable Store policy. The source carries a
+private owner identity; configuration rejects a source unless its primary
+service, runtime, graph backend, mutation log, HLC clock, origin tracker, and
+Store are the exact state owned by the replication responder. It calls that
+source once, preflights the complete detached image before sending its header,
+and streams the epoch, policy fingerprint/retention/capacity, clock high-water,
+sorted unexpired receipt rows with original result and Add contribution
+metadata, full origin HLC/sequence rows, local cutoff, graph frames, and a
+counted footer. A receipt-only cut is valid. Missing, malformed, reordered,
+count-mismatched, oversized, recursively unknown-field-bearing, or typed-nil
+oneof metadata produces no header. The same preflight validates graph payload
+identities, timestamps/HLCs, Add contribution IDs, duplicate/overlapping state,
+causal floors, and edge endpoints before the first frame is sent. Every
+nonzero graph HLC must be bounded by both the global cutoff and its matching
+origin row; an unknown origin is invalid. The receipt clock high-water must not
+exceed the cutoff's wall time at millisecond precision.
+`WithReceiptSnapshotRequired` without that configured source still fails
+closed.
+Current Pump and anti-entropy request graph-only format and reject a receipt
+format header before applying a frame; a future receipt receiver must request,
+stage, validate, and atomically install `RECEIPT_V1`. No production provider
+configures the producer or enables receipt writes, status, remote receipt
+apply, or installation.
 The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
 is a separate format from `.lbk`. It requires a `RECEIPT_V1` graph Snapshot
 header, receipt Store snapshot and policy, clock high-water, and origin HLC
@@ -459,12 +477,16 @@ private [whole-state capture](../../server/service/receipt_snapshot_capture.go)
 now copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local
 log seq, and an HLC frontier under one exclusive service publication cut. It
 clones mutable Vertex protobuf values before releasing that cut and rejects a
-publication fault or incomplete Store export. The private
-[archive producer](../../server/backup/receipt_archive_producer.go) calls this
-read-only source once, encodes only that detached capture, and decodes the
-complete archive before returning bytes. It is not wired into the backup
-scheduler or a public Snapshot/BackupSnapshot RPC and does not certify a
-durable recovery frontier. The service binds the first private coordinator's
+publication fault or incomplete Store export. Before sampling the cutoff, it
+restores the service clock floor from the captured Store high-water under that
+same cut; an unrepresentable high-water fails closed. The opt-in replication Snapshot
+producer and the private
+[archive producer](../../server/backup/receipt_archive_producer.go) each call
+this read-only source once and encode only that detached capture. The archive
+producer also decodes the complete archive before returning bytes. Neither
+path is wired into a production provider or backup scheduler, and neither
+certifies a durable recovery frontier. The service binds the first private
+coordinator's
 Store pointer, rejecting a different Store even with matching policy; a
 misconfigured first binding therefore fails closed on later construction.
 Direct Core Store access remains outside the service publication gate.
@@ -573,15 +595,16 @@ view until a checked Core read API or equivalent fail-stop gate exists.
 
 The private production provider installs the staged graph, Store, origin
 tracker, Log, restored HLC, epoch, and generation as one certified serving
-bundle. Public enablement still requires atomic remote receipt apply, a
-PeerStatus capability gate, and receipt-bearing Snapshot/BackupSnapshot with
-epoch and clock-high-water validation. Current Snapshot and BackupSnapshot
-remain graph-only and cannot certify receipt continuity after restart or
-restore. `Store.Begin` advances clock high-water and expires already-dead
-receipts even if the new mutation later aborts; only newly staged receipts
-roll back. Recovery persists that monotonic metadata through the bound clock
-journal; losing or mismatching it fails startup rather than silently rotating
-the epoch.
+bundle, but it does not configure the opt-in receipt Snapshot producer. Public
+enablement still requires atomic remote receipt apply, a receipt-aware staged
+Snapshot installer, PeerStatus capability negotiation, and receipt-bearing
+BackupSnapshot with epoch and clock-high-water validation. Default production
+Snapshot and all current BackupSnapshot paths remain graph-only and cannot
+certify receipt continuity after restart or restore. `Store.Begin` advances
+clock high-water and expires already-dead receipts even if the new mutation
+later aborts; only newly staged receipts roll back. Recovery persists that
+monotonic metadata through the bound clock journal; losing or mismatching it
+fails startup rather than silently rotating the epoch.
 
 ## Dependencies and rollout
 

@@ -28,6 +28,22 @@ type receiptWholeStateStage struct {
 	cutoffHLC      hlc.Timestamp
 }
 
+type archiveEdgeKey struct{ tail, head string }
+
+// A nil HLC represents a local-only live row with no recorded causal floor.
+// Every explicit floor must be a complete nonzero timestamp and node identity.
+func archiveHLC(stamp *pb.HLCTimestamp) (hlc.Timestamp, bool) {
+	if stamp == nil || stamp.GetWallNs() <= 0 || len(stamp.GetNodeId()) != 16 {
+		return hlc.Timestamp{}, false
+	}
+	var id hlc.NodeID
+	copy(id[:], stamp.GetNodeId())
+	if id == (hlc.NodeID{}) {
+		return hlc.Timestamp{}, false
+	}
+	return hlc.Timestamp{WallNs: stamp.GetWallNs(), Logical: stamp.GetLogical(), NodeID: id}, true
+}
+
 // stageReceiptWholeStateArchive validates the complete private archive before
 // creating an isolated graph. configureGraph may enable the same optional
 // indexes and limits as the future serving cache, but must leave this newly

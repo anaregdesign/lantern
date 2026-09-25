@@ -589,23 +589,32 @@ rpc Snapshot(SnapshotRequest) returns (stream SnapshotResponse);
 enum SnapshotFormat {
   SNAPSHOT_FORMAT_UNSPECIFIED = 0;
   SNAPSHOT_FORMAT_GRAPH_ONLY_V1 = 1;
-  SNAPSHOT_FORMAT_RECEIPT_V1 = 2; // reserved until receipt Snapshot exists
+  SNAPSHOT_FORMAT_RECEIPT_V1 = 2;
 }
 
 message SnapshotRequest {
   SnapshotFormat required_format = 1;
 }
 
+message SnapshotReceiptMetadata {
+  // Includes the 16-byte deployment epoch, 32-byte fingerprint,
+  // retention_ms, max_entries, and max_bytes.
+  ReceiptPolicy policy = 1;
+  uint64 clock_high_water_unix_ms = 2;
+  repeated OriginState origin_cutoffs = 3; // Sorted by raw origin bytes.
+}
+
 message SnapshotResponse {
   oneof entry {
-    SnapshotHeader header = 1;   // first frame: origin/local cutoffs + cutoff_hlc
+    SnapshotHeader header = 1;   // first frame: cutoffs + receipt metadata
     SnapshotVertex vertex = 2;   // body: live vertex with stored HLC
     SnapshotEdge   edge   = 3;   // body: edge with per-contribution payloads
-    SnapshotFooter footer = 4;   // last frame: all six streamed counts
+    SnapshotFooter footer = 4;   // last frame: all streamed counts
     SnapshotVertexCausalBarrier vertex_causal_barrier = 5;
     SnapshotEdgeCausalBarrier edge_causal_barrier = 6;
     SnapshotVertexTombstone vertex_tombstone = 7;
     SnapshotEdgeTombstone edge_tombstone = 8;
+    SnapshotReceipt receipt = 9;
   }
 }
 
@@ -618,6 +627,7 @@ message SnapshotHeader {
   HLCTimestamp cutoff_hlc = 2;
   uint64 cutoff_local_seq = 3; // same-responder log position
   SnapshotFormat format = 4;
+  SnapshotReceiptMetadata receipt_metadata = 5; // RECEIPT_V1 only
 }
 
 message SnapshotFooter {
@@ -627,6 +637,33 @@ message SnapshotFooter {
   uint64 edge_causal_barrier_count = 4;
   uint64 vertex_tombstone_count = 5;
   uint64 edge_tombstone_count = 6;
+  uint64 receipt_count = 7;
+  uint64 receipt_origin_count = 8;
+}
+
+enum SnapshotReceiptKind {
+  SNAPSHOT_RECEIPT_KIND_UNSPECIFIED = 0;
+  SNAPSHOT_RECEIPT_KIND_PUT_VERTEX = 1;
+  SNAPSHOT_RECEIPT_KIND_PUT_EDGE = 2;
+  SNAPSHOT_RECEIPT_KIND_ADD_EDGE = 3;
+  SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX = 4;
+  SNAPSHOT_RECEIPT_KIND_DELETE_EDGE = 5;
+}
+
+message SnapshotReceiptContribution {
+  bytes contribution_id = 1; // Nonzero 24-byte Add ContribID.
+}
+
+message SnapshotReceipt {
+  bytes operation_id = 1;     // Exactly 49 bytes; strict wire sort key.
+  bytes logical_call_id = 2;  // Exactly 16 nonzero bytes.
+  uint32 item_index = 3;
+  uint32 item_count = 4;
+  SnapshotReceiptKind kind = 5;
+  bytes intent_sha256 = 6;    // Exactly 32 bytes.
+  uint64 deadline_unix_ms = 7;
+  bytes original_result = 8;  // Exact opaque Store result, not recomputed.
+  SnapshotReceiptContribution contribution = 9; // AddEdge only.
 }
 
 message SnapshotVertexTombstone {
@@ -668,9 +705,13 @@ Framing contract:
   before installation. When receipt continuity is required, the responder
   advertises `PeerStatus.required_snapshot_format = RECEIPT_V1`, rejects
   legacy full Subscribe before checking the retained ring, and rejects every
-  graph-only Snapshot request. The receipt image producer and atomic installer
-  are not yet implemented, so this mode currently fails closed on Snapshot;
-  no production provider enables it.
+  graph-only Snapshot request. An opt-in receipt producer exists, but it must
+  be configured with the exact service-owned atomic capture source and policy.
+  The source's private identity must match the responder's primary service,
+  serving runtime, graph backend, mutation log, HLC clock, origin tracker, and
+  Store; a foreign or incomplete configuration fails before a header is sent.
+  No production provider configures it, no receipt write/status capability is
+  enabled, and the atomic receiver/installer remains unimplemented.
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
   the primary's contiguous per-origin committed prefix (every prior
   mutation has been applied to the graph and published to its relay log,
@@ -684,12 +725,22 @@ Framing contract:
   per-origin map remains the portable CDC/failover watermark.
   An empty map means the primary has not yet applied any origin
   (cold cluster); the consumer should pass an empty Subscribe cursor.
-- The **footer** is always the last frame. It reports six separate actually
+- A `RECEIPT_V1` header additionally carries the complete immutable policy
+  (deployment epoch, fingerprint, retention, entry capacity, and byte
+  capacity), monotonic clock high-water, and sorted full origin rows with both
+  HLC and sequence. Those origin rows must exactly agree with the legacy
+  cutoff map. The clock high-water must be no later than `cutoff_hlc` at
+  millisecond precision. Receipt rows immediately follow the header, are
+  strictly sorted by operation ID, and retain Store-reconstructable identity,
+  grouping, intent, deadline, exact original result bytes, and Add
+  contribution metadata. Zero receipt rows and a receipt-only graph cut are
+  valid.
+- The **footer** is always the last frame. It reports eight separate actually
   streamed counts: live vertices, live edges, vertex causal barriers, edge
-  causal barriers, vertex Delete tombstones, and edge Delete tombstones. Pump
-  and anti-entropy consumers reject count mismatches,
-  duplicate/missing header/footer frames, or any out-of-order body frame before
-  advancing resume watermarks.
+  causal barriers, vertex Delete tombstones, edge Delete tombstones, receipt
+  rows, and receipt-origin rows. Pump and anti-entropy consumers reject count
+  mismatches, duplicate/missing header/footer frames, or any out-of-order body
+  frame before advancing resume watermarks.
 - Every live vertex frame is self-describing and non-nil. In particular,
   endpoint vertices auto-created by `PutEdge*` / `AddEdge*` are serialized as a
   concrete `Vertex` carrying the endpoint key, expiration, and `nil` value arm;
@@ -750,6 +801,21 @@ Implementation notes:
   canonicalizing implicit nil-valued endpoint
   vertices at the service boundary and honouring `stream.Context()`
   cancellation between sends.
+- The receipt producer calls `ReceiptWholeStateSource` exactly once under the
+  service publication gate. All header metadata, receipt rows, graph frames,
+  origin/local cutoffs, and HLC values are derived solely from that detached
+  cut; components are never re-sampled afterward. Before sending the header,
+  it validates Store reconstruction, phase order, counts, field sizes, graph
+  identities and endpoint closure, timestamp/HLC and contribution validity,
+  duplicate/overlapping state, causal floors, origin/cutoff consistency, and
+  an 8 MiB per-frame bound across the complete stream. Every nonzero graph HLC
+  must be no later than both the global cutoff and that HLC origin's advertised
+  frontier. The preflight recursively rejects unknown protobuf fields and
+  typed-nil oneof wrappers before sizing or sending. The source reconciles the
+  HLC clock floor to the captured Store high-water under the same publication
+  cut before sampling the cutoff; overflow fails closed. Any malformed capture
+  therefore sends no partial image. The ordinary graph-only producer and wire
+  behavior are unchanged.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,
   one-peer-at-a-time operation, so the O(N+E) overhead is acceptable.
   Cursor-based / chunked snapshotting is a follow-up once the bootstrap

@@ -35,3 +35,13 @@ func mustGraphMutation(t *testing.T, op mutationlog.MutationOp) *pb.Mutation {
 	}
 	return mutation
 }
+
+func insertReceiptSnapshotFrames(
+	frames []*pb.SnapshotResponse,
+	index int,
+	additions ...*pb.SnapshotResponse,
+) []*pb.SnapshotResponse {
+	tail := append([]*pb.SnapshotResponse(nil), frames[index:]...)
+	frames = append(frames[:index], additions...)
+	return append(frames, tail...)
+}

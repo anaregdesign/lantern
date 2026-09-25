@@ -146,7 +146,7 @@ func TestEdgeDeleteReceiptCoordinatorConcurrentFirstStoreBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source(context.Background(), policy); err != nil {
+	if _, err := source.Capture(context.Background(), policy); err != nil {
 		t.Fatalf("bound Store could no longer capture: %v", err)
 	}
 }

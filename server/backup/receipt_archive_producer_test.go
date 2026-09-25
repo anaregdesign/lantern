@@ -23,6 +23,18 @@ type receiptArchiveWALFunc func(mutationlog.Entry) error
 
 func (f receiptArchiveWALFunc) Write(entry mutationlog.Entry) error { return f(entry) }
 
+type receiptWholeStateCaptureFunc func(
+	context.Context,
+	mutationreceipt.Config,
+) (service.ReceiptWholeStateCapture, error)
+
+func (f receiptWholeStateCaptureFunc) Capture(
+	ctx context.Context,
+	policy mutationreceipt.Config,
+) (service.ReceiptWholeStateCapture, error) {
+	return f(ctx, policy)
+}
+
 func producerCapture(a wholeStateArchive) service.ReceiptWholeStateCapture {
 	return service.ReceiptWholeStateCapture{Graph: a.Graph, Receipts: a.Receipts, Policy: a.Policy, Origins: a.Origins}
 }
@@ -39,13 +51,13 @@ func decodedProducerArchive(t *testing.T, raw []byte) wholeStateArchive {
 func TestReceiptArchiveProducerUsesOneDetachedCut(t *testing.T) {
 	a := wholeStateArchiveFixture(t)
 	calls := 0
-	source := func(_ context.Context, policy mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+	source := receiptWholeStateCaptureFunc(func(_ context.Context, policy mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 		calls++
 		if policy != a.Policy || calls != 1 {
 			return service.ReceiptWholeStateCapture{}, errors.New("unexpected second source read or policy")
 		}
 		return producerCapture(a), nil
-	}
+	})
 	raw, err := produceReceiptWholeStateArchive(context.Background(), source, a.Policy)
 	if err != nil || calls != 1 {
 		t.Fatalf("producer = %v, calls=%d", err, calls)
@@ -82,22 +94,22 @@ func TestReceiptArchiveProducerFailsWithoutPartialBytes(t *testing.T) {
 	a := wholeStateArchiveFixture(t)
 	for _, tc := range []struct {
 		name   string
-		source service.ReceiptWholeStateSource
+		source receiptWholeStateCapturer
 	}{
 		{"nil source", nil},
-		{"capture failure", func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+		{"capture failure", receiptWholeStateCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 			return producerCapture(a), errors.New("capture failed after partial work")
-		}},
-		{"invalid policy", func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+		})},
+		{"invalid policy", receiptWholeStateCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 			bad := producerCapture(wholeStateArchiveFixture(t))
 			bad.Policy.MaxEntries = 0
 			return bad, nil
-		}},
-		{"invalid graph", func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+		})},
+		{"invalid graph", receiptWholeStateCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 			bad := producerCapture(wholeStateArchiveFixture(t))
 			bad.Graph[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
 			return bad, nil
-		}},
+		})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := produceReceiptWholeStateArchive(context.Background(), tc.source, a.Policy)
@@ -109,18 +121,18 @@ func TestReceiptArchiveProducerFailsWithoutPartialBytes(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	calls := 0
-	raw, err := produceReceiptWholeStateArchive(canceled, func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+	raw, err := produceReceiptWholeStateArchive(canceled, receiptWholeStateCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 		calls++
 		return producerCapture(a), nil
-	}, a.Policy)
+	}), a.Policy)
 	if !errors.Is(err, context.Canceled) || raw != nil || calls != 0 {
 		t.Fatalf("canceled producer = %d bytes, %v, %d source calls", len(raw), err, calls)
 	}
 	ctx, cancelDuringCapture := context.WithCancel(context.Background())
-	raw, err = produceReceiptWholeStateArchive(ctx, func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+	raw, err = produceReceiptWholeStateArchive(ctx, receiptWholeStateCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 		cancelDuringCapture()
 		return producerCapture(a), nil
-	}, a.Policy)
+	}), a.Policy)
 	if !errors.Is(err, context.Canceled) || raw != nil {
 		t.Fatalf("producer canceled after capture = %d bytes, %v", len(raw), err)
 	}
@@ -149,10 +161,10 @@ func TestReceiptArchiveProducerRejectsMiswiredSourcePolicy(t *testing.T) {
 			requested := a.Policy
 			tc.change(&requested)
 			calls := 0
-			raw, err := produceReceiptWholeStateArchive(context.Background(), func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+			raw, err := produceReceiptWholeStateArchive(context.Background(), receiptWholeStateCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 				calls++
 				return producerCapture(a), nil
-			}, requested)
+			}), requested)
 			if !errors.Is(err, errWholeStateArchive) || raw != nil || calls != 1 {
 				t.Fatalf("miswired source returned %d bytes after %d reads: %v", len(raw), calls, err)
 			}
@@ -163,9 +175,9 @@ func TestReceiptArchiveProducerRejectsMiswiredSourcePolicy(t *testing.T) {
 func TestReceiptArchiveProducerRejectsOversizeFrame(t *testing.T) {
 	a := wholeStateArchiveFixture(t)
 	a.Graph[1].GetVertex().Vertex.Value = &pb.Vertex_String_{String_: strings.Repeat("v", wholeStateArchiveMaxFrame)}
-	raw, err := produceReceiptWholeStateArchive(context.Background(), func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
+	raw, err := produceReceiptWholeStateArchive(context.Background(), receiptWholeStateCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateCapture, error) {
 		return producerCapture(a), nil
-	}, a.Policy)
+	}), a.Policy)
 	if !errors.Is(err, errWholeStateArchive) || raw != nil {
 		t.Fatalf("oversize frame produced %d bytes: %v", len(raw), err)
 	}
@@ -175,7 +187,7 @@ type receiptArchiveFixture struct {
 	cache   *graphcache.GraphCache[string, *pb.Vertex]
 	log     *mutationlog.Log
 	service *service.LanternService
-	source  service.ReceiptWholeStateSource
+	source  *service.ReceiptWholeStateSource
 	policy  mutationreceipt.Config
 	clock   *hlc.Clock
 }

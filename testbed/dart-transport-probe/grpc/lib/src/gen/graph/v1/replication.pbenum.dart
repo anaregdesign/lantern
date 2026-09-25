@@ -86,8 +86,9 @@ class IdentityOperation extends $pb.ProtobufEnum {
 
 /// Snapshot format is an explicit compatibility boundary. A graph-only image
 /// cannot prove mutation-receipt continuity, even when its origin cutoffs are
-/// ahead of every retained log entry. Format 2 is reserved for a future
-/// receipt-bearing image; this server does not produce it yet.
+/// ahead of every retained log entry. RECEIPT_V1 carries one atomic graph,
+/// receipt, clock, and origin cut. A receiver that cannot install that complete
+/// format must reject its header before applying any body frame.
 class SnapshotFormat extends $pb.ProtobufEnum {
   static const SnapshotFormat SNAPSHOT_FORMAT_UNSPECIFIED =
       SnapshotFormat._(0, _omitEnumNames ? '' : 'SNAPSHOT_FORMAT_UNSPECIFIED');
@@ -108,6 +109,45 @@ class SnapshotFormat extends $pb.ProtobufEnum {
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
   const SnapshotFormat._(super.value, super.name);
+}
+
+/// SnapshotReceiptKind pins the Store mutation family independently of the
+/// result encoding. Prefix Delete is deliberately absent.
+class SnapshotReceiptKind extends $pb.ProtobufEnum {
+  static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_UNSPECIFIED =
+      SnapshotReceiptKind._(
+          0, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_UNSPECIFIED');
+  static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_PUT_VERTEX =
+      SnapshotReceiptKind._(
+          1, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_PUT_VERTEX');
+  static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_PUT_EDGE =
+      SnapshotReceiptKind._(
+          2, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_PUT_EDGE');
+  static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_ADD_EDGE =
+      SnapshotReceiptKind._(
+          3, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_ADD_EDGE');
+  static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX =
+      SnapshotReceiptKind._(
+          4, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX');
+  static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_DELETE_EDGE =
+      SnapshotReceiptKind._(
+          5, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_DELETE_EDGE');
+
+  static const $core.List<SnapshotReceiptKind> values = <SnapshotReceiptKind>[
+    SNAPSHOT_RECEIPT_KIND_UNSPECIFIED,
+    SNAPSHOT_RECEIPT_KIND_PUT_VERTEX,
+    SNAPSHOT_RECEIPT_KIND_PUT_EDGE,
+    SNAPSHOT_RECEIPT_KIND_ADD_EDGE,
+    SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX,
+    SNAPSHOT_RECEIPT_KIND_DELETE_EDGE,
+  ];
+
+  static final $core.List<SnapshotReceiptKind?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 5);
+  static SnapshotReceiptKind? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SnapshotReceiptKind._(super.value, super.name);
 }
 
 const $core.bool _omitEnumNames =
