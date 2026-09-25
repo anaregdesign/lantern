@@ -13,6 +13,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -109,6 +110,38 @@ func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceipt(t *testing.T) {
 	}
 	if length, _, evicted := runtime.MutationLogStats(); length != 0 || evicted != 1 {
 		t.Fatalf("post-install log = len %d evicted %d, want 0 and 1", length, evicted)
+	}
+}
+
+func TestReceiptSnapshotInstallerPublishesCanonicalEmptyOriginCut(t *testing.T) {
+	valid, _ := receiptSnapshotCollectorFixture(t)
+	header := cloneReceiptSnapshotCollectorFrames(valid[:1])[0]
+	footer := cloneReceiptSnapshotCollectorFrames(valid[len(valid)-1:])[0]
+	header.GetHeader().CutoffSeqPerOrigin = nil
+	header.GetHeader().GetReceiptMetadata().OriginCutoffs = nil
+	footer.GetFooter().VertexCount = 0
+	footer.GetFooter().EdgeCount = 0
+	footer.GetFooter().ActiveReceiptCount = 0
+	footer.GetFooter().OriginCount = 0
+	frames := []*pb.SnapshotResponse{header, footer}
+	installer, runtime := newReceiptSnapshotInstallerFixture(
+		t,
+		frames,
+		receiptSnapshotCollectorLimits(),
+	)
+
+	result, err := installer.Install(
+		t.Context(),
+		&receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Header == nil || result.Graph != (replication.SnapshotGraphCounts{}) {
+		t.Fatalf("empty-origin install result = %+v", result)
+	}
+	if length, _, evicted := runtime.MutationLogStats(); length != 0 || evicted != 1 {
+		t.Fatalf("empty-origin install log = len %d evicted %d, want 0 and 1", length, evicted)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -182,7 +183,7 @@ func (c *ReceiptSnapshotCandidate) installCapture(ctx context.Context) (service.
 	if !equalRetiredReceiptSnapshotState(retired, capture.Retired) {
 		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged retired receipts differ from validated stream")
 	}
-	if !reflect.DeepEqual(c.stage.origins, capture.Origins) {
+	if !slices.Equal(c.stage.origins, capture.Origins) {
 		return service.ReceiptWholeStateCapture{}, errors.New("backup: staged origin vector differs from validated stream")
 	}
 	if c.stage.policy != capture.Policy {

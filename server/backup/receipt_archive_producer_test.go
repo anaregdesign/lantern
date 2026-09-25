@@ -450,7 +450,10 @@ func newReceiptArchiveFixture(t *testing.T, wal mutationlog.WAL) receiptArchiveF
 	}
 	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
 	for _, key := range []string{"tail", "head"} {
-		if err := cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+		if err := cache.PutVertex(key, &pb.Vertex{
+			Key:   key,
+			Value: &pb.Vertex_Nil{Nil: true},
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

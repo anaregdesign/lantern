@@ -151,7 +151,10 @@ func receiptSnapshotTestCapture(t *testing.T, withReceipt, withGraph bool) (Rece
 	}
 	if withGraph {
 		cut.graph.Vertices = []graphcache.SnapshotVertex[string, *pb.Vertex]{{
-			Key: "live", Value: &pb.Vertex{Key: "live"}, HLC: stamp,
+			Key: "live", Value: &pb.Vertex{
+				Key:   "live",
+				Value: &pb.Vertex_Nil{Nil: true},
+			}, HLC: stamp,
 		}}
 	}
 	graph := &snapshotFrameSink{}
@@ -618,6 +621,14 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			frames[0].GetHeader().GetReceiptMetadata().GetOriginCutoffs()[0].GetLastHlc().WallNs--
 			return frames
 		}},
+		{"unset live vertex value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = nil
+			return frames
+		}},
+		{"false nil live vertex value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = &pb.Vertex_Nil{Nil: false}
+			return frames
+		}},
 		{"typed-nil timestamp value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Timestamp)(nil)
 			return frames
@@ -826,6 +837,12 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 		}},
 		{"live vertex HLC beyond origin frontier", func(c *ReceiptWholeStateCapture) {
 			c.Origins[0].LastHLC.WallNs--
+		}},
+		{"unset live vertex value", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().Value = nil
+		}},
+		{"false nil live vertex value", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().Value = &pb.Vertex_Nil{Nil: false}
 		}},
 		{"typed-nil timestamp value", func(c *ReceiptWholeStateCapture) {
 			c.Graph[1].GetVertex().GetVertex().Value = (*pb.Vertex_Timestamp)(nil)

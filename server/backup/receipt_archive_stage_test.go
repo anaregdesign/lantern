@@ -75,7 +75,11 @@ func TestReceiptWholeStateArchiveStageReconstructsCausalGraphAndIndexes(t *testi
 			WallNs: frontier.WallNs, Logical: frontier.Logical, NodeId: frontier.NodeID[:],
 		},
 		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
-			Vertex: &pb.Vertex{Key: "frontier", Expiration: timestamppb.New(future)},
+			Vertex: &pb.Vertex{
+				Key:        "frontier",
+				Value:      &pb.Vertex_Nil{Nil: true},
+				Expiration: timestamppb.New(future),
+			},
 		}}},
 	}); err != nil {
 		t.Fatalf("seed origin frontier: %v", err)

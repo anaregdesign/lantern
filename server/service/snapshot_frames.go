@@ -612,15 +612,19 @@ func validOptionalReceiptSnapshotTimestamp(stamp *timestamppb.Timestamp) bool {
 }
 
 func validReceiptSnapshotVertexValue(vertex *pb.Vertex) bool {
-	switch value := vertex.GetValue().(type) {
+	value := vertex.GetValue()
+	if value == nil || nilOneofWrapper(value) {
+		return false
+	}
+	switch value := value.(type) {
 	case *pb.Vertex_Timestamp:
-		return !nilOneofWrapper(value) && validReceiptSnapshotTimestamp(value.Timestamp)
+		return validReceiptSnapshotTimestamp(value.Timestamp)
 	case *pb.Vertex_Duration:
-		return !nilOneofWrapper(value) && value.Duration != nil && value.Duration.CheckValid() == nil
+		return value.Duration != nil && value.Duration.CheckValid() == nil
 	case *pb.Vertex_Nil:
-		return !nilOneofWrapper(value) && value.Nil
+		return value.Nil
 	default:
-		return !nilOneofWrapper(value)
+		return true
 	}
 }
 
@@ -922,10 +926,6 @@ func DecodeReceiptSnapshotFrames(
 	if state.ClockHighWaterMillis > cutoff.WallNs/int64(time.Millisecond) {
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot clock high-water exceeds cutoff HLC")
 	}
-	retiredState, retiredEpochs, err := receiptSnapshotRetiredState(metadata, config.Epoch)
-	if err != nil {
-		return ReceiptWholeStateCapture{}, err
-	}
 	if retiredConfig.ActiveEpoch != config.Epoch ||
 		retiredConfig.MaxEntries <= 0 || retiredConfig.MaxBytes == 0 ||
 		(!retiredConfig.ClockHighWater.IsZero() &&
@@ -936,6 +936,14 @@ func DecodeReceiptSnapshotFrames(
 		)
 	}
 	retiredConfig.ClockHighWater = state.ClockHighWater()
+	retiredState, retiredEpochs, err := receiptSnapshotRetiredState(
+		metadata,
+		config.Epoch,
+		retiredConfig,
+	)
+	if err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
 	originLast, origins, err := validateReceiptSnapshotWireOrigins(header, cutoff)
 	if err != nil {
 		return ReceiptWholeStateCapture{}, err
@@ -978,6 +986,10 @@ func DecodeReceiptSnapshotFrames(
 		}
 		graphStarted = true
 		graphFrames = append(graphFrames, proto.Clone(frame).(*pb.SnapshotResponse))
+	}
+	retiredState, err = canonicalReceiptSnapshotRetiredState(retiredConfig, retiredState)
+	if err != nil {
+		return ReceiptWholeStateCapture{}, err
 	}
 	if activeReceiptCount != footer.GetActiveReceiptCount() ||
 		retiredReceiptCount != footer.GetRetiredReceiptCount() ||
@@ -1049,11 +1061,18 @@ func receiptSnapshotStoreState(
 		MaxBytes:       policy.GetMaxBytes(),
 		ClockHighWater: time.UnixMilli(highWater),
 	}
-	state := mutationreceipt.Snapshot{
-		Version:              1,
-		Epoch:                epoch,
-		PolicyFingerprint:    fingerprint,
-		ClockHighWaterMillis: highWater,
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		return mutationreceipt.Config{}, mutationreceipt.Snapshot{},
+			fmt.Errorf("receipt Snapshot policy metadata is invalid: %w", err)
+	}
+	state, err := store.Snapshot()
+	if err != nil {
+		return mutationreceipt.Config{}, mutationreceipt.Snapshot{}, err
+	}
+	if state.PolicyFingerprint != fingerprint {
+		return mutationreceipt.Config{}, mutationreceipt.Snapshot{},
+			fmt.Errorf("receipt Snapshot policy fingerprint is invalid")
 	}
 	return config, state, nil
 }
@@ -1061,12 +1080,17 @@ func receiptSnapshotStoreState(
 func receiptSnapshotRetiredState(
 	metadata *pb.SnapshotReceiptMetadata,
 	active mutationreceipt.Epoch,
+	retiredConfig mutationreceipt.RetiredCatalogConfig,
 ) (mutationreceipt.RetiredCatalogSnapshot, map[mutationreceipt.Epoch]int, error) {
-	state := mutationreceipt.RetiredCatalogSnapshot{
-		Version:              1,
-		ClockHighWaterMillis: int64(metadata.GetClockHighWaterUnixMs()),
-		Epochs:               make([]mutationreceipt.RetiredEpochSnapshot, 0, len(metadata.GetRetiredPolicies())),
+	empty, err := mutationreceipt.NewRetiredCatalog(retiredConfig)
+	if err != nil {
+		return mutationreceipt.RetiredCatalogSnapshot{}, nil, err
 	}
+	state, err := empty.Snapshot(retiredConfig.ClockHighWater)
+	if err != nil {
+		return mutationreceipt.RetiredCatalogSnapshot{}, nil, err
+	}
+	state.Epochs = make([]mutationreceipt.RetiredEpochSnapshot, 0, len(metadata.GetRetiredPolicies()))
 	byEpoch := make(map[mutationreceipt.Epoch]int, len(metadata.GetRetiredPolicies()))
 	var previous mutationreceipt.Epoch
 	for i, wirePolicy := range metadata.GetRetiredPolicies() {
@@ -1095,6 +1119,48 @@ func receiptSnapshotRetiredState(
 		})
 	}
 	return state, byEpoch, nil
+}
+
+func canonicalReceiptSnapshotRetiredState(
+	retiredConfig mutationreceipt.RetiredCatalogConfig,
+	decoded mutationreceipt.RetiredCatalogSnapshot,
+) (mutationreceipt.RetiredCatalogSnapshot, error) {
+	empty, err := mutationreceipt.NewRetiredCatalog(retiredConfig)
+	if err != nil {
+		return mutationreceipt.RetiredCatalogSnapshot{}, err
+	}
+	canonical, err := empty.Snapshot(retiredConfig.ClockHighWater)
+	if err != nil {
+		return mutationreceipt.RetiredCatalogSnapshot{}, err
+	}
+	canonical.Epochs = make(
+		[]mutationreceipt.RetiredEpochSnapshot,
+		0,
+		len(decoded.Epochs),
+	)
+	for _, member := range decoded.Epochs {
+		memberConfig := mutationreceipt.Config{
+			Epoch:          member.Policy.Epoch,
+			Retention:      member.Policy.Retention,
+			MaxEntries:     member.Policy.MaxEntries,
+			MaxBytes:       member.Policy.MaxBytes,
+			ClockHighWater: retiredConfig.ClockHighWater,
+		}
+		converted, err := mutationreceipt.RetiredCatalogSnapshotFromActive(
+			memberConfig,
+			member.State,
+		)
+		if err != nil {
+			return mutationreceipt.RetiredCatalogSnapshot{},
+				fmt.Errorf("receipt Snapshot retired policy has no valid rows: %w", err)
+		}
+		if len(converted.Epochs) != 1 {
+			return mutationreceipt.RetiredCatalogSnapshot{},
+				fmt.Errorf("receipt Snapshot retired policy has no valid rows: %w", mutationreceipt.ErrInvalidRetiredCatalogSnapshot)
+		}
+		canonical.Epochs = append(canonical.Epochs, converted.Epochs[0])
+	}
+	return canonical, nil
 }
 
 func receiptSnapshotReceiptEpoch(id mutationreceipt.ID) mutationreceipt.Epoch {

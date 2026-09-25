@@ -174,10 +174,16 @@ func receiptSnapshotCollectorFixture(
 			},
 		}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{
-			Vertex: &pb.Vertex{Key: "head"}, Hlc: wireHLC(),
+			Vertex: &pb.Vertex{
+				Key:   "head",
+				Value: &pb.Vertex_Nil{Nil: true},
+			}, Hlc: wireHLC(),
 		}}},
 		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{
-			Vertex: &pb.Vertex{Key: "tail"}, Hlc: wireHLC(),
+			Vertex: &pb.Vertex{
+				Key:   "tail",
+				Value: &pb.Vertex_Nil{Nil: true},
+			}, Hlc: wireHLC(),
 		}}},
 		{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
 			Tail: "tail", Head: "head",
