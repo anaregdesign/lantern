@@ -7,6 +7,49 @@ import (
 	"math"
 )
 
+// CreateLeasedLogWithFileWAL creates a new durable Log while holding one
+// exclusive path lease from file creation through shutdown. An existing WAL is
+// never overwritten or silently resumed. The returned owner closes the Log
+// and writer before releasing the lease. This only establishes WAL/Log
+// ownership; callers still own application-level publication and recovery.
+func CreateLeasedLogWithFileWAL(path string, opts Options, encode func(MutationOp) ([]byte, error)) (*Log, io.Closer, error) {
+	if opts.WAL != nil {
+		return nil, nil, errors.New("mutationlog: leased Log cannot replace a configured WAL")
+	}
+	if encode == nil {
+		return nil, nil, errors.New("mutationlog: FileWAL encoder is nil")
+	}
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	transferred := false
+	var wal *FileWAL
+	defer func() {
+		if !transferred {
+			if wal != nil {
+				_ = wal.Close()
+			}
+			_ = lease.Close()
+		}
+	}()
+	err = lease.WithPath(func(canonicalPath string) error {
+		var createErr error
+		wal, createErr = CreateFileWAL(canonicalPath, encode)
+		return createErr
+	})
+	if err != nil {
+		return nil, nil, errors.Join(err, lease.Close())
+	}
+	opts.WAL = wal
+	log := New(opts)
+	transferred = true
+	return log, &leasedFileWALLogCloser{
+		owner: &resumedLogCloser{log: log, wal: wal},
+		lease: lease,
+	}, nil
+}
+
 // ResumeLogFromFileWAL validates and replays a complete FileWAL, then returns
 // an in-memory Log at exactly the same local sequence frontier. restore must
 // install every decoded entry into application state before returning nil.
@@ -64,6 +107,64 @@ func ResumeLogFromFileWAL(
 		return nil, nil, err
 	}
 	return attachResumedFileWAL(opts, wal, tail)
+}
+
+// ResumeLeasedLogFromFileWAL acquires the path lease before the first WAL
+// validation pass and keeps it until the returned owner closes the Log and
+// writer. The caller must discard any application state partly changed by a
+// failing restore callback. A successful return proves only Log/WAL sequence
+// continuity; receipt-capable serving also needs a certified graph, Store,
+// clock, epoch, and origin cut.
+func ResumeLeasedLogFromFileWAL(
+	path string,
+	opts Options,
+	encode func(MutationOp) ([]byte, error),
+	decode func([]byte) (MutationOp, error),
+	restore func(Entry) error,
+) (*Log, io.Closer, error) {
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = lease.Close()
+		}
+	}()
+	var log *Log
+	var owner io.Closer
+	err = lease.WithPath(func(canonicalPath string) error {
+		var restoreErr error
+		log, owner, restoreErr = ResumeLogFromFileWAL(canonicalPath, opts, encode, decode, restore)
+		return restoreErr
+	})
+	if err != nil {
+		if owner != nil {
+			err = errors.Join(err, owner.Close())
+		}
+		return nil, nil, errors.Join(err, lease.Close())
+	}
+	if log == nil || owner == nil {
+		missing := errors.New("mutationlog: resumed Log owner is missing")
+		if owner != nil {
+			missing = errors.Join(missing, owner.Close())
+		}
+		return nil, nil, errors.Join(missing, lease.Close())
+	}
+	transferred = true
+	return log, &leasedFileWALLogCloser{owner: owner, lease: lease}, nil
+}
+
+// Close releases the WAL writer before the path lease, so another process
+// cannot acquire the path while this Log may still append.
+type leasedFileWALLogCloser struct {
+	owner io.Closer
+	lease *FileWALLease
+}
+
+func (c *leasedFileWALLogCloser) Close() error {
+	return errors.Join(c.owner.Close(), c.lease.Close())
 }
 
 // attachResumedFileWAL is the final ownership transfer. Keep every frontier
