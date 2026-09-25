@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, an opt-in RECEIPT_V1 Snapshot producer, detached collection, and durable local baseline install/recovery exist, but network installation, capability/status RPCs, and receipt-enabled writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, RECEIPT_V1 Snapshot production/install, and durable local baseline recovery are wired for private durable replication, but capability/status RPCs and receipt-enabled client writes remain disabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116, #1393
 
@@ -245,8 +245,9 @@ partitioned status, and total-cluster loss remain explicit unknown outcomes.
 
 ### Internal implementation boundary
 
-The unwired [Edge Delete coordinator](../../server/service/receipt_edge_delete.go)
-now stages graph, per-item receipts, and one origin row before a WAL call. Its
+The private [Edge Delete coordinator](../../server/service/receipt_edge_delete.go)
+stages graph, per-item receipts, and one origin row before a WAL call. Public
+receipt-bearing mutation RPCs do not invoke it. Its
 private log envelope distinguishes the original request, request-indexed
 results, causally accepted graph transitions, epoch/policy, and origin HLC/seq.
 The private [Edge Delete WAL codec](../../server/service/receipt_edge_delete_codec.go)
@@ -256,8 +257,9 @@ graph-only `Mutation` from indexed accepted keys. The enclosing FileWAL frame
 owns the checksum and replica-local log seq; its HLC must match the envelope
 HLC, while its local seq is independent of the origin-local seq. Tombstone
 expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
-clock metadata. The codec is not wired to a serving WAL or replay path and
-does not certify receipt recovery, replication, or status continuity.
+clock metadata. Durable receipt-WAL mode carries this codec through the union
+WAL and replay path; the codec alone does not certify receipt recovery,
+replication, or status continuity.
 The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.go)
 adds a versioned kind discriminator for graph-only `Mutation`, private
 [graph Delete effect](../../server/service/graph_delete_effect_wal.go) and
@@ -424,14 +426,12 @@ an old peer that receives the unknown oneof rejects the operation before
 advancing its origin watermark. Identity-only Subscribe emits DeleteEdge
 keys only for causally accepted items, and an all-rejected call emits a final
 zero-key `RECEIPT_ONLY` marker to advance its cursor without invalidation.
-The existing Pump does not opt in, and remote apply rejects the arm. This
-remains an internal wire prerequisite, not a supported receipt CDC contract.
-If the receipt-bearing entry has already left the log ring, this per-entry
-opt-in guard is never reached: an old Pump can receive the ordinary gapped
-error and fall back to a graph-only Snapshot. Production enablement therefore
-requires authenticated PeerStatus capability/version negotiation and a
-receipt-aware Snapshot install gate that refuses a graph-only downgrade,
-including a real-wire test with an evicted receipt entry.
+Graph-only Pump does not opt in, and graph-only remote apply rejects the arm.
+This remains an internal wire prerequisite, not a supported receipt CDC
+contract. In durable receipt-WAL mode, Pump and anti-entropy now opt in only
+after the runtime is certified; they require `RECEIPT_V1`, so an evicted
+receipt entry cannot fall through to a graph-only Snapshot. The shared
+installer refuses a zero or graph-only header before publication.
 The `SnapshotFormat` request/header and
 `PeerStatus.required_snapshot_format` fields establish this downgrade
 boundary. `WithReceiptSnapshotRequired` is a lifetime service latch: when set,
@@ -456,11 +456,16 @@ origin row; an unknown origin is invalid. The receipt clock high-water must not
 exceed the cutoff's wall time at millisecond precision.
 `WithReceiptSnapshotRequired` without that configured source still fails
 closed.
-Current Pump and anti-entropy request graph-only format and reject a receipt
-format header before applying a frame; a future receipt receiver must request,
-stage, validate, and atomically install `RECEIPT_V1`. No production provider
-configures the producer or enables receipt writes, status, remote receipt
-apply, or installation.
+The production provider selects Snapshot behavior from the runtime mode.
+Graph-only mode retains the existing in-place `GRAPH_ONLY_V1` installer.
+Durable receipt-WAL mode constructs one transport-neutral receipt installer
+after runtime certification and passes that exact instance to both Pump and
+anti-entropy. It requires `RECEIPT_V1`, drains the complete bounded stream
+through `ReceiptSnapshotCollector`, revalidates the canonical archive, and
+then calls the certified durable baseline install once. A cancellation,
+receive error, malformed/truncated stream, count or capacity breach,
+epoch/policy mismatch, or format downgrade returns before live publication.
+This wiring does not enable receipt writes, public status, or capability.
 The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
 is a separate format from `.lbk`. It requires a `RECEIPT_V1` graph Snapshot
 header, receipt Store snapshot and policy, clock high-water, and origin HLC
@@ -483,9 +488,11 @@ same cut; an unrepresentable high-water fails closed. The opt-in replication Sna
 producer and the private
 [archive producer](../../server/backup/receipt_archive_producer.go) each call
 this read-only source once and encode only that detached capture. The archive
-producer also decodes the complete archive before returning bytes. Neither
-path is wired into a production provider or backup scheduler, and neither
-certifies a durable recovery frontier. The service binds the first private
+producer also decodes the complete archive before returning bytes. The
+replication producer is bound to the durable runtime and consumed only by its
+private peers; the archive producer remains outside the production backup
+scheduler. Neither producer alone certifies a durable recovery frontier. The
+service binds the first private
 coordinator's
 Store pointer, rejecting a different Store even with matching policy; a
 misconfigured first binding therefore fails closed on later construction.
@@ -503,9 +510,9 @@ as a new HLC Put. Staging rejects a tombstone whose absolute D4 deadline has
 already elapsed and verifies every staged tombstone's HLC and deadline before
 returning; it also rejects a live implicit endpoint whose HLC conflicts with
 its retained floor. A failed decode, apply, or index rebuild discards the whole
-candidate. No production provider or restore path consumes this candidate;
-the existing graph-only Snapshot receiver's in-place overlay is not an
-atomic receipt installer.
+candidate. The production durable installer consumes this candidate only
+after complete validation; the existing graph-only Snapshot receiver's
+in-place overlay remains separate and cannot certify receipt continuity.
 The private bounded
 [Snapshot collector](../../server/backup/receipt_snapshot_collector.go)
 consumes a transport-neutral `RECEIPT_V1` stream into that detached archive
@@ -514,14 +521,19 @@ positive limit; a task-owned spool is removed on every outcome, while a
 successful candidate owns a read-only canonical archive until `Close`.
 The candidate exposes cloned header/policy metadata, the canonical archive
 digest/size, and a copying writer; its detached GraphCache and Store remain
-private for a later atomic installer. A decoded Connect client stream does not
+private until the receipt installer asks the certified service to publish the
+decoded canonical cut. A decoded Connect client stream does not
 expose its original protobuf bytes, so the collector treats that incoming
 encoding as non-authoritative: it recursively validates the parsed message,
 including unknown fields and typed-nil oneofs, then deterministically
 re-encodes it. Raw-observing stream adapters may additionally supply exact
 frame bytes, in which case ambiguous duplicate fields and nonminimal wire
-encodings are rejected before staging. The collector is not wired into Pump,
-anti-entropy, providers, or installation.
+encodings are rejected before staging. Production durable mode shares one
+collector-backed installer across Pump and anti-entropy; graph-only mode never
+constructs it. The production collector caps each frame at 8 MiB, the complete
+wire/canonical image at 512 MiB, total frames at 1,048,576, origin rows at
+65,536, and receipt rows at the smaller of the configured Store entry cap and
+1,048,574.
 The private [FileWAL cut manifest](../../server/backup/receipt_archive_wal_cut.go)
 binds complete archive bytes to both the original WAL frame bytes through the
 archive's local sequence and the exact complete valid FileWAL tip observed at
@@ -600,6 +612,15 @@ Natural D4 tombstone and receipt expiry is reaped during restore rather than
 treated as archive corruption. Orphan sidecars without a marker are cleanup
 candidates; missing, mismatched, noncanonical, oversized, or corrupt committed
 state fails startup.
+Live baseline installs are serialized before candidate encoding and sidecar
+creation. After a committed marker, the runtime records its digest and removes
+every other recognized candidate. A definite pre-marker rejection or
+`DefiniteWALAbort` removes the new candidate while preserving the prior
+committed digest. An indeterminate WAL result or publication panic retains the
+candidate because its marker may be durable and fail-stops the service; later
+installs cannot reap it. Cleanup failure after commit is logged as an
+operational error while the install still reports the already-committed
+outcome.
 
 The sole production composition boundary selects
 `LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the
@@ -640,12 +661,12 @@ view until a checked Core read API or equivalent fail-stop gate exists.
 
 The private production provider installs the staged graph, Store, origin
 tracker, Log, restored HLC, epoch, and generation as one certified serving
-bundle and binds the opt-in receipt Snapshot producer to those exact
-identities. The detached collector and internal durable installer exist, but
-Pump and anti-entropy do not request or install `RECEIPT_V1`; public enablement
-still requires capability negotiation and the shared network composition.
-Default Pump/anti-entropy and BackupSnapshot restore paths remain graph-only
-and cannot certify receipt continuity. `Store.Begin` advances clock high-water
+bundle and binds the receipt Snapshot producer and one shared installer to
+those exact identities. Durable Pump and anti-entropy request and atomically
+install `RECEIPT_V1`; graph-only mode and `BackupSnapshot` restore remain
+graph-only and cannot certify receipt continuity. Public enablement still
+requires the later capability/status and receipt-bearing client mutation
+slice. `Store.Begin` advances clock high-water
 and expires already-dead receipts even if the new mutation later aborts; only
 newly staged receipts roll back. Recovery persists that monotonic metadata
 through the bound clock journal or the committed baseline marker; losing or
@@ -671,8 +692,12 @@ alone do not fix the graph history. #1282's graph-before-relay retry rule is
 not itself sufficient for receipts: the receipt implementation must strengthen
 that seam to an atomic graph/receipt/relay publication. Slice B for
 conditional Put and Delete uses the same envelope architecture. Both
-slices require new proto and SDK surfaces, real Connect/h2c failure tests,
-three-replica/restart/backup cases, and bounded capacity and performance
-gates. None of this blocks #1162's first Put-only offline core release. Until
-those vertical slices pass, the offline package continues to reject durable
-Add, conditional Put, and Delete.
+slices require new proto and SDK surfaces, real Connect/h2c failure tests, and
+bounded capacity and performance gates. Private two-node real-wire Pump and
+anti-entropy gap recovery now cover atomic graph/receipt/origin installation
+and same-responder tail resumption. Exhaustive multi-replica, partition,
+restart, soak, and backup acceptance remains a separate #1393 follow-up;
+#1394 continues to own the receipt-bearing backup boundary. None of this
+blocks #1162's first Put-only offline core release. Until those vertical slices
+pass, the offline package continues to reject durable Add, conditional Put,
+and Delete.

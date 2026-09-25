@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -178,6 +179,15 @@ func assertReceiptBaselinePublicationFault(t *testing.T, service *LanternService
 	); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("external graph read after receipt baseline failure = %v", err)
 	}
+}
+
+func receiptBaselineSidecars(t *testing.T, path string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(path + ".receipt-v1.*.baseline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matches
 }
 
 func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T) {
@@ -742,6 +752,9 @@ func TestInstallReceiptBaselineConcurrentGenerationChain(t *testing.T) {
 		scan.activeGeneration != active || scan.marker.PreviousGeneration == genesis {
 		t.Fatalf("concurrent marker chain = %+v, genesis %x active %x", scan, genesis, active)
 	}
+	if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
+		t.Fatalf("concurrent install sidecars = %v, want one committed candidate", sidecars)
+	}
 }
 
 func TestInstallReceiptBaselineWALFailureRollsBackStore(t *testing.T) {
@@ -833,6 +846,23 @@ func TestInstallReceiptBaselineWALFailureRollsBackStore(t *testing.T) {
 			if _, ok := runtime.graph.GetVertex("baseline-searchable"); ok {
 				t.Fatal("failed marker published graph")
 			}
+			sidecars := receiptBaselineSidecars(t, path)
+			if tc.wantFaulted && len(sidecars) != 1 {
+				t.Fatalf("indeterminate marker sidecars = %v, want retained candidate", sidecars)
+			}
+			if !tc.wantFaulted && len(sidecars) != 0 {
+				t.Fatalf("definite marker abort sidecars = %v, want no candidate", sidecars)
+			}
+			if tc.wantFaulted {
+				retained := sidecars[0]
+				image.codec.raw = []byte("candidate-after-indeterminate-marker")
+				if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err == nil {
+					t.Fatal("fail-stopped service accepted another baseline")
+				}
+				if after := receiptBaselineSidecars(t, path); len(after) != 1 || after[0] != retained {
+					t.Fatalf("later rejection removed uncertain candidate: before %v after %v", sidecars, after)
+				}
+			}
 
 			runtime.log = originalLog
 			if err := failingLog.Close(); err != nil {
@@ -842,5 +872,124 @@ func TestInstallReceiptBaselineWALFailureRollsBackStore(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestInstallReceiptBaselineBoundsLiveSidecarRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil)
+
+	for i := range 12 {
+		image.codec.raw = []byte(fmt.Sprintf("canonical-success-%02d", i))
+		if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
+			t.Fatalf("successful install %d: %v", i, err)
+		}
+		if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
+			t.Fatalf("successful install %d sidecars = %v, want one", i, sidecars)
+		}
+	}
+	committedDigest := runtime.receipt.committedBaselineDigest
+	newer := image.cutoff
+	newer.WallNs++
+	if !runtime.origins.Record(image.origin, 2, newer) {
+		t.Fatal("failed to seed newer receiver origin")
+	}
+	for i := range 12 {
+		image.codec.raw = []byte(fmt.Sprintf("canonical-rejected-%02d", i))
+		if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err == nil {
+			t.Fatalf("origin-regressing install %d succeeded", i)
+		}
+		if runtime.receipt.committedBaselineDigest != committedDigest {
+			t.Fatalf("rejected install %d changed committed digest", i)
+		}
+		if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
+			t.Fatalf("rejected install %d sidecars = %v, want prior committed candidate", i, sidecars)
+		}
+	}
+}
+
+func TestInstallReceiptBaselineRestartRetainsCommittedSidecarOnRejection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	committedSidecars := receiptBaselineSidecars(t, path)
+	if len(committedSidecars) != 1 {
+		t.Fatalf("committed sidecars = %v, want one", committedSidecars)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedPrimary := restarted.NewLanternService(nil)
+	newer := image.cutoff
+	newer.WallNs++
+	if !restarted.origins.Record(image.origin, 2, newer) {
+		t.Fatal("failed to seed newer receiver origin")
+	}
+	image.codec.raw = []byte("candidate-rejected-after-restart")
+	if err := restartedPrimary.InstallReceiptBaseline(context.Background(), image.capture); err == nil {
+		t.Fatal("origin-regressing baseline installed after restart")
+	}
+	if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 ||
+		sidecars[0] != committedSidecars[0] {
+		t.Fatalf("restart rejection sidecars = %v, want %v", sidecars, committedSidecars)
+	}
+}
+
+func TestInstallReceiptBaselineCleanupFailureReportsCommittedState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	var logs bytes.Buffer
+	primary := runtime.NewLanternService(nil).WithLogger(
+		slog.New(slog.NewTextHandler(&logs, nil)),
+	)
+	runtime.receipt.sidecarFault = func(point receiptBaselineSidecarFaultPoint) error {
+		if point == receiptBaselineBeforeCleanup {
+			return errors.New("injected cleanup failure")
+		}
+		return nil
+	}
+
+	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); err != nil {
+		t.Fatalf("committed install reported cleanup failure: %v", err)
+	}
+	if _, ok := runtime.graph.GetVertex("baseline-searchable"); !ok {
+		t.Fatal("cleanup failure hid committed graph")
+	}
+	if !strings.Contains(logs.String(), "receipt baseline committed but stale sidecar cleanup failed") ||
+		!strings.Contains(logs.String(), "injected cleanup failure") {
+		t.Fatalf("cleanup failure log = %q", logs.String())
+	}
+	if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 1 {
+		t.Fatalf("cleanup failure sidecars = %v, want committed candidate", sidecars)
 	}
 }

@@ -196,10 +196,15 @@ func receiptWALGraphConfigurator(
 	}
 }
 
-// runtimeCertified is an ordering marker that cannot be constructed outside
-// this package. Listener and pump providers require it, so Wire cannot
-// construct network-facing objects before both service surfaces exist.
-type runtimeCertified struct{ valid bool }
+// runtimeCertified is an identity-bearing ordering marker that cannot be
+// constructed outside this package. Listener and replication providers
+// require it, so Wire cannot bind network-facing objects to foreign state.
+type runtimeCertified struct {
+	valid       bool
+	runtime     *service.ServingRuntime
+	primary     *service.LanternService
+	replication *service.LanternReplicationService
+}
 
 // NewRuntimeCertified completes the production composition barrier.
 func NewRuntimeCertified(
@@ -213,7 +218,12 @@ func NewRuntimeCertified(
 	if err := runtime.CertifyInstallation(primary, replication); err != nil {
 		return runtimeCertified{}, fmt.Errorf("certify serving runtime: %w", err)
 	}
-	return runtimeCertified{valid: true}, nil
+	return runtimeCertified{
+		valid:       true,
+		runtime:     runtime,
+		primary:     primary,
+		replication: replication,
+	}, nil
 }
 
 func NewRuntimeGraph(runtime *service.ServingRuntime) *graphcache.GraphCache[string, *pb.Vertex] {

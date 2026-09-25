@@ -157,7 +157,9 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewRuntimeCertified(",
 		"provider.NewListener(",
 		"provider.NewMetricsServer(",
+		"provider.NewSnapshotInstallerSelection(",
 		"provider.NewReplicationPump(",
+		"provider.NewAntiEntropyDriver(",
 	}
 	previous := -1
 	for _, needle := range ordered {
@@ -172,6 +174,11 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 	}
 	if !strings.Contains(text, "cleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")
+	}
+	if strings.Count(text, "provider.NewSnapshotInstallerSelection(") != 1 ||
+		!strings.Contains(text, "logger, snapshotInstallerSelection, runtimeCertified)") ||
+		!strings.Contains(text, "logger, snapshotInstallerSelection)") {
+		t.Fatal("generated injector does not share one Snapshot installer selection across Pump and anti-entropy")
 	}
 }
 

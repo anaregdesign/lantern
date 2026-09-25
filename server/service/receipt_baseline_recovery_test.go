@@ -123,7 +123,7 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 	}
 }
 
-func TestReceiptBaselineRecoveryChoosesNewestMarkerWithoutFallback(t *testing.T) {
+func TestReceiptBaselineRecoveryNeverFallsBackFromNewestMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	config := baselineRuntimeTestConfig(path)
 	image := newReceiptBaselineTestImage(t, config)
@@ -148,8 +148,8 @@ func TestReceiptBaselineRecoveryChoosesNewestMarkerWithoutFallback(t *testing.T)
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(receiptBaselineSidecarPath(path, firstDigest)); err != nil {
-		t.Fatalf("older valid sidecar missing before recovery: %v", err)
+	if _, err := os.Stat(receiptBaselineSidecarPath(path, firstDigest)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("older committed sidecar was not reaped: %v", err)
 	}
 	if err := os.WriteFile(receiptBaselineSidecarPath(path, secondDigest), []byte("bad newest"), 0o600); err != nil {
 		t.Fatal(err)
