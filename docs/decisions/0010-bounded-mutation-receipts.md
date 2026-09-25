@@ -606,7 +606,9 @@ set exists. The protocol requires neither file locking nor hard-link support
 and never replaces an existing name. Cancellation and every filesystem error
 abort the attempt and clean only paths whose exclusive create proved ownership;
 files from interrupted processes or racing writers are preserved and ignored
-rather than guessed-owned.
+rather than guessed-owned. If the attempt created the manifest, cleanup may
+remove members only after the manifest is absent and that absence has been
+directory-synced; a failed marker removal or sync leaves every member in place.
 Retention counts only complete valid sets for the configured instance and
 prunes each manifest first, syncs the directory, removes its members, and syncs
 again. Other instances, unrecognized files, and unproven orphan files are

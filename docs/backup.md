@@ -90,10 +90,12 @@ strict loader accepts its complete canonical contents and bound members, so a
 visible partial marker fails closed. This protocol uses no file locking or hard
 links and never replaces an existing name. Failed attempts clean only paths
 whose exclusive create proved ownership; files left by an interrupted process
-or racing writer are preserved and ignored rather than guessed-owned. Retention
-counts only fully validated committed sets for this instance and removes each
-old manifest first, directory-syncs, removes its members, and directory-syncs
-again. `LANTERN_BACKUP_RETAIN=0` keeps all sets.
+or racing writer are preserved and ignored rather than guessed-owned. Once an
+attempt owns a manifest, cleanup preserves every member unless removing that
+manifest and syncing its absence both succeed. Retention counts only fully
+validated committed sets for this instance and removes each old manifest first,
+directory-syncs, removes its members, and directory-syncs again.
+`LANTERN_BACKUP_RETAIN=0` keeps all sets.
 Periodic, manual, and final-shutdown attempts are serialized, and set IDs stay
 unique and increasing even if wall time repeats or moves backward.
 Existing `lantern_backup_*` timing, failure, vertex, and edge metrics remain
