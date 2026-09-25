@@ -948,6 +948,58 @@ func startDurableReceiptPumpWithApplier(
 	}
 }
 
+func startPublicReceiptPump(
+	t *testing.T,
+	parent context.Context,
+	name string,
+	target publicReceiptWireServer,
+	source publicReceiptWireServer,
+	token string,
+) func() {
+	t.Helper()
+	return startDurableReceiptPumpWithApplier(
+		t, parent, name, target.config, target.runtime, target.server,
+		source.server.url, target.server.svc, nil, token,
+	)
+}
+
+func startPublicReceiptAntiEntropy(
+	t *testing.T,
+	parent context.Context,
+	name string,
+	target publicReceiptWireServer,
+	source publicReceiptWireServer,
+	token string,
+) func() {
+	t.Helper()
+	runCtx, cancel := context.WithCancel(parent)
+	done := make(chan error, 1)
+	antiEntropy := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+		NodeID: target.config.NodeID, Peers: []string{source.server.url},
+		Interval: 20 * time.Millisecond, SubscribeTimeout: 2 * time.Second,
+		AuthToken:               token,
+		HTTPClient:              h2cClient(),
+		SnapshotInstaller:       newDurableReceiptSnapshotInstaller(t, target.config, target.server),
+		SearchConfigFingerprint: target.server.svc.SearchConfigFingerprint(),
+	}, target.server.svc, target.server.svc, target.runtime.GraphCache())
+	go func() { done <- antiEntropy.Run(runCtx) }()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					t.Errorf("%s stop: %v", name, err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Errorf("%s did not stop", name)
+			}
+		})
+	}
+}
+
 type scriptedReceiptPumpPeer struct {
 	graphv1connect.UnimplementedLanternReplicationServiceHandler
 	subscribe               func(context.Context, int32, *pb.SubscribeRequest, *connect.ServerStream[pb.SubscribeResponse]) error
@@ -1130,6 +1182,21 @@ func waitForDurableReceiptCut(
 		case <-ticker.C:
 		}
 	}
+}
+
+func waitForPublicReceiptCut(
+	t *testing.T,
+	ctx context.Context,
+	name string,
+	wire publicReceiptWireServer,
+	token string,
+	want map[string]uint64,
+	timeout time.Duration,
+) *pb.PeerStatusResponse {
+	t.Helper()
+	return waitForDurableReceiptCut(
+		t, ctx, name, wire.server, wire.runtime, want, timeout, token,
+	)
 }
 
 func requireExactReceiptCut(
@@ -2371,6 +2438,7 @@ func newPublicReceiptWireServerWithNetAndTombstoneTTL(
 	if err != nil {
 		t.Fatal(err)
 	}
+	replicationService.WithSearchConfig(primary)
 	restored, err := provider.NewRuntimeRestored(runtime, primary)
 	if err != nil {
 		t.Fatal(err)
@@ -2891,6 +2959,57 @@ func requireReceiptWireEdge(
 	}
 }
 
+func receiptWireStatuses(
+	t *testing.T,
+	ctx context.Context,
+	wire publicReceiptWireServer,
+	token string,
+	operationIDs [][]byte,
+) []*pb.ReceiptStatus {
+	t.Helper()
+	response, err := wire.raw.GetReceiptStatuses(
+		ctx,
+		receiptRequestWithToken(&pb.GetReceiptStatusesRequest{
+			OperationIds: operationIDs,
+		}, token),
+	)
+	if err != nil {
+		t.Fatalf("GetReceiptStatuses: %v", err)
+	}
+	if len(response.Msg.GetStatuses()) != len(operationIDs) {
+		t.Fatalf("GetReceiptStatuses returned %d statuses, want %d",
+			len(response.Msg.GetStatuses()), len(operationIDs))
+	}
+	return response.Msg.GetStatuses()
+}
+
+func requireReceiptDeleteResults(
+	t *testing.T,
+	name string,
+	statuses []*pb.ReceiptStatus,
+	operationIDs [][]byte,
+	want []bool,
+) {
+	t.Helper()
+	if len(statuses) != len(want) || len(operationIDs) != len(want) {
+		t.Fatalf("%s result lengths = statuses %d ids %d, want %d", name, len(statuses), len(operationIDs), len(want))
+	}
+	for i, status := range statuses {
+		receipt := status.GetReceipt()
+		result, ok := receipt.GetOriginalResult().GetResult().(*pb.ReceiptResult_DeleteEdgeExisted)
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+			receipt == nil ||
+			!bytes.Equal(status.GetOperationId(), operationIDs[i]) ||
+			!bytes.Equal(receipt.GetOperationId(), operationIDs[i]) ||
+			receipt.GetItemIndex() != uint32(i) ||
+			receipt.GetItemCount() != uint32(len(want)) ||
+			!ok ||
+			result.DeleteEdgeExisted != want[i] {
+			t.Fatalf("%s status[%d] = %+v, want confirmed DeleteEdge result %t", name, i, status, want[i])
+		}
+	}
+}
+
 type dropFirstDeleteEdgesResponseTransport struct {
 	inner   http.RoundTripper
 	dropped atomic.Bool
@@ -3271,6 +3390,200 @@ func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
 		}
 		requireReceiptWireEdge(t, closed.raw, newToken, protected)
 	})
+}
+
+func TestPublicEdgeDeleteReceipts_ThreeReplicaPartitionAntiEntropy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping three-replica public receipt acceptance")
+	}
+	const token = "receipt-ha-token"
+	a := newPublicReceiptWireServer(t, hlc.NodeID{0xa1}, 16, token)
+	b := newPublicReceiptWireServer(t, hlc.NodeID{0xb2}, 16, token)
+	c := newPublicReceiptWireServer(t, hlc.NodeID{0xc3}, 16, token)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	aCapability := publicReceiptCapability(t, a, token)
+	bCapability := publicReceiptCapability(t, b, token)
+	cCapability := publicReceiptCapability(t, c, token)
+	for _, replica := range []struct {
+		name       string
+		capability *pb.GetReceiptCapabilityResponse
+	}{
+		{"B", bCapability},
+		{"C", cCapability},
+	} {
+		if !proto.Equal(replica.capability.GetPolicy(), aCapability.GetPolicy()) {
+			t.Fatalf("%s receipt policy differs from A: A=%+v %s=%+v",
+				replica.name, aCapability.GetPolicy(), replica.name, replica.capability.GetPolicy())
+		}
+	}
+	if proto.Equal(aCapability.GetEndpoint(), bCapability.GetEndpoint()) ||
+		proto.Equal(aCapability.GetEndpoint(), cCapability.GetEndpoint()) ||
+		proto.Equal(bCapability.GetEndpoint(), cCapability.GetEndpoint()) {
+		t.Fatalf("replicas share a receipt endpoint identity: A=%+v B=%+v C=%+v",
+			aCapability.GetEndpoint(), bCapability.GetEndpoint(), cCapability.GetEndpoint())
+	}
+
+	present := &pb.EdgeKey{Tail: "receipt-ha", Head: "present"}
+	absent := &pb.EdgeKey{Tail: "receipt-ha", Head: "absent"}
+	putReceiptWireEdges(t, a.raw, token, present)
+
+	stopBA := startPublicReceiptPump(t, ctx, "A->B public receipt tail", b, a, token)
+	defer stopBA()
+	stopCA := startPublicReceiptPump(t, ctx, "A->C public receipt tail", c, a, token)
+	defer stopCA()
+	aOrigin := hex.EncodeToString(a.config.NodeID[:])
+	seedCut := map[string]uint64{aOrigin: 1}
+	requireExactReceiptCut(t, "B seeded", waitForPublicReceiptCut(
+		t, ctx, "B seeded", b, token, seedCut, 5*time.Second,
+	), seedCut)
+	requireExactReceiptCut(t, "C seeded", waitForPublicReceiptCut(
+		t, ctx, "C seeded", c, token, seedCut, 5*time.Second,
+	), seedCut)
+	requireSeededEdge := func(name string, wire publicReceiptWireServer) {
+		t.Helper()
+		response, err := wire.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+			Tail: present.GetTail(), Head: present.GetHead(),
+		}, token))
+		if err != nil || response.Msg.GetEdge().GetWeight() != 1 {
+			t.Fatalf("%s seed edge = %+v, %v, want weight 1", name, response, err)
+		}
+	}
+	requireSeededEdge("B", b)
+	requireSeededEdge("C", c)
+
+	stopCA()
+	receiptContext := publicReceiptWireContext(
+		t, aCapability, 0xd4, 2,
+		time.UnixMilli(int64(aCapability.GetServerNowUnixMs())).Add(-time.Second),
+	)
+	before := receiptWireStatuses(t, ctx, c, token, receiptContext.GetOperationIds())
+	for i, status := range before {
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED ||
+			status.GetReceipt() != nil {
+			t.Fatalf("partitioned C status[%d] before commit = %+v, want NOT_YET_OBSERVED", i, status)
+		}
+	}
+
+	deleted, err := a.raw.DeleteEdges(
+		ctx,
+		receiptRequestWithToken(&pb.DeleteEdgesRequest{
+			Edges:          []*pb.EdgeKey{present, absent},
+			ReceiptContext: receiptContext,
+		}, token),
+	)
+	if err != nil || deleted.Msg.GetDeleted() != 1 ||
+		!reflect.DeepEqual(deleted.Msg.GetExisted(), []bool{true, false}) {
+		t.Fatalf("A mixed receipt DeleteEdges = %+v, %v", deleted, err)
+	}
+
+	deleteCut := map[string]uint64{aOrigin: 2}
+	requireExactReceiptCut(t, "A committed", waitForPublicReceiptCut(
+		t, ctx, "A committed", a, token, deleteCut, 5*time.Second,
+	), deleteCut)
+	requireExactReceiptCut(t, "B converged", waitForPublicReceiptCut(
+		t, ctx, "B converged", b, token, deleteCut, 5*time.Second,
+	), deleteCut)
+	aStatuses := receiptWireStatuses(t, ctx, a, token, receiptContext.GetOperationIds())
+	bStatuses := receiptWireStatuses(t, ctx, b, token, receiptContext.GetOperationIds())
+	for _, replica := range []struct {
+		name     string
+		statuses []*pb.ReceiptStatus
+	}{
+		{"A", aStatuses},
+		{"B", bStatuses},
+	} {
+		requireReceiptDeleteResults(
+			t, replica.name, replica.statuses, receiptContext.GetOperationIds(), []bool{true, false},
+		)
+	}
+	if !proto.Equal(&pb.GetReceiptStatusesResponse{Statuses: aStatuses}, &pb.GetReceiptStatusesResponse{Statuses: bStatuses}) {
+		t.Fatalf("B statuses differ from A:\nA=%+v\nB=%+v", aStatuses, bStatuses)
+	}
+	if _, err := b.raw.GetReceiptCapability(
+		ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
+	); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("tokenless B receipt capability = %v, want Unauthenticated", err)
+	}
+	if _, err := b.raw.GetReceiptStatuses(
+		ctx, connect.NewRequest(&pb.GetReceiptStatusesRequest{
+			OperationIds: receiptContext.GetOperationIds(),
+		}),
+	); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("tokenless B receipt statuses = %v, want Unauthenticated", err)
+	}
+	requireDeletedEdges := func(name string, wire publicReceiptWireServer) {
+		t.Helper()
+		for _, key := range []*pb.EdgeKey{present, absent} {
+			_, err := wire.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+				Tail: key.GetTail(), Head: key.GetHead(),
+			}, token))
+			if connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatalf("%s GetEdge(%q, %q) = %v, want NotFound", name, key.GetTail(), key.GetHead(), err)
+			}
+		}
+	}
+	requireDeletedEdges("A", a)
+	requireDeletedEdges("B", b)
+
+	identityCtx, stopIdentity := context.WithTimeout(ctx, 2*time.Second)
+	defer stopIdentity()
+	identity, err := newReplicationRawClient(t, b.server.url).Subscribe(
+		identityCtx,
+		receiptRequestWithToken(&pb.SubscribeRequest{
+			Projection:       pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+			FromSeqPerOrigin: map[string]uint64{aOrigin: 2},
+		}, token),
+	)
+	if err != nil {
+		t.Fatalf("B identity-only Subscribe: %v", err)
+	}
+	defer func() { _ = identity.Close() }()
+	if !identity.Receive() {
+		t.Fatalf("B public receipt identity chunk: %v", identity.Err())
+	}
+	chunk := identity.Msg().GetIdentityChunk()
+	// The absent live edge also commits a new tombstone, so CDC names both identities.
+	if chunk == nil ||
+		chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE ||
+		chunk.GetSeq() != 2 ||
+		!bytes.Equal(chunk.GetOrigin(), a.config.NodeID[:]) ||
+		chunk.GetChunkIndex() != 0 || chunk.GetFirstItemIndex() != 0 || !chunk.GetIsLast() ||
+		len(chunk.GetVertexKeys()) != 0 || len(chunk.GetEdgeKeys()) != 2 ||
+		!proto.Equal(chunk.GetEdgeKeys()[0], present) ||
+		!proto.Equal(chunk.GetEdgeKeys()[1], absent) {
+		t.Fatalf("B public receipt identity chunk = %+v, want both committed edge identities", identity.Msg())
+	}
+	stopIdentity()
+	if err := identity.Close(); err != nil {
+		t.Fatalf("close B identity stream: %v", err)
+	}
+
+	requireExactReceiptCut(t, "C partitioned", waitForPublicReceiptCut(
+		t, ctx, "C partitioned", c, token, seedCut, 5*time.Second,
+	), seedCut)
+	partitioned := receiptWireStatuses(t, ctx, c, token, receiptContext.GetOperationIds())
+	for i, status := range partitioned {
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED ||
+			!bytes.Equal(status.GetOperationId(), receiptContext.GetOperationIds()[i]) ||
+			status.GetReceipt() != nil {
+			t.Fatalf("partitioned C status[%d] = %+v, want NOT_YET_OBSERVED", i, status)
+		}
+	}
+	requireSeededEdge("C partitioned", c)
+
+	stopCARepair := startPublicReceiptAntiEntropy(t, ctx, "A->C public receipt repair", c, a, token)
+	defer stopCARepair()
+	requireExactReceiptCut(t, "C repaired", waitForPublicReceiptCut(
+		t, ctx, "C repaired", c, token, deleteCut, 5*time.Second,
+	), deleteCut)
+	cStatuses := receiptWireStatuses(t, ctx, c, token, receiptContext.GetOperationIds())
+	requireReceiptDeleteResults(t, "C", cStatuses, receiptContext.GetOperationIds(), []bool{true, false})
+	if !proto.Equal(&pb.GetReceiptStatusesResponse{Statuses: aStatuses}, &pb.GetReceiptStatusesResponse{Statuses: cStatuses}) {
+		t.Fatalf("C statuses differ from A after repair:\nA=%+v\nC=%+v", aStatuses, cStatuses)
+	}
+	requireDeletedEdges("C", c)
 }
 
 func durableFollowerReceiptMutation(
