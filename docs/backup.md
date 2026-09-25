@@ -121,10 +121,10 @@ individually. The nearest existing ancestor's parent is synced first so a retry
 can certify an entry left by a failed earlier parent sync, and each new child
 entry is then made crash-durable by syncing its parent. Directory flushes use
 the platform durability primitive, including a write-capable directory handle
-with `FlushFileBuffers` on Windows. Persistence creates each member staging file with
-`O_CREATE|O_EXCL`; writes all bytes, file-syncs, closes, and renames it to its
-final immutable name; directory-syncs after all three member renames; then
-creates/writes/file-syncs/closes the manifest staging file, renames the
+with `FlushFileBuffers` on Windows. Persistence creates each member staging
+file with `O_CREATE|O_EXCL`; writes all bytes, file-syncs, closes, and renames
+it to its final immutable name; directory-syncs after all three member renames;
+then creates/writes/file-syncs/closes the manifest staging file, renames the
 manifest last as the sole commit point, and directory-syncs again.
 An existing observed staging or final name is never replaced. Failed attempts
 clean only paths whose exclusive create or successful rename proved ownership;
@@ -141,8 +141,9 @@ resource bound. Discovery and ID allocation retain only the highest relevant
 ID. Retention keeps a bounded min-heap of the newest valid own sets, then uses
 a bounded second streaming pass to collect older candidates. It closes the
 directory stream, revalidates each candidate, removes its manifest first,
-directory-syncs, removes its members, and directory-syncs again. It never prunes invalid markers,
-legacy markers, other instances, or unproven orphan files.
+directory-syncs, removes its members, and directory-syncs again. It never
+prunes invalid markers, legacy markers, other instances, or unproven orphan
+files.
 `LANTERN_BACKUP_RETAIN=0` keeps all sets.
 Periodic, manual, and final-shutdown attempts are serialized, and set IDs stay
 unique and increasing even if wall time repeats or moves backward.
@@ -161,8 +162,8 @@ formats receive only bounded envelope/name recognition so they fail with
 `ErrUnsupportedReceiptBackupSet`; no obsolete member is decoded, installed,
 or migrated. A selected set containing the obsolete `LRWLCUT2` witness format
 fails with the same unsupported-set error. Runtime-local combined baseline
-publication remains the separate private `LANTCBLN` schema-1 sidecar, and graph-only `.lbk`
-remains a separate non-receipt contract.
+publication remains the separate private `LANTCBLN` schema-1 sidecar, and
+graph-only `.lbk` remains a separate non-receipt contract.
 
 **Durable receipt backup installation and startup wiring are not implemented
 in this layer; selecting, proving against the leased live WAL, and installing
