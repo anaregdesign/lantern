@@ -1411,3 +1411,209 @@ func TestInstallReceiptBaselineCleanupFailureReportsCommittedState(t *testing.T)
 		t.Fatalf("cleanup failure sidecars = %v, want committed candidate", sidecars)
 	}
 }
+
+type blockingReceiptBaselineCodec struct {
+	delegate ReceiptBaselineArchiveCodec
+	entered  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (c *blockingReceiptBaselineCodec) EncodeCombinedReceiptBaseline(
+	ctx context.Context,
+	capture ReceiptWholeStateCapture,
+) ([]byte, error) {
+	c.once.Do(func() { close(c.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+	}
+	return c.delegate.EncodeCombinedReceiptBaseline(ctx, capture)
+}
+
+func (c *blockingReceiptBaselineCodec) StageCombinedReceiptBaseline(
+	ctx context.Context,
+	raw []byte,
+	config mutationreceipt.Config,
+	defaultTTL time.Duration,
+	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
+) (*ReceiptBaselineCandidate, error) {
+	return c.delegate.StageCombinedReceiptBaseline(ctx, raw, config, defaultTTL, configureGraph)
+}
+
+func TestInstallReceiptBaselineExcludesPublicReceiptOperations(t *testing.T) {
+	path := t.TempDir() + "/receipts.wal"
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	blocking := &blockingReceiptBaselineCodec{
+		delegate: image.codec,
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	config.BaselineCodec = blocking
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallation(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyReceiptBackup(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ActivatePublicReceipts(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	before, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || !before.GetEnabled() {
+		t.Fatalf("capability before install = %+v, %v", before, err)
+	}
+
+	installDone := make(chan error, 1)
+	go func() {
+		installDone <- primary.InstallReceiptBaseline(context.Background(), image.capture)
+	}()
+	waitReceiptTest(t, "exclusive baseline install", blocking.entered)
+
+	during, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || during.GetEnabled() || during.GetPolicy() != nil || during.GetEndpoint() != nil {
+		t.Fatalf("capability during install = %+v, %v", during, err)
+	}
+	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: image.id.Bytes(),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("status during install = %v, want FailedPrecondition", err)
+	}
+	if _, err := primary.DeleteEdge(context.Background(), &pb.DeleteEdgeRequest{
+		Tail: "blocked", Head: "during-install",
+		ReceiptContext: &pb.MutationReceiptContext{
+			OperationIds:  [][]byte{image.id.Bytes()},
+			LogicalCallId: []byte{0x93, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+			Endpoint:      before.GetEndpoint(),
+		},
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("receipt mutation during install = %v, want FailedPrecondition", err)
+	}
+
+	close(blocking.release)
+	if err := waitReceiptTest(t, "baseline install completion", installDone); err != nil {
+		t.Fatal(err)
+	}
+	after, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || !after.GetEnabled() ||
+		bytes.Equal(after.GetEndpoint().GetGeneration(), before.GetEndpoint().GetGeneration()) {
+		t.Fatalf("capability after install = %+v, %v", after, err)
+	}
+}
+
+func TestInstallReceiptBaselineRestartPreservesEffectiveReceiptHighWater(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	if len(image.capture.Receipts.Receipts) != 1 {
+		t.Fatalf("receipt fixture rows = %d, want 1", len(image.capture.Receipts.Receipts))
+	}
+	deadline := image.capture.Receipts.Receipts[0].DeadlineMillis
+	initialHighWater := deadline - int64(2*time.Minute/time.Millisecond)
+	sourceHighWater := deadline - int64(time.Minute/time.Millisecond)
+	effectiveHighWater := deadline + int64(time.Minute/time.Millisecond)
+	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
+	config.Now = time.UnixMilli(initialHighWater)
+
+	baseBuild := image.codec.build
+	buildAtHighWater := func(highWater int64, includeReceipt bool) func() (*ReceiptBaselineCandidate, error) {
+		return func() (*ReceiptBaselineCandidate, error) {
+			candidate, err := baseBuild()
+			if err != nil {
+				return nil, err
+			}
+			state, err := candidate.Receipts.Snapshot()
+			if err != nil {
+				return nil, err
+			}
+			state.ClockHighWaterMillis = highWater
+			if !includeReceipt {
+				state.Receipts = nil
+			}
+			policy := candidate.Policy
+			policy.ClockHighWater = time.UnixMilli(highWater)
+			candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
+			candidate.Policy = policy
+			return candidate, err
+		}
+	}
+
+	firstCapture := image.capture
+	firstCapture.Receipts.ClockHighWaterMillis = effectiveHighWater
+	firstCapture.Receipts.Receipts = nil
+	firstCapture.Policy.ClockHighWater = time.UnixMilli(effectiveHighWater)
+	firstCodec := &receiptBaselineTestCodec{
+		raw:   []byte("canonical-high-water-baseline-a"),
+		build: buildAtHighWater(effectiveHighWater, false),
+	}
+	secondCapture := image.capture
+	secondCapture.Receipts.ClockHighWaterMillis = sourceHighWater
+	secondCapture.Policy.ClockHighWater = time.UnixMilli(sourceHighWater)
+	secondCodec := &receiptBaselineTestCodec{
+		raw:   []byte("canonical-high-water-baseline-b"),
+		build: buildAtHighWater(sourceHighWater, true),
+	}
+
+	config.BaselineCodec = firstCodec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(context.Background(), firstCapture); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+		t.Fatalf("first baseline Store = %+v", got)
+	}
+
+	runtime.receipt.baselineCodec = secondCodec
+	if err := primary.InstallReceiptBaseline(context.Background(), secondCapture); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+		t.Fatalf("second baseline regressed live Store = %+v", got)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scan.hasMarker || scan.markerSequence != 2 ||
+		scan.marker.ReceiptHighWaterMillis != effectiveHighWater {
+		t.Fatalf("newest baseline marker = %+v", scan)
+	}
+
+	config.BaselineCodec = secondCodec
+	config.Now = time.UnixMilli(initialHighWater)
+	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	if got := restarted.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+		t.Fatalf("restarted Store = %+v, want high-water %d and no resurrected rows", got, effectiveHighWater)
+	}
+	if status, _, err := restarted.receipt.store.Lookup(
+		image.id,
+		time.UnixMilli(initialHighWater),
+	); err != nil || status != mutationreceipt.NoLongerProvable {
+		t.Fatalf("expired receipt after restart = %v, %v", status, err)
+	}
+}

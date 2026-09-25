@@ -45,7 +45,7 @@ type receiptServingRuntime struct {
 	epoch                   mutationreceipt.Epoch
 	generation              [16]byte
 	committedBaseline       receiptBaselineReference
-	baselineInstallGate     chan struct{}
+	operationAdmission      *receiptOperationAdmission
 	baselineCodec           ReceiptBaselineArchiveCodec
 	defaultTTL              time.Duration
 	configureGraph          func(*graphcache.GraphCache[string, *pb.Vertex]) error
@@ -474,26 +474,23 @@ func certifyReceiptWALServingRuntime(
 	if err := clock.RestoreFloor(floor); err != nil {
 		return nil, fmt.Errorf("service: restore durable receipt WAL HLC frontier: %w", err)
 	}
-	baselineInstallGate := make(chan struct{}, 1)
-	baselineInstallGate <- struct{}{}
-
 	return &ServingRuntime{
 		graph:   candidate.state.graph,
 		log:     candidate.state.log,
 		clock:   clock,
 		origins: candidate.state.origins,
 		receipt: &receiptServingRuntime{
-			store:               candidate.state.receipts,
-			retired:             retired,
-			policy:              policy,
-			epoch:               candidate.state.receipts.Epoch(),
-			generation:          generation,
-			committedBaseline:   committedBaseline,
-			baselineInstallGate: baselineInstallGate,
-			baselineCodec:       config.BaselineCodec,
-			defaultTTL:          config.DefaultTTL,
-			configureGraph:      config.ConfigureGraph,
-			owner:               candidate,
+			store:              candidate.state.receipts,
+			retired:            retired,
+			policy:             policy,
+			epoch:              candidate.state.receipts.Epoch(),
+			generation:         generation,
+			committedBaseline:  committedBaseline,
+			operationAdmission: newReceiptOperationAdmission(),
+			baselineCodec:      config.BaselineCodec,
+			defaultTTL:         config.DefaultTTL,
+			configureGraph:     config.ConfigureGraph,
+			owner:              candidate,
 		},
 		owner: candidate,
 	}, nil

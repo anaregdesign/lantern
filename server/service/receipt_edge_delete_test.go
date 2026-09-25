@@ -165,16 +165,34 @@ func receiptDeleteCall(t *testing.T, epoch mutationreceipt.Epoch, keys ...graphc
 	return call
 }
 
-func waitReceiptTest[T any](t *testing.T, label string, ch <-chan T) T {
+func bindPublicReceiptFixtureForConcurrencyTest(
+	t *testing.T,
+	f receiptEdgeDeleteFixture,
+) *ServingRuntime {
 	t.Helper()
-	select {
-	case result := <-ch:
-		return result
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", label)
-		var zero T
-		return zero
+	policy := mutationreceipt.Config{
+		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+		ClockHighWater: time.UnixMilli(f.coordinator.store.Stats().HighWaterMillis),
 	}
+	retired, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch: f.epoch, MaxEntries: 32, MaxBytes: 1 << 20,
+		ClockHighWater: policy.ClockHighWater,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptRuntime := &receiptServingRuntime{
+		store: f.coordinator.store, retired: retired, policy: policy,
+		epoch: f.epoch, generation: [16]byte{0x7e},
+		operationAdmission: newReceiptOperationAdmission(),
+	}
+	receiptRuntime.publicEnabled.Store(true)
+	runtime := &ServingRuntime{
+		graph: f.cache, log: f.log, clock: f.service.clock,
+		origins: f.service.origins, receipt: receiptRuntime,
+	}
+	f.service.runtime = runtime
+	return runtime
 }
 
 func publicReceiptContext(
@@ -370,6 +388,112 @@ func TestPublicReceiptDeleteEdgesRejectsUnrepresentableWALBeforeState(t *testing
 	}
 	if _, _, ok := runtime.graph.GetEdgeDetail(tail, head); !ok {
 		t.Fatal("oversize receipt request deleted the seed edge")
+	}
+}
+
+func TestPublicReceiptOperationsShareAdmissionDuringCommit(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	var writes atomic.Int32
+	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
+		if writes.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}))
+	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
+	f.cache.AddEdgeWithExpiration("tail", "head", 1, time.Now().Add(time.Hour))
+	request := &pb.DeleteEdgesRequest{
+		Edges:          []*pb.EdgeKey{{Tail: "tail", Head: "head"}},
+		ReceiptContext: publicReceiptContext(t, runtime, 0x7a, 1),
+	}
+	type deleteResult struct {
+		response *pb.DeleteEdgesResponse
+		err      error
+	}
+	firstDone := make(chan deleteResult, 1)
+	go func() {
+		response, err := f.service.DeleteEdges(
+			context.Background(),
+			proto.Clone(request).(*pb.DeleteEdgesRequest),
+		)
+		firstDone <- deleteResult{response: response, err: err}
+	}()
+	waitReceiptTest(t, "public receipt WAL write", entered)
+
+	capabilityDone := make(chan struct {
+		response *pb.GetReceiptCapabilityResponse
+		err      error
+	}, 1)
+	go func() {
+		response, err := f.service.GetReceiptCapability(
+			context.Background(),
+			&pb.GetReceiptCapabilityRequest{},
+		)
+		capabilityDone <- struct {
+			response *pb.GetReceiptCapabilityResponse
+			err      error
+		}{response: response, err: err}
+	}()
+	statusDone := make(chan struct {
+		response *pb.GetReceiptStatusesResponse
+		err      error
+	}, 1)
+	go func() {
+		response, err := f.service.GetReceiptStatuses(
+			context.Background(),
+			&pb.GetReceiptStatusesRequest{
+				OperationIds: request.GetReceiptContext().GetOperationIds(),
+			},
+		)
+		statusDone <- struct {
+			response *pb.GetReceiptStatusesResponse
+			err      error
+		}{response: response, err: err}
+	}()
+	retryDone := make(chan deleteResult, 1)
+	go func() {
+		response, err := f.service.DeleteEdges(
+			context.Background(),
+			proto.Clone(request).(*pb.DeleteEdgesRequest),
+		)
+		retryDone <- deleteResult{response: response, err: err}
+	}()
+
+	select {
+	case result := <-capabilityDone:
+		t.Fatalf("capability misclassified healthy mutation overlap: %+v", result)
+	case result := <-statusDone:
+		t.Fatalf("status misclassified healthy mutation overlap: %+v", result)
+	case result := <-retryDone:
+		t.Fatalf("duplicate retry misclassified healthy mutation overlap: %+v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+
+	first := waitReceiptTest(t, "first public receipt response", firstDone)
+	retry := waitReceiptTest(t, "duplicate public receipt response", retryDone)
+	capability := waitReceiptTest(t, "overlapping capability", capabilityDone)
+	status := waitReceiptTest(t, "overlapping status", statusDone)
+	if first.err != nil || retry.err != nil || !proto.Equal(first.response, retry.response) ||
+		first.response.GetDeleted() != 1 || writes.Load() != 1 {
+		t.Fatalf("response-loss retry = first(%+v, %v) retry(%+v, %v) writes=%d",
+			first.response, first.err, retry.response, retry.err, writes.Load())
+	}
+	if capability.err != nil || !capability.response.GetEnabled() {
+		t.Fatalf("capability during healthy overlap = %+v, %v", capability.response, capability.err)
+	}
+	if status.err != nil || len(status.response.GetStatuses()) != 1 ||
+		status.response.GetStatuses()[0].GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED {
+		t.Fatalf("status during healthy overlap = %+v, %v", status.response, status.err)
 	}
 }
 

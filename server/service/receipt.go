@@ -40,15 +40,14 @@ func (s *LanternService) publicReceiptRuntime() *receiptServingRuntime {
 
 func (s *LanternService) acquirePublicReceiptRuntime() (*receiptServingRuntime, func(), error) {
 	runtime := s.publicReceiptRuntime()
-	if runtime == nil || runtime.baselineInstallGate == nil {
+	if runtime == nil || runtime.operationAdmission == nil {
 		return nil, nil, connect.NewError(connect.CodeFailedPrecondition, errReceiptsDisabled)
 	}
-	select {
-	case <-runtime.baselineInstallGate:
-		return runtime, func() { runtime.baselineInstallGate <- struct{}{} }, nil
-	default:
+	release, ok := runtime.operationAdmission.tryAcquireShared()
+	if !ok {
 		return nil, nil, connect.NewError(connect.CodeFailedPrecondition, errReceiptsRecovering)
 	}
+	return runtime, release, nil
 }
 
 // GetReceiptCapability samples the same persisted monotonic clock used for

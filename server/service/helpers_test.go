@@ -13,6 +13,18 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+func waitReceiptTest[T any](t *testing.T, label string, ch <-chan T) T {
+	t.Helper()
+	select {
+	case result := <-ch:
+		return result
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+		var zero T
+		return zero
+	}
+}
+
 func validReceiptOperationIDForTest(t *testing.T, seed byte) []byte {
 	t.Helper()
 	id, err := mutationreceipt.NewID(
