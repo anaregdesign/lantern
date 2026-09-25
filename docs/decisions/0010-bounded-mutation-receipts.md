@@ -183,6 +183,29 @@ backup can prove only the receipts it actually contains. Retained known
 old-epoch receipts may still answer status, but missing old-epoch receipts do
 not authorize replay.
 
+The private `core/mutationreceipt.RetiredCatalog` is the bounded read-only
+representation for that retained evidence. It imports strictly sorted,
+nonempty per-epoch Store snapshots together with each epoch's immutable
+retention and capacity policy, recomputes the policy fingerprint, and validates
+every original deadline before retaining the row. The catalog has separate
+aggregate entry and logical-byte caps, rejects the current active epoch, and
+advances only from a caller-supplied nondecreasing effective clock high-water.
+It keeps no admission, logical-call, contribution, or eviction indexes: only an
+exact known unexpired ID can return `CONFIRMED`; every absent or expired
+retired ID is `NO_LONGER_PROVABLE`, and an active-epoch lookup fails distinctly
+for routing back to the active Store. Its deterministic deep-copied snapshot
+omits expired rows and empty epoch members and can be validated and imported
+without an active Store.
+
+This catalog is not wired into the archive codec, Snapshot transport, runtime,
+service routing, scheduler, or restore path. It does not persist its own clock,
+merge a newly retired active Store, choose a replacement epoch/generation, or
+prove that its evidence and graph/WAL state share one cut. The #1394
+integration layer must rebuild and publish the active Store plus catalog
+atomically, durably preserve the effective high-water, enforce its configured
+capacity, and carry the catalog in a versioned backup/peer format before any
+retired-epoch status is exposed.
+
 ### Bounded retention and admission
 
 Receipt support is disabled until an operator configures a positive entry cap,
