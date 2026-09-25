@@ -244,6 +244,24 @@ const MutationOp$json = {
       '9': 0,
       '10': 'replicatedReceiptEdgeDelete'
     },
+    {
+      '1': 'replicated_receipt_vertex_put',
+      '3': 16,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptVertexPut',
+      '9': 0,
+      '10': 'replicatedReceiptVertexPut'
+    },
+    {
+      '1': 'replicated_receipt_vertex_delete',
+      '3': 17,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptVertexDelete',
+      '9': 0,
+      '10': 'replicatedReceiptVertexDelete'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -272,7 +290,11 @@ final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
     '9wdXRfZWRnZXMYDiABKAsyHC5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZXNIAFIScmVwbGlj'
     'YXRlZFB1dEVkZ2VzEmwKHnJlcGxpY2F0ZWRfcmVjZWlwdF9lZGdlX2RlbGV0ZRgPIAEoCzIlLm'
     'dyYXBoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0RWRnZURlbGV0ZUgAUhtyZXBsaWNhdGVkUmVjZWlw'
-    'dEVkZ2VEZWxldGVCBAoCb3A=');
+    'dEVkZ2VEZWxldGUSaQodcmVwbGljYXRlZF9yZWNlaXB0X3ZlcnRleF9wdXQYECABKAsyJC5ncm'
+    'FwaC52MS5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEgAUhpyZXBsaWNhdGVkUmVjZWlwdFZl'
+    'cnRleFB1dBJyCiByZXBsaWNhdGVkX3JlY2VpcHRfdmVydGV4X2RlbGV0ZRgRIAEoCzInLmdyYX'
+    'BoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0VmVydGV4RGVsZXRlSABSHXJlcGxpY2F0ZWRSZWNlaXB0'
+    'VmVydGV4RGVsZXRlQgQKAm9w');
 
 @$core.Deprecated('Use replicatedReceiptEdgeDeleteItemDescriptor instead')
 const ReplicatedReceiptEdgeDeleteItem$json = {
@@ -350,6 +372,145 @@ final $typed_data.Uint8List replicatedReceiptEdgeDeleteDescriptor = $convert.bas
     'Z2VycHJpbnQSTQoUdG9tYnN0b25lX2V4cGlyYXRpb24YAyABKAsyGi5nb29nbGUucHJvdG9idW'
     'YuVGltZXN0YW1wUhN0b21ic3RvbmVFeHBpcmF0aW9uEj8KBWl0ZW1zGAQgAygLMikuZ3JhcGgu'
     'djEuUmVwbGljYXRlZFJlY2VpcHRFZGdlRGVsZXRlSXRlbVIFaXRlbXM=');
+
+@$core.Deprecated('Use replicatedReceiptVertexPutItemDescriptor instead')
+const ReplicatedReceiptVertexPutItem$json = {
+  '1': 'ReplicatedReceiptVertexPutItem',
+  '2': [
+    {
+      '1': 'original',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Vertex',
+      '10': 'original'
+    },
+    {
+      '1': 'receipt',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+    {
+      '1': 'accepted',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedPutVertex',
+      '10': 'accepted'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptVertexPutItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptVertexPutItemDescriptor =
+    $convert.base64Decode(
+        'Ch5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEl0ZW0SLAoIb3JpZ2luYWwYASABKAsyEC5ncm'
+        'FwaC52MS5WZXJ0ZXhSCG9yaWdpbmFsEjMKB3JlY2VpcHQYAiABKAsyGS5ncmFwaC52MS5NdXRh'
+        'dGlvblJlY2VpcHRSB3JlY2VpcHQSOQoIYWNjZXB0ZWQYAyABKAsyHS5ncmFwaC52MS5SZXBsaW'
+        'NhdGVkUHV0VmVydGV4UghhY2NlcHRlZA==');
+
+@$core.Deprecated('Use replicatedReceiptVertexPutDescriptor instead')
+const ReplicatedReceiptVertexPut$json = {
+  '1': 'ReplicatedReceiptVertexPut',
+  '2': [
+    {'1': 'deployment_epoch', '3': 1, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 2,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+    {'1': 'if_absent', '3': 3, '4': 1, '5': 8, '10': 'ifAbsent'},
+    {
+      '1': 'items',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptVertexPutItem',
+      '10': 'items'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptVertexPut`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptVertexPutDescriptor = $convert.base64Decode(
+    'ChpSZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dBIpChBkZXBsb3ltZW50X2Vwb2NoGAEgASgMUg'
+    '9kZXBsb3ltZW50RXBvY2gSLQoScG9saWN5X2ZpbmdlcnByaW50GAIgASgMUhFwb2xpY3lGaW5n'
+    'ZXJwcmludBIbCglpZl9hYnNlbnQYAyABKAhSCGlmQWJzZW50Ej4KBWl0ZW1zGAQgAygLMiguZ3'
+    'JhcGgudjEuUmVwbGljYXRlZFJlY2VpcHRWZXJ0ZXhQdXRJdGVtUgVpdGVtcw==');
+
+@$core.Deprecated('Use replicatedReceiptVertexDeleteItemDescriptor instead')
+const ReplicatedReceiptVertexDeleteItem$json = {
+  '1': 'ReplicatedReceiptVertexDeleteItem',
+  '2': [
+    {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+    {
+      '1': 'receipt',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+    {
+      '1': 'causally_accepted',
+      '3': 3,
+      '4': 1,
+      '5': 8,
+      '10': 'causallyAccepted'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptVertexDeleteItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptVertexDeleteItemDescriptor =
+    $convert.base64Decode(
+        'CiFSZXBsaWNhdGVkUmVjZWlwdFZlcnRleERlbGV0ZUl0ZW0SEAoDa2V5GAEgASgJUgNrZXkSMw'
+        'oHcmVjZWlwdBgCIAEoCzIZLmdyYXBoLnYxLk11dGF0aW9uUmVjZWlwdFIHcmVjZWlwdBIrChFj'
+        'YXVzYWxseV9hY2NlcHRlZBgDIAEoCFIQY2F1c2FsbHlBY2NlcHRlZA==');
+
+@$core.Deprecated('Use replicatedReceiptVertexDeleteDescriptor instead')
+const ReplicatedReceiptVertexDelete$json = {
+  '1': 'ReplicatedReceiptVertexDelete',
+  '2': [
+    {'1': 'deployment_epoch', '3': 1, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 2,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+    {
+      '1': 'tombstone_expiration',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'tombstoneExpiration'
+    },
+    {
+      '1': 'items',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptVertexDeleteItem',
+      '10': 'items'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptVertexDelete`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptVertexDeleteDescriptor = $convert.base64Decode(
+    'Ch1SZXBsaWNhdGVkUmVjZWlwdFZlcnRleERlbGV0ZRIpChBkZXBsb3ltZW50X2Vwb2NoGAEgAS'
+    'gMUg9kZXBsb3ltZW50RXBvY2gSLQoScG9saWN5X2ZpbmdlcnByaW50GAIgASgMUhFwb2xpY3lG'
+    'aW5nZXJwcmludBJNChR0b21ic3RvbmVfZXhwaXJhdGlvbhgDIAEoCzIaLmdvb2dsZS5wcm90b2'
+    'J1Zi5UaW1lc3RhbXBSE3RvbWJzdG9uZUV4cGlyYXRpb24SQQoFaXRlbXMYBCADKAsyKy5ncmFw'
+    'aC52MS5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleERlbGV0ZUl0ZW1SBWl0ZW1z');
 
 @$core.Deprecated('Use vertexCausalBarrierDescriptor instead')
 const VertexCausalBarrier$json = {

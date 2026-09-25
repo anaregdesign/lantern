@@ -6577,7 +6577,12 @@ class GetReceiptCapabilityResponse extends $pb.GeneratedMessage {
   void clearServerNowUnixMs() => $_clearField(4);
 }
 
-enum ReceiptResult_Result { deleteEdgeExisted, notSet }
+enum ReceiptResult_Result {
+  deleteEdgeExisted,
+  putVertexOutcome,
+  deleteVertexExisted,
+  notSet
+}
 
 /// ReceiptResult stores the original public result, not the current graph
 /// state. A oneof preserves the presence of a false Delete outcome. Further
@@ -6585,9 +6590,14 @@ enum ReceiptResult_Result { deleteEdgeExisted, notSet }
 class ReceiptResult extends $pb.GeneratedMessage {
   factory ReceiptResult({
     $core.bool? deleteEdgeExisted,
+    PutOutcome? putVertexOutcome,
+    $core.bool? deleteVertexExisted,
   }) {
     final result = create();
     if (deleteEdgeExisted != null) result.deleteEdgeExisted = deleteEdgeExisted;
+    if (putVertexOutcome != null) result.putVertexOutcome = putVertexOutcome;
+    if (deleteVertexExisted != null)
+      result.deleteVertexExisted = deleteVertexExisted;
     return result;
   }
 
@@ -6603,14 +6613,22 @@ class ReceiptResult extends $pb.GeneratedMessage {
   static const $core.Map<$core.int, ReceiptResult_Result>
       _ReceiptResult_ResultByTag = {
     1: ReceiptResult_Result.deleteEdgeExisted,
+    2: ReceiptResult_Result.putVertexOutcome,
+    3: ReceiptResult_Result.deleteVertexExisted,
     0: ReceiptResult_Result.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'ReceiptResult',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1])
+    ..oo(0, [1, 2, 3])
     ..aOB(1, _omitFieldNames ? '' : 'deleteEdgeExisted')
+    ..e<PutOutcome>(
+        2, _omitFieldNames ? '' : 'putVertexOutcome', $pb.PbFieldType.OE,
+        defaultOrMaker: PutOutcome.PUT_OUTCOME_UNSPECIFIED,
+        valueOf: PutOutcome.valueOf,
+        enumValues: PutOutcome.values)
+    ..aOB(3, _omitFieldNames ? '' : 'deleteVertexExisted')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -6646,6 +6664,24 @@ class ReceiptResult extends $pb.GeneratedMessage {
   $core.bool hasDeleteEdgeExisted() => $_has(0);
   @$pb.TagNumber(1)
   void clearDeleteEdgeExisted() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  PutOutcome get putVertexOutcome => $_getN(1);
+  @$pb.TagNumber(2)
+  set putVertexOutcome(PutOutcome value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPutVertexOutcome() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPutVertexOutcome() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.bool get deleteVertexExisted => $_getBF(2);
+  @$pb.TagNumber(3)
+  set deleteVertexExisted($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasDeleteVertexExisted() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearDeleteVertexExisted() => $_clearField(3);
 }
 
 /// MutationReceipt is one request-index-aligned item from an atomic logical

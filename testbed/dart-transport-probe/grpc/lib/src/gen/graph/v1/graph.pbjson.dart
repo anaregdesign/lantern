@@ -2047,6 +2047,23 @@ const ReceiptResult$json = {
       '9': 0,
       '10': 'deleteEdgeExisted'
     },
+    {
+      '1': 'put_vertex_outcome',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.PutOutcome',
+      '9': 0,
+      '10': 'putVertexOutcome'
+    },
+    {
+      '1': 'delete_vertex_existed',
+      '3': 3,
+      '4': 1,
+      '5': 8,
+      '9': 0,
+      '10': 'deleteVertexExisted'
+    },
   ],
   '8': [
     {'1': 'result'},
@@ -2056,7 +2073,9 @@ const ReceiptResult$json = {
 /// Descriptor for `ReceiptResult`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List receiptResultDescriptor = $convert.base64Decode(
     'Cg1SZWNlaXB0UmVzdWx0EjAKE2RlbGV0ZV9lZGdlX2V4aXN0ZWQYASABKAhIAFIRZGVsZXRlRW'
-    'RnZUV4aXN0ZWRCCAoGcmVzdWx0');
+    'RnZUV4aXN0ZWQSRAoScHV0X3ZlcnRleF9vdXRjb21lGAIgASgOMhQuZ3JhcGgudjEuUHV0T3V0'
+    'Y29tZUgAUhBwdXRWZXJ0ZXhPdXRjb21lEjQKFWRlbGV0ZV92ZXJ0ZXhfZXhpc3RlZBgDIAEoCE'
+    'gAUhNkZWxldGVWZXJ0ZXhFeGlzdGVkQggKBnJlc3VsdA==');
 
 @$core.Deprecated('Use mutationReceiptDescriptor instead')
 const MutationReceipt$json = {
