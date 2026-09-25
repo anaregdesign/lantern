@@ -63,36 +63,6 @@ func (s *receiptWholeStateSourceSpy) CaptureForBackup(
 	return s.capture, nil
 }
 
-func producerWALTipWitness(seq uint64) mutationlog.FileWALTipWitness {
-	offset := receiptArchiveWALZeroOffset
-	if seq != 0 {
-		offset += int64(seq)
-	}
-	return mutationlog.FileWALTipWitness{
-		Seq:         seq,
-		Offset:      offset,
-		SHA256:      sha256.Sum256([]byte("producer WAL prefix")),
-		ChainSHA256: sha256.Sum256([]byte("producer WAL chain")),
-	}
-}
-
-func producerCapture(a wholeStateArchive) service.ReceiptWholeStateCapture {
-	return service.ReceiptWholeStateCapture{
-		Graph: a.Graph, Receipts: a.Receipts, Policy: a.Policy, Origins: a.Origins,
-	}
-}
-
-func producerBackupCapture(a wholeStateArchive) service.ReceiptWholeStateBackupCapture {
-	var seq uint64
-	if len(a.Graph) != 0 && a.Graph[0].GetHeader() != nil {
-		seq = a.Graph[0].GetHeader().GetCutoffLocalSeq()
-	}
-	return service.ReceiptWholeStateBackupCapture{
-		WholeState: producerCapture(a),
-		WALTip:     producerWALTipWitness(seq),
-	}
-}
-
 func decodedProducerArchive(t *testing.T, raw []byte) wholeStateArchive {
 	t.Helper()
 	got, err := decodeWholeStateArchive(bytes.NewReader(raw))
@@ -131,6 +101,10 @@ func TestReceiptArchiveProducerUsesOneCombinedDetachedCut(t *testing.T) {
 		bound.tipSHA256 != witness.SHA256 || bound.tipChainSHA256 != witness.ChainSHA256 {
 		t.Fatalf("manifest = %+v, want captured witness %+v at both cut and tip", bound, witness)
 	}
+	if product.nodeID != source.capture.NodeID || product.generation != source.capture.Generation {
+		t.Fatalf("product identity = %x/%x, want %x/%x",
+			product.nodeID, product.generation, source.capture.NodeID, source.capture.Generation)
+	}
 	// Mutating the source after its only read cannot change the returned bytes.
 	a.Graph[1].GetVertex().Vertex.Key = "changed"
 	a.Receipts.Receipts[0].Result[0] = 0
@@ -162,7 +136,7 @@ func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 	a := wholeStateArchiveFixture(t)
 	for _, tc := range []struct {
 		name   string
-		source receiptWholeStateBackupCapturer
+		source ReceiptSource
 	}{
 		{"nil source", nil},
 		{"capture failure", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
@@ -174,6 +148,21 @@ func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 		{"missing witness", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
 			bad := producerBackupCapture(wholeStateArchiveFixture(t))
 			bad.WALTip = mutationlog.FileWALTipWitness{}
+			return bad, nil
+		})},
+		{"missing node ID", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+			bad := producerBackupCapture(wholeStateArchiveFixture(t))
+			bad.NodeID = hlc.NodeID{}
+			return bad, nil
+		})},
+		{"missing generation", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+			bad := producerBackupCapture(wholeStateArchiveFixture(t))
+			bad.Generation = [16]byte{}
+			return bad, nil
+		})},
+		{"node ID mismatch", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
+			bad := producerBackupCapture(wholeStateArchiveFixture(t))
+			bad.NodeID[0] ^= 0xff
 			return bad, nil
 		})},
 		{"missing whole state", receiptWholeStateBackupCaptureFunc(func(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error) {
@@ -394,7 +383,7 @@ type receiptArchiveFixture struct {
 	log          *mutationlog.Log
 	service      *service.LanternService
 	source       *service.ReceiptWholeStateSource
-	backupSource receiptWholeStateBackupCapturer
+	backupSource ReceiptSource
 	policy       mutationreceipt.Config
 	clock        *hlc.Clock
 }
@@ -436,6 +425,8 @@ func newReceiptArchiveFixture(t *testing.T, wal mutationlog.WAL) receiptArchiveF
 		return service.ReceiptWholeStateBackupCapture{
 			WholeState: capture,
 			WALTip:     producerWALTipWitness(seq),
+			NodeID:     clock.NodeID(),
+			Generation: [16]byte{0x73},
 		}, nil
 	})
 	return receiptArchiveFixture{cache, log, svc, source, backupSource, policy, clock}

@@ -115,17 +115,18 @@ func TestValidateReceiptWALConfig(t *testing.T) {
 			want: "must be positive",
 		},
 		{
-			name:    "backup producer",
-			config:  validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "backup.wal"), ReceiptWALModeFresh),
-			backups: backup.Config{Enabled: true},
-			want:    "must be disabled",
-		},
-		{
 			name:    "legacy restore",
 			config:  validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "restore.wal"), ReceiptWALModeFresh),
 			backups: backup.Config{RestoreOnStart: true},
-			want:    "must be disabled",
+			want:    "RESTORE_ON_START",
 		},
+	}
+	if err := validateReceiptWALConfig(
+		validReceiptWALProviderConfig(filepath.Join(t.TempDir(), "backup.wal"), ReceiptWALModeFresh),
+		backup.Config{Enabled: true},
+		replication,
+	); err != nil {
+		t.Fatalf("durable receipt backup production: %v", err)
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

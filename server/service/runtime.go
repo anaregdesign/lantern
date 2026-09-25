@@ -538,6 +538,35 @@ func (r *ServingRuntime) CertifyInstallation(
 	return nil
 }
 
+// ReceiptWholeStateBackupSource returns the exact source installed during
+// runtime certification. It exposes no receipt mutation or status surface.
+func (r *ServingRuntime) ReceiptWholeStateBackupSource(
+	primary *LanternService,
+	replication *LanternReplicationService,
+) (*ReceiptWholeStateSource, mutationreceipt.Config, error) {
+	if r == nil || r.receipt == nil || primary == nil || replication == nil ||
+		primary.runtime != r || replication.runtime != r ||
+		primary.cache != r.graph || primary.log != r.log ||
+		primary.clock != r.clock || primary.origins != r.origins ||
+		primary.receiptStore != r.receipt.store ||
+		replication.backend != r.graph || replication.log != r.log ||
+		replication.clock != r.clock || replication.origins != primary ||
+		!replication.receiptSnapshotRequired ||
+		replication.receiptSnapshotSource == nil ||
+		!replication.receiptSnapshotSource.belongsTo(replication) ||
+		replication.receiptSnapshotSource.owner != primary ||
+		replication.receiptSnapshotSource.store != r.receipt.store ||
+		replication.receiptSnapshotPolicy != r.receipt.policy {
+		return nil, mutationreceipt.Config{}, errors.New(
+			"service: receipt backup source requires the exact certified serving runtime",
+		)
+	}
+	if r.clock.NodeID() == (hlc.NodeID{}) || r.receipt.generation == ([16]byte{}) {
+		return nil, mutationreceipt.Config{}, errors.New("service: certified receipt backup identity is invalid")
+	}
+	return replication.receiptSnapshotSource, r.receipt.policy, nil
+}
+
 // Close releases the runtime owner exactly once. Durable mode closes its Log,
 // FileWAL, journals, and lease; graph-only mode closes only its in-memory Log.
 func (r *ServingRuntime) Close() error {

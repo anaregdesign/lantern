@@ -1,8 +1,8 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, RECEIPT_V1 Snapshot production/install, and durable local baseline recovery are wired for private durable replication, but capability/status RPCs and receipt-enabled client writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, RECEIPT_V1 Snapshot production/install, durable local baseline recovery, and manifest-last active-epoch backup-set production are wired for private durable replication, but durable backup restore, capability/status RPCs, and receipt-enabled client writes remain disabled
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394
 
 ## Context and boundary
 
@@ -518,16 +518,16 @@ Both capture paths clone mutable Vertex protobuf values before releasing the
 cut. Before sampling the cutoff, they restore the service clock floor from the
 captured Store high-water under that same cut; an incomplete Store export or
 unrepresentable high-water fails closed. The opt-in replication Snapshot
-producer and the private
-[archive producer](../../server/backup/receipt_archive_producer.go) each call
-only `Capture` once and encode only that detached capture; neither consumes
-`CaptureForBackup` or its witness. The archive producer also decodes the
-complete archive before returning bytes. The replication producer is bound to
-the durable runtime and consumed only by its private peers; the archive
-producer remains outside the production backup scheduler. Neither producer
-alone certifies a durable recovery frontier. The service binds the first
-private coordinator's Store pointer, rejecting a different Store even with
-matching policy; a misconfigured first binding therefore fails closed on later
+producer calls `Capture` once. The private
+[archive producer](../../server/backup/receipt_archive_producer.go) instead
+calls `CaptureForBackup` exactly once and encodes only that detached combined
+result. It decodes the complete archive before returning immutable archive and
+WAL-cut bytes. Runtime certification binds the one source shared by replication
+Snapshot and production backup to the exact primary, graph, Store, origins,
+Log/FileWAL owner, HLC, NodeID, and endpoint generation. Neither producer alone
+certifies a durable recovery frontier. The service binds the first private
+coordinator's Store pointer, rejecting a different Store even with matching
+policy; a misconfigured first binding therefore fails closed on later
 construction.
 Direct Core Store access remains outside the service publication gate.
 The private [archive staging path](../../server/backup/receipt_archive_stage.go)
@@ -585,18 +585,58 @@ of `CaptureForBackup`. The private active-epoch archive producer instead calls
 `CaptureForBackup` exactly once and builds both manifest witnesses from its one
 captured live tip, so archive cut and observed tip are identical without a
 path reopen.
+The production backup scheduler persists that immutable pair as a v1
+instance-scoped set. Its canonical JSON commit manifest binds the exact member
+basenames, roles, formats, versions, sizes and SHA-256 digests together with a
+monotonic set ID, UTC timestamp, stable NodeID, and the active generation
+captured under the same committed view. The manifest codec rejects unsafe
+paths; missing, duplicate, reordered, or unknown members; malformed or
+noncanonical JSON; trailing bytes; invalid identity/time/ID fields; digest or
+size mismatches; and an archive/WAL-cut pair not taken from one live tip. The
+fully validated loader returns owned archive bytes, decoded cut/tip witnesses,
+and the same-cut identity without consulting the live appendable WAL, and is
+shared by retention so selection rules cannot drift.
+
+Each member is created exclusively in the target directory, completely
+written, file-synced, and closed before atomic no-replace publication (a
+hard-link-and-unlink move in the target directory). After both member
+publications the directory is synced; the manifest is then exclusively written,
+file-synced, closed, published through the same no-replace move last, and
+followed by a final directory sync. Cancellation and every filesystem error
+abort the attempt and clean only paths provably owned by it; a racing
+destination is never overwritten or subsequently treated as attempt-owned.
+Retention counts only complete valid sets for the configured instance and
+prunes each manifest first, syncs the directory, removes its members, and syncs
+again. Other instances and unrecognized files are untouched; well-scoped own
+orphan temps/members are cleanup candidates. `retain=0` keeps all. Periodic,
+manual, and final-shutdown attempts serialize, while per-instance IDs remain
+unique and increasing across repeated/backward clocks and process restarts.
+
+The later durable restore layer must consume this loader inside
+`provider.NewServingRuntime`, while holding the FileWAL lease and before
+`NewRuntimeCertified`; it must not reuse the graph-only
+`Backupper.RestoreOnStartup` path. A normal complete restart remains stronger
+than an older periodic set. A backup fallback must validate its recorded
+cut/tip, journals, and generation chain against the lease-owned WAL, then
+repair and persist its own current baseline proof before certification. A
+lost-WAL restore rotates to an operator-supplied new active epoch and
+normalizes known old receipts into the future retired catalog. None of that
+selection, suffix-proof, repair, catalog, or installation behavior is
+implemented by this production layer.
+
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
 recovery still needs an atomic installer and proof that the WAL covers the
 captured frontier or an epoch rollover. The installer
 must validate and install all sections together before serving. Total-cluster
 restore still rotates the active epoch unless a complete durable WAL proves
-the exact current frontier. No production scheduler or restore path consumes
-the private producer's immutable pair yet. The pair is only the active-epoch
-member of a future versioned backup set: it neither preserves retired-epoch
-receipts nor makes a rotated-epoch or same-epoch archive-restore claim. A later
-bounded retired-epoch catalog can be added as another backup-set member without
-resampling or reopening the live WAL.
+the exact current frontier. The production scheduler now consumes the private
+producer's immutable pair, but no startup restore path consumes the committed
+sets yet. Version 1 contains only the active-epoch archive and WAL-cut members:
+it neither preserves retired-epoch receipts nor makes a rotated-epoch or
+same-epoch archive-restore claim. A later set version can add a bounded
+retired-epoch catalog as another member without resampling or reopening the
+live WAL.
 The internal Store can now take an optional synchronous
 `ClockHighWaterSink`: it persists each higher observed millisecond before
 Begin/Lookup changes in-memory state, and a sink error permanently faults
@@ -636,11 +676,11 @@ witness to one committed in-memory cut. The private `server/backup` archive
 producer now consumes that combined result exactly once, validates and
 canonicalizes only its detached whole-state image, and builds the paired WAL-cut
 manifest directly from the captured witness without reopening the live WAL path.
-That pair represents only the active epoch and is structured as one member of a
-future versioned backup set; it does not retain retired-epoch receipts. Scheduler
-persistence, retention, the bounded retired-epoch catalog, startup restore, and
-same-epoch continuity certification remain unwired and unproven. The private
-production runtime adds a
+That pair represents only the active epoch and is persisted by the production
+scheduler as a versioned manifest-last backup set; it does not retain
+retired-epoch receipts. Startup selection/install, the bounded retired-epoch
+catalog, and same-epoch continuity certification remain unwired and unproven.
+The private production runtime adds a
 fixed-size checksummed `.generation` sidecar bound to the canonical WAL path,
 epoch, policy fingerprint, and stable replication NodeID. Fresh mode creates
 one opaque nonzero generation with exclusive file creation; restart requires
@@ -697,9 +737,12 @@ local Log at sequence N+1 under a new origin. They certify one owned
 graph/Store/origin/Log/HLC/epoch/generation bundle before constructing either
 service, the primary listener, metrics server, or replication pump.
 Wire cleanup releases later owners before this bundle, and `App` retains the
-bundle until all serving goroutines stop. Durable mode rejects the legacy
-graph-only backup producer and restore-on-startup because neither format can
-prove receipt/archive continuity; #1394 owns that archive boundary.
+bundle until all serving goroutines stop. Durable mode selects receipt-set
+production from the exact certified runtime while still rejecting legacy
+graph-only restore-on-startup because it cannot prove receipt/archive
+continuity. Graph-only mode preserves the historical `.lbk` producer, restore,
+filenames, retention, metrics, and behavior. #1394 owns the later durable-set
+startup selection and installation boundary.
 
 This runtime mode is private infrastructure only. It does not enable
 `GetReceiptCapability`, receipt status, receipt-bearing client mutations, peer

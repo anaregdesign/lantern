@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
 	"math"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -318,6 +320,13 @@ func TestReceiptWholeStateBackupCaptureTracksFreshAndResumedWAL(t *testing.T) {
 	if zero.WALTip.Seq != 0 {
 		t.Fatalf("fresh WAL witness seq = %d, want 0", zero.WALTip.Seq)
 	}
+	if zero.NodeID != runtime.clock.NodeID() ||
+		zero.Generation != runtime.receipt.generation ||
+		zero.NodeID == (hlc.NodeID{}) ||
+		zero.Generation == ([16]byte{}) {
+		t.Fatalf("fresh backup identity = %x/%x, runtime = %x/%x",
+			zero.NodeID, zero.Generation, runtime.clock.NodeID(), runtime.receipt.generation)
+	}
 
 	call := receiptDeleteCall(t, config.Receipt.Epoch, graphcache.EdgeKey[string]{Tail: "fresh-tail", Head: "fresh-head"})
 	if _, err := primary.receiptEdgeDeleteCoordinator.Commit(t.Context(), call); err != nil {
@@ -332,6 +341,10 @@ func TestReceiptWholeStateBackupCaptureTracksFreshAndResumedWAL(t *testing.T) {
 	}
 	if fresh.WALTip.Seq != 1 {
 		t.Fatalf("fresh appended WAL witness seq = %d, want 1", fresh.WALTip.Seq)
+	}
+	if fresh.NodeID != runtime.clock.NodeID() || fresh.Generation != runtime.receipt.generation {
+		t.Fatalf("appended backup identity = %x/%x, runtime = %x/%x",
+			fresh.NodeID, fresh.Generation, runtime.clock.NodeID(), runtime.receipt.generation)
 	}
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
@@ -368,7 +381,107 @@ func TestReceiptWholeStateBackupCaptureTracksFreshAndResumedWAL(t *testing.T) {
 	if got := resumed.WholeState.Graph[0].GetHeader().GetCutoffLocalSeq(); got != 1 {
 		t.Fatalf("resumed graph cutoff = %d, want 1", got)
 	}
+	if resumed.NodeID != resumedRuntime.clock.NodeID() ||
+		resumed.Generation != resumedRuntime.receipt.generation {
+		t.Fatalf("resumed backup identity = %x/%x, runtime = %x/%x",
+			resumed.NodeID, resumed.Generation,
+			resumedRuntime.clock.NodeID(), resumedRuntime.receipt.generation)
+	}
 	assertReceiptBackupWitnessMatchesCut(t, resumed.WALTip, freshCuts[1])
+}
+
+func TestReceiptWholeStateBackupCaptureCannotSplitBaselineGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallation(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	source, policy, err := runtime.ReceiptWholeStateBackupSource(primary, replication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis := runtime.receipt.generation
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+	})
+	runtime.receipt.installFault = func(point receiptBaselineInstallFaultPoint) error {
+		if point == receiptBaselineAfterMarkerBeforePublish {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+
+	installDone := make(chan error, 1)
+	go func() {
+		installDone <- primary.InstallReceiptBaseline(t.Context(), image.capture)
+	}()
+	waitReceiptTest(t, "baseline marker before publication", entered)
+
+	type backupResult struct {
+		capture ReceiptWholeStateBackupCapture
+		err     error
+	}
+	captureStarted := make(chan struct{})
+	captureDone := make(chan backupResult, 1)
+	go func() {
+		close(captureStarted)
+		capture, err := source.CaptureForBackup(t.Context(), policy)
+		captureDone <- backupResult{capture: capture, err: err}
+	}()
+	waitReceiptTest(t, "backup capture start", captureStarted)
+	select {
+	case early := <-captureDone:
+		t.Fatalf("backup capture split a staged generation rotation: %+v, %v", early.capture, early.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	once.Do(func() { close(release) })
+	if err := waitReceiptTest(t, "baseline install", installDone); err != nil {
+		t.Fatal(err)
+	}
+	result := waitReceiptTest(t, "post-baseline backup capture", captureDone)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if runtime.receipt.generation == genesis ||
+		result.capture.Generation != runtime.receipt.generation {
+		t.Fatalf("captured generation = %x, runtime = %x, genesis = %x",
+			result.capture.Generation, runtime.receipt.generation, genesis)
+	}
+	if result.capture.NodeID != runtime.clock.NodeID() {
+		t.Fatalf("captured NodeID = %x, runtime = %x",
+			result.capture.NodeID, runtime.clock.NodeID())
+	}
+	header := result.capture.WholeState.Graph[0].GetHeader()
+	if header == nil || !bytes.Equal(header.GetCutoffHlc().GetNodeId(), result.capture.NodeID[:]) {
+		t.Fatalf("captured graph header does not bind the post-rotation NodeID: %+v", header)
+	}
+	var baselineVertex bool
+	for _, frame := range result.capture.WholeState.Graph {
+		if vertex := frame.GetVertex().GetVertex(); vertex != nil &&
+			vertex.GetKey() == "baseline-searchable" {
+			baselineVertex = true
+		}
+	}
+	if !baselineVertex {
+		t.Fatal("post-rotation generation was captured with pre-rotation graph state")
+	}
 }
 
 func TestReceiptWholeStateBackupCaptureFailsClosed(t *testing.T) {
@@ -600,8 +713,9 @@ func TestReceiptWholeStateBackupCaptureCannotSplitCommittedView(t *testing.T) {
 		clock:   clock,
 		origins: primary.origins,
 		receipt: &receiptServingRuntime{
-			store: store,
-			owner: owner,
+			store:      store,
+			generation: [16]byte{0x79},
+			owner:      owner,
 		},
 		owner: owner,
 	}

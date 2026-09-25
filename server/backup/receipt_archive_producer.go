@@ -6,23 +6,27 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-type receiptWholeStateBackupCapturer interface {
+type ReceiptSource interface {
 	CaptureForBackup(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error)
 }
 
-// receiptActiveEpochArchiveProduct keeps one future backup-set member's paired
-// binary artifacts immutable after production. It covers only the captured
-// active epoch; a later versioned backup-set layer may add a retired-epoch
-// catalog alongside it without resampling the live WAL. bytes returns fresh
-// all-or-nothing copies for that later persistence boundary.
+// receiptActiveEpochArchiveProduct keeps one backup set's paired binary
+// artifacts immutable after production. It covers only the captured active
+// epoch; a later set version may add a retired-epoch catalog without
+// resampling the live WAL. bytes returns fresh all-or-nothing copies for the
+// persistence boundary.
 type receiptActiveEpochArchiveProduct struct {
-	archive  string
-	manifest string
+	archive    string
+	manifest   string
+	nodeID     hlc.NodeID
+	generation [16]byte
+	stats      Stats
 }
 
 func (p receiptActiveEpochArchiveProduct) bytes() (archive, manifest []byte) {
@@ -32,16 +36,15 @@ func (p receiptActiveEpochArchiveProduct) bytes() (archive, manifest []byte) {
 	return []byte(p.archive), []byte(p.manifest)
 }
 
-// produceReceiptWholeStateArchive is an unwired in-process prerequisite for one
-// active-epoch member of a receipt-aware backup set. Its sole source call
-// returns a detached publication cut and the exact live FileWAL tip captured
-// with it. The producer encodes only that detached state and builds the
-// manifest directly from that witness; it never reopens the appendable WAL
-// path. The complete canonical archive and manifest are decoded before an
-// immutable pair is returned.
+// produceReceiptWholeStateArchive creates the active-epoch members of one
+// receipt backup set. Its sole source call returns a detached publication cut
+// and the exact live FileWAL tip captured with it. The producer encodes only
+// that detached state and builds the WAL-cut member directly from that
+// witness; it never reopens the appendable WAL path. The complete canonical
+// archive and WAL-cut member are decoded before an immutable pair is returned.
 func produceReceiptWholeStateArchive(
 	ctx context.Context,
-	source receiptWholeStateBackupCapturer,
+	source ReceiptSource,
 	policy mutationreceipt.Config,
 ) (receiptActiveEpochArchiveProduct, error) {
 	var zero receiptActiveEpochArchiveProduct
@@ -83,7 +86,12 @@ func produceReceiptWholeStateArchive(
 	if err != nil {
 		return zero, fmt.Errorf("backup: verify receipt whole-state archive: %w", err)
 	}
-	if err := validateReceiptArchiveCapturedWitness(decoded, capture.WALTip); err != nil {
+	if err := validateReceiptArchiveCapturedWitness(
+		decoded,
+		capture.WALTip,
+		capture.NodeID,
+		capture.Generation,
+	); err != nil {
 		return zero, err
 	}
 	manifestRaw, err := encodeReceiptArchiveWALCutWitnesses(archiveRaw, capture.WALTip, capture.WALTip)
@@ -94,14 +102,35 @@ func produceReceiptWholeStateArchive(
 		return zero, err
 	}
 	return receiptActiveEpochArchiveProduct{
-		archive:  string(archiveRaw),
-		manifest: string(manifestRaw),
+		archive:    string(archiveRaw),
+		manifest:   string(manifestRaw),
+		nodeID:     capture.NodeID,
+		generation: capture.Generation,
+		stats:      receiptArchiveStats(decoded),
 	}, nil
+}
+
+func receiptArchiveStats(archive wholeStateArchive) Stats {
+	stats := Stats{
+		Receipts: len(archive.Receipts.Receipts),
+		Origins:  len(archive.Origins),
+	}
+	for _, frame := range archive.Graph {
+		switch {
+		case frame.GetVertex() != nil:
+			stats.Vertices++
+		case frame.GetEdge() != nil:
+			stats.Edges++
+		}
+	}
+	return stats
 }
 
 func validateReceiptArchiveCapturedWitness(
 	archive wholeStateArchive,
 	witness mutationlog.FileWALTipWitness,
+	nodeID hlc.NodeID,
+	generation [16]byte,
 ) error {
 	if err := validateReceiptArchiveWALWitness(
 		"captured tip",
@@ -112,11 +141,20 @@ func validateReceiptArchiveCapturedWitness(
 	); err != nil {
 		return err
 	}
+	if nodeID == (hlc.NodeID{}) || generation == ([16]byte{}) {
+		return errors.New("backup: receipt archive runtime identity is zero")
+	}
 	if len(archive.Graph) == 0 || archive.Graph[0].GetHeader() == nil {
 		return wholeStateArchiveError("archive graph header is missing")
 	}
-	if archive.Graph[0].GetHeader().GetCutoffLocalSeq() != witness.Seq {
+	header := archive.Graph[0].GetHeader()
+	if header.GetCutoffLocalSeq() != witness.Seq {
 		return fmt.Errorf("%w: archive local sequence differs from captured FileWAL witness", errReceiptArchiveWALCut)
+	}
+	cutoffHLC := header.GetCutoffHlc()
+	if cutoffHLC == nil || len(cutoffHLC.GetNodeId()) != len(nodeID) ||
+		!bytes.Equal(cutoffHLC.GetNodeId(), nodeID[:]) {
+		return errors.New("backup: receipt archive cutoff HLC differs from runtime NodeID")
 	}
 	return nil
 }

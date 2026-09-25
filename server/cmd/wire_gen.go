@@ -95,7 +95,12 @@ func initializeApp() (*App, func(), error) {
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)
-	backupper := provider.NewBackupper(backupConfig, lanternService, registry, logger)
+	backupper, err := provider.NewBackupper(backupConfig, receiptWALConfig, servingRuntime, lanternService, runtimeCertified, registry, logger)
+	if err != nil {
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
 	llmConfig := provider.NewLLMConfig(config)
 	llmEngine, err := provider.NewLLMEngine(llmConfig)
 	if err != nil {

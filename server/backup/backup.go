@@ -1,10 +1,8 @@
-// Package backup is the server-internal snapshot-durability engine (#770):
-// a goroutine that periodically dumps the whole graph to a mounted volume,
-// plus restore-on-startup that re-seeds the in-memory graph from the newest
-// dump before the server begins serving. It is the automation layer on top
-// of the on-demand backup/restore primitives shipped in #685 — the
-// rolling-update insurance for single-instance deploys where the
-// in-memory graph would otherwise be lost on every restart.
+// Package backup is the server-internal snapshot-durability engine (#770,
+// #1394). Its scheduler periodically produces either the historical
+// graph-only dump or a private durable receipt backup set on a mounted volume.
+// Graph-only restore-on-startup re-seeds the in-memory graph from the newest
+// dump before serving; durable receipt restore remains a separate layer.
 //
 // Reuse, not reinvention: the periodic dump drives the existing
 // LanternService.BackupSnapshot RPC verbatim through a file-backed Sender,
@@ -15,12 +13,11 @@
 // application (#698) prevents an entry whose TTL elapsed since the dump from
 // resurrecting and removes any older live local state.
 //
-// Shared storage is never assumed safe for concurrent writes (networked
-// or FUSE-backed filesystems generally have no reliable file locking), so
-// every writer owns a per-instance file
-// (name carries InstanceID) and restore selects the newest valid file.
-// Writes are atomic via a temp file + rename; a half-written file is never
-// a restore candidate.
+// Shared storage is never assumed safe for concurrent writes (networked or
+// FUSE-backed filesystems generally have no reliable file locking), so every
+// writer owns instance-scoped names. Graph-only writes use temp file + rename.
+// Receipt sets sync and rename their immutable members before atomically
+// publishing a manifest-last commit marker.
 package backup
 
 import (
@@ -41,6 +38,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/encoding/protodelim"
 
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -61,19 +59,20 @@ type Config struct {
 	// Enabled gates the periodic dump loop. Resolved to false when
 	// LANTERN_BACKUP_DIR is empty even if LANTERN_BACKUP_ENABLED is set.
 	Enabled bool
-	// Dir is the mounted directory backups are written to and read from.
+	// Dir is the mounted directory backups are written to. Graph-only restore
+	// also reads it.
 	Dir string
-	// Interval is the dump cadence.
+	// Interval is the backup-production cadence.
 	Interval time.Duration
-	// Retain caps how many of THIS instance's own dumps are kept (newest
-	// first). 0 keeps all.
+	// Retain caps how many of THIS instance's own valid dumps or sets are kept
+	// (newest first). 0 keeps all.
 	Retain int
-	// InstanceID is the per-instance filename token (collision-free writes
-	// on shared storage). Defaults to the hostname.
+	// InstanceID is the per-instance ownership token used directly by legacy
+	// filenames and hashed into receipt-set filenames. Defaults to the hostname.
 	InstanceID string
-	// RestoreOnStart is the resolved decision to restore the newest dump on
-	// boot as a baseline (already factors enabled, dir, and the env knob);
-	// peer bootstrap later overlays that baseline via HLC.
+	// RestoreOnStart is the graph-only decision to restore the newest dump on
+	// boot as a baseline. Receipt-set construction rejects it until durable
+	// restore is wired.
 	RestoreOnStart bool
 	// RestoreRequired makes a restore error fail boot instead of warning.
 	RestoreRequired bool
@@ -90,19 +89,29 @@ type Service interface {
 	CompleteSearchIndexRecovery() error
 }
 
-// Stats counts the vertices and edges in a single backup or restore.
+// Stats counts the records and bytes in a single backup or restore. Receipt
+// fields remain zero for the historical graph-only format.
 type Stats struct {
 	Vertices int
 	Edges    int
+	Receipts int
+	Origins  int
+	Members  int
+	Bytes    int64
 }
 
-// Backupper owns the periodic-dump loop and restore-on-startup.
+// Backupper owns periodic/manual/final production and graph-only startup restore.
 type Backupper struct {
-	svc     Service
-	cfg     Config
-	logger  *slog.Logger
-	metrics *metrics
-	now     func() time.Time
+	svc           Service
+	receiptSource ReceiptSource
+	receiptPolicy mutationreceipt.Config
+	cfg           Config
+	logger        *slog.Logger
+	metrics       *metrics
+	now           func() time.Time
+	attempt       chan struct{}
+	fs            receiptBackupFS
+	lastSetID     uint64
 }
 
 // New constructs a Backupper. reg may be nil (metrics unregistered but the
@@ -113,7 +122,37 @@ func New(svc Service, cfg Config, reg prometheus.Registerer, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Backupper{svc: svc, cfg: cfg, metrics: newMetrics(reg), logger: logger, now: time.Now}
+	return &Backupper{
+		svc: svc, cfg: cfg, metrics: newMetrics(reg), logger: logger, now: time.Now,
+		attempt: make(chan struct{}, 1), fs: newReceiptBackupFS(),
+	}
+}
+
+// NewReceipt constructs a Backupper whose periodic and manual production uses
+// the private receipt whole-state source instead of the legacy graph-only RPC.
+// Startup restore deliberately remains unsupported until the receipt restore
+// layer can validate and install a complete committed set.
+func NewReceipt(
+	svc Service,
+	source ReceiptSource,
+	policy mutationreceipt.Config,
+	cfg Config,
+	reg prometheus.Registerer,
+	logger *slog.Logger,
+) (*Backupper, error) {
+	if source == nil {
+		return nil, errors.New("backup: receipt source is nil")
+	}
+	if cfg.RestoreOnStart {
+		return nil, errors.New("backup: graph-only restore-on-start is unavailable for receipt backup sets")
+	}
+	if _, err := mutationreceipt.New(policy); err != nil {
+		return nil, fmt.Errorf("backup: receipt policy: %w", err)
+	}
+	b := New(svc, cfg, reg, logger)
+	b.receiptSource = source
+	b.receiptPolicy = policy
+	return b, nil
 }
 
 // RestoreOnStartup loads the newest valid dump from the backup directory and
@@ -122,6 +161,12 @@ func New(svc Service, cfg Config, reg prometheus.Registerer, logger *slog.Logger
 // not an error. A directory that contains only corrupt files returns an
 // error so RestoreRequired callers can fail boot.
 func (b *Backupper) RestoreOnStartup(ctx context.Context) (Stats, error) {
+	if b.receiptSource != nil {
+		if b.cfg.RestoreOnStart {
+			return Stats{}, errors.New("backup: receipt backup-set restore is not implemented")
+		}
+		return Stats{}, nil
+	}
 	if !b.cfg.RestoreOnStart {
 		return Stats{}, nil
 	}
@@ -161,7 +206,7 @@ func (b *Backupper) RestoreOnStartup(ctx context.Context) (Stats, error) {
 		len(candidates), b.cfg.Dir, lastErr)
 }
 
-// Run drives the periodic dump loop until ctx is cancelled. It is a no-op
+// Run drives the periodic backup loop until ctx is cancelled. It is a no-op
 // when backups are disabled. On graceful cancellation it takes one final
 // best-effort dump so the latest state is captured before exit.
 func (b *Backupper) Run(ctx context.Context) error {
@@ -195,21 +240,33 @@ func (b *Backupper) Run(ctx context.Context) error {
 	}
 }
 
-// BackupNow writes one whole-graph dump immediately and returns its stats.
-// It is the one-shot the periodic loop runs each tick, exposed so an
-// operator- or test-driven backup reuses the same atomic-write + retention
+// BackupNow writes one graph dump or receipt set immediately and returns its
+// stats. It is the one-shot the periodic loop runs each tick, exposed so an
+// operator- or test-driven backup reuses the same persistence and retention
 // path.
 func (b *Backupper) BackupNow(ctx context.Context) (Stats, error) {
 	return b.backupOnce(ctx)
 }
 
-// backupOnce writes one whole-graph dump atomically (temp file + rename),
-// then prunes to Retain newest of this instance's own dumps.
+// backupOnce dispatches one serialized manual attempt to the configured format.
 func (b *Backupper) backupOnce(ctx context.Context) (Stats, error) {
 	return b.backupOnceWithSource(ctx, "manual")
 }
 
 func (b *Backupper) backupOnceWithSource(ctx context.Context, source string) (Stats, error) {
+	select {
+	case <-ctx.Done():
+		return Stats{}, ctx.Err()
+	case b.attempt <- struct{}{}:
+	}
+	defer func() { <-b.attempt }()
+	if b.receiptSource != nil {
+		return b.backupReceiptSetWithSource(ctx, source)
+	}
+	return b.backupGraphOnceWithSource(ctx, source)
+}
+
+func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string) (Stats, error) {
 	start := b.now()
 	tickID := strconv.FormatInt(start.UnixNano(), 10)
 	b.logger.Info("backup: dump started",

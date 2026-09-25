@@ -2,28 +2,31 @@
 
 > Tracking: [#769](https://github.com/anaregdesign/lantern/issues/769) (epic),
 > [#770](https://github.com/anaregdesign/lantern/issues/770) (engine),
-> [#771](https://github.com/anaregdesign/lantern/issues/771) (this doc).
+> [#771](https://github.com/anaregdesign/lantern/issues/771) (this doc), and
+> [#1394](https://github.com/anaregdesign/lantern/issues/1394) (durable
+> receipt backup/restore).
 
 Lantern is an **in-memory** store, so a single instance loses its whole graph
-on any restart — including a routine **rolling update** or pod restart. The
-snapshot-durability feature is the insurance for that:
-the server **periodically dumps the whole graph to a mounted volume** and
-**restores the newest dump on startup**, before it begins serving.
+on any restart — including a routine **rolling update** or pod restart. In
+graph-only mode, snapshot durability periodically dumps the graph to a mounted
+volume and restores the newest dump before serving. Private durable
+receipt-WAL mode uses the same production schedule for a receipt-bearing
+backup set; startup restore for that set is a later layer.
 
-This is primarily the **single-instance** durability story — any single-pod
-or single-container deploy. In a **multi-replica** cluster restore still runs
-on boot as a **baseline**:
+The graph-only restore path is primarily the **single-instance** durability
+story — any single-pod or single-container deploy. In a **multi-replica**
+graph-only cluster restore still runs on boot as a **baseline**:
 the restarted pod replays its newest dump, then peer **bootstrap** (snapshot +
 tail, see [replication.md](replication.md)) overlays it through the write path,
 so HLC ordering lets newer peer state win per key — replicas take priority, the
 dump only fills gaps, and a whole-cluster cold start recovers from the dumps
 instead of coming up empty.
 
-It is **snapshot-based** durability — complementary to, and distinct from, the
-write-ahead-log hook deferred in the replication RFC (D1). It changes no
-leaderless-replication invariant.
+The historical path is **snapshot-based** durability. The private durable path
+pairs a receipt-bearing snapshot with exact FileWAL cut/tip evidence. Neither
+changes a leaderless-replication invariant.
 
-## How it works
+## Graph-only mode
 
 - **Dump** drives the same `BackupSnapshot` surface the CLI `lantern-cli dump`
   uses — a whole-graph, point-in-time snapshot taken under one lock — and
@@ -49,17 +52,59 @@ leaderless-replication invariant.
   a corrupt/truncated one for the next-newest. Retention deletes only an
   instance's **own** files.
 
-The current `.lbk` format contains graph records only. It does not preserve
-mutation receipts, contribution identities, origin cutoffs, or receipt clock
-high-water, so it cannot prove receipt continuity after restore. A separate
-private whole-state archive codec is being developed under [#1115](https://github.com/anaregdesign/lantern/issues/1115),
-but no production backup or restore path uses it. Receipt-enabled writes
-remain disabled; complete-cut capture and atomic restore are among their
-release prerequisites. The private codec checks frame order and integrity,
-while graph payload semantics and consistency with receipt/origin sections
-remain for a future installer. Its deterministic protobuf byte comparison
-must also become stable wire-field validation before production use because
-protobuf runtime versions need not emit identical bytes.
+The `.lbk` format contains graph records only. It does not preserve mutation
+receipts, contribution identities, origin cutoffs, or receipt clock
+high-water, so it cannot prove receipt continuity after restore.
+
+## Private durable receipt-WAL mode
+
+With `LANTERN_RECEIPT_WAL_MODE=fresh|restart`, the same scheduler and
+`BackupNow` path produce a private receipt backup set instead of an `.lbk`.
+The source is selected only from the exact certified `ServingRuntime` and
+captures the graph, active receipt Store, origin frontier, HLC cutoff, live
+FileWAL tip witness, stable NodeID, and active endpoint generation under one
+exclusive committed view. Each attempt invokes that combined source exactly
+once and never reopens the live appendable WAL path.
+
+A v1 set has deterministic, instance-scoped names:
+
+```text
+lantern-receipt-backup-v1-<sha256(instance)>-<20-digit-set-id>.active.lar
+lantern-receipt-backup-v1-<sha256(instance)>-<20-digit-set-id>.active.walcut
+lantern-receipt-backup-v1-<sha256(instance)>-<20-digit-set-id>.set.json
+```
+
+The canonical JSON `.set.json` manifest is the commit marker. It binds the
+exact two member names, formats, versions, byte sizes, SHA-256 digests,
+instance token, monotonic set ID, UTC backup timestamp, NodeID, and generation.
+The loader rejects unknown, duplicate, missing, reordered, unsafe, malformed,
+noncanonical, trailing, digest-mismatched, or size-mismatched data. Its fully
+validated result owns the archive bytes and parsed WAL cut/tip witnesses so a
+later restore layer does not need to reopen either member or the live WAL.
+
+Persistence orders durability as follows: create each member temp exclusively
+inside the target directory; write all bytes, file-sync, and close it; publish
+both members with an atomic no-replace hard-link-and-unlink move; directory-sync;
+create/write/file-sync/close the manifest temp; publish the manifest through the
+same no-replace move last; then directory-sync again. Failed attempts clean only
+paths they provably created, so a destination that races publication is neither
+overwritten nor removed. Retention counts only fully validated committed sets
+for this instance and removes each old manifest first, directory-syncs, removes
+its members, and directory-syncs again. `LANTERN_BACKUP_RETAIN=0` keeps all sets.
+Periodic, manual, and final-shutdown attempts are serialized, and set IDs stay
+unique and increasing even if wall time repeats or moves backward.
+Existing `lantern_backup_*` timing, failure, vertex, and edge metrics remain
+the common production signals. Durable sets additionally publish
+`lantern_backup_receipts`, `lantern_backup_origins`,
+`lantern_backup_set_members`, and `lantern_backup_set_bytes`; completion logs
+retain the existing `backup: wrote dump` event and add set, identity, member,
+and byte fields.
+
+**Durable receipt backup restore is not implemented in this layer.**
+`LANTERN_BACKUP_RESTORE_ON_START` must be `false` in durable receipt-WAL mode;
+the legacy graph-only replay path remains rejected because it cannot certify
+receipt continuity. Receipt capability/status and receipt-enabled client
+writes also remain disabled.
 
 ### Why per-instance files (the shared-storage decision)
 
@@ -81,13 +126,13 @@ every backend, and degrade cleanly to the single-instance case.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `LANTERN_BACKUP_ENABLED` | `false` | Master switch for the periodic dump loop. Requires `LANTERN_BACKUP_DIR`. |
-| `LANTERN_BACKUP_DIR` | _(empty)_ | Mounted directory dumps are written to / read from. |
-| `LANTERN_BACKUP_INTERVAL` | `5m` | Dump cadence (`time.ParseDuration`). |
-| `LANTERN_BACKUP_RETAIN` | `3` | Keep newest N own dumps; `0` keeps all. |
-| `LANTERN_BACKUP_INSTANCE_ID` | _(hostname)_ | Per-instance filename token. |
-| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Replay the newest dump on boot, before serving, as a baseline (peers then overlay it via HLC). Set `false` to skip restore — pure peer bootstrap / start empty. |
-| `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Fail boot when a restore errors (else warn + continue). |
+| `LANTERN_BACKUP_ENABLED` | `false` | Master switch for periodic production. Requires `LANTERN_BACKUP_DIR`; writes graph-only `.lbk` files or private durable receipt sets according to runtime mode. |
+| `LANTERN_BACKUP_DIR` | _(empty)_ | Mounted directory backup files are written to; graph-only startup restore also reads from it. |
+| `LANTERN_BACKUP_INTERVAL` | `5m` | Backup cadence (`time.ParseDuration`). |
+| `LANTERN_BACKUP_RETAIN` | `3` | Keep newest N valid own dumps/sets; `0` keeps all. |
+| `LANTERN_BACKUP_INSTANCE_ID` | _(hostname)_ | Per-instance ownership token used to derive safe filenames. |
+| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Graph-only: replay the newest dump before serving. Durable receipt-WAL mode currently requires this to be `false`. |
+| `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Graph-only: fail boot when restore errors (else warn + continue). Durable receipt restore is not implemented. |
 
 > **TTL-vs-interval caveat.** Entries decay, so a dump is only as useful as its
 > data is still live at restore time. Keep `LANTERN_DEFAULT_TTL_SECONDS`
@@ -98,8 +143,8 @@ every backend, and degrade cleanly to the single-instance case.
 
 The feature works on any platform that can mount a directory which survives
 container/pod restarts at `LANTERN_BACKUP_DIR`. Point the env vars above at
-that path — the server then dumps periodically and restores the newest dump
-on boot:
+that path — the server then produces backups periodically. Graph-only mode
+also restores the newest dump on boot:
 
 ```bash
 LANTERN_BACKUP_ENABLED=true
@@ -161,6 +206,9 @@ In a multi-replica StatefulSet each pod's `LANTERN_BACKUP_INSTANCE_ID` is its
 stable pod name, so dumps never collide. Restore-on-start still runs on each
 pod as a baseline; peer bootstrap then overlays newer cluster state via HLC, so
 replicas take priority while a whole-cluster cold start recovers from the dumps.
+This restore description applies only to graph-only mode; durable receipt-WAL
+deployments must set `backup.restoreOnStart: false` until the receipt-set restore
+layer lands.
 
 ## See also
 
@@ -168,4 +216,5 @@ replicas take priority while a whole-cluster cold start recovers from the dumps.
 - [docs/replication.md](replication.md) — the multi-replica peer-bootstrap recovery
   path and the deployment-topology matrix (D7).
 - `lantern-cli dump` / `lantern-cli restore` — the on-demand, file-compatible
-  CLI half of the same format.
+  CLI half of the graph-only `.lbk` format. They do not consume private receipt
+  backup sets.

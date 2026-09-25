@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -327,5 +328,122 @@ func TestBackupper_PerInstanceFileNaming(t *testing.T) {
 	all, _ := a.listBackups()
 	if len(all) != 2 {
 		t.Fatalf("expected 1 dump per instance (2 total), got %d", len(all))
+	}
+}
+
+func TestBackupperReceiptAttemptsSerializePeriodicManualAndShutdown(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var first sync.Once
+	source := &receiptBackupSetSource{capture: producerBackupCapture(archive)}
+	source.hook = func(context.Context) error {
+		first.Do(func() {
+			close(entered)
+			<-release
+		})
+		time.Sleep(5 * time.Millisecond)
+		return nil
+	}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	cfg := Config{
+		Enabled: true, Dir: t.TempDir(), Interval: 10 * time.Millisecond,
+		Retain: 0, InstanceID: "scheduler-owner",
+	}
+	b, err := NewReceipt(&fakeService{}, source, archive.Policy, cfg, nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.now = func() time.Time { return time.Unix(0, 800).UTC() }
+
+	runCtx, cancelRun := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() { runDone <- b.Run(runCtx) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("periodic receipt backup did not start")
+	}
+	manualStarted := make(chan struct{})
+	manualDone := make(chan error, 1)
+	go func() {
+		close(manualStarted)
+		_, err := b.BackupNow(t.Context())
+		manualDone <- err
+	}()
+	<-manualStarted
+	cancelRun()
+	close(release)
+	select {
+	case err := <-manualDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("manual receipt backup did not finish")
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("receipt backup scheduler did not finish")
+	}
+	if source.max.Load() != 1 || source.calls.Load() != 3 {
+		t.Fatalf("scheduler source calls/max active = %d/%d, want 3/1",
+			source.calls.Load(), source.max.Load())
+	}
+	for _, label := range []string{`"source":"periodic"`, `"source":"manual"`, `"source":"shutdown"`} {
+		if !strings.Contains(logs.String(), label) {
+			t.Fatalf("scheduler logs lack %s: %s", label, logs.String())
+		}
+	}
+	sets, err := b.collectReceiptBackupSets()
+	if err != nil || len(sets) != 2 {
+		t.Fatalf("manual/final committed sets = %d, %v, want 2", len(sets), err)
+	}
+}
+
+func TestBackupperReceiptMetricsPreserveExistingSeriesAndAddSetStats(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	source := &receiptBackupSetSource{capture: producerBackupCapture(archive)}
+	registry := prometheus.NewRegistry()
+	b, err := NewReceipt(
+		&fakeService{},
+		source,
+		archive.Policy,
+		Config{
+			Enabled: true, Dir: t.TempDir(), Interval: time.Hour,
+			Retain: 1, InstanceID: "metrics-owner",
+		},
+		registry,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	stats, err := b.BackupNow(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		name string
+		got  float64
+		want float64
+	}{
+		{"lantern_backup_vertices", testutil.ToFloat64(b.metrics.vertices), float64(stats.Vertices)},
+		{"lantern_backup_edges", testutil.ToFloat64(b.metrics.edges), float64(stats.Edges)},
+		{"lantern_backup_receipts", testutil.ToFloat64(b.metrics.receipts), float64(stats.Receipts)},
+		{"lantern_backup_origins", testutil.ToFloat64(b.metrics.origins), float64(stats.Origins)},
+		{"lantern_backup_set_members", testutil.ToFloat64(b.metrics.setMembers), 2},
+		{"lantern_backup_set_bytes", testutil.ToFloat64(b.metrics.setBytes), float64(stats.Bytes)},
+		{"lantern_backup_last_success_timestamp_seconds", testutil.ToFloat64(b.metrics.lastSuccess), 1000},
+	} {
+		if check.got != check.want {
+			t.Fatalf("%s = %v, want %v", check.name, check.got, check.want)
+		}
 	}
 }
