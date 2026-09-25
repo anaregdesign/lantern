@@ -222,18 +222,17 @@ func (c *receiptWALRecoveryCandidate) knownReceiptStatus(id mutationreceipt.ID, 
 // both replay passes; this function closes the resumed writer before return.
 // A graph-only exact Delete now has an absolute deadline and a private
 // accepted-index envelope, and graph Put/Add have accepted-effect envelopes.
-// Raw graph writes after a receipt and Delete effect envelopes remain
-// unreplayable: an omitted write could become accepted after a causal floor
-// expires. Prefix origins publish exact victim batches, not predicates.
-// Receipt Edge Deletes and evidenced graph Puts/Adds can interleave when
-// their projections are reproducible.
+// Raw graph writes after a receipt remain unreplayable: an omitted write
+// could become accepted after a causal floor expires. Prefix origins publish
+// exact victim batches, not predicates. Receipt Edge Deletes and evidenced
+// graph Puts/Adds/Deletes can interleave when their projections reproduce.
 //
 // The recovered Log and FileWAL are closed before return. This read-only
 // candidate does not authorize receipt admission, an absent-ID answer, or
 // publication-fault clearing. A future full mixed-WAL format must record
 // accepted graph effects for every dependent graph write before lifting these
-// restrictions. Put and Add effects replay only their receiver-local accepted
-// subsets; Delete effects still lack detached replay here.
+// restrictions. Put, Add, and Delete effects replay only their receiver-local
+// accepted subsets.
 func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now time.Time, opts mutationlog.Options, defaultTTL time.Duration) (*receiptWALRecoveryCandidate, error) {
 	audit, err := auditReceiptDecisionsFromFileWAL(path, config, now)
 	if err != nil {
@@ -261,10 +260,11 @@ func resumeReceiptWALCandidate(path string, config mutationreceipt.Config, now t
 				return fmt.Errorf("receipt WAL local seq %d: graph replay: %w", entry.Seq, err)
 			}
 		case *graphDeleteEffectEnvelope:
-			// The indexed sidecar preserves the origin's decision, but this
-			// candidate has no detached Delete effect replay. Never turn a
-			// private codec seam into serving recovery.
-			return fmt.Errorf("receipt WAL local seq %d: %w: graph Delete effects are not replayable yet", entry.Seq, errReceiptWALUnion)
+			copy(origin[:], value.Mutation.GetOrigin())
+			seq = value.Mutation.GetSeq()
+			if err := replayGraphDeleteEffect(graph, value); err != nil {
+				return fmt.Errorf("receipt WAL local seq %d: graph Delete effect replay: %w", entry.Seq, err)
+			}
 		case *graphPutEffectEnvelope:
 			copy(origin[:], value.Mutation.GetOrigin())
 			seq = value.Mutation.GetSeq()
@@ -508,6 +508,50 @@ func replayGraphAddEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effe
 		if !applied {
 			return receiptWALUnionError("graph Add accepted effect %d at index %d replayed as rejected", i, effect.AcceptedIndexes[i])
 		}
+	}
+	return nil
+}
+
+// replayGraphDeleteEffect retains only the receiver's accepted exact victims.
+// Existed=false does not imply rejection: an accepted absent identity still
+// installs a D4 floor. Omitted slots must remain omitted after their old
+// causal floor expires, while duplicate accepted positions remain ordered.
+func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effect *graphDeleteEffectEnvelope) error {
+	if err := validateGraphDeleteEffectEnvelope(effect); err != nil {
+		return err
+	}
+	if len(effect.AcceptedIndexes) == 0 {
+		return nil
+	}
+	m := effect.Mutation
+	deadline, err := mutationTombstoneExpiration(m, true)
+	if err != nil {
+		return receiptWALUnionError("graph Delete deadline: %v", err)
+	}
+	ts := hlcFromProto(m.GetHlc())
+	var replayed []int
+	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_DeleteVertices:
+		keys := make([]string, len(effect.AcceptedIndexes))
+		for i, index := range effect.AcceptedIndexes {
+			keys[i] = op.DeleteVertices.GetKeys()[index]
+		}
+		_, replayed, err = graph.DeleteVerticesHLCDecisionsChecked(keys, ts, deadline)
+	case *pb.MutationOp_DeleteEdges:
+		keys := make([]graphcache.EdgeKey[string], len(effect.AcceptedIndexes))
+		for i, index := range effect.AcceptedIndexes {
+			key := op.DeleteEdges.GetEdges()[index]
+			keys[i] = graphcache.EdgeKey[string]{Tail: key.GetTail(), Head: key.GetHead()}
+		}
+		_, replayed, err = graph.DeleteEdgesHLCDecisionsChecked(keys, ts, deadline)
+	default:
+		return receiptWALUnionError("graph Delete effect has unsupported replay arm %T", op)
+	}
+	if err != nil {
+		return receiptWALUnionError("graph Delete effect application: %v", err)
+	}
+	if len(replayed) != len(effect.AcceptedIndexes) {
+		return receiptWALUnionError("graph Delete accepted effect replayed as rejected")
 	}
 	return nil
 }

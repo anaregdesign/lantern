@@ -297,9 +297,13 @@ batch APIs can return response outcomes and accepted indexes from one lock,
 but no serving producer selects the new kind: a future producer must retain
 the same sidecar across an ambiguous WAL append and publication repair,
 including for remote relay and singular Delete mutations. The detached
-recovery candidate still rejects graph Delete envelopes and raw graph writes
-after receipt envelopes. A later Put/Add rejected while
-a tombstone was live can become accepted on naive replay after it expires;
+recovery candidate replays only accepted exact Vertex/Edge identities in
+request order, preserving duplicates, accepted absent-key floors, and the
+origin's absolute tombstone deadline. It rejects an accepted transition that
+is no longer causally admissible, while zero-accepted frames advance only the
+origin/log frontier. Raw graph writes after a receipt remain gated. A later
+Put/Add rejected while a tombstone was live can become accepted on naive replay
+after it expires;
 Delete evidence alone cannot certify a complete graph/receipt restore.
 The graph Put kind records the original Mutation and a strictly ordered subset
 of receiver-local accepted request indexes. Each accepted index distinguishes
