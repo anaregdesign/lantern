@@ -101,6 +101,35 @@ func recoveryGraphAddEffectEntry(t *testing.T, seq uint64, op *pb.MutationOp, ac
 	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(m), Op: effect}
 }
 
+func recoveryGraphDeleteEffectEntry(t *testing.T, origin byte, seq uint64, wall int64, op *pb.MutationOp, deadline time.Time, accepted ...int) mutationlog.Entry {
+	t.Helper()
+	m := receiptWALUnionGraphFixture(op)
+	m.Origin = bytes.Repeat([]byte{origin}, 16)
+	m.Hlc.NodeId = append([]byte(nil), m.Origin...)
+	m.Hlc.WallNs = wall
+	m.Seq = seq
+	m.TombstoneExpiration = timestamppb.New(deadline)
+	effect, err := newGraphDeleteEffectEnvelope(m, accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(m), Op: effect}
+}
+
+func recoveryGraphPutEffectEntry(t *testing.T, origin byte, wall int64, op *pb.MutationOp) mutationlog.Entry {
+	t.Helper()
+	m := receiptWALUnionGraphFixture(op)
+	m.Origin = bytes.Repeat([]byte{origin}, 16)
+	m.Hlc.NodeId = append([]byte(nil), m.Origin...)
+	m.Hlc.WallNs = wall
+	m.Seq = 1
+	effect, err := newGraphPutEffectEnvelope(m, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(m), Op: effect}
+}
+
 func recoveryEdgeEntry(seq uint64) mutationlog.Entry {
 	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutEdge{
 		PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{
@@ -402,6 +431,162 @@ func TestReceiptWALRecoveryCandidateRejectsRepeatedAddFrameAfterAmbiguousAppend(
 	}
 }
 
+func TestReceiptWALRecoveryCandidateReplaysAcceptedVertexDeleteEffects(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	wall := time.Now().UnixNano()
+	deadline := time.Now().Add(time.Hour)
+	valid := timestamppb.New(deadline)
+	put := func(origin byte, wall int64, key string) mutationlog.Entry {
+		return recoveryGraphPutEffectEntry(t, origin, wall, &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+			PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Expiration: valid}},
+		}})
+	}
+	deletion := recoveryGraphDeleteEffectEntry(t, 0x63, 1, wall, &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+		DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"present", "absent", "omitted", "present"}},
+	}}, deadline, 0, 1, 3)
+	path := writeReceiptWALAuditEntries(t, put(0x61, wall-2, "present"), put(0x62, wall+2, "omitted"), deletion)
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := candidate.graph.GetVertex("present"); ok {
+		t.Fatal("accepted Vertex Delete did not remove present key")
+	}
+	if _, ok := candidate.graph.GetVertex("omitted"); !ok {
+		t.Fatal("omitted Vertex Delete removed newer value")
+	}
+	seen := map[string]bool{}
+	for _, tombstone := range candidate.graph.SnapshotReplication().Tombstones.Vertices {
+		if !tombstone.Expiration.Equal(deadline) {
+			t.Fatalf("Vertex Delete renewed original deadline: %+v", tombstone)
+		}
+		seen[tombstone.Key] = true
+	}
+	if !seen["present"] || !seen["absent"] || seen["omitted"] || len(seen) != 2 {
+		t.Fatalf("accepted Vertex Delete tombstones = %+v", seen)
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 3 || len(candidate.origins.States()) != 3 {
+		t.Fatalf("Vertex Delete log/origin frontier = %d, %v, %+v", seq, ok, candidate.origins.States())
+	}
+}
+
+func TestReceiptWALRecoveryCandidateReplaysAcceptedEdgeDeleteEffects(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	wall := time.Now().UnixNano()
+	deadline := time.Now().Add(time.Hour)
+	valid := timestamppb.New(deadline)
+	put := func(origin byte, wall int64, head string) mutationlog.Entry {
+		return recoveryGraphPutEffectEntry(t, origin, wall, &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+			PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "t", Head: head, Weight: 2, Expiration: valid}},
+		}})
+	}
+	deletion := recoveryGraphDeleteEffectEntry(t, 0x66, 1, wall, &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{
+			{Tail: "t", Head: "present"}, {Tail: "t", Head: "absent"},
+			{Tail: "t", Head: "omitted"}, {Tail: "t", Head: "present"},
+		}},
+	}}, deadline, 0, 1, 3)
+	path := writeReceiptWALAuditEntries(t, put(0x64, wall-2, "present"), put(0x65, wall+2, "omitted"), recoveryEdgeEntry(1), receiptEntry, deletion)
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := candidate.graph.GetWeight("t", "present"); ok || got != 0 {
+		t.Fatalf("accepted Edge Delete left present edge: %g, %v", got, ok)
+	}
+	if got, ok := candidate.graph.GetWeight("t", "omitted"); !ok || got != 2 {
+		t.Fatalf("omitted Edge Delete removed newer row: %g, %v", got, ok)
+	}
+	seen := map[string]bool{}
+	for _, tombstone := range candidate.graph.SnapshotReplication().Tombstones.Edges {
+		if tombstone.Tail == "t" {
+			if !tombstone.Expiration.Equal(deadline) {
+				t.Fatalf("Edge Delete renewed original deadline: %+v", tombstone)
+			}
+			seen[tombstone.Head] = true
+		}
+	}
+	if !seen["present"] || !seen["absent"] || seen["omitted"] || len(seen) != 2 {
+		t.Fatalf("accepted Edge Delete tombstones = %+v", seen)
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 5 || len(candidate.origins.States()) != 5 {
+		t.Fatalf("Edge Delete log/origin frontier = %d, %v, %+v", seq, ok, candidate.origins.States())
+	}
+	for _, receipt := range receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts {
+		status, _, err := candidate.knownReceiptStatus(receipt.ID, time.Now())
+		if err != nil || status != mutationreceipt.Confirmed {
+			t.Fatalf("interleaved receipt = %v, %v", status, err)
+		}
+	}
+}
+
+func TestReceiptWALRecoveryCandidateReplaysZeroAcceptedDeleteEffect(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	entry := recoveryGraphDeleteEffectEntry(t, 0x68, 1, time.Now().UnixNano(), &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+		DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"omitted"}},
+	}}, time.Now().Add(time.Hour))
+	path := writeReceiptWALAuditEntries(t, recoveryEdgeEntry(1), receiptEntry, entry)
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.graph.SnapshotReplication().Tombstones.Vertices) != 0 {
+		t.Fatal("zero-accepted Delete created a tombstone")
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 3 {
+		t.Fatalf("zero-accepted Delete log frontier = %d, %v", seq, ok)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateRejectsContradictoryDeleteEffect(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	wall := time.Now().UnixNano()
+	put := recoveryGraphPutEffectEntry(t, 0x69, wall+1, &pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+		PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "protected", Expiration: timestamppb.New(time.Now().Add(time.Hour))}},
+	}})
+	deletion := recoveryGraphDeleteEffectEntry(t, 0x6a, 1, wall, &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+		DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"protected"}},
+	}}, time.Now().Add(time.Hour), 0)
+	path := writeReceiptWALAuditEntries(t, put, deletion)
+	if candidate, err := resumeReceiptWALCandidate(path, config, time.Now(), mutationlog.Options{}, time.Hour); candidate != nil || !errors.Is(err, errReceiptWALUnion) || !strings.Contains(err.Error(), "replayed as rejected") {
+		t.Fatalf("contradictory accepted Delete = %p, %v; want no candidate", candidate, err)
+	}
+}
+
+func TestReplayGraphDeleteEffectPreservesExpiredDeadline(t *testing.T) {
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	wall := time.Now().Add(-2 * time.Hour).UnixNano()
+	if !graph.PutEdgeWithExpirationHLC("t", "h", 1, time.Now().Add(time.Hour), hlc.Timestamp{WallNs: wall - 1}) {
+		t.Fatal("failed to seed Edge")
+	}
+	entry := recoveryGraphDeleteEffectEntry(t, 0x6b, 1, wall, &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "t", Head: "h"}}},
+	}}, time.Now().Add(-time.Hour), 0)
+	if err := replayGraphDeleteEffect(graph, entry.Op.(*graphDeleteEffectEnvelope)); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := graph.GetWeight("t", "h"); ok || got != 0 {
+		t.Fatalf("expired-deadline Delete left Edge: %g, %v", got, ok)
+	}
+	if len(graph.SnapshotReplication().Tombstones.Edges) != 0 {
+		t.Fatal("replay renewed an already expired Delete tombstone")
+	}
+}
+
+func TestReplayGraphDeleteEffectRejectsCapacityBeforePartialGraphChange(t *testing.T) {
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	graph.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{MaxEdgeEntries: 1})
+	entry := recoveryGraphDeleteEffectEntry(t, 0x6c, 1, time.Now().UnixNano(), &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
+		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "t", Head: "a"}, {Tail: "t", Head: "b"}}},
+	}}, time.Now().Add(time.Hour), 0, 1)
+	if err := replayGraphDeleteEffect(graph, entry.Op.(*graphDeleteEffectEnvelope)); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("over-budget Delete replay = %v, want fail-closed", err)
+	}
+	if len(graph.SnapshotReplication().Tombstones.Edges) != 0 {
+		t.Fatal("over-budget Delete partially changed causal state")
+	}
+}
+
 func TestReceiptWALRecoveryCandidateRejectsContradictoryPutEffect(t *testing.T) {
 	config, _ := receiptWALAuditFixture(t)
 	first := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "same"}}}})
@@ -439,22 +624,10 @@ func TestReceiptWALRecoveryCandidateRejectsRepeatedPutFrameAfterAmbiguousAppend(
 
 func TestReceiptWALRecoveryCandidateRejectsUnrepresentableGraphHistory(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
-	deleteGraph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
-		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "tail", Head: "present"}}},
-	}})
-	deleteGraph.Seq = 2
-	deleteGraph.Hlc.Logical++
-	deleteEffect, err := newGraphDeleteEffectEnvelope(deleteGraph, []int{0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	deleteEntry := mutationlog.Entry{HLC: receiptWALUnionGraphHLC(deleteGraph), Op: deleteEffect}
 	for _, tc := range []struct {
 		name    string
 		entries []mutationlog.Entry
 	}{
-		{"graph Delete accepted effect is not replayable yet", []mutationlog.Entry{auditGraphEntry(1), deleteEntry, receiptEntry}},
-		{"graph Delete after receipt remains gated", []mutationlog.Entry{auditGraphEntry(1), receiptEntry, deleteEntry}},
 		{"graph write after receipt", []mutationlog.Entry{receiptEntry, auditGraphEntry(1)}},
 		{"raw graph Add after receipt", []mutationlog.Entry{receiptEntry, auditGraphAddEntry(1)}},
 	} {

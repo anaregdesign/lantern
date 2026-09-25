@@ -297,9 +297,13 @@ batch APIs can return response outcomes and accepted indexes from one lock,
 but no serving producer selects the new kind: a future producer must retain
 the same sidecar across an ambiguous WAL append and publication repair,
 including for remote relay and singular Delete mutations. The detached
-recovery candidate still rejects graph Delete envelopes and raw graph writes
-after receipt envelopes. A later Put/Add rejected while
-a tombstone was live can become accepted on naive replay after it expires;
+recovery candidate replays only accepted exact Vertex/Edge identities in
+request order, preserving duplicates, accepted absent-key floors, and the
+origin's absolute tombstone deadline. It rejects an accepted transition that
+is no longer causally admissible, while zero-accepted frames advance only the
+origin/log frontier. Raw graph writes after a receipt remain gated. A later
+Put/Add rejected while a tombstone was live can become accepted on naive replay
+after it expires;
 Delete evidence alone cannot certify a complete graph/receipt restore.
 The graph Put kind records the original Mutation and a strictly ordered subset
 of receiver-local accepted request indexes. Each accepted index distinguishes
@@ -436,9 +440,8 @@ must own a non-mutating WAL path during each inspection; no production path
 creates or consumes the manifest.
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
-recovery still needs an
-atomic installer, proof that the WAL covers the captured frontier or an epoch
-rollover, and accepted-effect evidence for graph-only Deletes. The installer
+recovery still needs an atomic installer and proof that the WAL covers the
+captured frontier or an epoch rollover. The installer
 must validate and install all sections together before serving. Total-cluster
 restore still rotates the active epoch unless a complete durable WAL proves
 the exact current frontier.
