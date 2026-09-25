@@ -106,14 +106,8 @@ func (s receiptBaselineSidecarStore) persist(
 }
 
 func syncReceiptBaselineDirectory(dir string) error {
-	directory, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("service: open baseline directory: %w", err)
-	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	if syncErr != nil || closeErr != nil {
-		return fmt.Errorf("service: sync baseline directory: %w", errors.Join(syncErr, closeErr))
+	if err := syncReceiptDirectory(dir); err != nil {
+		return fmt.Errorf("service: sync baseline directory: %w", err)
 	}
 	return nil
 }

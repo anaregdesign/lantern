@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT_V1 Snapshot production/install, and manifest-last retired-aware receipt backup-set production are wired for private durable replication, but durable backup restore, RECEIPT_V2 peer transport, capability/status RPCs, and receipt-enabled client writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT_V1 Snapshot production/install, and manifest-last retired-aware receipt backup-set production are wired for private durable replication, but durable backup restore, receipt Snapshot peer transport, capability/status RPCs, and receipt-enabled client writes remain disabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116, #1393, #1394
 
@@ -203,8 +203,8 @@ transport, service lookup routing, or startup restore. It does not choose a
 replacement epoch/generation by itself. The remaining #1394 integration must
 rebuild and publish the active Store plus catalog atomically, validate the
 selected backup against the lease-owned WAL and generation chain, and carry
-the catalog in `RECEIPT_V2` peer transport before any retired-epoch status is
-exposed.
+the catalog in receipt Snapshot peer transport before any retired-epoch status
+is exposed.
 
 ### Bounded retention and admission
 
