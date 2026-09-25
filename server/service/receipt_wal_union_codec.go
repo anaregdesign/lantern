@@ -385,7 +385,7 @@ func validateReceiptWALGraph(m *pb.Mutation) error {
 	if err := validateSyntheticAddMutationBounds(m); err != nil {
 		return receiptWALUnionError("graph Add identity: %v", err)
 	}
-	if _, err := mutationTombstoneExpiration(m, true); err != nil {
+	if _, err := mutationTombstoneExpiration(m, m.GetTombstoneExpiration() != nil); err != nil {
 		return receiptWALUnionError("graph Delete deadline: %v", err)
 	}
 	return rejectReceiptWALUnknownFields(m.ProtoReflect())

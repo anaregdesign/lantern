@@ -188,6 +188,39 @@ func TestDeleteHLCDecisionsCheckedRetainsAcceptedRequestPositions(t *testing.T) 
 			t.Fatal("capacity error partially deleted edge")
 		}
 	})
+
+	t.Run("remote decisions converge beyond local capacity", func(t *testing.T) {
+		vertices := NewGraphCache[string, string](time.Minute)
+		vertices.SetCausalMetadataLimits(CausalMetadataLimits{MaxVertexEntries: 1})
+		if !vertices.PutVertexWithExpirationHLC("present", "value", expiration, older) {
+			t.Fatal("seed vertex Put failed")
+		}
+		existed, accepted := vertices.DeleteVerticesHLCDecisions(
+			[]string{"present", "remote-new", "remote-new"}, newer, expiration)
+		if !slices.Equal(existed, []bool{true, false, false}) ||
+			!slices.Equal(accepted, []int{0, 1, 2}) {
+			t.Fatalf("remote vertex decisions = %v, %v", existed, accepted)
+		}
+		if stats := vertices.CausalMetadataStats(); stats.VertexEntries != 2 || !stats.VertexOverLimit {
+			t.Fatalf("remote vertex convergence did not exceed local limit: %+v", stats)
+		}
+
+		edges := NewGraphCache[string, string](time.Minute)
+		edges.SetCausalMetadataLimits(CausalMetadataLimits{MaxEdgeEntries: 1})
+		if !edges.PutEdgeWithExpirationHLC("a", "present", 1, expiration, older) {
+			t.Fatal("seed edge Put failed")
+		}
+		existed, accepted = edges.DeleteEdgesHLCDecisions([]EdgeKey[string]{
+			{Tail: "a", Head: "present"}, {Tail: "a", Head: "remote-new"}, {Tail: "a", Head: "remote-new"},
+		}, newer, expiration)
+		if !slices.Equal(existed, []bool{true, false, false}) ||
+			!slices.Equal(accepted, []int{0, 1, 2}) {
+			t.Fatalf("remote edge decisions = %v, %v", existed, accepted)
+		}
+		if stats := edges.CausalMetadataStats(); stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
+			t.Fatalf("remote edge convergence did not exceed local limit: %+v", stats)
+		}
+	})
 }
 
 // After DeleteVertexHLC at T1, a later Put with strictly-older T0 must

@@ -30,11 +30,20 @@ func latestPrefixMutation(t *testing.T, log *mutationlog.Log) *pb.Mutation {
 		if entry.Seq != seq {
 			t.Fatalf("latest log entry seq = %d, want %d", entry.Seq, seq)
 		}
-		mutation, ok := entry.Op.(*pb.Mutation)
+		effect, ok := entry.Op.(*graphDeleteEffectEnvelope)
 		if !ok {
-			t.Fatalf("latest log entry type = %T, want *pb.Mutation", entry.Op)
+			t.Fatalf("latest prefix WAL entry = %T, want graph Delete effect", entry.Op)
 		}
-		return mutation
+		count, ok := graphDeleteRequestCount(effect.Mutation)
+		if !ok || len(effect.AcceptedIndexes) != count {
+			t.Fatalf("prefix Delete evidence = %+v, want every exact victim accepted", effect)
+		}
+		for i, index := range effect.AcceptedIndexes {
+			if index != uint32(i) {
+				t.Fatalf("prefix Delete accepted indexes = %v, want complete ordered set", effect.AcceptedIndexes)
+			}
+		}
+		return mustGraphMutation(t, entry.Op)
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out reading mutation %d", seq)
 		return nil

@@ -90,6 +90,7 @@ type Backend interface {
 	PutEdgesWithExpirationHLCOutcomes(items []graphcache.EdgeItem[string], ts hlc.Timestamp) []graphcache.PutOutcome
 	PutEdgesWithExpirationHLCOutcomesChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]graphcache.PutOutcome, error)
 	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
+	AddEdgesWithExpirationContribHLCResults(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int)
 	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 
@@ -106,10 +107,14 @@ type Backend interface {
 	DeleteVerticesHLC(keys []string, ts hlc.Timestamp, expiration time.Time) int
 	DeleteVerticesHLCChecked(keys []string, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteVerticesHLCOutcomesChecked(keys []string, ts hlc.Timestamp, expiration time.Time) ([]bool, error)
+	DeleteVerticesHLCDecisions(keys []string, ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int)
+	DeleteVerticesHLCDecisionsChecked(keys []string, ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error)
 	DeleteEdgeHLC(tail, head string, ts hlc.Timestamp, expiration time.Time) bool
 	DeleteEdgesHLC(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) int
 	DeleteEdgesHLCChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteEdgesHLCOutcomesChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) ([]bool, error)
+	DeleteEdgesHLCDecisions(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int)
+	DeleteEdgesHLCDecisionsChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error)
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteByPrefixHLCChecked(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteByPrefixHLCCheckedKeys(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) ([]string, error)

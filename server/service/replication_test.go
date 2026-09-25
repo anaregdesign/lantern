@@ -54,6 +54,12 @@ func (b *blockedAddSnapshotBackend) AddEdgesWithExpirationContribHLC(items []gra
 	return b.cache.AddEdgesWithExpirationContribHLC(items, ts)
 }
 
+func (b *blockedAddSnapshotBackend) AddEdgesWithExpirationContribHLCResults(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]float32, []bool, int) {
+	close(b.entered)
+	<-b.release
+	return b.cache.AddEdgesWithExpirationContribHLCResults(items, ts)
+}
+
 func (b *blockedAddSnapshotBackend) SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex] {
 	return b.cache.SnapshotReplication()
 }
@@ -62,6 +68,12 @@ func (b *blockedDeleteSnapshotBackend) DeleteVertexHLC(key string, ts hlc.Timest
 	close(b.entered)
 	<-b.release
 	return b.cache.DeleteVertexHLC(key, ts, expiration)
+}
+
+func (b *blockedDeleteSnapshotBackend) DeleteVerticesHLCDecisions(keys []string, ts hlc.Timestamp, expiration time.Time) ([]bool, []int) {
+	close(b.entered)
+	<-b.release
+	return b.cache.DeleteVerticesHLCDecisions(keys, ts, expiration)
 }
 
 func (b *blockedDeleteSnapshotBackend) SnapshotReplication() graphcache.ReplicationSnapshot[string, *pb.Vertex] {

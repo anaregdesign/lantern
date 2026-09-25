@@ -83,6 +83,101 @@ func TestGraphDeleteEffectWALRoundTripKeepsOriginalMutationAndDecision(t *testin
 	}
 }
 
+func TestGraphDeleteEffectWALReplaysEveryExactArmWithAndWithoutTombstones(t *testing.T) {
+	tests := []struct {
+		name      string
+		op        *pb.MutationOp
+		seed      func(*graphcache.GraphCache[string, *pb.Vertex])
+		stillLive func(*graphcache.GraphCache[string, *pb.Vertex]) bool
+		itemCount int
+	}{
+		{
+			name: "vertex",
+			op:   &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "v"}}},
+			seed: func(graph *graphcache.GraphCache[string, *pb.Vertex]) {
+				graph.PutVertexWithExpirationHLC("v", &pb.Vertex{Key: "v"}, time.Now().Add(time.Hour), hlc.Timestamp{WallNs: 1})
+			},
+			stillLive: func(graph *graphcache.GraphCache[string, *pb.Vertex]) bool {
+				_, ok := graph.GetVertex("v")
+				return ok
+			},
+			itemCount: 1,
+		},
+		{
+			name: "vertices",
+			op:   &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"v", "v"}}}},
+			seed: func(graph *graphcache.GraphCache[string, *pb.Vertex]) {
+				graph.PutVertexWithExpirationHLC("v", &pb.Vertex{Key: "v"}, time.Now().Add(time.Hour), hlc.Timestamp{WallNs: 1})
+			},
+			stillLive: func(graph *graphcache.GraphCache[string, *pb.Vertex]) bool {
+				_, ok := graph.GetVertex("v")
+				return ok
+			},
+			itemCount: 2,
+		},
+		{
+			name: "edge",
+			op:   &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{Tail: "t", Head: "h"}}},
+			seed: func(graph *graphcache.GraphCache[string, *pb.Vertex]) {
+				graph.PutEdgeWithExpirationHLC("t", "h", 1, time.Now().Add(time.Hour), hlc.Timestamp{WallNs: 1})
+			},
+			stillLive: func(graph *graphcache.GraphCache[string, *pb.Vertex]) bool {
+				_, ok := graph.GetWeight("t", "h")
+				return ok
+			},
+			itemCount: 1,
+		},
+		{
+			name: "edges",
+			op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{
+				Edges: []*pb.EdgeKey{{Tail: "t", Head: "h"}, {Tail: "t", Head: "h"}},
+			}}},
+			seed: func(graph *graphcache.GraphCache[string, *pb.Vertex]) {
+				graph.PutEdgeWithExpirationHLC("t", "h", 1, time.Now().Add(time.Hour), hlc.Timestamp{WallNs: 1})
+			},
+			stillLive: func(graph *graphcache.GraphCache[string, *pb.Vertex]) bool {
+				_, ok := graph.GetWeight("t", "h")
+				return ok
+			},
+			itemCount: 2,
+		},
+	}
+	for _, tc := range tests {
+		for _, tombstones := range []bool{false, true} {
+			name := "physical"
+			if tombstones {
+				name = "tombstone"
+			}
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				mutation := receiptWALUnionGraphFixture(tc.op)
+				if !tombstones {
+					mutation.TombstoneExpiration = nil
+				}
+				envelope, err := newGraphDeleteEffectEnvelope(mutation, allAcceptedIndexes(tc.itemCount))
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, err := encodeReceiptWALUnion(envelope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				decoded, err := decodeReceiptWALUnion(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+				tc.seed(graph)
+				if err := replayGraphDeleteEffect(graph, decoded.(*graphDeleteEffectEnvelope)); err != nil {
+					t.Fatal(err)
+				}
+				if tc.stillLive(graph) {
+					t.Fatal("accepted Delete effect remained live after replay")
+				}
+			})
+		}
+	}
+}
+
 func TestGraphDeleteEffectWALRejectsMalformedDecisionAndOldKind(t *testing.T) {
 	base := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
 		DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"a", "b", "a"}},
@@ -114,9 +209,6 @@ func TestGraphDeleteEffectWALRejectsMalformedDecisionAndOldKind(t *testing.T) {
 		{"non-Delete", func(m *pb.Mutation) {
 			m.Op = &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{}}}
 			m.TombstoneExpiration = nil
-		}},
-		{"singular Delete", func(m *pb.Mutation) {
-			m.Op = &pb.MutationOp{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{Key: "a"}}}
 		}},
 		{"predicate Delete", func(m *pb.Mutation) {
 			m.Op = &pb.MutationOp{Op: &pb.MutationOp_DeleteVerticesByPrefix{DeleteVerticesByPrefix: &pb.DeleteVerticesByPrefixRequest{Prefix: "a"}}}

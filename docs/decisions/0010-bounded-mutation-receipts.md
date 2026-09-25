@@ -14,14 +14,15 @@ record the server's **original per-item result**, including a no-op, before a
 client can reconcile those operations. It cannot manufacture a global
 exactly-once guarantee in Lantern's leaderless, asynchronous cluster.
 
-Today's write paths are not an atomic receipt seam. Put/Delete change
-`GraphCache` before `logMutationAt`, whose append failure is only logged.
-Add appends before graph application to obtain its contribution sequence.
-Before #1282, remote `ApplyMutation` could advance an origin watermark before
-graph apply or local relay publication; its contiguous-publication fix alone
-still does not provide an atomic receipt seam. A condition-not-met Put has no
-graph mutation to replicate, while `BackupSnapshot` and restore carry live
-graph records only.
+Today's write paths are not an atomic receipt seam. Graph-only Add/Put/Delete
+publication applies `GraphCache` first, captures an effect-complete private WAL
+envelope, and fails the shared publication cut closed if append needs repair.
+That makes strict graph recovery reproducible but does not atomically commit a
+receipt Store or original receipt result. Before #1282, remote `ApplyMutation`
+could advance an origin watermark before graph apply or local relay
+publication; its contiguous-publication fix alone still does not provide an
+atomic receipt seam. A condition-not-met Put has no graph mutation to
+replicate, while `BackupSnapshot` and restore carry live graph records only.
 Simply adding a receipt map to any one of these paths would permit graph,
 result, receipt, and log to disagree. The future implementation must replace
 that ordering; this ADR changes no current RPC or write behavior.
@@ -273,18 +274,38 @@ orders and duplicate scalar values retain protobuf semantics. The decoder
 accepts valid protobuf encodings without requiring a byte-for-byte match with
 this build's deterministic encoder:
 protobuf does not promise stable deterministic bytes across library versions.
-Union version 3 retains `Mutation.tombstone_expiration`: each graph-only exact
-Vertex or Edge Delete must retain the origin's absolute D4 deadline. Origin
-handlers use one sampled deadline for the graph effect and published mutation;
-follower apply uses that value without renewing it. An older graph Delete WAL
-record lacking the field, an invalid timestamp, or an older union fails
-closed on replay. Prefix Deletes still publish exact victim batches and carry
-that same sampled deadline. The deadline is sampled before the origin HLC and
-checked against both origin HLC + D4 and receiver now + D4 + D3 maximum skew;
-an arbitrary future deadline or forged future HLC fails closed. The origin
-checks those bounds before graph mutation, including after a clock rollback.
-A genesis recovery audit must not infer a missing deadline from its current
-clock. The new graph Delete kind preserves the original `Mutation` for existing
+
+#### Receiver-local graph publication evidence
+
+Serving graph publication no longer appends raw `Mutation` rows. Every enabled
+local and remote Add, Put, and exact Delete path first proves that its largest
+private envelope is encodable, then applies the graph operation and captures
+the receiver's exact accepted effects from that same `GraphCache` lock. The
+local relay log stores the corresponding graph Add, Put, or Delete effect
+envelope. If WAL append fails after graph apply, pending repair owns that exact
+immutable envelope and retries only its append; it never re-evaluates or
+reapplies the graph operation. The envelope's `GraphMutation()` remains the
+unchanged graph-only Subscribe/relay projection, so ordering, origin cursors,
+CDC payloads, and nil-slot wire indexes do not expose this private durability
+representation. This boundary does not enable a receipt write, receipt status,
+or receipt capability.
+
+Union version 3 retains `Mutation.tombstone_expiration` when graph tombstone
+retention is enabled: each graph-only exact Vertex or Edge Delete then carries
+the origin's absolute D4 deadline. Origin handlers use one sampled deadline
+for the graph effect and published mutation; follower apply uses that value
+without renewing it. An invalid timestamp, a missing deadline on a
+tombstone-retaining node, or an older union fails closed on replay. A
+graph-only node with tombstone retention disabled instead records a physical
+Delete envelope whose accepted indexes must be the complete ordered request;
+strict replay can reproduce that exact effect without inventing a causal
+floor. Prefix Deletes still publish exact victim batches and, when enabled,
+carry the same sampled deadline. The deadline is sampled before the origin HLC
+and checked against both origin HLC + D4 and receiver now + D4 + D3 maximum
+skew; an arbitrary future deadline or forged future HLC fails closed. The
+origin checks those bounds before graph mutation, including after a clock
+rollback. A genesis recovery audit must not infer a missing deadline from its
+current clock. The graph Delete kind preserves the original `Mutation` for existing
 Subscribe/relay projection and stores strictly increasing accepted request
 indexes separately. `Existed=false` is insufficient: an accepted absent-key
 tombstone and a Delete rejected by newer causal state both report false.
@@ -292,11 +313,12 @@ Prefix origins already publish only exact accepted victims, so the sidecar
 indexes refer to that exact batch, never a predicate. The decoder rejects
 old version 2 graph Deletes and version 3 ordinary-graph-kind Deletes without
 this sidecar. An expired absolute deadline remains valid historical evidence
-and is never replaced with `now + D4` during decode. The checked GraphCache
-batch APIs can return response outcomes and accepted indexes from one lock,
-but no serving producer selects the new kind: a future producer must retain
-the same sidecar across an ambiguous WAL append and publication repair,
-including for remote relay and singular Delete mutations. The detached
+and is never replaced with `now + D4` during decode. The checked GraphCache batch APIs return response outcomes and accepted
+indexes from one lock. Every enabled local and remote graph Delete path now
+publishes this private kind; singular facades, plural operations, and prefix
+operations all retain exact request positions. A WAL failure keeps the same
+immutable envelope for append-only repair without reapplying graph effects.
+The detached
 recovery candidate replays only accepted exact Vertex/Edge identities in
 request order, preserving duplicates, accepted absent-key floors, and the
 origin's absolute tombstone deadline. It rejects an accepted transition that
@@ -318,8 +340,9 @@ read-only audit rejects one after a receipt instead of treating its original
 mutation as evidence of a receiver-local effect. The detached recovery
 candidate replays only the accepted subset, preserving live/barrier decisions
 and allowing a live value to expire by recovery time. A contradictory accepted
-decision fails the candidate. The kind remains unwired to the serving writer;
-this detached replay enables neither Store admission nor an absent-ID answer.
+decision fails the candidate. Every enabled local and remote Put path emits
+this private kind. Serving use of this graph-only evidence enables neither
+Store admission nor an absent-ID answer.
 The stricter effect-complete staging path rejects even pre-receipt raw Put/Add
 rows before replay. It is a prerequisite for future serving recovery, not a
 serving certificate: Store clock high-water, epoch continuity, and atomic
@@ -339,9 +362,9 @@ candidate replays only accepted original wire indexes, using the original
 explicit or synthesized ContribID for each row; omitted, nil, deduplicated,
 and causally fenced rows stay absent even if their old floor has expired.
 A recorded accepted Add that now conflicts with recovered causal state rejects
-the whole candidate. This remains read-only evidence: no serving writer emits
-this kind, and it authorizes neither durable offline Add nor an absent-ID
-status answer.
+the whole candidate. Serving local and remote Add paths now emit this private
+kind, but it authorizes neither durable offline Add nor an absent-ID status
+answer.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
 replay. The receipt kind retains the existing LRED validation and its 8 MiB

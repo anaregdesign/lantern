@@ -15,7 +15,7 @@ import (
 // Existed alone cannot distinguish an accepted absent-key tombstone from a
 // rejected Delete. Prefix RPCs already project accepted victims into an exact
 // DeleteVertices/DeleteEdges Mutation before this envelope is constructed.
-// No serving write path selects this payload yet.
+// Every serving graph Delete publication selects this payload.
 type graphDeleteEffectEnvelope struct {
 	Mutation        *pb.Mutation
 	AcceptedIndexes []uint32
@@ -53,9 +53,17 @@ func graphDeleteRequestCount(m *pb.Mutation) (int, bool) {
 		return 0, false
 	}
 	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_DeleteVertex:
+		if op != nil && op.DeleteVertex != nil {
+			return 1, true
+		}
 	case *pb.MutationOp_DeleteVertices:
 		if op != nil && op.DeleteVertices != nil {
 			return len(op.DeleteVertices.GetKeys()), true
+		}
+	case *pb.MutationOp_DeleteEdge:
+		if op != nil && op.DeleteEdge != nil {
+			return 1, true
 		}
 	case *pb.MutationOp_DeleteEdges:
 		if op != nil && op.DeleteEdges != nil {
@@ -88,15 +96,21 @@ func validateGraphDeleteEffectEnvelope(e *graphDeleteEffectEnvelope) error {
 	}
 	count, ok := graphDeleteRequestCount(e.Mutation)
 	if !ok {
-		return receiptWALUnionError("graph Delete effect requires exact plural DeleteVertices or DeleteEdges")
+		return receiptWALUnionError("graph Delete effect requires an exact singular or plural Delete arm")
 	}
 	if len(e.AcceptedIndexes) > count {
 		return receiptWALUnionError("accepted Delete count exceeds request count")
+	}
+	if e.Mutation.GetTombstoneExpiration() == nil && len(e.AcceptedIndexes) != count {
+		return receiptWALUnionError("non-tombstone Delete must accept every request position")
 	}
 	var previous uint32
 	for i, index := range e.AcceptedIndexes {
 		if uint64(index) >= uint64(count) || (i > 0 && index <= previous) {
 			return receiptWALUnionError("accepted Delete index is out of range or unordered")
+		}
+		if e.Mutation.GetTombstoneExpiration() == nil && index != uint32(i) {
+			return receiptWALUnionError("non-tombstone Delete accepted indexes must be complete and ordered")
 		}
 		previous = index
 	}

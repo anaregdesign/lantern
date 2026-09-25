@@ -560,26 +560,53 @@ func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e
 		return nil
 	}
 	m := effect.Mutation
-	deadline, err := mutationTombstoneExpiration(m, true)
+	retainsTombstone := m.GetTombstoneExpiration() != nil
+	deadline, err := mutationTombstoneExpiration(m, retainsTombstone)
 	if err != nil {
 		return receiptWALUnionError("graph Delete deadline: %v", err)
 	}
 	ts := hlcFromProto(m.GetHlc())
 	var replayed []int
 	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_DeleteVertex:
+		keys := []string{op.DeleteVertex.GetKey()}
+		if retainsTombstone {
+			_, replayed, err = graph.DeleteVerticesHLCDecisionsChecked(keys, ts, deadline)
+		} else {
+			graph.DeleteVertices(keys)
+			replayed = []int{0}
+		}
 	case *pb.MutationOp_DeleteVertices:
 		keys := make([]string, len(effect.AcceptedIndexes))
 		for i, index := range effect.AcceptedIndexes {
 			keys[i] = op.DeleteVertices.GetKeys()[index]
 		}
-		_, replayed, err = graph.DeleteVerticesHLCDecisionsChecked(keys, ts, deadline)
+		if retainsTombstone {
+			_, replayed, err = graph.DeleteVerticesHLCDecisionsChecked(keys, ts, deadline)
+		} else {
+			graph.DeleteVertices(keys)
+			replayed = allAcceptedIndexes(len(keys))
+		}
+	case *pb.MutationOp_DeleteEdge:
+		keys := []graphcache.EdgeKey[string]{{Tail: op.DeleteEdge.GetTail(), Head: op.DeleteEdge.GetHead()}}
+		if retainsTombstone {
+			_, replayed, err = graph.DeleteEdgesHLCDecisionsChecked(keys, ts, deadline)
+		} else {
+			graph.DeleteEdges(keys)
+			replayed = []int{0}
+		}
 	case *pb.MutationOp_DeleteEdges:
 		keys := make([]graphcache.EdgeKey[string], len(effect.AcceptedIndexes))
 		for i, index := range effect.AcceptedIndexes {
 			key := op.DeleteEdges.GetEdges()[index]
 			keys[i] = graphcache.EdgeKey[string]{Tail: key.GetTail(), Head: key.GetHead()}
 		}
-		_, replayed, err = graph.DeleteEdgesHLCDecisionsChecked(keys, ts, deadline)
+		if retainsTombstone {
+			_, replayed, err = graph.DeleteEdgesHLCDecisionsChecked(keys, ts, deadline)
+		} else {
+			graph.DeleteEdges(keys)
+			replayed = allAcceptedIndexes(len(keys))
+		}
 	default:
 		return receiptWALUnionError("graph Delete effect has unsupported replay arm %T", op)
 	}

@@ -309,7 +309,7 @@ func TestReceiptWALUnionCodecMixedFileWALRoundTrip(t *testing.T) {
 	}
 }
 
-func TestReceiptWALUnionCodecDeleteDeadlineFailClosed(t *testing.T) {
+func TestReceiptWALUnionCodecDeleteDeadlineAndPhysicalDecisionFailClosed(t *testing.T) {
 	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{
 		DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "t", Head: "h"}}},
 	}})
@@ -326,9 +326,14 @@ func TestReceiptWALUnionCodecDeleteDeadlineFailClosed(t *testing.T) {
 		t.Fatalf("Delete deadline WAL round-trip = %v, %v", decoded, err)
 	}
 	envelope.Mutation.TombstoneExpiration = nil
-	if _, err := encodeReceiptWALUnion(envelope); !errors.Is(err, errReceiptWALUnion) {
-		t.Fatalf("missing Delete deadline encoded: %v", err)
+	if _, err := encodeReceiptWALUnion(envelope); err != nil {
+		t.Fatalf("exact graph-only Delete encoded: %v", err)
 	}
+	envelope.AcceptedIndexes = nil
+	if _, err := encodeReceiptWALUnion(envelope); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("incomplete graph-only Delete decision encoded: %v", err)
+	}
+	envelope.AcceptedIndexes = []uint32{0}
 	envelope.Mutation.TombstoneExpiration = &timestamppb.Timestamp{Seconds: 253402300800}
 	if _, err := encodeReceiptWALUnion(envelope); !errors.Is(err, errReceiptWALUnion) {
 		t.Fatalf("invalid Delete deadline encoded: %v", err)

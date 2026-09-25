@@ -773,6 +773,15 @@ func (f *fakeBackend) AddEdgesWithExpirationContribHLC(items []graphcache.EdgeIt
 	return f.AddEdgesWithExpirationContrib(items)
 }
 
+func (f *fakeBackend) AddEdgesWithExpirationContribHLCResults(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]float32, []bool, int) {
+	effective, deduped := f.AddEdgesWithExpirationContribHLC(items, ts)
+	accepted := make([]bool, len(items))
+	for i := range accepted {
+		accepted[i] = true
+	}
+	return effective, accepted, deduped
+}
+
 func (f *fakeBackend) ApplyVertexCausalBarrierHLC(key string, _ hlc.Timestamp) bool {
 	return f.DeleteVertices([]string{key}) > 0
 }
@@ -804,6 +813,16 @@ func (f *fakeBackend) DeleteVerticesHLCOutcomesChecked(keys []string, _ hlc.Time
 	return f.DeleteVerticesOutcomes(keys), nil
 }
 
+func (f *fakeBackend) DeleteVerticesHLCDecisions(keys []string, _ hlc.Timestamp, _ time.Time) ([]bool, []int) {
+	outcomes := f.DeleteVerticesOutcomes(keys)
+	return outcomes, allAcceptedIndexes(len(keys))
+}
+
+func (f *fakeBackend) DeleteVerticesHLCDecisionsChecked(keys []string, ts hlc.Timestamp, expiration time.Time) ([]bool, []int, error) {
+	outcomes, accepted := f.DeleteVerticesHLCDecisions(keys, ts, expiration)
+	return outcomes, accepted, nil
+}
+
 func (f *fakeBackend) DeleteEdgeHLC(tail, head string, _ hlc.Timestamp, _ time.Time) bool {
 	return f.DeleteEdges([]graphcache.EdgeKey[string]{{Tail: tail, Head: head}}) > 0
 }
@@ -818,6 +837,16 @@ func (f *fakeBackend) DeleteEdgesHLCChecked(keys []graphcache.EdgeKey[string], t
 
 func (f *fakeBackend) DeleteEdgesHLCOutcomesChecked(keys []graphcache.EdgeKey[string], _ hlc.Timestamp, _ time.Time) ([]bool, error) {
 	return f.DeleteEdgesOutcomes(keys), nil
+}
+
+func (f *fakeBackend) DeleteEdgesHLCDecisions(keys []graphcache.EdgeKey[string], _ hlc.Timestamp, _ time.Time) ([]bool, []int) {
+	outcomes := f.DeleteEdgesOutcomes(keys)
+	return outcomes, allAcceptedIndexes(len(keys))
+}
+
+func (f *fakeBackend) DeleteEdgesHLCDecisionsChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) ([]bool, []int, error) {
+	outcomes, accepted := f.DeleteEdgesHLCDecisions(keys, ts, expiration)
+	return outcomes, accepted, nil
 }
 
 func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, _ hlc.Timestamp, _ time.Time) (int, error) {
