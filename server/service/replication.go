@@ -120,6 +120,7 @@ type LanternReplicationService struct {
 	log     *mutationlog.Log
 	backend Backend
 	clock   *hlc.Clock
+	runtime *ServingRuntime
 	metrics SubscribeMetrics
 	logger  *slog.Logger
 	origins OriginStatesProvider

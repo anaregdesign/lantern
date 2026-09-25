@@ -404,14 +404,19 @@ must fail closed after epoch rollover.
 `mutationlog.AcquireFileWALLease` provides an advisory process lock for the
 WAL path across separate audit, replay, and append calls. A production owner
 must hold it throughout those calls and shutdown, use its canonical path,
-and never unlink the stable `.lease` sidecar. The lease is not wired into a
-production provider and does not certify application recovery on its own.
+and never unlink the stable `.lease` sidecar. The private production
+`ServingRuntime` now holds this lease together with the graph, Store, origin
+tracker, appendable Log, clock/tip journals, and endpoint generation for the
+entire process lifetime. The lease alone still does not certify application
+recovery.
 The HLC `RestoreFloor` API can seed a clock from the greatest verified
 committed timestamp without applying the live-peer skew clamp, so a wall-clock
-rollback cannot put the next local mutation below that frontier. No serving
-restore currently calls it. The caller must validate the entire WAL/Snapshot
-cut first; this clock floor does not recover graph state, Store clock
-high-water, receipt epoch continuity, or an absent-ID status.
+rollback cannot put the next local mutation below that frontier. Durable
+restart validates and reconstructs the full genesis WAL cut first, then calls
+`RestoreFloor` with the maximum of the replayed HLC frontier and persisted
+Store clock high-water before exposing the runtime to Wire. The clock floor
+itself does not recover graph state, Store clock high-water, receipt epoch
+continuity, or an absent-ID status.
 The guarded full Subscribe projection carries receipt-bearing entries as one
 `ReplicatedReceiptEdgeDelete` mutation arm. A full-stream consumer without
 `accept_receipt_envelopes` receives `INVALID_ARGUMENT` before that frame;
@@ -504,7 +509,8 @@ sidecar bound to the canonical WAL path, epoch, and policy fingerprint, while
 rejecting torn or incompatible metadata. Its caller must hold the same WAL
 lease through journal Close. Neither path binding nor the journal alone
 attests the WAL bytes, their archive/suffix cut, or a complete serving state;
-no production provider owns this journal or enables receipt recovery yet.
+the private production runtime owns it only together with the verified WAL,
+tip, Store, graph, origin cut, HLC, lease, and endpoint generation.
 A separate opt-in FileWAL tip journal durably records each frame's
 local sequence and rolling hash after the WAL fsync but before the Log reports
 success. On restart it verifies the complete attested prefix and rejects a
@@ -516,14 +522,37 @@ A private owned recovery candidate requires both clock and tip journals under
 that lease, stages the effect-complete WAL graph/Store/origins, binds the Store
 to the clock journal, and resumes a tip-certified appendable Log whose bounded
 tail matches the detached replay. It closes Log, both journals, and lease on
-discard. It remains unpublished: a matching tip does not certify the archive
-cut or install an endpoint generation, and no production provider owns this
-bundle yet.
+discard. A matching tip does not certify the archive cut. The private
+production runtime adds a fixed-size checksummed `.generation` sidecar bound
+to the canonical WAL path, epoch, policy fingerprint, and stable replication
+NodeID. Fresh mode creates one opaque nonzero generation with exclusive file
+creation; restart requires that exact sidecar and rejects missing, corrupt,
+zero, or mismatched metadata, including a changed NodeID.
 A companion private fresh candidate checks an empty staged GraphCache and
 search/index policy before creating any files, then creates WAL, tip, and
 clock journal under one lease and binds the empty Store and appendable Log.
 Existing files and partially created sidecars are never overwritten or
-silently retried as a fresh epoch. Neither candidate is a serving installer.
+silently retried as a fresh epoch.
+
+The sole production composition boundary selects
+`LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the
+default and preserves the historical in-memory graph, NopWAL-backed Log, HLC,
+and legacy graph-only backup restore. `fresh` and `restart` require an absolute
+`LANTERN_RECEIPT_WAL_PATH`, a nonzero `LANTERN_RECEIPT_EPOCH`, and explicit
+immutable retention, entry-cap, and logical-byte-cap policy. They also require
+an explicitly configured, nonzero `LANTERN_NODE_ID`; graph-only mode retains
+the historical random-per-boot fallback, but durable mode must not resume a
+local Log at sequence N+1 under a new origin. They certify one owned
+graph/Store/origin/Log/HLC/epoch/generation bundle before constructing either
+service, the primary listener, metrics server, or replication pump.
+Wire cleanup releases later owners before this bundle, and `App` retains the
+bundle until all serving goroutines stop. Durable mode rejects the legacy
+graph-only backup producer and restore-on-startup because neither format can
+prove receipt/archive continuity; #1394 owns that archive boundary.
+
+This runtime mode is private infrastructure only. It does not enable
+`GetReceiptCapability`, receipt status, receipt-bearing client mutations, peer
+capability negotiation, or receipt Snapshot/archive restore.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 
@@ -542,14 +571,17 @@ have no error result and cannot report an indeterminate WAL fault. Authoritative
 receipt status and graph reads must use the server's error-bearing committed
 view until a checked Core read API or equivalent fail-stop gate exists.
 
-No production provider uses the staged cache or coordinator. A durable WAL
-encoder/replayer, atomic remote receipt apply, a PeerStatus capability gate,
-and receipt-bearing Snapshot/BackupSnapshot with epoch and clock-high-water
-validation are still required. Current Snapshot and BackupSnapshot remain graph-only and cannot
-certify receipt continuity after restart or restore. `Store.Begin` advances
-clock high-water and expires already-dead receipts even if the new mutation
-later aborts; only newly staged receipts roll back. Recovery must persist that
-monotonic metadata with the committed cut or rotate the active epoch.
+The private production provider installs the staged graph, Store, origin
+tracker, Log, restored HLC, epoch, and generation as one certified serving
+bundle. Public enablement still requires atomic remote receipt apply, a
+PeerStatus capability gate, and receipt-bearing Snapshot/BackupSnapshot with
+epoch and clock-high-water validation. Current Snapshot and BackupSnapshot
+remain graph-only and cannot certify receipt continuity after restart or
+restore. `Store.Begin` advances clock high-water and expires already-dead
+receipts even if the new mutation later aborts; only newly staged receipts
+roll back. Recovery persists that monotonic metadata through the bound clock
+journal; losing or mismatching it fails startup rather than silently rotating
+the epoch.
 
 ## Dependencies and rollout
 

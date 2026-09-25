@@ -13,35 +13,47 @@ import (
 
 // Injectors from wire.go:
 
-func initializeApp() (*App, error) {
+func initializeApp() (*App, func(), error) {
 	config, err := provider.NewConfig()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	observabilityConfig := provider.NewObservabilityConfig(config)
 	logger := provider.NewLogger(observabilityConfig)
+	receiptWALConfig := provider.NewReceiptWALConfig(config)
 	cacheConfig := provider.NewCacheConfig(config)
 	searchConfig := provider.NewSearchConfig(config)
-	graphCache := provider.NewGraphCache(cacheConfig, searchConfig)
-	scanConfig := provider.NewScanConfig(config)
+	mutationLogConfig := provider.NewMutationLogConfig(config)
 	replicationConfig := provider.NewReplicationConfig(config)
+	backupConfig := provider.NewBackupConfig(config)
+	registry := provider.NewPrometheusRegistry()
+	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig)
+	servingRuntime, cleanup, err := provider.NewServingRuntime(receiptWALConfig, cacheConfig, searchConfig, mutationLogConfig, replicationConfig, backupConfig, domainMetrics)
+	if err != nil {
+		return nil, nil, err
+	}
+	scanConfig := provider.NewScanConfig(config)
 	validationLimits := provider.NewValidationLimits(config)
 	traversalConfig := provider.NewTraversalConfig(config)
 	tlsConfig := provider.NewTLSConfig(config)
-	mutationLogConfig := provider.NewMutationLogConfig(config)
-	registry := provider.NewPrometheusRegistry()
-	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig, graphCache)
-	mutationLogRuntime := provider.NewMutationLogRuntime(mutationLogConfig, domainMetrics)
-	log := provider.NewMutationLog(mutationLogRuntime)
-	clock := provider.NewHLCClock(replicationConfig)
-	lanternService := newLanternService(graphCache, scanConfig, searchConfig, replicationConfig, validationLimits, traversalConfig, tlsConfig, cacheConfig, observabilityConfig, logger, log, clock, domainMetrics)
+	lanternService := newLanternService(servingRuntime, scanConfig, searchConfig, replicationConfig, validationLimits, traversalConfig, tlsConfig, cacheConfig, observabilityConfig, logger, domainMetrics)
 	netConfig := provider.NewNetConfig(config)
-	listener, err := provider.NewListener(netConfig)
+	lanternReplicationService, err := newLanternReplicationService(servingRuntime, logger, domainMetrics, lanternService)
 	if err != nil {
-		return nil, err
+		cleanup()
+		return nil, nil, err
+	}
+	runtimeCertified, err := provider.NewRuntimeCertified(servingRuntime, lanternService, lanternReplicationService)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	listener, cleanup2, err := provider.NewListener(netConfig, runtimeCertified)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
 	}
 	corsConfig := provider.NewCORSConfig(config)
-	lanternReplicationService := newLanternReplicationService(log, graphCache, clock, logger, domainMetrics, lanternService)
 	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
 	rateLimitConfig := provider.NewRateLimitConfig(config)
 	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
@@ -53,33 +65,43 @@ func initializeApp() (*App, error) {
 	healthChecker := provider.NewHealthChecker()
 	lanternListener, err := provider.NewLanternListener(listener, netConfig, tlsConfig, observabilityConfig, corsConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, authInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger)
 	if err != nil {
-		return nil, err
+		cleanup2()
+		cleanup()
+		return nil, nil, err
 	}
 	shutdownConfig := provider.NewShutdownConfig(config)
 	lifecycleConfig := provider.NewLifecycleConfig(cacheConfig, shutdownConfig)
+	graphCache := provider.NewRuntimeGraph(servingRuntime)
 	lanternServer := service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphCache, lanternService, lanternReplicationService)
 	readinessConfig := provider.NewReadinessConfig(config)
 	peerConfig := provider.NewPeerConfig(config)
 	peerResolver := provider.NewPeerResolver(peerConfig, logger)
 	gate := provider.NewReadinessGate(readinessConfig, peerConfig, peerResolver, healthChecker)
-	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, gate, logger)
+	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, gate, logger, runtimeCertified)
 	tracing, err := provider.NewTracing(logger)
 	if err != nil {
-		return nil, err
+		cleanup2()
+		cleanup()
+		return nil, nil, err
 	}
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
-	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, authConfig, lanternService, graphCache, metrics, logger)
+	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, authConfig, lanternService, graphCache, metrics, logger, runtimeCertified)
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
 	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger)
-	backupConfig := provider.NewBackupConfig(config)
 	backupper := provider.NewBackupper(backupConfig, lanternService, registry, logger)
 	llmConfig := provider.NewLLMConfig(config)
 	llmEngine, err := provider.NewLLMEngine(llmConfig)
 	if err != nil {
-		return nil, err
+		cleanup2()
+		cleanup()
+		return nil, nil, err
 	}
+	domainMetricsWired := provider.WireDomainMetrics(graphCache, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, mutationLogRuntime, cacheGCHooksWired)
-	return app, nil
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, domainMetricsWired, cacheGCHooksWired)
+	return app, func() {
+		cleanup2()
+		cleanup()
+	}, nil
 }

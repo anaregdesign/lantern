@@ -15,9 +15,9 @@ import (
 )
 
 // receiptWALOwnedCandidate holds a fully replayed but unpublished image and
-// its live Log, clock/tip journals, and exclusive path lease. No production
-// provider installs it: a matching tip still cannot certify an archive cut,
-// endpoint generation, or the complete application publication boundary.
+// its live Log, clock/tip journals, and exclusive path lease. ServingRuntime
+// installs it only after binding endpoint-generation metadata and restoring
+// the HLC; a matching tip still cannot certify an archive cut on its own.
 type receiptWALOwnedCandidate struct {
 	state    *receiptWALRecoveryCandidate
 	logOwner io.Closer
@@ -48,8 +48,11 @@ func receiptWALTipBinding(epoch mutationreceipt.Epoch, policy [sha256.Size]byte)
 // strict effect-complete graph/receipt replay, a second Log/WAL resume pass,
 // and the returned owner's lifetime. The second pass keeps its writer open;
 // its bounded ring must exactly match the detached replay before return.
-// The caller must discard this candidate until a trusted complete WAL/archive
-// cut and endpoint generation have been certified elsewhere.
+// An optional preflight runs under that lease after policy validation but
+// before any journal can advance; the production runtime uses it to validate
+// endpoint-generation metadata without mutating a mismatched durable cut.
+// The caller must discard this candidate until the complete WAL cut and
+// endpoint generation have been certified elsewhere.
 func openLeasedReceiptWALCandidate(
 	path string,
 	config mutationreceipt.Config,
@@ -57,7 +60,11 @@ func openLeasedReceiptWALCandidate(
 	opts mutationlog.Options,
 	defaultTTL time.Duration,
 	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
+	preflight ...func(string, [sha256.Size]byte) error,
 ) (_ *receiptWALOwnedCandidate, err error) {
+	if len(preflight) > 1 {
+		return nil, fmt.Errorf("%w: at most one preflight is supported", errReceiptWALUnion)
+	}
 	lease, err := mutationlog.AcquireFileWALLease(path)
 	if err != nil {
 		return nil, err
@@ -77,11 +84,19 @@ func openLeasedReceiptWALCandidate(
 	if err != nil {
 		return nil, err
 	}
-	journal, err = mutationreceipt.ResumeClockJournal(lease.Path(), config.Epoch, policyStore.PolicyFingerprint())
+	policy := policyStore.PolicyFingerprint()
+	if len(preflight) == 1 && preflight[0] != nil {
+		if err := lease.WithPath(func(canonicalPath string) error {
+			return preflight[0](canonicalPath, policy)
+		}); err != nil {
+			return nil, err
+		}
+	}
+	journal, err = mutationreceipt.ResumeClockJournal(lease.Path(), config.Epoch, policy)
 	if err != nil {
 		return nil, fmt.Errorf("receipt WAL clock journal: %w", err)
 	}
-	tip, err = mutationlog.ResumeFileWALTipJournal(lease.Path(), receiptWALTipBinding(config.Epoch, policyStore.PolicyFingerprint()))
+	tip, err = mutationlog.ResumeFileWALTipJournal(lease.Path(), receiptWALTipBinding(config.Epoch, policy))
 	if err != nil {
 		return nil, fmt.Errorf("receipt WAL tip journal: %w", err)
 	}

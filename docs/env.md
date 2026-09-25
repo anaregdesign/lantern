@@ -62,7 +62,7 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_MUTATION_LOG_CAPACITY` | int | `100000` | Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds. |
 | `LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER` | int | `512` | Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped. |
 | `LANTERN_MUTEX_PROFILE_FRACTION` | int | `0` | runtime.SetMutexProfileFraction sampling rate (0 = disabled; has runtime cost). |
-| `LANTERN_NODE_ID` | string | (empty) | Stable 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset. |
+| `LANTERN_NODE_ID` | string | (empty) | Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes. |
 | `LANTERN_PEERS` | string | (empty) | Comma-separated static peer list (host:port) for the replication pump; empty = single instance. |
 | `LANTERN_PEER_DEFAULT_PORT` | string | `50051` | Port appended to DNS-discovered peer addresses. |
 | `LANTERN_PEER_DISCOVERY` | string | `static` | Peer discovery mode: static or dns. |
@@ -74,6 +74,12 @@ canonical in the [SearchVertices contract](search.md).
 | `LANTERN_PUMP_BACKOFF_MIN_MS` | int | `250` | Initial reconnect backoff after a peer session error, in milliseconds. |
 | `LANTERN_RATE_LIMIT_BURST` | int | `0` | Token-bucket burst size; when unset or <= 0 it resolves to 2x LANTERN_RATE_LIMIT_RPS. |
 | `LANTERN_RATE_LIMIT_RPS` | float | `0` | Process-wide token-bucket refill rate in requests/second (0 disables rate limiting). |
+| `LANTERN_RECEIPT_EPOCH` | string | (empty) | Nonzero 32-hex-character deployment epoch required by fresh/restart mode and immutable for restart. |
+| `LANTERN_RECEIPT_MAX_BYTES` | int | `0` | Positive retained-receipt logical-byte cap required by fresh/restart mode and immutable for restart. |
+| `LANTERN_RECEIPT_MAX_ENTRIES` | int | `0` | Positive retained-receipt entry cap required by fresh/restart mode and immutable for restart. |
+| `LANTERN_RECEIPT_RETENTION` | duration | `0s` | Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart. |
+| `LANTERN_RECEIPT_WAL_MODE` | string | `graph-only` | Private receipt-WAL runtime mode: graph-only (default), fresh, or restart; durable modes do not enable public receipt APIs. |
+| `LANTERN_RECEIPT_WAL_PATH` | string | (empty) | Absolute FileWAL path for fresh/restart mode; its .clock, .tip, .generation, and stable .lease sidecars share the same ownership boundary. |
 | `LANTERN_REFLECTION` | bool | `true` | Serve gRPC server reflection on the primary listener. |
 | `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |
 | `LANTERN_SCAN_MAX_LIMIT` | uint32 | `10000` | Ceiling a Scan* request's limit is clamped to. |

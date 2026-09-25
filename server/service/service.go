@@ -46,6 +46,7 @@ const ServiceName = "graph.v1.LanternService"
 // a fake without standing up the real cache.
 type LanternService struct {
 	cache                   Backend
+	runtime                 *ServingRuntime
 	scan                    ScanLimits
 	search                  SearchLimits
 	searchConfigFingerprint string

@@ -91,6 +91,7 @@ func NewReplicationPump(
 	cache *graphcache.GraphCache[string, *v1.Vertex],
 	m replication.Metrics,
 	logger *slog.Logger,
+	_ runtimeCertified,
 ) *replication.Pump {
 	cfg := replication.Config{
 		NodeID:                  rc.NodeID,

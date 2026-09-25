@@ -27,7 +27,8 @@ func (o *receiptFreshWALLogOwner) Close() error {
 // Close. Existing WAL/sidecars are never overwritten or silently interpreted
 // as fresh. A partial creation failure may leave files behind and must fail
 // closed on the next start rather than deleting uncertain durable bytes.
-// No production provider exposes this candidate or its receipt capability.
+// The production runtime must add and bind endpoint-generation metadata before
+// installing the candidate; the candidate itself exposes no receipt capability.
 func createLeasedReceiptWALCandidate(
 	path string,
 	config mutationreceipt.Config,
