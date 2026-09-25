@@ -170,9 +170,8 @@ export type MutationOp = Message<"graph.v1.MutationOp"> & {
     case: "replicatedReceiptEdgeDelete";
   } | {
     /**
-     * Private receipt-bearing Vertex Put/Delete envelopes retain each
-     * original request position and the receiver-local graph projection.
-     * Public write requests do not expose operation IDs yet.
+     * Receipt-bearing Vertex Put/Delete envelopes retain each original
+     * request position and the receiver-local graph projection.
      *
      * @generated from field: graph.v1.ReplicatedReceiptVertexPut replicated_receipt_vertex_put = 16;
      */
@@ -229,8 +228,8 @@ export const ReplicatedReceiptEdgeDeleteItemSchema: GenMessage<ReplicatedReceipt
  * A complete, ordered logical call. Mutation.seq/origin/hlc outside this
  * message are the sole causal coordinate. Receipt epoch and policy are kept
  * alongside the graph transition; no-op calls still consume that sequence.
- * This arm remains production-disabled until atomic follower replay,
- * receipt-bearing Snapshot, and recovery are available.
+ * Receipt-aware peers persist and relay this arm without projecting it into a
+ * graph-only Delete.
  *
  * @generated from message graph.v1.ReplicatedReceiptEdgeDelete
  */

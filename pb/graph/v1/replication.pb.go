@@ -615,9 +615,8 @@ type MutationOp_ReplicatedReceiptEdgeDelete struct {
 }
 
 type MutationOp_ReplicatedReceiptVertexPut struct {
-	// Private receipt-bearing Vertex Put/Delete envelopes retain each
-	// original request position and the receiver-local graph projection.
-	// Public write requests do not expose operation IDs yet.
+	// Receipt-bearing Vertex Put/Delete envelopes retain each original
+	// request position and the receiver-local graph projection.
 	ReplicatedReceiptVertexPut *ReplicatedReceiptVertexPut `protobuf:"bytes,16,opt,name=replicated_receipt_vertex_put,json=replicatedReceiptVertexPut,proto3,oneof"`
 }
 
@@ -725,8 +724,8 @@ func (x *ReplicatedReceiptEdgeDeleteItem) GetCausallyAccepted() bool {
 // A complete, ordered logical call. Mutation.seq/origin/hlc outside this
 // message are the sole causal coordinate. Receipt epoch and policy are kept
 // alongside the graph transition; no-op calls still consume that sequence.
-// This arm remains production-disabled until atomic follower replay,
-// receipt-bearing Snapshot, and recovery are available.
+// Receipt-aware peers persist and relay this arm without projecting it into a
+// graph-only Delete.
 type ReplicatedReceiptEdgeDelete struct {
 	state               protoimpl.MessageState             `protogen:"open.v1"`
 	DeploymentEpoch     []byte                             `protobuf:"bytes,1,opt,name=deployment_epoch,json=deploymentEpoch,proto3" json:"deployment_epoch,omitempty"`

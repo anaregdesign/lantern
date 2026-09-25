@@ -1545,8 +1545,6 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.PutEdgeRequest': $0.PutEdgeRequest$json,
   '.graph.v1.PutEdgesRequest': $0.PutEdgesRequest$json,
   '.graph.v1.DeleteEdgeRequest': $0.DeleteEdgeRequest$json,
-  '.graph.v1.MutationReceiptContext': $0.MutationReceiptContext$json,
-  '.graph.v1.ReceiptEndpoint': $0.ReceiptEndpoint$json,
   '.graph.v1.DeleteEdgesRequest': $0.DeleteEdgesRequest$json,
   '.graph.v1.EdgeKey': $0.EdgeKey$json,
   '.graph.v1.DeleteEdgesByPrefixRequest': $0.DeleteEdgesByPrefixRequest$json,

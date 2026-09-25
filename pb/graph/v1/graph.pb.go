@@ -634,6 +634,60 @@ func (SearchIndexHealth) EnumDescriptor() ([]byte, []int) {
 	return file_graph_v1_graph_proto_rawDescGZIP(), []int{9}
 }
 
+// ReceiptMutationKind identifies a mutation family supported by the public
+// durable receipt surface. Absence from supported_mutations means unsupported.
+type ReceiptMutationKind int32
+
+const (
+	ReceiptMutationKind_RECEIPT_MUTATION_KIND_UNSPECIFIED   ReceiptMutationKind = 0
+	ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX    ReceiptMutationKind = 1
+	ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX ReceiptMutationKind = 2
+	ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE   ReceiptMutationKind = 3
+)
+
+// Enum value maps for ReceiptMutationKind.
+var (
+	ReceiptMutationKind_name = map[int32]string{
+		0: "RECEIPT_MUTATION_KIND_UNSPECIFIED",
+		1: "RECEIPT_MUTATION_KIND_PUT_VERTEX",
+		2: "RECEIPT_MUTATION_KIND_DELETE_VERTEX",
+		3: "RECEIPT_MUTATION_KIND_DELETE_EDGE",
+	}
+	ReceiptMutationKind_value = map[string]int32{
+		"RECEIPT_MUTATION_KIND_UNSPECIFIED":   0,
+		"RECEIPT_MUTATION_KIND_PUT_VERTEX":    1,
+		"RECEIPT_MUTATION_KIND_DELETE_VERTEX": 2,
+		"RECEIPT_MUTATION_KIND_DELETE_EDGE":   3,
+	}
+)
+
+func (x ReceiptMutationKind) Enum() *ReceiptMutationKind {
+	p := new(ReceiptMutationKind)
+	*p = x
+	return p
+}
+
+func (x ReceiptMutationKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ReceiptMutationKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_graph_v1_graph_proto_enumTypes[10].Descriptor()
+}
+
+func (ReceiptMutationKind) Type() protoreflect.EnumType {
+	return &file_graph_v1_graph_proto_enumTypes[10]
+}
+
+func (x ReceiptMutationKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ReceiptMutationKind.Descriptor instead.
+func (ReceiptMutationKind) EnumDescriptor() ([]byte, []int) {
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{10}
+}
+
 // MutationReceiptState is a read-only observation on the serving replica.
 // NOT_YET_OBSERVED is never proof that the mutation was not executed elsewhere.
 type MutationReceiptState int32
@@ -672,11 +726,11 @@ func (x MutationReceiptState) String() string {
 }
 
 func (MutationReceiptState) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[10].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[11].Descriptor()
 }
 
 func (MutationReceiptState) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[10]
+	return &file_graph_v1_graph_proto_enumTypes[11]
 }
 
 func (x MutationReceiptState) Number() protoreflect.EnumNumber {
@@ -685,7 +739,7 @@ func (x MutationReceiptState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MutationReceiptState.Descriptor instead.
 func (MutationReceiptState) EnumDescriptor() ([]byte, []int) {
-	return file_graph_v1_graph_proto_rawDescGZIP(), []int{10}
+	return file_graph_v1_graph_proto_rawDescGZIP(), []int{11}
 }
 
 // Direction selects which incident edges count toward a vertex's degree.
@@ -730,11 +784,11 @@ func (x TopVerticesByDegreeRequest_Direction) String() string {
 }
 
 func (TopVerticesByDegreeRequest_Direction) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[11].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[12].Descriptor()
 }
 
 func (TopVerticesByDegreeRequest_Direction) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[11]
+	return &file_graph_v1_graph_proto_enumTypes[12]
 }
 
 func (x TopVerticesByDegreeRequest_Direction) Number() protoreflect.EnumNumber {
@@ -793,11 +847,11 @@ func (x ReplicationPeer_State) String() string {
 }
 
 func (ReplicationPeer_State) Descriptor() protoreflect.EnumDescriptor {
-	return file_graph_v1_graph_proto_enumTypes[12].Descriptor()
+	return file_graph_v1_graph_proto_enumTypes[13].Descriptor()
 }
 
 func (ReplicationPeer_State) Type() protoreflect.EnumType {
-	return &file_graph_v1_graph_proto_enumTypes[12]
+	return &file_graph_v1_graph_proto_enumTypes[13]
 }
 
 func (x ReplicationPeer_State) Number() protoreflect.EnumNumber {
@@ -1833,9 +1887,12 @@ type PutVertexRequest struct {
 	Vertex *Vertex                `protobuf:"bytes,1,opt,name=vertex,proto3" json:"vertex,omitempty"`
 	// When true, the write applies only if no live vertex exists at the key.
 	// An existing live vertex leaves value and expiration untouched (SET NX).
-	IfAbsent      bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IfAbsent bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
+	// Optional receipt context for one durable, status-queryable operation.
+	// When absent, this is an intentional receipt-less online Put.
+	ReceiptContext *MutationReceiptContext `protobuf:"bytes,3,opt,name=receipt_context,json=receiptContext,proto3" json:"receipt_context,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PutVertexRequest) Reset() {
@@ -1880,6 +1937,13 @@ func (x *PutVertexRequest) GetIfAbsent() bool {
 		return x.IfAbsent
 	}
 	return false
+}
+
+func (x *PutVertexRequest) GetReceiptContext() *MutationReceiptContext {
+	if x != nil {
+		return x.ReceiptContext
+	}
+	return nil
 }
 
 type PutVertexResponse struct {
@@ -1936,9 +2000,13 @@ type PutVerticesRequest struct {
 	// When true, each write applies only if no live vertex exists at its key;
 	// keys with a live vertex are left untouched and reported as
 	// PUT_OUTCOME_CONDITION_NOT_MET at the matching response index.
-	IfAbsent      bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IfAbsent bool `protobuf:"varint,2,opt,name=if_absent,json=ifAbsent,proto3" json:"if_absent,omitempty"`
+	// Optional durable receipt context. operation_ids must be index-aligned
+	// with vertices. When absent, this is an intentional receipt-less online
+	// Put with no receipt/status guarantee.
+	ReceiptContext *MutationReceiptContext `protobuf:"bytes,3,opt,name=receipt_context,json=receiptContext,proto3" json:"receipt_context,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PutVerticesRequest) Reset() {
@@ -1983,6 +2051,13 @@ func (x *PutVerticesRequest) GetIfAbsent() bool {
 		return x.IfAbsent
 	}
 	return false
+}
+
+func (x *PutVerticesRequest) GetReceiptContext() *MutationReceiptContext {
+	if x != nil {
+		return x.ReceiptContext
+	}
+	return nil
 }
 
 type PutVerticesResponse struct {
@@ -2037,10 +2112,13 @@ func (x *PutVerticesResponse) GetOutcomes() []PutOutcome {
 // orphaned (tail, head) rows on its next tick, and reads against missing
 // endpoints return NotFound in the meantime.
 type DeleteVertexRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Optional receipt context for one durable, status-queryable operation.
+	// When absent, this is an intentional receipt-less online Delete.
+	ReceiptContext *MutationReceiptContext `protobuf:"bytes,2,opt,name=receipt_context,json=receiptContext,proto3" json:"receipt_context,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DeleteVertexRequest) Reset() {
@@ -2078,6 +2156,13 @@ func (x *DeleteVertexRequest) GetKey() string {
 		return x.Key
 	}
 	return ""
+}
+
+func (x *DeleteVertexRequest) GetReceiptContext() *MutationReceiptContext {
+	if x != nil {
+		return x.ReceiptContext
+	}
+	return nil
 }
 
 type DeleteVertexResponse struct {
@@ -2129,10 +2214,14 @@ func (x *DeleteVertexResponse) GetExisted() bool {
 // cascade semantics as DeleteVertex (edges reaped lazily by the GC loop).
 // Subject to the same MaxBatchSize / MaxKeyLen guard rails as the put RPCs.
 type DeleteVerticesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Keys  []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	// Optional durable receipt context. operation_ids must be index-aligned
+	// with keys. When absent, this is an intentional receipt-less online
+	// Delete with no receipt/status guarantee.
+	ReceiptContext *MutationReceiptContext `protobuf:"bytes,2,opt,name=receipt_context,json=receiptContext,proto3" json:"receipt_context,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DeleteVerticesRequest) Reset() {
@@ -2168,6 +2257,13 @@ func (*DeleteVerticesRequest) Descriptor() ([]byte, []int) {
 func (x *DeleteVerticesRequest) GetKeys() []string {
 	if x != nil {
 		return x.Keys
+	}
+	return nil
+}
+
+func (x *DeleteVerticesRequest) GetReceiptContext() *MutationReceiptContext {
+	if x != nil {
+		return x.ReceiptContext
 	}
 	return nil
 }
@@ -5748,8 +5844,10 @@ type GetReceiptCapabilityResponse struct {
 	Policy          *ReceiptPolicy   `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
 	Endpoint        *ReceiptEndpoint `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	ServerNowUnixMs uint64           `protobuf:"varint,4,opt,name=server_now_unix_ms,json=serverNowUnixMs,proto3" json:"server_now_unix_ms,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Stable ascending list of mutation families enabled at this endpoint.
+	SupportedMutations []ReceiptMutationKind `protobuf:"varint,5,rep,packed,name=supported_mutations,json=supportedMutations,proto3,enum=graph.v1.ReceiptMutationKind" json:"supported_mutations,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GetReceiptCapabilityResponse) Reset() {
@@ -5808,6 +5906,13 @@ func (x *GetReceiptCapabilityResponse) GetServerNowUnixMs() uint64 {
 		return x.ServerNowUnixMs
 	}
 	return 0
+}
+
+func (x *GetReceiptCapabilityResponse) GetSupportedMutations() []ReceiptMutationKind {
+	if x != nil {
+		return x.SupportedMutations
+	}
+	return nil
 }
 
 // ReceiptResult stores the original public result, not the current graph
@@ -6204,8 +6309,8 @@ func (x *GetReceiptStatusesRequest) GetOperationIds() [][]byte {
 type GetReceiptStatusesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Index-aligned with operation_ids, including duplicate IDs. An invalid
-	// request fails as a whole; a future implementation must not return a
-	// partial list or silently interpret absence as NO_LONGER_PROVABLE.
+	// request fails as a whole; the server never returns a partial list or
+	// silently interprets absence as NO_LONGER_PROVABLE.
 	Statuses      []*ReceiptStatus `protobuf:"bytes,1,rep,name=statuses,proto3" json:"statuses,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6512,23 +6617,27 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\"]\n" +
 	"\x13GetVerticesResponse\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x18\n" +
-	"\amissing\x18\x02 \x03(\tR\amissing\"Y\n" +
+	"\amissing\x18\x02 \x03(\tR\amissing\"\xa4\x01\n" +
 	"\x10PutVertexRequest\x12(\n" +
 	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\x12\x1b\n" +
-	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\"C\n" +
+	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\x12I\n" +
+	"\x0freceipt_context\x18\x03 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"C\n" +
 	"\x11PutVertexResponse\x12.\n" +
-	"\aoutcome\x18\x01 \x01(\x0e2\x14.graph.v1.PutOutcomeR\aoutcome\"_\n" +
+	"\aoutcome\x18\x01 \x01(\x0e2\x14.graph.v1.PutOutcomeR\aoutcome\"\xaa\x01\n" +
 	"\x12PutVerticesRequest\x12,\n" +
 	"\bvertices\x18\x01 \x03(\v2\x10.graph.v1.VertexR\bvertices\x12\x1b\n" +
-	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\"G\n" +
+	"\tif_absent\x18\x02 \x01(\bR\bifAbsent\x12I\n" +
+	"\x0freceipt_context\x18\x03 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"G\n" +
 	"\x13PutVerticesResponse\x120\n" +
-	"\boutcomes\x18\x01 \x03(\x0e2\x14.graph.v1.PutOutcomeR\boutcomes\"'\n" +
+	"\boutcomes\x18\x01 \x03(\x0e2\x14.graph.v1.PutOutcomeR\boutcomes\"r\n" +
 	"\x13DeleteVertexRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"0\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12I\n" +
+	"\x0freceipt_context\x18\x02 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"0\n" +
 	"\x14DeleteVertexResponse\x12\x18\n" +
-	"\aexisted\x18\x01 \x01(\bR\aexisted\"+\n" +
+	"\aexisted\x18\x01 \x01(\bR\aexisted\"v\n" +
 	"\x15DeleteVerticesRequest\x12\x12\n" +
-	"\x04keys\x18\x01 \x03(\tR\x04keys\"L\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\x12I\n" +
+	"\x0freceipt_context\x18\x02 \x01(\v2 .graph.v1.MutationReceiptContextR\x0ereceiptContext\"L\n" +
 	"\x16DeleteVerticesResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\x05R\adeleted\x12\x18\n" +
 	"\aexisted\x18\x02 \x03(\bR\aexisted\"\x86\x01\n" +
@@ -6803,12 +6912,13 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\roperation_ids\x18\x01 \x03(\fR\foperationIds\x12&\n" +
 	"\x0flogical_call_id\x18\x02 \x01(\fR\rlogicalCallId\x125\n" +
 	"\bendpoint\x18\x03 \x01(\v2\x19.graph.v1.ReceiptEndpointR\bendpoint\"\x1d\n" +
-	"\x1bGetReceiptCapabilityRequest\"\xcd\x01\n" +
+	"\x1bGetReceiptCapabilityRequest\"\x9d\x02\n" +
 	"\x1cGetReceiptCapabilityResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12/\n" +
 	"\x06policy\x18\x02 \x01(\v2\x17.graph.v1.ReceiptPolicyR\x06policy\x125\n" +
 	"\bendpoint\x18\x03 \x01(\v2\x19.graph.v1.ReceiptEndpointR\bendpoint\x12+\n" +
-	"\x12server_now_unix_ms\x18\x04 \x01(\x04R\x0fserverNowUnixMs\"\xc7\x01\n" +
+	"\x12server_now_unix_ms\x18\x04 \x01(\x04R\x0fserverNowUnixMs\x12N\n" +
+	"\x13supported_mutations\x18\x05 \x03(\x0e2\x1d.graph.v1.ReceiptMutationKindR\x12supportedMutations\"\xc7\x01\n" +
 	"\rReceiptResult\x120\n" +
 	"\x13delete_edge_existed\x18\x01 \x01(\bH\x00R\x11deleteEdgeExisted\x12D\n" +
 	"\x12put_vertex_outcome\x18\x02 \x01(\x0e2\x14.graph.v1.PutOutcomeH\x00R\x10putVertexOutcome\x124\n" +
@@ -6896,7 +7006,12 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\x1fSEARCH_INDEX_HEALTH_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cSEARCH_INDEX_HEALTH_DISABLED\x10\x01\x12\x1f\n" +
 	"\x1bSEARCH_INDEX_HEALTH_HEALTHY\x10\x02\x12\"\n" +
-	"\x1eSEARCH_INDEX_HEALTH_INCOMPLETE\x10\x03*\xc0\x01\n" +
+	"\x1eSEARCH_INDEX_HEALTH_INCOMPLETE\x10\x03*\xb2\x01\n" +
+	"\x13ReceiptMutationKind\x12%\n" +
+	"!RECEIPT_MUTATION_KIND_UNSPECIFIED\x10\x00\x12$\n" +
+	" RECEIPT_MUTATION_KIND_PUT_VERTEX\x10\x01\x12'\n" +
+	"#RECEIPT_MUTATION_KIND_DELETE_VERTEX\x10\x02\x12%\n" +
+	"!RECEIPT_MUTATION_KIND_DELETE_EDGE\x10\x03*\xc0\x01\n" +
 	"\x14MutationReceiptState\x12&\n" +
 	"\"MUTATION_RECEIPT_STATE_UNSPECIFIED\x10\x00\x12$\n" +
 	" MUTATION_RECEIPT_STATE_CONFIRMED\x10\x01\x12+\n" +
@@ -6949,7 +7064,7 @@ func file_graph_v1_graph_proto_rawDescGZIP() []byte {
 	return file_graph_v1_graph_proto_rawDescData
 }
 
-var file_graph_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
+var file_graph_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 14)
 var file_graph_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 80)
 var file_graph_v1_graph_proto_goTypes = []any{
 	(Reduction)(0),                            // 0: graph.v1.Reduction
@@ -6962,231 +7077,237 @@ var file_graph_v1_graph_proto_goTypes = []any{
 	(SearchHitProjectionStatus)(0),            // 7: graph.v1.SearchHitProjectionStatus
 	(SearchErrorReason)(0),                    // 8: graph.v1.SearchErrorReason
 	(SearchIndexHealth)(0),                    // 9: graph.v1.SearchIndexHealth
-	(MutationReceiptState)(0),                 // 10: graph.v1.MutationReceiptState
-	(TopVerticesByDegreeRequest_Direction)(0), // 11: graph.v1.TopVerticesByDegreeRequest.Direction
-	(ReplicationPeer_State)(0),                // 12: graph.v1.ReplicationPeer.State
-	(*Vertex)(nil),                            // 13: graph.v1.Vertex
-	(*Edge)(nil),                              // 14: graph.v1.Edge
-	(*Graph)(nil),                             // 15: graph.v1.Graph
-	(*IlluminateRequest)(nil),                 // 16: graph.v1.IlluminateRequest
-	(*BfsParams)(nil),                         // 17: graph.v1.BfsParams
-	(*LocalCommunityParams)(nil),              // 18: graph.v1.LocalCommunityParams
-	(*PprParams)(nil),                         // 19: graph.v1.PprParams
-	(*IlluminateResponse)(nil),                // 20: graph.v1.IlluminateResponse
-	(*GetVertexRequest)(nil),                  // 21: graph.v1.GetVertexRequest
-	(*GetVertexResponse)(nil),                 // 22: graph.v1.GetVertexResponse
-	(*GetVerticesRequest)(nil),                // 23: graph.v1.GetVerticesRequest
-	(*GetVerticesResponse)(nil),               // 24: graph.v1.GetVerticesResponse
-	(*PutVertexRequest)(nil),                  // 25: graph.v1.PutVertexRequest
-	(*PutVertexResponse)(nil),                 // 26: graph.v1.PutVertexResponse
-	(*PutVerticesRequest)(nil),                // 27: graph.v1.PutVerticesRequest
-	(*PutVerticesResponse)(nil),               // 28: graph.v1.PutVerticesResponse
-	(*DeleteVertexRequest)(nil),               // 29: graph.v1.DeleteVertexRequest
-	(*DeleteVertexResponse)(nil),              // 30: graph.v1.DeleteVertexResponse
-	(*DeleteVerticesRequest)(nil),             // 31: graph.v1.DeleteVerticesRequest
-	(*DeleteVerticesResponse)(nil),            // 32: graph.v1.DeleteVerticesResponse
-	(*ScanVerticesRequest)(nil),               // 33: graph.v1.ScanVerticesRequest
-	(*ScanVerticesResponse)(nil),              // 34: graph.v1.ScanVerticesResponse
-	(*ScanVertexKeysRequest)(nil),             // 35: graph.v1.ScanVertexKeysRequest
-	(*ScanVertexKeysResponse)(nil),            // 36: graph.v1.ScanVertexKeysResponse
-	(*SearchOptions)(nil),                     // 37: graph.v1.SearchOptions
-	(*SearchVerticesRequest)(nil),             // 38: graph.v1.SearchVerticesRequest
-	(*SearchVerticesResponse)(nil),            // 39: graph.v1.SearchVerticesResponse
-	(*SearchHit)(nil),                         // 40: graph.v1.SearchHit
-	(*CountVerticesByPrefixRequest)(nil),      // 41: graph.v1.CountVerticesByPrefixRequest
-	(*CountVerticesByPrefixResponse)(nil),     // 42: graph.v1.CountVerticesByPrefixResponse
-	(*DeleteVerticesByPrefixRequest)(nil),     // 43: graph.v1.DeleteVerticesByPrefixRequest
-	(*DeleteVerticesByPrefixResponse)(nil),    // 44: graph.v1.DeleteVerticesByPrefixResponse
-	(*TopVerticesByDegreeRequest)(nil),        // 45: graph.v1.TopVerticesByDegreeRequest
-	(*TopVerticesByDegreeResponse)(nil),       // 46: graph.v1.TopVerticesByDegreeResponse
-	(*GetEdgeRequest)(nil),                    // 47: graph.v1.GetEdgeRequest
-	(*GetEdgeResponse)(nil),                   // 48: graph.v1.GetEdgeResponse
-	(*GetEdgesRequest)(nil),                   // 49: graph.v1.GetEdgesRequest
-	(*GetEdgesResponse)(nil),                  // 50: graph.v1.GetEdgesResponse
-	(*DeleteEdgeRequest)(nil),                 // 51: graph.v1.DeleteEdgeRequest
-	(*DeleteEdgeResponse)(nil),                // 52: graph.v1.DeleteEdgeResponse
-	(*EdgeKey)(nil),                           // 53: graph.v1.EdgeKey
-	(*ScanEdgesRequest)(nil),                  // 54: graph.v1.ScanEdgesRequest
-	(*ScanEdgesResponse)(nil),                 // 55: graph.v1.ScanEdgesResponse
-	(*DeleteEdgesRequest)(nil),                // 56: graph.v1.DeleteEdgesRequest
-	(*DeleteEdgesResponse)(nil),               // 57: graph.v1.DeleteEdgesResponse
-	(*DeleteEdgesByPrefixRequest)(nil),        // 58: graph.v1.DeleteEdgesByPrefixRequest
-	(*DeleteEdgesByPrefixResponse)(nil),       // 59: graph.v1.DeleteEdgesByPrefixResponse
-	(*AddEdgeRequest)(nil),                    // 60: graph.v1.AddEdgeRequest
-	(*AddEdgeResponse)(nil),                   // 61: graph.v1.AddEdgeResponse
-	(*AddEdgesRequest)(nil),                   // 62: graph.v1.AddEdgesRequest
-	(*AddEdgesResponse)(nil),                  // 63: graph.v1.AddEdgesResponse
-	(*PutEdgeRequest)(nil),                    // 64: graph.v1.PutEdgeRequest
-	(*PutEdgeResponse)(nil),                   // 65: graph.v1.PutEdgeResponse
-	(*PutEdgesRequest)(nil),                   // 66: graph.v1.PutEdgesRequest
-	(*PutEdgesResponse)(nil),                  // 67: graph.v1.PutEdgesResponse
-	(*GetServerStatusRequest)(nil),            // 68: graph.v1.GetServerStatusRequest
-	(*SearchErrorDetail)(nil),                 // 69: graph.v1.SearchErrorDetail
-	(*SearchCapabilities)(nil),                // 70: graph.v1.SearchCapabilities
-	(*SearchIndexStats)(nil),                  // 71: graph.v1.SearchIndexStats
-	(*CausalMetadataKindStatus)(nil),          // 72: graph.v1.CausalMetadataKindStatus
-	(*CausalMetadataStatus)(nil),              // 73: graph.v1.CausalMetadataStatus
-	(*GetServerStatusResponse)(nil),           // 74: graph.v1.GetServerStatusResponse
-	(*ReplicationPeer)(nil),                   // 75: graph.v1.ReplicationPeer
-	(*GetReplicationStatusRequest)(nil),       // 76: graph.v1.GetReplicationStatusRequest
-	(*GetReplicationStatusResponse)(nil),      // 77: graph.v1.GetReplicationStatusResponse
-	(*ReceiptPolicy)(nil),                     // 78: graph.v1.ReceiptPolicy
-	(*ReceiptEndpoint)(nil),                   // 79: graph.v1.ReceiptEndpoint
-	(*MutationReceiptContext)(nil),            // 80: graph.v1.MutationReceiptContext
-	(*GetReceiptCapabilityRequest)(nil),       // 81: graph.v1.GetReceiptCapabilityRequest
-	(*GetReceiptCapabilityResponse)(nil),      // 82: graph.v1.GetReceiptCapabilityResponse
-	(*ReceiptResult)(nil),                     // 83: graph.v1.ReceiptResult
-	(*MutationReceipt)(nil),                   // 84: graph.v1.MutationReceipt
-	(*ReceiptStatus)(nil),                     // 85: graph.v1.ReceiptStatus
-	(*GetReceiptStatusRequest)(nil),           // 86: graph.v1.GetReceiptStatusRequest
-	(*GetReceiptStatusResponse)(nil),          // 87: graph.v1.GetReceiptStatusResponse
-	(*GetReceiptStatusesRequest)(nil),         // 88: graph.v1.GetReceiptStatusesRequest
-	(*GetReceiptStatusesResponse)(nil),        // 89: graph.v1.GetReceiptStatusesResponse
-	(*BackupSnapshotRequest)(nil),             // 90: graph.v1.BackupSnapshotRequest
-	(*BackupSnapshotResponse)(nil),            // 91: graph.v1.BackupSnapshotResponse
-	(*TopVerticesByDegreeResponse_Entry)(nil), // 92: graph.v1.TopVerticesByDegreeResponse.Entry
-	(*timestamppb.Timestamp)(nil),             // 93: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),               // 94: google.protobuf.Duration
+	(ReceiptMutationKind)(0),                  // 10: graph.v1.ReceiptMutationKind
+	(MutationReceiptState)(0),                 // 11: graph.v1.MutationReceiptState
+	(TopVerticesByDegreeRequest_Direction)(0), // 12: graph.v1.TopVerticesByDegreeRequest.Direction
+	(ReplicationPeer_State)(0),                // 13: graph.v1.ReplicationPeer.State
+	(*Vertex)(nil),                            // 14: graph.v1.Vertex
+	(*Edge)(nil),                              // 15: graph.v1.Edge
+	(*Graph)(nil),                             // 16: graph.v1.Graph
+	(*IlluminateRequest)(nil),                 // 17: graph.v1.IlluminateRequest
+	(*BfsParams)(nil),                         // 18: graph.v1.BfsParams
+	(*LocalCommunityParams)(nil),              // 19: graph.v1.LocalCommunityParams
+	(*PprParams)(nil),                         // 20: graph.v1.PprParams
+	(*IlluminateResponse)(nil),                // 21: graph.v1.IlluminateResponse
+	(*GetVertexRequest)(nil),                  // 22: graph.v1.GetVertexRequest
+	(*GetVertexResponse)(nil),                 // 23: graph.v1.GetVertexResponse
+	(*GetVerticesRequest)(nil),                // 24: graph.v1.GetVerticesRequest
+	(*GetVerticesResponse)(nil),               // 25: graph.v1.GetVerticesResponse
+	(*PutVertexRequest)(nil),                  // 26: graph.v1.PutVertexRequest
+	(*PutVertexResponse)(nil),                 // 27: graph.v1.PutVertexResponse
+	(*PutVerticesRequest)(nil),                // 28: graph.v1.PutVerticesRequest
+	(*PutVerticesResponse)(nil),               // 29: graph.v1.PutVerticesResponse
+	(*DeleteVertexRequest)(nil),               // 30: graph.v1.DeleteVertexRequest
+	(*DeleteVertexResponse)(nil),              // 31: graph.v1.DeleteVertexResponse
+	(*DeleteVerticesRequest)(nil),             // 32: graph.v1.DeleteVerticesRequest
+	(*DeleteVerticesResponse)(nil),            // 33: graph.v1.DeleteVerticesResponse
+	(*ScanVerticesRequest)(nil),               // 34: graph.v1.ScanVerticesRequest
+	(*ScanVerticesResponse)(nil),              // 35: graph.v1.ScanVerticesResponse
+	(*ScanVertexKeysRequest)(nil),             // 36: graph.v1.ScanVertexKeysRequest
+	(*ScanVertexKeysResponse)(nil),            // 37: graph.v1.ScanVertexKeysResponse
+	(*SearchOptions)(nil),                     // 38: graph.v1.SearchOptions
+	(*SearchVerticesRequest)(nil),             // 39: graph.v1.SearchVerticesRequest
+	(*SearchVerticesResponse)(nil),            // 40: graph.v1.SearchVerticesResponse
+	(*SearchHit)(nil),                         // 41: graph.v1.SearchHit
+	(*CountVerticesByPrefixRequest)(nil),      // 42: graph.v1.CountVerticesByPrefixRequest
+	(*CountVerticesByPrefixResponse)(nil),     // 43: graph.v1.CountVerticesByPrefixResponse
+	(*DeleteVerticesByPrefixRequest)(nil),     // 44: graph.v1.DeleteVerticesByPrefixRequest
+	(*DeleteVerticesByPrefixResponse)(nil),    // 45: graph.v1.DeleteVerticesByPrefixResponse
+	(*TopVerticesByDegreeRequest)(nil),        // 46: graph.v1.TopVerticesByDegreeRequest
+	(*TopVerticesByDegreeResponse)(nil),       // 47: graph.v1.TopVerticesByDegreeResponse
+	(*GetEdgeRequest)(nil),                    // 48: graph.v1.GetEdgeRequest
+	(*GetEdgeResponse)(nil),                   // 49: graph.v1.GetEdgeResponse
+	(*GetEdgesRequest)(nil),                   // 50: graph.v1.GetEdgesRequest
+	(*GetEdgesResponse)(nil),                  // 51: graph.v1.GetEdgesResponse
+	(*DeleteEdgeRequest)(nil),                 // 52: graph.v1.DeleteEdgeRequest
+	(*DeleteEdgeResponse)(nil),                // 53: graph.v1.DeleteEdgeResponse
+	(*EdgeKey)(nil),                           // 54: graph.v1.EdgeKey
+	(*ScanEdgesRequest)(nil),                  // 55: graph.v1.ScanEdgesRequest
+	(*ScanEdgesResponse)(nil),                 // 56: graph.v1.ScanEdgesResponse
+	(*DeleteEdgesRequest)(nil),                // 57: graph.v1.DeleteEdgesRequest
+	(*DeleteEdgesResponse)(nil),               // 58: graph.v1.DeleteEdgesResponse
+	(*DeleteEdgesByPrefixRequest)(nil),        // 59: graph.v1.DeleteEdgesByPrefixRequest
+	(*DeleteEdgesByPrefixResponse)(nil),       // 60: graph.v1.DeleteEdgesByPrefixResponse
+	(*AddEdgeRequest)(nil),                    // 61: graph.v1.AddEdgeRequest
+	(*AddEdgeResponse)(nil),                   // 62: graph.v1.AddEdgeResponse
+	(*AddEdgesRequest)(nil),                   // 63: graph.v1.AddEdgesRequest
+	(*AddEdgesResponse)(nil),                  // 64: graph.v1.AddEdgesResponse
+	(*PutEdgeRequest)(nil),                    // 65: graph.v1.PutEdgeRequest
+	(*PutEdgeResponse)(nil),                   // 66: graph.v1.PutEdgeResponse
+	(*PutEdgesRequest)(nil),                   // 67: graph.v1.PutEdgesRequest
+	(*PutEdgesResponse)(nil),                  // 68: graph.v1.PutEdgesResponse
+	(*GetServerStatusRequest)(nil),            // 69: graph.v1.GetServerStatusRequest
+	(*SearchErrorDetail)(nil),                 // 70: graph.v1.SearchErrorDetail
+	(*SearchCapabilities)(nil),                // 71: graph.v1.SearchCapabilities
+	(*SearchIndexStats)(nil),                  // 72: graph.v1.SearchIndexStats
+	(*CausalMetadataKindStatus)(nil),          // 73: graph.v1.CausalMetadataKindStatus
+	(*CausalMetadataStatus)(nil),              // 74: graph.v1.CausalMetadataStatus
+	(*GetServerStatusResponse)(nil),           // 75: graph.v1.GetServerStatusResponse
+	(*ReplicationPeer)(nil),                   // 76: graph.v1.ReplicationPeer
+	(*GetReplicationStatusRequest)(nil),       // 77: graph.v1.GetReplicationStatusRequest
+	(*GetReplicationStatusResponse)(nil),      // 78: graph.v1.GetReplicationStatusResponse
+	(*ReceiptPolicy)(nil),                     // 79: graph.v1.ReceiptPolicy
+	(*ReceiptEndpoint)(nil),                   // 80: graph.v1.ReceiptEndpoint
+	(*MutationReceiptContext)(nil),            // 81: graph.v1.MutationReceiptContext
+	(*GetReceiptCapabilityRequest)(nil),       // 82: graph.v1.GetReceiptCapabilityRequest
+	(*GetReceiptCapabilityResponse)(nil),      // 83: graph.v1.GetReceiptCapabilityResponse
+	(*ReceiptResult)(nil),                     // 84: graph.v1.ReceiptResult
+	(*MutationReceipt)(nil),                   // 85: graph.v1.MutationReceipt
+	(*ReceiptStatus)(nil),                     // 86: graph.v1.ReceiptStatus
+	(*GetReceiptStatusRequest)(nil),           // 87: graph.v1.GetReceiptStatusRequest
+	(*GetReceiptStatusResponse)(nil),          // 88: graph.v1.GetReceiptStatusResponse
+	(*GetReceiptStatusesRequest)(nil),         // 89: graph.v1.GetReceiptStatusesRequest
+	(*GetReceiptStatusesResponse)(nil),        // 90: graph.v1.GetReceiptStatusesResponse
+	(*BackupSnapshotRequest)(nil),             // 91: graph.v1.BackupSnapshotRequest
+	(*BackupSnapshotResponse)(nil),            // 92: graph.v1.BackupSnapshotResponse
+	(*TopVerticesByDegreeResponse_Entry)(nil), // 93: graph.v1.TopVerticesByDegreeResponse.Entry
+	(*timestamppb.Timestamp)(nil),             // 94: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),               // 95: google.protobuf.Duration
 }
 var file_graph_v1_graph_proto_depIdxs = []int32{
-	93,  // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
-	93,  // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
-	94,  // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
-	93,  // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
-	13,  // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
-	14,  // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
+	94,  // 0: graph.v1.Vertex.expiration:type_name -> google.protobuf.Timestamp
+	94,  // 1: graph.v1.Vertex.timestamp:type_name -> google.protobuf.Timestamp
+	95,  // 2: graph.v1.Vertex.duration:type_name -> google.protobuf.Duration
+	94,  // 3: graph.v1.Edge.expiration:type_name -> google.protobuf.Timestamp
+	14,  // 4: graph.v1.Graph.vertices:type_name -> graph.v1.Vertex
+	15,  // 5: graph.v1.Graph.edges:type_name -> graph.v1.Edge
 	2,   // 6: graph.v1.IlluminateRequest.weighting:type_name -> graph.v1.Weighting
-	17,  // 7: graph.v1.IlluminateRequest.bfs:type_name -> graph.v1.BfsParams
-	19,  // 8: graph.v1.IlluminateRequest.ppr:type_name -> graph.v1.PprParams
-	18,  // 9: graph.v1.IlluminateRequest.community:type_name -> graph.v1.LocalCommunityParams
+	18,  // 7: graph.v1.IlluminateRequest.bfs:type_name -> graph.v1.BfsParams
+	20,  // 8: graph.v1.IlluminateRequest.ppr:type_name -> graph.v1.PprParams
+	19,  // 9: graph.v1.IlluminateRequest.community:type_name -> graph.v1.LocalCommunityParams
 	1,   // 10: graph.v1.BfsParams.objective:type_name -> graph.v1.Objective
 	0,   // 11: graph.v1.BfsParams.reduction:type_name -> graph.v1.Reduction
 	0,   // 12: graph.v1.LocalCommunityParams.reduction:type_name -> graph.v1.Reduction
 	1,   // 13: graph.v1.LocalCommunityParams.objective:type_name -> graph.v1.Objective
-	15,  // 14: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
-	13,  // 15: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
-	13,  // 16: graph.v1.GetVerticesResponse.vertices:type_name -> graph.v1.Vertex
-	13,  // 17: graph.v1.PutVertexRequest.vertex:type_name -> graph.v1.Vertex
-	3,   // 18: graph.v1.PutVertexResponse.outcome:type_name -> graph.v1.PutOutcome
-	13,  // 19: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
-	3,   // 20: graph.v1.PutVerticesResponse.outcomes:type_name -> graph.v1.PutOutcome
-	4,   // 21: graph.v1.ScanVerticesRequest.order:type_name -> graph.v1.ScanOrder
-	13,  // 22: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
-	4,   // 23: graph.v1.ScanVertexKeysRequest.order:type_name -> graph.v1.ScanOrder
-	5,   // 24: graph.v1.SearchOptions.match_mode:type_name -> graph.v1.MatchMode
-	37,  // 25: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
-	6,   // 26: graph.v1.SearchVerticesRequest.projection:type_name -> graph.v1.SearchProjection
-	40,  // 27: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
-	13,  // 28: graph.v1.SearchHit.vertex:type_name -> graph.v1.Vertex
-	7,   // 29: graph.v1.SearchHit.projection_status:type_name -> graph.v1.SearchHitProjectionStatus
-	11,  // 30: graph.v1.TopVerticesByDegreeRequest.direction:type_name -> graph.v1.TopVerticesByDegreeRequest.Direction
-	92,  // 31: graph.v1.TopVerticesByDegreeResponse.entries:type_name -> graph.v1.TopVerticesByDegreeResponse.Entry
-	14,  // 32: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
-	53,  // 33: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	14,  // 34: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
-	53,  // 35: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
-	80,  // 36: graph.v1.DeleteEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	14,  // 37: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
-	53,  // 38: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
-	80,  // 39: graph.v1.DeleteEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
-	14,  // 40: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
-	14,  // 41: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
-	14,  // 42: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
-	3,   // 43: graph.v1.PutEdgeResponse.outcome:type_name -> graph.v1.PutOutcome
-	14,  // 44: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
-	3,   // 45: graph.v1.PutEdgesResponse.outcomes:type_name -> graph.v1.PutOutcome
-	8,   // 46: graph.v1.SearchErrorDetail.reason:type_name -> graph.v1.SearchErrorReason
-	5,   // 47: graph.v1.SearchCapabilities.default_match_mode:type_name -> graph.v1.MatchMode
-	71,  // 48: graph.v1.SearchCapabilities.index_stats:type_name -> graph.v1.SearchIndexStats
-	9,   // 49: graph.v1.SearchIndexStats.health:type_name -> graph.v1.SearchIndexHealth
-	94,  // 50: graph.v1.SearchIndexStats.last_rebuild_duration:type_name -> google.protobuf.Duration
-	94,  // 51: graph.v1.SearchIndexStats.last_expiration_purge_duration:type_name -> google.protobuf.Duration
-	93,  // 52: graph.v1.CausalMetadataKindStatus.oldest_retention_deadline:type_name -> google.protobuf.Timestamp
-	72,  // 53: graph.v1.CausalMetadataStatus.vertices:type_name -> graph.v1.CausalMetadataKindStatus
-	72,  // 54: graph.v1.CausalMetadataStatus.edges:type_name -> graph.v1.CausalMetadataKindStatus
-	93,  // 55: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
-	94,  // 56: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
-	94,  // 57: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
-	70,  // 58: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
-	73,  // 59: graph.v1.GetServerStatusResponse.causal_metadata:type_name -> graph.v1.CausalMetadataStatus
-	12,  // 60: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
-	93,  // 61: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
-	93,  // 62: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
-	75,  // 63: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
-	79,  // 64: graph.v1.MutationReceiptContext.endpoint:type_name -> graph.v1.ReceiptEndpoint
-	78,  // 65: graph.v1.GetReceiptCapabilityResponse.policy:type_name -> graph.v1.ReceiptPolicy
-	79,  // 66: graph.v1.GetReceiptCapabilityResponse.endpoint:type_name -> graph.v1.ReceiptEndpoint
-	3,   // 67: graph.v1.ReceiptResult.put_vertex_outcome:type_name -> graph.v1.PutOutcome
-	83,  // 68: graph.v1.MutationReceipt.original_result:type_name -> graph.v1.ReceiptResult
-	10,  // 69: graph.v1.ReceiptStatus.state:type_name -> graph.v1.MutationReceiptState
-	84,  // 70: graph.v1.ReceiptStatus.receipt:type_name -> graph.v1.MutationReceipt
-	85,  // 71: graph.v1.GetReceiptStatusResponse.status:type_name -> graph.v1.ReceiptStatus
-	85,  // 72: graph.v1.GetReceiptStatusesResponse.statuses:type_name -> graph.v1.ReceiptStatus
-	13,  // 73: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
-	14,  // 74: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
-	16,  // 75: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	21,  // 76: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	23,  // 77: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
-	25,  // 78: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	27,  // 79: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
-	29,  // 80: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	31,  // 81: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	33,  // 82: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
-	35,  // 83: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
-	38,  // 84: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
-	41,  // 85: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
-	43,  // 86: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
-	45,  // 87: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
-	47,  // 88: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	49,  // 89: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
-	60,  // 90: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	62,  // 91: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
-	64,  // 92: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	66,  // 93: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
-	51,  // 94: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	56,  // 95: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	58,  // 96: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
-	54,  // 97: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
-	68,  // 98: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
-	76,  // 99: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
-	81,  // 100: graph.v1.LanternService.GetReceiptCapability:input_type -> graph.v1.GetReceiptCapabilityRequest
-	86,  // 101: graph.v1.LanternService.GetReceiptStatus:input_type -> graph.v1.GetReceiptStatusRequest
-	88,  // 102: graph.v1.LanternService.GetReceiptStatuses:input_type -> graph.v1.GetReceiptStatusesRequest
-	90,  // 103: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
-	20,  // 104: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	22,  // 105: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	24,  // 106: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
-	26,  // 107: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	28,  // 108: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
-	30,  // 109: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	32,  // 110: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	34,  // 111: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
-	36,  // 112: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
-	39,  // 113: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
-	42,  // 114: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
-	44,  // 115: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
-	46,  // 116: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
-	48,  // 117: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	50,  // 118: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
-	61,  // 119: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	63,  // 120: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
-	65,  // 121: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	67,  // 122: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
-	52,  // 123: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	57,  // 124: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	59,  // 125: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
-	55,  // 126: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
-	74,  // 127: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
-	77,  // 128: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
-	82,  // 129: graph.v1.LanternService.GetReceiptCapability:output_type -> graph.v1.GetReceiptCapabilityResponse
-	87,  // 130: graph.v1.LanternService.GetReceiptStatus:output_type -> graph.v1.GetReceiptStatusResponse
-	89,  // 131: graph.v1.LanternService.GetReceiptStatuses:output_type -> graph.v1.GetReceiptStatusesResponse
-	91,  // 132: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
-	104, // [104:133] is the sub-list for method output_type
-	75,  // [75:104] is the sub-list for method input_type
-	75,  // [75:75] is the sub-list for extension type_name
-	75,  // [75:75] is the sub-list for extension extendee
-	0,   // [0:75] is the sub-list for field type_name
+	16,  // 14: graph.v1.IlluminateResponse.graph:type_name -> graph.v1.Graph
+	14,  // 15: graph.v1.GetVertexResponse.vertex:type_name -> graph.v1.Vertex
+	14,  // 16: graph.v1.GetVerticesResponse.vertices:type_name -> graph.v1.Vertex
+	14,  // 17: graph.v1.PutVertexRequest.vertex:type_name -> graph.v1.Vertex
+	81,  // 18: graph.v1.PutVertexRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	3,   // 19: graph.v1.PutVertexResponse.outcome:type_name -> graph.v1.PutOutcome
+	14,  // 20: graph.v1.PutVerticesRequest.vertices:type_name -> graph.v1.Vertex
+	81,  // 21: graph.v1.PutVerticesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	3,   // 22: graph.v1.PutVerticesResponse.outcomes:type_name -> graph.v1.PutOutcome
+	81,  // 23: graph.v1.DeleteVertexRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	81,  // 24: graph.v1.DeleteVerticesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	4,   // 25: graph.v1.ScanVerticesRequest.order:type_name -> graph.v1.ScanOrder
+	14,  // 26: graph.v1.ScanVerticesResponse.vertices:type_name -> graph.v1.Vertex
+	4,   // 27: graph.v1.ScanVertexKeysRequest.order:type_name -> graph.v1.ScanOrder
+	5,   // 28: graph.v1.SearchOptions.match_mode:type_name -> graph.v1.MatchMode
+	38,  // 29: graph.v1.SearchVerticesRequest.options:type_name -> graph.v1.SearchOptions
+	6,   // 30: graph.v1.SearchVerticesRequest.projection:type_name -> graph.v1.SearchProjection
+	41,  // 31: graph.v1.SearchVerticesResponse.hits:type_name -> graph.v1.SearchHit
+	14,  // 32: graph.v1.SearchHit.vertex:type_name -> graph.v1.Vertex
+	7,   // 33: graph.v1.SearchHit.projection_status:type_name -> graph.v1.SearchHitProjectionStatus
+	12,  // 34: graph.v1.TopVerticesByDegreeRequest.direction:type_name -> graph.v1.TopVerticesByDegreeRequest.Direction
+	93,  // 35: graph.v1.TopVerticesByDegreeResponse.entries:type_name -> graph.v1.TopVerticesByDegreeResponse.Entry
+	15,  // 36: graph.v1.GetEdgeResponse.edge:type_name -> graph.v1.Edge
+	54,  // 37: graph.v1.GetEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	15,  // 38: graph.v1.GetEdgesResponse.edges:type_name -> graph.v1.Edge
+	54,  // 39: graph.v1.GetEdgesResponse.missing:type_name -> graph.v1.EdgeKey
+	81,  // 40: graph.v1.DeleteEdgeRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	15,  // 41: graph.v1.ScanEdgesResponse.edges:type_name -> graph.v1.Edge
+	54,  // 42: graph.v1.DeleteEdgesRequest.edges:type_name -> graph.v1.EdgeKey
+	81,  // 43: graph.v1.DeleteEdgesRequest.receipt_context:type_name -> graph.v1.MutationReceiptContext
+	15,  // 44: graph.v1.AddEdgeRequest.edge:type_name -> graph.v1.Edge
+	15,  // 45: graph.v1.AddEdgesRequest.edges:type_name -> graph.v1.Edge
+	15,  // 46: graph.v1.PutEdgeRequest.edge:type_name -> graph.v1.Edge
+	3,   // 47: graph.v1.PutEdgeResponse.outcome:type_name -> graph.v1.PutOutcome
+	15,  // 48: graph.v1.PutEdgesRequest.edges:type_name -> graph.v1.Edge
+	3,   // 49: graph.v1.PutEdgesResponse.outcomes:type_name -> graph.v1.PutOutcome
+	8,   // 50: graph.v1.SearchErrorDetail.reason:type_name -> graph.v1.SearchErrorReason
+	5,   // 51: graph.v1.SearchCapabilities.default_match_mode:type_name -> graph.v1.MatchMode
+	72,  // 52: graph.v1.SearchCapabilities.index_stats:type_name -> graph.v1.SearchIndexStats
+	9,   // 53: graph.v1.SearchIndexStats.health:type_name -> graph.v1.SearchIndexHealth
+	95,  // 54: graph.v1.SearchIndexStats.last_rebuild_duration:type_name -> google.protobuf.Duration
+	95,  // 55: graph.v1.SearchIndexStats.last_expiration_purge_duration:type_name -> google.protobuf.Duration
+	94,  // 56: graph.v1.CausalMetadataKindStatus.oldest_retention_deadline:type_name -> google.protobuf.Timestamp
+	73,  // 57: graph.v1.CausalMetadataStatus.vertices:type_name -> graph.v1.CausalMetadataKindStatus
+	73,  // 58: graph.v1.CausalMetadataStatus.edges:type_name -> graph.v1.CausalMetadataKindStatus
+	94,  // 59: graph.v1.GetServerStatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	95,  // 60: graph.v1.GetServerStatusResponse.uptime:type_name -> google.protobuf.Duration
+	95,  // 61: graph.v1.GetServerStatusResponse.default_ttl:type_name -> google.protobuf.Duration
+	71,  // 62: graph.v1.GetServerStatusResponse.search:type_name -> graph.v1.SearchCapabilities
+	74,  // 63: graph.v1.GetServerStatusResponse.causal_metadata:type_name -> graph.v1.CausalMetadataStatus
+	13,  // 64: graph.v1.ReplicationPeer.state:type_name -> graph.v1.ReplicationPeer.State
+	94,  // 65: graph.v1.ReplicationPeer.last_event_at:type_name -> google.protobuf.Timestamp
+	94,  // 66: graph.v1.GetReplicationStatusResponse.local_now:type_name -> google.protobuf.Timestamp
+	76,  // 67: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
+	80,  // 68: graph.v1.MutationReceiptContext.endpoint:type_name -> graph.v1.ReceiptEndpoint
+	79,  // 69: graph.v1.GetReceiptCapabilityResponse.policy:type_name -> graph.v1.ReceiptPolicy
+	80,  // 70: graph.v1.GetReceiptCapabilityResponse.endpoint:type_name -> graph.v1.ReceiptEndpoint
+	10,  // 71: graph.v1.GetReceiptCapabilityResponse.supported_mutations:type_name -> graph.v1.ReceiptMutationKind
+	3,   // 72: graph.v1.ReceiptResult.put_vertex_outcome:type_name -> graph.v1.PutOutcome
+	84,  // 73: graph.v1.MutationReceipt.original_result:type_name -> graph.v1.ReceiptResult
+	11,  // 74: graph.v1.ReceiptStatus.state:type_name -> graph.v1.MutationReceiptState
+	85,  // 75: graph.v1.ReceiptStatus.receipt:type_name -> graph.v1.MutationReceipt
+	86,  // 76: graph.v1.GetReceiptStatusResponse.status:type_name -> graph.v1.ReceiptStatus
+	86,  // 77: graph.v1.GetReceiptStatusesResponse.statuses:type_name -> graph.v1.ReceiptStatus
+	14,  // 78: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
+	15,  // 79: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
+	17,  // 80: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	22,  // 81: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	24,  // 82: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
+	26,  // 83: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	28,  // 84: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
+	30,  // 85: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	32,  // 86: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	34,  // 87: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
+	36,  // 88: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
+	39,  // 89: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
+	42,  // 90: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
+	44,  // 91: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
+	46,  // 92: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
+	48,  // 93: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	50,  // 94: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
+	61,  // 95: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	63,  // 96: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
+	65,  // 97: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	67,  // 98: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
+	52,  // 99: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	57,  // 100: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	59,  // 101: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
+	55,  // 102: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
+	69,  // 103: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
+	77,  // 104: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
+	82,  // 105: graph.v1.LanternService.GetReceiptCapability:input_type -> graph.v1.GetReceiptCapabilityRequest
+	87,  // 106: graph.v1.LanternService.GetReceiptStatus:input_type -> graph.v1.GetReceiptStatusRequest
+	89,  // 107: graph.v1.LanternService.GetReceiptStatuses:input_type -> graph.v1.GetReceiptStatusesRequest
+	91,  // 108: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
+	21,  // 109: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	23,  // 110: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	25,  // 111: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
+	27,  // 112: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	29,  // 113: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
+	31,  // 114: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	33,  // 115: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	35,  // 116: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
+	37,  // 117: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
+	40,  // 118: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
+	43,  // 119: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
+	45,  // 120: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
+	47,  // 121: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
+	49,  // 122: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	51,  // 123: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
+	62,  // 124: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	64,  // 125: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
+	66,  // 126: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	68,  // 127: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
+	53,  // 128: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	58,  // 129: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	60,  // 130: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
+	56,  // 131: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
+	75,  // 132: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
+	78,  // 133: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
+	83,  // 134: graph.v1.LanternService.GetReceiptCapability:output_type -> graph.v1.GetReceiptCapabilityResponse
+	88,  // 135: graph.v1.LanternService.GetReceiptStatus:output_type -> graph.v1.GetReceiptStatusResponse
+	90,  // 136: graph.v1.LanternService.GetReceiptStatuses:output_type -> graph.v1.GetReceiptStatusesResponse
+	92,  // 137: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
+	109, // [109:138] is the sub-list for method output_type
+	80,  // [80:109] is the sub-list for method input_type
+	80,  // [80:80] is the sub-list for extension type_name
+	80,  // [80:80] is the sub-list for extension extendee
+	0,   // [0:80] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }
@@ -7227,7 +7348,7 @@ func file_graph_v1_graph_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_graph_proto_rawDesc), len(file_graph_v1_graph_proto_rawDesc)),
-			NumEnums:      13,
+			NumEnums:      14,
 			NumMessages:   80,
 			NumExtensions: 0,
 			NumServices:   1,
