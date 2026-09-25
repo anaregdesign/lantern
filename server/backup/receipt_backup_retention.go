@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"container/heap"
 	"errors"
 	"fmt"
 	"os"
@@ -12,16 +13,16 @@ import (
 )
 
 func (b *Backupper) nextReceiptBackupSetID(at time.Time) (uint64, error) {
-	entries, err := b.fs.readDir(b.cfg.Dir)
-	if err != nil {
-		return 0, fmt.Errorf("backup: read receipt backup directory %s: %w", b.cfg.Dir, err)
-	}
 	var maxID uint64
-	for _, entry := range entries {
+	err := b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
 		id, _, _, ok := parseOwnReceiptBackupSetName(entry.Name(), b.cfg.InstanceID)
 		if ok && id > maxID {
 			maxID = id
 		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("backup: scan receipt backup directory %s for next ID: %w", b.cfg.Dir, err)
 	}
 	if b.lastSetID > maxID {
 		maxID = b.lastSetID
@@ -46,14 +47,31 @@ const (
 	receiptBackupSetUnknownFile receiptBackupSetFileKind = iota
 	receiptBackupSetArchiveFile
 	receiptBackupSetWALCutFile
+	receiptBackupSetRetiredCatalogFile
 	receiptBackupSetManifestFile
+	receiptBackupSetUnsupportedManifestFile
 	receiptBackupSetTempFile
 )
 
 func parseOwnReceiptBackupSetName(
 	name, instance string,
 ) (id uint64, base string, kind receiptBackupSetFileKind, ok bool) {
-	prefix := receiptBackupSetPrefix + receiptBackupSetScope(instance) + "-"
+	scope := receiptBackupSetScope(instance)
+	for _, obsolete := range receiptBackupSetUnsupportedPrefixes {
+		prefix := obsolete + scope + "-"
+		if strings.HasPrefix(name, prefix) &&
+			strings.HasSuffix(name, receiptBackupSetManifestSuffix) {
+			id, ok := parseReceiptBackupSetID(
+				strings.TrimSuffix(strings.TrimPrefix(name, prefix), receiptBackupSetManifestSuffix),
+			)
+			if !ok {
+				return 0, "", receiptBackupSetUnknownFile, false
+			}
+			return id, prefix + receiptBackupSetIDString(id), receiptBackupSetUnsupportedManifestFile, true
+		}
+	}
+
+	prefix := receiptBackupSetPrefix + scope + "-"
 	if !strings.HasPrefix(name, prefix) {
 		return 0, "", receiptBackupSetUnknownFile, false
 	}
@@ -63,9 +81,11 @@ func parseOwnReceiptBackupSetName(
 	}{
 		{receiptBackupSetArchiveSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
 		{receiptBackupSetWALCutSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
+		{receiptBackupSetRetiredCatalogSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
 		{receiptBackupSetManifestSuffix + receiptBackupSetTempSuffix, receiptBackupSetTempFile},
 		{receiptBackupSetArchiveSuffix, receiptBackupSetArchiveFile},
 		{receiptBackupSetWALCutSuffix, receiptBackupSetWALCutFile},
+		{receiptBackupSetRetiredCatalogSuffix, receiptBackupSetRetiredCatalogFile},
 		{receiptBackupSetManifestSuffix, receiptBackupSetManifestFile},
 	}
 	for _, candidate := range suffixes {
@@ -73,11 +93,8 @@ func parseOwnReceiptBackupSetName(
 			continue
 		}
 		idText := strings.TrimSuffix(strings.TrimPrefix(name, prefix), candidate.suffix)
-		if len(idText) != receiptBackupSetCanonicalIDDigits {
-			return 0, "", receiptBackupSetUnknownFile, false
-		}
-		parsed, err := strconv.ParseUint(idText, 10, 64)
-		if err != nil || parsed == 0 || receiptBackupSetIDString(parsed) != idText {
+		parsed, ok := parseReceiptBackupSetID(idText)
+		if !ok {
 			return 0, "", receiptBackupSetUnknownFile, false
 		}
 		return parsed, prefix + idText, candidate.kind, true
@@ -85,22 +102,23 @@ func parseOwnReceiptBackupSetName(
 	return 0, "", receiptBackupSetUnknownFile, false
 }
 
-func (b *Backupper) collectReceiptBackupSets() ([]receiptBackupSet, error) {
-	entries, err := b.fs.readDir(b.cfg.Dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("backup: read receipt backup directory %s: %w", b.cfg.Dir, err)
+func parseReceiptBackupSetID(value string) (uint64, bool) {
+	if len(value) != receiptBackupSetCanonicalIDDigits {
+		return 0, false
 	}
+	id, err := strconv.ParseUint(value, 10, 64)
+	return id, err == nil && id != 0 && receiptBackupSetIDString(id) == value
+}
+
+func (b *Backupper) collectReceiptBackupSets() ([]receiptBackupSet, error) {
 	var sets []receiptBackupSet
-	for _, entry := range entries {
+	err := b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
 		if entry.IsDir() {
-			continue
+			return nil
 		}
 		id, _, kind, ok := parseOwnReceiptBackupSetName(entry.Name(), b.cfg.InstanceID)
 		if !ok || kind != receiptBackupSetManifestFile {
-			continue
+			return nil
 		}
 		path := filepath.Join(b.cfg.Dir, entry.Name())
 		loaded, loadErr := b.loadReceiptBackupSet(path)
@@ -108,48 +126,142 @@ func (b *Backupper) collectReceiptBackupSets() ([]receiptBackupSet, error) {
 			b.logger.Warn("backup: ignoring invalid receipt backup set",
 				"manifest", path,
 				"err", loadErr)
-			continue
+			return nil
 		}
 		if loaded.id != id {
 			b.logger.Warn("backup: ignoring receipt backup set with mismatched ID",
 				"manifest", path,
 				"filename_id", id,
 				"manifest_id", loaded.id)
-			continue
+			return nil
 		}
 		sets = append(sets, loaded.receiptBackupSet)
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("backup: scan receipt backup directory %s: %w", b.cfg.Dir, err)
 	}
 	sort.Slice(sets, func(i, j int) bool { return sets[i].id > sets[j].id })
 	return sets, nil
 }
 
 func (b *Backupper) pruneReceiptBackupSets() error {
-	if b.cfg.Retain <= 0 {
+	if b.cfg.Retain <= 0 || b.cfg.Retain >= receiptBackupDirectoryMaxEntries {
 		return nil
 	}
-	sets, err := b.collectReceiptBackupSets()
-	if err != nil || len(sets) <= b.cfg.Retain {
-		return err
+	newest := make(receiptBackupSetMinHeap, 0, b.cfg.Retain)
+	err := b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
+		if entry.IsDir() {
+			return nil
+		}
+		id, _, kind, ok := parseOwnReceiptBackupSetName(entry.Name(), b.cfg.InstanceID)
+		if !ok || kind != receiptBackupSetManifestFile {
+			return nil
+		}
+		set, ok := b.validReceiptBackupSet(entry.Name(), id)
+		if !ok {
+			return nil
+		}
+		if len(newest) < b.cfg.Retain {
+			heap.Push(&newest, set)
+		} else if set.id > newest[0].id {
+			heap.Pop(&newest)
+			heap.Push(&newest, set)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("backup: scan receipt backup directory %s for retention: %w", b.cfg.Dir, err)
 	}
-	for _, set := range sets[b.cfg.Retain:] {
-		if err := b.fs.remove(set.manifestPath); err != nil {
-			return fmt.Errorf("backup: prune receipt backup-set manifest %s: %w", set.manifestPath, err)
+	if len(newest) < b.cfg.Retain {
+		return nil
+	}
+	keepFromID := newest[0].id
+	var candidates []receiptBackupSet
+	err = b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
+		if entry.IsDir() {
+			return nil
 		}
-		if err := b.fs.syncDir(b.cfg.Dir); err != nil {
-			return fmt.Errorf("backup: sync receipt backup directory after pruning manifest %s: %w", set.manifestPath, err)
+		id, _, kind, ok := parseOwnReceiptBackupSetName(entry.Name(), b.cfg.InstanceID)
+		if !ok || kind != receiptBackupSetManifestFile || id >= keepFromID {
+			return nil
 		}
-		var memberErr error
-		for _, path := range set.memberPaths {
-			if err := b.fs.remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				memberErr = errors.Join(memberErr, fmt.Errorf("backup: prune receipt backup-set member %s: %w", path, err))
-			}
+		set, valid := b.validReceiptBackupSet(entry.Name(), id)
+		if !valid {
+			return nil
 		}
-		if err := b.fs.syncDir(b.cfg.Dir); err != nil {
-			memberErr = errors.Join(memberErr, fmt.Errorf("backup: sync receipt backup directory after pruning members: %w", err))
+		candidates = append(candidates, set)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("backup: scan receipt backup directory %s while pruning: %w", b.cfg.Dir, err)
+	}
+	for _, candidate := range candidates {
+		name := filepath.Base(candidate.manifestPath)
+		set, valid := b.validReceiptBackupSet(name, candidate.id)
+		if !valid {
+			continue
 		}
-		if memberErr != nil {
-			return memberErr
+		if err := b.pruneReceiptBackupSet(set); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (b *Backupper) validReceiptBackupSet(name string, id uint64) (receiptBackupSet, bool) {
+	path := filepath.Join(b.cfg.Dir, name)
+	loaded, err := b.loadReceiptBackupSet(path)
+	if err != nil {
+		b.logger.Warn("backup: ignoring invalid receipt backup set",
+			"manifest", path,
+			"err", err)
+		return receiptBackupSet{}, false
+	}
+	if loaded.id != id {
+		b.logger.Warn("backup: ignoring receipt backup set with mismatched ID",
+			"manifest", path,
+			"filename_id", id,
+			"manifest_id", loaded.id)
+		return receiptBackupSet{}, false
+	}
+	return loaded.receiptBackupSet, true
+}
+
+func (b *Backupper) pruneReceiptBackupSet(set receiptBackupSet) error {
+	if err := b.fs.remove(set.manifestPath); err != nil {
+		return fmt.Errorf("backup: prune receipt backup-set manifest %s: %w", set.manifestPath, err)
+	}
+	if err := b.fs.syncDir(b.cfg.Dir); err != nil {
+		return fmt.Errorf("backup: sync receipt backup directory after pruning manifest %s: %w", set.manifestPath, err)
+	}
+	var memberErr error
+	for _, path := range set.memberPaths {
+		if err := b.fs.remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			memberErr = errors.Join(memberErr, fmt.Errorf("backup: prune receipt backup-set member %s: %w", path, err))
+		}
+	}
+	if err := b.fs.syncDir(b.cfg.Dir); err != nil {
+		memberErr = errors.Join(memberErr, fmt.Errorf("backup: sync receipt backup directory after pruning members: %w", err))
+	}
+	return memberErr
+}
+
+type receiptBackupSetMinHeap []receiptBackupSet
+
+func (h receiptBackupSetMinHeap) Len() int           { return len(h) }
+func (h receiptBackupSetMinHeap) Less(i, j int) bool { return h[i].id < h[j].id }
+func (h receiptBackupSetMinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *receiptBackupSetMinHeap) Push(value any) {
+	*h = append(*h, value.(receiptBackupSet))
+}
+func (h *receiptBackupSetMinHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	*h = old[:last]
+	return value
 }

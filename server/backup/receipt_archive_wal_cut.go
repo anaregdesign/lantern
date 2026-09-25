@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	receiptArchiveWALCutMagic       = "LRWLCUT2"
-	receiptArchiveWALCutVersion     = uint16(2)
+	receiptArchiveWALCutMagic       = "LANTWCUT"
+	receiptArchiveWALCutVersion     = uint16(1)
+	receiptArchiveWALCutOldMagic    = "LRWLCUT2"
 	receiptArchiveWALZeroOffset     = int64(8)
 	receiptArchiveWALCutPayloadSize = 8 + 2 + 2 + sha256.Size +
 		8 + 8 + sha256.Size + sha256.Size +
@@ -26,7 +27,13 @@ const (
 	receiptArchiveWALCutSize = receiptArchiveWALCutPayloadSize + sha256.Size
 )
 
-var errReceiptArchiveWALCut = errors.New("backup: invalid receipt archive/FileWAL cut")
+var (
+	errReceiptArchiveWALCut            = errors.New("backup: invalid receipt archive/FileWAL cut")
+	errUnsupportedReceiptArchiveWALCut = fmt.Errorf(
+		"%w: unsupported receipt archive/FileWAL cut format",
+		errReceiptArchiveWALCut,
+	)
+)
 
 type receiptArchiveWALCut struct {
 	archiveSHA256  [sha256.Size]byte
@@ -185,8 +192,19 @@ func encodeReceiptArchiveWALCutWitnesses(
 }
 
 func decodeReceiptArchiveWALCut(raw []byte) (receiptArchiveWALCut, error) {
-	if len(raw) != receiptArchiveWALCutSize || string(raw[:8]) != receiptArchiveWALCutMagic ||
-		binary.BigEndian.Uint16(raw[8:10]) != receiptArchiveWALCutVersion || raw[10] != 0 || raw[11] != 0 {
+	if len(raw) != receiptArchiveWALCutSize {
+		return receiptArchiveWALCut{}, errReceiptArchiveWALCut
+	}
+	if string(raw[:8]) == receiptArchiveWALCutOldMagic {
+		return receiptArchiveWALCut{}, errUnsupportedReceiptArchiveWALCut
+	}
+	if string(raw[:8]) != receiptArchiveWALCutMagic {
+		return receiptArchiveWALCut{}, errReceiptArchiveWALCut
+	}
+	if binary.BigEndian.Uint16(raw[8:10]) != receiptArchiveWALCutVersion {
+		return receiptArchiveWALCut{}, errUnsupportedReceiptArchiveWALCut
+	}
+	if raw[10] != 0 || raw[11] != 0 {
 		return receiptArchiveWALCut{}, errReceiptArchiveWALCut
 	}
 	sum := sha256.Sum256(raw[:receiptArchiveWALCutPayloadSize])

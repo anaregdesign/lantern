@@ -438,7 +438,7 @@ func TestBackupperReceiptMetricsPreserveExistingSeriesAndAddSetStats(t *testing.
 		{"lantern_backup_edges", testutil.ToFloat64(b.metrics.edges), float64(stats.Edges)},
 		{"lantern_backup_receipts", testutil.ToFloat64(b.metrics.receipts), float64(stats.Receipts)},
 		{"lantern_backup_origins", testutil.ToFloat64(b.metrics.origins), float64(stats.Origins)},
-		{"lantern_backup_set_members", testutil.ToFloat64(b.metrics.setMembers), 2},
+		{"lantern_backup_set_members", testutil.ToFloat64(b.metrics.setMembers), 3},
 		{"lantern_backup_set_bytes", testutil.ToFloat64(b.metrics.setBytes), float64(stats.Bytes)},
 		{"lantern_backup_last_success_timestamp_seconds", testutil.ToFloat64(b.metrics.lastSuccess), 1000},
 	} {

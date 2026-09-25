@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -22,6 +24,12 @@ func completedReceiptBackupSet(
 	t.Helper()
 	archive := wholeStateArchiveFixture(t)
 	capture := producerBackupCapture(archive)
+	capture.WholeState.Retired = producerRetiredSnapshot(
+		t,
+		archive.Policy,
+		archive.Receipts.ClockHighWaterMillis,
+		0x7a,
+	)
 	source := &receiptBackupSetSource{capture: capture}
 	b := newReceiptBackupSetTestBackupper(t, t.TempDir(), "set-owner", 0, source, archive.Policy)
 	b.now = func() time.Time { return time.Unix(0, 1234).UTC() }
@@ -104,6 +112,7 @@ func cloneReceiptBackupSetAt(
 	for i, suffix := range []string{
 		receiptBackupSetArchiveSuffix,
 		receiptBackupSetWALCutSuffix,
+		receiptBackupSetRetiredCatalogSuffix,
 	} {
 		memberRaw, err := os.ReadFile(source.memberPaths[i])
 		if err != nil {
@@ -118,6 +127,7 @@ func cloneReceiptBackupSetAt(
 			t.Fatal(err)
 		}
 	}
+	refreshReceiptBackupPublicationCommitment(t, &manifest)
 	manifestRaw, err = encodeReceiptBackupSetManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +181,77 @@ func receiptBackupDirectoryState(
 	return state
 }
 
+func refreshReceiptBackupPublicationCommitment(
+	t *testing.T,
+	manifest *receiptBackupSetManifest,
+) {
+	t.Helper()
+	digest, err := receiptBackupPublicationDigest(*manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.PublicationSHA256 = hex.EncodeToString(digest[:])
+}
+
+func historicalReceiptBackupSetManifest(
+	t *testing.T,
+	instance string,
+	setID uint64,
+) (string, []byte) {
+	t.Helper()
+	const historicalPrefix = "lantern-receipt-backup-v1-"
+	type member struct {
+		Role    string `json:"role"`
+		Format  string `json:"format"`
+		Version uint16 `json:"version"`
+		Name    string `json:"name"`
+		Size    uint64 `json:"size"`
+		SHA256  string `json:"sha256"`
+	}
+	type manifest struct {
+		Format          string   `json:"format"`
+		Version         uint16   `json:"version"`
+		Instance        string   `json:"instance"`
+		SetID           string   `json:"set_id"`
+		BackupTimestamp string   `json:"backup_timestamp"`
+		NodeID          string   `json:"node_id"`
+		Generation      string   `json:"generation"`
+		Members         []member `json:"members"`
+	}
+	base := historicalPrefix + receiptBackupSetScope(instance) + "-" +
+		receiptBackupSetIDString(setID)
+	raw, err := json.Marshal(manifest{
+		Format:          receiptBackupSetFormat,
+		Version:         1,
+		Instance:        instance,
+		SetID:           receiptBackupSetIDString(setID),
+		BackupTimestamp: time.Unix(0, int64(setID)).UTC().Format(time.RFC3339Nano),
+		NodeID:          strings.Repeat("11", 16),
+		Generation:      strings.Repeat("22", 16),
+		Members: []member{
+			{
+				Role: receiptBackupSetArchiveRole, Format: receiptBackupSetArchiveFormat,
+				Version: wholeStateArchiveVersion, Name: base + receiptBackupSetArchiveSuffix,
+				Size: 1, SHA256: strings.Repeat("33", sha256.Size),
+			},
+			{
+				Role: receiptBackupSetWALCutRole, Format: receiptBackupSetWALCutFormat,
+				Version: 2, Name: base + receiptBackupSetWALCutSuffix,
+				Size: receiptArchiveWALCutSize, SHA256: strings.Repeat("44", sha256.Size),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base + receiptBackupSetManifestSuffix, raw
+}
+
+func obsoleteReceiptBackupSetMarker(prefix, instance string, setID uint64) string {
+	return prefix + receiptBackupSetScope(instance) + "-" +
+		receiptBackupSetIDString(setID) + receiptBackupSetManifestSuffix
+}
+
 func TestReceiptBackupSetPersistsOneImmutableValidatedCapture(t *testing.T) {
 	b, archive, capture, source, loaded := completedReceiptBackupSet(t)
 	if source.calls.Load() != 1 {
@@ -204,17 +285,71 @@ func TestReceiptBackupSetPersistsOneImmutableValidatedCapture(t *testing.T) {
 		!reflect.DeepEqual(loaded.archive.Origins, archive.Origins) {
 		t.Fatal("loaded archive lost active receipt state")
 	}
+	if !reflect.DeepEqual(loaded.retired, capture.WholeState.Retired) {
+		t.Fatal("loaded archive lost retired receipt state")
+	}
+	manifestRaw, err := os.ReadFile(loaded.manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := decodeReceiptBackupSetManifest(manifestRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != 1 ||
+		manifest.ActivePolicy.Epoch != hex.EncodeToString(archive.Policy.Epoch[:]) ||
+		manifest.Cut.ReceiptClockHighWaterMillis != archive.Receipts.ClockHighWaterMillis ||
+		manifest.Cut.OriginCount != uint64(len(archive.Origins)) ||
+		manifest.RetiredCatalog.EpochCount != uint64(len(capture.WholeState.Retired.Epochs)) ||
+		manifest.RetiredCatalog.ReceiptCount != 1 ||
+		len(manifest.Members) != 3 ||
+		manifest.Members[0].Role != receiptBackupSetArchiveRole ||
+		manifest.Members[1].Role != receiptBackupSetWALCutRole ||
+		manifest.Members[2].Role != receiptBackupSetRetiredCatalogRole {
+		t.Fatalf("receipt backup-set manifest metadata = %+v", manifest)
+	}
+	walCutRaw, err := os.ReadFile(loaded.memberPaths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiredRaw, err := os.ReadFile(loaded.memberPaths[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := newReceiptBackupSetManifest(
+		b.cfg.InstanceID,
+		loaded.id,
+		loaded.createdAt,
+		receiptBackupSetProduct{nodeID: capture.NodeID, generation: capture.Generation},
+		loaded.archiveRaw,
+		walCutRaw,
+		retiredRaw,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuiltRaw, err := encodeReceiptBackupSetManifest(rebuilt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rebuiltRaw, manifestRaw) {
+		t.Fatal("identical receipt backup-set members produced nondeterministic manifest bytes")
+	}
 	entries, err := os.ReadDir(b.cfg.Dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != receiptBackupSetExpectedMemberCount+1 {
-		t.Fatalf("committed set files = %d, want 3", len(entries))
+		t.Fatalf("committed set files = %d, want %d", len(entries), receiptBackupSetExpectedMemberCount+1)
 	}
+	wantPrefix := "lantern-receipt-backup-" + receiptBackupSetScope(b.cfg.InstanceID) + "-"
 	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), wantPrefix) {
+			t.Fatalf("receipt backup set emitted noncanonical filename %q", entry.Name())
+		}
 		if strings.HasSuffix(entry.Name(), receiptBackupSetTempSuffix) ||
 			strings.HasSuffix(entry.Name(), fileSuffix) {
-			t.Fatalf("durable receipt set emitted legacy or temporary file %q", entry.Name())
+			t.Fatalf("durable receipt set emitted obsolete or temporary file %q", entry.Name())
 		}
 	}
 
@@ -225,20 +360,22 @@ func TestReceiptBackupSetPersistsOneImmutableValidatedCapture(t *testing.T) {
 	if evidence.SetID != loaded.id || evidence.BackupTimestamp != loaded.createdAt ||
 		evidence.NodeID != capture.NodeID || evidence.Generation != capture.Generation ||
 		evidence.WALCut != capture.WALTip || evidence.Stats != loaded.stats ||
-		!bytes.Equal(evidence.Archive, loaded.archiveRaw) {
+		!bytes.Equal(evidence.Archive, loaded.archiveRaw) ||
+		!bytes.Equal(evidence.RetiredCatalog, loaded.retiredRaw) {
 		t.Fatalf("public receipt backup-set evidence = %+v", evidence)
 	}
 
-	owned := append([]byte(nil), loaded.archiveRaw...)
-	if err := os.WriteFile(loaded.memberPaths[0], bytes.Repeat([]byte{0x5a}, len(owned)), receiptBackupSetFilePermissions); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(loaded.archiveRaw, owned) {
-		t.Fatal("loaded archive bytes alias the member file")
+	ownedArchive := bytes.Clone(evidence.Archive)
+	ownedRetired := bytes.Clone(evidence.RetiredCatalog)
+	loaded.archiveRaw[0] ^= 0xff
+	loaded.retiredRaw[0] ^= 0xff
+	if !bytes.Equal(evidence.Archive, ownedArchive) ||
+		!bytes.Equal(evidence.RetiredCatalog, ownedRetired) {
+		t.Fatal("public evidence bytes alias the loaded member buffers")
 	}
 }
 
-func TestReceiptBackupSetRejectsRetiredEvidenceBeforeCreatingFiles(t *testing.T) {
+func TestReceiptBackupSetPreservesRetiredEvidence(t *testing.T) {
 	archive := wholeStateArchiveFixture(t)
 	capture := producerBackupCapture(archive)
 	capture.WholeState.Retired = producerRetiredSnapshot(
@@ -249,17 +386,25 @@ func TestReceiptBackupSetRejectsRetiredEvidenceBeforeCreatingFiles(t *testing.T)
 	)
 	source := &receiptBackupSetSource{capture: capture}
 	dir := t.TempDir()
-	b := newReceiptBackupSetTestBackupper(t, dir, "retired-rejected", 0, source, archive.Policy)
+	b := newReceiptBackupSetTestBackupper(t, dir, "retired-preserved", 0, source, archive.Policy)
 
-	if stats, err := b.BackupNow(t.Context()); err == nil || stats != (Stats{}) {
-		t.Fatalf("active-only backup with retired evidence = %+v, %v", stats, err)
-	}
-	entries, err := os.ReadDir(dir)
+	stats, err := b.BackupNow(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("active-only rejection created backup files: %+v", entries)
+	if stats.Receipts != len(archive.Receipts.Receipts)+1 || stats.Members != 3 {
+		t.Fatalf("retired-aware stats = %+v", stats)
+	}
+	evidence, err := LoadLatestReceiptBackupSet(dir, b.cfg.InstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, _, err := decodeRetiredCatalogArchive(evidence.RetiredCatalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(retired, capture.WholeState.Retired) {
+		t.Fatalf("retired evidence = %+v, want %+v", retired, capture.WholeState.Retired)
 	}
 }
 
@@ -277,6 +422,18 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 	if err != nil || !bytes.Equal(reencoded, raw) {
 		t.Fatalf("canonical manifest round trip = %q, %v", reencoded, err)
 	}
+
+	t.Run("unsupported schema version", func(t *testing.T) {
+		unsupported := manifest
+		unsupported.Version = 2
+		unsupportedRaw, err := json.Marshal(unsupported)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeReceiptBackupSetManifest(unsupportedRaw); !errors.Is(err, ErrUnsupportedReceiptBackupSet) {
+			t.Fatalf("unsupported receipt backup-set schema error = %v, want unsupported", err)
+		}
+	})
 
 	t.Run("noncanonical and trailing bytes", func(t *testing.T) {
 		for _, malformed := range [][]byte{
@@ -303,12 +460,48 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 			{"timestamp", func(m *receiptBackupSetManifest) { m.BackupTimestamp = "not-a-time" }},
 			{"node ID", func(m *receiptBackupSetManifest) { m.NodeID = "00" }},
 			{"generation", func(m *receiptBackupSetManifest) { m.Generation = "00" }},
+			{"publication commitment", func(m *receiptBackupSetManifest) { m.PublicationSHA256 = "00" }},
+			{"active epoch", func(m *receiptBackupSetManifest) { m.ActivePolicy.Epoch = "00" }},
+			{"active retention", func(m *receiptBackupSetManifest) { m.ActivePolicy.RetentionMillis = 0 }},
+			{"active entry overflow", func(m *receiptBackupSetManifest) { m.ActivePolicy.MaxEntries = ^uint64(0) }},
+			{"active fingerprint", func(m *receiptBackupSetManifest) { m.ActivePolicy.PolicyFingerprint = "00" }},
+			{"retired format", func(m *receiptBackupSetManifest) { m.RetiredCatalog.Format = "unknown" }},
+			{"retired version", func(m *receiptBackupSetManifest) { m.RetiredCatalog.Version++ }},
+			{"retired active epoch", func(m *receiptBackupSetManifest) { m.RetiredCatalog.ActiveEpoch = "00" }},
+			{"retired high-water", func(m *receiptBackupSetManifest) { m.RetiredCatalog.ClockHighWaterMillis++ }},
+			{"retired entry cap", func(m *receiptBackupSetManifest) { m.RetiredCatalog.MaxEntries++ }},
+			{"retired byte cap", func(m *receiptBackupSetManifest) { m.RetiredCatalog.MaxBytes++ }},
+			{"retired epoch count", func(m *receiptBackupSetManifest) { m.RetiredCatalog.EpochCount = m.RetiredCatalog.MaxEntries + 1 }},
+			{"retired receipt count", func(m *receiptBackupSetManifest) { m.RetiredCatalog.ReceiptCount = m.RetiredCatalog.MaxEntries + 1 }},
+			{"retired epoch count overflow", func(m *receiptBackupSetManifest) { m.RetiredCatalog.EpochCount = ^uint64(0) }},
+			{"retired receipt count overflow", func(m *receiptBackupSetManifest) { m.RetiredCatalog.ReceiptCount = ^uint64(0) }},
+			{"retired policies", func(m *receiptBackupSetManifest) { m.RetiredCatalog.PolicySetSHA256 = "00" }},
+			{"negative high-water", func(m *receiptBackupSetManifest) { m.Cut.ReceiptClockHighWaterMillis = -1 }},
+			{"cutoff HLC", func(m *receiptBackupSetManifest) { m.Cut.SnapshotHLC.WallNanos = 0 }},
+			{"cutoff NodeID", func(m *receiptBackupSetManifest) { m.Cut.SnapshotHLC.NodeID = "00" }},
+			{"origin count overflow", func(m *receiptBackupSetManifest) { m.Cut.OriginCount = ^uint64(0) }},
+			{"origin digest", func(m *receiptBackupSetManifest) { m.Cut.OriginCutoffsSHA256 = "00" }},
+			{"WAL offset overflow", func(m *receiptBackupSetManifest) { m.Cut.WALCut.Offset = ^uint64(0) }},
+			{"WAL cut tip mismatch", func(m *receiptBackupSetManifest) { m.Cut.WALTip.Sequence++ }},
 			{"missing member", func(m *receiptBackupSetManifest) { m.Members = m.Members[:1] }},
 			{"duplicate member", func(m *receiptBackupSetManifest) { m.Members[1] = m.Members[0] }},
+			{"reordered members", func(m *receiptBackupSetManifest) { m.Members[0], m.Members[1] = m.Members[1], m.Members[0] }},
+			{"extra member", func(m *receiptBackupSetManifest) { m.Members = append(m.Members, m.Members[0]) }},
 			{"unknown member", func(m *receiptBackupSetManifest) { m.Members[1].Role = "unknown" }},
 			{"unsafe member path", func(m *receiptBackupSetManifest) { m.Members[0].Name = "../archive" }},
+			{"absolute member path", func(m *receiptBackupSetManifest) { m.Members[0].Name = "/tmp/archive" }},
+			{"backslash member path", func(m *receiptBackupSetManifest) { m.Members[0].Name = `..\archive` }},
 			{"wrong member name", func(m *receiptBackupSetManifest) { m.Members[0].Name = "other.active.lar" }},
 			{"zero member size", func(m *receiptBackupSetManifest) { m.Members[0].Size = 0 }},
+			{"active member size overflow", func(m *receiptBackupSetManifest) {
+				m.Members[0].Size = uint64(wholeStateArchiveMaxBytes) + 1
+			}},
+			{"WAL member size overflow", func(m *receiptBackupSetManifest) {
+				m.Members[1].Size = uint64(receiptArchiveWALCutSize) + 1
+			}},
+			{"retired member size overflow", func(m *receiptBackupSetManifest) {
+				m.Members[2].Size = uint64(wholeStateArchiveMaxBytes) + 1
+			}},
 			{"malformed digest", func(m *receiptBackupSetManifest) { m.Members[0].SHA256 = "00" }},
 		}
 		for _, tc := range tests {
@@ -346,13 +539,15 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 
 	t.Run("member size digest and file type", func(t *testing.T) {
 		tests := []struct {
-			name   string
-			mutate func(*testing.T, *Backupper, loadedReceiptBackupSet, receiptBackupSetManifest)
+			name            string
+			mutate          func(*testing.T, *Backupper, loadedReceiptBackupSet, receiptBackupSetManifest)
+			wantUnsupported bool
 		}{
 			{
 				name: "size",
 				mutate: func(t *testing.T, b *Backupper, loaded loadedReceiptBackupSet, manifest receiptBackupSetManifest) {
 					manifest.Members[0].Size++
+					refreshReceiptBackupPublicationCommitment(t, &manifest)
 					raw, err := encodeReceiptBackupSetManifest(manifest)
 					if err != nil {
 						t.Fatal(err)
@@ -366,6 +561,7 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 				name: "digest",
 				mutate: func(t *testing.T, b *Backupper, loaded loadedReceiptBackupSet, manifest receiptBackupSetManifest) {
 					manifest.Members[0].SHA256 = hex.EncodeToString(bytes.Repeat([]byte{0x44}, sha256.Size))
+					refreshReceiptBackupPublicationCommitment(t, &manifest)
 					raw, err := encodeReceiptBackupSetManifest(manifest)
 					if err != nil {
 						t.Fatal(err)
@@ -379,6 +575,8 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 				name: "NodeID differs from archive cutoff",
 				mutate: func(t *testing.T, b *Backupper, loaded loadedReceiptBackupSet, manifest receiptBackupSetManifest) {
 					manifest.NodeID = hex.EncodeToString(bytes.Repeat([]byte{0x45}, 16))
+					manifest.Cut.SnapshotHLC.NodeID = manifest.NodeID
+					refreshReceiptBackupPublicationCommitment(t, &manifest)
 					raw, err := encodeReceiptBackupSetManifest(manifest)
 					if err != nil {
 						t.Fatal(err)
@@ -420,6 +618,35 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 					digest := sha256.Sum256(raw)
 					manifest.Members[1].Size = uint64(len(raw))
 					manifest.Members[1].SHA256 = hex.EncodeToString(digest[:])
+					refreshReceiptBackupPublicationCommitment(t, &manifest)
+					manifestRaw, err := encodeReceiptBackupSetManifest(manifest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(loaded.manifestPath, manifestRaw, receiptBackupSetFilePermissions); err != nil {
+						t.Fatal(err)
+					}
+				},
+			},
+			{
+				name:            "obsolete LRWLCUT2 member",
+				wantUnsupported: true,
+				mutate: func(t *testing.T, b *Backupper, loaded loadedReceiptBackupSet, manifest receiptBackupSetManifest) {
+					raw, err := os.ReadFile(loaded.memberPaths[1])
+					if err != nil {
+						t.Fatal(err)
+					}
+					copy(raw[:8], "LRWLCUT2")
+					binary.BigEndian.PutUint16(raw[8:10], 2)
+					checksum := sha256.Sum256(raw[:receiptArchiveWALCutPayloadSize])
+					copy(raw[receiptArchiveWALCutPayloadSize:], checksum[:])
+					if err := os.WriteFile(loaded.memberPaths[1], raw, receiptBackupSetFilePermissions); err != nil {
+						t.Fatal(err)
+					}
+					digest := sha256.Sum256(raw)
+					manifest.Members[1].Size = uint64(len(raw))
+					manifest.Members[1].SHA256 = hex.EncodeToString(digest[:])
+					refreshReceiptBackupPublicationCommitment(t, &manifest)
 					manifestRaw, err := encodeReceiptBackupSetManifest(manifest)
 					if err != nil {
 						t.Fatal(err)
@@ -457,8 +684,20 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 					t.Fatal(err)
 				}
 				tc.mutate(t, b, loaded, manifest)
-				if _, err := b.loadReceiptBackupSet(loaded.manifestPath); err == nil {
+				_, err = b.loadReceiptBackupSet(loaded.manifestPath)
+				if err == nil {
 					t.Fatal("invalid committed set loaded")
+				}
+				if tc.wantUnsupported && !errors.Is(err, ErrUnsupportedReceiptBackupSet) {
+					t.Fatalf("obsolete committed set error = %v, want unsupported", err)
+				}
+				if tc.wantUnsupported {
+					if _, latestErr := b.loadLatestReceiptBackupSet(); !errors.Is(
+						latestErr,
+						ErrUnsupportedReceiptBackupSet,
+					) {
+						t.Fatalf("latest obsolete committed set error = %v, want unsupported", latestErr)
+					}
 				}
 			})
 		}
@@ -466,6 +705,281 @@ func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 
 	if _, err := b.loadReceiptBackupSet(filepath.Join(b.cfg.Dir, "..", filepath.Base(loaded.manifestPath))); err == nil {
 		t.Fatal("manifest path outside the backup directory was accepted")
+	}
+}
+
+func TestReceiptBackupSetRejectsCrossCutManifestMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *receiptBackupSetManifest)
+	}{
+		{
+			name: "active epoch",
+			mutate: func(_ *testing.T, manifest *receiptBackupSetManifest) {
+				epoch := hex.EncodeToString(bytes.Repeat([]byte{0x31}, 16))
+				manifest.ActivePolicy.Epoch = epoch
+				manifest.RetiredCatalog.ActiveEpoch = epoch
+			},
+		},
+		{
+			name: "active policy",
+			mutate: func(t *testing.T, manifest *receiptBackupSetManifest) {
+				manifest.ActivePolicy.MaxEntries++
+				manifest.RetiredCatalog.MaxEntries++
+				rawEpoch, err := decodeReceiptBackupSetIdentity(manifest.ActivePolicy.Epoch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var epoch mutationreceipt.Epoch
+				copy(epoch[:], rawEpoch[:])
+				store, err := mutationreceipt.New(mutationreceipt.Config{
+					Epoch:      epoch,
+					Retention:  time.Duration(manifest.ActivePolicy.RetentionMillis) * time.Millisecond,
+					MaxEntries: int(manifest.ActivePolicy.MaxEntries),
+					MaxBytes:   manifest.ActivePolicy.MaxBytes,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				fingerprint := store.PolicyFingerprint()
+				manifest.ActivePolicy.PolicyFingerprint = hex.EncodeToString(fingerprint[:])
+			},
+		},
+		{
+			name: "clock high-water",
+			mutate: func(_ *testing.T, manifest *receiptBackupSetManifest) {
+				manifest.Cut.ReceiptClockHighWaterMillis--
+				manifest.RetiredCatalog.ClockHighWaterMillis--
+			},
+		},
+		{
+			name: "snapshot HLC",
+			mutate: func(_ *testing.T, manifest *receiptBackupSetManifest) {
+				manifest.Cut.SnapshotHLC.Logical++
+			},
+		},
+		{
+			name: "origin count",
+			mutate: func(_ *testing.T, manifest *receiptBackupSetManifest) {
+				manifest.Cut.OriginCount++
+			},
+		},
+		{
+			name: "origin cutoffs",
+			mutate: func(_ *testing.T, manifest *receiptBackupSetManifest) {
+				manifest.Cut.OriginCutoffsSHA256 = hex.EncodeToString(bytes.Repeat([]byte{0x32}, sha256.Size))
+			},
+		},
+		{
+			name: "retired policies",
+			mutate: func(_ *testing.T, manifest *receiptBackupSetManifest) {
+				manifest.RetiredCatalog.PolicySetSHA256 = hex.EncodeToString(bytes.Repeat([]byte{0x33}, sha256.Size))
+			},
+		},
+		{
+			name: "WAL frontier",
+			mutate: func(_ *testing.T, manifest *receiptBackupSetManifest) {
+				manifest.Cut.LocalSequence++
+				manifest.Cut.WALCut.Sequence++
+				manifest.Cut.WALTip.Sequence++
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _, _, _, loaded := completedReceiptBackupSet(t)
+			raw, err := os.ReadFile(loaded.manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := decodeReceiptBackupSetManifest(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, &manifest)
+			refreshReceiptBackupPublicationCommitment(t, &manifest)
+			raw, err = encodeReceiptBackupSetManifest(manifest)
+			if err != nil {
+				t.Fatalf("cross-cut test manifest is not structurally valid: %v", err)
+			}
+			if err := os.WriteFile(loaded.manifestPath, raw, receiptBackupSetFilePermissions); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := b.loadReceiptBackupSet(loaded.manifestPath); err == nil {
+				t.Fatal("cross-cut manifest metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestReceiptBackupSetRejectsMissingTruncatedCorruptAndReplacedMembers(t *testing.T) {
+	for memberIndex, role := range []string{
+		receiptBackupSetArchiveRole,
+		receiptBackupSetWALCutRole,
+		receiptBackupSetRetiredCatalogRole,
+	} {
+		for _, mutation := range []string{"missing", "truncated", "corrupt", "replaced"} {
+			t.Run(role+"/"+mutation, func(t *testing.T) {
+				b, _, _, _, loaded := completedReceiptBackupSet(t)
+				path := loaded.memberPaths[memberIndex]
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch mutation {
+				case "missing":
+					err = os.Remove(path)
+				case "truncated":
+					err = os.WriteFile(path, raw[:len(raw)-1], receiptBackupSetFilePermissions)
+				case "corrupt":
+					raw[len(raw)/2] ^= 0x80
+					err = os.WriteFile(path, raw, receiptBackupSetFilePermissions)
+				case "replaced":
+					err = os.WriteFile(path, bytes.Repeat([]byte{0xa5}, len(raw)), receiptBackupSetFilePermissions)
+				default:
+					t.Fatalf("unknown mutation %q", mutation)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := b.loadReceiptBackupSet(loaded.manifestPath); err == nil {
+					t.Fatal("invalid member was accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestReceiptBackupSetRejectsMissingTruncatedCorruptAndReplacedManifest(t *testing.T) {
+	for _, mutation := range []string{"missing", "truncated", "corrupt", "replaced", "oversized"} {
+		t.Run(mutation, func(t *testing.T) {
+			b, _, _, _, loaded := completedReceiptBackupSet(t)
+			raw, err := os.ReadFile(loaded.manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mutation {
+			case "missing":
+				err = os.Remove(loaded.manifestPath)
+			case "truncated":
+				err = os.WriteFile(loaded.manifestPath, raw[:len(raw)-1], receiptBackupSetFilePermissions)
+			case "corrupt":
+				raw[len(raw)/2] ^= 0x80
+				err = os.WriteFile(loaded.manifestPath, raw, receiptBackupSetFilePermissions)
+			case "replaced":
+				other := writeReceiptBackupSetAt(t, b, int64(loaded.id+1))
+				replacement, readErr := os.ReadFile(other.manifestPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				err = os.WriteFile(loaded.manifestPath, replacement, receiptBackupSetFilePermissions)
+			case "oversized":
+				err = os.WriteFile(
+					loaded.manifestPath,
+					bytes.Repeat([]byte{'x'}, receiptBackupSetManifestMaxBytes+1),
+					receiptBackupSetFilePermissions,
+				)
+			default:
+				t.Fatalf("unknown mutation %q", mutation)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := b.loadReceiptBackupSet(loaded.manifestPath); err == nil {
+				t.Fatal("invalid manifest was accepted")
+			}
+		})
+	}
+}
+
+func TestReceiptBackupSetRejectsCrossMemberReplacementAndChangedWAL(t *testing.T) {
+	t.Run("retired high-water", func(t *testing.T) {
+		b, archive, _, _, loaded := completedReceiptBackupSet(t)
+		replacement, err := encodeRetiredCatalogArchive(
+			archive.Policy,
+			producerEmptyRetiredSnapshot(
+				t,
+				archive.Policy,
+				archive.Receipts.ClockHighWaterMillis-1,
+			),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replaceReceiptBackupMemberAndDigest(t, loaded, 2, replacement)
+		if _, err := b.loadReceiptBackupSet(loaded.manifestPath); err == nil {
+			t.Fatal("retired catalog from a lower active cut was accepted")
+		}
+	})
+
+	t.Run("retired policy set", func(t *testing.T) {
+		b, archive, _, _, loaded := completedReceiptBackupSet(t)
+		replacement, err := encodeRetiredCatalogArchive(
+			archive.Policy,
+			producerRetiredSnapshot(
+				t,
+				archive.Policy,
+				archive.Receipts.ClockHighWaterMillis,
+				0x6a,
+			),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replaceReceiptBackupMemberAndDigest(t, loaded, 2, replacement)
+		if _, err := b.loadReceiptBackupSet(loaded.manifestPath); err == nil {
+			t.Fatal("retired catalog with mismatched policy commitment was accepted")
+		}
+	})
+
+	t.Run("changed WAL tip", func(t *testing.T) {
+		b, _, _, _, loaded := completedReceiptBackupSet(t)
+		raw, err := os.ReadFile(loaded.memberPaths[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		walCut, err := decodeReceiptArchiveWALCut(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		walCut.tipSeq++
+		walCut.tipOffset++
+		replacement := encodeReceiptArchiveWALCut(walCut)
+		replaceReceiptBackupMemberAndDigest(t, loaded, 1, replacement)
+		if _, err := b.loadReceiptBackupSet(loaded.manifestPath); err == nil {
+			t.Fatal("changed WAL tip was accepted")
+		}
+	})
+}
+
+func replaceReceiptBackupMemberAndDigest(
+	t *testing.T,
+	loaded loadedReceiptBackupSet,
+	memberIndex int,
+	replacement []byte,
+) {
+	t.Helper()
+	if err := os.WriteFile(loaded.memberPaths[memberIndex], replacement, receiptBackupSetFilePermissions); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(loaded.manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := decodeReceiptBackupSetManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(replacement)
+	manifest.Members[memberIndex].Size = uint64(len(replacement))
+	manifest.Members[memberIndex].SHA256 = hex.EncodeToString(digest[:])
+	refreshReceiptBackupPublicationCommitment(t, &manifest)
+	raw, err = encodeReceiptBackupSetManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(loaded.manifestPath, raw, receiptBackupSetFilePermissions); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -545,6 +1059,14 @@ func TestLoadLatestReceiptBackupSet(t *testing.T) {
 				receiptBackupSetIDString(0) + receiptBackupSetManifestSuffix,
 			maxBase + receiptBackupSetArchiveSuffix,
 			maxBase + receiptBackupSetWALCutSuffix,
+			maxBase + receiptBackupSetRetiredCatalogSuffix,
+		}
+		for _, prefix := range receiptBackupSetUnsupportedPrefixes {
+			files = append(files, obsoleteReceiptBackupSetMarker(
+				prefix,
+				"foreign-owner",
+				^uint64(0),
+			))
 		}
 		for _, name := range files {
 			if err := os.WriteFile(
@@ -568,6 +1090,78 @@ func TestLoadLatestReceiptBackupSet(t *testing.T) {
 		}
 	})
 
+	t.Run("older obsolete markers do not hide newest current set", func(t *testing.T) {
+		for _, prefix := range receiptBackupSetUnsupportedPrefixes {
+			t.Run(prefix, func(t *testing.T) {
+				dir := t.TempDir()
+				b := newReceiptBackupSetDiscoveryBackupper(t, dir, "newer-current-owner")
+				name := obsoleteReceiptBackupSetMarker(prefix, b.cfg.InstanceID, 100)
+				if err := os.WriteFile(
+					filepath.Join(dir, name),
+					[]byte(`{"format":"obsolete"}`),
+					receiptBackupSetFilePermissions,
+				); err != nil {
+					t.Fatal(err)
+				}
+				newest := writeReceiptBackupSetAt(t, b, 200)
+				evidence, err := LoadLatestReceiptBackupSet(dir, b.cfg.InstanceID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if evidence.SetID != newest.id {
+					t.Fatalf("latest evidence selected set %d, want %d", evidence.SetID, newest.id)
+				}
+			})
+		}
+	})
+
+	t.Run("duplicate lower obsolete IDs do not preempt newer current set", func(t *testing.T) {
+		dir := t.TempDir()
+		b := newReceiptBackupSetDiscoveryBackupper(t, dir, "ordered-obsolete-owner")
+		newest := writeReceiptBackupSetAt(t, b, 200)
+		for _, prefix := range receiptBackupSetUnsupportedPrefixes {
+			name := obsoleteReceiptBackupSetMarker(prefix, b.cfg.InstanceID, 100)
+			if err := os.WriteFile(
+				filepath.Join(dir, name),
+				[]byte(`{"format":"obsolete"}`),
+				receiptBackupSetFilePermissions,
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ordered []os.DirEntry
+		for _, prefix := range receiptBackupSetUnsupportedPrefixes {
+			want := obsoleteReceiptBackupSetMarker(prefix, b.cfg.InstanceID, 100)
+			for _, entry := range entries {
+				if entry.Name() == want {
+					ordered = append(ordered, entry)
+				}
+			}
+		}
+		for _, entry := range entries {
+			if entry.Name() == filepath.Base(newest.manifestPath) {
+				ordered = append(ordered, entry)
+			}
+		}
+		if len(ordered) != 3 {
+			t.Fatalf("ordered marker fixture has %d entries, want 3", len(ordered))
+		}
+		b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+			return &receiptBackupStaticReadDir{entries: ordered}, nil
+		}
+		evidence, err := b.loadLatestReceiptBackupSet()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if evidence.id != newest.id {
+			t.Fatalf("ordered discovery selected %d, want %d", evidence.id, newest.id)
+		}
+	})
+
 	t.Run("canonical maximum ID is selected", func(t *testing.T) {
 		dir := t.TempDir()
 		b := newReceiptBackupSetDiscoveryBackupper(t, dir, "maximum-owner")
@@ -585,6 +1179,76 @@ func TestLoadLatestReceiptBackupSet(t *testing.T) {
 }
 
 func TestLoadLatestReceiptBackupSetFailsClosed(t *testing.T) {
+	t.Run("obsolete versioned markers are terminal unsupported", func(t *testing.T) {
+		for prefixIndex, prefix := range receiptBackupSetUnsupportedPrefixes {
+			for _, withOlderCurrent := range []bool{false, true} {
+				name := prefix
+				if withOlderCurrent {
+					name += " newer than current"
+				}
+				t.Run(name, func(t *testing.T) {
+					dir := t.TempDir()
+					b := newReceiptBackupSetDiscoveryBackupper(t, dir, "obsolete-owner")
+					if withOlderCurrent {
+						writeReceiptBackupSetAt(t, b, 100)
+					}
+					obsoleteName := obsoleteReceiptBackupSetMarker(prefix, b.cfg.InstanceID, 200)
+					obsoleteRaw := []byte(`{"format":"lantern-receipt-backup-set","version":2}`)
+					if prefixIndex == 0 {
+						obsoleteName, obsoleteRaw = historicalReceiptBackupSetManifest(
+							t,
+							b.cfg.InstanceID,
+							200,
+						)
+					}
+					obsoletePath := filepath.Join(dir, obsoleteName)
+					if err := os.WriteFile(
+						obsoletePath,
+						obsoleteRaw,
+						receiptBackupSetFilePermissions,
+					); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := LoadReceiptBackupSet(
+						dir,
+						b.cfg.InstanceID,
+						obsoletePath,
+					); !errors.Is(err, ErrUnsupportedReceiptBackupSet) {
+						t.Fatalf("direct obsolete set error = %v, want unsupported", err)
+					}
+					if _, err := LoadLatestReceiptBackupSet(
+						dir,
+						b.cfg.InstanceID,
+					); !errors.Is(err, ErrUnsupportedReceiptBackupSet) {
+						t.Fatalf("latest obsolete set error = %v, want unsupported", err)
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("obsolete marker tied with current maximum is unsupported", func(t *testing.T) {
+		for _, prefix := range receiptBackupSetUnsupportedPrefixes {
+			dir := t.TempDir()
+			b := newReceiptBackupSetDiscoveryBackupper(t, dir, "tied-obsolete-owner")
+			writeReceiptBackupSetAt(t, b, 200)
+			name := obsoleteReceiptBackupSetMarker(prefix, b.cfg.InstanceID, 200)
+			if err := os.WriteFile(
+				filepath.Join(dir, name),
+				[]byte(`{"format":"obsolete"}`),
+				receiptBackupSetFilePermissions,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := b.loadLatestReceiptBackupSet(); !errors.Is(
+				err,
+				ErrUnsupportedReceiptBackupSet,
+			) {
+				t.Fatalf("tied obsolete marker error = %v, want unsupported", err)
+			}
+		}
+	})
+
 	t.Run("newer invalid marker never falls back", func(t *testing.T) {
 		tests := []struct {
 			name   string
@@ -675,6 +1339,8 @@ func TestLoadLatestReceiptBackupSetFailsClosed(t *testing.T) {
 					manifest.Members = append([]receiptBackupSetMember(nil), manifest.Members...)
 					manifest.Members[0].Name = base + receiptBackupSetArchiveSuffix
 					manifest.Members[1].Name = base + receiptBackupSetWALCutSuffix
+					manifest.Members[2].Name = base + receiptBackupSetRetiredCatalogSuffix
+					refreshReceiptBackupPublicationCommitment(t, &manifest)
 					raw, err = encodeReceiptBackupSetManifest(manifest)
 					if err != nil {
 						t.Fatal(err)
@@ -703,6 +1369,8 @@ func TestLoadLatestReceiptBackupSetFailsClosed(t *testing.T) {
 					manifest.Members = append([]receiptBackupSetMember(nil), manifest.Members...)
 					manifest.Members[0].Name = base + receiptBackupSetArchiveSuffix
 					manifest.Members[1].Name = base + receiptBackupSetWALCutSuffix
+					manifest.Members[2].Name = base + receiptBackupSetRetiredCatalogSuffix
+					refreshReceiptBackupPublicationCommitment(t, &manifest)
 					raw, err = encodeReceiptBackupSetManifest(manifest)
 					if err != nil {
 						t.Fatal(err)
@@ -847,7 +1515,7 @@ func TestLoadLatestReceiptBackupSetFailsClosed(t *testing.T) {
 
 		t.Run("read directory", func(t *testing.T) {
 			b := newReceiptBackupSetDiscoveryBackupper(t, t.TempDir(), "read-dir-owner")
-			b.fs.readDir = func(string) ([]os.DirEntry, error) {
+			b.fs.openDir = func(string) (receiptBackupReadDir, error) {
 				return nil, injected
 			}
 			if _, err := b.loadLatestReceiptBackupSet(); !errors.Is(err, injected) {
@@ -873,8 +1541,7 @@ func TestLoadLatestReceiptBackupSetFailsClosed(t *testing.T) {
 		t.Run("duplicate recognized name", func(t *testing.T) {
 			b := newReceiptBackupSetDiscoveryBackupper(t, t.TempDir(), "duplicate-owner")
 			writeReceiptBackupSetAt(t, b, 100)
-			baseReadDir := b.fs.readDir
-			entries, err := baseReadDir(b.cfg.Dir)
+			entries, err := os.ReadDir(b.cfg.Dir)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -889,8 +1556,10 @@ func TestLoadLatestReceiptBackupSetFailsClosed(t *testing.T) {
 			if manifestEntry == nil {
 				t.Fatal("fixture has no manifest entry")
 			}
-			b.fs.readDir = func(string) ([]os.DirEntry, error) {
-				return append(append([]os.DirEntry(nil), entries...), manifestEntry), nil
+			b.fs.openDir = func(string) (receiptBackupReadDir, error) {
+				return &receiptBackupStaticReadDir{
+					entries: append(append([]os.DirEntry(nil), entries...), manifestEntry),
+				}, nil
 			}
 			if _, err := b.loadLatestReceiptBackupSet(); err == nil ||
 				!strings.Contains(err.Error(), "duplicate") {

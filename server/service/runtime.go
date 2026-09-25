@@ -229,16 +229,8 @@ func createReceiptRuntimeGeneration(
 	if err := file.Sync(); err != nil {
 		return generation, fmt.Errorf("service: sync receipt runtime generation: %w", err)
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return generation, fmt.Errorf("service: open receipt runtime generation directory: %w", err)
-	}
-	if err := dir.Sync(); err != nil {
-		_ = dir.Close()
+	if err := syncReceiptDirectory(filepath.Dir(path)); err != nil {
 		return generation, fmt.Errorf("service: sync receipt runtime generation directory: %w", err)
-	}
-	if err := dir.Close(); err != nil {
-		return generation, fmt.Errorf("service: close receipt runtime generation directory: %w", err)
 	}
 	return generation, nil
 }

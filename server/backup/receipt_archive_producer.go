@@ -17,38 +17,35 @@ type ReceiptSource interface {
 	CaptureForBackup(context.Context, mutationreceipt.Config) (service.ReceiptWholeStateBackupCapture, error)
 }
 
-// receiptActiveEpochArchiveProduct keeps one backup set's paired binary
-// artifacts immutable after production. It covers only the captured active
-// epoch; a later set version may add a retired-epoch catalog without
-// resampling the live WAL. bytes returns fresh all-or-nothing copies for the
-// persistence boundary.
-type receiptActiveEpochArchiveProduct struct {
-	archive    string
-	manifest   string
-	nodeID     hlc.NodeID
-	generation [16]byte
-	stats      Stats
+// receiptBackupSetProduct keeps one backup set's three binary artifacts
+// immutable after production. bytes returns fresh all-or-nothing copies for
+// the persistence boundary.
+type receiptBackupSetProduct struct {
+	activeArchive  string
+	walCut         string
+	retiredCatalog string
+	nodeID         hlc.NodeID
+	generation     [16]byte
+	stats          Stats
 }
 
-func (p receiptActiveEpochArchiveProduct) bytes() (archive, manifest []byte) {
-	if p.archive == "" || p.manifest == "" {
-		return nil, nil
+func (p receiptBackupSetProduct) bytes() (activeArchive, walCut, retiredCatalog []byte) {
+	if p.activeArchive == "" || p.walCut == "" || p.retiredCatalog == "" {
+		return nil, nil, nil
 	}
-	return []byte(p.archive), []byte(p.manifest)
+	return []byte(p.activeArchive), []byte(p.walCut), []byte(p.retiredCatalog)
 }
 
-// produceReceiptWholeStateArchive creates the active-epoch members of one
-// receipt backup set. Its sole source call returns a detached publication cut
-// and the exact live FileWAL tip captured with it. The producer encodes only
-// that detached state and builds the WAL-cut member directly from that
-// witness; it never reopens the appendable WAL path. The complete canonical
-// archive and WAL-cut member are decoded before an immutable pair is returned.
+// produceReceiptWholeStateArchive creates all three members of one receipt
+// backup set from a single detached publication cut. The WAL-cut member is
+// built directly from the captured witness; the producer never reopens the
+// appendable WAL path.
 func produceReceiptWholeStateArchive(
 	ctx context.Context,
 	source ReceiptSource,
 	policy mutationreceipt.Config,
-) (receiptActiveEpochArchiveProduct, error) {
-	var zero receiptActiveEpochArchiveProduct
+) (receiptBackupSetProduct, error) {
+	var zero receiptBackupSetProduct
 	if err := ctx.Err(); err != nil {
 		return zero, err
 	}
@@ -63,12 +60,12 @@ func produceReceiptWholeStateArchive(
 		return zero, err
 	}
 	wholeState := capture.WholeState
-	if err := validateActiveOnlyRetiredSnapshot(
+	if err := validateBackupRetiredSnapshot(
 		wholeState.Policy,
 		wholeState.Receipts,
 		wholeState.Retired,
 	); err != nil {
-		return zero, fmt.Errorf("backup: validate active-only retired receipt state: %w", err)
+		return zero, fmt.Errorf("backup: validate retired receipt state: %w", err)
 	}
 	if wholeState.Policy.Epoch != policy.Epoch || wholeState.Policy.Retention != policy.Retention ||
 		wholeState.Policy.MaxEntries != policy.MaxEntries || wholeState.Policy.MaxBytes != policy.MaxBytes ||
@@ -102,23 +99,49 @@ func produceReceiptWholeStateArchive(
 	); err != nil {
 		return zero, err
 	}
-	manifestRaw, err := encodeReceiptArchiveWALCutWitnesses(archiveRaw, capture.WALTip, capture.WALTip)
+	walCutRaw, err := encodeReceiptArchiveWALCutWitnesses(archiveRaw, capture.WALTip, capture.WALTip)
 	if err != nil {
 		return zero, fmt.Errorf("backup: encode captured receipt archive/FileWAL cut: %w", err)
+	}
+	retiredCatalogRaw, err := encodeRetiredCatalogArchive(wholeState.Policy, wholeState.Retired)
+	if err != nil {
+		return zero, fmt.Errorf("backup: encode retired receipt catalog: %w", err)
+	}
+	retired, retiredMetadata, err := decodeRetiredCatalogArchive(retiredCatalogRaw)
+	if err != nil {
+		return zero, fmt.Errorf("backup: verify retired receipt catalog: %w", err)
+	}
+	if retiredMetadata.ClockHighWaterMillis != decoded.Receipts.ClockHighWaterMillis {
+		return zero, errors.New("backup: active and retired receipt clock high-water differ")
+	}
+	canonicalRetired, err := encodeRetiredCatalogArchiveWithoutPolicy(retiredMetadata, retired)
+	if err != nil {
+		return zero, fmt.Errorf("backup: canonicalize retired receipt catalog: %w", err)
+	}
+	if !bytes.Equal(canonicalRetired, retiredCatalogRaw) {
+		return zero, errors.New("backup: retired receipt catalog is not canonical")
 	}
 	if err := ctx.Err(); err != nil {
 		return zero, err
 	}
-	return receiptActiveEpochArchiveProduct{
-		archive:    string(archiveRaw),
-		manifest:   string(manifestRaw),
-		nodeID:     capture.NodeID,
-		generation: capture.Generation,
-		stats:      receiptArchiveStats(decoded),
+	stats := receiptArchiveStats(decoded)
+	for _, epoch := range retired.Epochs {
+		if len(epoch.State.Receipts) > int(^uint(0)>>1)-stats.Receipts {
+			return zero, errors.New("backup: retired receipt count overflows int")
+		}
+		stats.Receipts += len(epoch.State.Receipts)
+	}
+	return receiptBackupSetProduct{
+		activeArchive:  string(archiveRaw),
+		walCut:         string(walCutRaw),
+		retiredCatalog: string(retiredCatalogRaw),
+		nodeID:         capture.NodeID,
+		generation:     capture.Generation,
+		stats:          stats,
 	}, nil
 }
 
-func validateActiveOnlyRetiredSnapshot(
+func validateBackupRetiredSnapshot(
 	policy mutationreceipt.Config,
 	active mutationreceipt.Snapshot,
 	retired mutationreceipt.RetiredCatalogSnapshot,
@@ -134,9 +157,6 @@ func validateActiveOnlyRetiredSnapshot(
 	}
 	if _, err := mutationreceipt.NewRetiredCatalogFromSnapshot(config, retired); err != nil {
 		return fmt.Errorf("backup: invalid retired receipt catalog: %w", err)
-	}
-	if len(retired.Epochs) != 0 {
-		return errors.New("backup: active-only receipt archive cannot represent retired receipt evidence")
 	}
 	return nil
 }

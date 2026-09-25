@@ -207,7 +207,7 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Members != 2 || stats.Bytes <= 0 {
+	if stats.Members != 3 || stats.Bytes <= 0 {
 		t.Fatalf("production receipt backup stats = %+v", stats)
 	}
 	entries, err := os.ReadDir(backupDir)
@@ -223,8 +223,8 @@ func TestInitializeAppDurableBackupProductionUsesCertifiedRuntime(t *testing.T) 
 			t.Fatalf("production durable backup emitted legacy or temporary file %q", entry.Name())
 		}
 	}
-	if len(entries) != 3 || manifests != 1 {
-		t.Fatalf("production durable backup files = %+v, want two members and one manifest", entries)
+	if len(entries) != 4 || manifests != 1 {
+		t.Fatalf("production durable backup files = %+v, want three members and one manifest", entries)
 	}
 	capability, err := app.svc.GetReceiptCapability(t.Context(), &pb.GetReceiptCapabilityRequest{})
 	if err != nil {

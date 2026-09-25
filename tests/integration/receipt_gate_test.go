@@ -477,8 +477,9 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 		)
 	}
 	if evidence.SetID == 0 || evidence.BackupTimestamp.IsZero() ||
-		evidence.Stats.Vertices != 1 || evidence.Stats.Members != 2 ||
-		evidence.Stats.Bytes <= 0 || len(evidence.Archive) == 0 {
+		evidence.Stats.Vertices != 1 || evidence.Stats.Members != 3 ||
+		evidence.Stats.Bytes <= 0 || len(evidence.Archive) == 0 ||
+		len(evidence.RetiredCatalog) == 0 {
 		t.Fatalf("loaded durable backup evidence = %+v", evidence)
 	}
 	for _, entry := range mustReadDir(t, backupDir) {
