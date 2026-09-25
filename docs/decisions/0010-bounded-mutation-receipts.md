@@ -476,22 +476,20 @@ rejecting torn or incompatible metadata. Its caller must hold the same WAL
 lease through journal Close. Neither path binding nor the journal alone
 attests the WAL bytes, their archive/suffix cut, or a complete serving state;
 no production provider owns this journal or enables receipt recovery yet.
-A private owned recovery candidate now holds the same lease while reading the
-journal frontier, staging the effect-complete WAL graph/Store/origins, binding
-the Store to the journal, and resuming an appendable Log whose bounded tail
-matches the detached replay. It closes Log, journal, and lease together on
-discard. It is deliberately unpublished: an apparently valid WAL prefix can
-still omit a later durable suffix, and no provider has installed an epoch or
-endpoint generation at a trusted serving cut.
-A separate opt-in FileWAL tip journal can now durably record each frame's
+A separate opt-in FileWAL tip journal durably records each frame's
 local sequence and rolling hash after the WAL fsync but before the Log reports
 success. On restart it verifies the complete attested prefix and rejects a
 valid-looking WAL truncation or changed frame; a fully validated extra suffix
 may be attested before serving, since the previous process may have crashed
 between WAL fsync and tip publication. The caller must bind the journal to
-the active epoch/policy and keep it under the same path lease. This core
-primitive is not yet installed by the server, and a matching tip alone does
-not certify the graph/Store/origin image or archive cut.
+the active epoch/policy and keep it under the same path lease.
+A private owned recovery candidate requires both clock and tip journals under
+that lease, stages the effect-complete WAL graph/Store/origins, binds the Store
+to the clock journal, and resumes a tip-certified appendable Log whose bounded
+tail matches the detached replay. It closes Log, both journals, and lease on
+discard. It remains unpublished: a matching tip does not certify the archive
+cut or install an endpoint generation, and no production provider owns this
+bundle yet.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 

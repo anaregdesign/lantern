@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -14,23 +15,33 @@ import (
 )
 
 // receiptWALOwnedCandidate holds a fully replayed but unpublished image and
-// its live Log, journal, and exclusive path lease. No production provider
-// installs it: a valid WAL prefix can still omit a later durable receipt, so
-// archive/suffix proof and an atomic serving cut are required before any
-// receipt status or admission can use this state.
+// its live Log, clock/tip journals, and exclusive path lease. No production
+// provider installs it: a matching tip still cannot certify an archive cut,
+// endpoint generation, or the complete application publication boundary.
 type receiptWALOwnedCandidate struct {
 	state    *receiptWALRecoveryCandidate
 	logOwner io.Closer
 	journal  *mutationreceipt.ClockJournal
+	tip      *mutationlog.FileWALTipJournal
 	lease    *mutationlog.FileWALLease
 }
 
-// Close stops appends, closes the clock journal, then releases path ownership.
+// Close stops appends, closes both journals, then releases path ownership.
 func (c *receiptWALOwnedCandidate) Close() error {
 	if c == nil {
 		return nil
 	}
-	return errors.Join(c.logOwner.Close(), c.journal.Close(), c.lease.Close())
+	return errors.Join(c.logOwner.Close(), c.journal.Close(), c.tip.Close(), c.lease.Close())
+}
+
+func receiptWALTipBinding(epoch mutationreceipt.Epoch, policy [sha256.Size]byte) [sha256.Size]byte {
+	h := sha256.New()
+	_, _ = h.Write([]byte("lantern-receipt-wal-tip-v1\x00"))
+	_, _ = h.Write(epoch[:])
+	_, _ = h.Write(policy[:])
+	var binding [sha256.Size]byte
+	copy(binding[:], h.Sum(nil))
+	return binding
 }
 
 // openLeasedReceiptWALCandidate holds one lease across journal validation,
@@ -52,13 +63,14 @@ func openLeasedReceiptWALCandidate(
 		return nil, err
 	}
 	var journal *mutationreceipt.ClockJournal
+	var tip *mutationlog.FileWALTipJournal
 	var logOwner io.Closer
 	defer func() {
 		if err != nil {
 			if logOwner != nil {
 				err = errors.Join(err, logOwner.Close())
 			}
-			err = errors.Join(err, journal.Close(), lease.Close())
+			err = errors.Join(err, journal.Close(), tip.Close(), lease.Close())
 		}
 	}()
 	policyStore, err := mutationreceipt.New(config)
@@ -68,6 +80,10 @@ func openLeasedReceiptWALCandidate(
 	journal, err = mutationreceipt.ResumeClockJournal(lease.Path(), config.Epoch, policyStore.PolicyFingerprint())
 	if err != nil {
 		return nil, fmt.Errorf("receipt WAL clock journal: %w", err)
+	}
+	tip, err = mutationlog.ResumeFileWALTipJournal(lease.Path(), receiptWALTipBinding(config.Epoch, policyStore.PolicyFingerprint()))
+	if err != nil {
+		return nil, fmt.Errorf("receipt WAL tip journal: %w", err)
 	}
 	if config.ClockHighWater.IsZero() || config.ClockHighWater.UnixMilli() < journal.HighWaterMillis() {
 		config.ClockHighWater = time.UnixMilli(journal.HighWaterMillis())
@@ -87,9 +103,9 @@ func openLeasedReceiptWALCandidate(
 	var liveLog *mutationlog.Log
 	err = lease.WithPath(func(canonicalPath string) error {
 		var resumeErr error
-		liveLog, logOwner, resumeErr = mutationlog.ResumeLogFromFileWAL(canonicalPath, opts, encodeReceiptWALUnion, decodeReceiptWALUnion, func(mutationlog.Entry) error {
+		liveLog, logOwner, resumeErr = mutationlog.ResumeLogFromFileWALWithTip(canonicalPath, opts, encodeReceiptWALUnion, decodeReceiptWALUnion, validateReceiptWALUnionEntry, func(mutationlog.Entry) error {
 			return nil // The strict first pass installed the detached application image.
-		})
+		}, tip)
 		return resumeErr
 	})
 	if err != nil {
@@ -99,7 +115,7 @@ func openLeasedReceiptWALCandidate(
 		return nil, err
 	}
 	state.log = liveLog
-	return &receiptWALOwnedCandidate{state: state, logOwner: logOwner, journal: journal, lease: lease}, nil
+	return &receiptWALOwnedCandidate{state: state, logOwner: logOwner, journal: journal, tip: tip, lease: lease}, nil
 }
 
 func matchingReceiptWALLogTail(staged, live *mutationlog.Log) error {
