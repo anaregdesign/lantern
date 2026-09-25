@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -44,6 +45,7 @@ type App struct {
 	pump        *replication.Pump
 	llm         *provider.LLMEngine
 	antiEntropy *replication.AntiEntropy
+	mutationLog *provider.MutationLogRuntime
 }
 
 func newApp(
@@ -64,6 +66,7 @@ func newApp(
 	pc provider.PeerConfig,
 	rc provider.ReplicationConfig,
 	engine *provider.LLMEngine,
+	mutationLog *provider.MutationLogRuntime,
 	_ provider.CacheGCHooksWired,
 ) *App {
 	// Wire the replication snapshotter onto svc here (rather than inside
@@ -101,6 +104,7 @@ func newApp(
 		restoreReq:  bcfg.RestoreRequired,
 		pump:        pump,
 		antiEntropy: antiEntropy,
+		mutationLog: mutationLog,
 	}
 }
 
@@ -233,7 +237,11 @@ func newLanternReplicationService(
 		WithSearchConfig(svc)
 }
 
-func (a *App) Run(ctx context.Context) error {
+func (a *App) Run(ctx context.Context) (runErr error) {
+	// Keep one owner for the Log until every serving goroutine has stopped.
+	// An early restore failure also releases it; a future durable runtime
+	// will close its FileWAL and path lease at this same boundary.
+	defer func() { runErr = errors.Join(runErr, a.mutationLog.Close()) }()
 	// Restore-on-startup (#770, #779) runs BEFORE any listener serves: the
 	// newest mounted dump is replayed as a baseline so the node never begins
 	// serving an empty graph. When peers exist the subsequent bootstrap

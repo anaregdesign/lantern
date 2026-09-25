@@ -31,7 +31,8 @@ func initializeApp() (*App, error) {
 	mutationLogConfig := provider.NewMutationLogConfig(config)
 	registry := provider.NewPrometheusRegistry()
 	domainMetrics := provider.NewDomainMetrics(registry, observabilityConfig, graphCache)
-	log := provider.NewMutationLog(mutationLogConfig, domainMetrics)
+	mutationLogRuntime := provider.NewMutationLogRuntime(mutationLogConfig, domainMetrics)
+	log := provider.NewMutationLog(mutationLogRuntime)
 	clock := provider.NewHLCClock(replicationConfig)
 	lanternService := newLanternService(graphCache, scanConfig, searchConfig, replicationConfig, validationLimits, traversalConfig, tlsConfig, cacheConfig, observabilityConfig, logger, log, clock, domainMetrics)
 	netConfig := provider.NewNetConfig(config)
@@ -79,6 +80,6 @@ func initializeApp() (*App, error) {
 		return nil, err
 	}
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, mutationLogRuntime, cacheGCHooksWired)
 	return app, nil
 }

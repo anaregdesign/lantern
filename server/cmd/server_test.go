@@ -2,10 +2,39 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/provider"
 )
+
+func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := mutationlog.New(mutationlog.Options{})
+	runtime := &provider.MutationLogRuntime{Log: log}
+	app := &App{
+		backupper:   backup.New(nil, backup.Config{RestoreOnStart: true, Dir: path}, nil, nil),
+		restoreReq:  true,
+		mutationLog: runtime,
+	}
+	if err := app.Run(context.Background()); err == nil {
+		t.Fatal("required restore failure did not stop startup")
+	}
+	if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); !errors.Is(err, mutationlog.ErrClosed) {
+		t.Fatalf("Log after failed startup = %v, want closed", err)
+	}
+}
 
 // TestDrainPhase_SigtermDrainsThenReturns verifies that when the parent
 // context is cancelled (SIGTERM), drainPhase invokes begin exactly once and

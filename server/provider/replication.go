@@ -107,10 +107,10 @@ func NewHLCClock(rc ReplicationConfig) *hlc.Clock {
 	return hlc.New(rc.NodeID, hlc.Options{})
 }
 
-// NewMutationLog constructs the bounded in-memory mutation log. The capacity
+// NewMutationLogRuntime constructs the bounded in-memory mutation log. The capacity
 // gauge is initialised here (rather than from inside mutationlog itself) so
 // the core package keeps zero dependencies on prometheus.
-func NewMutationLog(mlc MutationLogConfig, m *domainmetrics.DomainMetrics) *mutationlog.Log {
+func NewMutationLogRuntime(mlc MutationLogConfig, m *domainmetrics.DomainMetrics) *MutationLogRuntime {
 	log := mutationlog.New(mutationlog.Options{
 		Capacity:         mlc.Capacity,
 		SubscriberBuffer: mlc.SubscriberBuffer,
@@ -120,5 +120,24 @@ func NewMutationLog(mlc MutationLogConfig, m *domainmetrics.DomainMetrics) *muta
 		OnDrop: m.OnMutationLogSubscriberDropped,
 	})
 	m.SetMutationLogCapacity(mlc.Capacity)
-	return log
+	return &MutationLogRuntime{Log: log}
 }
+
+// MutationLogRuntime keeps the Log's lifetime with the composition root. A
+// future durable receipt provider will extend this owner with its FileWAL and
+// path lease; the graph-only default still owns just the in-memory Log.
+type MutationLogRuntime struct {
+	Log *mutationlog.Log
+}
+
+// Close stops the dispatcher after serving goroutines have exited.
+func (r *MutationLogRuntime) Close() error {
+	if r == nil || r.Log == nil {
+		return nil
+	}
+	return r.Log.Close()
+}
+
+// NewMutationLog exposes the one Log owned by the runtime to service and
+// replication providers without creating a second instance.
+func NewMutationLog(r *MutationLogRuntime) *mutationlog.Log { return r.Log }

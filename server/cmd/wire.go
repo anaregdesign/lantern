@@ -34,6 +34,7 @@ func initializeApp() (*App, error) {
 		provider.NewPeerResolver,
 		provider.NewAntiEntropyConfig,
 		provider.NewHLCClock,
+		provider.NewMutationLogRuntime,
 		provider.NewMutationLog,
 		provider.NewLogger,
 		provider.NewTracing,
