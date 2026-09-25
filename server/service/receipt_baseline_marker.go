@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
@@ -14,7 +16,7 @@ const (
 	receiptBaselineMarkerVersion = 1
 	receiptBaselineMarkerSize    = 4 + sha256.Size + 8 +
 		len(mutationreceipt.Epoch{}) + sha256.Size +
-		2*16 + 8 + 2*(8+4+len(hlc.NodeID{}))
+		2*16 + 8 + 8 + 2*(8+4+len(hlc.NodeID{}))
 	maxReceiptBaselineBytes = 512 << 20
 )
 
@@ -25,15 +27,16 @@ var errReceiptBaselineMarker = errors.New("service: invalid RECEIPT_V1 baseline 
 // boundary and its HLC must equal RestoreFloor. It is deliberately not a
 // protobuf or public replication operation.
 type receiptBaselineMarker struct {
-	Digest             [sha256.Size]byte
-	Size               uint64
-	Epoch              mutationreceipt.Epoch
-	PolicyFingerprint  [sha256.Size]byte
-	PreviousGeneration [16]byte
-	RotatedGeneration  [16]byte
-	SourceLocalCutoff  uint64
-	SnapshotHLC        hlc.Timestamp
-	RestoreFloor       hlc.Timestamp
+	Digest                 [sha256.Size]byte
+	Size                   uint64
+	Epoch                  mutationreceipt.Epoch
+	PolicyFingerprint      [sha256.Size]byte
+	PreviousGeneration     [16]byte
+	RotatedGeneration      [16]byte
+	SourceLocalCutoff      uint64
+	ReceiptHighWaterMillis int64
+	SnapshotHLC            hlc.Timestamp
+	RestoreFloor           hlc.Timestamp
 }
 
 func validateReceiptBaselineMarker(marker receiptBaselineMarker) error {
@@ -44,11 +47,14 @@ func validateReceiptBaselineMarker(marker receiptBaselineMarker) error {
 		marker.PreviousGeneration == ([16]byte{}) ||
 		marker.RotatedGeneration == ([16]byte{}) ||
 		marker.PreviousGeneration == marker.RotatedGeneration ||
+		marker.ReceiptHighWaterMillis < 0 ||
+		marker.ReceiptHighWaterMillis > math.MaxInt64/int64(time.Millisecond) ||
 		marker.SnapshotHLC.WallNs <= 0 ||
 		marker.SnapshotHLC.NodeID == (hlc.NodeID{}) ||
 		marker.RestoreFloor.WallNs <= 0 ||
 		marker.RestoreFloor.NodeID == (hlc.NodeID{}) ||
-		marker.RestoreFloor.Less(marker.SnapshotHLC) {
+		marker.RestoreFloor.Less(marker.SnapshotHLC) ||
+		marker.RestoreFloor.WallNs < marker.ReceiptHighWaterMillis*int64(time.Millisecond) {
 		return errReceiptBaselineMarker
 	}
 	return nil
@@ -75,6 +81,8 @@ func marshalReceiptBaselineMarker(marker receiptBaselineMarker) ([]byte, error) 
 	off += len(marker.RotatedGeneration)
 	binary.BigEndian.PutUint64(raw[off:], marker.SourceLocalCutoff)
 	off += 8
+	binary.BigEndian.PutUint64(raw[off:], uint64(marker.ReceiptHighWaterMillis))
+	off += 8
 	off = putReceiptBaselineTimestamp(raw, off, marker.SnapshotHLC)
 	_ = putReceiptBaselineTimestamp(raw, off, marker.RestoreFloor)
 	return raw, nil
@@ -100,6 +108,8 @@ func unmarshalReceiptBaselineMarker(raw []byte) (receiptBaselineMarker, error) {
 	copy(marker.RotatedGeneration[:], raw[off:off+len(marker.RotatedGeneration)])
 	off += len(marker.RotatedGeneration)
 	marker.SourceLocalCutoff = binary.BigEndian.Uint64(raw[off:])
+	off += 8
+	marker.ReceiptHighWaterMillis = int64(binary.BigEndian.Uint64(raw[off:]))
 	off += 8
 	marker.SnapshotHLC, off = readReceiptBaselineTimestamp(raw, off)
 	marker.RestoreFloor, off = readReceiptBaselineTimestamp(raw, off)

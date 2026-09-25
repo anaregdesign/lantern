@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -14,15 +15,16 @@ func receiptBaselineMarkerFixture() receiptBaselineMarker {
 	snapshotOrigin := hlc.NodeID{2}
 	localOrigin := hlc.NodeID{3}
 	return receiptBaselineMarker{
-		Digest:             [32]byte{1},
-		Size:               4096,
-		Epoch:              mutationreceipt.Epoch{4},
-		PolicyFingerprint:  [32]byte{5},
-		PreviousGeneration: [16]byte{6},
-		RotatedGeneration:  [16]byte{7},
-		SourceLocalCutoff:  9,
-		SnapshotHLC:        hlc.Timestamp{WallNs: 100, Logical: 2, NodeID: snapshotOrigin},
-		RestoreFloor:       hlc.Timestamp{WallNs: 101, Logical: 3, NodeID: localOrigin},
+		Digest:                 [32]byte{1},
+		Size:                   4096,
+		Epoch:                  mutationreceipt.Epoch{4},
+		PolicyFingerprint:      [32]byte{5},
+		PreviousGeneration:     [16]byte{6},
+		RotatedGeneration:      [16]byte{7},
+		SourceLocalCutoff:      9,
+		ReceiptHighWaterMillis: 100,
+		SnapshotHLC:            hlc.Timestamp{WallNs: 100_000_000, Logical: 2, NodeID: snapshotOrigin},
+		RestoreFloor:           hlc.Timestamp{WallNs: 101_000_000, Logical: 3, NodeID: localOrigin},
 	}
 }
 
@@ -63,11 +65,15 @@ func TestReceiptBaselineMarkerCanonicalRoundTripAndFrameBinding(t *testing.T) {
 func TestReceiptBaselineMarkerRejectsInvalidProvenance(t *testing.T) {
 	valid := receiptBaselineMarkerFixture()
 	tests := map[string]func(*receiptBaselineMarker){
-		"zero digest":        func(m *receiptBaselineMarker) { m.Digest = [32]byte{} },
-		"oversized":          func(m *receiptBaselineMarker) { m.Size = maxReceiptBaselineBytes + 1 },
-		"zero epoch":         func(m *receiptBaselineMarker) { m.Epoch = mutationreceipt.Epoch{} },
-		"same generation":    func(m *receiptBaselineMarker) { m.RotatedGeneration = m.PreviousGeneration },
-		"backward HLC":       func(m *receiptBaselineMarker) { m.RestoreFloor.WallNs = m.SnapshotHLC.WallNs - 1 },
+		"zero digest":         func(m *receiptBaselineMarker) { m.Digest = [32]byte{} },
+		"oversized":           func(m *receiptBaselineMarker) { m.Size = maxReceiptBaselineBytes + 1 },
+		"zero epoch":          func(m *receiptBaselineMarker) { m.Epoch = mutationreceipt.Epoch{} },
+		"same generation":     func(m *receiptBaselineMarker) { m.RotatedGeneration = m.PreviousGeneration },
+		"backward HLC":        func(m *receiptBaselineMarker) { m.RestoreFloor.WallNs = m.SnapshotHLC.WallNs - 1 },
+		"negative high-water": func(m *receiptBaselineMarker) { m.ReceiptHighWaterMillis = -1 },
+		"high-water beyond floor": func(m *receiptBaselineMarker) {
+			m.ReceiptHighWaterMillis = m.RestoreFloor.WallNs/int64(time.Millisecond) + 1
+		},
 		"zero snapshot node": func(m *receiptBaselineMarker) { m.SnapshotHLC.NodeID = hlc.NodeID{} },
 	}
 	for name, mutate := range tests {

@@ -10,8 +10,11 @@ import (
 
 const snapshotVersion = 1
 
-var ErrInvalidSnapshot = errors.New("mutationreceipt: invalid receipt snapshot")
-var ErrRetiredEpochSnapshot = errors.New("mutationreceipt: retired-epoch receipt snapshot is not supported")
+var (
+	ErrInvalidSnapshot         = errors.New("mutationreceipt: invalid receipt snapshot")
+	ErrRetiredEpochSnapshot    = errors.New("mutationreceipt: retired-epoch receipt snapshot is not supported")
+	ErrSnapshotDoesNotDominate = errors.New("mutationreceipt: snapshot omits or changes a retained receipt")
+)
 
 // Snapshot is a detached copy of one Store's known receipts and clock
 // high-water. It is only one component of a future graph/receipt/origin
@@ -27,8 +30,10 @@ type Snapshot struct {
 
 // SnapshotInstall is a reversible whole-Store replacement. It holds Store.mu
 // from BeginSnapshotInstall until Commit or Abort, so direct readers cannot
-// observe the staged map/index set. The caller must commit an enclosing
-// durable boundary containing the effective clock high-water before Commit.
+// observe the staged map/index set. A staged snapshot retains every receiver
+// receipt that remains live at the effective clock high-water. The caller must
+// commit an enclosing durable boundary containing that high-water before
+// Commit.
 type SnapshotInstall struct {
 	store    *Store
 	previous storeSnapshotState
@@ -171,11 +176,13 @@ func NewFromSnapshot(config Config, state Snapshot) (*Store, error) {
 
 // BeginSnapshotInstall validates a complete same-epoch, same-policy snapshot
 // and stages its receipt indexes and nondecreasing clock high-water in place
-// while retaining the Store object identity. It deliberately does not invoke
-// the Store's high-water sink: the caller must durably record the effective
-// high-water in its enclosing commit before calling Commit. Abort restores the
-// exact pre-stage state. The caller must hold its outer publication cut and
-// defer Abort immediately.
+// while retaining the Store object identity. Every receiver receipt still live
+// at the effective high-water must be present byte-for-byte in the candidate;
+// otherwise replacing it could turn a known retry into NotYetObserved. It
+// deliberately does not invoke the Store's high-water sink: the caller must
+// durably record the effective high-water in its enclosing commit before
+// calling Commit. Abort restores the exact pre-stage state. The caller must
+// hold its outer publication cut and defer Abort immediately.
 func (s *Store) BeginSnapshotInstall(state Snapshot) (*SnapshotInstall, error) {
 	if s == nil {
 		return nil, ErrInvalidSnapshot
@@ -209,6 +216,9 @@ func (s *Store) BeginSnapshotInstall(state Snapshot) (*SnapshotInstall, error) {
 	if s.highWaterFault != nil {
 		return nil, s.highWaterFault
 	}
+	if err := validateRetainedReceiptDominance(candidate.receipts, s.receipts, candidate.highWaterMS); err != nil {
+		return nil, err
+	}
 	stage := &SnapshotInstall{
 		store: s,
 		previous: storeSnapshotState{
@@ -239,8 +249,7 @@ func (s *SnapshotInstall) Commit() {
 	s.store.mu.Unlock()
 }
 
-// Abort restores the pre-install receipt maps and indexes. The monotonic
-// clock high-water and any expiry it caused before staging remain advanced.
+// Abort restores the exact pre-install receipt maps, indexes, and high-water.
 func (s *SnapshotInstall) Abort() {
 	if s == nil || s.closed {
 		return
@@ -254,6 +263,21 @@ func (s *SnapshotInstall) Abort() {
 	store.highWaterMS = s.previous.highWaterMS
 	s.closed = true
 	store.mu.Unlock()
+}
+
+func validateRetainedReceiptDominance(candidate, current map[ID]Receipt, effectiveHighWater int64) error {
+	for id, retained := range current {
+		if retained.DeadlineMillis <= effectiveHighWater {
+			continue
+		}
+		replacement, ok := candidate[id]
+		if !ok || replacement.Intent != retained.Intent ||
+			replacement.DeadlineMillis != retained.DeadlineMillis ||
+			!bytes.Equal(replacement.Result, retained.Result) {
+			return ErrSnapshotDoesNotDominate
+		}
+	}
+	return nil
 }
 
 func (s *Store) validateSnapshotReceipt(receipt Receipt, snapshotHighWater int64) error {

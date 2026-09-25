@@ -117,6 +117,9 @@ func resumeReceiptBaselineWALCandidate(
 	if err != nil {
 		return nil, nil, fmt.Errorf("service: read staged baseline receipts: %w", err)
 	}
+	if scan.marker.ReceiptHighWaterMillis < receiptSnapshot.ClockHighWaterMillis {
+		return nil, nil, fmt.Errorf("%w: marker receipt high-water precedes sidecar", errReceiptBaselineMarker)
+	}
 	replay := &receiptBaselineSuffixReplay{
 		graph:             baseline.Graph,
 		origins:           originTracker,
@@ -124,7 +127,7 @@ func resumeReceiptBaselineWALCandidate(
 		receipts:          make(map[mutationreceipt.ID]mutationreceipt.Receipt, len(receiptSnapshot.Receipts)),
 		seenReceipts:      make(map[mutationreceipt.ID]mutationreceipt.Receipt, len(receiptSnapshot.Receipts)),
 		policyFingerprint: scan.marker.PolicyFingerprint,
-		highWater:         receiptSnapshot.ClockHighWaterMillis,
+		highWater:         scan.marker.ReceiptHighWaterMillis,
 		frontier:          scan.marker.RestoreFloor,
 	}
 	if now.IsZero() {

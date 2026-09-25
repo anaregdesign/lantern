@@ -56,6 +56,29 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 			},
 		},
 		{
+			name: "receipt high-water mismatch",
+			damage: func(t *testing.T, _ string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
+				t.Helper()
+				original := image.codec.build
+				image.codec.build = func() (*ReceiptBaselineCandidate, error) {
+					candidate, err := original()
+					if err != nil {
+						return nil, err
+					}
+					state, err := candidate.Receipts.Snapshot()
+					if err != nil {
+						return nil, err
+					}
+					state.ClockHighWaterMillis++
+					policy := candidate.Policy
+					policy.ClockHighWater = time.UnixMilli(state.ClockHighWaterMillis)
+					candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
+					candidate.Policy = policy
+					return candidate, err
+				}
+			},
+		},
+		{
 			name: "genesis generation mismatch",
 			damage: func(t *testing.T, path string, config DurableReceiptWALRuntimeConfig, _ receiptBaselineTestImage) {
 				t.Helper()

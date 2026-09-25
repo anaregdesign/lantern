@@ -161,6 +161,25 @@ func baselineRuntimeTestConfig(path string) DurableReceiptWALRuntimeConfig {
 	}
 }
 
+func assertReceiptBaselinePublicationFault(t *testing.T, service *LanternService) {
+	t.Helper()
+	generation, faulted := service.publicationStatus()
+	if !faulted {
+		t.Fatal("receipt baseline failure did not fault the publication generation")
+	}
+	select {
+	case <-generation:
+	default:
+		t.Fatal("faulted publication generation remained open")
+	}
+	if _, err := (&lanternServiceConnect{svc: service}).GetVertex(
+		context.Background(),
+		connect.NewRequest(&pb.GetVertexRequest{Key: "baseline-searchable"}),
+	); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("external graph read after receipt baseline failure = %v", err)
+	}
+}
+
 func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T) {
 	path := t.TempDir() + "/receipts.wal"
 	config := baselineRuntimeTestConfig(path)
@@ -290,6 +309,111 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	}
 }
 
+func TestInstallReceiptBaselineRestartPreservesEffectiveReceiptHighWater(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	if len(image.capture.Receipts.Receipts) != 1 {
+		t.Fatalf("receipt fixture rows = %d, want 1", len(image.capture.Receipts.Receipts))
+	}
+	deadline := image.capture.Receipts.Receipts[0].DeadlineMillis
+	initialHighWater := deadline - int64(2*time.Minute/time.Millisecond)
+	sourceHighWater := deadline - int64(time.Minute/time.Millisecond)
+	effectiveHighWater := deadline + int64(time.Minute/time.Millisecond)
+	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
+	config.Now = time.UnixMilli(initialHighWater)
+
+	baseBuild := image.codec.build
+	buildAtHighWater := func(highWater int64, includeReceipt bool) func() (*ReceiptBaselineCandidate, error) {
+		return func() (*ReceiptBaselineCandidate, error) {
+			candidate, err := baseBuild()
+			if err != nil {
+				return nil, err
+			}
+			state, err := candidate.Receipts.Snapshot()
+			if err != nil {
+				return nil, err
+			}
+			state.ClockHighWaterMillis = highWater
+			if !includeReceipt {
+				state.Receipts = nil
+			}
+			policy := candidate.Policy
+			policy.ClockHighWater = time.UnixMilli(highWater)
+			candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
+			candidate.Policy = policy
+			return candidate, err
+		}
+	}
+
+	firstCapture := image.capture
+	firstCapture.Receipts.ClockHighWaterMillis = effectiveHighWater
+	firstCapture.Receipts.Receipts = nil
+	firstCapture.Policy.ClockHighWater = time.UnixMilli(effectiveHighWater)
+	firstCodec := &receiptBaselineTestCodec{
+		raw:   []byte("canonical-high-water-baseline-a"),
+		build: buildAtHighWater(effectiveHighWater, false),
+	}
+	secondCapture := image.capture
+	secondCapture.Receipts.ClockHighWaterMillis = sourceHighWater
+	secondCapture.Policy.ClockHighWater = time.UnixMilli(sourceHighWater)
+	secondCodec := &receiptBaselineTestCodec{
+		raw:   []byte("canonical-high-water-baseline-b"),
+		build: buildAtHighWater(sourceHighWater, true),
+	}
+
+	config.BaselineCodec = firstCodec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(context.Background(), firstCapture); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+		t.Fatalf("first baseline Store = %+v", got)
+	}
+
+	runtime.receipt.baselineCodec = secondCodec
+	if err := primary.InstallReceiptBaseline(context.Background(), secondCapture); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+		t.Fatalf("second baseline regressed live Store = %+v", got)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scan.hasMarker || scan.markerSequence != 2 ||
+		scan.marker.ReceiptHighWaterMillis != effectiveHighWater {
+		t.Fatalf("newest baseline marker = %+v", scan)
+	}
+
+	config.BaselineCodec = secondCodec
+	config.Now = time.UnixMilli(initialHighWater)
+	config.Receipt.ClockHighWater = time.UnixMilli(initialHighWater)
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	if got := restarted.receipt.store.Stats(); got.HighWaterMillis != effectiveHighWater || got.Entries != 0 {
+		t.Fatalf("restarted Store = %+v, want high-water %d and no resurrected rows", got, effectiveHighWater)
+	}
+	if status, _, err := restarted.receipt.store.Lookup(
+		image.id,
+		time.UnixMilli(initialHighWater),
+	); err != nil || status != mutationreceipt.NoLongerProvable {
+		t.Fatalf("expired receipt after restart = %v, %v", status, err)
+	}
+}
+
 func TestInstallReceiptBaselineCrashPointsRecoverOrRemainUncommitted(t *testing.T) {
 	for _, point := range []receiptBaselineSidecarFaultPoint{
 		receiptBaselineBeforeRename,
@@ -378,6 +502,7 @@ func TestInstallReceiptBaselineCrashPointsRecoverOrRemainUncommitted(t *testing.
 			} else if _, ok := runtime.graph.GetVertex("baseline-searchable"); !ok {
 				t.Fatal("post-publication crash lost installed graph")
 			}
+			assertReceiptBaselinePublicationFault(t, primary)
 			if err := runtime.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -434,6 +559,142 @@ func TestInstallReceiptBaselineRejectsPolicyAndOriginRegressionBeforeMarker(t *t
 	}
 	if _, ok := runtime.graph.GetVertex("baseline-searchable"); ok {
 		t.Fatal("rejected baseline published graph")
+	}
+}
+
+func TestInstallReceiptBaselineRejectsRetainedReceiptRegressionBeforeMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil)
+	generation := runtime.receipt.generation
+
+	issued := config.Now.Add(10 * time.Second)
+	id, err := mutationreceipt.NewID(config.Receipt.Epoch, issued, [24]byte{0x44})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := mutationreceipt.Intent{
+		ID: id, Group: mutationreceipt.GroupID{0x45}, Count: 1,
+		Kind: mutationreceipt.PutVertex, Digest: mutationreceipt.IntentDigest([]byte("receiver-only")),
+	}
+	tx, err := runtime.receipt.store.Begin(issued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if classification, _, err := tx.Classify([]mutationreceipt.Intent{intent}); err != nil ||
+		classification != mutationreceipt.Fresh {
+		tx.Abort()
+		t.Fatalf("classify receiver receipt = %v, %v", classification, err)
+	}
+	if err := tx.Reserve([][]byte{[]byte("receiver-result")}); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	tx.Commit()
+
+	if err := primary.InstallReceiptBaseline(context.Background(), image.capture); !errors.Is(err, mutationreceipt.ErrSnapshotDoesNotDominate) {
+		t.Fatalf("receipt-regressing baseline error = %v", err)
+	}
+	if _, ok := runtime.log.LastSeq(); ok {
+		t.Fatal("receipt-regressing baseline committed a marker")
+	}
+	if runtime.receipt.generation != generation {
+		t.Fatal("receipt-regressing baseline rotated generation")
+	}
+	if _, ok := runtime.graph.GetVertex("baseline-searchable"); ok {
+		t.Fatal("receipt-regressing baseline published graph")
+	}
+	if status, receipt, err := runtime.receipt.store.Lookup(id, issued); err != nil ||
+		status != mutationreceipt.Confirmed || string(receipt.Result) != "receiver-result" {
+		t.Fatalf("rejected baseline lost receiver receipt: %v, %+v, %v", status, receipt, err)
+	}
+}
+
+func TestInstallReceiptBaselineCancellationBeforeMarkerRollsBackStages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil)
+	generation := runtime.receipt.generation
+
+	primary.receiptOriginCutMu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	installDone := make(chan error, 1)
+	go func() {
+		installDone <- primary.InstallReceiptBaseline(ctx, image.capture)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if !primary.replicationCutMu.TryRLock() {
+			break
+		}
+		primary.replicationCutMu.RUnlock()
+		if !time.Now().Before(deadline) {
+			primary.receiptOriginCutMu.Unlock()
+			cancel()
+			t.Fatal("baseline install did not reach the exclusive publication cut")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-installDone:
+		primary.receiptOriginCutMu.Unlock()
+		cancel()
+		t.Fatalf("baseline install returned before the blocked origin cut was released: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	cancel()
+	primary.receiptOriginCutMu.Unlock()
+	select {
+	case err := <-installDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled baseline install = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled baseline install remained blocked")
+	}
+	if _, ok := runtime.log.LastSeq(); ok {
+		t.Fatal("canceled baseline install committed a marker")
+	}
+	if runtime.receipt.generation != generation {
+		t.Fatal("canceled baseline install rotated generation")
+	}
+	if _, ok := runtime.graph.GetVertex("baseline-searchable"); ok {
+		t.Fatal("canceled baseline install published graph")
+	}
+	if got := runtime.receipt.store.Stats(); got.Entries != 0 {
+		t.Fatalf("canceled baseline install changed Store = %+v", got)
+	}
+	if states := runtime.origins.States(); len(states) != 0 {
+		t.Fatalf("canceled baseline install changed origins = %+v", states)
+	}
+	faultGeneration, faulted := primary.publicationStatus()
+	if faulted {
+		t.Fatal("definitely canceled baseline install faulted publication")
+	}
+	select {
+	case <-faultGeneration:
+		t.Fatal("definitely canceled baseline install closed publication generation")
+	default:
 	}
 }
 
@@ -549,6 +810,19 @@ func TestInstallReceiptBaselineWALFailureRollsBackStore(t *testing.T) {
 			}
 			if primary.receiptCommitFaulted != tc.wantFaulted {
 				t.Fatalf("receipt fail-stop = %t, want %t", primary.receiptCommitFaulted, tc.wantFaulted)
+			}
+			if tc.wantFaulted {
+				assertReceiptBaselinePublicationFault(t, primary)
+			} else {
+				generation, faulted := primary.publicationStatus()
+				if faulted {
+					t.Fatal("definite marker abort faulted publication")
+				}
+				select {
+				case <-generation:
+					t.Fatal("definite marker abort closed publication generation")
+				default:
+				}
 			}
 			if got := runtime.receipt.store.Stats(); got.HighWaterMillis != originalHighWater || got.Entries != 0 {
 				t.Fatalf("failed marker changed Store = %+v, want high-water %d and no rows", got, originalHighWater)

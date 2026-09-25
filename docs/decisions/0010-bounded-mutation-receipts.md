@@ -1,8 +1,8 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, and an opt-in RECEIPT_V1 Snapshot producer exist, but receiver/install, capability/status RPCs, and receipt-enabled writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, an opt-in RECEIPT_V1 Snapshot producer, detached collection, and durable local baseline install/recovery exist, but network installation, capability/status RPCs, and receipt-enabled writes remain disabled
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116
+- Issues: #1115, #1282, #1203, #1116, #1393
 
 ## Context and boundary
 
@@ -579,17 +579,24 @@ silently retried as a fresh epoch.
 
 A private fixed-size WAL baseline marker now binds a canonical `RECEIPT_V1`
 archive digest and byte count to its source cutoff/HLC, epoch, policy
-fingerprint, previous generation, rotated generation, and local HLC restore
-floor. The immutable archive is fsynced under a content-addressed sidecar name
-before the marker commit. Startup validates the complete WAL and generation
-chain before selecting the newest marker, requires that marker's exact
-sidecar, and never falls back to an older committed baseline. It restores the
-baseline into the existing GraphCache, Store, origin tracker, HLC, and Log
-identities, replays only the suffix, and preserves the responder-local WAL
-sequence while gapping pre-boundary cursors. Natural D4 tombstone and receipt
-expiry is reaped during restore rather than treated as archive corruption.
-Orphan sidecars without a marker are cleanup candidates; missing, mismatched,
-noncanonical, oversized, or corrupt committed state fails startup.
+fingerprint, previous generation, rotated generation, exact effective receipt
+clock high-water, and local HLC restore floor. The immutable archive is fsynced
+under a content-addressed sidecar name
+before the marker commit. Under the exclusive publication cut, installation
+requires the source origin vector to dominate local origins and the candidate
+Store to preserve every receiver receipt still live at the effective clock
+high-water. Cancellation is checked again after all reversible staging and
+immediately before the marker write. An indeterminate marker outcome or
+interrupted publication closes the graph/CDC publication generation and
+fail-stops external reads as well as writes. Startup validates the complete WAL
+and generation chain before selecting the newest marker, requires that
+marker's exact sidecar, and never falls back to an older committed baseline. It
+restores the baseline into the existing GraphCache, Store, origin tracker, HLC,
+and Log identities, replays only the suffix, and preserves the responder-local
+WAL sequence while gapping pre-boundary cursors. Natural D4 tombstone and
+receipt expiry is reaped during restore rather than treated as archive
+corruption. Orphan sidecars without a marker are cleanup candidates; missing,
+mismatched, noncanonical, oversized, or corrupt committed state fails startup.
 
 The sole production composition boundary selects
 `LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the

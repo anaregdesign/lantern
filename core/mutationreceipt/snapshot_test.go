@@ -1,8 +1,10 @@
 package mutationreceipt
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -121,6 +123,31 @@ func TestSnapshotInstallPreservesIdentityAndReversibleState(t *testing.T) {
 	persistedBeforeStage := len(persisted)
 
 	stage, err := live.BeginSnapshotInstall(candidate)
+	if stage != nil || !errors.Is(err, ErrSnapshotDoesNotDominate) {
+		t.Fatalf("receipt-regressing install = %p, %v", stage, err)
+	}
+	if len(persisted) != persistedBeforeStage {
+		t.Fatal("rejected install persisted high-water")
+	}
+	if status, receipt, err := live.Lookup(original.ID, time.UnixMilli(originalHighWater)); err != nil ||
+		status != Confirmed || string(receipt.Result) != "original" {
+		t.Fatalf("rejected install lost original state: %v, %+v, %v", status, receipt, err)
+	}
+
+	current, err := live.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Receipts) != 1 || current.Receipts[0].ID != original.ID {
+		t.Fatalf("current retained receipts = %+v", current.Receipts)
+	}
+	dominating := cloneSnapshot(candidate)
+	dominating.Receipts = append(dominating.Receipts, current.Receipts[0])
+	sort.Slice(dominating.Receipts, func(i, j int) bool {
+		return bytes.Compare(dominating.Receipts[i].ID[:], dominating.Receipts[j].ID[:]) < 0
+	})
+
+	stage, err = live.BeginSnapshotInstall(dominating)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +163,7 @@ func TestSnapshotInstallPreservesIdentityAndReversibleState(t *testing.T) {
 		t.Fatalf("aborted install high-water = %d, want %d", got, originalHighWater)
 	}
 
-	stage, err = live.BeginSnapshotInstall(candidate)
+	stage, err = live.BeginSnapshotInstall(dominating)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +172,9 @@ func TestSnapshotInstallPreservesIdentityAndReversibleState(t *testing.T) {
 		status != NoLongerProvable {
 		t.Fatalf("committed install retained candidate row expired by local high-water: %v, %v", status, err)
 	}
-	if status, _, err := live.Lookup(original.ID, time.UnixMilli(originalHighWater)); err != nil || status != NotYetObserved {
-		t.Fatalf("committed install retained original: %v, %v", status, err)
+	if status, receipt, err := live.Lookup(original.ID, time.UnixMilli(originalHighWater)); err != nil ||
+		status != Confirmed || string(receipt.Result) != "original" {
+		t.Fatalf("committed install lost receiver receipt: %v, %+v, %v", status, receipt, err)
 	}
 	if got := live.Stats().HighWaterMillis; got != originalHighWater {
 		t.Fatalf("committed install regressed high-water = %d, want %d", got, originalHighWater)

@@ -131,23 +131,27 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 		}
 		defer clockStage.Abort()
 		marker := receiptBaselineMarker{
-			Digest:             digest,
-			Size:               uint64(len(raw)),
-			Epoch:              receiptRuntime.epoch,
-			PolicyFingerprint:  policyStore.PolicyFingerprint(),
-			PreviousGeneration: receiptRuntime.generation,
-			RotatedGeneration:  rotatedGeneration,
-			SourceLocalCutoff:  candidate.CutoffLocalSeq,
-			SnapshotHLC:        candidate.CutoffHLC,
-			RestoreFloor:       clockStage.Floor(),
+			Digest:                 digest,
+			Size:                   uint64(len(raw)),
+			Epoch:                  receiptRuntime.epoch,
+			PolicyFingerprint:      policyStore.PolicyFingerprint(),
+			PreviousGeneration:     receiptRuntime.generation,
+			RotatedGeneration:      rotatedGeneration,
+			SourceLocalCutoff:      candidate.CutoffLocalSeq,
+			ReceiptHighWaterMillis: effectiveHighWater,
+			SnapshotHLC:            candidate.CutoffHLC,
+			RestoreFloor:           clockStage.Floor(),
 		}
 		if err := validateReceiptBaselineMarker(marker); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				s.receiptCommitFaulted = true
+				s.markReceiptCommitFaultLocked()
 				panic(recovered)
 			}
 		}()
@@ -164,7 +168,7 @@ func (s *LanternService) InstallReceiptBaseline(ctx context.Context, capture Rec
 		if err != nil {
 			if errors.Is(err, mutationlog.ErrWALIndeterminate) ||
 				errors.Is(err, mutationlog.ErrPublicationInterrupted) {
-				s.receiptCommitFaulted = true
+				s.markReceiptCommitFaultLocked()
 			}
 			return fmt.Errorf("service: commit receipt baseline marker: %w", err)
 		}
