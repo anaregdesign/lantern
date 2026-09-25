@@ -4075,8 +4075,10 @@ type AddEdgesRequest struct {
 	// opaque to the server.
 	//
 	// Canonical 24-byte layout (the one spec; drift breaks cross-SDK dedup):
-	//   bytes [0:16] = client nonce / origin NodeID
-	//   bytes [16:24] = big-endian uint64 (seq<<16)|idx
+	//
+	//	bytes [0:16] = client nonce / origin NodeID
+	//	bytes [16:24] = big-endian uint64 (seq<<16)|idx
+	//
 	// where seq is a per-client/per-mutation monotonic counter and idx is the
 	// edge's position within its batch (folding idx into the low 16 bits lets
 	// one batch carry up to 65 536 distinct ids under a single seq). Three
