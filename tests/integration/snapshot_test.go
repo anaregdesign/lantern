@@ -3,8 +3,13 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +24,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -337,6 +343,239 @@ func TestReceiptSnapshotProducer_RealConnectWire(t *testing.T) {
 	}
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("graph-only downgrade = %v, want FailedPrecondition", err)
+	}
+}
+
+type scriptedReceiptSnapshotService struct {
+	graphv1connect.UnimplementedLanternReplicationServiceHandler
+	frames []*pb.SnapshotResponse
+	err    error
+}
+
+func (s scriptedReceiptSnapshotService) Snapshot(
+	ctx context.Context,
+	_ *connect.Request[pb.SnapshotRequest],
+	stream *connect.ServerStream[pb.SnapshotResponse],
+) error {
+	for _, frame := range s.frames {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := stream.Send(proto.Clone(frame).(*pb.SnapshotResponse)); err != nil {
+			return err
+		}
+	}
+	return s.err
+}
+
+func newScriptedReceiptSnapshotClient(
+	t *testing.T,
+	frames []*pb.SnapshotResponse,
+	err error,
+) graphv1connect.LanternReplicationServiceClient {
+	t.Helper()
+	path, handler := graphv1connect.NewLanternReplicationServiceHandler(
+		scriptedReceiptSnapshotService{frames: frames, err: err},
+	)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	server.Config.Protocols = protocols
+	server.Start()
+	t.Cleanup(server.Close)
+	return graphv1connect.NewLanternReplicationServiceClient(h2cClient(), server.URL)
+}
+
+func receiptSnapshotIntegrationCollector(
+	t *testing.T,
+	dir string,
+	policy mutationreceipt.Config,
+) *backup.ReceiptSnapshotCollector {
+	t.Helper()
+	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
+		TempDir: dir,
+		Limits: backup.ReceiptSnapshotCollectorLimits{
+			MaxFrameBytes:  1 << 20,
+			MaxFrames:      64,
+			MaxTotalBytes:  4 << 20,
+			MaxReceipts:    16,
+			MaxOrigins:     16,
+			MaxGraphFrames: 32,
+		},
+		ExpectedPolicy: policy,
+		DefaultTTL:     time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return collector
+}
+
+func assertReceiptSnapshotIntegrationTempDirEmpty(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("receipt Snapshot collector left temporary artifacts: %+v", entries)
+	}
+}
+
+func TestReceiptSnapshotCollector_RealConnectWireDetachedAndFailClosed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	peer := newSnapshotPeerWithMode(t, hlc.NodeID{0x61}, 1024, true)
+	policy := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x62}, Retention: time.Hour,
+		MaxEntries: 16, MaxBytes: 1 << 20,
+	}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := time.Now().Add(-time.Second)
+	id, err := mutationreceipt.NewID(policy.Epoch, issued, [24]byte{0x63})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := mutationreceipt.Intent{
+		ID: id, Group: mutationreceipt.GroupID{0x64}, Count: 1,
+		Kind: mutationreceipt.PutVertex, Digest: mutationreceipt.IntentDigest([]byte("collector-wire")),
+	}
+	tx, err := store.Begin(issued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]mutationreceipt.Intent{intent}); err != nil ||
+		class != mutationreceipt.Fresh {
+		t.Fatalf("Classify = (%v, %v)", class, err)
+	}
+	if err := tx.Reserve([][]byte{{0xca, 0xfe}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	if _, err := peer.sdk.PutVertex(ctx, "collector-live", "value", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	source, err := service.NewReceiptWholeStateSource(peer.service, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.replication.ConfigureReceiptSnapshot(source, policy); err != nil {
+		t.Fatal(err)
+	}
+	beforeStore, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeGraph := peer.cache.SnapshotReplication()
+
+	stream, err := peer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	dir := t.TempDir()
+	candidate, err := receiptSnapshotIntegrationCollector(t, dir, policy).Collect(ctx, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := candidate.Metadata()
+	var canonical bytes.Buffer
+	if err := candidate.WriteArchive(&canonical); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
+		metadata.Header.GetCutoffLocalSeq() != 1 ||
+		metadata.ArchiveBytes != uint64(canonical.Len()) ||
+		metadata.ArchiveSHA256 != sha256.Sum256(canonical.Bytes()) {
+		t.Fatalf("collected candidate metadata = %+v", metadata)
+	}
+	if err := candidate.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertReceiptSnapshotIntegrationTempDirEmpty(t, dir)
+
+	validStream, err := peer.repl.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var validFrames []*pb.SnapshotResponse
+	for validStream.Receive() {
+		validFrames = append(validFrames, proto.Clone(validStream.Msg()).(*pb.SnapshotResponse))
+	}
+	if err := validStream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_ = validStream.Close()
+
+	tests := []struct {
+		name   string
+		frames func() []*pb.SnapshotResponse
+	}{
+		{"truncated", func() []*pb.SnapshotResponse {
+			return validFrames[:len(validFrames)-1]
+		}},
+		{"duplicate header", func() []*pb.SnapshotResponse {
+			return append([]*pb.SnapshotResponse{
+				validFrames[0], proto.Clone(validFrames[0]).(*pb.SnapshotResponse),
+			}, validFrames[1:]...)
+		}},
+		{"format downgrade", func() []*pb.SnapshotResponse {
+			frames := make([]*pb.SnapshotResponse, len(validFrames))
+			for i, frame := range validFrames {
+				frames[i] = proto.Clone(frame).(*pb.SnapshotResponse)
+			}
+			frames[0].GetHeader().Format = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+			return frames
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newScriptedReceiptSnapshotClient(t, test.frames(), nil)
+			stream, err := client.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+				RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			dir := t.TempDir()
+			candidate, err := receiptSnapshotIntegrationCollector(t, dir, policy).Collect(ctx, stream)
+			if err == nil || candidate != nil {
+				if candidate != nil {
+					_ = candidate.Close()
+				}
+				t.Fatalf("invalid real-wire stream returned candidate=%p, err=%v", candidate, err)
+			}
+			assertReceiptSnapshotIntegrationTempDirEmpty(t, dir)
+		})
+	}
+
+	afterStore, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterGraph := peer.cache.SnapshotReplication()
+	if !reflect.DeepEqual(beforeStore, afterStore) ||
+		!reflect.DeepEqual(beforeGraph, afterGraph) {
+		t.Fatal("collector changed the producer's live graph or receipt Store")
+	}
+	if vertex, ok := peer.cache.GetVertex("collector-live"); !ok || vertex.GetString_() != "value" {
+		t.Fatalf("producer live vertex changed: %+v, %t", vertex, ok)
 	}
 }
 

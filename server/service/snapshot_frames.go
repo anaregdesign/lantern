@@ -686,84 +686,115 @@ func receiptKindFromSnapshot(kind pb.SnapshotReceiptKind) (mutationreceipt.Kind,
 	}
 }
 
-// validateReceiptSnapshotFrames is the producer's final preflight. It mirrors
-// the future receiver's structural and semantic obligations without
-// installing any state.
+// ValidateReceiptSnapshotFrame checks one decoded frame before a receiver
+// serializes or stages it. It preserves typed-nil detection that protobuf
+// marshaling would otherwise collapse into an empty message.
+func ValidateReceiptSnapshotFrame(frame *pb.SnapshotResponse) error {
+	if !validReceiptSnapshotFrameOneofs(frame) {
+		return fmt.Errorf("receipt Snapshot frame has a nil or unknown oneof")
+	}
+	if proto.Size(frame) > receiptSnapshotMaxFrameBytes {
+		return fmt.Errorf("receipt Snapshot frame is nil or exceeds %d bytes", receiptSnapshotMaxFrameBytes)
+	}
+	if err := rejectProtoUnknownFields(frame.ProtoReflect()); err != nil {
+		return fmt.Errorf("receipt Snapshot frame %v", err)
+	}
+	return nil
+}
+
+// validateReceiptSnapshotFrames is the producer's final preflight.
 func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
+	_, err := DecodeReceiptSnapshotFrames(frames)
+	return err
+}
+
+// DecodeReceiptSnapshotFrames validates one complete RECEIPT_V1 stream and
+// converts it into the detached capture shape consumed by the private
+// whole-state archive/staging layer. The returned graph stream owns cloned
+// frames and has receipt metadata/counts split back out of its header/footer.
+// It installs nothing and returns no partial capture.
+func DecodeReceiptSnapshotFrames(frames []*pb.SnapshotResponse) (ReceiptWholeStateCapture, error) {
 	if len(frames) < 2 {
-		return fmt.Errorf("receipt Snapshot stream lacks header or footer")
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot stream lacks header or footer")
 	}
 	for _, frame := range frames {
-		if !validReceiptSnapshotFrameOneofs(frame) {
-			return fmt.Errorf("receipt Snapshot frame has a nil or unknown oneof")
-		}
-		if proto.Size(frame) > receiptSnapshotMaxFrameBytes {
-			return fmt.Errorf("receipt Snapshot frame is nil or exceeds %d bytes", receiptSnapshotMaxFrameBytes)
-		}
-		if err := rejectProtoUnknownFields(frame.ProtoReflect()); err != nil {
-			return fmt.Errorf("receipt Snapshot frame %v", err)
+		if err := ValidateReceiptSnapshotFrame(frame); err != nil {
+			return ReceiptWholeStateCapture{}, err
 		}
 	}
 	if frames[0].GetHeader() == nil || frames[len(frames)-1].GetFooter() == nil {
-		return fmt.Errorf("receipt Snapshot stream lacks header or footer")
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot stream lacks header or footer")
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
 	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1 ||
 		header.GetReceiptMetadata() == nil || header.GetReceiptMetadata().GetPolicy() == nil {
-		return fmt.Errorf("receipt Snapshot header metadata is missing")
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot header metadata is missing")
 	}
 	cutoff, ok := receiptSnapshotHLC(header.GetCutoffHlc())
 	if !ok {
-		return fmt.Errorf("receipt Snapshot cutoff HLC is invalid")
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot cutoff HLC is invalid")
 	}
 
 	config, state, err := receiptSnapshotStoreState(header.GetReceiptMetadata())
 	if err != nil {
-		return err
+		return ReceiptWholeStateCapture{}, err
 	}
 	if state.ClockHighWaterMillis > cutoff.WallNs/int64(time.Millisecond) {
-		return fmt.Errorf("receipt Snapshot clock high-water exceeds cutoff HLC")
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot clock high-water exceeds cutoff HLC")
 	}
-	originLast, err := validateReceiptSnapshotWireOrigins(header, cutoff)
+	originLast, origins, err := validateReceiptSnapshotWireOrigins(header, cutoff)
 	if err != nil {
-		return err
+		return ReceiptWholeStateCapture{}, err
 	}
 
 	var receiptCount uint64
-	graphFrames := make([]*pb.SnapshotResponse, 0, len(frames)-2)
+	graphFrames := make([]*pb.SnapshotResponse, 0, len(frames))
+	headerFrame := proto.Clone(frames[0]).(*pb.SnapshotResponse)
+	headerFrame.GetHeader().ReceiptMetadata = nil
+	graphFrames = append(graphFrames, headerFrame)
 	graphStarted := false
 	for _, frame := range frames[1 : len(frames)-1] {
 		if row := frame.GetReceipt(); row != nil {
 			if graphStarted {
-				return fmt.Errorf("receipt Snapshot receipt row follows graph data")
+				return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot receipt row follows graph data")
 			}
 			receipt, err := receiptFromSnapshotRow(row)
 			if err != nil {
-				return err
+				return ReceiptWholeStateCapture{}, err
 			}
 			state.Receipts = append(state.Receipts, receipt)
 			receiptCount++
 			continue
 		}
 		graphStarted = true
-		graphFrames = append(graphFrames, frame)
+		graphFrames = append(graphFrames, proto.Clone(frame).(*pb.SnapshotResponse))
 	}
 	if receiptCount != footer.GetReceiptCount() ||
 		uint64(len(header.GetReceiptMetadata().GetOriginCutoffs())) != footer.GetReceiptOriginCount() {
-		return fmt.Errorf("receipt Snapshot footer count mismatch")
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot footer count mismatch")
 	}
 	if err := validateReceiptSnapshotGraphBody(
-		graphFrames,
+		graphFrames[1:],
 		footer,
 		receiptSnapshotCausalBounds{cutoff: cutoff, originLast: originLast},
 	); err != nil {
-		return err
+		return ReceiptWholeStateCapture{}, err
 	}
 	if _, err := mutationreceipt.NewFromSnapshot(config, state); err != nil {
-		return fmt.Errorf("receipt Snapshot rows are invalid: %w", err)
+		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot rows are invalid: %w", err)
 	}
-	return nil
+	footerFrame := proto.Clone(frames[len(frames)-1]).(*pb.SnapshotResponse)
+	footerFrame.GetFooter().ReceiptCount = 0
+	footerFrame.GetFooter().ReceiptOriginCount = 0
+	graphFrames = append(graphFrames, footerFrame)
+	capture := ReceiptWholeStateCapture{
+		Graph: graphFrames, Receipts: state, Policy: config, Origins: origins,
+	}
+	if err := validateReceiptSnapshotCapture(capture, config); err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
+	return capture, nil
 }
 
 func receiptSnapshotStoreState(metadata *pb.SnapshotReceiptMetadata) (mutationreceipt.Config, mutationreceipt.Snapshot, error) {
@@ -857,16 +888,17 @@ func validateReceiptSnapshotOrigins(
 func validateReceiptSnapshotWireOrigins(
 	header *pb.SnapshotHeader,
 	cutoff hlc.Timestamp,
-) (map[hlc.NodeID]hlc.Timestamp, error) {
+) (map[hlc.NodeID]hlc.Timestamp, []OriginState, error) {
 	metadata := header.GetReceiptMetadata()
 	if len(header.GetCutoffSeqPerOrigin()) != len(metadata.GetOriginCutoffs()) {
-		return nil, fmt.Errorf("receipt Snapshot origin metadata count mismatch")
+		return nil, nil, fmt.Errorf("receipt Snapshot origin metadata count mismatch")
 	}
 	var previous hlc.NodeID
 	lastByOrigin := make(map[hlc.NodeID]hlc.Timestamp, len(metadata.GetOriginCutoffs()))
+	origins := make([]OriginState, 0, len(metadata.GetOriginCutoffs()))
 	for i, row := range metadata.GetOriginCutoffs() {
 		if row == nil || len(row.GetOrigin()) != len(hlc.NodeID{}) || row.GetLastSeq() == 0 {
-			return nil, fmt.Errorf("receipt Snapshot origin metadata is invalid")
+			return nil, nil, fmt.Errorf("receipt Snapshot origin metadata is invalid")
 		}
 		var origin hlc.NodeID
 		copy(origin[:], row.GetOrigin())
@@ -875,12 +907,15 @@ func validateReceiptSnapshotWireOrigins(
 			(i != 0 && bytes.Compare(previous[:], origin[:]) >= 0) ||
 			cutoff.Less(last) ||
 			header.GetCutoffSeqPerOrigin()[hex.EncodeToString(origin[:])] != row.GetLastSeq() {
-			return nil, fmt.Errorf("receipt Snapshot origin metadata is invalid")
+			return nil, nil, fmt.Errorf("receipt Snapshot origin metadata is invalid")
 		}
 		lastByOrigin[origin] = last
+		origins = append(origins, OriginState{
+			Origin: origin, LastSeq: row.GetLastSeq(), LastHLC: last,
+		})
 		previous = origin
 	}
-	return lastByOrigin, nil
+	return lastByOrigin, origins, nil
 }
 
 func receiptSnapshotHLC(stamp *pb.HLCTimestamp) (hlc.Timestamp, bool) {

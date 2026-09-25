@@ -237,6 +237,41 @@ func TestPrepareReceiptSnapshotFramesCarriesCompleteDeterministicCut(t *testing.
 	}
 }
 
+func TestDecodeReceiptSnapshotFramesReturnsDetachedArchiveCapture(t *testing.T) {
+	want, policy := receiptSnapshotTestCapture(t, true, true)
+	frames, err := prepareReceiptSnapshotFrames(want, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeReceiptSnapshotFrames(frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Graph) != len(want.Graph) ||
+		decoded.Graph[0].GetHeader().GetReceiptMetadata() != nil ||
+		decoded.Graph[len(decoded.Graph)-1].GetFooter().GetReceiptCount() != 0 ||
+		decoded.Graph[len(decoded.Graph)-1].GetFooter().GetReceiptOriginCount() != 0 ||
+		len(decoded.Receipts.Receipts) != 1 ||
+		len(decoded.Origins) != 1 ||
+		decoded.Policy.Epoch != policy.Epoch ||
+		decoded.Policy.ClockHighWater.UnixMilli() != decoded.Receipts.ClockHighWaterMillis {
+		t.Fatalf("decoded receipt Snapshot capture = %+v", decoded)
+	}
+	for i := range want.Graph {
+		if !proto.Equal(decoded.Graph[i], want.Graph[i]) {
+			t.Fatalf("decoded graph frame %d differs from archive capture", i)
+		}
+	}
+	frames[0].GetHeader().CutoffLocalSeq++
+	frames[1].GetReceipt().OriginalResult[0] ^= 1
+	frames[2].GetVertex().GetVertex().Key = "mutated"
+	if decoded.Graph[0].GetHeader().GetCutoffLocalSeq() != 11 ||
+		decoded.Receipts.Receipts[0].Result[0] != 0xde ||
+		decoded.Graph[1].GetVertex().GetVertex().GetKey() != "live" {
+		t.Fatal("decoded receipt Snapshot capture aliases input frames")
+	}
+}
+
 func TestPrepareReceiptSnapshotFramesReceiptOnlyAndZeroRows(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
