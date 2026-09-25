@@ -22,7 +22,8 @@ import (
 // It provides durable bytes, not application recovery: a restored server must
 // replay the complete mutation envelope into graph, receipts, origin state,
 // and the in-memory Log before serving. Production does not wire FileWAL yet.
-// The caller must ensure no other process writes the path.
+// The caller must ensure no other process writes the path. A production owner
+// can hold AcquireFileWALLease across all audit, replay, and append passes.
 type FileWAL struct {
 	mu       sync.Mutex
 	file     fileWALWriter
@@ -108,7 +109,8 @@ func CreateFileWAL(path string, encode func(MutationOp) ([]byte, error)) (*FileW
 // restored application state, which the caller must discard.
 //
 // The caller must guarantee exclusive ownership of path across processes for
-// the entire validation, restore, and append lifetime. There is no OS lock.
+// the entire validation, restore, and append lifetime, for example by holding
+// AcquireFileWALLease. This raw function does not acquire that lease itself.
 // decode must be deterministic across validation and restore passes. A nil
 // visit is not permitted: byte validation alone cannot prove that graph,
 // receipts, origin state, and the in-memory Log were restored to the same cut.
