@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bytes"
+	"errors"
 	"sort"
 	"sync"
 
@@ -30,8 +32,75 @@ type originRow struct {
 	hlc hlc.Timestamp
 }
 
+type originWholeStateStage struct {
+	tracker  *originStateTracker
+	previous map[hlc.NodeID]originRow
+	finished bool
+}
+
 func newOriginStateTracker() *originStateTracker {
 	return &originStateTracker{m: make(map[hlc.NodeID]originRow)}
+}
+
+func validateOriginStateDominance(source, current []OriginState) error {
+	rows := make(map[hlc.NodeID]originRow, len(source))
+	var previous hlc.NodeID
+	for i, state := range source {
+		if state.Origin == (hlc.NodeID{}) || state.LastSeq == 0 ||
+			state.LastHLC.WallNs <= 0 || state.LastHLC.NodeID != state.Origin ||
+			(i != 0 && bytes.Compare(previous[:], state.Origin[:]) >= 0) {
+			return errors.New("service: invalid receipt baseline origin state")
+		}
+		rows[state.Origin] = originRow{seq: state.LastSeq, hlc: state.LastHLC}
+		previous = state.Origin
+	}
+	for _, existing := range current {
+		candidate, ok := rows[existing.Origin]
+		if !ok || candidate.seq < existing.LastSeq ||
+			(candidate.seq == existing.LastSeq && !candidate.hlc.Equal(existing.LastHLC)) ||
+			(candidate.seq > existing.LastSeq && candidate.hlc.Less(existing.LastHLC)) {
+			return errors.New("service: receipt baseline origin vector does not dominate local state")
+		}
+	}
+	return nil
+}
+
+// stageWholeState validates and tentatively replaces the complete origin map
+// while retaining the tracker identity and write lock. The input must be in
+// strict raw-origin order, as emitted by RECEIPT_V1 capture.
+func (t *originStateTracker) stageWholeState(states []OriginState) (*originWholeStateStage, error) {
+	next := make(map[hlc.NodeID]originRow, len(states))
+	var previous hlc.NodeID
+	for i, state := range states {
+		if state.Origin == (hlc.NodeID{}) || state.LastSeq == 0 ||
+			state.LastHLC.WallNs <= 0 || state.LastHLC.NodeID != state.Origin ||
+			(i != 0 && bytes.Compare(previous[:], state.Origin[:]) >= 0) {
+			return nil, errors.New("service: invalid receipt baseline origin state")
+		}
+		next[state.Origin] = originRow{seq: state.LastSeq, hlc: state.LastHLC}
+		previous = state.Origin
+	}
+	t.mu.Lock()
+	stage := &originWholeStateStage{tracker: t, previous: t.m}
+	t.m = next
+	return stage, nil
+}
+
+func (s *originWholeStateStage) Commit() {
+	if s == nil || s.finished {
+		return
+	}
+	s.finished = true
+	s.tracker.mu.Unlock()
+}
+
+func (s *originWholeStateStage) Abort() {
+	if s == nil || s.finished {
+		return
+	}
+	s.tracker.m = s.previous
+	s.finished = true
+	s.tracker.mu.Unlock()
 }
 
 // Record advances only to the next contiguous seq. It returns false for

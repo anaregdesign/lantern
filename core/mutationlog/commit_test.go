@@ -120,6 +120,7 @@ func TestCommitWithPostRingPublicationReleasesAfterRingBeforeDispatch(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer cancel()
 	var external sync.RWMutex
 	external.Lock() // Model a staged GraphCache or receipt Store transaction.
@@ -200,6 +201,83 @@ func TestCommitWithPostRingPublicationReleasesAfterRingBeforeDispatch(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("subscriber did not receive committed entry")
 	}
+}
+
+func TestCommitBoundaryClearsRingGapsSubscribersAndKeepsSequence(t *testing.T) {
+	wal := &scriptedWAL{}
+	log := New(Options{Capacity: 4, SubscriberBuffer: 4, WAL: wal})
+	defer log.Close()
+	if _, err := log.CommitWithPublication("before", ts(1), nil); err != nil {
+		t.Fatal(err)
+	}
+	old, cancel, err := log.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if got := <-old; got.Seq != 1 {
+		t.Fatalf("initial subscription entry = %+v", got)
+	}
+	released := false
+	marker, err := log.CommitBoundaryWithPostRingPublication("baseline", ts(2), func(entry Entry) {
+		released = true
+		if entry.Seq != 2 || log.size != 0 || log.lastSeq != 2 {
+			t.Fatalf("boundary callback saw inconsistent log: entry=%+v size=%d last=%d", entry, log.size, log.lastSeq)
+		}
+	})
+	if err != nil || marker.Seq != 2 || !released {
+		t.Fatalf("boundary commit = %+v, %v, released=%t", marker, err, released)
+	}
+	if _, open := <-old; open {
+		t.Fatal("pre-boundary subscriber remained open")
+	}
+	if log.Len() != 0 || log.Evicted() != 2 {
+		t.Fatalf("boundary ring = len %d evicted %d", log.Len(), log.Evicted())
+	}
+	if _, _, err := log.Subscribe(2); !errors.Is(err, ErrGapped) {
+		t.Fatalf("pre-boundary cursor = %v, want ErrGapped", err)
+	}
+	next, err := log.CommitWithPublication("after", ts(3), nil)
+	if err != nil || next.Seq != 3 {
+		t.Fatalf("post-boundary commit = %+v, %v", next, err)
+	}
+}
+
+func TestCommitBoundaryClassifiesDefiniteAndIndeterminateWALFailures(t *testing.T) {
+	t.Run("definite abort", func(t *testing.T) {
+		wal := &scriptedWAL{fail: &DefiniteWALAbort{Cause: errors.New("injected")}}
+		log := New(Options{Capacity: 2, WAL: wal})
+		defer log.Close()
+		released := false
+		if _, err := log.CommitBoundaryWithPostRingPublication("marker", ts(1), func(Entry) {
+			released = true
+		}); err == nil {
+			t.Fatal("definite marker abort succeeded")
+		}
+		if released {
+			t.Fatal("definite marker abort released staged state")
+		}
+		if next, err := log.CommitWithPublication("retry", ts(2), nil); err != nil || next.Seq != 1 {
+			t.Fatalf("definite marker abort did not preserve sequence: %+v, %v", next, err)
+		}
+	})
+	t.Run("indeterminate", func(t *testing.T) {
+		wal := &scriptedWAL{fail: errors.New("unknown outcome")}
+		log := New(Options{Capacity: 2, WAL: wal})
+		defer log.Close()
+		released := false
+		if _, err := log.CommitBoundaryWithPostRingPublication("marker", ts(1), func(Entry) {
+			released = true
+		}); !errors.Is(err, ErrWALIndeterminate) {
+			t.Fatalf("indeterminate marker error = %v", err)
+		}
+		if released {
+			t.Fatal("indeterminate marker released staged state")
+		}
+		if _, err := log.CommitWithPublication("later", ts(2), nil); !errors.Is(err, ErrWALIndeterminate) {
+			t.Fatalf("poisoned log accepted later commit: %v", err)
+		}
+	})
 }
 
 func TestCommitWithPostRingPublicationDefiniteAbortSkipsRelease(t *testing.T) {

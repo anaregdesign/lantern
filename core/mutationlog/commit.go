@@ -132,7 +132,7 @@ func (l *Log) markUnusableLocked(cause error) {
 // [ErrLegacyWALUncertain]; mixing it into that history would not restore the
 // unique durable sequence that Append's retry semantics cannot prove.
 func (l *Log) CommitWithPublication(op MutationOp, ts hlc.Timestamp, publish func(Entry), stampers ...SeqStamper) (Entry, error) {
-	return l.commitWithPublication(op, ts, publish, nil, stampers...)
+	return l.commitWithPublication(op, ts, publish, nil, false, stampers...)
 }
 
 // CommitWithPostRingPublication keeps external staged state hidden until the
@@ -148,16 +148,34 @@ func (l *Log) CommitWithPublication(op MutationOp, ts hlc.Timestamp, publish fun
 // WAL write. It does not by itself supply recovery or a fail-closed read API
 // for a WAL error whose commit outcome is indeterminate.
 func (l *Log) CommitWithPostRingPublication(op MutationOp, ts hlc.Timestamp, release func(Entry), stampers ...SeqStamper) (Entry, error) {
-	return l.commitWithPublication(op, ts, nil, release, stampers...)
+	return l.commitWithPublication(op, ts, nil, release, false, stampers...)
 }
 
-func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, publishBeforeRing, releaseAfterRing func(Entry), stampers ...SeqStamper) (Entry, error) {
+// CommitBoundaryWithPostRingPublication commits a private durable boundary
+// without retaining or dispatching its payload. After WAL success it gaps all
+// existing subscribers, removes every pre-boundary ring row, advances the
+// responder-local sequence, and only then invokes release while log readers
+// remain excluded. The next ordinary commit retains sequence boundary+1.
+//
+// This is the compaction seam used by a separately validated whole-state
+// baseline. It does not validate that baseline or interpret op. A caller must
+// keep its application publication cut held, prepare an infallible release,
+// and recover the committed marker before serving after an interrupted
+// publication.
+func (l *Log) CommitBoundaryWithPostRingPublication(op MutationOp, ts hlc.Timestamp, release func(Entry)) (Entry, error) {
+	return l.commitWithPublication(op, ts, nil, release, true)
+}
+
+func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, publishBeforeRing, releaseAfterRing func(Entry), boundary bool, stampers ...SeqStamper) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.commitReadyLocked(); err != nil {
 		return Entry{}, err
 	}
 	seq := l.lastSeq + 1
+	if boundary && seq == math.MaxUint64 {
+		return Entry{}, ErrSeqExhausted
+	}
 	for _, s := range stampers {
 		if s != nil {
 			s(seq)
@@ -190,13 +208,42 @@ func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, publishBefo
 	if publishBeforeRing != nil {
 		publishBeforeRing(entry)
 	}
-	l.storeLocked(entry)
-	l.lastSeq = seq
-	l.hasEntries = true
+	if boundary {
+		l.installBoundaryLocked(seq)
+	} else {
+		l.storeLocked(entry)
+		l.lastSeq = seq
+		l.hasEntries = true
+	}
 	if releaseAfterRing != nil {
 		releaseAfterRing(entry)
 	}
-	l.dispatch <- entry
+	if !boundary {
+		l.dispatch <- entry
+	}
 	resolved = true
 	return entry, nil
+}
+
+// installBoundaryLocked invalidates all retained replay state without
+// resetting the WAL-local sequence. Queued pre-boundary dispatcher entries
+// cannot reach a later subscriber because Subscribe captures startSeq from
+// the advanced frontier. The caller holds l.mu.
+func (l *Log) installBoundaryLocked(seq uint64) {
+	clear(l.ring)
+	l.head = 0
+	l.size = 0
+	l.firstSeq = seq + 1
+	l.lastSeq = seq
+	l.hasEntries = true
+	if l.evicted < seq {
+		l.evicted = seq
+	}
+	l.subsMu.Lock()
+	for sub := range l.subscribers {
+		sub.gapped = true
+		close(sub.ch)
+		delete(l.subscribers, sub)
+	}
+	l.subsMu.Unlock()
 }

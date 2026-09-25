@@ -168,6 +168,7 @@ func NewServingRuntime(
 			ConfigureGraph: receiptWALGraphConfigurator(cacheConfig, searchConfig),
 			NodeID:         replicationConfig.NodeID,
 			Now:            now,
+			BaselineCodec:  backup.ReceiptBaselineCodec{},
 		}
 		if config.Mode == ReceiptWALModeFresh {
 			runtime, err = service.CreateDurableReceiptWALServingRuntime(runtimeConfig)

@@ -84,9 +84,9 @@ is required for either reads or writes.
 The future bounded mutation-receipt extension is specified in
 [ADR 0010](decisions/0010-bounded-mutation-receipts.md). It requires an atomic
 graph/result/receipt/log boundary and the contiguous publication work in
-#1282; receipt RPCs remain disabled and the atomic follower boundary does not
-exist yet. The guarded receipt-tail wire arm does not enable peer apply. D1 remains
-the current crash-persistence rule.
+#1282. Receipt RPCs remain disabled; the guarded follower, Snapshot producer,
+detached collector, and durable baseline primitives are private and are not
+wired into Pump or anti-entropy. D1 remains the current crash-persistence rule.
 
 ## 4. CRDT semantics per RPC
 
@@ -710,8 +710,10 @@ Framing contract:
   The source's private identity must match the responder's primary service,
   serving runtime, graph backend, mutation log, HLC clock, origin tracker, and
   Store; a foreign or incomplete configuration fails before a header is sent.
-  No production provider configures it, no receipt write/status capability is
-  enabled, and the atomic receiver/installer remains unimplemented.
+  The durable production runtime configures this producer against its exact
+  certified state. A detached collector and internal durable baseline
+  installer/restart path exist, but Pump and anti-entropy do not request or
+  invoke them. No receipt write/status capability is enabled.
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
   the primary's contiguous per-origin committed prefix (every prior
   mutation has been applied to the graph and published to its relay log,

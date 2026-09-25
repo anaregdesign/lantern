@@ -155,7 +155,27 @@ func ResumeLogFromFileWAL(
 	decode func([]byte) (MutationOp, error),
 	restore func(Entry) error,
 ) (*Log, io.Closer, error) {
-	return resumeLogFromFileWAL(path, opts, encode, decode, nil, restore, nil)
+	return resumeLogFromFileWAL(path, opts, encode, decode, nil, restore, nil, 0)
+}
+
+// ResumeLogFromFileWALSuffix validates the complete WAL but restores and
+// retains only records strictly after boundarySeq. The returned Log preserves
+// the WAL-local sequence frontier, treats every earlier sequence (including
+// the private boundary record itself) as evicted, and gaps subscriptions that
+// request it. The caller must already have validated and installed the
+// detached application baseline certified by boundarySeq.
+func ResumeLogFromFileWALSuffix(
+	path string,
+	opts Options,
+	encode func(MutationOp) ([]byte, error),
+	decode func([]byte) (MutationOp, error),
+	restore func(Entry) error,
+	boundarySeq uint64,
+) (*Log, io.Closer, error) {
+	if boundarySeq == 0 || boundarySeq == math.MaxUint64 {
+		return nil, nil, fmt.Errorf("%w: invalid restore boundary %d", ErrFileWALSequence, boundarySeq)
+	}
+	return resumeLogFromFileWAL(path, opts, encode, decode, nil, restore, nil, boundarySeq)
 }
 
 // ResumeLogFromFileWALWithTip requires an existing tip journal from the same
@@ -177,7 +197,30 @@ func ResumeLogFromFileWALWithTip(
 	if validate == nil || tip == nil {
 		return nil, nil, errors.New("mutationlog: FileWAL tip validator and journal are required")
 	}
-	return resumeLogFromFileWAL(path, opts, encode, decode, validate, restore, tip)
+	return resumeLogFromFileWAL(path, opts, encode, decode, validate, restore, tip, 0)
+}
+
+// ResumeLogFromFileWALWithTipSuffix is the tip-certified counterpart of
+// [ResumeLogFromFileWALSuffix]. Validation and tip catch-up still cover the
+// complete WAL; only application restore and retained-ring reconstruction
+// start after boundarySeq.
+func ResumeLogFromFileWALWithTipSuffix(
+	path string,
+	opts Options,
+	encode func(MutationOp) ([]byte, error),
+	decode func([]byte) (MutationOp, error),
+	validate func(Entry) error,
+	restore func(Entry) error,
+	tip *FileWALTipJournal,
+	boundarySeq uint64,
+) (*Log, io.Closer, error) {
+	if validate == nil || tip == nil {
+		return nil, nil, errors.New("mutationlog: FileWAL tip validator and journal are required")
+	}
+	if boundarySeq == 0 || boundarySeq == math.MaxUint64 {
+		return nil, nil, fmt.Errorf("%w: invalid restore boundary %d", ErrFileWALSequence, boundarySeq)
+	}
+	return resumeLogFromFileWAL(path, opts, encode, decode, validate, restore, tip, boundarySeq)
 }
 
 func resumeLogFromFileWAL(
@@ -188,6 +231,7 @@ func resumeLogFromFileWAL(
 	validate func(Entry) error,
 	restore func(Entry) error,
 	tip *FileWALTipJournal,
+	boundarySeq uint64,
 ) (*Log, io.Closer, error) {
 	if opts.WAL != nil {
 		return nil, nil, errors.New("mutationlog: resumed Log cannot replace a configured WAL")
@@ -202,7 +246,16 @@ func resumeLogFromFileWAL(
 	// A temporary Log uses only its ring fields; it has no dispatcher, WAL,
 	// subscribers, or external references during replay.
 	tail := &Log{capacity: capacity, ring: make([]Entry, capacity)}
+	if boundarySeq != 0 {
+		tail.lastSeq = boundarySeq
+		tail.firstSeq = boundarySeq + 1
+		tail.evicted = boundarySeq
+		tail.hasEntries = true
+	}
 	wal, err := ResumeFileWAL(path, encode, decode, func(entry Entry) error {
+		if entry.Seq <= boundarySeq {
+			return nil
+		}
 		if tail.lastSeq == math.MaxUint64 || entry.Seq != tail.lastSeq+1 {
 			return fmt.Errorf("%w: restored seq %d after %d", ErrFileWALSequence, entry.Seq, tail.lastSeq)
 		}
@@ -216,6 +269,10 @@ func resumeLogFromFileWAL(
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	if wal.lastSeq < boundarySeq {
+		_ = wal.Close()
+		return nil, nil, fmt.Errorf("%w: restore boundary %d is beyond WAL frontier %d", ErrFileWALSequence, boundarySeq, wal.lastSeq)
 	}
 	if tip != nil {
 		if err := tip.VerifyAndCatchUp(path, decode, validate); err != nil {
@@ -308,7 +365,11 @@ func attachResumedFileWAL(opts Options, wal *FileWAL, tail *Log) (*Log, io.Close
 		tail.lastSeq >= uint64(tail.size) &&
 		tail.evicted == tail.lastSeq-uint64(tail.size)
 	if valid && tail.hasEntries {
-		valid = tail.size > 0 && tail.firstSeq == tail.lastSeq-uint64(tail.size)+1
+		if tail.size > 0 {
+			valid = tail.firstSeq == tail.lastSeq-uint64(tail.size)+1
+		} else {
+			valid = tail.lastSeq != math.MaxUint64 && tail.firstSeq == tail.lastSeq+1
+		}
 	} else if valid {
 		valid = tail.size == 0 && tail.evicted == 0
 	}

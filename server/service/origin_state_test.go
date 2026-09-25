@@ -180,6 +180,48 @@ func TestOriginStateStageDeferredAbortAfterPanic(t *testing.T) {
 	}
 }
 
+func TestOriginWholeStateStageAndDominance(t *testing.T) {
+	tracker := newOriginStateTracker()
+	origin := hlc.NodeID{1}
+	first := hlc.Timestamp{WallNs: 10, NodeID: origin}
+	if !tracker.Record(origin, 1, first) {
+		t.Fatal("failed to seed origin")
+	}
+	newer := hlc.Timestamp{WallNs: 20, NodeID: origin}
+	source := []OriginState{{Origin: origin, LastSeq: 2, LastHLC: newer}}
+	if err := validateOriginStateDominance(source, tracker.States()); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := tracker.stageWholeState(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Abort()
+	if got := tracker.States(); len(got) != 1 || got[0].LastSeq != 1 {
+		t.Fatalf("abort origin state = %+v", got)
+	}
+	stage, err = tracker.stageWholeState(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Commit()
+	if got := tracker.States(); len(got) != 1 || got[0].LastSeq != 2 || got[0].LastHLC != newer {
+		t.Fatalf("committed origin state = %+v", got)
+	}
+	if err := validateOriginStateDominance(
+		[]OriginState{{Origin: origin, LastSeq: 1, LastHLC: first}},
+		tracker.States(),
+	); err == nil {
+		t.Fatal("regressing origin vector passed dominance")
+	}
+	if err := validateOriginStateDominance(
+		[]OriginState{{Origin: origin, LastSeq: 2, LastHLC: first}},
+		tracker.States(),
+	); err == nil {
+		t.Fatal("equal sequence with mismatched HLC passed dominance")
+	}
+}
+
 func BenchmarkOriginStateStageExistingRow(b *testing.B) {
 	origin := hlc.NodeID{0xa1}
 	ts := hlc.Timestamp{WallNs: 1, NodeID: origin}

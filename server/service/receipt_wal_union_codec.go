@@ -31,6 +31,7 @@ const (
 	receiptWALUnionGraphDeleteEffect = byte(3)
 	receiptWALUnionGraphPutEffect    = byte(4)
 	receiptWALUnionGraphAddEffect    = byte(5)
+	receiptWALUnionBaseline          = byte(6)
 	receiptWALGraphHeaderSize        = 12 // protobuf length, repeated-slot count, nil count
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
 	// The existing LRED receipt body has a stricter independent 8 MiB cap.
@@ -80,6 +81,15 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	case *graphAddEffectEnvelope:
 		kind = receiptWALUnionGraphAddEffect
 		body, err = encodeGraphAddEffectWAL(value)
+	case receiptBaselineMarker:
+		kind = receiptWALUnionBaseline
+		body, err = marshalReceiptBaselineMarker(value)
+	case *receiptBaselineMarker:
+		if value == nil {
+			return nil, receiptWALUnionError("nil baseline marker")
+		}
+		kind = receiptWALUnionBaseline
+		body, err = marshalReceiptBaselineMarker(*value)
 	default:
 		return nil, receiptWALUnionError("unexpected operation type %T", op)
 	}
@@ -133,6 +143,12 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 		return decodeGraphPutEffectWAL(body)
 	case receiptWALUnionGraphAddEffect:
 		return decodeGraphAddEffectWAL(body)
+	case receiptWALUnionBaseline:
+		marker, err := unmarshalReceiptBaselineMarker(body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
+		}
+		return marker, nil
 	default:
 		return nil, receiptWALUnionError("unknown operation kind %d", raw[8])
 	}
@@ -199,6 +215,11 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		return nil
 	case *edgeDeleteReceiptEnvelope:
 		if err := validateReceiptEdgeDeleteWALEntry(entry); err != nil {
+			return fmt.Errorf("%w: %w", errReceiptWALUnion, err)
+		}
+		return nil
+	case receiptBaselineMarker:
+		if err := validateReceiptBaselineEntry(entry.Seq, entry.HLC, value); err != nil {
 			return fmt.Errorf("%w: %w", errReceiptWALUnion, err)
 		}
 		return nil
