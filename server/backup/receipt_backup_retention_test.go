@@ -1,12 +1,24 @@
 package backup
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type receiptBackupTrackedReadDir struct {
+	receiptBackupReadDir
+	open *int
+}
+
+func (d *receiptBackupTrackedReadDir) Close() error {
+	err := d.receiptBackupReadDir.Close()
+	*d.open = *d.open - 1
+	return err
+}
 
 func TestReceiptBackupSetRetentionIsolationOrphansAndMonotonicIDs(t *testing.T) {
 	t.Run("retention is exact and instance scoped", func(t *testing.T) {
@@ -190,6 +202,71 @@ func TestReceiptBackupSetRetentionIsolationOrphansAndMonotonicIDs(t *testing.T) 
 			}
 		}
 	})
+
+	t.Run("bounded retention keeps exact newest set IDs", func(t *testing.T) {
+		dir := t.TempDir()
+		archive := wholeStateArchiveFixture(t)
+		source := &receiptBackupSetSource{capture: producerBackupCapture(archive)}
+		b := newReceiptBackupSetTestBackupper(t, dir, "bounded-retention", 0, source, archive.Policy)
+		b.now = func() time.Time { return time.Unix(0, 400).UTC() }
+		for i := 0; i < 12; i++ {
+			if _, err := b.BackupNow(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		invalid := filepath.Join(
+			dir,
+			receiptBackupSetBase(b.cfg.InstanceID, 999)+receiptBackupSetManifestSuffix,
+		)
+		if err := os.WriteFile(invalid, []byte("{}"), receiptBackupSetFilePermissions); err != nil {
+			t.Fatal(err)
+		}
+		var obsoletePaths []string
+		for i, prefix := range receiptBackupSetUnsupportedPrefixes {
+			path := filepath.Join(
+				dir,
+				obsoleteReceiptBackupSetMarker(prefix, b.cfg.InstanceID, uint64(997+i)),
+			)
+			if err := os.WriteFile(path, []byte("obsolete"), receiptBackupSetFilePermissions); err != nil {
+				t.Fatal(err)
+			}
+			obsoletePaths = append(obsoletePaths, path)
+		}
+		for i := 0; i < 256; i++ {
+			if err := os.WriteFile(
+				filepath.Join(dir, "foreign-"+receiptBackupSetIDString(uint64(i+1))),
+				[]byte("foreign"),
+				receiptBackupSetFilePermissions,
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		b.cfg.Retain = 3
+		if err := b.pruneReceiptBackupSets(); err != nil {
+			t.Fatal(err)
+		}
+		sets, err := b.collectReceiptBackupSets()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sets) != 3 {
+			t.Fatalf("bounded retention kept %d sets, want 3", len(sets))
+		}
+		for i, want := range []uint64{411, 410, 409} {
+			if sets[i].id != want {
+				t.Fatalf("bounded retention IDs = %+v, want 411,410,409", sets)
+			}
+		}
+		if _, err := os.Stat(invalid); err != nil {
+			t.Fatalf("bounded retention removed invalid marker: %v", err)
+		}
+		for _, path := range obsoletePaths {
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("bounded retention removed obsolete marker %s: %v", path, err)
+			}
+		}
+	})
 }
 
 func TestReceiptBackupSetRetentionRemovesMarkerBeforeMembers(t *testing.T) {
@@ -228,5 +305,52 @@ func TestReceiptBackupSetRetentionRemovesMarkerBeforeMembers(t *testing.T) {
 	sets, err := b.collectReceiptBackupSets()
 	if err != nil || len(sets) != 1 {
 		t.Fatalf("retention left %d valid sets: %v", len(sets), err)
+	}
+}
+
+func TestReceiptBackupSetRetentionClosesDirectoryBeforePruning(t *testing.T) {
+	dir := t.TempDir()
+	archive := wholeStateArchiveFixture(t)
+	source := &receiptBackupSetSource{capture: producerBackupCapture(archive)}
+	b := newReceiptBackupSetTestBackupper(t, dir, "closed-before-prune", 0, source, archive.Policy)
+	b.now = func() time.Time { return time.Unix(0, 700).UTC() }
+	for i := 0; i < 40; i++ {
+		if _, err := b.BackupNow(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	baseFS := b.fs
+	openDirectories := 0
+	b.fs.openDir = func(path string) (receiptBackupReadDir, error) {
+		dir, err := baseFS.openDir(path)
+		if err != nil {
+			return nil, err
+		}
+		openDirectories++
+		return &receiptBackupTrackedReadDir{
+			receiptBackupReadDir: dir,
+			open:                 &openDirectories,
+		}, nil
+	}
+	b.fs.remove = func(path string) error {
+		if openDirectories != 0 {
+			return errors.New("remove attempted while receipt backup directory is open")
+		}
+		return baseFS.remove(path)
+	}
+	b.cfg.Retain = 3
+	if err := b.pruneReceiptBackupSets(); err != nil {
+		t.Fatal(err)
+	}
+	if openDirectories != 0 {
+		t.Fatalf("open receipt backup directories = %d, want 0", openDirectories)
+	}
+	sets, err := b.collectReceiptBackupSets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 3 {
+		t.Fatalf("retained sets = %d, want 3", len(sets))
 	}
 }

@@ -93,6 +93,13 @@ func TestReceiptArchiveWALCutBindsExactArchiveCutAndObservedTip(t *testing.T) {
 		if err != nil || !bytes.Equal(manifest, again) {
 			t.Fatalf("manifest is not deterministic: %v", err)
 		}
+		if string(manifest[:8]) != "LANTWCUT" ||
+			binary.BigEndian.Uint16(manifest[8:10]) != 1 {
+			t.Fatalf("WAL-cut envelope = %q version %d, want LANTWCUT version 1",
+				manifest[:8],
+				binary.BigEndian.Uint16(manifest[8:10]),
+			)
+		}
 		bound, err := decodeReceiptArchiveWALCut(manifest)
 		if err != nil {
 			t.Fatal(err)
@@ -325,39 +332,56 @@ func TestReceiptArchiveWALCutRejectsMalformedManifest(t *testing.T) {
 		return candidate
 	}
 	for _, tc := range []struct {
-		name     string
-		manifest []byte
+		name        string
+		manifest    []byte
+		unsupported bool
 	}{
-		{"short", manifest[:len(manifest)-1]},
-		{"long", append(bytes.Clone(manifest), 0)},
-		{"old magic", editRaw(func(b []byte) { copy(b[:8], "LRWLCUT1") })},
-		{"unsupported version", editRaw(func(b []byte) { binary.BigEndian.PutUint16(b[8:10], 1) })},
-		{"reserved bits", editRaw(func(b []byte) { b[10] = 1 })},
-		{"cut offset overflow", editRaw(func(b []byte) { binary.BigEndian.PutUint64(b[52:60], ^uint64(0)) })},
-		{"tip offset overflow", editRaw(func(b []byte) { binary.BigEndian.PutUint64(b[132:140], ^uint64(0)) })},
-		{"cut offset below header", editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = receiptArchiveWALZeroOffset - 1 })},
-		{"tip offset below header", editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = receiptArchiveWALZeroOffset - 1 })},
-		{"zero archive digest", editManifest(func(c *receiptArchiveWALCut) { c.archiveSHA256 = [sha256.Size]byte{} })},
-		{"zero cut digest", editManifest(func(c *receiptArchiveWALCut) { c.cutSHA256 = [sha256.Size]byte{} })},
-		{"zero cut chain", editManifest(func(c *receiptArchiveWALCut) { c.cutChainSHA256 = [sha256.Size]byte{} })},
-		{"zero tip digest", editManifest(func(c *receiptArchiveWALCut) { c.tipSHA256 = [sha256.Size]byte{} })},
-		{"zero tip chain", editManifest(func(c *receiptArchiveWALCut) { c.tipChainSHA256 = [sha256.Size]byte{} })},
-		{"zero cut with framed offset", editManifest(func(c *receiptArchiveWALCut) { c.cutSeq = 0 })},
-		{"nonzero cut at zero offset", editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = receiptArchiveWALZeroOffset })},
-		{"zero tip with framed offset", editManifest(func(c *receiptArchiveWALCut) { c.tipSeq = 0 })},
-		{"nonzero tip at zero offset", editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = receiptArchiveWALZeroOffset })},
-		{"cut sequence after tip", editManifest(func(c *receiptArchiveWALCut) { c.cutSeq = c.tipSeq + 1 })},
-		{"cut offset after tip", editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = c.tipOffset + 1 })},
-		{"equal sequence different witness", editManifest(func(c *receiptArchiveWALCut) { c.tipSeq = c.cutSeq })},
-		{"later sequence without offset advance", editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = c.cutOffset })},
+		{name: "short", manifest: manifest[:len(manifest)-1]},
+		{name: "long", manifest: append(bytes.Clone(manifest), 0)},
+		{name: "unknown magic", manifest: editRaw(func(b []byte) { copy(b[:8], "LRWLCUT1") })},
+		{
+			name:        "obsolete LRWLCUT2",
+			manifest:    editRaw(func(b []byte) { copy(b[:8], "LRWLCUT2") }),
+			unsupported: true,
+		},
+		{
+			name:        "unsupported version",
+			manifest:    editRaw(func(b []byte) { binary.BigEndian.PutUint16(b[8:10], 2) }),
+			unsupported: true,
+		},
+		{name: "reserved bits", manifest: editRaw(func(b []byte) { b[10] = 1 })},
+		{name: "cut offset overflow", manifest: editRaw(func(b []byte) { binary.BigEndian.PutUint64(b[52:60], ^uint64(0)) })},
+		{name: "tip offset overflow", manifest: editRaw(func(b []byte) { binary.BigEndian.PutUint64(b[132:140], ^uint64(0)) })},
+		{name: "cut offset below header", manifest: editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = receiptArchiveWALZeroOffset - 1 })},
+		{name: "tip offset below header", manifest: editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = receiptArchiveWALZeroOffset - 1 })},
+		{name: "zero archive digest", manifest: editManifest(func(c *receiptArchiveWALCut) { c.archiveSHA256 = [sha256.Size]byte{} })},
+		{name: "zero cut digest", manifest: editManifest(func(c *receiptArchiveWALCut) { c.cutSHA256 = [sha256.Size]byte{} })},
+		{name: "zero cut chain", manifest: editManifest(func(c *receiptArchiveWALCut) { c.cutChainSHA256 = [sha256.Size]byte{} })},
+		{name: "zero tip digest", manifest: editManifest(func(c *receiptArchiveWALCut) { c.tipSHA256 = [sha256.Size]byte{} })},
+		{name: "zero tip chain", manifest: editManifest(func(c *receiptArchiveWALCut) { c.tipChainSHA256 = [sha256.Size]byte{} })},
+		{name: "zero cut with framed offset", manifest: editManifest(func(c *receiptArchiveWALCut) { c.cutSeq = 0 })},
+		{name: "nonzero cut at zero offset", manifest: editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = receiptArchiveWALZeroOffset })},
+		{name: "zero tip with framed offset", manifest: editManifest(func(c *receiptArchiveWALCut) { c.tipSeq = 0 })},
+		{name: "nonzero tip at zero offset", manifest: editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = receiptArchiveWALZeroOffset })},
+		{name: "cut sequence after tip", manifest: editManifest(func(c *receiptArchiveWALCut) { c.cutSeq = c.tipSeq + 1 })},
+		{name: "cut offset after tip", manifest: editManifest(func(c *receiptArchiveWALCut) { c.cutOffset = c.tipOffset + 1 })},
+		{name: "equal sequence different witness", manifest: editManifest(func(c *receiptArchiveWALCut) { c.tipSeq = c.cutSeq })},
+		{name: "later sequence without offset advance", manifest: editManifest(func(c *receiptArchiveWALCut) { c.tipOffset = c.cutOffset })},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := decodeReceiptArchiveWALCut(tc.manifest); !errors.Is(err, errReceiptArchiveWALCut) {
+			_, err := decodeReceiptArchiveWALCut(tc.manifest)
+			if !errors.Is(err, errReceiptArchiveWALCut) {
 				t.Fatalf("malformed manifest decoded: %v", err)
+			}
+			if tc.unsupported && !errors.Is(err, errUnsupportedReceiptArchiveWALCut) {
+				t.Fatalf("obsolete manifest error = %v, want unsupported", err)
 			}
 			stage, err := stageBoundArchive(t, raw, tc.manifest, path)
 			if !errors.Is(err, errReceiptArchiveWALCut) || stage != nil {
 				t.Fatalf("malformed manifest produced stage: %+v, %v", stage, err)
+			}
+			if tc.unsupported && !errors.Is(err, errUnsupportedReceiptArchiveWALCut) {
+				t.Fatalf("obsolete staged manifest error = %v, want unsupported", err)
 			}
 		})
 	}

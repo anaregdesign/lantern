@@ -83,11 +83,11 @@ func (f *receiptBackupFaultFile) Close() error {
 
 func installReceiptBackupFaultPlan(b *Backupper, plan *receiptBackupFaultPlan) {
 	base := b.fs
-	b.fs.mkdirAll = func(path string, mode os.FileMode) error {
+	b.fs.mkdir = func(path string, mode os.FileMode) error {
 		if err := plan.inject("mkdir", path, false); err != nil {
 			return err
 		}
-		return base.mkdirAll(path, mode)
+		return base.mkdir(path, mode)
 	}
 	b.fs.openExclusive = func(path string, flag int, mode os.FileMode) (receiptBackupSyncFile, bool, error) {
 		if err := plan.inject("create", path, false); err != nil {
@@ -117,6 +117,9 @@ func installReceiptBackupFaultPlan(b *Backupper, plan *receiptBackupFaultPlan) {
 		return renamed, nil
 	}
 	b.fs.syncDir = func(path string) error {
+		if filepath.Clean(path) != filepath.Clean(b.cfg.Dir) {
+			return base.syncDir(path)
+		}
 		if err := plan.inject("directory sync", path, false); err != nil {
 			return err
 		}
@@ -190,7 +193,6 @@ func TestReceiptBackupSetFaultsAndCancellationNeverCommitPartialSet(t *testing.T
 		after      bool
 		cancel     bool
 	}{
-		{"mkdir", "mkdir", "", 1, false, false},
 		{"member create", "create", receiptBackupSetArchiveSuffix, 1, false, false},
 		{"ambiguous member create", "create", receiptBackupSetArchiveSuffix, 1, true, false},
 		{"member write", "write", receiptBackupSetArchiveSuffix, 1, false, false},
@@ -206,8 +208,6 @@ func TestReceiptBackupSetFaultsAndCancellationNeverCommitPartialSet(t *testing.T
 		{"manifest write", "write", receiptBackupSetManifestSuffix, 1, false, false},
 		{"manifest sync", "file sync", receiptBackupSetManifestSuffix, 1, false, false},
 		{"manifest close", "close", receiptBackupSetManifestSuffix, 1, true, false},
-		{"manifest rename", "rename", receiptBackupSetManifestSuffix, 1, false, false},
-		{"ambiguous manifest rename", "rename", receiptBackupSetManifestSuffix, 1, true, false},
 		{"final directory sync", "directory sync", "", 2, false, false},
 		{"cancel after member close", "close", receiptBackupSetArchiveSuffix, 1, true, true},
 		{"cancel after member directory sync", "directory sync", "", 1, true, true},
@@ -275,6 +275,102 @@ func TestReceiptBackupSetFaultsAndCancellationNeverCommitPartialSet(t *testing.T
 				if _, err := os.Stat(filepath.Join(b.cfg.Dir, name)); err != nil {
 					t.Fatalf("failed attempt removed foreign path %q: %v", name, err)
 				}
+			}
+		})
+	}
+}
+
+func TestReceiptBackupSetManifestRenameAmbiguityPreservesMarkerSafety(t *testing.T) {
+	tests := []struct {
+		name             string
+		commitRename     bool
+		reportedRenamed  bool
+		wantNewestID     uint64
+		wantNewSetExists bool
+	}{
+		{
+			name:             "committed but unreported",
+			commitRename:     true,
+			wantNewestID:     200,
+			wantNewSetExists: true,
+		},
+		{
+			name:         "not committed",
+			wantNewestID: 100,
+		},
+		{
+			name:            "committed and reported",
+			commitRename:    true,
+			reportedRenamed: true,
+			wantNewestID:    100,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			archive := wholeStateArchiveFixture(t)
+			capture := producerBackupCapture(archive)
+			source := &receiptBackupSetSource{capture: capture}
+			dir := t.TempDir()
+			b := newReceiptBackupSetTestBackupper(t, dir, "ambiguous-owner", 0, source, archive.Policy)
+			b.now = func() time.Time { return time.Unix(0, 100).UTC() }
+			if _, err := b.BackupNow(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+
+			baseFS := b.fs
+			b.fs.renameExclusive = func(oldPath, newPath string) (bool, error) {
+				if !strings.HasSuffix(newPath, receiptBackupSetManifestSuffix) {
+					return baseFS.renameExclusive(oldPath, newPath)
+				}
+				if tc.commitRename {
+					if _, err := baseFS.renameExclusive(oldPath, newPath); err != nil {
+						return false, err
+					}
+				}
+				return tc.reportedRenamed, errInjectedReceiptBackupFS
+			}
+			b.now = func() time.Time { return time.Unix(0, 200).UTC() }
+			if _, err := b.BackupNow(t.Context()); !errors.Is(err, errInjectedReceiptBackupFS) {
+				t.Fatalf("ambiguous manifest rename error = %v", err)
+			}
+
+			base := filepath.Join(dir, receiptBackupSetBase(b.cfg.InstanceID, 200))
+			for _, suffix := range []string{
+				receiptBackupSetArchiveSuffix,
+				receiptBackupSetWALCutSuffix,
+				receiptBackupSetRetiredCatalogSuffix,
+			} {
+				_, err := os.Stat(base + suffix)
+				if tc.wantNewSetExists || !tc.reportedRenamed {
+					if err != nil {
+						t.Fatalf("ambiguous rename removed final member %s: %v", suffix, err)
+					}
+				} else if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("reported committed rename retained member %s: %v", suffix, err)
+				}
+			}
+
+			evidence, err := LoadLatestReceiptBackupSet(dir, b.cfg.InstanceID)
+			if err != nil {
+				t.Fatalf("restart discovery after ambiguous rename: %v", err)
+			}
+			if evidence.SetID != tc.wantNewestID {
+				t.Fatalf("restart selected set %d, want %d", evidence.SetID, tc.wantNewestID)
+			}
+			_, manifestErr := os.Stat(base + receiptBackupSetManifestSuffix)
+			if tc.wantNewSetExists {
+				if manifestErr != nil {
+					t.Fatalf("committed ambiguous marker is missing: %v", manifestErr)
+				}
+				if _, err := LoadReceiptBackupSet(
+					dir,
+					b.cfg.InstanceID,
+					base+receiptBackupSetManifestSuffix,
+				); err != nil {
+					t.Fatalf("committed ambiguous set is incomplete: %v", err)
+				}
+			} else if !errors.Is(manifestErr, os.ErrNotExist) {
+				t.Fatalf("uncommitted ambiguous marker exists: %v", manifestErr)
 			}
 		})
 	}
@@ -394,6 +490,9 @@ func TestReceiptBackupSetCleanupRequiresDurableManifestRetirement(t *testing.T) 
 			baseFS := b.fs
 			var syncCalls int
 			b.fs.syncDir = func(path string) error {
+				if filepath.Clean(path) != filepath.Clean(b.cfg.Dir) {
+					return baseFS.syncDir(path)
+				}
 				syncCalls++
 				switch syncCalls {
 				case 2:
@@ -483,10 +582,20 @@ func TestReceiptBackupSetNeverClobbersRacedDestination(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			allowed := map[string]bool{target: true}
+			if targetSuffix == receiptBackupSetManifestSuffix {
+				base := strings.TrimSuffix(target, receiptBackupSetManifestSuffix)
+				allowed[base+receiptBackupSetArchiveSuffix] = true
+				allowed[base+receiptBackupSetWALCutSuffix] = true
+				allowed[base+receiptBackupSetRetiredCatalogSuffix] = true
+			}
 			for _, entry := range entries {
-				if filepath.Join(b.cfg.Dir, entry.Name()) != target {
+				if !allowed[filepath.Join(b.cfg.Dir, entry.Name())] {
 					t.Fatalf("raced attempt left nonforeign path %q", entry.Name())
 				}
+			}
+			if len(entries) != len(allowed) {
+				t.Fatalf("raced attempt paths = %d, want %d", len(entries), len(allowed))
 			}
 		})
 	}
@@ -533,7 +642,11 @@ func TestReceiptBackupSetCommitsManifestLastWithDurableOrdering(t *testing.T) {
 		return baseFS.renameExclusive(oldPath, newPath)
 	}
 	b.fs.syncDir = func(path string) error {
-		record("directory-sync")
+		if filepath.Clean(path) == filepath.Clean(b.cfg.Dir) {
+			record("directory-sync")
+		} else {
+			record("parent-directory-sync")
+		}
 		return baseFS.syncDir(path)
 	}
 	if _, err := b.BackupNow(t.Context()); err != nil {
@@ -577,7 +690,8 @@ func TestReceiptBackupSetCommitsManifestLastWithDurableOrdering(t *testing.T) {
 			directorySyncs = append(directorySyncs, i)
 		}
 	}
-	if archiveOpen < 0 || archiveWrite <= archiveOpen ||
+	if len(events) == 0 || events[0] != "parent-directory-sync" ||
+		archiveOpen < 0 || archiveWrite <= archiveOpen ||
 		archiveSync <= archiveWrite || archiveClose <= archiveSync ||
 		archiveRename <= archiveClose ||
 		cutOpen <= archiveRename || cutWrite <= cutOpen ||

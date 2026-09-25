@@ -25,8 +25,8 @@ import (
 
 const (
 	receiptBackupSetFormat               = "lantern-receipt-backup-set"
-	receiptBackupSetVersion              = uint16(2)
-	receiptBackupSetPrefix               = "lantern-receipt-backup-v2-"
+	receiptBackupSetVersion              = uint16(1)
+	receiptBackupSetPrefix               = "lantern-receipt-backup-"
 	receiptBackupSetArchiveSuffix        = ".active.lar"
 	receiptBackupSetWALCutSuffix         = ".active.walcut"
 	receiptBackupSetRetiredCatalogSuffix = ".retired.lret"
@@ -44,18 +44,24 @@ const (
 	receiptBackupSetFilePermissions      = 0o600
 	receiptBackupSetDirectoryPerms       = 0o755
 	receiptBackupSetExpectedMemberCount  = 3
-	receiptBackupOriginsDigestDomain     = "lantern-receipt-backup-set-v2/origin-cutoffs\x00"
-	receiptBackupPoliciesDigestDomain    = "lantern-receipt-backup-set-v2/retired-policies\x00"
-	receiptBackupPublicationDigestDomain = "lantern-receipt-backup-set-v2/certified-publication\x00"
+	receiptBackupOriginsDigestDomain     = "lantern-receipt-backup-set/origin-cutoffs\x00"
+	receiptBackupPoliciesDigestDomain    = "lantern-receipt-backup-set/retired-policies\x00"
+	receiptBackupPublicationDigestDomain = "lantern-receipt-backup-set/certified-publication\x00"
 )
 
 var (
+	receiptBackupSetUnsupportedPrefixes = [...]string{
+		"lantern-receipt-backup-v1-",
+		"lantern-receipt-backup-v2-",
+	}
+
 	// ErrReceiptBackupSetNotFound reports that no committed receipt backup-set
 	// manifest exists for the requested instance.
 	ErrReceiptBackupSetNotFound = errors.New("backup: receipt backup set not found")
 
-	// ErrUnsupportedReceiptBackupSet reports a non-v2 manifest. No legacy
-	// backup-set format is decoded or migrated.
+	// ErrUnsupportedReceiptBackupSet reports an obsolete marker namespace or
+	// unsupported manifest schema. No obsolete backup-set format is decoded or
+	// migrated.
 	ErrUnsupportedReceiptBackupSet = errors.New("backup: unsupported receipt backup-set format")
 )
 
@@ -124,6 +130,11 @@ type receiptBackupSetManifest struct {
 	RetiredCatalog    receiptBackupSetRetiredMetadata `json:"retired_catalog"`
 	Cut               receiptBackupSetCutMetadata     `json:"cut"`
 	Members           []receiptBackupSetMember        `json:"members"`
+}
+
+type receiptBackupSetEnvelope struct {
+	Format  string `json:"format"`
+	Version uint16 `json:"version"`
 }
 
 type receiptBackupSet struct {
@@ -227,53 +238,74 @@ func receiptBackupSetEvidence(loaded loadedReceiptBackupSet) ReceiptBackupSetEvi
 }
 
 func (b *Backupper) loadLatestReceiptBackupSet() (loadedReceiptBackupSet, error) {
-	entries, err := b.fs.readDir(b.cfg.Dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return loadedReceiptBackupSet{}, ErrReceiptBackupSetNotFound
-		}
-		return loadedReceiptBackupSet{}, fmt.Errorf(
-			"backup: read receipt backup directory %s: %w",
-			b.cfg.Dir,
-			err,
-		)
-	}
-
-	seenNames := make(map[string]struct{})
-	seenIDs := make(map[uint64]string)
 	var selectedID uint64
 	var selectedName string
-	for _, entry := range entries {
+	var duplicateName string
+	var selectedUnsupported bool
+	var unsupportedName string
+	err := b.scanReceiptBackupDirectory(func(entry os.DirEntry) error {
 		id, _, kind, ok := parseOwnReceiptBackupSetName(entry.Name(), b.cfg.InstanceID)
-		if !ok || kind != receiptBackupSetManifestFile {
-			continue
+		if !ok || (kind != receiptBackupSetManifestFile &&
+			kind != receiptBackupSetUnsupportedManifestFile) {
+			return nil
 		}
-		if _, duplicate := seenNames[entry.Name()]; duplicate {
-			return loadedReceiptBackupSet{}, fmt.Errorf(
-				"backup: duplicate receipt backup-set manifest name %q",
-				entry.Name(),
-			)
-		}
-		seenNames[entry.Name()] = struct{}{}
-		if previous, duplicate := seenIDs[id]; duplicate {
-			return loadedReceiptBackupSet{}, fmt.Errorf(
-				"backup: duplicate receipt backup-set manifest ID %s in %q and %q",
-				receiptBackupSetIDString(id),
-				previous,
-				entry.Name(),
-			)
-		}
-		seenIDs[id] = entry.Name()
 		if id > selectedID {
 			selectedID = id
 			selectedName = entry.Name()
+			duplicateName = ""
+			selectedUnsupported = kind == receiptBackupSetUnsupportedManifestFile
+			unsupportedName = ""
+			if selectedUnsupported {
+				unsupportedName = entry.Name()
+			}
+			return nil
 		}
+		if id == selectedID {
+			selectedUnsupported = selectedUnsupported ||
+				kind == receiptBackupSetUnsupportedManifestFile
+			if kind == receiptBackupSetUnsupportedManifestFile &&
+				(unsupportedName == "" || entry.Name() < unsupportedName) {
+				unsupportedName = entry.Name()
+			}
+			if entry.Name() < selectedName {
+				duplicateName = selectedName
+				selectedName = entry.Name()
+			} else if duplicateName == "" || entry.Name() < duplicateName {
+				duplicateName = entry.Name()
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return loadedReceiptBackupSet{}, ErrReceiptBackupSetNotFound
+	}
+	if err != nil {
+		return loadedReceiptBackupSet{}, fmt.Errorf(
+			"backup: scan receipt backup directory %s: %w",
+			b.cfg.Dir,
+			err,
+		)
 	}
 	if selectedName == "" {
 		return loadedReceiptBackupSet{}, ErrReceiptBackupSetNotFound
 	}
 
 	selectedPath := filepath.Join(b.cfg.Dir, selectedName)
+	if selectedUnsupported {
+		return loadedReceiptBackupSet{}, fmt.Errorf(
+			"%w: obsolete receipt backup-set marker %s",
+			ErrUnsupportedReceiptBackupSet,
+			filepath.Join(b.cfg.Dir, unsupportedName),
+		)
+	}
+	if duplicateName != "" {
+		return loadedReceiptBackupSet{}, fmt.Errorf(
+			"backup: duplicate receipt backup-set manifest ID %s in %q and %q",
+			receiptBackupSetIDString(selectedID),
+			selectedName,
+			duplicateName,
+		)
+	}
 	loaded, err := b.loadReceiptBackupSet(selectedPath)
 	if err != nil {
 		return loadedReceiptBackupSet{}, fmt.Errorf(
@@ -435,6 +467,26 @@ func encodeReceiptBackupSetManifest(manifest receiptBackupSetManifest) ([]byte, 
 func decodeReceiptBackupSetManifest(raw []byte) (receiptBackupSetManifest, error) {
 	if len(raw) == 0 || len(raw) > receiptBackupSetManifestMaxBytes {
 		return receiptBackupSetManifest{}, errors.New("backup: receipt backup-set manifest has an invalid size")
+	}
+	var envelope receiptBackupSetEnvelope
+	envelopeDecoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := envelopeDecoder.Decode(&envelope); err != nil {
+		return receiptBackupSetManifest{}, fmt.Errorf("backup: decode receipt backup-set manifest envelope: %w", err)
+	}
+	var envelopeTrailing any
+	if err := envelopeDecoder.Decode(&envelopeTrailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return receiptBackupSetManifest{}, errors.New("backup: receipt backup-set manifest has trailing data")
+		}
+		return receiptBackupSetManifest{}, fmt.Errorf("backup: decode receipt backup-set manifest envelope trailer: %w", err)
+	}
+	if envelope.Format != receiptBackupSetFormat || envelope.Version != receiptBackupSetVersion {
+		return receiptBackupSetManifest{}, fmt.Errorf(
+			"%w: format=%q version=%d",
+			ErrUnsupportedReceiptBackupSet,
+			envelope.Format,
+			envelope.Version,
+		)
 	}
 	var manifest receiptBackupSetManifest
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -779,6 +831,12 @@ func decodeReceiptBackupSetMembers(
 	}
 	walCut, err := decodeReceiptArchiveWALCut(walCutRaw)
 	if err != nil {
+		if errors.Is(err, errUnsupportedReceiptArchiveWALCut) {
+			return receiptBackupSetDecoded{}, fmt.Errorf(
+				"%w: obsolete WAL-cut member",
+				ErrUnsupportedReceiptBackupSet,
+			)
+		}
 		return receiptBackupSetDecoded{}, err
 	}
 	retired, retiredMetadata, err := decodeRetiredCatalogArchive(retiredRaw)
@@ -1024,6 +1082,16 @@ func (b *Backupper) loadReceiptBackupSet(manifestPath string) (loadedReceiptBack
 	raw, err := b.fs.readFile(manifestPath, receiptBackupSetManifestMaxBytes)
 	if err != nil {
 		return loadedReceiptBackupSet{}, fmt.Errorf("backup: read receipt backup-set manifest: %w", err)
+	}
+	if _, _, kind, ok := parseOwnReceiptBackupSetName(
+		filepath.Base(manifestPath),
+		b.cfg.InstanceID,
+	); ok && kind == receiptBackupSetUnsupportedManifestFile {
+		return loadedReceiptBackupSet{}, fmt.Errorf(
+			"%w: obsolete receipt backup-set marker %s",
+			ErrUnsupportedReceiptBackupSet,
+			manifestPath,
+		)
 	}
 	manifest, err := decodeReceiptBackupSetManifest(raw)
 	if err != nil {

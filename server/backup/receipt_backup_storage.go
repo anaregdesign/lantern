@@ -18,12 +18,17 @@ type receiptBackupSyncFile interface {
 	Close() error
 }
 
+type receiptBackupReadDir interface {
+	ReadDir(int) ([]os.DirEntry, error)
+	Close() error
+}
+
 type receiptBackupFS struct {
-	mkdirAll        func(string, os.FileMode) error
+	mkdir           func(string, os.FileMode) error
 	openExclusive   func(string, int, os.FileMode) (receiptBackupSyncFile, bool, error)
+	openDir         func(string) (receiptBackupReadDir, error)
 	renameExclusive func(string, string) (bool, error)
 	remove          func(string) error
-	readDir         func(string) ([]os.DirEntry, error)
 	readFile        func(string, int64) ([]byte, error)
 	lstat           func(string) (os.FileInfo, error)
 	syncDir         func(string) error
@@ -31,14 +36,16 @@ type receiptBackupFS struct {
 
 func newReceiptBackupFS() receiptBackupFS {
 	return receiptBackupFS{
-		mkdirAll: os.MkdirAll,
+		mkdir: os.Mkdir,
 		openExclusive: func(path string, flag int, perm os.FileMode) (receiptBackupSyncFile, bool, error) {
 			file, err := os.OpenFile(path, flag, perm)
 			return file, err == nil, err
 		},
+		openDir: func(path string) (receiptBackupReadDir, error) {
+			return os.Open(path)
+		},
 		renameExclusive: renameReceiptBackupExclusive,
 		remove:          os.Remove,
-		readDir:         os.ReadDir,
 		readFile: func(path string, limit int64) ([]byte, error) {
 			f, err := os.Open(path)
 			if err != nil {
@@ -54,14 +61,8 @@ func newReceiptBackupFS() receiptBackupFS {
 			}
 			return raw, nil
 		},
-		lstat: os.Lstat,
-		syncDir: func(path string) error {
-			dir, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			return errors.Join(dir.Sync(), dir.Close())
-		},
+		lstat:   os.Lstat,
+		syncDir: syncReceiptBackupDirectory,
 	}
 }
 
@@ -88,9 +89,9 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 		b.failed()
 		return Stats{}, err
 	}
-	if err := b.fs.mkdirAll(b.cfg.Dir, receiptBackupSetDirectoryPerms); err != nil {
+	if err := b.ensureReceiptBackupDirectory(); err != nil {
 		b.failed()
-		return Stats{}, fmt.Errorf("backup: mkdir %s: %w", b.cfg.Dir, err)
+		return Stats{}, err
 	}
 	setID, err := b.nextReceiptBackupSetID(start)
 	if err != nil {
@@ -168,11 +169,12 @@ func (b *Backupper) backupReceiptSetWithSource(ctx context.Context, source strin
 }
 
 type receiptBackupAttempt struct {
-	manifestFinal string
-	manifestTemp  string
-	memberFinals  []string
-	memberTemps   []string
-	owned         map[string]bool
+	manifestFinal       string
+	manifestTemp        string
+	memberFinals        []string
+	memberTemps         []string
+	owned               map[string]bool
+	manifestRenameError bool
 }
 
 // Members are staged, file-synced, and renamed before their directory entries
@@ -276,6 +278,7 @@ func (b *Backupper) persistReceiptBackupSet(
 	if writeErr != nil {
 		return "", fmt.Errorf("backup: write receipt backup-set manifest %s: %w", attempt.manifestTemp, writeErr)
 	}
+	attempt.manifestRenameError = true
 	renamed, renameErr := b.fs.renameExclusive(attempt.manifestTemp, attempt.manifestFinal)
 	if renamed {
 		attempt.owned[attempt.manifestFinal] = true
@@ -288,6 +291,7 @@ func (b *Backupper) persistReceiptBackupSet(
 			renameErr,
 		)
 	}
+	attempt.manifestRenameError = false
 	delete(attempt.owned, attempt.manifestTemp)
 	if syncErr := b.fs.syncDir(b.cfg.Dir); syncErr != nil {
 		return "", fmt.Errorf("backup: sync receipt backup directory after manifest: %w", syncErr)
@@ -354,6 +358,7 @@ func writeAllReceiptBackupBytes(w io.Writer, raw []byte) error {
 
 func (b *Backupper) cleanupReceiptBackupAttempt(attempt receiptBackupAttempt) error {
 	var cleanupErr error
+	manifestAbsenceDurable := false
 	if attempt.owned[attempt.manifestFinal] {
 		if err := b.fs.remove(attempt.manifestFinal); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf(
@@ -366,6 +371,7 @@ func (b *Backupper) cleanupReceiptBackupAttempt(attempt receiptBackupAttempt) er
 		if err := b.fs.syncDir(b.cfg.Dir); err != nil {
 			return fmt.Errorf("backup: sync receipt backup directory after marker cleanup: %w", err)
 		}
+		manifestAbsenceDurable = true
 	}
 
 	membersRemoved := false
@@ -374,6 +380,10 @@ func (b *Backupper) cleanupReceiptBackupAttempt(attempt receiptBackupAttempt) er
 		attempt.manifestTemp,
 	) {
 		if !attempt.owned[path] {
+			continue
+		}
+		if attempt.manifestRenameError && !manifestAbsenceDurable &&
+			receiptBackupPathIn(path, attempt.memberFinals) {
 			continue
 		}
 		if err := b.fs.remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -392,4 +402,13 @@ func (b *Backupper) cleanupReceiptBackupAttempt(attempt receiptBackupAttempt) er
 		}
 	}
 	return cleanupErr
+}
+
+func receiptBackupPathIn(path string, paths []string) bool {
+	for _, candidate := range paths {
+		if path == candidate {
+			return true
+		}
+	}
+	return false
 }

@@ -67,21 +67,22 @@ and active endpoint generation under one exclusive committed view. Each
 attempt invokes that combined source exactly once and never reopens the live
 appendable WAL path.
 
-A v2 set has deterministic, instance-scoped names:
+A receipt backup set has deterministic, unversioned, instance-scoped names:
 
 ```text
-lantern-receipt-backup-v2-<sha256(instance)>-<20-digit-set-id>.active.lar
-lantern-receipt-backup-v2-<sha256(instance)>-<20-digit-set-id>.active.walcut
-lantern-receipt-backup-v2-<sha256(instance)>-<20-digit-set-id>.retired.lret
-lantern-receipt-backup-v2-<sha256(instance)>-<20-digit-set-id>.set.json
+lantern-receipt-backup-<sha256(instance)>-<20-digit-set-id>.active.lar
+lantern-receipt-backup-<sha256(instance)>-<20-digit-set-id>.active.walcut
+lantern-receipt-backup-<sha256(instance)>-<20-digit-set-id>.retired.lret
+lantern-receipt-backup-<sha256(instance)>-<20-digit-set-id>.set.json
 ```
 
-The canonical JSON `.set.json` manifest is the commit marker. It binds the
-exact three ordered member names, formats, versions, byte sizes, and SHA-256
-digests:
+The canonical JSON `.set.json` manifest uses internal schema version 1 and is
+the commit marker. It binds the exact three ordered member names, formats,
+versions, byte sizes, and SHA-256 digests:
 
 1. the existing canonical active graph + Store + origin + HLC archive;
-2. the exact lease-owning FileWAL cut/tip witness captured with that archive;
+2. the exact canonical `LANTWCUT` version 1 lease-owning FileWAL cut/tip
+   witness captured with that archive;
 3. the canonical `LANTRET1` retired catalog captured at the same active Store
    clock high-water.
 
@@ -101,28 +102,47 @@ reopen a member or the live WAL.
 Startup restore discovery is deliberately stricter than retention collection.
 `LoadLatestReceiptBackupSet` enumerates only the configured backup directory,
 recognizes canonical current-format `.set.json` names in the requested
-instance scope, chooses the highest recognized nonzero 20-digit set ID once,
-and then delegates to the canonical set loader. If no such marker exists it
-returns `ErrReceiptBackupSetNotFound`. Once a newest marker is selected, any
-marker or member validation error fails closed; discovery never scans backward
-to an older valid set. Foreign scopes, unrecognized names, temporary files, and
-orphan members are not committed-set candidates. Discovery is read-only and
-returns validated evidence only; it does not install that evidence into a
-runtime.
+instance scope, and recognizes exact owned markers in the obsolete
+`lantern-receipt-backup-v1-...` and `lantern-receipt-backup-v2-...`
+namespaces only to reject them as unsupported. Discovery chooses the highest
+recognized nonzero 20-digit set ID once, then either rejects a selected
+obsolete marker or delegates to the canonical set loader. If no such marker
+exists it returns
+`ErrReceiptBackupSetNotFound`. Once a newest marker is selected, any
+unsupported-format, marker, or member validation error fails closed; discovery
+never scans backward to an older valid set. Foreign scopes, unrecognized names,
+temporary files, and orphan members are not committed-set candidates.
+Discovery is read-only and returns validated evidence only; it does not install
+that evidence into a runtime.
 
-Persistence orders durability as follows: create each member staging file with
-`O_CREATE|O_EXCL`; write all bytes, file-sync, close, and rename it to its final
-immutable name; directory-sync after all three member renames; then
-create/write/file-sync/close the manifest staging file, rename the manifest
-last as the sole commit point, and directory-sync again. An existing observed
-staging or final name is never replaced. Failed attempts clean only paths whose
-exclusive create or successful rename proved ownership; files left by an
-interrupted process or racing writer are preserved and ignored rather than
-guessed-owned. Once an attempt owns a manifest, cleanup preserves every member
-unless removing that manifest and syncing its absence both succeed. Retention
-counts only fully validated committed sets for this instance and removes each
-old manifest first, directory-syncs, removes its members, and directory-syncs
-again.
+Before publication, every configured backup-directory component is inspected
+without following intermediate symlinks, and every missing component is created
+individually. The nearest existing ancestor's parent is synced first so a retry
+can certify an entry left by a failed earlier parent sync, and each new child
+entry is then made crash-durable by syncing its parent. Directory flushes use
+the platform durability primitive, including a write-capable directory handle
+with `FlushFileBuffers` on Windows. Persistence creates each member staging file with
+`O_CREATE|O_EXCL`; writes all bytes, file-syncs, closes, and renames it to its
+final immutable name; directory-syncs after all three member renames; then
+creates/writes/file-syncs/closes the manifest staging file, renames the
+manifest last as the sole commit point, and directory-syncs again.
+An existing observed staging or final name is never replaced. Failed attempts
+clean only paths whose exclusive create or successful rename proved ownership;
+files left by an interrupted process or racing writer are preserved and
+ignored rather than guessed-owned. Once the manifest rename is attempted, a
+rename error is publication-ambiguous: the operation returns that error but
+preserves all final members unless it owned and removed the marker and synced
+the marker's absence. This can leave bounded member orphans, but can never
+leave a committed marker without its members.
+
+All receipt-set directory walks stream fixed-size batches and fail after
+100,000 entries, counting foreign and orphan names toward that explicit
+resource bound. Discovery and ID allocation retain only the highest relevant
+ID. Retention keeps a bounded min-heap of the newest valid own sets, then uses
+a bounded second streaming pass to collect older candidates. It closes the
+directory stream, revalidates each candidate, removes its manifest first,
+directory-syncs, removes its members, and directory-syncs again. It never prunes invalid markers,
+legacy markers, other instances, or unproven orphan files.
 `LANTERN_BACKUP_RETAIN=0` keeps all sets.
 Periodic, manual, and final-shutdown attempts are serialized, and set IDs stay
 unique and increasing even if wall time repeats or moves backward.
@@ -133,16 +153,20 @@ the common production signals. Durable sets additionally publish
 retain the existing `backup: wrote dump` event and add set, identity, member,
 and byte fields.
 
-The canonical receipt backup set is the only supported receipt-set format. The producer
+The unversioned receipt backup set is the only supported receipt backup-set
+format. The producer
 requires exact active/retired clock high-water equality and preserves a
 nonempty retired catalog rather than discarding or resampling it. Legacy set
-formats are neither read nor migrated. Runtime-local combined baseline
+formats receive only bounded envelope/name recognition so they fail with
+`ErrUnsupportedReceiptBackupSet`; no obsolete member is decoded, installed,
+or migrated. A selected set containing the obsolete `LRWLCUT2` witness format
+fails with the same unsupported-set error. Runtime-local combined baseline
 publication remains the separate private `LANTCBLN` schema-1 sidecar, and graph-only `.lbk`
 remains a separate non-receipt contract.
 
 **Durable receipt backup installation and startup wiring are not implemented
 in this layer; selecting, proving against the leased live WAL, and installing
-this evidence remains a follow-on.**
+this receipt-set evidence remains a follow-on.**
 `LANTERN_BACKUP_RESTORE_ON_START` must be `false` in durable receipt-WAL mode;
 the legacy graph-only replay path remains rejected because it cannot certify
 receipt continuity. Receipt capability/status and receipt-enabled client

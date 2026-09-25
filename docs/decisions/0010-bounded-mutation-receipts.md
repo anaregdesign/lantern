@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT_V1 Snapshot production/install, and manifest-last retired-aware backup-set v2 production are wired for private durable replication, but durable backup restore, RECEIPT_V2 peer transport, capability/status RPCs, and receipt-enabled client writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT_V1 Snapshot production/install, and manifest-last retired-aware receipt backup-set production are wired for private durable replication, but durable backup restore, RECEIPT_V2 peer transport, capability/status RPCs, and receipt-enabled client writes remain disabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116, #1393, #1394
 
@@ -198,7 +198,7 @@ omits expired rows and empty epoch members and can be validated and imported
 without an active Store.
 
 This catalog is wired into the runtime-owned slot, one-cut capture, canonical
-combined baseline, and backup-set v2. It is not yet wired into Snapshot
+combined baseline, and the receipt backup set. It is not yet wired into Snapshot
 transport, service lookup routing, or startup restore. It does not choose a
 replacement epoch/generation by itself. The remaining #1394 integration must
 rebuild and publish the active Store plus catalog atomically, validate the
@@ -599,10 +599,11 @@ of `CaptureForBackup`. The private active-epoch archive producer instead calls
 `CaptureForBackup` exactly once and builds both manifest witnesses from its one
 captured live tip, so archive cut and observed tip are identical without a
 path reopen.
-The production backup scheduler persists that immutable cut as a v2
-instance-scoped set with exactly three ordered members: unchanged canonical
-active `LANTARCH` bytes, the exact `LRWLCUT2` witness, and canonical `LANTRET1`
-retired-catalog bytes. Its canonical JSON commit manifest binds the exact
+The production backup scheduler persists that immutable cut as a canonical
+unversioned, instance-scoped set with exactly three ordered members: unchanged
+canonical active `LANTARCH` bytes, the exact `LANTWCUT` version 1 witness, and
+canonical `LANTRET1` retired-catalog bytes. Its internal-schema-version-1
+canonical JSON commit manifest binds the exact
 member basenames, roles, formats, versions, sizes, and SHA-256 digests together
 with a monotonic set ID, UTC timestamp, stable NodeID, active endpoint
 generation-chain head, active epoch and policy fingerprint, retired policy-set
@@ -616,33 +617,52 @@ digest mismatches; and cross-cut archive, retired-catalog, or WAL evidence.
 The fully validated loader returns owned active and retired bytes, decoded
 cut/tip witnesses, and the same-cut identity without consulting the live
 appendable WAL, and is shared by retention so selection rules cannot drift.
-Older backup-set formats are unsupported rather than migrated.
+Older backup-set marker namespaces and the obsolete `LRWLCUT2` witness are
+unsupported rather than migrated.
 
-Each member is staged with `O_CREATE|O_EXCL`, completely written, file-synced,
-closed, and renamed before the directory is synced. The manifest is then
-staged, written, file-synced, closed, and renamed last as the sole commit
-point, followed by a final directory sync. The strict canonical loader must
-validate the manifest and every bound member before the set exists.
+Every configured backup-directory component is inspected without following an
+intermediate symlink, and missing components are created one at a time. The
+nearest existing ancestor's parent is synced first, so a retry certifies an
+entry that may have survived an earlier failed parent sync; each new directory
+entry is then made crash-durable by syncing its parent before publication
+proceeds. Directory flushes use the platform durability primitive, including a
+write-capable directory handle with `FlushFileBuffers` on Windows. Each member
+is staged with `O_CREATE|O_EXCL`,
+completely written, file-synced, closed, and renamed before the directory is
+synced. The manifest is staged, written, file-synced, closed, and renamed last
+as the sole commit point, followed by a final directory sync. The strict
+canonical loader must validate the manifest and every bound member before the
+set exists.
 Cancellation and every filesystem error abort the attempt and clean only paths
 whose exclusive create or completed rename proved ownership; files from
 interrupted processes or racing writers are preserved and ignored rather than
-guessed-owned. If the attempt renamed the manifest, cleanup may remove members
-only after the manifest is absent and that absence has been directory-synced;
-a failed marker removal or sync leaves every member in place.
-Retention counts only complete valid sets for the configured instance and
-prunes each manifest first, syncs the directory, removes its members, and syncs
-again. Other instances, unrecognized files, and unproven orphan files are
-untouched. `retain=0` keeps all. Periodic,
-manual, and final-shutdown attempts serialize, while per-instance IDs remain
-unique and increasing across repeated/backward clocks and process restarts.
+guessed-owned. A manifest-rename error is publication-ambiguous even when the
+rename reports no committed result: the operation returns the error and
+preserves every final member unless it owned and removed the marker and
+directory-synced that absence. This deliberately permits bounded member
+orphans rather than risking a committed marker whose members were deleted.
+
+Directory enumeration streams 128-entry batches and fails after 100,000 total
+entries, including foreign and orphan names. Discovery and ID allocation keep
+only the highest relevant candidate. Retention keeps only its configured
+newest-set min-heap, then makes a bounded second pass to collect older
+candidates. It closes the directory stream, revalidates each candidate, and
+then prunes its manifest first, syncs the directory, removes its members, and
+syncs again.
+Other instances, invalid or legacy markers, unrecognized files, and unproven
+orphan files are untouched. `retain=0` keeps all. Periodic, manual, and
+final-shutdown attempts serialize, while per-instance IDs remain unique and
+increasing across repeated/backward clocks and process restarts.
 
 The backup package exposes read-only strict newest-marker discovery as a
-prerequisite for startup restore. It recognizes only canonical current-format
-manifest names in one configured instance scope, selects the highest
-recognized set ID before loading it, and returns an explicit not-found
-sentinel when no marker exists. Once selected, any canonical-loader failure in
-that marker or its members is terminal; discovery never scans backward to an
-older valid set.
+prerequisite for startup restore. It recognizes canonical current-format
+manifest names in one configured instance scope plus exact owned markers in
+the obsolete versioned v1 and v2 namespaces solely for terminal
+unsupported-format refusal. It selects the highest recognized set ID before
+decoding it and returns an explicit not-found sentinel when no marker exists.
+Once selected, an unsupported namespace or schema version, or any
+canonical-loader failure in that marker or its members, is terminal; discovery
+never scans backward to an older valid set.
 
 The later durable restore layer must consume this loader inside
 `provider.NewServingRuntime`, while holding the FileWAL lease and before
@@ -663,9 +683,9 @@ captured frontier or an epoch rollover. The installer
 must validate and install all sections together before serving. Total-cluster
 restore still rotates the active epoch unless a complete durable WAL proves
 the exact current frontier. The production scheduler now consumes the private
-producer's immutable three-member v2 cut, but no startup restore path consumes
-the committed sets yet. Backup-set v2 preserves active and retired evidence
-without making a rotated-epoch or same-epoch archive-restore claim.
+producer's immutable three-member cut, but no startup restore path consumes
+the committed sets yet. The receipt backup set preserves active and retired
+evidence without making a rotated-epoch or same-epoch archive-restore claim.
 The internal Store can now take an optional synchronous
 `ClockHighWaterSink`: it persists each higher observed millisecond before
 Begin/Lookup changes in-memory state, and a sink error permanently faults
@@ -705,8 +725,8 @@ witness to one committed in-memory cut. The private `server/backup` archive
 producer now consumes that combined result exactly once, validates and
 canonicalizes its detached active whole-state image and retired catalog, and
 builds the WAL-cut member directly from the captured witness without reopening
-the live WAL path. Those three immutable members are persisted by the
-production scheduler as backup-set v2. Production requires exact active and
+the live WAL path. Those three immutable members are persisted by the production
+scheduler as the receipt backup set. Production requires exact active and
 retired clock high-water equality and does not normalize, lift, or discard a
 zero-value or lower-cut retired snapshot.
 Startup selection/install of those scheduler sets remains unwired; the

@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +15,32 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/server/service"
 )
+
+type receiptBackupStaticReadDir struct {
+	entries  []os.DirEntry
+	index    int
+	readErr  error
+	closeErr error
+}
+
+func (d *receiptBackupStaticReadDir) ReadDir(n int) ([]os.DirEntry, error) {
+	if d.index == len(d.entries) {
+		if d.readErr != nil {
+			err := d.readErr
+			d.readErr = nil
+			return nil, err
+		}
+		return nil, io.EOF
+	}
+	end := min(d.index+n, len(d.entries))
+	entries := d.entries[d.index:end]
+	d.index = end
+	return entries, nil
+}
+
+func (d *receiptBackupStaticReadDir) Close() error {
+	return d.closeErr
+}
 
 func producerWALTipWitness(seq uint64) mutationlog.FileWALTipWitness {
 	offset := receiptArchiveWALZeroOffset
