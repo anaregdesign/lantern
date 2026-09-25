@@ -224,6 +224,37 @@ func TestReceiptWALUnionCodecRejectsUnservableReplicatedPutSlots(t *testing.T) {
 	}
 }
 
+func TestReceiptWALUnionCodecRejectsAliasedSyntheticAddIDs(t *testing.T) {
+	edges := make([]*pb.Edge, maxSyntheticContribIndex+2)
+	for i := range edges {
+		edges[i] = &pb.Edge{Tail: "tail", Head: "head", Weight: 1}
+	}
+	for _, tc := range []struct {
+		name  string
+		seq   uint64
+		count uint32
+		op    *pb.MutationOp
+	}{
+		{"wire index", 7, uint32(len(edges)), &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{Edges: edges}}}},
+		{"origin sequence", maxSyntheticContribSequence + 1, 0, &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutation := receiptWALUnionGraphFixture(tc.op)
+			mutation.Seq = tc.seq
+			if _, err := encodeReceiptWALUnion(mutation); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("aliased Add encoded: %v", err)
+			}
+			protobuf, err := proto.Marshal(mutation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeReceiptWALUnion(receiptWALUnionRawGraphProto(protobuf, tc.count)); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("aliased Add decoded: %v", err)
+			}
+		})
+	}
+}
+
 func TestReceiptWALUnionCodecMixedFileWALRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mixed.wal")
 	wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)

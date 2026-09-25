@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sort"
@@ -1732,5 +1733,86 @@ func TestContribIDForGoldenVectors(t *testing.T) {
 		if got != wantID {
 			t.Fatalf("contribIDFor(origin, %#x, %#x):\n  got  %x\n  want %x", tc.seq, tc.idx, got[:], wantID[:])
 		}
+	}
+}
+
+func TestSyntheticAddContribBounds(t *testing.T) {
+	explicit := make([]byte, len(graphcache.ContribID{}))
+	explicit[0] = 1
+	if err := validateSyntheticAddIDs(maxSyntheticContribSequence, maxSyntheticContribIndex+1, nil); err != nil {
+		t.Fatalf("last valid unkeyed index/sequence: %v", err)
+	}
+	if err := validateSyntheticAddIDs(maxSyntheticContribSequence+1, 1, nil); !errors.Is(err, errSyntheticContribSequence) {
+		t.Fatalf("sequence overflow = %v", err)
+	}
+	if err := validateSyntheticAddIDs(0, 1, nil); !errors.Is(err, errSyntheticContribSequence) {
+		t.Fatalf("zero sequence = %v", err)
+	}
+	if err := validateSyntheticAddIDs(1, maxSyntheticContribIndex+2, nil); !errors.Is(err, errSyntheticContribIndex) {
+		t.Fatalf("wire-index overflow = %v", err)
+	}
+	ids := make([][]byte, maxSyntheticContribIndex+2)
+	ids[len(ids)-1] = explicit
+	if err := validateSyntheticAddIDs(1, len(ids), ids); err != nil {
+		t.Fatalf("explicit ID at large wire index = %v", err)
+	}
+	if err := validateSyntheticAddIDs(maxSyntheticContribSequence+1, 1, [][]byte{explicit}); err != nil {
+		t.Fatalf("explicit ID above packed sequence range = %v", err)
+	}
+}
+
+func TestApplyMutationRejectsSyntheticAddAliasBeforeGraph(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seq  uint64
+		op   *pb.MutationOp
+	}{
+		{"wire index", 1, func() *pb.MutationOp {
+			edges := make([]*pb.Edge, maxSyntheticContribIndex+2)
+			for i := range edges {
+				edges[i] = &pb.Edge{Tail: "tail", Head: "head", Weight: 1}
+			}
+			return &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{Edges: edges}}}
+		}()},
+		{"origin sequence", maxSyntheticContribSequence + 1, &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+			Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 1},
+		}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			log := mutationlog.New(mutationlog.Options{Capacity: 8})
+			t.Cleanup(func() { _ = log.Close() })
+			local, remote := hlc.NodeID{0x41}, hlc.NodeID{0x42}
+			svc := NewLanternService(cache).WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+			m := &pb.Mutation{Seq: tc.seq, Origin: remote[:], Hlc: newHLC(1, remote), Op: tc.op}
+			if err := svc.ApplyMutation(context.Background(), m); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("synthetic Add alias = %v, want InvalidArgument", err)
+			}
+			if _, ok := cache.GetWeight("tail", "head"); ok || log.Len() != 0 || svc.LocalSeq(remote) != 0 {
+				t.Fatalf("invalid Add changed graph/log/origin: edges=%+v, log=%d, origin=%d", cache.SnapshotEdges(), log.Len(), svc.LocalSeq(remote))
+			}
+		})
+	}
+}
+
+func TestApplyMutationAcceptsExplicitContribIDAtLargeWireIndex(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	local, remote := hlc.NodeID{0x51}, hlc.NodeID{0x52}
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+	edges := make([]*pb.Edge, maxSyntheticContribIndex+2)
+	edges[len(edges)-1] = &pb.Edge{Tail: "tail", Head: "head", Weight: 2}
+	ids := make([][]byte, len(edges))
+	ids[len(ids)-1] = make([]byte, len(graphcache.ContribID{}))
+	ids[len(ids)-1][0] = 0x7f
+	m := &pb.Mutation{Seq: 1, Origin: remote[:], Hlc: newHLC(1, remote), Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+		AddEdges: &pb.AddEdgesRequest{Edges: edges, ContribIds: ids},
+	}}}
+	if err := svc.ApplyMutation(context.Background(), m); err != nil {
+		t.Fatalf("explicit high-index Add rejected: %v", err)
+	}
+	if got, ok := cache.GetWeight("tail", "head"); !ok || got != 2 || log.Len() != 1 || svc.LocalSeq(remote) != 1 {
+		t.Fatalf("explicit high-index Add = %g, %v, log=%d, origin=%d", got, ok, log.Len(), svc.LocalSeq(remote))
 	}
 }
