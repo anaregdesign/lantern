@@ -66,6 +66,64 @@ func ResumeLogFromFileWAL(
 	return attachResumedFileWAL(opts, wal, tail)
 }
 
+// ResumeLeasedLogFromFileWAL acquires the path lease before the first WAL
+// validation pass and keeps it until the returned owner closes the Log and
+// writer. The caller must discard any application state partly changed by a
+// failing restore callback. A successful return proves only Log/WAL sequence
+// continuity; receipt-capable serving also needs a certified graph, Store,
+// clock, epoch, and origin cut.
+func ResumeLeasedLogFromFileWAL(
+	path string,
+	opts Options,
+	encode func(MutationOp) ([]byte, error),
+	decode func([]byte) (MutationOp, error),
+	restore func(Entry) error,
+) (*Log, io.Closer, error) {
+	lease, err := AcquireFileWALLease(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = lease.Close()
+		}
+	}()
+	var log *Log
+	var owner io.Closer
+	err = lease.WithPath(func(canonicalPath string) error {
+		var restoreErr error
+		log, owner, restoreErr = ResumeLogFromFileWAL(canonicalPath, opts, encode, decode, restore)
+		return restoreErr
+	})
+	if err != nil {
+		if owner != nil {
+			err = errors.Join(err, owner.Close())
+		}
+		return nil, nil, errors.Join(err, lease.Close())
+	}
+	if log == nil || owner == nil {
+		missing := errors.New("mutationlog: resumed Log owner is missing")
+		if owner != nil {
+			missing = errors.Join(missing, owner.Close())
+		}
+		return nil, nil, errors.Join(missing, lease.Close())
+	}
+	transferred = true
+	return log, &leasedResumedLogCloser{owner: owner, lease: lease}, nil
+}
+
+// Close releases the WAL writer before the path lease, so another process
+// cannot acquire the path while this Log may still append.
+type leasedResumedLogCloser struct {
+	owner io.Closer
+	lease *FileWALLease
+}
+
+func (c *leasedResumedLogCloser) Close() error {
+	return errors.Join(c.owner.Close(), c.lease.Close())
+}
+
 // attachResumedFileWAL is the final ownership transfer. Keep every frontier
 // check before New starts the dispatcher; an invalid restore closes the writer.
 func attachResumedFileWAL(opts Options, wal *FileWAL, tail *Log) (*Log, io.Closer, error) {
