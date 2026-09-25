@@ -555,19 +555,25 @@ already existed at bind time, and permits a valid suffix appended after the
 recorded tip. This byte pairing does not prove that the archive source used
 that FileWAL, that commits after the recorded tip were retained, or that the
 runtime tip journal belongs to the archive. The caller must own a non-mutating
-WAL path during each inspection; no production path creates or consumes the
-manifest. This stable-path, two-pass inspection helper remains separate from
-the lease-owned live witness: it does not inspect a mutating FileWAL and is not
-part of `CaptureForBackup`.
+WAL path during each inspection. This stable-path, two-pass inspection helper
+remains available for staging and its existing tests, separate from the
+lease-owned live witness; it does not inspect a mutating FileWAL and is not part
+of `CaptureForBackup`. The private active-epoch archive producer instead calls
+`CaptureForBackup` exactly once and builds both manifest witnesses from its one
+captured live tip, so archive cut and observed tip are identical without a
+path reopen.
 `Clock.Now()` advances only in-memory HLC state, and an aborted `Store.Begin`
 or a direct `Store.Lookup` may advance high-water without a WAL entry. A serving
 recovery still needs an atomic installer and proof that the WAL covers the
 captured frontier or an epoch rollover. The installer
 must validate and install all sections together before serving. Total-cluster
 restore still rotates the active epoch unless a complete durable WAL proves
-the exact current frontier. The archive producer, production backup scheduler,
-and restore paths do not consume `CaptureForBackup` or its live witness yet;
-this prerequisite therefore makes no same-epoch archive-restore claim.
+the exact current frontier. No production scheduler or restore path consumes
+the private producer's immutable pair yet. The pair is only the active-epoch
+member of a future versioned backup set: it neither preserves retired-epoch
+receipts nor makes a rotated-epoch or same-epoch archive-restore claim. A later
+bounded retired-epoch catalog can be added as another backup-set member without
+resampling or reopening the live WAL.
 The internal Store can now take an optional synchronous
 `ClockHighWaterSink`: it persists each higher observed millisecond before
 Begin/Lookup changes in-memory state, and a sink error permanently faults
@@ -603,8 +609,15 @@ active lease and rejects a different runtime/service owner, Log or FileWAL,
 path, sequence, closed or unusable Log, or legacy-WAL uncertainty. A matching
 tip or standalone live witness still does not certify an archive cut;
 `CaptureForBackup` is the service-owned composition seam that binds the
-witness to one committed in-memory cut, and no archive or restore path
-consumes that combined result yet. The private production runtime adds a
+witness to one committed in-memory cut. The private `server/backup` archive
+producer now consumes that combined result exactly once, validates and
+canonicalizes only its detached whole-state image, and builds the paired WAL-cut
+manifest directly from the captured witness without reopening the live WAL path.
+That pair represents only the active epoch and is structured as one member of a
+future versioned backup set; it does not retain retired-epoch receipts. Scheduler
+persistence, retention, the bounded retired-epoch catalog, startup restore, and
+same-epoch continuity certification remain unwired and unproven. The private
+production runtime adds a
 fixed-size checksummed `.generation` sidecar bound to the canonical WAL path,
 epoch, policy fingerprint, and stable replication NodeID. Fresh mode creates
 one opaque nonzero generation with exclusive file creation; restart requires

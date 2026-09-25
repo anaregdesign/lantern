@@ -64,17 +64,21 @@ func bindReceiptArchiveFileWAL(
 	if err != nil {
 		return nil, fmt.Errorf("backup: inspect FileWAL at archive cut: %w", err)
 	}
-	return encodeReceiptArchiveWALCut(receiptArchiveWALCut{
-		archiveSHA256:  sha256.Sum256(owned),
-		cutSeq:         seq,
-		cutOffset:      cut.Offset,
-		cutSHA256:      cut.SHA256,
-		cutChainSHA256: cut.ChainSHA256,
-		tipSeq:         cut.ObservedLast,
-		tipOffset:      cut.ObservedOffset,
-		tipSHA256:      cut.ObservedSHA256,
-		tipChainSHA256: cut.ObservedChainSHA256,
-	}), nil
+	return encodeReceiptArchiveWALCutWitnesses(
+		owned,
+		mutationlog.FileWALTipWitness{
+			Seq:         seq,
+			Offset:      cut.Offset,
+			SHA256:      cut.SHA256,
+			ChainSHA256: cut.ChainSHA256,
+		},
+		mutationlog.FileWALTipWitness{
+			Seq:         cut.ObservedLast,
+			Offset:      cut.ObservedOffset,
+			SHA256:      cut.ObservedSHA256,
+			ChainSHA256: cut.ObservedChainSHA256,
+		},
+	)
 }
 
 // stageReceiptWholeStateArchiveAtWALCut returns an entirely detached stage
@@ -153,6 +157,31 @@ func encodeReceiptArchiveWALCut(cut receiptArchiveWALCut) []byte {
 	sum := sha256.Sum256(raw[:receiptArchiveWALCutPayloadSize])
 	copy(raw[receiptArchiveWALCutPayloadSize:], sum[:])
 	return raw
+}
+
+func encodeReceiptArchiveWALCutWitnesses(
+	archiveRaw []byte,
+	cut mutationlog.FileWALTipWitness,
+	tip mutationlog.FileWALTipWitness,
+) ([]byte, error) {
+	if len(archiveRaw) == 0 || len(archiveRaw) > wholeStateArchiveMaxBytes {
+		return nil, wholeStateArchiveError("invalid archive size")
+	}
+	raw := encodeReceiptArchiveWALCut(receiptArchiveWALCut{
+		archiveSHA256:  sha256.Sum256(archiveRaw),
+		cutSeq:         cut.Seq,
+		cutOffset:      cut.Offset,
+		cutSHA256:      cut.SHA256,
+		cutChainSHA256: cut.ChainSHA256,
+		tipSeq:         tip.Seq,
+		tipOffset:      tip.Offset,
+		tipSHA256:      tip.SHA256,
+		tipChainSHA256: tip.ChainSHA256,
+	})
+	if _, err := decodeReceiptArchiveWALCut(raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 func decodeReceiptArchiveWALCut(raw []byte) (receiptArchiveWALCut, error) {

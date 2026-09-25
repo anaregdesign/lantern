@@ -47,7 +47,7 @@ type wholeStateArchive struct {
 	// causal floors and the per-contribution edge decomposition that .lbk
 	// discards. The codec validates each graph payload but cannot prove that
 	// Graph, Receipts, and Origins came from one atomic publication cut; a
-	// future producer and installer must establish that cut before serving.
+	// producer and installer must establish that cut before serving.
 	Graph    []*pb.SnapshotResponse
 	Receipts mutationreceipt.Snapshot
 	Policy   mutationreceipt.Config
