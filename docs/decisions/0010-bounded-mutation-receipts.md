@@ -465,6 +465,12 @@ captured frontier or an epoch rollover. The installer
 must validate and install all sections together before serving. Total-cluster
 restore still rotates the active epoch unless a complete durable WAL proves
 the exact current frontier.
+The internal Store can now take an optional synchronous
+`ClockHighWaterSink`: it persists each higher observed millisecond before
+Begin/Lookup changes in-memory state, and a sink error permanently faults
+those decisions and Snapshot export. Snapshot import validates first, then
+binds and advances the sink. This establishes the in-process persistence seam
+only; no production journal, WAL binding, or serving recovery owns it yet.
 The diagnostic `GetReplicationStatus` dashboard remains available during a
 publication fault; it reports pump health, not a receipt or graph cut.
 

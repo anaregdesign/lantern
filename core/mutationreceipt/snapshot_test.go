@@ -100,6 +100,39 @@ func TestSnapshotRestoreHigherClockEvictsExpiredButNeverReopensID(t *testing.T) 
 	}
 }
 
+func TestSnapshotRestoreBindsHighWaterSinkAfterValidation(t *testing.T) {
+	config, state, first, _ := snapshotFixture(t)
+	config.ClockHighWater = testStart.Add(time.Hour + 30*time.Second)
+	writes := 0
+	corrupt := cloneSnapshot(state)
+	corrupt.PolicyFingerprint[0] ^= 1
+	if s, err := NewFromSnapshotWithClockHighWaterSink(config, corrupt, func(int64) error {
+		writes++
+		return nil
+	}); s != nil || !errors.Is(err, ErrInvalidSnapshot) || writes != 0 {
+		t.Fatalf("invalid snapshot persisted metadata: %p, %v, writes %d", s, err, writes)
+	}
+	var persisted int64
+	restored, err := NewFromSnapshotWithClockHighWaterSink(config, state, func(ms int64) error {
+		writes++
+		persisted = ms
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writes != 1 || persisted != config.ClockHighWater.UnixMilli() {
+		t.Fatalf("persisted restored high-water = %d, writes %d", persisted, writes)
+	}
+	if status, _, err := restored.Lookup(first.ID, testStart); err != nil || status != NoLongerProvable {
+		t.Fatalf("restored backward-clock status = %v, %v", status, err)
+	}
+	writeErr := errors.New("metadata sync failed")
+	if s, err := NewFromSnapshotWithClockHighWaterSink(config, state, func(int64) error { return writeErr }); s != nil || !errors.Is(err, ErrHighWaterPersistence) || !errors.Is(err, writeErr) {
+		t.Fatalf("failed restore sink = %p, %v", s, err)
+	}
+}
+
 func TestSnapshotAllowsPartiallyExpiredLogicalCall(t *testing.T) {
 	config := Config{Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 1000}
 	s, err := New(config)

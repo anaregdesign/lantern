@@ -372,6 +372,78 @@ func TestStoreRestoredClockHighWaterRejectsBackwardExpiry(t *testing.T) {
 	}
 }
 
+func TestStoreClockHighWaterSinkPersistsAbortedAndLookupAdvances(t *testing.T) {
+	config := Config{Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 1000, ClockHighWater: testStart}
+	var durable []int64
+	s, err := NewWithClockHighWaterSink(config, func(ms int64) error {
+		durable = append(durable, ms)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(durable) != 1 || durable[0] != testStart.UnixMilli() {
+		t.Fatalf("initial durable high-water = %v", durable)
+	}
+	tx, err := s.Begin(testStart.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Abort()
+	if len(durable) != 2 || durable[1] != testStart.Add(time.Minute).UnixMilli() {
+		t.Fatalf("aborted Begin high-water = %v", durable)
+	}
+	id := testIntent(t, 1, testStart, GroupID{1}, 0, 1).ID
+	if status, _, err := s.Lookup(id, testStart.Add(2*time.Minute)); err != nil || status != NotYetObserved {
+		t.Fatalf("Lookup = %v, %v", status, err)
+	}
+	if len(durable) != 3 || durable[2] != testStart.Add(2*time.Minute).UnixMilli() {
+		t.Fatalf("Lookup high-water = %v", durable)
+	}
+	if status, _, err := s.Lookup(id, testStart); err != nil || status != NotYetObserved || len(durable) != 3 {
+		t.Fatalf("backward Lookup = %v, %v; durable = %v", status, err, durable)
+	}
+}
+
+func TestStoreClockHighWaterSinkFailureFaultsDecisions(t *testing.T) {
+	config := Config{Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 2, MaxBytes: 1000, ClockHighWater: testStart}
+	writeErr := errors.New("indeterminate metadata write")
+	if s, err := NewWithClockHighWaterSink(config, nil); s != nil || !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("nil sink = %p, %v", s, err)
+	}
+	if s, err := NewWithClockHighWaterSink(config, func(int64) error { return writeErr }); s != nil ||
+		!errors.Is(err, ErrHighWaterPersistence) || !errors.Is(err, writeErr) {
+		t.Fatalf("failed initial sink = %p, %v", s, err)
+	}
+	writes := 0
+	s, err := NewWithClockHighWaterSink(config, func(int64) error {
+		writes++
+		if writes > 1 {
+			return writeErr
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := testIntent(t, 1, testStart, GroupID{1}, 0, 1)
+	commitTestBatch(t, s, testStart, []Intent{intent}, [][]byte{[]byte("original")})
+	before := s.Stats()
+	if status, receipt, err := s.Lookup(intent.ID, testStart.Add(time.Hour)); status != 0 || receipt.ID != (ID{}) || len(receipt.Result) != 0 ||
+		!errors.Is(err, ErrHighWaterPersistence) || !errors.Is(err, writeErr) {
+		t.Fatalf("failed high-water Lookup = %v, %+v, %v", status, receipt, err)
+	}
+	if got := s.Stats(); got.HighWaterMillis != before.HighWaterMillis || got.Entries != before.Entries {
+		t.Fatalf("failed sink modified Store: before %+v, after %+v", before, got)
+	}
+	if tx, err := s.Begin(testStart); tx != nil || !errors.Is(err, ErrHighWaterPersistence) || writes != 2 {
+		t.Fatalf("faulted Begin = %p, %v; writes %d", tx, err, writes)
+	}
+	if _, err := s.Snapshot(); !errors.Is(err, ErrHighWaterPersistence) {
+		t.Fatalf("faulted Snapshot = %v", err)
+	}
+}
+
 func TestStoreRetainedOldEpochReceiptsUseOriginalDeadline(t *testing.T) {
 	s, err := New(Config{Epoch: Epoch{1}, Retention: 2 * time.Hour, MaxEntries: 3, MaxBytes: 1000})
 	if err != nil {
