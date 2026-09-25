@@ -48,14 +48,21 @@ type receiptServingRuntime struct {
 	defaultTTL          time.Duration
 	configureGraph      func(*graphcache.GraphCache[string, *pb.Vertex]) error
 	owner               *receiptWALOwnedCandidate
+	startupRestore      *ReceiptStartupRestore
+	recaptureOnRestore  bool
 	sidecarFault        func(receiptBaselineSidecarFaultPoint) error
 	installFault        func(receiptBaselineInstallFaultPoint) error
 }
 
 const (
 	receiptRuntimeGenerationMagic = "LNRGEN1\n"
-	receiptRuntimeGenerationSize  = len(receiptRuntimeGenerationMagic) + sha256.Size + 16 + sha256.Size
+	receiptRuntimeGenerationSize  = len(receiptRuntimeGenerationMagic) + sha256.Size + 16 + 1 + sha256.Size
 )
+
+type receiptRuntimeGenerationRecord struct {
+	generation       [16]byte
+	requiresBaseline bool
+}
 
 // DurableReceiptWALRuntimeConfig is the validated input for a fresh or
 // same-epoch restart. The caller supplies the production graph policy before
@@ -69,6 +76,22 @@ type DurableReceiptWALRuntimeConfig struct {
 	NodeID         hlc.NodeID
 	Now            time.Time
 	BaselineCodec  ReceiptBaselineArchiveCodec
+	StartupRestore *ReceiptStartupRestore
+}
+
+// ReceiptStartupRestore is immutable backup-set evidence prepared for one
+// durable startup. Fresh mode installs Capture directly after creating a new
+// epoch. Restart fallback uses Capture as the proven WAL boundary, replays the
+// current suffix, then captures that complete recovered runtime before
+// publishing a new canonical baseline.
+type ReceiptStartupRestore struct {
+	Capture        ReceiptWholeStateCapture
+	WALCut         mutationlog.FileWALTipWitness
+	NodeID         hlc.NodeID
+	Generation     [16]byte
+	ArchivedEpoch  mutationreceipt.Epoch
+	ArchivedPolicy [sha256.Size]byte
+	BackupSetID    uint64
 }
 
 // NewGraphOnlyServingRuntime preserves the historical in-memory composition.
@@ -92,6 +115,11 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 	if err := validateDurableReceiptWALRuntimeConfig(config); err != nil {
 		return nil, err
 	}
+	if config.StartupRestore != nil {
+		if err := validateFreshReceiptStartupRestore(config, *config.StartupRestore); err != nil {
+			return nil, err
+		}
+	}
 	candidate, err := createLeasedReceiptWALCandidate(
 		config.Path,
 		config.Receipt,
@@ -107,11 +135,20 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 		config.Receipt.Epoch,
 		candidate.state.receipts.PolicyFingerprint(),
 		config.NodeID,
+		config.StartupRestore != nil,
 	)
 	if err != nil {
 		return nil, errors.Join(err, candidate.Close())
 	}
-	return certifyReceiptWALServingRuntime(candidate, config, generation, receiptBaselineReference{})
+	runtime, err := certifyReceiptWALServingRuntime(candidate, config, generation, receiptBaselineReference{})
+	if err != nil {
+		return nil, err
+	}
+	if config.StartupRestore != nil {
+		restore := cloneReceiptStartupRestore(*config.StartupRestore)
+		runtime.receipt.startupRestore = &restore
+	}
+	return runtime, nil
 }
 
 // OpenDurableReceiptWALServingRuntime resumes one complete genesis WAL under
@@ -121,19 +158,31 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 	if err := validateDurableReceiptWALRuntimeConfig(config); err != nil {
 		return nil, err
 	}
+	if config.StartupRestore != nil {
+		return nil, errors.New("service: normal durable receipt WAL restart cannot carry backup restore evidence")
+	}
 	now := config.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
 	var generation [16]byte
+	var requiresBaseline bool
 	preflight := func(canonicalPath string, policy [sha256.Size]byte) error {
 		var readErr error
-		generation, readErr = readReceiptRuntimeGeneration(
+		var record receiptRuntimeGenerationRecord
+		record, readErr = readReceiptRuntimeGenerationRecord(
 			canonicalPath,
 			config.Receipt.Epoch,
 			policy,
 			config.NodeID,
 		)
+		generation = record.generation
+		requiresBaseline = record.requiresBaseline
+		if readErr == nil && requiresBaseline && config.BaselineCodec == nil {
+			return errors.New(
+				"service: durable receipt WAL startup restore requires the combined baseline codec",
+			)
+		}
 		return readErr
 	}
 	var candidate *receiptWALOwnedCandidate
@@ -145,6 +194,9 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 		)
 	} else {
 		validateBaseline := func(scan receiptBaselineWALScan) error {
+			if requiresBaseline && !scan.hasMarker {
+				return errors.New("service: durable receipt WAL requires its committed startup restore baseline")
+			}
 			if scan.hasMarker && scan.firstGeneration != generation {
 				return errors.New("service: receipt baseline generation does not descend from genesis")
 			}
@@ -209,6 +261,7 @@ func createReceiptRuntimeGeneration(
 	epoch mutationreceipt.Epoch,
 	policy [sha256.Size]byte,
 	nodeID hlc.NodeID,
+	requiresBaseline bool,
 ) (_ [16]byte, err error) {
 	generation, err := newReceiptRuntimeGeneration()
 	if err != nil {
@@ -222,7 +275,14 @@ func createReceiptRuntimeGeneration(
 	defer func() {
 		err = errors.Join(err, file.Close())
 	}()
-	record := encodeReceiptRuntimeGeneration(walPath, epoch, policy, nodeID, generation)
+	record := encodeReceiptRuntimeGeneration(
+		walPath,
+		epoch,
+		policy,
+		nodeID,
+		generation,
+		requiresBaseline,
+	)
 	if _, err := file.Write(record); err != nil {
 		return generation, fmt.Errorf("service: write receipt runtime generation: %w", err)
 	}
@@ -241,53 +301,73 @@ func readReceiptRuntimeGeneration(
 	policy [sha256.Size]byte,
 	nodeID hlc.NodeID,
 ) ([16]byte, error) {
-	var generation [16]byte
+	record, err := readReceiptRuntimeGenerationRecord(walPath, epoch, policy, nodeID)
+	return record.generation, err
+}
+
+func readReceiptRuntimeGenerationRecord(
+	walPath string,
+	epoch mutationreceipt.Epoch,
+	policy [sha256.Size]byte,
+	nodeID hlc.NodeID,
+) (receiptRuntimeGenerationRecord, error) {
+	var recordValue receiptRuntimeGenerationRecord
 	path := walPath + ".generation"
 	info, err := os.Lstat(path)
 	if err != nil {
-		return generation, fmt.Errorf("service: stat receipt runtime generation: %w", err)
+		return recordValue, fmt.Errorf("service: stat receipt runtime generation: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Size() != int64(receiptRuntimeGenerationSize) {
-		return generation, errors.New("service: receipt runtime generation is corrupt")
+		return recordValue, errors.New("service: receipt runtime generation is corrupt")
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return generation, fmt.Errorf("service: open receipt runtime generation: %w", err)
+		return recordValue, fmt.Errorf("service: open receipt runtime generation: %w", err)
 	}
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil {
-		return generation, fmt.Errorf("service: stat receipt runtime generation: %w", err)
+		return recordValue, fmt.Errorf("service: stat receipt runtime generation: %w", err)
 	}
 	if !os.SameFile(info, opened) {
-		return generation, errors.New("service: receipt runtime generation changed during open")
+		return recordValue, errors.New("service: receipt runtime generation changed during open")
 	}
 	record := make([]byte, receiptRuntimeGenerationSize)
 	if _, err := io.ReadFull(file, record); err != nil {
-		return generation, fmt.Errorf("service: read receipt runtime generation: %w", err)
+		return recordValue, fmt.Errorf("service: read receipt runtime generation: %w", err)
 	}
 	final, err := os.Lstat(path)
 	if err != nil {
-		return generation, fmt.Errorf("service: restat receipt runtime generation: %w", err)
+		return recordValue, fmt.Errorf("service: restat receipt runtime generation: %w", err)
 	}
 	if !os.SameFile(info, final) {
-		return generation, errors.New("service: receipt runtime generation changed during read")
+		return recordValue, errors.New("service: receipt runtime generation changed during read")
 	}
 	wantBinding := receiptRuntimeGenerationBinding(walPath, epoch, policy, nodeID)
 	if !bytes.Equal(record[:len(receiptRuntimeGenerationMagic)], []byte(receiptRuntimeGenerationMagic)) ||
 		!bytes.Equal(record[len(receiptRuntimeGenerationMagic):len(receiptRuntimeGenerationMagic)+sha256.Size], wantBinding[:]) {
-		return generation, errors.New("service: receipt runtime generation binding mismatch")
+		return recordValue, errors.New("service: receipt runtime generation binding mismatch")
 	}
 	checksumStart := receiptRuntimeGenerationSize - sha256.Size
 	checksum := sha256.Sum256(record[:checksumStart])
 	if !bytes.Equal(record[checksumStart:], checksum[:]) {
-		return generation, errors.New("service: receipt runtime generation checksum mismatch")
+		return recordValue, errors.New("service: receipt runtime generation checksum mismatch")
 	}
-	copy(generation[:], record[len(receiptRuntimeGenerationMagic)+sha256.Size:checksumStart])
-	if generation == ([16]byte{}) {
-		return generation, errors.New("service: receipt runtime generation is zero")
+	generationStart := len(receiptRuntimeGenerationMagic) + sha256.Size
+	copy(recordValue.generation[:], record[generationStart:generationStart+16])
+	if recordValue.generation == ([16]byte{}) {
+		return receiptRuntimeGenerationRecord{}, errors.New("service: receipt runtime generation is zero")
 	}
-	return generation, nil
+	switch record[generationStart+16] {
+	case 0:
+	case 1:
+		recordValue.requiresBaseline = true
+	default:
+		return receiptRuntimeGenerationRecord{}, errors.New(
+			"service: receipt runtime generation baseline requirement is invalid",
+		)
+	}
+	return recordValue, nil
 }
 
 func encodeReceiptRuntimeGeneration(
@@ -296,12 +376,18 @@ func encodeReceiptRuntimeGeneration(
 	policy [sha256.Size]byte,
 	nodeID hlc.NodeID,
 	generation [16]byte,
+	requiresBaseline bool,
 ) []byte {
 	record := make([]byte, 0, receiptRuntimeGenerationSize)
 	record = append(record, receiptRuntimeGenerationMagic...)
 	binding := receiptRuntimeGenerationBinding(walPath, epoch, policy, nodeID)
 	record = append(record, binding[:]...)
 	record = append(record, generation[:]...)
+	if requiresBaseline {
+		record = append(record, 1)
+	} else {
+		record = append(record, 0)
+	}
 	checksum := sha256.Sum256(record)
 	return append(record, checksum[:]...)
 }

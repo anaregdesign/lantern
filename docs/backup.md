@@ -11,7 +11,8 @@ on any restart — including a routine **rolling update** or pod restart. In
 graph-only mode, snapshot durability periodically dumps the graph to a mounted
 volume and restores the newest dump before serving. Private durable
 receipt-WAL mode uses the same production schedule for a receipt-bearing
-backup set; startup restore for that set is a later layer.
+backup set and restores it only at the durable runtime construction boundary,
+under the FileWAL lease and before any listener or background worker exists.
 
 The graph-only restore path is primarily the **single-instance** durability
 story — any single-pod or single-container deploy. In a **multi-replica**
@@ -165,13 +166,45 @@ fails with the same unsupported-set error. Runtime-local combined baseline
 publication remains the separate private `LANTCBLN` schema-1 sidecar, and
 graph-only `.lbk` remains a separate non-receipt contract.
 
-**Durable receipt backup installation and startup wiring are not implemented
-in this layer; selecting, proving against the leased live WAL, and installing
-this receipt-set evidence remains a follow-on.**
-`LANTERN_BACKUP_RESTORE_ON_START` must be `false` in durable receipt-WAL mode;
-the legacy graph-only replay path remains rejected because it cannot certify
-receipt continuity. Receipt capability/status and receipt-enabled client
-writes also remain disabled.
+Durable startup restore consumes only the strict newest-set loader above. It
+does not call the graph-only `Backupper.RestoreOnStartup` path:
+
+- **`restart` first proves the current runtime.** A complete current WAL,
+  journals, generation chain, and committed combined baseline always win;
+  the backup is not read, even when restore is required. Backup fallback is
+  limited to a missing or damaged sidecar for the newest otherwise-valid
+  committed baseline. Under the same FileWAL lease it requires the backup's
+  exact NodeID, epoch, policy, generation at the archived cut, graph/archive
+  cutoff, WAL offset/digest/rolling-chain witness, and the complete valid
+  current suffix. Lease contention, identity or policy mismatch, journal
+  failure, ambiguous WAL bytes, a later valid generation, or any other
+  unclassified current state fail without fallback. The repaired graph,
+  active Store, retired catalog, origins, HLC floor, Log, WAL, and generation
+  are installed as one runtime, then a fresh canonical `LANTCBLN` schema-1
+  baseline is committed before certification.
+- **`fresh` is the total-cluster-loss path.** The configured active epoch must
+  differ from the archived active epoch, and existing target bytes still fail
+  closed. The configured epoch starts with an empty active Store and a new
+  endpoint generation. The archived graph and origins are restored; the
+  archived active Store is converted with its original policy into one
+  retired-epoch member and unioned deterministically with `LANTRET1`.
+  Configured aggregate bounds are charged against the distinct raw union
+  before rows expired at the effective high-water are pruned. A canonical
+  combined baseline commits before certification.
+- **Optional restore is narrow.** With `fresh`, a genuinely absent backup may
+  start a complete empty fresh runtime; an invalid selected backup never does.
+  With `restart`, an absent backup cannot repair an incomplete current
+  runtime, so startup fails. `LANTERN_BACKUP_RESTORE_REQUIRED=true` makes a
+  missing fresh backup terminal and is invalid unless restore-on-start is
+  enabled. A valid current restart needs no backup.
+
+The generation record remembers when a fresh runtime requires its first
+startup-restore baseline. A crash before that marker commits cannot later
+turn the empty target into a valid restart. The private identity-bearing
+restore barrier commits any pending baseline before `NewRuntimeCertified`;
+listener, metrics-server, Snapshot installer, Pump, anti-entropy, and backup
+scheduler construction all depend on that certification. Receipt
+capability/status and receipt-enabled client writes remain disabled.
 
 ### Why per-instance files (the shared-storage decision)
 
@@ -194,12 +227,12 @@ every backend, and degrade cleanly to the single-instance case.
 | Env var | Default | Meaning |
 |---|---|---|
 | `LANTERN_BACKUP_ENABLED` | `false` | Master switch for periodic production. Requires `LANTERN_BACKUP_DIR`; writes graph-only `.lbk` files or private durable receipt sets according to runtime mode. |
-| `LANTERN_BACKUP_DIR` | _(empty)_ | Mounted directory backup files are written to; graph-only startup restore also reads from it. |
+| `LANTERN_BACKUP_DIR` | _(empty)_ | Mounted directory backup files are written to and startup restore reads from. |
 | `LANTERN_BACKUP_INTERVAL` | `5m` | Backup cadence (`time.ParseDuration`). |
 | `LANTERN_BACKUP_RETAIN` | `3` | Keep newest N valid own dumps/sets; `0` keeps all. |
 | `LANTERN_BACKUP_INSTANCE_ID` | _(hostname)_ | Per-instance ownership token used to derive safe filenames. |
-| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Graph-only: replay the newest dump before serving. Durable receipt-WAL mode currently requires this to be `false`. |
-| `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Graph-only: fail boot when restore errors (else warn + continue). Durable receipt restore is not implemented. |
+| `LANTERN_BACKUP_RESTORE_ON_START` | `true` | Graph-only: replay the newest valid dump. Durable `fresh`: restore the strict newest receipt set or, only when optional and absent, start empty. Durable `restart`: use a set only for eligible current-baseline damage. |
+| `LANTERN_BACKUP_RESTORE_REQUIRED` | `false` | Graph-only: fail boot when restore errors. Durable `fresh`: require a valid newest set. Durable `restart`: restore failure is always terminal when the current runtime is incomplete; a valid current runtime remains authoritative. |
 
 > **TTL-vs-interval caveat.** Entries decay, so a dump is only as useful as its
 > data is still live at restore time. Keep `LANTERN_DEFAULT_TTL_SECONDS`
@@ -273,9 +306,10 @@ In a multi-replica StatefulSet each pod's `LANTERN_BACKUP_INSTANCE_ID` is its
 stable pod name, so dumps never collide. Restore-on-start still runs on each
 pod as a baseline; peer bootstrap then overlays newer cluster state via HLC, so
 replicas take priority while a whole-cluster cold start recovers from the dumps.
-This restore description applies only to graph-only mode; durable receipt-WAL
-deployments must set `backup.restoreOnStart: false` until the receipt-set restore
-layer lands.
+In durable receipt-WAL mode, each stable instance ID selects only its own
+strict newest receipt set. Use `fresh` with a new configured epoch for
+total-cluster recovery, or `restart` for same-epoch current-WAL recovery and
+its narrowly eligible baseline-sidecar repair.
 
 ## See also
 

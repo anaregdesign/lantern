@@ -20,9 +20,8 @@ import (
 // is replayed on boot as a baseline, independent of replication topology.
 // When peers exist the subsequent peer bootstrap overlays that baseline
 // through the normal write path, so HLC ordering lets newer peer state win per
-// key. Durable receipt mode uses the same production schedule for receipt
-// backup sets but rejects RestoreOnStart until its continuity-preserving
-// startup loader and installer are wired.
+// key. Durable receipt mode restores only at NewServingRuntime, under the WAL
+// lease and before runtime certification.
 //
 //   - LANTERN_BACKUP_ENABLED          (default false) master switch for
 //     periodic backup production. Resolved to off when LANTERN_BACKUP_DIR is
@@ -34,9 +33,8 @@ import (
 //     dumps/sets; 0 keeps all.
 //   - LANTERN_BACKUP_INSTANCE_ID      (default hostname) per-instance file
 //     token so shared-storage writes never collide.
-//   - LANTERN_BACKUP_RESTORE_ON_START (default true) graph-only replay of the
-//     newest dump before serving. Durable receipt mode currently requires
-//     false.
+//   - LANTERN_BACKUP_RESTORE_ON_START (default true) startup restore of the
+//     newest graph dump or canonical receipt backup set before serving.
 //   - LANTERN_BACKUP_RESTORE_REQUIRED (default false) fail boot when a
 //     restore errors instead of warning and continuing.
 func loadBackupConfig() backup.Config {

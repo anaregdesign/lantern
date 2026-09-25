@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -751,24 +752,6 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 		t.Fatalf("durable backup config = %+v", cfg.Backup)
 	}
 
-	t.Run("restore on start remains rejected", func(t *testing.T) {
-		invalid := cfg.Backup
-		invalid.RestoreOnStart = true
-		runtime, cleanup, err := provider.NewServingRuntime(
-			cfg.ReceiptWAL,
-			cfg.Cache,
-			cfg.Search,
-			cfg.MutationLog,
-			cfg.Replication,
-			invalid,
-			nil,
-		)
-		if runtime != nil || cleanup != nil || err == nil ||
-			!strings.Contains(err.Error(), "LANTERN_BACKUP_RESTORE_ON_START must be disabled") {
-			t.Fatalf("durable restore-on-start runtime = (%v, cleanup nil=%t, %v)", runtime, cleanup == nil, err)
-		}
-	})
-
 	runtime, cleanup, err := provider.NewServingRuntime(
 		cfg.ReceiptWAL,
 		cfg.Cache,
@@ -789,7 +772,16 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	certified, err := provider.NewRuntimeCertified(runtime, primary, replicationService)
+	restored, err := provider.NewRuntimeRestored(runtime, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certified, err := provider.NewRuntimeCertified(
+		runtime,
+		primary,
+		replicationService,
+		restored,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1988,11 +1980,10 @@ func TestDurableReceiptWALRuntime_RealConnectWireGapRecovery(t *testing.T) {
 	}
 }
 
-// TestDurableReceiptWALRuntime_RealConnectWireRestart is the external-surface
-// gate for the private production runtime. Public writes traverse real h2c,
-// shutdown releases every serving consumer before the runtime owner, and a
-// same-generation restart reconstructs live, expired, and deleted state.
-func TestDurableReceiptWALRuntime_RealConnectWireRestart(t *testing.T) {
+// TestDurableReceiptWALRuntime_RealConnectWireRecovery is the external-surface
+// gate for ordinary restart plus same-epoch backup repair and fresh
+// total-cluster restore. Public writes and post-restore reads traverse h2c.
+func TestDurableReceiptWALRuntime_RealConnectWireRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "receipts.wal")
@@ -2003,6 +1994,271 @@ func TestDurableReceiptWALRuntime_RealConnectWireRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("startup restore", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		root := t.TempDir()
+		sourcePath := filepath.Join(root, "source.wal")
+		backupDir := filepath.Join(root, "backups")
+		instance := "startup-restore-wire"
+		sourceConfig := durableReceiptWireConfig(sourcePath, hlc.NodeID{0x61})
+		sourceRuntime, err := service.CreateDurableReceiptWALServingRuntime(sourceConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceServer, sourceSDK := mountDurableReceiptWireRuntime(t, sourceRuntime)
+		if outcome, err := sourceSDK.PutVertex(
+			ctx,
+			"startup/restore",
+			"restored over h2c",
+			time.Hour,
+		); err != nil || outcome != client.PutOutcomeAppliedAndLive {
+			closeDurableReceiptWireRuntime(
+				t,
+				sourceServer,
+				sourceSDK,
+				sourceRuntime,
+			)
+			t.Fatalf("source wire PutVertex = (%v, %v)", outcome, err)
+		}
+		source, policy, err := sourceRuntime.ReceiptWholeStateBackupSource(
+			sourceServer.svc,
+			sourceServer.rep,
+		)
+		if err != nil {
+			closeDurableReceiptWireRuntime(
+				t,
+				sourceServer,
+				sourceSDK,
+				sourceRuntime,
+			)
+			t.Fatal(err)
+		}
+		capture, err := source.Capture(ctx, policy)
+		if err != nil {
+			closeDurableReceiptWireRuntime(
+				t,
+				sourceServer,
+				sourceSDK,
+				sourceRuntime,
+			)
+			t.Fatal(err)
+		}
+		if err := sourceServer.svc.InstallReceiptBaseline(ctx, capture); err != nil {
+			closeDurableReceiptWireRuntime(
+				t,
+				sourceServer,
+				sourceSDK,
+				sourceRuntime,
+			)
+			t.Fatal(err)
+		}
+		backupConfig := backup.Config{
+			Enabled: true, Dir: backupDir, Interval: time.Hour,
+			Retain: 3, InstanceID: instance,
+		}
+		backupper, err := backup.NewReceipt(
+			sourceServer.svc,
+			source,
+			policy,
+			backupConfig,
+			nil,
+			nil,
+		)
+		if err != nil {
+			closeDurableReceiptWireRuntime(
+				t,
+				sourceServer,
+				sourceSDK,
+				sourceRuntime,
+			)
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if _, err := backupper.BackupNow(ctx); err != nil {
+				closeDurableReceiptWireRuntime(
+					t,
+					sourceServer,
+					sourceSDK,
+					sourceRuntime,
+				)
+				t.Fatal(err)
+			}
+		}
+		if outcome, err := sourceSDK.PutVertex(
+			ctx,
+			"startup/post-backup-suffix",
+			"replayed only by restart",
+			time.Hour,
+		); err != nil || outcome != client.PutOutcomeAppliedAndLive {
+			closeDurableReceiptWireRuntime(
+				t,
+				sourceServer,
+				sourceSDK,
+				sourceRuntime,
+			)
+			t.Fatalf("source suffix PutVertex = (%v, %v)", outcome, err)
+		}
+		closeDurableReceiptWireRuntime(
+			t,
+			sourceServer,
+			sourceSDK,
+			sourceRuntime,
+		)
+
+		t.Run("restart repairs missing current baseline", func(t *testing.T) {
+			sidecars, err := filepath.Glob(sourcePath + ".receipt.*.baseline")
+			if err != nil || len(sidecars) != 1 {
+				t.Fatalf("source baseline sidecars = %v, %v; want one", sidecars, err)
+			}
+			if err := os.Remove(sidecars[0]); err != nil {
+				t.Fatal(err)
+			}
+			sourceConfig.Now = time.Now()
+			sourceConfig.Receipt.ClockHighWater = sourceConfig.Now
+			if current, err := service.OpenDurableReceiptWALServingRuntime(sourceConfig); current != nil ||
+				!errors.Is(err, service.ErrDurableReceiptWALBackupFallbackEligible) {
+				if current != nil {
+					_ = current.Close()
+				}
+				t.Fatalf("missing-sidecar normal restart = %p, %v", current, err)
+			}
+			evidence, err := backup.LoadLatestReceiptBackupSet(backupDir, instance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restore, err := backup.PrepareRestartReceiptStartupRestore(
+				evidence,
+				sourceConfig.Receipt,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceConfig.StartupRestore = &restore
+			restarted, err := service.OpenDurableReceiptWALServingRuntimeFromBackup(
+				sourceConfig,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restorePrimary := restarted.NewLanternService(nil).
+				WithTombstoneTTL(2 * time.Hour)
+			if err := restarted.CompleteStartupRestore(ctx, restorePrimary); err != nil {
+				_ = restarted.Close()
+				t.Fatal(err)
+			}
+			restartedServer, restartedSDK := mountDurableReceiptWireRuntime(t, restarted)
+			defer closeDurableReceiptWireRuntime(
+				t,
+				restartedServer,
+				restartedSDK,
+				restarted,
+			)
+			vertex, err := restartedSDK.GetVertex(ctx, "startup/restore")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value, err := client.StringValue(vertex); err != nil ||
+				value != "restored over h2c" {
+				t.Fatalf("restart restored value = %q, %v", value, err)
+			}
+			suffix, err := restartedSDK.GetVertex(ctx, "startup/post-backup-suffix")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value, err := client.StringValue(suffix); err != nil ||
+				value != "replayed only by restart" {
+				t.Fatalf("restart replayed suffix = %q, %v", value, err)
+			}
+		})
+
+		t.Run("fresh rotates active epoch", func(t *testing.T) {
+			evidence, err := backup.LoadLatestReceiptBackupSet(backupDir, instance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			targetConfig := durableReceiptWireConfig(
+				filepath.Join(root, "fresh-target.wal"),
+				hlc.NodeID{0x62},
+			)
+			targetConfig.Receipt.Epoch[0] ^= 0xff
+			restore, err := backup.PrepareFreshReceiptStartupRestore(
+				evidence,
+				targetConfig.Receipt,
+				targetConfig.Now,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			targetConfig.StartupRestore = &restore
+			fresh, err := service.CreateDurableReceiptWALServingRuntime(targetConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restorePrimary := fresh.NewLanternService(nil).
+				WithTombstoneTTL(2 * time.Hour)
+			if err := fresh.CompleteStartupRestore(ctx, restorePrimary); err != nil {
+				_ = fresh.Close()
+				t.Fatal(err)
+			}
+			freshServer, freshSDK := mountDurableReceiptWireRuntime(t, fresh)
+			vertex, err := freshSDK.GetVertex(ctx, "startup/restore")
+			if err != nil {
+				closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
+				t.Fatal(err)
+			}
+			if value, err := client.StringValue(vertex); err != nil ||
+				value != "restored over h2c" {
+				closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
+				t.Fatalf("fresh restored value = %q, %v", value, err)
+			}
+			if _, err := freshSDK.GetVertex(
+				ctx,
+				"startup/post-backup-suffix",
+			); !errors.Is(err, client.ErrNotFound) {
+				closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
+				t.Fatalf("fresh restore included post-backup suffix: %v", err)
+			}
+			closeDurableReceiptWireRuntime(t, freshServer, freshSDK, fresh)
+
+			targetConfig.StartupRestore = nil
+			targetConfig.Now = time.Now()
+			targetConfig.Receipt.ClockHighWater = targetConfig.Now
+			normal, err := service.OpenDurableReceiptWALServingRuntime(targetConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalServer, normalSDK := mountDurableReceiptWireRuntime(t, normal)
+			defer closeDurableReceiptWireRuntime(
+				t,
+				normalServer,
+				normalSDK,
+				normal,
+			)
+			if _, err := normalSDK.GetVertex(ctx, "startup/restore"); err != nil {
+				t.Fatalf("fresh restore canonical restart: %v", err)
+			}
+		})
+
+		t.Run("corrupt newest never falls back", func(t *testing.T) {
+			archives, err := filepath.Glob(filepath.Join(backupDir, "*.active.lar"))
+			if err != nil || len(archives) != 2 {
+				t.Fatalf("backup archives = %v, %v; want two", archives, err)
+			}
+			sort.Strings(archives)
+			if err := os.WriteFile(archives[len(archives)-1], []byte("corrupt"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if evidence, err := backup.LoadLatestReceiptBackupSet(
+				backupDir,
+				instance,
+			); err == nil || evidence.SetID != 0 {
+				t.Fatalf("corrupt newest startup evidence = %+v, %v", evidence, err)
+			}
+		})
+	})
 	server, sdk := mountDurableReceiptWireRuntime(t, fresh)
 	for _, key := range []string{"durable/live", "durable/deleted"} {
 		if outcome, err := sdk.PutVertex(ctx, key, key, time.Hour); err != nil ||

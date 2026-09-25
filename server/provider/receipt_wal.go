@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -105,8 +106,8 @@ func validateReceiptWALConfig(
 	if _, err := mutationreceipt.New(config.receiptConfig(time.Time{})); err != nil {
 		return fmt.Errorf("durable receipt WAL policy: %w", err)
 	}
-	if backups.RestoreOnStart {
-		return errors.New("LANTERN_BACKUP_RESTORE_ON_START must be disabled in durable receipt WAL mode until receipt backup-set restore is implemented")
+	if backups.RestoreRequired && !backups.RestoreOnStart {
+		return errors.New("LANTERN_BACKUP_RESTORE_REQUIRED requires LANTERN_BACKUP_RESTORE_ON_START in durable receipt WAL mode")
 	}
 	return nil
 }
@@ -171,19 +172,85 @@ func NewServingRuntime(
 			BaselineCodec:  backup.ReceiptBaselineCodec{},
 		}
 		if config.Mode == ReceiptWALModeFresh {
+			restore, restoreErr := prepareFreshReceiptStartupRestore(
+				backups,
+				runtimeConfig.Receipt,
+				now,
+			)
+			if restoreErr != nil {
+				return nil, nil, restoreErr
+			}
+			runtimeConfig.StartupRestore = restore
 			runtime, err = service.CreateDurableReceiptWALServingRuntime(runtimeConfig)
 		} else {
 			runtime, err = service.OpenDurableReceiptWALServingRuntime(runtimeConfig)
+			if err != nil &&
+				errors.Is(err, service.ErrDurableReceiptWALBackupFallbackEligible) &&
+				backups.RestoreOnStart {
+				normalErr := err
+				restore, restoreErr := loadRestartReceiptStartupRestore(
+					backups,
+					runtimeConfig.Receipt,
+				)
+				if restoreErr != nil {
+					return nil, nil, errors.Join(normalErr, restoreErr)
+				}
+				runtimeConfig.StartupRestore = restore
+				runtime, err = service.OpenDurableReceiptWALServingRuntimeFromBackup(
+					runtimeConfig,
+				)
+				if err != nil {
+					return nil, nil, errors.Join(normalErr, err)
+				}
+			}
 		}
 		if err != nil {
 			return nil, nil, err
 		}
+
 	default:
 		return nil, nil, fmt.Errorf("unsupported receipt WAL mode %q", config.Mode)
 	}
 
 	cleanup = func() { _ = runtime.Close() }
 	return runtime, cleanup, nil
+}
+
+func prepareFreshReceiptStartupRestore(
+	backups backup.Config,
+	config mutationreceipt.Config,
+	now time.Time,
+) (*service.ReceiptStartupRestore, error) {
+	if !backups.RestoreOnStart {
+		return nil, nil
+	}
+	evidence, err := backup.LoadLatestReceiptBackupSet(backups.Dir, backups.InstanceID)
+	if errors.Is(err, backup.ErrReceiptBackupSetNotFound) && !backups.RestoreRequired {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load fresh receipt startup backup: %w", err)
+	}
+	restore, err := backup.PrepareFreshReceiptStartupRestore(evidence, config, now)
+	if err != nil {
+		return nil, fmt.Errorf("prepare fresh receipt startup restore: %w", err)
+	}
+	return &restore, nil
+}
+
+func loadRestartReceiptStartupRestore(
+	backups backup.Config,
+	config mutationreceipt.Config,
+) (*service.ReceiptStartupRestore, error) {
+	evidence, err := backup.LoadLatestReceiptBackupSet(backups.Dir, backups.InstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("load restart receipt startup backup: %w", err)
+	}
+	restore, err := backup.PrepareRestartReceiptStartupRestore(evidence, config)
+	if err != nil {
+		return nil, fmt.Errorf("prepare restart receipt startup restore: %w", err)
+	}
+	return &restore, nil
 }
 
 func receiptWALGraphConfigurator(
@@ -206,13 +273,37 @@ type runtimeCertified struct {
 	replication *service.LanternReplicationService
 }
 
+// runtimeRestored is the identity-bearing startup-restore barrier. Even a
+// no-op graph-only or healthy-restart path passes through it, so Wire cannot
+// certify a runtime before any pending durable baseline has committed.
+type runtimeRestored struct {
+	valid   bool
+	runtime *service.ServingRuntime
+	primary *service.LanternService
+}
+
+func NewRuntimeRestored(
+	runtime *service.ServingRuntime,
+	primary *service.LanternService,
+) (runtimeRestored, error) {
+	if runtime == nil || primary == nil {
+		return runtimeRestored{}, errors.New("startup restore requires the serving runtime and primary service")
+	}
+	if err := runtime.CompleteStartupRestore(context.Background(), primary); err != nil {
+		return runtimeRestored{}, err
+	}
+	return runtimeRestored{valid: true, runtime: runtime, primary: primary}, nil
+}
+
 // NewRuntimeCertified completes the production composition barrier.
 func NewRuntimeCertified(
 	runtime *service.ServingRuntime,
 	primary *service.LanternService,
 	replication *service.LanternReplicationService,
+	restored runtimeRestored,
 ) (runtimeCertified, error) {
-	if runtime == nil || primary == nil || replication == nil {
+	if runtime == nil || primary == nil || replication == nil ||
+		!restored.valid || restored.runtime != runtime || restored.primary != primary {
 		return runtimeCertified{}, errors.New("receipt WAL runtime certification requires both service surfaces")
 	}
 	if err := runtime.CertifyInstallation(primary, replication); err != nil {

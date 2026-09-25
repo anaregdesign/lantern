@@ -13,11 +13,10 @@ import (
 )
 
 // TestLoadBackupConfig covers the LANTERN_BACKUP_* resolution. The headline
-// invariant (#779) is that restore-on-start is UNCONDITIONAL — a baseline
-// independent of replication topology — so a restart never comes up empty
-// while it waits for peers, and a whole-cluster cold start recovers from the
-// dump instead of staying empty. Replica priority is achieved later, at
-// bootstrap time, via HLC ordering — not by suppressing restore here.
+// invariant (#779) is that restore-on-start selection is independent of
+// replication topology. Graph-only mode restores its baseline before peer
+// overlay; durable mode applies its stricter fresh/restart policy at the
+// runtime construction boundary rather than suppressing restore here.
 func TestLoadBackupConfig(t *testing.T) {
 	t.Run("DisabledByDefault", func(t *testing.T) {
 		cfg := loadBackupConfig()
