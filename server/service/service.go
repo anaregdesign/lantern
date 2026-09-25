@@ -99,6 +99,7 @@ type LanternService struct {
 	// one Store instance. Protected by replicationCutMu; a second Store with
 	// the same policy still cannot substitute an incomplete receipt image.
 	receiptStore                 *mutationreceipt.Store
+	receiptRetiredCatalog        *retiredReceiptCatalogSlot
 	receiptEdgeDeleteCoordinator *edgeDeleteReceiptCoordinator
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus

@@ -1,6 +1,6 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, RECEIPT_V1 Snapshot production/install, durable local baseline recovery, and manifest-last active-epoch backup-set production are wired for private durable replication, but durable backup restore, capability/status RPCs, and receipt-enabled client writes remain disabled
+- Status: Accepted as the #1115 design; internal Store, Edge Delete commit, guarded receipt-tail wire, active-plus-retired durable local baseline recovery, guarded RECEIPT_V1 Snapshot production/install, and manifest-last active-epoch backup-set production are wired for private durable replication, but durable backup restore, retired backup-set transport, capability/status RPCs, and receipt-enabled client writes remain disabled
 - Date: 2026-09-24
 - Issues: #1115, #1282, #1203, #1116, #1393, #1394
 
@@ -690,9 +690,11 @@ canonicalizes only its detached whole-state image, and builds the paired WAL-cut
 manifest directly from the captured witness without reopening the live WAL path.
 That pair represents only the active epoch and is persisted by the production
 scheduler as a versioned manifest-last backup set; it does not retain
-retired-epoch receipts. Provider startup reconciliation/install, the bounded
-retired-epoch catalog, and same-epoch continuity certification remain unwired
-and unproven.
+retired-epoch receipts. The producer therefore rejects a capture containing
+retired evidence before encoding a member or creating a backup-set file.
+Startup selection/install of those scheduler sets remains unwired; the
+runtime-local bounded retired catalog and same-epoch baseline continuity are
+implemented separately below.
 The private production runtime adds a
 fixed-size checksummed `.generation` sidecar bound to the canonical WAL path,
 epoch, policy fingerprint, and stable replication NodeID. Fresh mode creates
@@ -705,29 +707,55 @@ clock journal under one lease and binds the empty Store and appendable Log.
 Existing files and partially created sidecars are never overwritten or
 silently retried as a fresh epoch.
 
-A private fixed-size WAL baseline marker now binds a canonical `RECEIPT_V1`
-archive digest and byte count to its source cutoff/HLC, epoch, policy
-fingerprint, previous generation, rotated generation, exact effective receipt
-clock high-water, and local HLC restore floor. The immutable archive is fsynced
-under a content-addressed sidecar name
-before the marker commit. Under the exclusive publication cut, installation
-requires the source origin vector to dominate local origins and the candidate
-Store to preserve every receiver receipt still live at the effective clock
-high-water. Cancellation is checked again after all reversible staging and
-immediately before the marker write. An indeterminate marker outcome or
-interrupted publication closes the graph/CDC publication generation and
-fail-stops external reads as well as writes. Startup validates the complete WAL
-and generation chain before selecting the newest marker. Successive markers
-must have nondecreasing effective receipt high-waters and responder-local HLC
-restore floors even when each marker is individually canonical. Recovery
-requires the newest marker's exact sidecar and never falls back to an older
-committed baseline. It restores the baseline into the existing GraphCache,
-Store, origin tracker, HLC, and Log identities, replays only the suffix, and
-preserves the responder-local WAL sequence while gapping pre-boundary cursors.
-Natural D4 tombstone and receipt expiry is reaped during restore rather than
-treated as archive corruption. Orphan sidecars without a marker are cleanup
-candidates; missing, mismatched, noncanonical, oversized, or corrupt committed
-state fails startup.
+A durable runtime owns an identity-stable retired-catalog slot beside the
+identity-stable active Store. Fresh and marker-free restart initialize a
+validated empty catalog from the active epoch, active Store high-water, and
+separate aggregate entry/byte caps derived from the configured receipt policy.
+The service-owned whole-state source snapshots active receipts first and then
+the retired catalog at that exact active high-water inside the same exclusive
+graph/origin/HLC/WAL cut. Runtime certification and source ownership bind the
+exact slot identity, not merely equivalent contents.
+
+A private fixed-size version-2 WAL baseline marker binds a canonical
+`LANTBLN2` sidecar digest and byte count to its source cutoff/HLC, epoch,
+policy fingerprint, previous generation, rotated generation, exact active and
+retired receipt clock high-water, and actual staged local HLC restore floor.
+`LANTBLN2` embeds the existing canonical active `LANTARCH` bytes unchanged and
+a bounded canonical `LANTRET1` retired section. The retired section binds the
+active epoch and aggregate caps; decoding requires those fields and its
+high-water to match the active section exactly. This private persistence path
+recognizes only marker version 2 and `.receipt-v2` sidecar names.
+
+Before the marker commit, installation fully validates the incoming active and
+retired images, snapshots local retired evidence under a short exclusive cut,
+and forms the deterministic exact union with
+`NewRetiredCatalogFromUnion`. Conflicts, active-epoch rows, aggregate-cap
+overflow, or active high-water rollback fail closed. Encoding and sidecar
+fsync happen outside the publication cut; a bounded optimistic retry requires
+the active Store, retired revision, and origins to still match before staging.
+The immutable combined candidate is fsynced under a content-addressed
+`.receipt-v2` sidecar name before the marker commit. Graph, active Store,
+retired slot, origins, clock, and generation publish only in the WAL
+post-publication callback. Cancellation is checked again after reversible
+staging and immediately before the marker write.
+
+An indeterminate marker outcome or interrupted publication closes the
+graph/CDC publication generation and fail-stops external reads as well as
+writes. Startup validates the complete WAL and generation chain before
+selecting the newest marker. Successive markers must have nondecreasing
+receipt high-waters and responder-local HLC restore floors. The selected
+marker receipt high-water must equal both sidecar receipt sections exactly;
+its restore floor remains the persisted actual local HLC staged at install and
+may be above the minimum implied by the source cutoff and receipt clock.
+Recovery requires the newest marker's exact sidecar and never falls back to an
+older committed baseline. It advances/prunes active and retired state at one
+effective restart high-water, restores the existing GraphCache, Store,
+retired slot, origin tracker, HLC, and Log identities, and replays only the
+suffix. Suffix replay never mutates retired evidence. Natural D4 tombstone and
+receipt expiry is reaped during restore rather than treated as archive
+corruption. Orphan v2 sidecars without a marker are cleanup candidates;
+missing, mismatched, noncanonical, oversized, or corrupt committed state fails
+startup.
 Live baseline installs are serialized before candidate encoding and sidecar
 creation. After a committed marker, the runtime records its digest and removes
 every other recognized candidate. A definite pre-marker rejection or
@@ -779,10 +807,13 @@ receipt status and graph reads must use the server's error-bearing committed
 view until a checked Core read API or equivalent fail-stop gate exists.
 
 The private production provider installs the staged graph, Store, origin
-tracker, Log, restored HLC, epoch, and generation as one certified serving
-bundle and binds the receipt Snapshot producer and one shared installer to
-those exact identities. Durable Pump and anti-entropy request and atomically
-install `RECEIPT_V1`; graph-only mode and `BackupSnapshot` restore remain
+tracker, retired-catalog slot, Log, restored HLC, epoch, and generation as one
+certified serving bundle and binds the receipt Snapshot producer and one
+shared installer to those exact identities. `RECEIPT_V1` remains active-only:
+its producer rejects nonempty retired evidence before sending a header, and
+its installer rejects nonempty local retired evidence before publication.
+Durable Pump and anti-entropy can therefore use it only while the retired
+catalog is empty. Graph-only mode and `BackupSnapshot` restore remain
 graph-only and cannot certify receipt continuity. Public enablement still
 requires the later capability/status and receipt-bearing client mutation
 slice. `Store.Begin` advances clock high-water

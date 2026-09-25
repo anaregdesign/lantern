@@ -712,15 +712,20 @@ Framing contract:
   be configured with the exact service-owned atomic capture source and policy.
   The source's private identity must match the responder's primary service,
   serving runtime, graph backend, mutation log, HLC clock, origin tracker, and
-  Store; a foreign or incomplete configuration fails before a header is sent.
+  active Store plus the runtime-owned retired-catalog slot; a foreign or
+  incomplete configuration fails before a header is sent.
   The durable production runtime configures this producer against its exact
   certified state. Its transport-neutral installer fully drains the stream
   into the bounded detached collector, validates the canonical archive, and
-  invokes the exact certified durable baseline publication once. Graph,
-  receipt Store, origin vector, HLC floor, marker, and resume cutoff therefore
-  publish as one cut. Cancellation, corruption, truncation, capacity,
-  epoch/policy mismatch, and downgrade failures publish nothing. No receipt
-  write/status capability is enabled. Production bounds are 8 MiB per frame,
+  invokes the exact certified durable baseline publication once. Because
+  `RECEIPT_V1` has no retired section, its producer rejects nonempty retired
+  evidence before sending a header and its installer rejects a nonempty local
+  retired catalog before mutating live state. With an empty retired catalog,
+  graph, active receipt Store, origin vector, HLC floor, private combined-v2
+  marker, and resume cutoff publish as one cut. Cancellation, corruption,
+  truncation, capacity, epoch/policy mismatch, and downgrade failures publish
+  nothing. No receipt write/status capability is enabled. Production bounds
+  are 8 MiB per frame,
   512 MiB per complete wire/canonical image, 1,048,576 total frames, 65,536
   origin rows, and at most 1,048,574 receipt rows (further limited by the
   configured Store entry cap).

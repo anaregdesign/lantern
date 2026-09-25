@@ -79,7 +79,8 @@ func assertReceiptCaptureCut(t *testing.T, capture ReceiptWholeStateCapture, rec
 		header.GetCutoffHlc() == nil || len(capture.Receipts.Receipts) != receiptCount ||
 		receiptCaptureGraphEdge(capture, "tail", "head") != edgeLive ||
 		receiptCaptureEdgeTombstone(capture, "tail", "head") != tombstone ||
-		capture.Policy.ClockHighWater.UnixMilli() != capture.Receipts.ClockHighWaterMillis {
+		capture.Policy.ClockHighWater.UnixMilli() != capture.Receipts.ClockHighWaterMillis ||
+		capture.Retired.ClockHighWaterMillis != capture.Receipts.ClockHighWaterMillis {
 		t.Fatalf("inconsistent graph/receipt/local/high-water cut: header=%+v receipts=%+v policy=%+v", header, capture.Receipts, capture.Policy)
 	}
 	if localSeq == 0 {
@@ -394,6 +395,9 @@ func TestReceiptWholeStateBackupCaptureCannotSplitBaselineGeneration(t *testing.
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	config := baselineRuntimeTestConfig(path)
 	image := newReceiptBaselineTestImage(t, config)
+	highWater := image.capture.Receipts.ClockHighWaterMillis
+	retiredState, _ := mustRetiredCatalogSnapshot(t, config.Receipt, highWater, 0x69)
+	setReceiptBaselineTestRetired(&image, retiredState)
 	config.BaselineCodec = image.codec
 	runtime, err := CreateDurableReceiptWALServingRuntime(config)
 	if err != nil {
@@ -482,6 +486,15 @@ func TestReceiptWholeStateBackupCaptureCannotSplitBaselineGeneration(t *testing.
 	if !baselineVertex {
 		t.Fatal("post-rotation generation was captured with pre-rotation graph state")
 	}
+	if result.capture.WholeState.Retired.ClockHighWaterMillis !=
+		result.capture.WholeState.Receipts.ClockHighWaterMillis ||
+		!reflect.DeepEqual(result.capture.WholeState.Retired, retiredState) {
+		t.Fatalf(
+			"post-rotation retired capture = %+v, want %+v",
+			result.capture.WholeState.Retired,
+			retiredState,
+		)
+	}
 }
 
 func TestReceiptWholeStateBackupCaptureFailsClosed(t *testing.T) {
@@ -545,6 +558,37 @@ func TestReceiptWholeStateBackupCaptureFailsClosed(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, ReceiptWholeStateBackupCapture{}) {
 			t.Fatalf("CaptureForBackup returned partial foreign-owner result: %#v", got)
+		}
+	})
+
+	t.Run("matching foreign retired slot", func(t *testing.T) {
+		config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipt.log"))
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+		replication, err := runtime.NewLanternReplicationService(primary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CertifyInstallation(primary, replication); err != nil {
+			t.Fatal(err)
+		}
+		source := replication.receiptSnapshotSource
+		highWater := runtime.receipt.store.Stats().HighWaterMillis
+		foreign, err := newEmptyRetiredReceiptCatalogSlot(runtime.receipt.policy, highWater)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.retired = foreign
+		if source.belongsTo(replication) {
+			t.Fatal("source accepted a matching-content foreign retired slot")
+		}
+		got, policy, err := runtime.ReceiptWholeStateBackupSource(primary, replication)
+		if err == nil || got != nil || policy != (mutationreceipt.Config{}) {
+			t.Fatalf("foreign retired slot backup source = %p, %+v, %v", got, policy, err)
 		}
 	})
 
@@ -696,10 +740,28 @@ func TestReceiptWholeStateBackupCaptureCannotSplitCommittedView(t *testing.T) {
 	primary := NewLanternService(cache).
 		WithReplication(log, clock, nil).
 		WithTombstoneTTL(time.Hour)
+	receiptState, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiredState, err := newEmptyRetiredCatalogSnapshot(policy, receiptState.ClockHighWaterMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := newRetiredReceiptCatalogSlot(
+		policy,
+		receiptState.ClockHighWaterMillis,
+		retiredState,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary.receiptRetiredCatalog = retired
 	owner := &receiptWALOwnedCandidate{
 		state: &receiptWALRecoveryCandidate{
 			graph:    cache,
 			receipts: store,
+			retired:  retiredState,
 			origins:  primary.origins,
 			log:      log,
 		},
@@ -714,6 +776,9 @@ func TestReceiptWholeStateBackupCaptureCannotSplitCommittedView(t *testing.T) {
 		origins: primary.origins,
 		receipt: &receiptServingRuntime{
 			store:      store,
+			retired:    retired,
+			policy:     policy,
+			epoch:      policy.Epoch,
 			generation: [16]byte{0x79},
 			owner:      owner,
 		},

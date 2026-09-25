@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -62,6 +63,13 @@ func produceReceiptWholeStateArchive(
 		return zero, err
 	}
 	wholeState := capture.WholeState
+	if err := validateActiveOnlyRetiredSnapshot(
+		wholeState.Policy,
+		wholeState.Receipts,
+		wholeState.Retired,
+	); err != nil {
+		return zero, fmt.Errorf("backup: validate active-only retired receipt state: %w", err)
+	}
 	if wholeState.Policy.Epoch != policy.Epoch || wholeState.Policy.Retention != policy.Retention ||
 		wholeState.Policy.MaxEntries != policy.MaxEntries || wholeState.Policy.MaxBytes != policy.MaxBytes ||
 		(!policy.ClockHighWater.IsZero() && policy.ClockHighWater.UnixMilli() > wholeState.Policy.ClockHighWater.UnixMilli()) {
@@ -108,6 +116,29 @@ func produceReceiptWholeStateArchive(
 		generation: capture.Generation,
 		stats:      receiptArchiveStats(decoded),
 	}, nil
+}
+
+func validateActiveOnlyRetiredSnapshot(
+	policy mutationreceipt.Config,
+	active mutationreceipt.Snapshot,
+	retired mutationreceipt.RetiredCatalogSnapshot,
+) error {
+	if retired.ClockHighWaterMillis != active.ClockHighWaterMillis {
+		return errors.New("backup: active and retired receipt clock high-water differ")
+	}
+	config := mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch:    policy.Epoch,
+		MaxEntries:     policy.MaxEntries,
+		MaxBytes:       policy.MaxBytes,
+		ClockHighWater: time.UnixMilli(active.ClockHighWaterMillis),
+	}
+	if _, err := mutationreceipt.NewRetiredCatalogFromSnapshot(config, retired); err != nil {
+		return fmt.Errorf("backup: invalid retired receipt catalog: %w", err)
+	}
+	if len(retired.Epochs) != 0 {
+		return errors.New("backup: active-only receipt archive cannot represent retired receipt evidence")
+	}
+	return nil
 }
 
 func receiptArchiveStats(archive wholeStateArchive) Stats {

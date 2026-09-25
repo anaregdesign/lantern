@@ -27,7 +27,7 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 			damage: func(t *testing.T, path string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
 				t.Helper()
 				digest := sha256.Sum256(image.codec.raw)
-				if err := os.Remove(receiptBaselineSidecarPath(path, digest)); err != nil {
+				if err := os.Remove(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, digest)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -37,7 +37,7 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 			damage: func(t *testing.T, path string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
 				t.Helper()
 				digest := sha256.Sum256(image.codec.raw)
-				if err := os.WriteFile(receiptBaselineSidecarPath(path, digest), []byte("truncated"), 0o600); err != nil {
+				if err := os.WriteFile(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, digest), []byte("truncated"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -76,6 +76,46 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 					candidate.Receipts, err = mutationreceipt.NewFromSnapshot(policy, state)
 					candidate.Policy = policy
 					return candidate, err
+				}
+			},
+		},
+		{
+			name: "forged later marker high-water and restore floor",
+			damage: func(t *testing.T, path string, config DurableReceiptWALRuntimeConfig, _ receiptBaselineTestImage) {
+				t.Helper()
+				scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				marker := scan.marker
+				marker.ReceiptHighWaterMillis++
+				marker.RestoreFloor.WallNs += int64(time.Millisecond)
+				marker.RestoreFloor.Logical = 0
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path + ".tip"); err != nil {
+					t.Fatal(err)
+				}
+				store, err := mutationreceipt.New(config.Receipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				log, owner, err := mutationlog.CreateLeasedLogWithFileWALTip(
+					path,
+					config.Log,
+					encodeReceiptWALUnion,
+					receiptWALTipBinding(config.Receipt.Epoch, store.PolicyFingerprint()),
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if entry, err := log.Append(marker, marker.RestoreFloor); err != nil || entry.Seq != 1 {
+					_ = owner.Close()
+					t.Fatalf("write forged marker = %+v, %v", entry, err)
+				}
+				if err := owner.Close(); err != nil {
+					t.Fatal(err)
 				}
 			},
 		},
@@ -148,10 +188,10 @@ func TestReceiptBaselineRecoveryNeverFallsBackFromNewestMarker(t *testing.T) {
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(receiptBaselineSidecarPath(path, firstDigest)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, firstDigest)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("older committed sidecar was not reaped: %v", err)
 	}
-	if err := os.WriteFile(receiptBaselineSidecarPath(path, secondDigest), []byte("bad newest"), 0o600); err != nil {
+	if err := os.WriteFile(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, secondDigest), []byte("bad newest"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if restarted, err := OpenDurableReceiptWALServingRuntime(config); restarted != nil || err == nil {

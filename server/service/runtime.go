@@ -37,18 +37,19 @@ type ServingRuntime struct {
 }
 
 type receiptServingRuntime struct {
-	store                   *mutationreceipt.Store
-	policy                  mutationreceipt.Config
-	epoch                   mutationreceipt.Epoch
-	generation              [16]byte
-	committedBaselineDigest [sha256.Size]byte
-	baselineInstallGate     chan struct{}
-	baselineCodec           ReceiptBaselineArchiveCodec
-	defaultTTL              time.Duration
-	configureGraph          func(*graphcache.GraphCache[string, *pb.Vertex]) error
-	owner                   *receiptWALOwnedCandidate
-	sidecarFault            func(receiptBaselineSidecarFaultPoint) error
-	installFault            func(receiptBaselineInstallFaultPoint) error
+	store               *mutationreceipt.Store
+	retired             *retiredReceiptCatalogSlot
+	policy              mutationreceipt.Config
+	epoch               mutationreceipt.Epoch
+	generation          [16]byte
+	committedBaseline   receiptBaselineReference
+	baselineInstallGate chan struct{}
+	baselineCodec       ReceiptBaselineArchiveCodec
+	defaultTTL          time.Duration
+	configureGraph      func(*graphcache.GraphCache[string, *pb.Vertex]) error
+	owner               *receiptWALOwnedCandidate
+	sidecarFault        func(receiptBaselineSidecarFaultPoint) error
+	installFault        func(receiptBaselineInstallFaultPoint) error
 }
 
 const (
@@ -110,7 +111,7 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 	if err != nil {
 		return nil, errors.Join(err, candidate.Close())
 	}
-	return certifyReceiptWALServingRuntime(candidate, config, generation, [sha256.Size]byte{})
+	return certifyReceiptWALServingRuntime(candidate, config, generation, receiptBaselineReference{})
 }
 
 // OpenDurableReceiptWALServingRuntime resumes one complete genesis WAL under
@@ -158,7 +159,7 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 		return nil, err
 	}
 	activeGeneration := generation
-	var committedBaselineDigest [sha256.Size]byte
+	var committedBaseline receiptBaselineReference
 	if candidate.baseline.hasMarker {
 		if candidate.baseline.firstGeneration != generation {
 			return nil, errors.Join(
@@ -167,9 +168,9 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 			)
 		}
 		activeGeneration = candidate.baseline.activeGeneration
-		committedBaselineDigest = candidate.baseline.marker.Digest
+		committedBaseline = candidate.baseline.marker.reference()
 	}
-	return certifyReceiptWALServingRuntime(candidate, config, activeGeneration, committedBaselineDigest)
+	return certifyReceiptWALServingRuntime(candidate, config, activeGeneration, committedBaseline)
 }
 
 func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfig) error {
@@ -337,7 +338,7 @@ func certifyReceiptWALServingRuntime(
 	candidate *receiptWALOwnedCandidate,
 	config DurableReceiptWALRuntimeConfig,
 	generation [16]byte,
-	committedBaselineDigest [sha256.Size]byte,
+	committedBaseline receiptBaselineReference,
 ) (_ *ServingRuntime, err error) {
 	if candidate == nil || candidate.state == nil || candidate.state.graph == nil ||
 		candidate.state.receipts == nil || candidate.state.origins == nil ||
@@ -361,6 +362,18 @@ func certifyReceiptWALServingRuntime(
 	if candidate.state.receipts.Epoch() != policy.Epoch ||
 		candidate.state.receipts.PolicyFingerprint() != policyStore.PolicyFingerprint() {
 		return nil, errors.New("service: durable receipt WAL policy does not match recovered Store")
+	}
+	receiptState, err := candidate.state.receipts.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("service: certify recovered receipt Store: %w", err)
+	}
+	retired, err := newRetiredReceiptCatalogSlot(
+		policy,
+		receiptState.ClockHighWaterMillis,
+		candidate.state.retired,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("service: certify recovered retired receipt catalog: %w", err)
 	}
 
 	clock := hlc.New(config.NodeID, hlc.Options{})
@@ -387,16 +400,17 @@ func certifyReceiptWALServingRuntime(
 		clock:   clock,
 		origins: candidate.state.origins,
 		receipt: &receiptServingRuntime{
-			store:                   candidate.state.receipts,
-			policy:                  policy,
-			epoch:                   candidate.state.receipts.Epoch(),
-			generation:              generation,
-			committedBaselineDigest: committedBaselineDigest,
-			baselineInstallGate:     baselineInstallGate,
-			baselineCodec:           config.BaselineCodec,
-			defaultTTL:              config.DefaultTTL,
-			configureGraph:          config.ConfigureGraph,
-			owner:                   candidate,
+			store:               candidate.state.receipts,
+			retired:             retired,
+			policy:              policy,
+			epoch:               candidate.state.receipts.Epoch(),
+			generation:          generation,
+			committedBaseline:   committedBaseline,
+			baselineInstallGate: baselineInstallGate,
+			baselineCodec:       config.BaselineCodec,
+			defaultTTL:          config.DefaultTTL,
+			configureGraph:      config.ConfigureGraph,
+			owner:               candidate,
 		},
 		owner: candidate,
 	}, nil
@@ -422,7 +436,8 @@ func (r *ServingRuntime) receiptWALTipWitness(
 	}
 	if primary == nil || primary.runtime != r || primary.cache != r.graph ||
 		primary.log != r.log || primary.clock != r.clock ||
-		primary.origins != r.origins || primary.receiptStore != r.receipt.store {
+		primary.origins != r.origins || primary.receiptStore != r.receipt.store ||
+		primary.receiptRetiredCatalog != r.receipt.retired {
 		return mutationlog.FileWALTipWitness{}, errors.New("service: durable receipt WAL witness service differs from runtime")
 	}
 	owner, ok := r.owner.(*receiptWALOwnedCandidate)
@@ -465,6 +480,7 @@ func (r *ServingRuntime) NewLanternService(onAppend func()) *LanternService {
 	svc.runtime = r
 	if r.receipt != nil {
 		svc.receiptStore = r.receipt.store
+		svc.receiptRetiredCatalog = r.receipt.retired
 	}
 	return svc.WithReplication(r.log, r.clock, onAppend)
 }
@@ -496,14 +512,16 @@ func (r *ServingRuntime) CertifyInstallation(
 		return errors.New("service: primary service is not installed from the serving runtime")
 	}
 	if r.receipt == nil {
-		if primary.receiptStore != nil || primary.receiptEdgeDeleteCoordinator != nil {
+		if primary.receiptStore != nil || primary.receiptRetiredCatalog != nil ||
+			primary.receiptEdgeDeleteCoordinator != nil {
 			return errors.New("service: graph-only runtime installed receipt state")
 		}
 		if replication.receiptSnapshotRequired || replication.receiptSnapshotSource != nil {
 			return errors.New("service: graph-only runtime installed receipt Snapshot state")
 		}
-	} else if primary.receiptStore != r.receipt.store {
-		return errors.New("service: durable runtime receipt Store is not installed")
+	} else if primary.receiptStore != r.receipt.store ||
+		primary.receiptRetiredCatalog != r.receipt.retired {
+		return errors.New("service: durable runtime receipt state is not installed")
 	}
 	if replication.runtime != r || replication.backend != r.graph ||
 		replication.log != r.log || replication.clock != r.clock ||
@@ -517,7 +535,7 @@ func (r *ServingRuntime) CertifyInstallation(
 		}
 		coordinator := primary.receiptEdgeDeleteCoordinator
 		if coordinator == nil || coordinator.service != primary || coordinator.cache != r.graph ||
-			coordinator.store != r.receipt.store {
+			coordinator.store != r.receipt.store || coordinator.retired != r.receipt.retired {
 			return errors.New("service: durable receipt follower coordinator is not installed from the serving runtime")
 		}
 		if replication.receiptSnapshotSource == nil {
@@ -528,6 +546,7 @@ func (r *ServingRuntime) CertifyInstallation(
 			!replication.receiptSnapshotSource.belongsTo(replication) ||
 			replication.receiptSnapshotSource.owner != primary ||
 			replication.receiptSnapshotSource.store != r.receipt.store ||
+			replication.receiptSnapshotSource.retired != r.receipt.retired ||
 			replication.receiptSnapshotPolicy != r.receipt.policy {
 			return errors.New("service: durable receipt Snapshot configuration differs from the serving runtime")
 		}
@@ -549,6 +568,7 @@ func (r *ServingRuntime) ReceiptWholeStateBackupSource(
 		primary.cache != r.graph || primary.log != r.log ||
 		primary.clock != r.clock || primary.origins != r.origins ||
 		primary.receiptStore != r.receipt.store ||
+		primary.receiptRetiredCatalog != r.receipt.retired ||
 		replication.backend != r.graph || replication.log != r.log ||
 		replication.clock != r.clock || replication.origins != primary ||
 		!replication.receiptSnapshotRequired ||
@@ -556,6 +576,7 @@ func (r *ServingRuntime) ReceiptWholeStateBackupSource(
 		!replication.receiptSnapshotSource.belongsTo(replication) ||
 		replication.receiptSnapshotSource.owner != primary ||
 		replication.receiptSnapshotSource.store != r.receipt.store ||
+		replication.receiptSnapshotSource.retired != r.receipt.retired ||
 		replication.receiptSnapshotPolicy != r.receipt.policy {
 		return nil, mutationreceipt.Config{}, errors.New(
 			"service: receipt backup source requires the exact certified serving runtime",

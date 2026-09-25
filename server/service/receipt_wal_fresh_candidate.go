@@ -102,6 +102,14 @@ func createLeasedReceiptWALCandidate(
 	if err != nil {
 		return nil, fmt.Errorf("receipt WAL fresh clock binding: %w", err)
 	}
+	receiptState, err := receipts.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("receipt WAL fresh Store snapshot: %w", err)
+	}
+	retired, err := newEmptyRetiredCatalogSnapshot(config, receiptState.ClockHighWaterMillis)
+	if err != nil {
+		return nil, fmt.Errorf("receipt WAL fresh retired catalog: %w", err)
+	}
 	opts.WAL = wal
 	log = mutationlog.New(opts)
 	walProvenance, err := log.FileWALTipProvenance(lease.Path())
@@ -109,7 +117,7 @@ func createLeasedReceiptWALCandidate(
 		return nil, fmt.Errorf("receipt WAL fresh provenance: %w", err)
 	}
 	state := &receiptWALRecoveryCandidate{
-		graph: graph, receipts: receipts, origins: newOriginStateTracker(), log: log,
+		graph: graph, receipts: receipts, retired: retired, origins: newOriginStateTracker(), log: log,
 	}
 	return &receiptWALOwnedCandidate{
 		state: state, logOwner: &receiptFreshWALLogOwner{log: log, wal: wal},

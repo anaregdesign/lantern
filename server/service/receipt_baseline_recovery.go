@@ -97,13 +97,19 @@ func resumeReceiptBaselineWALCandidate(
 		return nil, nil, errors.New("service: baseline recovery requires a marker, codec, and tip journal")
 	}
 	sidecars := receiptBaselineSidecarStore{walPath: path}
-	raw, err := sidecars.load(scan.marker.Digest, scan.marker.Size)
+	raw, err := sidecars.load(scan.marker.Format, scan.marker.Digest, scan.marker.Size)
 	if err != nil {
 		return nil, nil, fmt.Errorf("service: load committed receipt baseline at WAL seq %d: %w", scan.markerSequence, err)
 	}
 	policy := config
 	policy.ClockHighWater = time.Time{}
-	baseline, err := codec.StageReceiptBaseline(ctx, raw, policy, defaultTTL, configureGraph)
+	baseline, err := codec.StageCombinedReceiptBaseline(
+		ctx,
+		raw,
+		policy,
+		defaultTTL,
+		configureGraph,
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("service: stage committed receipt baseline at WAL seq %d: %w", scan.markerSequence, err)
 	}
@@ -125,8 +131,11 @@ func resumeReceiptBaselineWALCandidate(
 	if err != nil {
 		return nil, nil, fmt.Errorf("service: read staged baseline receipts: %w", err)
 	}
-	if scan.marker.ReceiptHighWaterMillis < receiptSnapshot.ClockHighWaterMillis {
-		return nil, nil, fmt.Errorf("%w: marker receipt high-water precedes sidecar", errReceiptBaselineMarker)
+	if scan.marker.ReceiptHighWaterMillis != receiptSnapshot.ClockHighWaterMillis {
+		return nil, nil, fmt.Errorf("%w: marker and sidecar receipt high-water differ", errReceiptBaselineMarker)
+	}
+	if baseline.Retired.ClockHighWaterMillis != receiptSnapshot.ClockHighWaterMillis {
+		return nil, nil, fmt.Errorf("%w: active and retired sidecar high-water differs", errReceiptBaselineMarker)
 	}
 	replay := &receiptBaselineSuffixReplay{
 		graph:             baseline.Graph,
@@ -200,12 +209,28 @@ func resumeReceiptBaselineWALCandidate(
 	if err != nil {
 		return nil, nil, fmt.Errorf("service: restore baseline receipt suffix: %w", err)
 	}
+	retiredConfig, _, err := retiredCatalogConfig(policy, replay.highWater)
+	if err != nil {
+		return nil, nil, fmt.Errorf("service: configure restored retired receipt catalog: %w", err)
+	}
+	retired, err := mutationreceipt.NewRetiredCatalogFromSnapshot(
+		retiredConfig,
+		baseline.Retired,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("service: restore retired receipt catalog: %w", err)
+	}
+	retiredSnapshot, err := retired.Snapshot(time.UnixMilli(replay.highWater))
+	if err != nil {
+		return nil, nil, fmt.Errorf("service: snapshot restored retired receipt catalog: %w", err)
+	}
 	if err := baseline.Graph.CompleteSearchIndexRecovery(); err != nil {
 		return nil, nil, fmt.Errorf("service: rebuild baseline suffix search index: %w", err)
 	}
 	return &receiptWALRecoveryCandidate{
 		graph:       baseline.Graph,
 		receipts:    receipts,
+		retired:     retiredSnapshot,
 		origins:     originTracker,
 		log:         liveLog,
 		hlcFrontier: replay.frontier,

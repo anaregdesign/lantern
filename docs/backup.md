@@ -61,10 +61,11 @@ high-water, so it cannot prove receipt continuity after restore.
 With `LANTERN_RECEIPT_WAL_MODE=fresh|restart`, the same scheduler and
 `BackupNow` path produce a private receipt backup set instead of an `.lbk`.
 The source is selected only from the exact certified `ServingRuntime` and
-captures the graph, active receipt Store, origin frontier, HLC cutoff, live
-FileWAL tip witness, stable NodeID, and active endpoint generation under one
-exclusive committed view. Each attempt invokes that combined source exactly
-once and never reopens the live appendable WAL path.
+captures the graph, active receipt Store, runtime-owned retired receipt
+catalog, origin frontier, HLC cutoff, live FileWAL tip witness, stable NodeID,
+and active endpoint generation under one exclusive committed view. Each
+attempt invokes that combined source exactly once and never reopens the live
+appendable WAL path.
 
 A v1 set has deterministic, instance-scoped names:
 
@@ -116,6 +117,13 @@ the common production signals. Durable sets additionally publish
 `lantern_backup_set_members`, and `lantern_backup_set_bytes`; completion logs
 retain the existing `backup: wrote dump` event and add set, identity, member,
 and byte fields.
+
+The v1 set remains active-epoch-only and has no retired-catalog member. If the
+one-cut source contains any retired evidence, production rejects the attempt
+before encoding a member or creating a staging/final file. An empty retired
+catalog preserves the existing two-member bytes and manifest contract.
+Runtime-local baseline publication uses a separate private v2 sidecar; it does
+not silently change these scheduler backup members.
 
 **Durable receipt backup installation and startup wiring are not implemented
 in this layer.**

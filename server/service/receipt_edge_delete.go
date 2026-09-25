@@ -27,6 +27,7 @@ type edgeDeleteReceiptCoordinator struct {
 	service *LanternService
 	cache   *graphcache.GraphCache[string, *pb.Vertex]
 	store   *mutationreceipt.Store
+	retired *retiredReceiptCatalogSlot
 }
 
 type receiptEdgeDeleteItem struct {
@@ -79,7 +80,15 @@ func newEdgeDeleteReceiptCoordinator(s *LanternService, store *mutationreceipt.S
 		return s.receiptEdgeDeleteCoordinator, nil
 	}
 	s.receiptStore = store
-	coordinator := &edgeDeleteReceiptCoordinator{service: s, cache: cache, store: store}
+	if s.receiptRetiredCatalog == nil {
+		s.receiptRetiredCatalog = &retiredReceiptCatalogSlot{}
+	}
+	coordinator := &edgeDeleteReceiptCoordinator{
+		service: s,
+		cache:   cache,
+		store:   store,
+		retired: s.receiptRetiredCatalog,
+	}
 	s.receiptEdgeDeleteCoordinator = coordinator
 	return coordinator, nil
 }

@@ -28,9 +28,107 @@ func producerWALTipWitness(seq uint64) mutationlog.FileWALTipWitness {
 }
 
 func producerCapture(a wholeStateArchive) service.ReceiptWholeStateCapture {
-	return service.ReceiptWholeStateCapture{
-		Graph: a.Graph, Receipts: a.Receipts, Policy: a.Policy, Origins: a.Origins,
+	retired, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch:    a.Policy.Epoch,
+		MaxEntries:     a.Policy.MaxEntries,
+		MaxBytes:       a.Policy.MaxBytes,
+		ClockHighWater: a.Receipts.ClockHighWater(),
+	})
+	if err != nil {
+		panic(err)
 	}
+	retiredSnapshot, err := retired.Snapshot(a.Receipts.ClockHighWater())
+	if err != nil {
+		panic(err)
+	}
+	return service.ReceiptWholeStateCapture{
+		Graph: a.Graph, Receipts: a.Receipts, Retired: retiredSnapshot,
+		Policy: a.Policy, Origins: a.Origins,
+	}
+}
+
+func producerRetiredSnapshot(
+	t testing.TB,
+	active mutationreceipt.Config,
+	highWaterMillis int64,
+	seed byte,
+) mutationreceipt.RetiredCatalogSnapshot {
+	t.Helper()
+	retiredEpoch := mutationreceipt.Epoch{seed}
+	if retiredEpoch == active.Epoch {
+		retiredEpoch[1] = 1
+	}
+	policy := mutationreceipt.Config{
+		Epoch: retiredEpoch, Retention: 7 * 24 * time.Hour,
+		MaxEntries: active.MaxEntries, MaxBytes: active.MaxBytes,
+		ClockHighWater: time.UnixMilli(highWaterMillis),
+	}
+	store, err := mutationreceipt.New(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := time.UnixMilli(highWaterMillis)
+	id, err := mutationreceipt.NewID(retiredEpoch, issued, [24]byte{seed, 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.Begin(issued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	intent := mutationreceipt.Intent{
+		ID: id, Group: mutationreceipt.GroupID{seed, 2}, Count: 1,
+		Kind: mutationreceipt.PutVertex, Digest: mutationreceipt.IntentDigest([]byte{seed, 3}),
+	}
+	classification, _, err := tx.Classify([]mutationreceipt.Intent{intent})
+	if err != nil || classification != mutationreceipt.Fresh {
+		t.Fatalf("classify retired receipt = %v, %v", classification, err)
+	}
+	if err := tx.Reserve([][]byte{{seed, 4}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	state, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mutationreceipt.RetiredCatalogSnapshot{
+		Version:              1,
+		ClockHighWaterMillis: highWaterMillis,
+		Epochs: []mutationreceipt.RetiredEpochSnapshot{{
+			Policy: mutationreceipt.RetiredEpochPolicy{
+				Epoch: retiredEpoch, Retention: policy.Retention,
+				MaxEntries: policy.MaxEntries, MaxBytes: policy.MaxBytes,
+			},
+			State: state,
+		}},
+	}
+}
+
+func producerEmptyRetiredSnapshot(
+	t testing.TB,
+	active mutationreceipt.Config,
+	highWaterMillis int64,
+) mutationreceipt.RetiredCatalogSnapshot {
+	t.Helper()
+	catalog, err := mutationreceipt.NewRetiredCatalog(mutationreceipt.RetiredCatalogConfig{
+		ActiveEpoch:    active.Epoch,
+		MaxEntries:     active.MaxEntries,
+		MaxBytes:       active.MaxBytes,
+		ClockHighWater: time.UnixMilli(highWaterMillis),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := catalog.Snapshot(time.UnixMilli(highWaterMillis))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 func producerBackupCapture(a wholeStateArchive) service.ReceiptWholeStateBackupCapture {

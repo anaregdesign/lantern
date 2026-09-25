@@ -238,6 +238,31 @@ func TestReceiptBackupSetPersistsOneImmutableValidatedCapture(t *testing.T) {
 	}
 }
 
+func TestReceiptBackupSetRejectsRetiredEvidenceBeforeCreatingFiles(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	capture := producerBackupCapture(archive)
+	capture.WholeState.Retired = producerRetiredSnapshot(
+		t,
+		archive.Policy,
+		archive.Receipts.ClockHighWaterMillis,
+		0x7a,
+	)
+	source := &receiptBackupSetSource{capture: capture}
+	dir := t.TempDir()
+	b := newReceiptBackupSetTestBackupper(t, dir, "retired-rejected", 0, source, archive.Policy)
+
+	if stats, err := b.BackupNow(t.Context()); err == nil || stats != (Stats{}) {
+		t.Fatalf("active-only backup with retired evidence = %+v, %v", stats, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("active-only rejection created backup files: %+v", entries)
+	}
+}
+
 func TestReceiptBackupSetManifestValidationFailsClosed(t *testing.T) {
 	b, _, capture, _, loaded := completedReceiptBackupSet(t)
 	raw, err := os.ReadFile(loaded.manifestPath)

@@ -110,6 +110,47 @@ func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceiptV1(t *testing.T) {
 	}
 }
 
+func TestReceiptSnapshotInstallerRejectsWhenTargetHasRetiredEvidence(t *testing.T) {
+	frames, _ := receiptSnapshotCollectorFixture(t)
+	installer, runtime := newReceiptSnapshotInstallerFixture(
+		t,
+		frames,
+		receiptSnapshotCollectorLimits(),
+	)
+	capture, err := service.DecodeReceiptSnapshotFrames(frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.Retired = producerRetiredSnapshot(
+		t,
+		capture.Policy,
+		capture.Receipts.ClockHighWaterMillis,
+		0x77,
+	)
+	if err := installer.target.InstallReceiptBaseline(t.Context(), capture); err != nil {
+		t.Fatal(err)
+	}
+	beforeLength, _, beforeEvicted := runtime.MutationLogStats()
+
+	result, err := installer.Install(
+		t.Context(),
+		&receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err == nil || result.Header != nil {
+		t.Fatalf("active-only install with retired evidence = %+v, %v", result, err)
+	}
+	afterLength, _, afterEvicted := runtime.MutationLogStats()
+	if afterLength != beforeLength || afterEvicted != beforeEvicted {
+		t.Fatalf(
+			"rejected active-only install changed WAL boundary: before=(%d,%d) after=(%d,%d)",
+			beforeLength,
+			beforeEvicted,
+			afterLength,
+			afterEvicted,
+		)
+	}
+}
+
 func TestReceiptSnapshotInstallerRejectsBeforePublication(t *testing.T) {
 	valid, _ := receiptSnapshotCollectorFixture(t)
 	tests := []struct {

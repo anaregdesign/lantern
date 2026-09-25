@@ -25,6 +25,7 @@ import (
 type ReceiptWholeStateCapture struct {
 	Graph    []*pb.SnapshotResponse
 	Receipts mutationreceipt.Snapshot
+	Retired  mutationreceipt.RetiredCatalogSnapshot
 	Policy   mutationreceipt.Config
 	Origins  []OriginState
 }
@@ -49,6 +50,7 @@ type ReceiptWholeStateBackupCapture struct {
 type ReceiptWholeStateSource struct {
 	owner         *LanternService
 	store         *mutationreceipt.Store
+	retired       *retiredReceiptCatalogSlot
 	cache         *graphcache.GraphCache[string, *pb.Vertex]
 	capture       func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error)
 	captureBackup func(context.Context, mutationreceipt.Config) (ReceiptWholeStateBackupCapture, error)
@@ -79,20 +81,24 @@ func (s *ReceiptWholeStateSource) CaptureForBackup(
 }
 
 func (s *ReceiptWholeStateSource) belongsTo(replication *LanternReplicationService) bool {
-	if s == nil || s.owner == nil || s.store == nil || s.cache == nil ||
+	if s == nil || s.owner == nil || s.store == nil || s.retired == nil || s.cache == nil ||
 		s.capture == nil || s.captureBackup == nil || replication == nil {
 		return false
 	}
 	backend, backendOK := replication.backend.(*graphcache.GraphCache[string, *pb.Vertex])
 	ownerBackend, ownerBackendOK := s.owner.cache.(*graphcache.GraphCache[string, *pb.Vertex])
 	originOwner, originOwnerOK := replication.origins.(*LanternService)
+	runtimeSlotMatches := replication.runtime == nil ||
+		(replication.runtime.receipt != nil && replication.runtime.receipt.retired == s.retired)
 	return backendOK && ownerBackendOK && originOwnerOK &&
 		s.cache == backend && s.cache == ownerBackend &&
 		s.owner == originOwner &&
 		s.owner.log == replication.log &&
 		s.owner.clock == replication.clock &&
 		s.owner.runtime == replication.runtime &&
-		s.owner.receiptStore == s.store
+		runtimeSlotMatches &&
+		s.owner.receiptStore == s.store &&
+		s.owner.receiptRetiredCatalog == s.retired
 }
 
 // NewReceiptWholeStateSource exposes only the coordinator's detached capture,
@@ -106,9 +112,17 @@ func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store)
 	if err != nil {
 		return nil, err
 	}
+	s.replicationCutMu.Lock()
+	if s.receiptRetiredCatalog == nil {
+		s.receiptRetiredCatalog = &retiredReceiptCatalogSlot{}
+	}
+	retired := s.receiptRetiredCatalog
+	coordinator.retired = retired
+	s.replicationCutMu.Unlock()
 	return &ReceiptWholeStateSource{
 		owner:         s,
 		store:         store,
+		retired:       retired,
 		cache:         coordinator.cache,
 		capture:       coordinator.captureReceiptWholeState,
 		captureBackup: coordinator.captureReceiptWholeStateForBackup,
@@ -148,8 +162,8 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 	if err := ctx.Err(); err != nil {
 		return ReceiptWholeStateBackupCapture{}, ctxToConnect(err)
 	}
-	if c == nil || c.service == nil || c.cache == nil || c.store == nil {
-		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state capture requires a staged service and Store")
+	if c == nil || c.service == nil || c.cache == nil || c.store == nil || c.retired == nil {
+		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state capture requires a staged service, Store, and retired catalog")
 	}
 	s := c.service
 	cache, ok := s.cache.(*graphcache.GraphCache[string, *pb.Vertex])
@@ -166,6 +180,7 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 
 	var image replicationSnapshotCut
 	var receipts mutationreceipt.Snapshot
+	var retired mutationreceipt.RetiredCatalogSnapshot
 	var origins []OriginState
 	var walTip mutationlog.FileWALTipWitness
 	var nodeID hlc.NodeID
@@ -176,6 +191,13 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 		}
 		var captureErr error
 		receipts, captureErr = c.store.Snapshot()
+		if captureErr != nil {
+			return captureErr
+		}
+		if captureErr = c.retired.initializeIfNeeded(policy, receipts.ClockHighWaterMillis); captureErr != nil {
+			return captureErr
+		}
+		retired, _, captureErr = c.retired.snapshot(policy, receipts.ClockHighWaterMillis)
 		if captureErr != nil {
 			return captureErr
 		}
@@ -260,7 +282,7 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 		return ReceiptWholeStateBackupCapture{}, err
 	}
 	wholeState := ReceiptWholeStateCapture{
-		Graph: collector.frames, Receipts: receipts, Policy: policy, Origins: origins,
+		Graph: collector.frames, Receipts: receipts, Retired: retired, Policy: policy, Origins: origins,
 	}
 	if includeWALTip {
 		if len(wholeState.Graph) == 0 {

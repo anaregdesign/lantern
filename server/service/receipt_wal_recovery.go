@@ -211,6 +211,7 @@ func sameReceiptWALDecision(a, b mutationreceipt.Receipt) bool {
 type receiptWALRecoveryCandidate struct {
 	graph       *graphcache.GraphCache[string, *pb.Vertex]
 	receipts    *mutationreceipt.Store
+	retired     mutationreceipt.RetiredCatalogSnapshot
 	origins     *originStateTracker
 	log         *mutationlog.Log
 	hlcFrontier hlc.Timestamp // evidence for a future restored Clock, not a live Clock
@@ -362,6 +363,11 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 	if err != nil {
 		_ = closer.Close()
 		return nil, fmt.Errorf("receipt WAL Store restore: %w", err)
+	}
+	candidate.retired, err = newEmptyRetiredCatalogSnapshot(config, audit.highWaterMillis)
+	if err != nil {
+		_ = closer.Close()
+		return nil, fmt.Errorf("receipt WAL retired catalog restore: %w", err)
 	}
 	if err := graph.CompleteSearchIndexRecovery(); err != nil {
 		_ = closer.Close()
