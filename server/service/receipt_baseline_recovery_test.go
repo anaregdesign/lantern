@@ -1,0 +1,497 @@
+package service
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+)
+
+func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		damage func(t *testing.T, path string, config DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage)
+	}{
+		{
+			name: "missing sidecar",
+			damage: func(t *testing.T, path string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
+				t.Helper()
+				digest := sha256.Sum256(image.codec.raw)
+				if err := os.Remove(receiptBaselineSidecarPath(path, digest)); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "corrupt sidecar",
+			damage: func(t *testing.T, path string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
+				t.Helper()
+				digest := sha256.Sum256(image.codec.raw)
+				if err := os.WriteFile(receiptBaselineSidecarPath(path, digest), []byte("truncated"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "archive provenance mismatch",
+			damage: func(t *testing.T, _ string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
+				t.Helper()
+				original := image.codec.build
+				image.codec.build = func() (*ReceiptBaselineCandidate, error) {
+					candidate, err := original()
+					if candidate != nil {
+						candidate.CutoffLocalSeq++
+					}
+					return candidate, err
+				}
+			},
+		},
+		{
+			name: "genesis generation mismatch",
+			damage: func(t *testing.T, path string, config DurableReceiptWALRuntimeConfig, _ receiptBaselineTestImage) {
+				t.Helper()
+				store, err := mutationreceipt.New(config.Receipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := encodeReceiptRuntimeGeneration(
+					path, config.Receipt.Epoch, store.PolicyFingerprint(), config.NodeID, [16]byte{0xee},
+				)
+				if err := os.WriteFile(path+".generation", record, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipts.wal")
+			config := baselineRuntimeTestConfig(path)
+			image := newReceiptBaselineTestImage(t, config)
+			config.BaselineCodec = image.codec
+			runtime, err := CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			primary := runtime.NewLanternService(nil)
+			if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.Close(); err != nil {
+				t.Fatal(err)
+			}
+			tc.damage(t, path, config, image)
+			if restarted, err := OpenDurableReceiptWALServingRuntime(config); restarted != nil || err == nil {
+				if restarted != nil {
+					_ = restarted.Close()
+				}
+				t.Fatalf("damaged committed baseline reopened: runtime=%p err=%v", restarted, err)
+			}
+		})
+	}
+}
+
+func TestReceiptBaselineRecoveryChoosesNewestMarkerWithoutFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	firstDigest := sha256.Sum256(image.codec.raw)
+	image.codec.raw = []byte("canonical-test-receipt-baseline-v2")
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	secondDigest := sha256.Sum256(image.codec.raw)
+	if firstDigest == secondDigest {
+		t.Fatal("test baselines unexpectedly share a digest")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(receiptBaselineSidecarPath(path, firstDigest)); err != nil {
+		t.Fatalf("older valid sidecar missing before recovery: %v", err)
+	}
+	if err := os.WriteFile(receiptBaselineSidecarPath(path, secondDigest), []byte("bad newest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if restarted, err := OpenDurableReceiptWALServingRuntime(config); restarted != nil || err == nil {
+		if restarted != nil {
+			_ = restarted.Close()
+		}
+		t.Fatalf("recovery fell back from corrupt newest marker: runtime=%p err=%v", restarted, err)
+	}
+}
+
+func TestReceiptBaselineRecoveryValidatesWALBeforeAndAfterMarker(t *testing.T) {
+	for _, corruptFrame := range []int{0, 2} {
+		t.Run(map[int]string{0: "before marker", 2: "after marker"}[corruptFrame], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipts.wal")
+			config := baselineRuntimeTestConfig(path)
+			image := newReceiptBaselineTestImage(t, config)
+			config.BaselineCodec = image.codec
+			runtime, err := CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := recoveryGraphPutEffectEntry(t, 0x77, image.cutoff.WallNs-1, &pb.MutationOp{
+				Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "before"}}},
+			})
+			if _, err := runtime.log.Append(before.Op, before.HLC); err != nil {
+				t.Fatal(err)
+			}
+			primary := runtime.NewLanternService(nil)
+			if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+				t.Fatal(err)
+			}
+			after := recoveryGraphPutEffectEntry(t, 0x88, image.cutoff.WallNs+1, &pb.MutationOp{
+				Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "after"}}},
+			})
+			after.Op.(*graphPutEffectEnvelope).Mutation.Seq = 2
+			if _, err := runtime.log.Append(after.Op, after.HLC); err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.Close(); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			offsets := receiptBaselineTestFrameOffsets(t, raw)
+			if len(offsets) != 3 {
+				t.Fatalf("WAL frame count = %d, want 3", len(offsets))
+			}
+			raw[offsets[corruptFrame]+4] ^= 1 // Corrupt the selected frame CRC.
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if restarted, err := OpenDurableReceiptWALServingRuntime(config); restarted != nil || err == nil {
+				if restarted != nil {
+					_ = restarted.Close()
+				}
+				t.Fatalf("corrupt WAL reopened: runtime=%p err=%v", restarted, err)
+			}
+		})
+	}
+}
+
+func TestReceiptBaselineMarkerScanEnforcesGenerationAndPolicyChain(t *testing.T) {
+	config := baselineRuntimeTestConfig(filepath.Join(t.TempDir(), "unused"))
+	store, err := mutationreceipt.New(config.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := receiptBaselineMarkerFixture()
+	first.Epoch = config.Receipt.Epoch
+	first.PolicyFingerprint = store.PolicyFingerprint()
+	first.RestoreFloor.NodeID = config.NodeID
+	first.PreviousGeneration = [16]byte{1}
+	first.RotatedGeneration = [16]byte{2}
+	second := first
+	second.PreviousGeneration = first.RotatedGeneration
+	second.RotatedGeneration = [16]byte{3}
+	for _, tc := range []struct {
+		name       string
+		second     receiptBaselineMarker
+		wantErr    bool
+		wantActive [16]byte
+	}{
+		{name: "valid newest", second: second, wantActive: second.RotatedGeneration},
+		{name: "broken chain", second: func() receiptBaselineMarker {
+			bad := second
+			bad.PreviousGeneration = [16]byte{9}
+			return bad
+		}(), wantErr: true},
+		{name: "policy mismatch", second: func() receiptBaselineMarker {
+			bad := second
+			bad.PolicyFingerprint[0] ^= 1
+			return bad
+		}(), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "markers.wal")
+			wal, err := mutationlog.CreateFileWAL(path, encodeReceiptWALUnion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := wal.Write(mutationlog.Entry{Seq: 1, HLC: first.RestoreFloor, Op: first}); err != nil {
+				t.Fatal(err)
+			}
+			if err := wal.Write(mutationlog.Entry{Seq: 2, HLC: tc.second.RestoreFloor, Op: tc.second}); err != nil {
+				t.Fatal(err)
+			}
+			if err := wal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("invalid marker chain selected %+v", scan)
+				}
+				return
+			}
+			if err != nil || !scan.hasMarker || scan.markerSequence != 2 ||
+				scan.activeGeneration != tc.wantActive {
+				t.Fatalf("marker scan = %+v, %v", scan, err)
+			}
+		})
+	}
+}
+
+func TestReceiptBaselineSuffixCoalescesExactReceiptDuplicatesAndRejectsConflicts(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		name := "exact duplicate"
+		if conflict {
+			name = "conflicting duplicate"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipts.wal")
+			config := baselineRuntimeTestConfig(path)
+			config.Receipt.MaxEntries = 2
+			image := newReceiptBaselineTestImage(t, config)
+			config.BaselineCodec = image.codec
+			runtime, err := CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			primary := runtime.NewLanternService(nil)
+			if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+				t.Fatal(err)
+			}
+			first := receiptBaselineSuffixEnvelope(
+				t, config.Receipt, 0x91, 1, image.cutoff.WallNs+int64(time.Millisecond),
+				graphcache.EdgeKey[string]{Tail: "duplicate", Head: "same"}, nil,
+			)
+			secondKey := first.OriginalKeys[0]
+			if conflict {
+				secondKey.Head = "conflict"
+			}
+			second := receiptBaselineSuffixEnvelope(
+				t, config.Receipt, 0x92, 1, first.HLC.WallNs+int64(time.Millisecond),
+				secondKey, &first.Receipts[0],
+			)
+			for _, envelope := range []*edgeDeleteReceiptEnvelope{first, second} {
+				if _, err := runtime.log.Append(envelope, envelope.HLC); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := runtime.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			restarted, err := OpenDurableReceiptWALServingRuntime(config)
+			if conflict {
+				if restarted != nil {
+					_ = restarted.Close()
+				}
+				if err == nil || !errors.Is(err, mutationreceipt.ErrInvalidSnapshot) {
+					t.Fatalf("conflicting duplicate restart = %p, %v", restarted, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer restarted.Close()
+			snapshot, err := restarted.receipt.store.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Receipts) != 2 {
+				t.Fatalf("exact duplicate charged twice: %+v", snapshot.Receipts)
+			}
+		})
+	}
+}
+
+func TestReceiptBaselineSuffixRejectsEpochAndPolicyMismatch(t *testing.T) {
+	for _, mismatch := range []string{"epoch", "policy"} {
+		t.Run(mismatch, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipts.wal")
+			config := baselineRuntimeTestConfig(path)
+			image := newReceiptBaselineTestImage(t, config)
+			config.BaselineCodec = image.codec
+			runtime, err := CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			primary := runtime.NewLanternService(nil)
+			if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+				t.Fatal(err)
+			}
+			envelopeConfig := config.Receipt
+			if mismatch == "epoch" {
+				envelopeConfig.Epoch = mutationreceipt.Epoch{0xee}
+			}
+			envelope := receiptBaselineSuffixEnvelope(
+				t, envelopeConfig, 0x91, 1, image.cutoff.WallNs+int64(time.Millisecond),
+				graphcache.EdgeKey[string]{Tail: "mismatch", Head: mismatch}, nil,
+			)
+			if mismatch == "policy" {
+				envelope.PolicyFingerprint[0] ^= 1
+			}
+			if _, err := runtime.log.Append(envelope, envelope.HLC); err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if restarted, err := OpenDurableReceiptWALServingRuntime(config); restarted != nil || err == nil {
+				if restarted != nil {
+					_ = restarted.Close()
+				}
+				t.Fatalf("%s-mismatched suffix restarted: %p, %v", mismatch, restarted, err)
+			}
+		})
+	}
+}
+
+func TestReceiptBaselineSuffixReplaysReplicatedDeletePastLocalCausalLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	config.ConfigureGraph = func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+		graph.EnablePrefixIndex(func(key string) string { return key })
+		graph.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{
+			MaxVertexEntries: 16,
+			MaxEdgeEntries:   1,
+		})
+		return nil
+	}
+	image := newReceiptBaselineTestImage(t, config)
+	build := image.codec.build
+	image.codec.build = func() (*ReceiptBaselineCandidate, error) {
+		candidate, err := build()
+		if err != nil {
+			return nil, err
+		}
+		candidate.Graph.ApplySnapshotEdgeTombstoneHLC(
+			"existing", "floor",
+			hlc.Timestamp{WallNs: image.cutoff.WallNs - 1, NodeID: hlc.NodeID{0x90}},
+			time.Now().Add(time.Hour),
+		)
+		return candidate, nil
+	}
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	envelope := receiptBaselineSuffixEnvelope(
+		t, config.Receipt, 0x91, 1, image.cutoff.WallNs+int64(time.Millisecond),
+		graphcache.EdgeKey[string]{Tail: "over", Head: "limit"}, nil,
+	)
+	if _, err := runtime.log.Append(envelope, envelope.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	stats := restarted.graph.CausalMetadataStats()
+	if stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
+		t.Fatalf("replicated suffix causal state = %+v", stats)
+	}
+}
+
+func receiptBaselineSuffixEnvelope(
+	t *testing.T,
+	config mutationreceipt.Config,
+	originByte byte,
+	originSequence uint64,
+	wallNS int64,
+	key graphcache.EdgeKey[string],
+	duplicate *mutationreceipt.Receipt,
+) *edgeDeleteReceiptEnvelope {
+	t.Helper()
+	issued := time.UnixMilli(wallNS / int64(time.Millisecond)).UTC()
+	var origin hlc.NodeID
+	for i := range origin {
+		origin[i] = originByte
+	}
+	stamp := hlc.Timestamp{
+		WallNs: issued.UnixNano(),
+		NodeID: origin,
+	}
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt mutationreceipt.Receipt
+	if duplicate == nil {
+		id, err := mutationreceipt.NewID(config.Epoch, issued, [24]byte{originByte})
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt = mutationreceipt.Receipt{
+			Intent: mutationreceipt.Intent{
+				ID: id, Group: mutationreceipt.GroupID{0xa1}, Count: 1,
+				Kind: mutationreceipt.DeleteEdge, Digest: edgeDeleteDigest(key.Tail, key.Head),
+			},
+			DeadlineMillis: issued.Add(config.Retention).UnixMilli(),
+			Result:         []byte{1},
+		}
+	} else {
+		receipt = *duplicate
+		receipt.Result = append([]byte(nil), duplicate.Result...)
+		receipt.Digest = edgeDeleteDigest(key.Tail, key.Head)
+	}
+	envelope := &edgeDeleteReceiptEnvelope{
+		Origin:              stamp.NodeID,
+		OriginSeq:           originSequence,
+		HLC:                 stamp,
+		Epoch:               config.Epoch,
+		PolicyFingerprint:   store.PolicyFingerprint(),
+		TombstoneExpiration: issued.Add(time.Hour),
+		OriginalKeys:        []graphcache.EdgeKey[string]{key},
+		Accepted:            []graphcache.IndexedEdgeDelete[string]{{Index: 0, Key: key}},
+		Receipts:            []mutationreceipt.Receipt{receipt},
+	}
+	envelope.Mutation = receiptEdgeDeleteWALMutation(envelope)
+	if err := validateReceiptEdgeDeleteWALEntry(mutationlog.Entry{Seq: 1, HLC: stamp, Op: envelope}); err != nil {
+		t.Fatalf("invalid suffix fixture: %v", err)
+	}
+	return envelope
+}
+
+func receiptBaselineTestFrameOffsets(t *testing.T, raw []byte) []int {
+	t.Helper()
+	const walMagicSize = 8
+	const frameHeaderSize = 8
+	var offsets []int
+	for offset := walMagicSize; offset < len(raw); {
+		if len(raw)-offset < frameHeaderSize {
+			t.Fatal("truncated test WAL frame")
+		}
+		bodySize := int(binary.BigEndian.Uint32(raw[offset : offset+4]))
+		if bodySize <= 0 || bodySize > len(raw)-offset-frameHeaderSize {
+			t.Fatal("invalid test WAL frame size")
+		}
+		offsets = append(offsets, offset)
+		offset += frameHeaderSize + bodySize
+	}
+	return offsets
+}

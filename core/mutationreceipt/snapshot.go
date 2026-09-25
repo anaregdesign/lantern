@@ -25,6 +25,25 @@ type Snapshot struct {
 	Receipts             []Receipt
 }
 
+// SnapshotInstall is a reversible whole-Store replacement. It holds Store.mu
+// from BeginSnapshotInstall until Commit or Abort, so direct readers cannot
+// observe the staged map/index set. The caller must commit an enclosing
+// durable boundary containing the effective clock high-water before Commit.
+type SnapshotInstall struct {
+	store    *Store
+	previous storeSnapshotState
+	closed   bool
+}
+
+type storeSnapshotState struct {
+	receipts      map[ID]Receipt
+	groups        map[GroupID]*groupReceiptRows
+	contributions map[ContribID]ID
+	deadlines     deadlineIndex
+	bytes         uint64
+	highWaterMS   int64
+}
+
 // Snapshot returns receipt rows sorted by operation ID so equivalent Store
 // states have a deterministic representation. Result bytes are copied; the
 // caller may retain or mutate the returned value after this call. Until a
@@ -84,6 +103,7 @@ func NewFromSnapshot(config Config, state Snapshot) (*Store, error) {
 		state.ClockHighWaterMillis < 0 || config.Epoch != state.Epoch {
 		return nil, ErrInvalidSnapshot
 	}
+
 	s, err := New(config)
 	if err != nil {
 		return nil, err
@@ -147,6 +167,93 @@ func NewFromSnapshot(config Config, state Snapshot) (*Store, error) {
 		s.bytes += owned.cost()
 	}
 	return s, nil
+}
+
+// BeginSnapshotInstall validates a complete same-epoch, same-policy snapshot
+// and stages its receipt indexes and nondecreasing clock high-water in place
+// while retaining the Store object identity. It deliberately does not invoke
+// the Store's high-water sink: the caller must durably record the effective
+// high-water in its enclosing commit before calling Commit. Abort restores the
+// exact pre-stage state. The caller must hold its outer publication cut and
+// defer Abort immediately.
+func (s *Store) BeginSnapshotInstall(state Snapshot) (*SnapshotInstall, error) {
+	if s == nil {
+		return nil, ErrInvalidSnapshot
+	}
+	config := Config{
+		Epoch:          s.epoch,
+		Retention:      time.Duration(s.retentionMS) * time.Millisecond,
+		MaxEntries:     s.maxEntries,
+		MaxBytes:       s.maxBytes,
+		ClockHighWater: state.ClockHighWater(),
+	}
+	candidate, err := NewFromSnapshot(config, state)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	release := true
+	defer func() {
+		if release {
+			s.mu.Unlock()
+		}
+	}()
+	if state.ClockHighWaterMillis < s.highWaterMS {
+		config.ClockHighWater = time.UnixMilli(s.highWaterMS)
+		candidate, err = NewFromSnapshot(config, state)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.highWaterFault != nil {
+		return nil, s.highWaterFault
+	}
+	stage := &SnapshotInstall{
+		store: s,
+		previous: storeSnapshotState{
+			receipts:      s.receipts,
+			groups:        s.groups,
+			contributions: s.contributions,
+			deadlines:     s.deadlines,
+			bytes:         s.bytes,
+			highWaterMS:   s.highWaterMS,
+		},
+	}
+	s.receipts = candidate.receipts
+	s.groups = candidate.groups
+	s.contributions = candidate.contributions
+	s.deadlines = candidate.deadlines
+	s.bytes = candidate.bytes
+	s.highWaterMS = candidate.highWaterMS
+	release = false
+	return stage, nil
+}
+
+// Commit publishes the staged receipt state by releasing Store.mu.
+func (s *SnapshotInstall) Commit() {
+	if s == nil || s.closed {
+		return
+	}
+	s.closed = true
+	s.store.mu.Unlock()
+}
+
+// Abort restores the pre-install receipt maps and indexes. The monotonic
+// clock high-water and any expiry it caused before staging remain advanced.
+func (s *SnapshotInstall) Abort() {
+	if s == nil || s.closed {
+		return
+	}
+	store := s.store
+	store.receipts = s.previous.receipts
+	store.groups = s.previous.groups
+	store.contributions = s.previous.contributions
+	store.deadlines = s.previous.deadlines
+	store.bytes = s.previous.bytes
+	store.highWaterMS = s.previous.highWaterMS
+	s.closed = true
+	store.mu.Unlock()
 }
 
 func (s *Store) validateSnapshotReceipt(receipt Receipt, snapshotHighWater int64) error {

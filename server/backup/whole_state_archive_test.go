@@ -23,8 +23,11 @@ import (
 )
 
 func wholeStateArchiveFixture(t *testing.T) wholeStateArchive {
+	return wholeStateArchiveFixtureAt(t, time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
+}
+
+func wholeStateArchiveFixtureAt(t *testing.T, issued time.Time) wholeStateArchive {
 	t.Helper()
-	issued := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	policy := mutationreceipt.Config{Epoch: mutationreceipt.Epoch{9}, Retention: time.Hour, MaxEntries: 4, MaxBytes: 4096}
 	store, err := mutationreceipt.New(policy)
 	if err != nil {

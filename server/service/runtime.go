@@ -37,10 +37,16 @@ type ServingRuntime struct {
 }
 
 type receiptServingRuntime struct {
-	store      *mutationreceipt.Store
-	policy     mutationreceipt.Config
-	epoch      mutationreceipt.Epoch
-	generation [16]byte
+	store          *mutationreceipt.Store
+	policy         mutationreceipt.Config
+	epoch          mutationreceipt.Epoch
+	generation     [16]byte
+	baselineCodec  ReceiptBaselineArchiveCodec
+	defaultTTL     time.Duration
+	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error
+	owner          *receiptWALOwnedCandidate
+	sidecarFault   func(receiptBaselineSidecarFaultPoint) error
+	installFault   func(receiptBaselineInstallFaultPoint) error
 }
 
 const (
@@ -59,6 +65,7 @@ type DurableReceiptWALRuntimeConfig struct {
 	ConfigureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error
 	NodeID         hlc.NodeID
 	Now            time.Time
+	BaselineCodec  ReceiptBaselineArchiveCodec
 }
 
 // NewGraphOnlyServingRuntime preserves the historical in-memory composition.
@@ -101,7 +108,7 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 	if err != nil {
 		return nil, errors.Join(err, candidate.Close())
 	}
-	return certifyReceiptWALServingRuntime(candidate, config.NodeID, generation, config.Receipt)
+	return certifyReceiptWALServingRuntime(candidate, config, generation)
 }
 
 // OpenDurableReceiptWALServingRuntime resumes one complete genesis WAL under
@@ -116,28 +123,49 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 		now = time.Now()
 	}
 	var generation [16]byte
-	candidate, err := openLeasedReceiptWALCandidate(
-		config.Path,
-		config.Receipt,
-		now,
-		config.Log,
-		config.DefaultTTL,
-		config.ConfigureGraph,
-		func(canonicalPath string, policy [sha256.Size]byte) error {
-			var readErr error
-			generation, readErr = readReceiptRuntimeGeneration(
-				canonicalPath,
-				config.Receipt.Epoch,
-				policy,
-				config.NodeID,
-			)
-			return readErr
-		},
-	)
+	preflight := func(canonicalPath string, policy [sha256.Size]byte) error {
+		var readErr error
+		generation, readErr = readReceiptRuntimeGeneration(
+			canonicalPath,
+			config.Receipt.Epoch,
+			policy,
+			config.NodeID,
+		)
+		return readErr
+	}
+	var candidate *receiptWALOwnedCandidate
+	var err error
+	if config.BaselineCodec == nil {
+		candidate, err = openLeasedReceiptWALCandidate(
+			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
+			config.ConfigureGraph, preflight,
+		)
+	} else {
+		validateBaseline := func(scan receiptBaselineWALScan) error {
+			if scan.hasMarker && scan.firstGeneration != generation {
+				return errors.New("service: receipt baseline generation does not descend from genesis")
+			}
+			return nil
+		}
+		candidate, err = openLeasedReceiptWALCandidateWithBaseline(
+			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
+			config.ConfigureGraph, config.NodeID, config.BaselineCodec, validateBaseline, preflight,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return certifyReceiptWALServingRuntime(candidate, config.NodeID, generation, config.Receipt)
+	activeGeneration := generation
+	if candidate.baseline.hasMarker {
+		if candidate.baseline.firstGeneration != generation {
+			return nil, errors.Join(
+				errors.New("service: receipt baseline generation does not descend from genesis"),
+				candidate.Close(),
+			)
+		}
+		activeGeneration = candidate.baseline.activeGeneration
+	}
+	return certifyReceiptWALServingRuntime(candidate, config, activeGeneration)
 }
 
 func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfig) error {
@@ -145,6 +173,7 @@ func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfi
 		config.ConfigureGraph == nil || config.Log.WAL != nil {
 		return errors.New("service: durable receipt WAL runtime requires an absolute path, graph policy, and no preconfigured WAL")
 	}
+
 	if config.NodeID == (hlc.NodeID{}) {
 		return errors.New("service: durable receipt WAL runtime requires a nonzero node ID")
 	}
@@ -152,6 +181,11 @@ func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfi
 		return fmt.Errorf("service: durable receipt WAL policy: %w", err)
 	}
 	return nil
+}
+
+func clearReceiptClockHighWater(config mutationreceipt.Config) mutationreceipt.Config {
+	config.ClockHighWater = time.Time{}
+	return config
 }
 
 func newReceiptRuntimeGeneration() ([16]byte, error) {
@@ -297,9 +331,8 @@ func receiptRuntimeGenerationBinding(
 
 func certifyReceiptWALServingRuntime(
 	candidate *receiptWALOwnedCandidate,
-	nodeID hlc.NodeID,
+	config DurableReceiptWALRuntimeConfig,
 	generation [16]byte,
-	policy mutationreceipt.Config,
 ) (_ *ServingRuntime, err error) {
 	if candidate == nil || candidate.state == nil || candidate.state.graph == nil ||
 		candidate.state.receipts == nil || candidate.state.origins == nil ||
@@ -314,7 +347,7 @@ func certifyReceiptWALServingRuntime(
 			err = errors.Join(err, candidate.Close())
 		}
 	}()
-	policy.ClockHighWater = time.Time{}
+	policy := clearReceiptClockHighWater(config.Receipt)
 	policyStore, err := mutationreceipt.New(policy)
 	if err != nil {
 		return nil, fmt.Errorf("service: certify receipt Snapshot policy: %w", err)
@@ -324,7 +357,7 @@ func certifyReceiptWALServingRuntime(
 		return nil, errors.New("service: durable receipt WAL policy does not match recovered Store")
 	}
 
-	clock := hlc.New(nodeID, hlc.Options{})
+	clock := hlc.New(config.NodeID, hlc.Options{})
 	floor := candidate.state.hlcFrontier
 	highWaterMillis := candidate.state.receipts.Stats().HighWaterMillis
 	if highWaterMillis < 0 || highWaterMillis > math.MaxInt64/int64(time.Millisecond) {
@@ -346,10 +379,14 @@ func certifyReceiptWALServingRuntime(
 		clock:   clock,
 		origins: candidate.state.origins,
 		receipt: &receiptServingRuntime{
-			store:      candidate.state.receipts,
-			policy:     policy,
-			epoch:      candidate.state.receipts.Epoch(),
-			generation: generation,
+			store:          candidate.state.receipts,
+			policy:         policy,
+			epoch:          candidate.state.receipts.Epoch(),
+			generation:     generation,
+			baselineCodec:  config.BaselineCodec,
+			defaultTTL:     config.DefaultTTL,
+			configureGraph: config.ConfigureGraph,
+			owner:          candidate,
 		},
 		owner: candidate,
 	}, nil

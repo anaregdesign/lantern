@@ -275,25 +275,11 @@ func TestReceiptWholeStateArchiveStageFailsWithoutCandidate(t *testing.T) {
 	}
 }
 
-func TestReceiptWholeStateArchiveStageRejectsLostOrInconsistentFloors(t *testing.T) {
+func TestReceiptWholeStateArchiveStageRejectsInconsistentFloors(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		edit func(*wholeStateArchive)
 	}{
-		{"expired vertex tombstone", func(a *wholeStateArchive) {
-			a.Graph = append(a.Graph[:1], append([]*pb.SnapshotResponse{{Entry: &pb.SnapshotResponse_VertexTombstone{
-				VertexTombstone: &pb.SnapshotVertexTombstone{Key: "old", Hlc: a.Graph[0].GetHeader().GetCutoffHlc(),
-					Expiration: timestamppb.New(time.Now().Add(-time.Minute))},
-			}}}, a.Graph[1:]...)...)
-			a.Graph[len(a.Graph)-1].GetFooter().VertexTombstoneCount++
-		}},
-		{"expired edge tombstone", func(a *wholeStateArchive) {
-			a.Graph = append(a.Graph[:1], append([]*pb.SnapshotResponse{{Entry: &pb.SnapshotResponse_EdgeTombstone{
-				EdgeTombstone: &pb.SnapshotEdgeTombstone{Tail: "old-tail", Head: "old-head", Hlc: a.Graph[0].GetHeader().GetCutoffHlc(),
-					Expiration: timestamppb.New(time.Now().Add(-time.Minute))},
-			}}}, a.Graph[1:]...)...)
-			a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++
-		}},
 		{"live vertex newer than barrier", func(a *wholeStateArchive) {
 			stamp := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
 			stamp.WallNs--
@@ -312,5 +298,38 @@ func TestReceiptWholeStateArchiveStageRejectsLostOrInconsistentFloors(t *testing
 				t.Fatalf("inconsistent archive yielded candidate=%p, err=%v", candidate, err)
 			}
 		})
+	}
+}
+
+func TestReceiptWholeStateArchiveStageReapsNaturallyExpiredTombstones(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	expired := timestamppb.New(time.Now().Add(-time.Minute))
+	archive.Graph = append(archive.Graph[:1], append([]*pb.SnapshotResponse{
+		{Entry: &pb.SnapshotResponse_VertexTombstone{
+			VertexTombstone: &pb.SnapshotVertexTombstone{
+				Key: "old", Hlc: archive.Graph[0].GetHeader().GetCutoffHlc(), Expiration: expired,
+			},
+		}},
+		{Entry: &pb.SnapshotResponse_EdgeTombstone{
+			EdgeTombstone: &pb.SnapshotEdgeTombstone{
+				Tail: "old-tail", Head: "old-head",
+				Hlc: archive.Graph[0].GetHeader().GetCutoffHlc(), Expiration: expired,
+			},
+		}},
+	}, archive.Graph[1:]...)...)
+	footer := archive.Graph[len(archive.Graph)-1].GetFooter()
+	footer.VertexTombstoneCount++
+	footer.EdgeTombstoneCount++
+	raw := encodedWholeStateArchive(t, archive)
+
+	candidate, err := stageReceiptWholeStateArchive(
+		context.Background(), bytes.NewReader(raw), archive.Policy, time.Hour, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tombstones := candidate.graph.SnapshotReplication().Tombstones
+	if len(tombstones.Vertices) != 0 || len(tombstones.Edges) != 0 {
+		t.Fatalf("expired tombstones were resurrected: %+v", tombstones)
 	}
 }

@@ -377,13 +377,13 @@ replay. The receipt kind retains the existing LRED validation and its 8 MiB
 body cap under the FileWAL frame's
 32 MiB bound. The `FileWAL` payload decoder cannot see frame metadata, so a
 replay/restore visitor must additionally validate the frame HLC against the
-decoded graph or receipt HLC before applying state. This remains unwired and
-does not yet constitute a complete replay or durable serving configuration;
-production activation also needs a WAL schema migration policy across future
-protobuf changes. The private graph kind now pins the reachable `Mutation`
-schema and rejects an unreviewed field change under union v3. A production
-migration must still retain a decoder for prior WAL versions before any schema
-change is allowed on a receipt-enabled node.
+decoded graph or receipt HLC before applying state. The union is bound only to
+the opt-in durable runtime; public receipt capability remains disabled.
+Production activation still needs a WAL schema migration policy across future
+protobuf changes. The private graph kind pins the reachable `Mutation` schema
+and rejects an unreviewed field change under union v3. A production migration
+must retain a decoder for prior WAL versions before any schema change is
+allowed on a receipt-enabled node.
 The private [read-only mixed-WAL audit](../../server/service/receipt_wal_recovery.go)
 checks a complete, genesis-based FileWAL for frame/payload HLC agreement,
 contiguous per-origin sequences, one configured epoch/policy, and a bounded
@@ -577,6 +577,20 @@ clock journal under one lease and binds the empty Store and appendable Log.
 Existing files and partially created sidecars are never overwritten or
 silently retried as a fresh epoch.
 
+A private fixed-size WAL baseline marker now binds a canonical `RECEIPT_V1`
+archive digest and byte count to its source cutoff/HLC, epoch, policy
+fingerprint, previous generation, rotated generation, and local HLC restore
+floor. The immutable archive is fsynced under a content-addressed sidecar name
+before the marker commit. Startup validates the complete WAL and generation
+chain before selecting the newest marker, requires that marker's exact
+sidecar, and never falls back to an older committed baseline. It restores the
+baseline into the existing GraphCache, Store, origin tracker, HLC, and Log
+identities, replays only the suffix, and preserves the responder-local WAL
+sequence while gapping pre-boundary cursors. Natural D4 tombstone and receipt
+expiry is reaped during restore rather than treated as archive corruption.
+Orphan sidecars without a marker are cleanup candidates; missing, mismatched,
+noncanonical, oversized, or corrupt committed state fails startup.
+
 The sole production composition boundary selects
 `LANTERN_RECEIPT_WAL_MODE=graph-only|fresh|restart`. `graph-only` is the
 default and preserves the historical in-memory graph, NopWAL-backed Log, HLC,
@@ -616,16 +630,17 @@ view until a checked Core read API or equivalent fail-stop gate exists.
 
 The private production provider installs the staged graph, Store, origin
 tracker, Log, restored HLC, epoch, and generation as one certified serving
-bundle, but it does not configure the opt-in receipt Snapshot producer. Public
-enablement still requires atomic remote receipt apply, a receipt-aware staged
-Snapshot installer, PeerStatus capability negotiation, and receipt-bearing
-BackupSnapshot with epoch and clock-high-water validation. Default production
-Snapshot and all current BackupSnapshot paths remain graph-only and cannot
-certify receipt continuity after restart or restore. `Store.Begin` advances
-clock high-water and expires already-dead receipts even if the new mutation
-later aborts; only newly staged receipts roll back. Recovery persists that
-monotonic metadata through the bound clock journal; losing or mismatching it
-fails startup rather than silently rotating the epoch.
+bundle and binds the opt-in receipt Snapshot producer to those exact
+identities. The detached collector and internal durable installer exist, but
+Pump and anti-entropy do not request or install `RECEIPT_V1`; public enablement
+still requires capability negotiation and the shared network composition.
+Default Pump/anti-entropy and BackupSnapshot restore paths remain graph-only
+and cannot certify receipt continuity. `Store.Begin` advances clock high-water
+and expires already-dead receipts even if the new mutation later aborts; only
+newly staged receipts roll back. Recovery persists that monotonic metadata
+through the bound clock journal or the committed baseline marker; losing or
+mismatching either required artifact fails startup rather than silently
+rotating the epoch.
 
 ## Dependencies and rollout
 

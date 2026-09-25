@@ -95,7 +95,7 @@ func stageReceiptWholeStateArchive(
 	// Keep the index healthy for checked local Put replay (implicit endpoint
 	// vertices can coexist with retained causal floors), then require a full
 	// bounded rebuild before returning the candidate.
-	if err := replayReceiptArchiveGraph(ctx, graph, archive.Graph); err != nil {
+	if err := replayReceiptArchiveGraph(ctx, graph, archive.Graph, time.Now()); err != nil {
 		return nil, err
 	}
 	if err := graph.CompleteSearchIndexRecovery(); err != nil {
@@ -137,7 +137,12 @@ func emptyReceiptStageGraph(graph *graphcache.GraphCache[string, *pb.Vertex]) bo
 // replayReceiptArchiveGraph runs only against a fresh, unpublished cache.
 // decodeWholeStateArchive already validated frame shape, order, and cross-frame
 // relationships. Apply failures still fail closed: no partial cache escapes.
-func replayReceiptArchiveGraph(ctx context.Context, graph *graphcache.GraphCache[string, *pb.Vertex], frames []*pb.SnapshotResponse) error {
+func replayReceiptArchiveGraph(
+	ctx context.Context,
+	graph *graphcache.GraphCache[string, *pb.Vertex],
+	frames []*pb.SnapshotResponse,
+	restoreNow time.Time,
+) error {
 	vertexBarriers := make(map[string]hlc.Timestamp)
 	vertexTombstones := make(map[string]struct{})
 	for _, frame := range frames[1 : len(frames)-1] {
@@ -160,19 +165,19 @@ func replayReceiptArchiveGraph(ctx context.Context, graph *graphcache.GraphCache
 			}
 		case *pb.SnapshotResponse_VertexTombstone:
 			item := entry.VertexTombstone
-			if !time.Now().Before(item.GetExpiration().AsTime()) {
-				return wholeStateArchiveError("staged vertex tombstone expired")
-			}
 			ts, _ := archiveHLC(item.GetHlc())
-			graph.ApplySnapshotVertexTombstoneHLC(item.GetKey(), ts, item.GetExpiration().AsTime())
+			expiration := item.GetExpiration().AsTime()
+			if restoreNow.Before(expiration) {
+				graph.ApplySnapshotVertexTombstoneHLC(item.GetKey(), ts, expiration)
+			}
 			vertexTombstones[item.GetKey()] = struct{}{}
 		case *pb.SnapshotResponse_EdgeTombstone:
 			item := entry.EdgeTombstone
-			if !time.Now().Before(item.GetExpiration().AsTime()) {
-				return wholeStateArchiveError("staged edge tombstone expired")
+			expiration := item.GetExpiration().AsTime()
+			if restoreNow.Before(expiration) {
+				ts, _ := archiveHLC(item.GetHlc())
+				graph.ApplySnapshotEdgeTombstoneHLC(item.GetTail(), item.GetHead(), ts, expiration)
 			}
-			ts, _ := archiveHLC(item.GetHlc())
-			graph.ApplySnapshotEdgeTombstoneHLC(item.GetTail(), item.GetHead(), ts, item.GetExpiration().AsTime())
 		case *pb.SnapshotResponse_Vertex:
 			item := entry.Vertex
 			vertex := item.GetVertex()
@@ -255,20 +260,30 @@ func validateStagedTombstones(graph *graphcache.GraphCache[string, *pb.Vertex], 
 		}
 	}
 	snapshot := graph.SnapshotReplication().Tombstones
-	if len(snapshot.Vertices) != len(vertices) || len(snapshot.Edges) != len(edges) {
-		return wholeStateArchiveError("staged tombstone count differs from archive")
-	}
 	now := time.Now()
 	for _, item := range snapshot.Vertices {
 		want, ok := vertices[item.Key]
-		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) || !now.Before(want.expiration) {
+		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) {
 			return wholeStateArchiveError("staged vertex tombstone differs from archive")
 		}
+		delete(vertices, item.Key)
 	}
 	for _, item := range snapshot.Edges {
-		want, ok := edges[archiveEdgeKey{item.Tail, item.Head}]
-		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) || !now.Before(want.expiration) {
+		key := archiveEdgeKey{item.Tail, item.Head}
+		want, ok := edges[key]
+		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) {
 			return wholeStateArchiveError("staged edge tombstone differs from archive")
+		}
+		delete(edges, key)
+	}
+	for _, want := range vertices {
+		if now.Before(want.expiration) {
+			return wholeStateArchiveError("live staged vertex tombstone is missing")
+		}
+	}
+	for _, want := range edges {
+		if now.Before(want.expiration) {
+			return wholeStateArchiveError("live staged edge tombstone is missing")
 		}
 	}
 	return nil

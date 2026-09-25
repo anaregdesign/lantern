@@ -21,6 +21,7 @@ func TestResumeLogFromFileWALRestoresBoundedTailAndNextWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	for seq := uint64(1); seq <= 5; seq++ {
 		if err := wal.Write(fileWALEntry(seq, string(rune('a'+seq-1)))); err != nil {
 			t.Fatal(err)
@@ -118,6 +119,68 @@ func TestResumeLogFromFileWALRestoresBoundedTailAndNextWrite(t *testing.T) {
 	}
 	if !bytes.HasPrefix(after, before) {
 		t.Fatal("post-restore commit rewrote the WAL prefix")
+	}
+}
+
+func TestResumeLogFromFileWALSuffixValidatesAllButRestoresOnlySuffix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "suffix.wal")
+	wal, err := CreateFileWAL(path, fileWALStringEncode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for seq := uint64(1); seq <= 5; seq++ {
+		if err := wal.Write(fileWALEntry(seq, fmt.Sprintf("%d", seq))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var restored []Entry
+	log, owner, err := ResumeLogFromFileWALSuffix(
+		path,
+		Options{Capacity: 8},
+		fileWALStringEncode,
+		fileWALStringDecode,
+		func(entry Entry) error {
+			restored = append(restored, entry)
+			return nil
+		},
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	if len(restored) != 2 || restored[0].Seq != 4 || restored[1].Seq != 5 {
+		t.Fatalf("restored suffix = %+v", restored)
+	}
+	if first, ok := log.FirstSeq(); !ok || first != 4 {
+		t.Fatalf("FirstSeq = (%d, %t), want (4, true)", first, ok)
+	}
+	if _, _, err := log.Subscribe(3); !errors.Is(err, ErrGapped) {
+		t.Fatalf("boundary subscription = %v, want ErrGapped", err)
+	}
+	if next, err := log.CommitWithPublication("6", fileWALEntry(6, "6").HLC, nil); err != nil || next.Seq != 6 {
+		t.Fatalf("next commit = %+v, %v", next, err)
+	}
+
+	// Damage before the skipped boundary still fails the validating first pass.
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(fileWALMagic)+fileWALFrameHeader] ^= 1
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resumed, closer, err := ResumeLogFromFileWALSuffix(
+		path, Options{}, fileWALStringEncode, fileWALStringDecode, func(Entry) error { return nil }, 3,
+	); resumed != nil || closer != nil || err == nil {
+		t.Fatalf("corrupt pre-boundary WAL resumed: log=%p closer=%v err=%v", resumed, closer, err)
 	}
 }
 

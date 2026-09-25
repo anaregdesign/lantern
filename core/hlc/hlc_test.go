@@ -106,6 +106,7 @@ func TestRestoreFloorKeepsCommittedOrderAfterWallClockRollback(t *testing.T) {
 	if err := c.RestoreFloor(floor); err != nil {
 		t.Fatal(err)
 	}
+
 	first := c.Now()
 	if !floor.Less(first) || first.WallNs != floor.WallNs || first.Logical != floor.Logical+1 {
 		t.Fatalf("restored Now = %+v, want strictly after %+v", first, floor)
@@ -122,6 +123,33 @@ func TestRestoreFloorKeepsCommittedOrderAfterWallClockRollback(t *testing.T) {
 	if third := c.Now(); !second.Less(third) {
 		t.Fatalf("re-restored Now = %+v, want after %+v", third, second)
 	}
+}
+
+func TestRestoreFloorStageCommitAndAbort(t *testing.T) {
+	c := New(nodeID(1), Options{Now: func() int64 { return 10 }})
+	first := c.Now()
+	stage, err := c.BeginRestoreFloor(Timestamp{WallNs: 100, Logical: 7, NodeID: nodeID(9)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stage.Floor(); got.WallNs != 100 || got.Logical != 7 || got.NodeID != nodeID(1) {
+		t.Fatalf("staged floor = %+v", got)
+	}
+	stage.Abort()
+	afterAbort := c.Now()
+	if afterAbort.WallNs != first.WallNs || afterAbort.Logical != first.Logical+1 {
+		t.Fatalf("abort did not restore prior clock: first=%+v after=%+v", first, afterAbort)
+	}
+
+	stage, err = c.BeginRestoreFloor(Timestamp{WallNs: 200, Logical: 3, NodeID: nodeID(8)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Commit()
+	if got := c.Now(); got.WallNs != 200 || got.Logical != 4 {
+		t.Fatalf("committed floor produced %+v", got)
+	}
+	stage.Abort()
 }
 
 func TestRestoreFloorAvoidsLogicalWraparound(t *testing.T) {

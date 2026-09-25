@@ -140,16 +140,86 @@ func (c *Clock) NodeID() NodeID { return c.nodeID }
 // moves an already-used clock backward. A negative wall timestamp or the
 // maximum representable wall/logical pair cannot provide a safe next stamp.
 func (c *Clock) RestoreFloor(floor Timestamp) error {
-	if floor.WallNs < 0 || (floor.WallNs == math.MaxInt64 && floor.Logical == math.MaxUint32) {
-		return ErrInvalidRestoreFloor
+	if err := validateRestoreFloor(floor); err != nil {
+		return err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.restoreFloorLocked(floor)
+	return nil
+}
+
+func validateRestoreFloor(floor Timestamp) error {
+	if floor.WallNs < 0 || (floor.WallNs == math.MaxInt64 && floor.Logical == math.MaxUint32) {
+		return ErrInvalidRestoreFloor
+	}
+	return nil
+}
+
+func (c *Clock) restoreFloorLocked(floor Timestamp) {
 	if floor.WallNs > c.wallNs || (floor.WallNs == c.wallNs && floor.Logical > c.logical) {
 		c.wallNs = floor.WallNs
 		c.logical = floor.Logical
 	}
-	return nil
+}
+
+// RestoreFloorStage holds the Clock lock around a reversible in-place floor
+// replacement. It lets a larger durable transaction perform every fallible
+// validation before its WAL commit, then publish by only releasing locks.
+// Commit and Abort are idempotent; callers must finish the stage exactly once.
+type RestoreFloorStage struct {
+	clock      *Clock
+	previousW  int64
+	previousL  uint32
+	floor      Timestamp
+	terminated bool
+}
+
+// BeginRestoreFloor stages max(current, floor) without changing the Clock
+// object identity. Now, Update, and another restore wait until Commit or
+// Abort. The returned Floor carries this Clock's NodeID and is safe to persist
+// as the exact post-commit restart floor.
+func (c *Clock) BeginRestoreFloor(floor Timestamp) (*RestoreFloorStage, error) {
+	if err := validateRestoreFloor(floor); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	stage := &RestoreFloorStage{
+		clock:     c,
+		previousW: c.wallNs,
+		previousL: c.logical,
+	}
+	c.restoreFloorLocked(floor)
+	stage.floor = Timestamp{WallNs: c.wallNs, Logical: c.logical, NodeID: c.nodeID}
+	return stage, nil
+}
+
+// Floor returns the exact staged local floor.
+func (s *RestoreFloorStage) Floor() Timestamp {
+	if s == nil {
+		return Timestamp{}
+	}
+	return s.floor
+}
+
+// Commit publishes the staged floor by releasing the Clock lock.
+func (s *RestoreFloorStage) Commit() {
+	if s == nil || s.terminated {
+		return
+	}
+	s.terminated = true
+	s.clock.mu.Unlock()
+}
+
+// Abort restores the prior wall/logical pair and releases the Clock lock.
+func (s *RestoreFloorStage) Abort() {
+	if s == nil || s.terminated {
+		return
+	}
+	s.clock.wallNs = s.previousW
+	s.clock.logical = s.previousL
+	s.terminated = true
+	s.clock.mu.Unlock()
 }
 
 // bumpLogical advances the clock past the current wall/logical pair. The

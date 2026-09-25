@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -24,6 +26,7 @@ type receiptWALOwnedCandidate struct {
 	journal  *mutationreceipt.ClockJournal
 	tip      *mutationlog.FileWALTipJournal
 	lease    *mutationlog.FileWALLease
+	baseline receiptBaselineWALScan
 }
 
 // Close stops appends, closes both journals, then releases path ownership.
@@ -60,6 +63,43 @@ func openLeasedReceiptWALCandidate(
 	opts mutationlog.Options,
 	defaultTTL time.Duration,
 	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
+	preflight ...func(string, [sha256.Size]byte) error,
+) (_ *receiptWALOwnedCandidate, err error) {
+	return openLeasedReceiptWALCandidateInternal(
+		path, config, now, opts, defaultTTL, configureGraph, hlc.NodeID{}, nil, nil, preflight...,
+	)
+}
+
+func openLeasedReceiptWALCandidateWithBaseline(
+	path string,
+	config mutationreceipt.Config,
+	now time.Time,
+	opts mutationlog.Options,
+	defaultTTL time.Duration,
+	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
+	nodeID hlc.NodeID,
+	codec ReceiptBaselineArchiveCodec,
+	validateBaseline func(receiptBaselineWALScan) error,
+	preflight ...func(string, [sha256.Size]byte) error,
+) (_ *receiptWALOwnedCandidate, err error) {
+	if nodeID == (hlc.NodeID{}) || codec == nil || validateBaseline == nil {
+		return nil, errors.New("service: baseline-aware WAL recovery requires node ID, archive codec, and generation validator")
+	}
+	return openLeasedReceiptWALCandidateInternal(
+		path, config, now, opts, defaultTTL, configureGraph, nodeID, codec, validateBaseline, preflight...,
+	)
+}
+
+func openLeasedReceiptWALCandidateInternal(
+	path string,
+	config mutationreceipt.Config,
+	now time.Time,
+	opts mutationlog.Options,
+	defaultTTL time.Duration,
+	configureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error,
+	nodeID hlc.NodeID,
+	codec ReceiptBaselineArchiveCodec,
+	validateBaseline func(receiptBaselineWALScan) error,
 	preflight ...func(string, [sha256.Size]byte) error,
 ) (_ *receiptWALOwnedCandidate, err error) {
 	if len(preflight) > 1 {
@@ -103,7 +143,42 @@ func openLeasedReceiptWALCandidate(
 	if config.ClockHighWater.IsZero() || config.ClockHighWater.UnixMilli() < journal.HighWaterMillis() {
 		config.ClockHighWater = time.UnixMilli(journal.HighWaterMillis())
 	}
-	state, err := stageEffectCompleteReceiptWALCandidate(lease, config, now, opts, defaultTTL, configureGraph)
+	var baseline receiptBaselineWALScan
+	if codec != nil {
+		err = lease.WithPath(func(canonicalPath string) error {
+			var scanErr error
+			baseline, scanErr = scanReceiptBaselineWAL(canonicalPath, config, nodeID)
+			return scanErr
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := validateBaseline(baseline); err != nil {
+			return nil, err
+		}
+	}
+	var state *receiptWALRecoveryCandidate
+	if baseline.hasMarker {
+		err = lease.WithPath(func(canonicalPath string) error {
+			var resumeErr error
+			state, logOwner, resumeErr = resumeReceiptBaselineWALCandidate(
+				context.Background(),
+				canonicalPath,
+				config,
+				now,
+				opts,
+				defaultTTL,
+				configureGraph,
+				codec,
+				journal.HighWaterMillis(),
+				tip,
+				baseline,
+			)
+			return resumeErr
+		})
+	} else {
+		state, err = stageEffectCompleteReceiptWALCandidate(lease, config, now, opts, defaultTTL, configureGraph)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -115,22 +190,34 @@ func openLeasedReceiptWALCandidate(
 	if err != nil {
 		return nil, fmt.Errorf("receipt WAL clock binding: %w", err)
 	}
-	var liveLog *mutationlog.Log
-	err = lease.WithPath(func(canonicalPath string) error {
-		var resumeErr error
-		liveLog, logOwner, resumeErr = mutationlog.ResumeLogFromFileWALWithTip(canonicalPath, opts, encodeReceiptWALUnion, decodeReceiptWALUnion, validateReceiptWALUnionEntry, func(mutationlog.Entry) error {
-			return nil // The strict first pass installed the detached application image.
-		}, tip)
-		return resumeErr
-	})
-	if err != nil {
-		return nil, err
+	if !baseline.hasMarker {
+		var liveLog *mutationlog.Log
+		err = lease.WithPath(func(canonicalPath string) error {
+			var resumeErr error
+			liveLog, logOwner, resumeErr = mutationlog.ResumeLogFromFileWALWithTip(canonicalPath, opts, encodeReceiptWALUnion, decodeReceiptWALUnion, validateReceiptWALUnionEntry, func(mutationlog.Entry) error {
+				return nil // The strict first pass installed the detached application image.
+			}, tip)
+			return resumeErr
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := matchingReceiptWALLogTail(state.log, liveLog); err != nil {
+			return nil, err
+		}
+		state.log = liveLog
 	}
-	if err := matchingReceiptWALLogTail(state.log, liveLog); err != nil {
-		return nil, err
+	if codec != nil {
+		err = lease.WithPath(func(canonicalPath string) error {
+			return (receiptBaselineSidecarStore{walPath: canonicalPath}).cleanup(baseline.marker.Digest)
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
-	state.log = liveLog
-	return &receiptWALOwnedCandidate{state: state, logOwner: logOwner, journal: journal, tip: tip, lease: lease}, nil
+	return &receiptWALOwnedCandidate{
+		state: state, logOwner: logOwner, journal: journal, tip: tip, lease: lease, baseline: baseline,
+	}, nil
 }
 
 func matchingReceiptWALLogTail(staged, live *mutationlog.Log) error {
