@@ -52,6 +52,11 @@ message MutationOp {
     // peers unaware of this contract reject the unknown operation instead
     // of applying a graph-only Delete and advancing the origin watermark.
     ReplicatedReceiptEdgeDelete replicated_receipt_edge_delete = 15;
+    // Private receipt-bearing Vertex Put/Delete envelopes retain each
+    // original request position and the receiver-local graph projection.
+    // Public write requests do not expose operation IDs yet.
+    ReplicatedReceiptVertexPut replicated_receipt_vertex_put = 16;
+    ReplicatedReceiptVertexDelete replicated_receipt_vertex_delete = 17;
   }
 }
 
@@ -74,6 +79,43 @@ message ReplicatedReceiptEdgeDelete {
   bytes policy_fingerprint = 2;
   google.protobuf.Timestamp tombstone_expiration = 3;
   repeated ReplicatedReceiptEdgeDeleteItem items = 4;
+}
+
+// One request-index-aligned item in a receipt-bearing Vertex Put. Original
+// retains the complete semantic intent. Accepted is omitted when this receiver
+// has no graph effect; when present it is either a live value or an explicit
+// causal barrier and is never re-evaluated against if_absent.
+message ReplicatedReceiptVertexPutItem {
+  Vertex original = 1;
+  MutationReceipt receipt = 2;
+  ReplicatedPutVertex accepted = 3;
+}
+
+// A complete ordered conditional Vertex Put call. A call with no accepted
+// graph effects still consumes Mutation.seq and persists every exact result.
+message ReplicatedReceiptVertexPut {
+  bytes deployment_epoch = 1;
+  bytes policy_fingerprint = 2;
+  bool if_absent = 3;
+  repeated ReplicatedReceiptVertexPutItem items = 4;
+}
+
+// One request-index-aligned item in a receipt-bearing exact Vertex Delete.
+// causally_accepted may be true when existed=false because the Delete still
+// installs an identity floor.
+message ReplicatedReceiptVertexDeleteItem {
+  string key = 1;
+  MutationReceipt receipt = 2;
+  bool causally_accepted = 3;
+}
+
+// A complete ordered exact Vertex Delete call. Prefix Delete is deliberately
+// excluded from the receipt-capable mutation families.
+message ReplicatedReceiptVertexDelete {
+  bytes deployment_epoch = 1;
+  bytes policy_fingerprint = 2;
+  google.protobuf.Timestamp tombstone_expiration = 3;
+  repeated ReplicatedReceiptVertexDeleteItem items = 4;
 }
 
 message VertexCausalBarrier {

@@ -513,7 +513,9 @@ func (r *ServingRuntime) CertifyInstallation(
 	}
 	if r.receipt == nil {
 		if primary.receiptStore != nil || primary.receiptRetiredCatalog != nil ||
-			primary.receiptEdgeDeleteCoordinator != nil {
+			primary.receiptEdgeDeleteCoordinator != nil ||
+			primary.receiptVertexPutCoordinator != nil ||
+			primary.receiptVertexDeleteCoordinator != nil {
 			return errors.New("service: graph-only runtime installed receipt state")
 		}
 		if replication.receiptSnapshotRequired || replication.receiptSnapshotSource != nil {
@@ -537,6 +539,16 @@ func (r *ServingRuntime) CertifyInstallation(
 		if coordinator == nil || coordinator.service != primary || coordinator.cache != r.graph ||
 			coordinator.store != r.receipt.store || coordinator.retired != r.receipt.retired {
 			return errors.New("service: durable receipt follower coordinator is not installed from the serving runtime")
+		}
+		vertexPut := primary.receiptVertexPutCoordinator
+		if vertexPut == nil || vertexPut.service != primary || vertexPut.cache != r.graph ||
+			vertexPut.store != r.receipt.store {
+			return errors.New("service: durable receipt Vertex Put coordinator is not installed from the serving runtime")
+		}
+		vertexDelete := primary.receiptVertexDeleteCoordinator
+		if vertexDelete == nil || vertexDelete.service != primary || vertexDelete.cache != r.graph ||
+			vertexDelete.store != r.receipt.store {
+			return errors.New("service: durable receipt Vertex Delete coordinator is not installed from the serving runtime")
 		}
 		if replication.receiptSnapshotSource == nil {
 			if err := replication.ConfigureReceiptSnapshot(source, r.receipt.policy); err != nil {

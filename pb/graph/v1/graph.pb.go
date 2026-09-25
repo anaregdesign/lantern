@@ -5734,6 +5734,8 @@ type ReceiptResult struct {
 	// Types that are valid to be assigned to Result:
 	//
 	//	*ReceiptResult_DeleteEdgeExisted
+	//	*ReceiptResult_PutVertexOutcome
+	//	*ReceiptResult_DeleteVertexExisted
 	Result        isReceiptResult_Result `protobuf_oneof:"result"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -5785,6 +5787,24 @@ func (x *ReceiptResult) GetDeleteEdgeExisted() bool {
 	return false
 }
 
+func (x *ReceiptResult) GetPutVertexOutcome() PutOutcome {
+	if x != nil {
+		if x, ok := x.Result.(*ReceiptResult_PutVertexOutcome); ok {
+			return x.PutVertexOutcome
+		}
+	}
+	return PutOutcome_PUT_OUTCOME_UNSPECIFIED
+}
+
+func (x *ReceiptResult) GetDeleteVertexExisted() bool {
+	if x != nil {
+		if x, ok := x.Result.(*ReceiptResult_DeleteVertexExisted); ok {
+			return x.DeleteVertexExisted
+		}
+	}
+	return false
+}
+
 type isReceiptResult_Result interface {
 	isReceiptResult_Result()
 }
@@ -5793,7 +5813,19 @@ type ReceiptResult_DeleteEdgeExisted struct {
 	DeleteEdgeExisted bool `protobuf:"varint,1,opt,name=delete_edge_existed,json=deleteEdgeExisted,proto3,oneof"`
 }
 
+type ReceiptResult_PutVertexOutcome struct {
+	PutVertexOutcome PutOutcome `protobuf:"varint,2,opt,name=put_vertex_outcome,json=putVertexOutcome,proto3,enum=graph.v1.PutOutcome,oneof"`
+}
+
+type ReceiptResult_DeleteVertexExisted struct {
+	DeleteVertexExisted bool `protobuf:"varint,3,opt,name=delete_vertex_existed,json=deleteVertexExisted,proto3,oneof"`
+}
+
 func (*ReceiptResult_DeleteEdgeExisted) isReceiptResult_Result() {}
+
+func (*ReceiptResult_PutVertexOutcome) isReceiptResult_Result() {}
+
+func (*ReceiptResult_DeleteVertexExisted) isReceiptResult_Result() {}
 
 // MutationReceipt is one request-index-aligned item from an atomic logical
 // call. The 49-byte operation ID, 16-byte call ID, and semantic SHA-256 are
@@ -6686,9 +6718,11 @@ const file_graph_v1_graph_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12/\n" +
 	"\x06policy\x18\x02 \x01(\v2\x17.graph.v1.ReceiptPolicyR\x06policy\x125\n" +
 	"\bendpoint\x18\x03 \x01(\v2\x19.graph.v1.ReceiptEndpointR\bendpoint\x12+\n" +
-	"\x12server_now_unix_ms\x18\x04 \x01(\x04R\x0fserverNowUnixMs\"K\n" +
+	"\x12server_now_unix_ms\x18\x04 \x01(\x04R\x0fserverNowUnixMs\"\xc7\x01\n" +
 	"\rReceiptResult\x120\n" +
-	"\x13delete_edge_existed\x18\x01 \x01(\bH\x00R\x11deleteEdgeExistedB\b\n" +
+	"\x13delete_edge_existed\x18\x01 \x01(\bH\x00R\x11deleteEdgeExisted\x12D\n" +
+	"\x12put_vertex_outcome\x18\x02 \x01(\x0e2\x14.graph.v1.PutOutcomeH\x00R\x10putVertexOutcome\x124\n" +
+	"\x15delete_vertex_existed\x18\x03 \x01(\bH\x00R\x13deleteVertexExistedB\b\n" +
 	"\x06result\"\xab\x02\n" +
 	"\x0fMutationReceipt\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\fR\voperationId\x12&\n" +
@@ -6988,76 +7022,77 @@ var file_graph_v1_graph_proto_depIdxs = []int32{
 	75,  // 61: graph.v1.GetReplicationStatusResponse.peers:type_name -> graph.v1.ReplicationPeer
 	78,  // 62: graph.v1.GetReceiptCapabilityResponse.policy:type_name -> graph.v1.ReceiptPolicy
 	79,  // 63: graph.v1.GetReceiptCapabilityResponse.endpoint:type_name -> graph.v1.ReceiptEndpoint
-	82,  // 64: graph.v1.MutationReceipt.original_result:type_name -> graph.v1.ReceiptResult
-	10,  // 65: graph.v1.ReceiptStatus.state:type_name -> graph.v1.MutationReceiptState
-	83,  // 66: graph.v1.ReceiptStatus.receipt:type_name -> graph.v1.MutationReceipt
-	84,  // 67: graph.v1.GetReceiptStatusResponse.status:type_name -> graph.v1.ReceiptStatus
-	84,  // 68: graph.v1.GetReceiptStatusesResponse.statuses:type_name -> graph.v1.ReceiptStatus
-	13,  // 69: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
-	14,  // 70: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
-	16,  // 71: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
-	21,  // 72: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
-	23,  // 73: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
-	25,  // 74: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
-	27,  // 75: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
-	29,  // 76: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
-	31,  // 77: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
-	33,  // 78: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
-	35,  // 79: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
-	38,  // 80: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
-	41,  // 81: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
-	43,  // 82: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
-	45,  // 83: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
-	47,  // 84: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
-	49,  // 85: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
-	60,  // 86: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
-	62,  // 87: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
-	64,  // 88: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
-	66,  // 89: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
-	51,  // 90: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
-	56,  // 91: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
-	58,  // 92: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
-	54,  // 93: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
-	68,  // 94: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
-	76,  // 95: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
-	80,  // 96: graph.v1.LanternService.GetReceiptCapability:input_type -> graph.v1.GetReceiptCapabilityRequest
-	85,  // 97: graph.v1.LanternService.GetReceiptStatus:input_type -> graph.v1.GetReceiptStatusRequest
-	87,  // 98: graph.v1.LanternService.GetReceiptStatuses:input_type -> graph.v1.GetReceiptStatusesRequest
-	89,  // 99: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
-	20,  // 100: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
-	22,  // 101: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
-	24,  // 102: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
-	26,  // 103: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
-	28,  // 104: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
-	30,  // 105: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
-	32,  // 106: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
-	34,  // 107: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
-	36,  // 108: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
-	39,  // 109: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
-	42,  // 110: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
-	44,  // 111: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
-	46,  // 112: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
-	48,  // 113: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
-	50,  // 114: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
-	61,  // 115: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
-	63,  // 116: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
-	65,  // 117: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
-	67,  // 118: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
-	52,  // 119: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
-	57,  // 120: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
-	59,  // 121: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
-	55,  // 122: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
-	74,  // 123: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
-	77,  // 124: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
-	81,  // 125: graph.v1.LanternService.GetReceiptCapability:output_type -> graph.v1.GetReceiptCapabilityResponse
-	86,  // 126: graph.v1.LanternService.GetReceiptStatus:output_type -> graph.v1.GetReceiptStatusResponse
-	88,  // 127: graph.v1.LanternService.GetReceiptStatuses:output_type -> graph.v1.GetReceiptStatusesResponse
-	90,  // 128: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
-	100, // [100:129] is the sub-list for method output_type
-	71,  // [71:100] is the sub-list for method input_type
-	71,  // [71:71] is the sub-list for extension type_name
-	71,  // [71:71] is the sub-list for extension extendee
-	0,   // [0:71] is the sub-list for field type_name
+	3,   // 64: graph.v1.ReceiptResult.put_vertex_outcome:type_name -> graph.v1.PutOutcome
+	82,  // 65: graph.v1.MutationReceipt.original_result:type_name -> graph.v1.ReceiptResult
+	10,  // 66: graph.v1.ReceiptStatus.state:type_name -> graph.v1.MutationReceiptState
+	83,  // 67: graph.v1.ReceiptStatus.receipt:type_name -> graph.v1.MutationReceipt
+	84,  // 68: graph.v1.GetReceiptStatusResponse.status:type_name -> graph.v1.ReceiptStatus
+	84,  // 69: graph.v1.GetReceiptStatusesResponse.statuses:type_name -> graph.v1.ReceiptStatus
+	13,  // 70: graph.v1.BackupSnapshotResponse.vertex:type_name -> graph.v1.Vertex
+	14,  // 71: graph.v1.BackupSnapshotResponse.edge:type_name -> graph.v1.Edge
+	16,  // 72: graph.v1.LanternService.Illuminate:input_type -> graph.v1.IlluminateRequest
+	21,  // 73: graph.v1.LanternService.GetVertex:input_type -> graph.v1.GetVertexRequest
+	23,  // 74: graph.v1.LanternService.GetVertices:input_type -> graph.v1.GetVerticesRequest
+	25,  // 75: graph.v1.LanternService.PutVertex:input_type -> graph.v1.PutVertexRequest
+	27,  // 76: graph.v1.LanternService.PutVertices:input_type -> graph.v1.PutVerticesRequest
+	29,  // 77: graph.v1.LanternService.DeleteVertex:input_type -> graph.v1.DeleteVertexRequest
+	31,  // 78: graph.v1.LanternService.DeleteVertices:input_type -> graph.v1.DeleteVerticesRequest
+	33,  // 79: graph.v1.LanternService.ScanVertices:input_type -> graph.v1.ScanVerticesRequest
+	35,  // 80: graph.v1.LanternService.ScanVertexKeys:input_type -> graph.v1.ScanVertexKeysRequest
+	38,  // 81: graph.v1.LanternService.SearchVertices:input_type -> graph.v1.SearchVerticesRequest
+	41,  // 82: graph.v1.LanternService.CountVerticesByPrefix:input_type -> graph.v1.CountVerticesByPrefixRequest
+	43,  // 83: graph.v1.LanternService.DeleteVerticesByPrefix:input_type -> graph.v1.DeleteVerticesByPrefixRequest
+	45,  // 84: graph.v1.LanternService.TopVerticesByDegree:input_type -> graph.v1.TopVerticesByDegreeRequest
+	47,  // 85: graph.v1.LanternService.GetEdge:input_type -> graph.v1.GetEdgeRequest
+	49,  // 86: graph.v1.LanternService.GetEdges:input_type -> graph.v1.GetEdgesRequest
+	60,  // 87: graph.v1.LanternService.AddEdge:input_type -> graph.v1.AddEdgeRequest
+	62,  // 88: graph.v1.LanternService.AddEdges:input_type -> graph.v1.AddEdgesRequest
+	64,  // 89: graph.v1.LanternService.PutEdge:input_type -> graph.v1.PutEdgeRequest
+	66,  // 90: graph.v1.LanternService.PutEdges:input_type -> graph.v1.PutEdgesRequest
+	51,  // 91: graph.v1.LanternService.DeleteEdge:input_type -> graph.v1.DeleteEdgeRequest
+	56,  // 92: graph.v1.LanternService.DeleteEdges:input_type -> graph.v1.DeleteEdgesRequest
+	58,  // 93: graph.v1.LanternService.DeleteEdgesByPrefix:input_type -> graph.v1.DeleteEdgesByPrefixRequest
+	54,  // 94: graph.v1.LanternService.ScanEdges:input_type -> graph.v1.ScanEdgesRequest
+	68,  // 95: graph.v1.LanternService.GetServerStatus:input_type -> graph.v1.GetServerStatusRequest
+	76,  // 96: graph.v1.LanternService.GetReplicationStatus:input_type -> graph.v1.GetReplicationStatusRequest
+	80,  // 97: graph.v1.LanternService.GetReceiptCapability:input_type -> graph.v1.GetReceiptCapabilityRequest
+	85,  // 98: graph.v1.LanternService.GetReceiptStatus:input_type -> graph.v1.GetReceiptStatusRequest
+	87,  // 99: graph.v1.LanternService.GetReceiptStatuses:input_type -> graph.v1.GetReceiptStatusesRequest
+	89,  // 100: graph.v1.LanternService.BackupSnapshot:input_type -> graph.v1.BackupSnapshotRequest
+	20,  // 101: graph.v1.LanternService.Illuminate:output_type -> graph.v1.IlluminateResponse
+	22,  // 102: graph.v1.LanternService.GetVertex:output_type -> graph.v1.GetVertexResponse
+	24,  // 103: graph.v1.LanternService.GetVertices:output_type -> graph.v1.GetVerticesResponse
+	26,  // 104: graph.v1.LanternService.PutVertex:output_type -> graph.v1.PutVertexResponse
+	28,  // 105: graph.v1.LanternService.PutVertices:output_type -> graph.v1.PutVerticesResponse
+	30,  // 106: graph.v1.LanternService.DeleteVertex:output_type -> graph.v1.DeleteVertexResponse
+	32,  // 107: graph.v1.LanternService.DeleteVertices:output_type -> graph.v1.DeleteVerticesResponse
+	34,  // 108: graph.v1.LanternService.ScanVertices:output_type -> graph.v1.ScanVerticesResponse
+	36,  // 109: graph.v1.LanternService.ScanVertexKeys:output_type -> graph.v1.ScanVertexKeysResponse
+	39,  // 110: graph.v1.LanternService.SearchVertices:output_type -> graph.v1.SearchVerticesResponse
+	42,  // 111: graph.v1.LanternService.CountVerticesByPrefix:output_type -> graph.v1.CountVerticesByPrefixResponse
+	44,  // 112: graph.v1.LanternService.DeleteVerticesByPrefix:output_type -> graph.v1.DeleteVerticesByPrefixResponse
+	46,  // 113: graph.v1.LanternService.TopVerticesByDegree:output_type -> graph.v1.TopVerticesByDegreeResponse
+	48,  // 114: graph.v1.LanternService.GetEdge:output_type -> graph.v1.GetEdgeResponse
+	50,  // 115: graph.v1.LanternService.GetEdges:output_type -> graph.v1.GetEdgesResponse
+	61,  // 116: graph.v1.LanternService.AddEdge:output_type -> graph.v1.AddEdgeResponse
+	63,  // 117: graph.v1.LanternService.AddEdges:output_type -> graph.v1.AddEdgesResponse
+	65,  // 118: graph.v1.LanternService.PutEdge:output_type -> graph.v1.PutEdgeResponse
+	67,  // 119: graph.v1.LanternService.PutEdges:output_type -> graph.v1.PutEdgesResponse
+	52,  // 120: graph.v1.LanternService.DeleteEdge:output_type -> graph.v1.DeleteEdgeResponse
+	57,  // 121: graph.v1.LanternService.DeleteEdges:output_type -> graph.v1.DeleteEdgesResponse
+	59,  // 122: graph.v1.LanternService.DeleteEdgesByPrefix:output_type -> graph.v1.DeleteEdgesByPrefixResponse
+	55,  // 123: graph.v1.LanternService.ScanEdges:output_type -> graph.v1.ScanEdgesResponse
+	74,  // 124: graph.v1.LanternService.GetServerStatus:output_type -> graph.v1.GetServerStatusResponse
+	77,  // 125: graph.v1.LanternService.GetReplicationStatus:output_type -> graph.v1.GetReplicationStatusResponse
+	81,  // 126: graph.v1.LanternService.GetReceiptCapability:output_type -> graph.v1.GetReceiptCapabilityResponse
+	86,  // 127: graph.v1.LanternService.GetReceiptStatus:output_type -> graph.v1.GetReceiptStatusResponse
+	88,  // 128: graph.v1.LanternService.GetReceiptStatuses:output_type -> graph.v1.GetReceiptStatusesResponse
+	90,  // 129: graph.v1.LanternService.BackupSnapshot:output_type -> graph.v1.BackupSnapshotResponse
+	101, // [101:130] is the sub-list for method output_type
+	72,  // [72:101] is the sub-list for method input_type
+	72,  // [72:72] is the sub-list for extension type_name
+	72,  // [72:72] is the sub-list for extension extendee
+	0,   // [0:72] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_graph_proto_init() }
@@ -7086,6 +7121,8 @@ func file_graph_v1_graph_proto_init() {
 	}
 	file_graph_v1_graph_proto_msgTypes[69].OneofWrappers = []any{
 		(*ReceiptResult_DeleteEdgeExisted)(nil),
+		(*ReceiptResult_PutVertexOutcome)(nil),
+		(*ReceiptResult_DeleteVertexExisted)(nil),
 	}
 	file_graph_v1_graph_proto_msgTypes[77].OneofWrappers = []any{
 		(*BackupSnapshotResponse_Vertex)(nil),

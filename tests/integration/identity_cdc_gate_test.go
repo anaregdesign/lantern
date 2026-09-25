@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -63,6 +64,151 @@ func receiptEdgeDeleteTailFixture(t *testing.T, origin hlc.NodeID, seq uint64, a
 			},
 		}},
 	}, stamp
+}
+
+func receiptVertexPutTailDigest(vertex *pb.Vertex, ifAbsent bool) []byte {
+	canonical := []byte{byte(mutationreceipt.PutVertex)}
+	canonical = binary.BigEndian.AppendUint64(canonical, uint64(len(vertex.GetKey())))
+	canonical = append(canonical, vertex.GetKey()...)
+	canonical = append(canonical, 17)
+	canonical = binary.BigEndian.AppendUint64(canonical, uint64(len(vertex.GetString_())))
+	canonical = append(canonical, vertex.GetString_()...)
+	if vertex.GetExpiration() == nil {
+		canonical = append(canonical, 0)
+	} else {
+		canonical = append(canonical, 1)
+		canonical = binary.BigEndian.AppendUint64(
+			canonical, uint64(vertex.GetExpiration().GetSeconds()),
+		)
+		canonical = binary.BigEndian.AppendUint32(
+			canonical, uint32(vertex.GetExpiration().GetNanos()),
+		)
+	}
+	if ifAbsent {
+		canonical = append(canonical, 1)
+	} else {
+		canonical = append(canonical, 0)
+	}
+	digest := mutationreceipt.IntentDigest(canonical)
+	return digest[:]
+}
+
+func receiptVertexDeleteTailDigest(key string) []byte {
+	canonical := []byte{byte(mutationreceipt.DeleteVertex)}
+	canonical = binary.BigEndian.AppendUint64(canonical, uint64(len(key)))
+	canonical = append(canonical, key...)
+	digest := mutationreceipt.IntentDigest(canonical)
+	return digest[:]
+}
+
+func receiptVertexTailFixtures(
+	t *testing.T,
+	origin hlc.NodeID,
+) (*pb.Mutation, hlc.Timestamp, *pb.Mutation, hlc.Timestamp) {
+	t.Helper()
+	epoch := mutationreceipt.Epoch{0x73}
+	issued := time.Now().Add(-time.Second)
+	deadline := uint64(issued.Add(time.Hour).UnixMilli())
+	policy := append([]byte{0x51}, make([]byte, 31)...)
+	putGroup := mutationreceipt.GroupID{0x31}
+	expiredAt := timestamppb.New(time.Now().Add(-time.Minute))
+	originals := []*pb.Vertex{
+		{Key: "vertex/permanent", Value: &pb.Vertex_String_{String_: "permanent"}},
+		{Key: "vertex/no-op", Value: &pb.Vertex_String_{String_: "blocked"}},
+		{
+			Key: "vertex/expired", Value: &pb.Vertex_String_{String_: "expired"},
+			Expiration: expiredAt,
+		},
+	}
+	putResults := []pb.PutOutcome{
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+	}
+	putItems := make([]*pb.ReplicatedReceiptVertexPutItem, len(originals))
+	for i, original := range originals {
+		id, err := mutationreceipt.NewID(epoch, issued, [24]byte{0x31, byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := &pb.ReplicatedReceiptVertexPutItem{
+			Original: proto.Clone(original).(*pb.Vertex),
+			Receipt: &pb.MutationReceipt{
+				OperationId: id.Bytes(), LogicalCallId: putGroup[:],
+				ItemIndex: uint32(i), ItemCount: uint32(len(originals)),
+				IntentSha256:   receiptVertexPutTailDigest(original, true),
+				DeadlineUnixMs: deadline,
+				OriginalResult: &pb.ReceiptResult{
+					Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: putResults[i]},
+				},
+			},
+		}
+		switch i {
+		case 0:
+			item.Accepted = &pb.ReplicatedPutVertex{
+				Outcome: &pb.ReplicatedPutVertex_Live{
+					Live: proto.Clone(original).(*pb.Vertex),
+				},
+			}
+		case 2:
+			item.Accepted = &pb.ReplicatedPutVertex{
+				Outcome: &pb.ReplicatedPutVertex_CausalBarrier{
+					CausalBarrier: &pb.VertexCausalBarrier{Key: original.GetKey()},
+				},
+			}
+		}
+		putItems[i] = item
+	}
+	putStamp := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: origin}
+	put := &pb.Mutation{
+		Seq: 1, Origin: origin[:],
+		Hlc: &pb.HLCTimestamp{WallNs: putStamp.WallNs, NodeId: origin[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptVertexPut{
+			ReplicatedReceiptVertexPut: &pb.ReplicatedReceiptVertexPut{
+				DeploymentEpoch: epoch[:], PolicyFingerprint: policy,
+				IfAbsent: true, Items: putItems,
+			},
+		}},
+	}
+
+	deleteGroup := mutationreceipt.GroupID{0x32}
+	deleteKeys := []string{"vertex/permanent", "vertex/absent"}
+	deleteItems := make([]*pb.ReplicatedReceiptVertexDeleteItem, len(deleteKeys))
+	for i, key := range deleteKeys {
+		id, err := mutationreceipt.NewID(epoch, issued, [24]byte{0x32, byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		deleteItems[i] = &pb.ReplicatedReceiptVertexDeleteItem{
+			Key: key,
+			Receipt: &pb.MutationReceipt{
+				OperationId: id.Bytes(), LogicalCallId: deleteGroup[:],
+				ItemIndex: uint32(i), ItemCount: uint32(len(deleteKeys)),
+				IntentSha256: receiptVertexDeleteTailDigest(key), DeadlineUnixMs: deadline,
+				OriginalResult: &pb.ReceiptResult{
+					Result: &pb.ReceiptResult_DeleteVertexExisted{
+						DeleteVertexExisted: i == 0,
+					},
+				},
+			},
+		}
+	}
+	deleteStamp := putStamp
+	deleteStamp.Logical++
+	deleteMutation := &pb.Mutation{
+		Seq: 2, Origin: origin[:],
+		Hlc: &pb.HLCTimestamp{
+			WallNs: deleteStamp.WallNs, Logical: deleteStamp.Logical, NodeId: origin[:],
+		},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptVertexDelete{
+			ReplicatedReceiptVertexDelete: &pb.ReplicatedReceiptVertexDelete{
+				DeploymentEpoch: epoch[:], PolicyFingerprint: append([]byte(nil), policy...),
+				TombstoneExpiration: timestamppb.New(time.Now().Add(time.Hour)),
+				Items:               deleteItems,
+			},
+		}},
+	}
+	return put, putStamp, deleteMutation, deleteStamp
 }
 
 func TestIdentityCDC_SupersededEdgePutDoesNotReviveUnloggedEndpoint(t *testing.T) {
@@ -425,6 +571,118 @@ func TestIdentityCDC_ReceiptEdgeDeleteTailFailsClosedAndPreservesCursor(t *testi
 	}
 	if connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("malformed receipt full error = %v, want Internal", err)
+	}
+}
+
+func TestIdentityCDC_VertexReceiptTailsUseRealWireAndFailClosed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	origin := hlc.NodeID{0xD1, 0x16}
+	node := newPumpNode(t, origin)
+	rep := newReplicationRawClient(t, node.url)
+	put, putStamp, deleteMutation, deleteStamp := receiptVertexTailFixtures(t, origin)
+	if _, err := node.log.Append(put, putStamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.log.Append(deleteMutation, deleteStamp); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	if err == nil {
+		if legacy.Receive() {
+			t.Fatalf("legacy full Subscribe received Vertex receipt frame: %+v", legacy.Msg())
+		}
+		err = legacy.Err()
+		_ = legacy.Close()
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("legacy Vertex receipt Subscribe = %v, want InvalidArgument", err)
+	}
+
+	full, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		FromLocalSeq: 1, AcceptReceiptEnvelopes: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = full.Close() }()
+	if !full.Receive() {
+		t.Fatalf("Vertex Put full frame: %v", full.Err())
+	}
+	putFrame := full.Msg().GetMutation()
+	putCall := putFrame.GetOp().GetReplicatedReceiptVertexPut()
+	if putFrame.GetSeq() != 1 || putCall == nil || len(putCall.GetItems()) != 3 ||
+		putCall.GetItems()[0].GetOriginal().GetExpiration() != nil ||
+		putCall.GetItems()[0].GetAccepted().GetLive().GetExpiration() != nil ||
+		putCall.GetItems()[1].GetAccepted() != nil ||
+		putCall.GetItems()[2].GetAccepted().GetCausalBarrier().GetKey() != "vertex/expired" {
+		t.Fatalf("Vertex Put receipt envelope changed over h2c: %+v", full.Msg())
+	}
+	if !full.Receive() {
+		t.Fatalf("Vertex Delete full frame: %v", full.Err())
+	}
+	deleteFrame := full.Msg().GetMutation()
+	deleteCall := deleteFrame.GetOp().GetReplicatedReceiptVertexDelete()
+	if deleteFrame.GetSeq() != 2 || deleteCall == nil || len(deleteCall.GetItems()) != 2 ||
+		deleteCall.GetItems()[0].GetReceipt().GetOriginalResult().GetDeleteVertexExisted() != true ||
+		deleteCall.GetItems()[1].GetReceipt().GetOriginalResult().GetDeleteVertexExisted() ||
+		deleteCall.GetItems()[0].GetCausallyAccepted() ||
+		deleteCall.GetItems()[1].GetCausallyAccepted() {
+		t.Fatalf("Vertex Delete receipt envelope changed over h2c: %+v", full.Msg())
+	}
+
+	identity, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		Projection:       pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+		FromSeqPerOrigin: map[string]uint64{hex.EncodeToString(origin[:]): 1},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = identity.Close() }()
+	if !identity.Receive() {
+		t.Fatalf("Vertex Put identity frame: %v", identity.Err())
+	}
+	putIdentity := identity.Msg().GetIdentityChunk()
+	if putIdentity == nil ||
+		putIdentity.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_PUT_VERTEX ||
+		putIdentity.GetSeq() != 1 ||
+		!reflect.DeepEqual(putIdentity.GetVertexKeys(),
+			[]string{"vertex/permanent", "vertex/expired"}) {
+		t.Fatalf("Vertex Put identity projection = %+v", identity.Msg())
+	}
+	if !identity.Receive() {
+		t.Fatalf("Vertex Delete receipt-only identity frame: %v", identity.Err())
+	}
+	deleteIdentity := identity.Msg().GetIdentityChunk()
+	if deleteIdentity == nil ||
+		deleteIdentity.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY ||
+		deleteIdentity.GetSeq() != 2 || !deleteIdentity.GetIsLast() ||
+		len(deleteIdentity.GetVertexKeys())+len(deleteIdentity.GetEdgeKeys()) != 0 {
+		t.Fatalf("Vertex Delete receipt-only projection = %+v", identity.Msg())
+	}
+
+	bad := proto.Clone(deleteMutation).(*pb.Mutation)
+	bad.Seq = 3
+	bad.Hlc.Logical++
+	bad.GetOp().GetReplicatedReceiptVertexDelete().Items[1].Receipt.LogicalCallId[0] ^= 1
+	if _, err := node.log.Append(bad, hlc.Timestamp{
+		WallNs: bad.GetHlc().GetWallNs(), Logical: bad.GetHlc().GetLogical(), NodeID: origin,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	malformed, err := rep.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		FromLocalSeq: 3, AcceptReceiptEnvelopes: true,
+	}))
+	if err == nil {
+		if malformed.Receive() {
+			t.Fatalf("mixed-group Vertex receipt frame escaped: %+v", malformed.Msg())
+		}
+		err = malformed.Err()
+		_ = malformed.Close()
+	}
+	if connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("mixed-group Vertex receipt Subscribe = %v, want Internal", err)
 	}
 }
 

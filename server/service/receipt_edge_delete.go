@@ -350,8 +350,8 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
-	e := pending.receipt
-	if e == nil || e.Origin != origin || e.OriginSeq != seq || e.HLC != ts {
+	e, ok := pending.receipt.(*edgeDeleteReceiptEnvelope)
+	if !ok || e == nil || e.Origin != origin || e.OriginSeq != seq || e.HLC != ts {
 		return connect.NewError(connect.CodeInternal, errors.New("replication receipt pending identity drift"))
 	}
 	s := c.service
@@ -411,7 +411,8 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	if _, err := validateReceiptEdgeDeleteWALEnvelope(localEnvelope); err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication receipt relay envelope: %w", err))
 	}
-	if prior := pending.receiptWAL; prior != nil && slices.Equal(prior.Accepted, localEnvelope.Accepted) {
+	if prior, ok := pending.receiptWAL.(*edgeDeleteReceiptEnvelope); ok &&
+		slices.Equal(prior.Accepted, localEnvelope.Accepted) {
 		localEnvelope = prior
 	}
 

@@ -1188,9 +1188,13 @@ func TestEdgeDeleteReceiptFollowerIndeterminateWALRetainsEvidenceAndFailStops(t 
 	}
 
 	pending := f.service.pendingMutations[origin][1]
-	if pending == nil || pending.receiptWAL == nil ||
-		pending.receiptWAL.Receipts[0].ID != receiptIDFromWire(t, wire, 0) ||
-		pending.receiptWAL.Origin != origin || pending.receiptWAL.OriginSeq != 1 {
+	var retained *edgeDeleteReceiptEnvelope
+	if pending != nil {
+		retained, _ = pending.receiptWAL.(*edgeDeleteReceiptEnvelope)
+	}
+	if pending == nil || retained == nil ||
+		retained.Receipts[0].ID != receiptIDFromWire(t, wire, 0) ||
+		retained.Origin != origin || retained.OriginSeq != 1 {
 		t.Fatalf("indeterminate follower WAL lost retry evidence: %+v", pending)
 	}
 	if _, live := f.cache.GetWeight(key.Tail, key.Head); !live ||

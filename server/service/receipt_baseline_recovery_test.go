@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testing.T) {
@@ -401,6 +404,48 @@ func TestReceiptBaselineSuffixCoalescesExactReceiptDuplicatesAndRejectsConflicts
 	}
 }
 
+func TestReceiptBaselineSuffixChargesRetainedBaselineBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	baselineCost := receiptWALDecisionCost(mutationreceipt.Receipt{
+		Intent: mutationreceipt.Intent{},
+		Result: []byte("baseline-result"),
+	})
+	suffixCost := receiptWALDecisionCost(mutationreceipt.Receipt{
+		Intent: mutationreceipt.Intent{},
+		Result: []byte{0},
+	})
+	config.Receipt.MaxEntries = 2
+	config.Receipt.MaxBytes = baselineCost + suffixCost - 1
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	suffix := receiptBaselineSuffixEnvelope(
+		t, config.Receipt, 0x91, 1, image.cutoff.WallNs+int64(time.Millisecond),
+		graphcache.EdgeKey[string]{Tail: "byte", Head: "limited"}, nil,
+	)
+	if _, err := runtime.log.Append(suffix, suffix.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if restarted != nil {
+		_ = restarted.Close()
+	}
+	if !errors.Is(err, mutationreceipt.ErrCapacity) {
+		t.Fatalf("byte-limited baseline suffix restart = %p, %v", restarted, err)
+	}
+}
+
 func TestReceiptBaselineSuffixRejectsEpochAndPolicyMismatch(t *testing.T) {
 	for _, mismatch := range []string{"epoch", "policy"} {
 		t.Run(mismatch, func(t *testing.T) {
@@ -496,6 +541,343 @@ func TestReceiptBaselineSuffixReplaysReplicatedDeletePastLocalCausalLimit(t *tes
 	if stats.EdgeEntries != 2 || !stats.EdgeOverLimit {
 		t.Fatalf("replicated suffix causal state = %+v", stats)
 	}
+}
+
+func TestReceiptBaselineSuffixReplaysVertexReceiptFamiliesWithRetiredState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	highWater := image.capture.Receipts.ClockHighWaterMillis
+	retiredState, retiredID := mustRetiredCatalogSnapshot(
+		t, config.Receipt, highWater, 0x94,
+	)
+	setReceiptBaselineTestRetired(&image, retiredState)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+	put := receiptBaselineVertexPutSuffixEnvelope(
+		t, config.Receipt, 0x93, 1, image.cutoff.WallNs+int64(time.Millisecond),
+	)
+	deleteEnvelope := receiptBaselineVertexDeleteSuffixEnvelope(
+		t, config.Receipt, 0x93, 2, put.HLC.WallNs+int64(time.Millisecond),
+	)
+	if _, err := runtime.log.Append(put, put.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.log.Append(deleteEnvelope, deleteEnvelope.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if _, live := restarted.graph.GetVertex("suffix-live"); live {
+		t.Fatal("baseline suffix recovery resurrected exactly deleted Vertex")
+	}
+	if _, live := restarted.graph.GetVertex("suffix-expired"); live {
+		t.Fatal("baseline suffix recovery resurrected expired Vertex Put")
+	}
+	if _, live := restarted.graph.GetVertex("suffix-origin-only"); live {
+		t.Fatal("baseline suffix recovery applied an omitted receiver-local Vertex Put")
+	}
+	replication := restarted.graph.SnapshotReplication()
+	if len(replication.Barriers.Vertices) != 1 ||
+		replication.Barriers.Vertices[0].Key != "suffix-expired" {
+		t.Fatalf("baseline suffix Vertex barriers = %+v", replication.Barriers.Vertices)
+	}
+	tombstones := make(map[string]bool)
+	for _, tombstone := range replication.Tombstones.Vertices {
+		tombstones[tombstone.Key] = true
+	}
+	if !tombstones["suffix-live"] || !tombstones["suffix-absent"] {
+		t.Fatalf("baseline suffix Vertex tombstones = %+v", replication.Tombstones.Vertices)
+	}
+	snapshot, err := restarted.receipt.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Receipts) != 6 {
+		t.Fatalf("baseline plus suffix receipt count = %d, want 6", len(snapshot.Receipts))
+	}
+	results := make(map[mutationreceipt.ID]mutationreceipt.Receipt, len(snapshot.Receipts))
+	for _, receipt := range snapshot.Receipts {
+		results[receipt.ID] = receipt
+	}
+	for _, receipt := range append(
+		append([]mutationreceipt.Receipt{}, put.Receipts...),
+		deleteEnvelope.Receipts...,
+	) {
+		got, ok := results[receipt.ID]
+		if !ok || got.Kind != receipt.Kind ||
+			!reflect.DeepEqual(got.Result, receipt.Result) ||
+			got.Group != receipt.Group || got.Index != receipt.Index {
+			t.Fatalf("baseline suffix receipt = %+v, %v; want %+v", got, ok, receipt)
+		}
+	}
+	retiredSnapshot, _, err := restarted.receipt.retired.snapshot(
+		restarted.receipt.policy,
+		snapshot.ClockHighWaterMillis,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retiredSnapshot.ClockHighWaterMillis != snapshot.ClockHighWaterMillis {
+		t.Fatalf(
+			"retired high-water = %d, want active high-water %d",
+			retiredSnapshot.ClockHighWaterMillis,
+			snapshot.ClockHighWaterMillis,
+		)
+	}
+	retiredConfig, _, err := retiredCatalogConfig(
+		restarted.receipt.policy,
+		snapshot.ClockHighWaterMillis,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := mutationreceipt.NewRetiredCatalogFromSnapshot(retiredConfig, retiredSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, receipt, err := retired.Lookup(
+		retiredID,
+		time.UnixMilli(snapshot.ClockHighWaterMillis),
+	)
+	if err != nil || status != mutationreceipt.Confirmed ||
+		!reflect.DeepEqual(receipt.Result, []byte{0x94, 4}) {
+		t.Fatalf("retired receipt after suffix restart = %v, %+v, %v", status, receipt, err)
+	}
+	var foundOrigin bool
+	for _, state := range restarted.origins.States() {
+		if state.Origin == put.Origin {
+			foundOrigin = state.LastSeq == 2 && state.LastHLC.Equal(deleteEnvelope.HLC)
+		}
+	}
+	if !foundOrigin {
+		t.Fatalf("baseline suffix origin frontier = %+v", restarted.origins.States())
+	}
+}
+
+func TestReceiptBaselineSuffixDoesNotReapplyOmittedVertexDeleteAfterBlockerExpires(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	now := time.Now()
+	config.Receipt.ClockHighWater = now.Add(-3 * time.Hour).Truncate(time.Millisecond)
+	config.Receipt.Retention = 24 * time.Hour
+	config.Now = config.Receipt.ClockHighWater
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWall := image.cutoff.WallNs + int64(time.Millisecond)
+	blocker := recoveryGraphDeleteEffectEntry(
+		t,
+		0xd3,
+		1,
+		oldWall+int64(time.Millisecond),
+		&pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
+			DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"blocked"}},
+		}},
+		now.Add(-time.Hour),
+		0,
+	)
+	omitted := receiptVertexDeleteRecoveryEnvelope(
+		t,
+		config.Receipt,
+		0xd4,
+		1,
+		oldWall,
+		now.Add(time.Hour),
+		[]string{"blocked"},
+	)
+	if _, err := runtime.log.Append(blocker.Op, blocker.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.log.Append(omitted, omitted.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	for _, tombstone := range restarted.graph.SnapshotReplication().Tombstones.Vertices {
+		if tombstone.Key == "blocked" {
+			t.Fatalf("baseline suffix reapplied omitted older Vertex Delete: %+v", tombstone)
+		}
+	}
+	snapshot, err := restarted.receipt.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, receipt := range snapshot.Receipts {
+		found = found || receipt.ID == omitted.Receipts[0].ID
+	}
+	if !found {
+		t.Fatal("baseline suffix lost omitted Vertex Delete receipt")
+	}
+}
+
+func receiptBaselineVertexPutSuffixEnvelope(
+	t *testing.T,
+	config mutationreceipt.Config,
+	originByte byte,
+	originSequence uint64,
+	wallNS int64,
+) *vertexPutReceiptEnvelope {
+	t.Helper()
+	issued := time.UnixMilli(wallNS / int64(time.Millisecond)).UTC()
+	var origin hlc.NodeID
+	for i := range origin {
+		origin[i] = originByte
+	}
+	stamp := hlc.Timestamp{WallNs: issued.UnixNano(), NodeID: origin}
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := []*pb.Vertex{
+		{
+			Key: "suffix-live", Value: &pb.Vertex_String_{String_: "value"},
+			Expiration: timestamppb.New(issued.Add(time.Hour)),
+		},
+		{
+			Key: "suffix-expired", Value: &pb.Vertex_String_{String_: "expired"},
+			Expiration: timestamppb.New(time.Now().Add(-time.Hour)),
+		},
+		{
+			Key: "suffix-origin-only", Value: &pb.Vertex_String_{String_: "not accepted locally"},
+			Expiration: timestamppb.New(issued.Add(time.Hour)),
+		},
+	}
+	outcomes := []pb.PutOutcome{
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_EXPIRED,
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+	}
+	group := mutationreceipt.GroupID{0xb1}
+	receipts := make([]mutationreceipt.Receipt, len(original))
+	for i, vertex := range original {
+		id, err := mutationreceipt.NewID(config.Epoch, issued, [24]byte{originByte, byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest, err := vertexPutDigest(vertex, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts[i] = mutationreceipt.Receipt{
+			Intent: mutationreceipt.Intent{
+				ID: id, Group: group, Index: uint32(i), Count: uint32(len(original)),
+				Kind: mutationreceipt.PutVertex, Digest: digest,
+			},
+			Result: []byte{byte(outcomes[i])}, DeadlineMillis: issued.Add(config.Retention).UnixMilli(),
+		}
+	}
+	envelope := &vertexPutReceiptEnvelope{
+		Origin: origin, OriginSeq: originSequence, HLC: stamp,
+		Epoch: config.Epoch, PolicyFingerprint: store.PolicyFingerprint(),
+		Original: original,
+		Accepted: []graphcache.IndexedVertexPut[string, *pb.Vertex]{
+			{
+				Index: 0, Outcome: graphcache.PutOutcomeAppliedAndLive,
+				Item: graphcache.VertexItem[string, *pb.Vertex]{
+					Key: "suffix-live", Value: proto.Clone(original[0]).(*pb.Vertex),
+					Expiration: original[0].GetExpiration().AsTime(),
+				},
+			},
+			{
+				Index: 1, Outcome: graphcache.PutOutcomeExpired,
+				Item: graphcache.VertexItem[string, *pb.Vertex]{
+					Key: "suffix-expired", CausalBarrier: true,
+				},
+			},
+		},
+		Receipts: receipts,
+	}
+	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+	if err := validateReceiptVertexPutWALEntry(mutationlog.Entry{
+		Seq: 1, HLC: stamp, Op: envelope,
+	}); err != nil {
+		t.Fatalf("invalid Vertex Put suffix fixture: %v", err)
+	}
+	return envelope
+}
+
+func receiptBaselineVertexDeleteSuffixEnvelope(
+	t *testing.T,
+	config mutationreceipt.Config,
+	originByte byte,
+	originSequence uint64,
+	wallNS int64,
+) *vertexDeleteReceiptEnvelope {
+	t.Helper()
+	issued := time.UnixMilli(wallNS / int64(time.Millisecond)).UTC()
+	var origin hlc.NodeID
+	for i := range origin {
+		origin[i] = originByte
+	}
+	stamp := hlc.Timestamp{WallNs: issued.UnixNano(), NodeID: origin}
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"suffix-live", "suffix-absent"}
+	results := []byte{1, 0}
+	group := mutationreceipt.GroupID{0xb2}
+	receipts := make([]mutationreceipt.Receipt, len(keys))
+	for i, key := range keys {
+		id, err := mutationreceipt.NewID(config.Epoch, issued, [24]byte{originByte, byte(i + 3)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts[i] = mutationreceipt.Receipt{
+			Intent: mutationreceipt.Intent{
+				ID: id, Group: group, Index: uint32(i), Count: uint32(len(keys)),
+				Kind: mutationreceipt.DeleteVertex, Digest: vertexDeleteDigest(key),
+			},
+			Result: []byte{results[i]}, DeadlineMillis: issued.Add(config.Retention).UnixMilli(),
+		}
+	}
+	envelope := &vertexDeleteReceiptEnvelope{
+		Origin: origin, OriginSeq: originSequence, HLC: stamp,
+		Epoch: config.Epoch, PolicyFingerprint: store.PolicyFingerprint(),
+		TombstoneExpiration: issued.Add(time.Hour),
+		OriginalKeys:        keys,
+		Accepted: []graphcache.IndexedVertexDelete[string]{
+			{Index: 0, Key: keys[0]}, {Index: 1, Key: keys[1]},
+		},
+		Receipts: receipts,
+	}
+	envelope.Mutation = receiptVertexDeleteGraphMutation(envelope)
+	if err := validateReceiptVertexDeleteWALEntry(mutationlog.Entry{
+		Seq: 1, HLC: stamp, Op: envelope,
+	}); err != nil {
+		t.Fatalf("invalid Vertex Delete suffix fixture: %v", err)
+	}
+	return envelope
 }
 
 func receiptBaselineSuffixEnvelope(

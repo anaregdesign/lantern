@@ -19,12 +19,11 @@ import (
 )
 
 // This private, unwired codec covers graph-only Mutations, accepted-effect
-// sidecars, and receipt-bearing Edge Delete envelopes. The
+// sidecars, and receipt-bearing exact mutation envelopes. The
 // FileWAL frame owns its checksum, replica-local sequence and HLC. The union
-// header is versioned independently of the inner LRED receipt format. No
-// production provider or write path selects this codec yet.
+// header is versioned independently of the inner receipt formats.
 const (
-	receiptWALUnionMagic             = "LRWU\x03\x00\x00\x00"
+	receiptWALUnionMagic             = "LRWU\x04\x00\x00\x00"
 	receiptWALUnionHeaderSize        = 16 // magic, kind, reserved[3], body length
 	receiptWALUnionGraph             = byte(1)
 	receiptWALUnionEdgeDelete        = byte(2)
@@ -32,21 +31,23 @@ const (
 	receiptWALUnionGraphPutEffect    = byte(4)
 	receiptWALUnionGraphAddEffect    = byte(5)
 	receiptWALUnionBaseline          = byte(6)
+	receiptWALUnionVertexPut         = byte(7)
+	receiptWALUnionVertexDelete      = byte(8)
 	receiptWALGraphHeaderSize        = 12 // protobuf length, repeated-slot count, nil count
 	// FileWAL allows a 32 MiB body with a 36-byte frame metadata header.
-	// The existing LRED receipt body has a stricter independent 8 MiB cap.
+	// Each receipt-envelope body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
-	// A new reachable Mutation field must not silently change what the v3
+	// A new reachable Mutation field must not silently change what the v4
 	// graph kind persists or replays. Review and version the WAL schema first.
-	receiptWALGraphSchemaFingerprintV3 = "7940660efd6cbc80ebf0e6804cd22e285e292d498c66c178fd175d68f4213d3d"
+	receiptWALGraphSchemaFingerprintV4 = "58d9b4cbe7311c0e5e45cf1be6b0b8909a87d458e425b7fb958ab6021283c19a"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
 
 var receiptWALGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
-	if digest != receiptWALGraphSchemaFingerprintV3 {
-		return receiptWALUnionError("WAL union v3 graph schema changed: %s", digest)
+	if digest != receiptWALGraphSchemaFingerprintV4 {
+		return receiptWALUnionError("WAL union v4 graph schema changed: %s", digest)
 	}
 	return nil
 })
@@ -72,6 +73,12 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	case *edgeDeleteReceiptEnvelope:
 		kind = receiptWALUnionEdgeDelete
 		body, err = encodeReceiptEdgeDeleteWAL(value)
+	case *vertexPutReceiptEnvelope:
+		kind = receiptWALUnionVertexPut
+		body, err = encodeReceiptVertexPutWAL(value)
+	case *vertexDeleteReceiptEnvelope:
+		kind = receiptWALUnionVertexDelete
+		body, err = encodeReceiptVertexDeleteWAL(value)
 	case *graphDeleteEffectEnvelope:
 		kind = receiptWALUnionGraphDeleteEffect
 		body, err = encodeGraphDeleteEffectWAL(value)
@@ -149,6 +156,18 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 			return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
 		}
 		return marker, nil
+	case receiptWALUnionVertexPut:
+		value, err := decodeReceiptVertexPutWAL(body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
+		}
+		return value, nil
+	case receiptWALUnionVertexDelete:
+		value, err := decodeReceiptVertexDeleteWAL(body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
+		}
+		return value, nil
 	default:
 		return nil, receiptWALUnionError("unknown operation kind %d", raw[8])
 	}
@@ -215,6 +234,16 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		return nil
 	case *edgeDeleteReceiptEnvelope:
 		if err := validateReceiptEdgeDeleteWALEntry(entry); err != nil {
+			return fmt.Errorf("%w: %w", errReceiptWALUnion, err)
+		}
+		return nil
+	case *vertexPutReceiptEnvelope:
+		if err := validateReceiptVertexPutWALEntry(entry); err != nil {
+			return fmt.Errorf("%w: %w", errReceiptWALUnion, err)
+		}
+		return nil
+	case *vertexDeleteReceiptEnvelope:
+		if err := validateReceiptVertexDeleteWALEntry(entry); err != nil {
 			return fmt.Errorf("%w: %w", errReceiptWALUnion, err)
 		}
 		return nil

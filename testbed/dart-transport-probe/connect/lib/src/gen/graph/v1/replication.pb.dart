@@ -130,6 +130,8 @@ enum MutationOp_Op {
   replicatedPutVertices,
   replicatedPutEdges,
   replicatedReceiptEdgeDelete,
+  replicatedReceiptVertexPut,
+  replicatedReceiptVertexDelete,
   notSet
 }
 
@@ -158,6 +160,8 @@ class MutationOp extends $pb.GeneratedMessage {
     ReplicatedPutVertices? replicatedPutVertices,
     ReplicatedPutEdges? replicatedPutEdges,
     ReplicatedReceiptEdgeDelete? replicatedReceiptEdgeDelete,
+    ReplicatedReceiptVertexPut? replicatedReceiptVertexPut,
+    ReplicatedReceiptVertexDelete? replicatedReceiptVertexDelete,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -180,6 +184,10 @@ class MutationOp extends $pb.GeneratedMessage {
       result.replicatedPutEdges = replicatedPutEdges;
     if (replicatedReceiptEdgeDelete != null)
       result.replicatedReceiptEdgeDelete = replicatedReceiptEdgeDelete;
+    if (replicatedReceiptVertexPut != null)
+      result.replicatedReceiptVertexPut = replicatedReceiptVertexPut;
+    if (replicatedReceiptVertexDelete != null)
+      result.replicatedReceiptVertexDelete = replicatedReceiptVertexDelete;
     return result;
   }
 
@@ -208,13 +216,15 @@ class MutationOp extends $pb.GeneratedMessage {
     13: MutationOp_Op.replicatedPutVertices,
     14: MutationOp_Op.replicatedPutEdges,
     15: MutationOp_Op.replicatedReceiptEdgeDelete,
+    16: MutationOp_Op.replicatedReceiptVertexPut,
+    17: MutationOp_Op.replicatedReceiptVertexDelete,
     0: MutationOp_Op.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'MutationOp',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
     ..aOM<$0.PutVertexRequest>(1, _omitFieldNames ? '' : 'putVertex',
         subBuilder: $0.PutVertexRequest.create)
     ..aOM<$0.PutVerticesRequest>(2, _omitFieldNames ? '' : 'putVertices',
@@ -249,6 +259,12 @@ class MutationOp extends $pb.GeneratedMessage {
     ..aOM<ReplicatedReceiptEdgeDelete>(
         15, _omitFieldNames ? '' : 'replicatedReceiptEdgeDelete',
         subBuilder: ReplicatedReceiptEdgeDelete.create)
+    ..aOM<ReplicatedReceiptVertexPut>(
+        16, _omitFieldNames ? '' : 'replicatedReceiptVertexPut',
+        subBuilder: ReplicatedReceiptVertexPut.create)
+    ..aOM<ReplicatedReceiptVertexDelete>(
+        17, _omitFieldNames ? '' : 'replicatedReceiptVertexDelete',
+        subBuilder: ReplicatedReceiptVertexDelete.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -450,6 +466,34 @@ class MutationOp extends $pb.GeneratedMessage {
   @$pb.TagNumber(15)
   ReplicatedReceiptEdgeDelete ensureReplicatedReceiptEdgeDelete() =>
       $_ensure(14);
+
+  /// Private receipt-bearing Vertex Put/Delete envelopes retain each
+  /// original request position and the receiver-local graph projection.
+  /// Public write requests do not expose operation IDs yet.
+  @$pb.TagNumber(16)
+  ReplicatedReceiptVertexPut get replicatedReceiptVertexPut => $_getN(15);
+  @$pb.TagNumber(16)
+  set replicatedReceiptVertexPut(ReplicatedReceiptVertexPut value) =>
+      $_setField(16, value);
+  @$pb.TagNumber(16)
+  $core.bool hasReplicatedReceiptVertexPut() => $_has(15);
+  @$pb.TagNumber(16)
+  void clearReplicatedReceiptVertexPut() => $_clearField(16);
+  @$pb.TagNumber(16)
+  ReplicatedReceiptVertexPut ensureReplicatedReceiptVertexPut() => $_ensure(15);
+
+  @$pb.TagNumber(17)
+  ReplicatedReceiptVertexDelete get replicatedReceiptVertexDelete => $_getN(16);
+  @$pb.TagNumber(17)
+  set replicatedReceiptVertexDelete(ReplicatedReceiptVertexDelete value) =>
+      $_setField(17, value);
+  @$pb.TagNumber(17)
+  $core.bool hasReplicatedReceiptVertexDelete() => $_has(16);
+  @$pb.TagNumber(17)
+  void clearReplicatedReceiptVertexDelete() => $_clearField(17);
+  @$pb.TagNumber(17)
+  ReplicatedReceiptVertexDelete ensureReplicatedReceiptVertexDelete() =>
+      $_ensure(16);
 }
 
 /// One request-index-aligned item in a receipt-bearing Edge Delete. The
@@ -647,6 +691,390 @@ class ReplicatedReceiptEdgeDelete extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(4)
   $pb.PbList<ReplicatedReceiptEdgeDeleteItem> get items => $_getList(3);
+}
+
+/// One request-index-aligned item in a receipt-bearing Vertex Put. Original
+/// retains the complete semantic intent. Accepted is omitted when this receiver
+/// has no graph effect; when present it is either a live value or an explicit
+/// causal barrier and is never re-evaluated against if_absent.
+class ReplicatedReceiptVertexPutItem extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptVertexPutItem({
+    $0.Vertex? original,
+    $0.MutationReceipt? receipt,
+    ReplicatedPutVertex? accepted,
+  }) {
+    final result = create();
+    if (original != null) result.original = original;
+    if (receipt != null) result.receipt = receipt;
+    if (accepted != null) result.accepted = accepted;
+    return result;
+  }
+
+  ReplicatedReceiptVertexPutItem._();
+
+  factory ReplicatedReceiptVertexPutItem.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptVertexPutItem.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptVertexPutItem',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$0.Vertex>(1, _omitFieldNames ? '' : 'original',
+        subBuilder: $0.Vertex.create)
+    ..aOM<$0.MutationReceipt>(2, _omitFieldNames ? '' : 'receipt',
+        subBuilder: $0.MutationReceipt.create)
+    ..aOM<ReplicatedPutVertex>(3, _omitFieldNames ? '' : 'accepted',
+        subBuilder: ReplicatedPutVertex.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexPutItem clone() =>
+      ReplicatedReceiptVertexPutItem()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexPutItem copyWith(
+          void Function(ReplicatedReceiptVertexPutItem) updates) =>
+      super.copyWith(
+              (message) => updates(message as ReplicatedReceiptVertexPutItem))
+          as ReplicatedReceiptVertexPutItem;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexPutItem create() =>
+      ReplicatedReceiptVertexPutItem._();
+  @$core.override
+  ReplicatedReceiptVertexPutItem createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptVertexPutItem> createRepeated() =>
+      $pb.PbList<ReplicatedReceiptVertexPutItem>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexPutItem getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedReceiptVertexPutItem>(create);
+  static ReplicatedReceiptVertexPutItem? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $0.Vertex get original => $_getN(0);
+  @$pb.TagNumber(1)
+  set original($0.Vertex value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOriginal() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOriginal() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $0.Vertex ensureOriginal() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $0.MutationReceipt get receipt => $_getN(1);
+  @$pb.TagNumber(2)
+  set receipt($0.MutationReceipt value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceipt() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceipt() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $0.MutationReceipt ensureReceipt() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  ReplicatedPutVertex get accepted => $_getN(2);
+  @$pb.TagNumber(3)
+  set accepted(ReplicatedPutVertex value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAccepted() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAccepted() => $_clearField(3);
+  @$pb.TagNumber(3)
+  ReplicatedPutVertex ensureAccepted() => $_ensure(2);
+}
+
+/// A complete ordered conditional Vertex Put call. A call with no accepted
+/// graph effects still consumes Mutation.seq and persists every exact result.
+class ReplicatedReceiptVertexPut extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptVertexPut({
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? policyFingerprint,
+    $core.bool? ifAbsent,
+    $core.Iterable<ReplicatedReceiptVertexPutItem>? items,
+  }) {
+    final result = create();
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (policyFingerprint != null) result.policyFingerprint = policyFingerprint;
+    if (ifAbsent != null) result.ifAbsent = ifAbsent;
+    if (items != null) result.items.addAll(items);
+    return result;
+  }
+
+  ReplicatedReceiptVertexPut._();
+
+  factory ReplicatedReceiptVertexPut.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptVertexPut.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptVertexPut',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'policyFingerprint', $pb.PbFieldType.OY)
+    ..aOB(3, _omitFieldNames ? '' : 'ifAbsent')
+    ..pc<ReplicatedReceiptVertexPutItem>(
+        4, _omitFieldNames ? '' : 'items', $pb.PbFieldType.PM,
+        subBuilder: ReplicatedReceiptVertexPutItem.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexPut clone() =>
+      ReplicatedReceiptVertexPut()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexPut copyWith(
+          void Function(ReplicatedReceiptVertexPut) updates) =>
+      super.copyWith(
+              (message) => updates(message as ReplicatedReceiptVertexPut))
+          as ReplicatedReceiptVertexPut;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexPut create() => ReplicatedReceiptVertexPut._();
+  @$core.override
+  ReplicatedReceiptVertexPut createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptVertexPut> createRepeated() =>
+      $pb.PbList<ReplicatedReceiptVertexPut>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexPut getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedReceiptVertexPut>(create);
+  static ReplicatedReceiptVertexPut? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get deploymentEpoch => $_getN(0);
+  @$pb.TagNumber(1)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeploymentEpoch() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeploymentEpoch() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get policyFingerprint => $_getN(1);
+  @$pb.TagNumber(2)
+  set policyFingerprint($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPolicyFingerprint() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPolicyFingerprint() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.bool get ifAbsent => $_getBF(2);
+  @$pb.TagNumber(3)
+  set ifAbsent($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIfAbsent() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIfAbsent() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<ReplicatedReceiptVertexPutItem> get items => $_getList(3);
+}
+
+/// One request-index-aligned item in a receipt-bearing exact Vertex Delete.
+/// causally_accepted may be true when existed=false because the Delete still
+/// installs an identity floor.
+class ReplicatedReceiptVertexDeleteItem extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptVertexDeleteItem({
+    $core.String? key,
+    $0.MutationReceipt? receipt,
+    $core.bool? causallyAccepted,
+  }) {
+    final result = create();
+    if (key != null) result.key = key;
+    if (receipt != null) result.receipt = receipt;
+    if (causallyAccepted != null) result.causallyAccepted = causallyAccepted;
+    return result;
+  }
+
+  ReplicatedReceiptVertexDeleteItem._();
+
+  factory ReplicatedReceiptVertexDeleteItem.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptVertexDeleteItem.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptVertexDeleteItem',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'key')
+    ..aOM<$0.MutationReceipt>(2, _omitFieldNames ? '' : 'receipt',
+        subBuilder: $0.MutationReceipt.create)
+    ..aOB(3, _omitFieldNames ? '' : 'causallyAccepted')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexDeleteItem clone() =>
+      ReplicatedReceiptVertexDeleteItem()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexDeleteItem copyWith(
+          void Function(ReplicatedReceiptVertexDeleteItem) updates) =>
+      super.copyWith((message) =>
+              updates(message as ReplicatedReceiptVertexDeleteItem))
+          as ReplicatedReceiptVertexDeleteItem;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexDeleteItem create() =>
+      ReplicatedReceiptVertexDeleteItem._();
+  @$core.override
+  ReplicatedReceiptVertexDeleteItem createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptVertexDeleteItem> createRepeated() =>
+      $pb.PbList<ReplicatedReceiptVertexDeleteItem>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexDeleteItem getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedReceiptVertexDeleteItem>(
+          create);
+  static ReplicatedReceiptVertexDeleteItem? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get key => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set key($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasKey() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearKey() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $0.MutationReceipt get receipt => $_getN(1);
+  @$pb.TagNumber(2)
+  set receipt($0.MutationReceipt value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceipt() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceipt() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $0.MutationReceipt ensureReceipt() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.bool get causallyAccepted => $_getBF(2);
+  @$pb.TagNumber(3)
+  set causallyAccepted($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCausallyAccepted() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCausallyAccepted() => $_clearField(3);
+}
+
+/// A complete ordered exact Vertex Delete call. Prefix Delete is deliberately
+/// excluded from the receipt-capable mutation families.
+class ReplicatedReceiptVertexDelete extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptVertexDelete({
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? policyFingerprint,
+    $1.Timestamp? tombstoneExpiration,
+    $core.Iterable<ReplicatedReceiptVertexDeleteItem>? items,
+  }) {
+    final result = create();
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (policyFingerprint != null) result.policyFingerprint = policyFingerprint;
+    if (tombstoneExpiration != null)
+      result.tombstoneExpiration = tombstoneExpiration;
+    if (items != null) result.items.addAll(items);
+    return result;
+  }
+
+  ReplicatedReceiptVertexDelete._();
+
+  factory ReplicatedReceiptVertexDelete.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptVertexDelete.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptVertexDelete',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'policyFingerprint', $pb.PbFieldType.OY)
+    ..aOM<$1.Timestamp>(3, _omitFieldNames ? '' : 'tombstoneExpiration',
+        subBuilder: $1.Timestamp.create)
+    ..pc<ReplicatedReceiptVertexDeleteItem>(
+        4, _omitFieldNames ? '' : 'items', $pb.PbFieldType.PM,
+        subBuilder: ReplicatedReceiptVertexDeleteItem.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexDelete clone() =>
+      ReplicatedReceiptVertexDelete()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptVertexDelete copyWith(
+          void Function(ReplicatedReceiptVertexDelete) updates) =>
+      super.copyWith(
+              (message) => updates(message as ReplicatedReceiptVertexDelete))
+          as ReplicatedReceiptVertexDelete;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexDelete create() =>
+      ReplicatedReceiptVertexDelete._();
+  @$core.override
+  ReplicatedReceiptVertexDelete createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptVertexDelete> createRepeated() =>
+      $pb.PbList<ReplicatedReceiptVertexDelete>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptVertexDelete getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedReceiptVertexDelete>(create);
+  static ReplicatedReceiptVertexDelete? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get deploymentEpoch => $_getN(0);
+  @$pb.TagNumber(1)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeploymentEpoch() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeploymentEpoch() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get policyFingerprint => $_getN(1);
+  @$pb.TagNumber(2)
+  set policyFingerprint($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPolicyFingerprint() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPolicyFingerprint() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $1.Timestamp get tombstoneExpiration => $_getN(2);
+  @$pb.TagNumber(3)
+  set tombstoneExpiration($1.Timestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasTombstoneExpiration() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearTombstoneExpiration() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $1.Timestamp ensureTombstoneExpiration() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<ReplicatedReceiptVertexDeleteItem> get items => $_getList(3);
 }
 
 class VertexCausalBarrier extends $pb.GeneratedMessage {

@@ -4,6 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protowire"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -35,6 +39,94 @@ func mustGraphMutation(t *testing.T, op mutationlog.MutationOp) *pb.Mutation {
 		t.Fatalf("graph mutation unavailable from %T", op)
 	}
 	return mutation
+}
+
+func receiptVertexWALItemsWire(arm protowire.Number, count int, item []byte) []byte {
+	call := make([]byte, 0, count*(len(item)+2))
+	for range count {
+		call = protowire.AppendTag(call, protowire.Number(receiptVertexItemsField), protowire.BytesType)
+		call = protowire.AppendBytes(call, item)
+	}
+	op := protowire.AppendTag(nil, arm, protowire.BytesType)
+	op = protowire.AppendBytes(op, call)
+	mutation := protowire.AppendTag(nil, 4, protowire.BytesType)
+	return protowire.AppendBytes(mutation, op)
+}
+
+func receiptVertexWALMalformedItemWire(arm protowire.Number) []byte {
+	call := protowire.AppendTag(nil, protowire.Number(receiptVertexItemsField), protowire.BytesType)
+	call = append(call, 0x80)
+	op := protowire.AppendTag(nil, arm, protowire.BytesType)
+	op = protowire.AppendBytes(op, call)
+	mutation := protowire.AppendTag(nil, 4, protowire.BytesType)
+	return protowire.AppendBytes(mutation, op)
+}
+
+func receiptVertexDeleteRecoveryEnvelope(
+	t *testing.T,
+	config mutationreceipt.Config,
+	originByte byte,
+	originSequence uint64,
+	wallNS int64,
+	expiration time.Time,
+	keys []string,
+	acceptedIndexes ...int,
+) *vertexDeleteReceiptEnvelope {
+	t.Helper()
+	issued := time.Unix(0, wallNS).UTC().Truncate(time.Millisecond)
+	var origin hlc.NodeID
+	for i := range origin {
+		origin[i] = originByte
+	}
+	stamp := hlc.Timestamp{WallNs: issued.UnixNano(), NodeID: origin}
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := mutationreceipt.GroupID{originByte}
+	receipts := make([]mutationreceipt.Receipt, len(keys))
+	for i, key := range keys {
+		id, err := mutationreceipt.NewID(
+			config.Epoch,
+			issued,
+			[24]byte{originByte, byte(i + 1)},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts[i] = mutationreceipt.Receipt{
+			Intent: mutationreceipt.Intent{
+				ID: id, Group: group, Index: uint32(i), Count: uint32(len(keys)),
+				Kind: mutationreceipt.DeleteVertex, Digest: vertexDeleteDigest(key),
+			},
+			Result: []byte{0}, DeadlineMillis: issued.Add(config.Retention).UnixMilli(),
+		}
+	}
+	accepted := make([]graphcache.IndexedVertexDelete[string], len(acceptedIndexes))
+	for i, index := range acceptedIndexes {
+		if index < 0 || index >= len(keys) {
+			t.Fatalf("accepted index %d is outside %d recovery keys", index, len(keys))
+		}
+		accepted[i] = graphcache.IndexedVertexDelete[string]{
+			Index: index,
+			Key:   keys[index],
+		}
+	}
+	envelope := &vertexDeleteReceiptEnvelope{
+		Origin: origin, OriginSeq: originSequence, HLC: stamp,
+		Epoch: config.Epoch, PolicyFingerprint: store.PolicyFingerprint(),
+		TombstoneExpiration: expiration,
+		OriginalKeys:        append([]string(nil), keys...),
+		Accepted:            accepted,
+		Receipts:            receipts,
+	}
+	envelope.Mutation = receiptVertexDeleteGraphMutation(envelope)
+	if err := validateReceiptVertexDeleteWALEntry(mutationlog.Entry{
+		Seq: 1, HLC: stamp, Op: envelope,
+	}); err != nil {
+		t.Fatalf("invalid Vertex Delete recovery fixture: %v", err)
+	}
+	return envelope
 }
 
 func insertReceiptSnapshotFrames(

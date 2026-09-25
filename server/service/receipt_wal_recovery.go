@@ -33,6 +33,36 @@ type receiptWALDecisionAudit struct {
 	unprovenGraphAddRows  uint64
 }
 
+type receiptWALEnvelopeMetadata struct {
+	origin    hlc.NodeID
+	originSeq uint64
+	epoch     mutationreceipt.Epoch
+	policy    [32]byte
+	receipts  []mutationreceipt.Receipt
+}
+
+func receiptWALEnvelopeInfo(op mutationlog.MutationOp) (receiptWALEnvelopeMetadata, bool) {
+	switch value := op.(type) {
+	case *edgeDeleteReceiptEnvelope:
+		return receiptWALEnvelopeMetadata{
+			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
+			policy: value.PolicyFingerprint, receipts: value.Receipts,
+		}, true
+	case *vertexPutReceiptEnvelope:
+		return receiptWALEnvelopeMetadata{
+			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
+			policy: value.PolicyFingerprint, receipts: value.Receipts,
+		}, true
+	case *vertexDeleteReceiptEnvelope:
+		return receiptWALEnvelopeMetadata{
+			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
+			policy: value.PolicyFingerprint, receipts: value.Receipts,
+		}, true
+	default:
+		return receiptWALEnvelopeMetadata{}, false
+	}
+}
+
 // auditReceiptDecisionsFromFileWAL validates a closed mixed FileWAL without
 // opening an append writer. Each origin must start at seq 1 and remain
 // contiguous: this helper has no verified Snapshot baseline to justify a
@@ -67,43 +97,45 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 		}
 		var origin hlc.NodeID
 		var seq uint64
-		var envelope *edgeDeleteReceiptEnvelope
-		switch value := entry.Op.(type) {
-		case *pb.Mutation:
-			if isAnyGraphPut(value) {
-				if seenReceipt {
-					return fmt.Errorf("receipt WAL local seq %d: %w: graph Put lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
-				}
-				report.unprovenGraphPutRows++
-			}
-			if isAnyGraphAdd(value) {
-				if seenReceipt {
-					return fmt.Errorf("receipt WAL local seq %d: %w: graph Add lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
-				}
-				report.unprovenGraphAddRows++
-			}
-			copy(origin[:], value.GetOrigin())
-			seq = value.GetSeq()
-		case *graphPutEffectEnvelope:
-			copy(origin[:], value.Mutation.GetOrigin())
-			seq = value.Mutation.GetSeq()
-			report.evidencedGraphPutRows++
-		case *graphAddEffectEnvelope:
-			copy(origin[:], value.Mutation.GetOrigin())
-			seq = value.Mutation.GetSeq()
-			report.evidencedGraphAddRows++
-		case *graphDeleteEffectEnvelope:
-			copy(origin[:], value.Mutation.GetOrigin())
-			seq = value.Mutation.GetSeq()
-		case *edgeDeleteReceiptEnvelope:
+		var receiptRows []mutationreceipt.Receipt
+		if envelope, ok := receiptWALEnvelopeInfo(entry.Op); ok {
 			seenReceipt = true
-			origin, seq = value.Origin, value.OriginSeq
-			if value.Epoch != config.Epoch || value.PolicyFingerprint != base.PolicyFingerprint() {
+			origin, seq = envelope.origin, envelope.originSeq
+			if envelope.epoch != config.Epoch || envelope.policy != base.PolicyFingerprint() {
 				return fmt.Errorf("receipt WAL local seq %d: %w: epoch or policy mismatch", entry.Seq, errReceiptWALUnion)
 			}
-			envelope = value
-		default:
-			return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
+			receiptRows = envelope.receipts
+		} else {
+			switch value := entry.Op.(type) {
+			case *pb.Mutation:
+				if isAnyGraphPut(value) {
+					if seenReceipt {
+						return fmt.Errorf("receipt WAL local seq %d: %w: graph Put lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
+					}
+					report.unprovenGraphPutRows++
+				}
+				if isAnyGraphAdd(value) {
+					if seenReceipt {
+						return fmt.Errorf("receipt WAL local seq %d: %w: graph Add lacks receiver-local accepted-effect evidence after receipt", entry.Seq, errReceiptWALUnion)
+					}
+					report.unprovenGraphAddRows++
+				}
+				copy(origin[:], value.GetOrigin())
+				seq = value.GetSeq()
+			case *graphPutEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				report.evidencedGraphPutRows++
+			case *graphAddEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				report.evidencedGraphAddRows++
+			case *graphDeleteEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+			default:
+				return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
+			}
 		}
 		previous, exists := rows[origin]
 		if !nextContiguousOriginSeq(seq, previous, exists) {
@@ -126,8 +158,8 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 			clear(previousReceipts[len(live):])
 			report.knownReceipts = live
 		}
-		if envelope != nil {
-			for _, receipt := range envelope.Receipts {
+		if receiptRows != nil {
+			for _, receipt := range receiptRows {
 				// Check every committed row, including rows now expired.
 				// Snapshot restore only sees the retained subset below.
 				issued := int64(binary.BigEndian.Uint64(receipt.ID[17:25]))
@@ -149,9 +181,9 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 				if receipt.DeadlineMillis <= highWater {
 					continue
 				}
-				// Edge Delete has no contribution binding. Match the Store's
-				// current logical byte ledger before retaining another row;
-				// NewFromSnapshot verifies the ledger again at the end.
+				// Match the Store's current logical byte ledger before
+				// retaining another row; NewFromSnapshot verifies the ledger
+				// again at the end.
 				cost := receiptWALDecisionCost(receipt)
 				if len(report.knownReceipts) >= config.MaxEntries || cost > config.MaxBytes-knownBytes {
 					return fmt.Errorf("receipt WAL local seq %d: %w", entry.Seq, mutationreceipt.ErrCapacity)
@@ -201,6 +233,120 @@ func sameReceiptWALDecision(a, b mutationreceipt.Receipt) bool {
 	return a.Intent == b.Intent &&
 		a.DeadlineMillis == b.DeadlineMillis &&
 		bytes.Equal(a.Result, b.Result)
+}
+
+func replayReceiptEnvelopeGraph(
+	graph *graphcache.GraphCache[string, *pb.Vertex],
+	op mutationlog.MutationOp,
+) error {
+	switch value := op.(type) {
+	case *edgeDeleteReceiptEnvelope:
+		tx, err := graph.BeginReplicatedEdgeDelete(
+			value.OriginalKeys, value.HLC, value.TombstoneExpiration,
+		)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(tx.Result().Accepted, value.Accepted) {
+			tx.Abort()
+			return fmt.Errorf("%w: accepted Edge Delete projection drift", errReceiptWALUnion)
+		}
+		tx.Commit()
+		return nil
+	case *vertexDeleteReceiptEnvelope:
+		keys := make([]string, len(value.Accepted))
+		previous := -1
+		for i, accepted := range value.Accepted {
+			if accepted.Index <= previous || accepted.Index < 0 ||
+				accepted.Index >= len(value.OriginalKeys) ||
+				accepted.Key != value.OriginalKeys[accepted.Index] {
+				return fmt.Errorf("%w: accepted Vertex Delete projection is invalid", errReceiptWALUnion)
+			}
+			keys[i] = accepted.Key
+			previous = accepted.Index
+		}
+		tx, err := graph.BeginReplicatedVertexDelete(
+			keys, value.HLC, value.TombstoneExpiration,
+		)
+		if err != nil {
+			return err
+		}
+		replayed := tx.Result().Accepted
+		if len(replayed) != len(keys) {
+			tx.Abort()
+			return fmt.Errorf("%w: accepted Vertex Delete projection drift", errReceiptWALUnion)
+		}
+		for i, accepted := range replayed {
+			if accepted.Index != i || accepted.Key != keys[i] {
+				tx.Abort()
+				return fmt.Errorf("%w: accepted Vertex Delete projection drift", errReceiptWALUnion)
+			}
+		}
+		tx.Commit()
+		return nil
+	case *vertexPutReceiptEnvelope:
+		items := make([]graphcache.VertexItem[string, *pb.Vertex], len(value.Accepted))
+		indexes := make([]int, len(value.Accepted))
+		for i, accepted := range value.Accepted {
+			items[i], indexes[i] = accepted.Item, accepted.Index
+		}
+		tx, err := graph.BeginReplicatedVertexPut(items, value.HLC)
+		if err != nil {
+			return err
+		}
+		replayed, err := normalizedVertexPutAccepted(tx.Result().Accepted, indexes)
+		if err != nil {
+			tx.Abort()
+			return err
+		}
+		if !vertexPutReplayProjectionMatches(value.Accepted, replayed) {
+			tx.Abort()
+			return fmt.Errorf("%w: accepted Vertex Put projection drift", errReceiptWALUnion)
+		}
+		tx.Commit()
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown receipt envelope %T", errReceiptWALUnion, op)
+	}
+}
+
+func vertexPutReplayProjectionMatches(
+	recorded, replayed []graphcache.IndexedVertexPut[string, *pb.Vertex],
+) bool {
+	if len(recorded) != len(replayed) {
+		return false
+	}
+	for i := range recorded {
+		left, right := recorded[i], replayed[i]
+		if left.Index != right.Index || left.Item.Key != right.Item.Key {
+			return false
+		}
+		switch left.Outcome {
+		case graphcache.PutOutcomeAppliedAndLive:
+			if right.Outcome == graphcache.PutOutcomeExpired {
+				if left.Item.Value == nil {
+					return false
+				}
+				expiration := left.Item.Value.GetExpiration()
+				if expiration == nil || expiration.CheckValid() != nil {
+					return false
+				}
+				continue
+			}
+			if right.Outcome != graphcache.PutOutcomeAppliedAndLive ||
+				!sameVertexPutCanonicalValue(left.Item.Value, right.Item.Value) ||
+				!left.Item.Expiration.Equal(right.Item.Expiration) {
+				return false
+			}
+		case graphcache.PutOutcomeExpired:
+			if right.Outcome != graphcache.PutOutcomeExpired {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // receiptWALRecoveryCandidate is deliberately detached from LanternService.
@@ -287,52 +433,44 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 		}
 		var origin hlc.NodeID
 		var seq uint64
-		switch value := entry.Op.(type) {
-		case *pb.Mutation:
-			if seenReceipt || !receiptWALGraphRecoverable(value) {
-				return fmt.Errorf("receipt WAL local seq %d: %w: graph arm has no exact recovery contract", entry.Seq, errReceiptWALUnion)
-			}
-			copy(origin[:], value.GetOrigin())
-			seq = value.GetSeq()
-			if _, err := replayService.applyMutationGraph(value); err != nil {
-				return fmt.Errorf("receipt WAL local seq %d: graph replay: %w", entry.Seq, err)
-			}
-		case *graphDeleteEffectEnvelope:
-			copy(origin[:], value.Mutation.GetOrigin())
-			seq = value.Mutation.GetSeq()
-			if err := replayGraphDeleteEffect(graph, value); err != nil {
-				return fmt.Errorf("receipt WAL local seq %d: graph Delete effect replay: %w", entry.Seq, err)
-			}
-		case *graphPutEffectEnvelope:
-			copy(origin[:], value.Mutation.GetOrigin())
-			seq = value.Mutation.GetSeq()
-			if err := replayGraphPutEffect(graph, value); err != nil {
-				return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
-			}
-		case *graphAddEffectEnvelope:
-			copy(origin[:], value.Mutation.GetOrigin())
-			seq = value.Mutation.GetSeq()
-			if err := replayGraphAddEffect(graph, value); err != nil {
-				return fmt.Errorf("receipt WAL local seq %d: graph Add effect replay: %w", entry.Seq, err)
-			}
-		case *edgeDeleteReceiptEnvelope:
+		if envelope, ok := receiptWALEnvelopeInfo(entry.Op); ok {
 			seenReceipt = true
-			origin, seq = value.Origin, value.OriginSeq
-			// Recheck the exact accepted projection against the detached
-			// graph. A stale receipt HLC may lose to an earlier WAL Put;
-			// DeleteEdgesHLCChecked would silently skip it while the Store
-			// still returned the forged original result as Confirmed.
-			tx, err := graph.BeginReplicatedEdgeDelete(value.OriginalKeys, value.HLC, value.TombstoneExpiration)
-			if err != nil {
+			origin, seq = envelope.origin, envelope.originSeq
+			if err := replayReceiptEnvelopeGraph(graph, entry.Op); err != nil {
 				return fmt.Errorf("receipt WAL local seq %d: receipt graph replay: %w", entry.Seq, err)
 			}
-			if !slices.Equal(tx.Result().Accepted, value.Accepted) {
-				tx.Abort()
-				return fmt.Errorf("receipt WAL local seq %d: %w: accepted Edge Delete projection drift", entry.Seq, errReceiptWALUnion)
+		} else {
+			switch value := entry.Op.(type) {
+			case *pb.Mutation:
+				if seenReceipt || !receiptWALGraphRecoverable(value) {
+					return fmt.Errorf("receipt WAL local seq %d: %w: graph arm has no exact recovery contract", entry.Seq, errReceiptWALUnion)
+				}
+				copy(origin[:], value.GetOrigin())
+				seq = value.GetSeq()
+				if _, err := replayService.applyMutationGraph(value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph replay: %w", entry.Seq, err)
+				}
+			case *graphDeleteEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayGraphDeleteEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph Delete effect replay: %w", entry.Seq, err)
+				}
+			case *graphPutEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayGraphPutEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
+				}
+			case *graphAddEffectEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayGraphAddEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: graph Add effect replay: %w", entry.Seq, err)
+				}
+			default:
+				return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
 			}
-			tx.Commit()
-		default:
-			return fmt.Errorf("receipt WAL local seq %d: %w: unknown operation", entry.Seq, errReceiptWALUnion)
 		}
 		if !origins.Record(origin, seq, entry.HLC) {
 			return fmt.Errorf("receipt WAL local seq %d: %w: origin frontier drift", entry.Seq, errReceiptWALUnion)

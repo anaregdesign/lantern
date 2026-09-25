@@ -29,13 +29,94 @@ const (
 
 type pendingMutation struct {
 	mutation   *pb.Mutation
-	receipt    *edgeDeleteReceiptEnvelope
-	receiptWAL *edgeDeleteReceiptEnvelope
+	receipt    receiptMutationEnvelope
+	receiptWAL receiptMutationEnvelope
 	walOp      mutationlog.MutationOp
 	size       int
 	applied    bool // graph committed; retry the log append without applying twice
 	faulted    bool // relay WAL failed after graph apply; all CDC streams are gapped
 	opName     string
+}
+
+type receiptMutationEnvelope interface {
+	GraphMutation() *pb.Mutation
+}
+
+func (s *LanternService) validateReplicatedReceiptEnvelope(envelope receiptMutationEnvelope) error {
+	switch value := envelope.(type) {
+	case *edgeDeleteReceiptEnvelope:
+		if s.receiptEdgeDeleteCoordinator == nil {
+			return connect.NewError(connect.CodeUnimplemented,
+				fmt.Errorf("receipt-bearing Edge Delete replication apply is not enabled"))
+		}
+		return s.receiptEdgeDeleteCoordinator.validateReplicatedEnvelope(value)
+	case *vertexPutReceiptEnvelope:
+		if s.receiptVertexPutCoordinator == nil {
+			return connect.NewError(connect.CodeUnimplemented,
+				fmt.Errorf("receipt-bearing Vertex Put replication apply is not enabled"))
+		}
+		return s.receiptVertexPutCoordinator.validateReplicatedEnvelope(value)
+	case *vertexDeleteReceiptEnvelope:
+		if s.receiptVertexDeleteCoordinator == nil {
+			return connect.NewError(connect.CodeUnimplemented,
+				fmt.Errorf("receipt-bearing Vertex Delete replication apply is not enabled"))
+		}
+		return s.receiptVertexDeleteCoordinator.validateReplicatedEnvelope(value)
+	default:
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("unknown receipt-bearing replication envelope %T", envelope))
+	}
+}
+
+func sameReceiptMutationIntent(left, right receiptMutationEnvelope) bool {
+	switch value := left.(type) {
+	case *edgeDeleteReceiptEnvelope:
+		other, ok := right.(*edgeDeleteReceiptEnvelope)
+		return ok && sameReceiptEdgeDeleteIntent(value, other)
+	case *vertexPutReceiptEnvelope:
+		other, ok := right.(*vertexPutReceiptEnvelope)
+		return ok && sameReceiptVertexPutIntent(value, other)
+	case *vertexDeleteReceiptEnvelope:
+		other, ok := right.(*vertexDeleteReceiptEnvelope)
+		return ok && sameReceiptVertexDeleteIntent(value, other)
+	default:
+		return left == nil && right == nil
+	}
+}
+
+func (s *LanternService) commitReplicatedReceipt(
+	ctx context.Context,
+	origin hlc.NodeID,
+	seq uint64,
+	ts hlc.Timestamp,
+	pending *pendingMutation,
+) (string, error) {
+	switch pending.receipt.(type) {
+	case *edgeDeleteReceiptEnvelope:
+		if s.receiptEdgeDeleteCoordinator == nil {
+			return "", connect.NewError(connect.CodeInternal,
+				fmt.Errorf("receipt-bearing Edge Delete coordinator became unavailable"))
+		}
+		return "replicated_receipt_edge_delete",
+			s.receiptEdgeDeleteCoordinator.commitReplicated(ctx, origin, seq, ts, pending)
+	case *vertexPutReceiptEnvelope:
+		if s.receiptVertexPutCoordinator == nil {
+			return "", connect.NewError(connect.CodeInternal,
+				fmt.Errorf("receipt-bearing Vertex Put coordinator became unavailable"))
+		}
+		return "replicated_receipt_vertex_put",
+			s.receiptVertexPutCoordinator.commitReplicated(ctx, origin, seq, ts, pending)
+	case *vertexDeleteReceiptEnvelope:
+		if s.receiptVertexDeleteCoordinator == nil {
+			return "", connect.NewError(connect.CodeInternal,
+				fmt.Errorf("receipt-bearing Vertex Delete coordinator became unavailable"))
+		}
+		return "replicated_receipt_vertex_delete",
+			s.receiptVertexDeleteCoordinator.commitReplicated(ctx, origin, seq, ts, pending)
+	default:
+		return "", connect.NewError(connect.CodeInternal,
+			fmt.Errorf("receipt-bearing replication coordinator became unavailable"))
+	}
 }
 
 func publicationGapError() error {
@@ -519,7 +600,7 @@ func allAcceptedIndexes(count int) []int {
 func (s *LanternService) publishRemoteMutation(
 	ctx context.Context,
 	m *pb.Mutation,
-	receipt *edgeDeleteReceiptEnvelope,
+	receipt receiptMutationEnvelope,
 ) error {
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_DeleteVerticesByPrefix, *pb.MutationOp_DeleteEdgesByPrefix:
@@ -545,11 +626,7 @@ func (s *LanternService) publishRemoteMutation(
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: origin state is unavailable"))
 	}
 	if receipt != nil {
-		coordinator := s.receiptEdgeDeleteCoordinator
-		if coordinator == nil {
-			return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("receipt-bearing replication apply is not enabled"))
-		}
-		if err := coordinator.validateReplicatedEnvelope(receipt); err != nil {
+		if err := s.validateReplicatedReceiptEnvelope(receipt); err != nil {
 			return err
 		}
 	} else if err := s.validateDurableRemoteHLC(hlcFromProto(m.GetHlc())); err != nil {
@@ -570,7 +647,7 @@ func (s *LanternService) publishRemoteMutation(
 	if prev, exists := queue[m.GetSeq()]; exists {
 		same := proto.Equal(prev.mutation, m)
 		if prev.receipt != nil || receipt != nil {
-			same = sameReceiptEdgeDeleteIntent(prev.receipt, receipt)
+			same = sameReceiptMutationIntent(prev.receipt, receipt)
 		}
 		if !same {
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("replication: conflicting mutation for origin %x seq %d", origin, m.GetSeq()))
@@ -582,10 +659,10 @@ func (s *LanternService) publishRemoteMutation(
 		}
 		queuedMutation := cloneQueuedMutation(m)
 		if receipt != nil {
-			// decodeReceiptEdgeDeleteMutation already made an owned graph
-			// projection. Retaining a second full receipt frame would nearly
+			// Receipt decoding already made an owned graph projection.
+			// Retaining a second full receipt frame would nearly
 			// double the bounded pending queue's actual memory.
-			queuedMutation = receipt.Mutation
+			queuedMutation = receipt.GraphMutation()
 		}
 		if queue == nil {
 			queue = make(map[uint64]*pendingMutation)
@@ -677,15 +754,12 @@ func (s *LanternService) drainRemoteOrigin(ctx context.Context, origin hlc.NodeI
 		}
 		m := pending.mutation
 		if pending.receipt != nil {
-			coordinator := s.receiptEdgeDeleteCoordinator
-			if coordinator == nil {
-				return connect.NewError(connect.CodeInternal, fmt.Errorf("receipt-bearing replication coordinator became unavailable"))
-			}
-			if err := coordinator.commitReplicated(ctx, origin, seq, hlcFromProto(m.GetHlc()), pending); err != nil {
+			opName, err := s.commitReplicatedReceipt(ctx, origin, seq, hlcFromProto(m.GetHlc()), pending)
+			if err != nil {
 				return err
 			}
 			if s.onReplicationApply != nil {
-				s.onReplicationApply("replicated_receipt_edge_delete")
+				s.onReplicationApply(opName)
 			}
 			if s.onApplied != nil {
 				s.onApplied(hex.EncodeToString(origin[:]))

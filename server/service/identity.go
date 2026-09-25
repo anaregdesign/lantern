@@ -297,7 +297,8 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		return connect.NewError(connect.CodeInternal, errors.New("identity projection received malformed mutation"))
 	}
 	var category pb.IdentityOperation
-	var receiptKeys []*pb.EdgeKey
+	var receiptEdgeKeys []*pb.EdgeKey
+	var receiptVertexKeys []string
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_PutVertex, *pb.MutationOp_PutVertices, *pb.MutationOp_ReplicatedPutVertices:
 		category = pb.IdentityOperation_IDENTITY_OPERATION_PUT_VERTEX
@@ -311,12 +312,32 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
 		var err error
-		receiptKeys, err = acceptedReceiptEdgeDeleteKeys(m)
+		receiptEdgeKeys, err = acceptedReceiptEdgeDeleteKeys(m)
 		if err != nil {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity projection invalid receipt envelope: %w", err))
 		}
 		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
-		if len(receiptKeys) == 0 {
+		if len(receiptEdgeKeys) == 0 {
+			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+		}
+	case *pb.MutationOp_ReplicatedReceiptVertexPut:
+		var err error
+		receiptVertexKeys, err = acceptedReceiptVertexPutKeys(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity projection invalid receipt envelope: %w", err))
+		}
+		category = pb.IdentityOperation_IDENTITY_OPERATION_PUT_VERTEX
+		if len(receiptVertexKeys) == 0 {
+			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+		}
+	case *pb.MutationOp_ReplicatedReceiptVertexDelete:
+		var err error
+		receiptVertexKeys, err = acceptedReceiptVertexDeleteKeys(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity projection invalid receipt envelope: %w", err))
+		}
+		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_VERTEX
+		if len(receiptVertexKeys) == 0 {
 			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
 		}
 	case *pb.MutationOp_DeleteVerticesByPrefix, *pb.MutationOp_DeleteEdgesByPrefix:
@@ -417,8 +438,15 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 			}
 		}
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
-		for _, edge := range receiptKeys {
+		for _, edge := range receiptEdgeKeys {
 			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	case *pb.MutationOp_ReplicatedReceiptVertexPut,
+		*pb.MutationOp_ReplicatedReceiptVertexDelete:
+		for _, key := range receiptVertexKeys {
+			if err = p.addVertex(key); err != nil {
 				return err
 			}
 		}
