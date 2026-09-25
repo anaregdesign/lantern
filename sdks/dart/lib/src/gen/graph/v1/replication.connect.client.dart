@@ -18,7 +18,7 @@ import "replication.connect.spec.dart" as specs;
 /// boundary. Hosting Subscribe on a dedicated service keeps the import
 /// graph one-way (replication.proto → graph.proto) and is documented as
 /// part of #178's implementation in docs/replication.md.
-extension type LanternReplicationServiceClient(connect.Transport _transport) {
+extension type LanternReplicationServiceClient (connect.Transport _transport) {
   /// Subscribe streams replicated mutations to a peer (or CDC consumer)
   /// starting at the supplied per-origin cursor. A same-responder snapshot
   /// resume also supplies `from_local_seq`; the server replays retained entries
