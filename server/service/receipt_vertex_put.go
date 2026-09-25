@@ -254,15 +254,22 @@ func prepareVertexPutReceiptCall(
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, nil, nil, err
 		}
-		vertex := proto.Clone(item.Vertex).(*pb.Vertex)
-		original[i] = vertex
+		original[i] = item.Vertex
 		items[i] = graphcache.VertexItem[string, *pb.Vertex]{
-			Key: vertex.GetKey(), Value: vertex, Expiration: expiration,
+			Key: item.Vertex.GetKey(), Value: item.Vertex, Expiration: expiration,
 		}
 		intents[i] = mutationreceipt.Intent{
 			ID: item.ID, Group: call.Group, Index: uint32(i), Count: uint32(len(call.Items)),
 			Kind: mutationreceipt.PutVertex, Digest: digest,
 		}
+	}
+	if err := validateReceiptVertexPutWALRequestCapacity(original); err != nil {
+		return nil, nil, nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
+	for i, vertex := range original {
+		cloned := proto.Clone(vertex).(*pb.Vertex)
+		original[i] = cloned
+		items[i].Value = cloned
 	}
 	return original, items, intents, nil
 }
@@ -372,9 +379,6 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	original, items, intents, err := prepareVertexPutReceiptCall(c.service, call)
 	if err != nil {
 		return nil, err
-	}
-	if err := validateReceiptVertexPutWALRequestCapacity(original); err != nil {
-		return nil, connect.NewError(connect.CodeResourceExhausted, err)
 	}
 	s := c.service
 	s.replicationCutMu.Lock()

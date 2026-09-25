@@ -294,6 +294,40 @@ func TestVertexDeleteReceiptCoordinatorRejectsOversizedReceiverLocalRelay(t *tes
 		rejected.service.LocalSeq(node) != 0 {
 		t.Fatal("rejected Vertex Delete changed Store, log, or origin")
 	}
+
+	sparseWire, err := envelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedRelay := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x84}, 32, nil)
+	rejectedRelay.service.replicationFrameCertified = true
+	rejectedRelay.service.replicationSendMaxBytes = maximalSize - 1
+	if err := rejectedRelay.service.ApplyMutation(context.Background(), sparseWire); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("one-byte-under sparse Vertex Delete relay = %v, want ResourceExhausted", err)
+	}
+	rejectedGraph := rejectedRelay.cache.SnapshotReplication()
+	if len(rejectedGraph.Tombstones.Vertices) != 0 ||
+		len(rejectedGraph.Barriers.Vertices) != 0 ||
+		len(rejectedGraph.Graph.Vertices) != 0 ||
+		rejectedRelay.store.Stats().Entries != 0 || rejectedRelay.log.Len() != 0 ||
+		rejectedRelay.service.LocalSeq(node) != 0 {
+		t.Fatal("rejected sparse Vertex Delete relay changed graph, Store, log, or origin")
+	}
+
+	exactRelay := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x85}, 32, nil)
+	exactRelay.service.replicationFrameCertified = true
+	exactRelay.service.replicationSendMaxBytes = maximalSize
+	if err := exactRelay.service.ApplyMutation(context.Background(), sparseWire); err != nil {
+		t.Fatalf("exact-fit sparse Vertex Delete relay: %v", err)
+	}
+	if tombstones := exactRelay.cache.SnapshotReplication().Tombstones.Vertices; len(tombstones) != itemCount ||
+		exactRelay.store.Stats().Entries != itemCount || exactRelay.log.Len() != 1 ||
+		exactRelay.service.LocalSeq(node) != 1 {
+		t.Fatal("exact-fit Vertex Delete relay lost causal effects, receipts, log, or origin")
+	}
+	if size, err := validateReplicationFrameSize(exactRelay.log.RetainedEntries()[0].Op, 0); err != nil || size != maximalSize {
+		t.Fatalf("exact-fit Vertex Delete relay frame = %d, %v, want %d", size, err, maximalSize)
+	}
 }
 
 func TestVertexDeleteReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {

@@ -333,6 +333,37 @@ func TestVertexPutReceiptRelayMaximumBoundsSparseFollower(t *testing.T) {
 	if size, err := validateReplicationRelayFrameSize(retained, maximalSize); err != nil || size != maximalSize {
 		t.Fatalf("exact-fit maximal Vertex Put relay = %d, %v", size, err)
 	}
+
+	sparseWire, err := retained.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x93}, 8, nil)
+	rejected.service.replicationFrameCertified = true
+	rejected.service.replicationSendMaxBytes = maximalSize - 1
+	if err := rejected.service.ApplyMutation(context.Background(), sparseWire); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("one-byte-under sparse Vertex Put relay = %v, want ResourceExhausted", err)
+	}
+	if _, live := rejected.cache.GetVertex(vertex.Key); live ||
+		rejected.store.Stats().Entries != 0 || rejected.log.Len() != 0 ||
+		rejected.service.LocalSeq(origin.service.clock.NodeID()) != 0 {
+		t.Fatal("rejected sparse Vertex Put relay changed graph, Store, log, or origin")
+	}
+
+	exact := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x94}, 8, nil)
+	exact.service.replicationFrameCertified = true
+	exact.service.replicationSendMaxBytes = maximalSize
+	if err := exact.service.ApplyMutation(context.Background(), sparseWire); err != nil {
+		t.Fatalf("exact-fit sparse Vertex Put relay: %v", err)
+	}
+	if got, live := exact.cache.GetVertex(vertex.Key); !live || got.GetBytes() == nil ||
+		exact.store.Stats().Entries != 1 || exact.log.Len() != 1 ||
+		exact.service.LocalSeq(origin.service.clock.NodeID()) != 1 {
+		t.Fatal("exact-fit Vertex Put relay lost live value, receipt, log, or origin")
+	}
+	if size, err := validateReplicationFrameSize(exact.log.RetainedEntries()[0].Op, 0); err != nil || size != maximalSize {
+		t.Fatalf("exact-fit Vertex Put relay frame = %d, %v, want %d", size, err, maximalSize)
+	}
 }
 
 func TestVertexPutReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
@@ -363,8 +394,42 @@ func TestVertexPutReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
 		}
 	})
 
+	t.Run("Semantic invalid before WAL capacity", func(t *testing.T) {
+		var walWrites atomic.Int32
+		f := newReceiptVertexPutFixture(t, receiptVertexPutWALFunc(func(mutationlog.Entry) error {
+			walWrites.Add(1)
+			return nil
+		}), hlc.NodeID{0x77}, 8, nil)
+		beforeStore := f.store.Stats()
+		call := receiptVertexPutTestCall(t, f.epoch, 0x24, false,
+			&pb.Vertex{
+				Key: "oversized-valid",
+				Value: &pb.Vertex_Bytes{
+					Bytes: make([]byte, receiptVertexWALMaxBytes/2),
+				},
+			},
+			&pb.Vertex{Key: "invalid", Value: &pb.Vertex_Timestamp{}},
+		)
+		_, err := f.coordinator.Commit(context.Background(), call)
+		if connect.CodeOf(err) != connect.CodeInvalidArgument ||
+			errors.Is(err, errReceiptVertexWALCapacity) {
+			t.Fatalf("semantic invalid input = %v, want InvalidArgument before WAL capacity", err)
+		}
+		graph := f.cache.SnapshotReplication()
+		if len(graph.Graph.Vertices) != 0 || len(graph.Tombstones.Vertices) != 0 ||
+			len(graph.Barriers.Vertices) != 0 || f.cache.VertexHLCCount() != 0 ||
+			f.store.Stats() != beforeStore || f.log.Len() != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 || walWrites.Load() != 0 {
+			t.Fatal("invalid input changed graph, Store, WAL, log, or origin")
+		}
+	})
+
 	t.Run("WAL capacity", func(t *testing.T) {
-		f := newReceiptVertexPutFixture(t, nil, hlc.NodeID{0x76}, 8, nil)
+		var walWrites atomic.Int32
+		f := newReceiptVertexPutFixture(t, receiptVertexPutWALFunc(func(mutationlog.Entry) error {
+			walWrites.Add(1)
+			return nil
+		}), hlc.NodeID{0x76}, 8, nil)
 		beforeStore := f.store.Stats()
 		call := receiptVertexPutTestCall(t, f.epoch, 0x23, false, &pb.Vertex{
 			Key: "oversized-wal",
@@ -377,11 +442,13 @@ func TestVertexPutReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
 			!errors.Is(err, errReceiptVertexWALCapacity) {
 			t.Fatalf("WAL capacity rejection = %v, want ResourceExhausted capacity error", err)
 		}
-		if _, live := f.cache.GetVertex("oversized-wal"); live ||
+		graph := f.cache.SnapshotReplication()
+		if len(graph.Graph.Vertices) != 0 || len(graph.Tombstones.Vertices) != 0 ||
+			len(graph.Barriers.Vertices) != 0 ||
 			f.store.Stats() != beforeStore || f.log.Len() != 0 ||
 			f.service.LocalSeq(f.service.clock.NodeID()) != 0 ||
-			f.cache.VertexHLCCount() != 0 {
-			t.Fatal("WAL capacity rejection changed graph, Store, log, or origin")
+			f.cache.VertexHLCCount() != 0 || walWrites.Load() != 0 {
+			t.Fatal("WAL capacity rejection changed graph, Store, WAL, log, or origin")
 		}
 	})
 

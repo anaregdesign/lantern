@@ -3992,6 +3992,216 @@ func TestPublicVertexReceipts_RealConnectWire(t *testing.T) {
 	})
 }
 
+func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
+	const (
+		token     = "vertex-receipt-frame-token"
+		recvLimit = 64 << 10
+	)
+	readFrame := func(t *testing.T, wire publicReceiptWireServer) *pb.SubscribeResponse {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		stream, err := newReplicationRawClient(t, wire.server.url).Subscribe(
+			ctx,
+			receiptRequestWithToken(&pb.SubscribeRequest{
+				FromLocalSeq: 1, AcceptReceiptEnvelopes: true,
+			}, token),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = stream.Close() }()
+		if !stream.Receive() {
+			t.Fatalf("Vertex receipt Subscribe: %v", stream.Err())
+		}
+		return proto.Clone(stream.Msg()).(*pb.SubscribeResponse)
+	}
+	checkRejected := func(t *testing.T, wire publicReceiptWireServer, receiptContext *pb.MutationReceiptContext, beforeWAL int64, origin hlc.NodeID) {
+		t.Helper()
+		if stats := wire.runtime.ReceiptStats(); stats.Entries != 0 || stats.Bytes != 0 {
+			t.Fatalf("rejected Vertex receipt changed Store: %+v", stats)
+		}
+		if length, _, _ := wire.runtime.MutationLogStats(); length != 0 ||
+			wire.server.svc.LocalSeq(origin) != 0 {
+			t.Fatalf("rejected Vertex receipt changed log or origin: len=%d seq=%d",
+				length, wire.server.svc.LocalSeq(origin))
+		}
+		afterWAL, err := os.Stat(wire.config.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if afterWAL.Size() != beforeWAL {
+			t.Fatalf("rejected Vertex receipt changed WAL from %d to %d", beforeWAL, afterWAL.Size())
+		}
+		status, err := wire.raw.GetReceiptStatus(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptStatusRequest{
+				OperationId: receiptContext.GetOperationIds()[0],
+			}, token),
+		)
+		if err != nil ||
+			status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED {
+			t.Fatalf("rejected Vertex receipt status = %+v, %v", status, err)
+		}
+	}
+
+	t.Run("conditional Put includes full response envelope", func(t *testing.T) {
+		node := hlc.NodeID{0x95}
+		prepare := func(sendLimit int, seed byte) (publicReceiptWireServer, *pb.PutVerticesRequest) {
+			wire := newPublicReceiptWireServerWithNet(t, node, 8,
+				provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit}, token)
+			capability := publicReceiptCapability(t, wire, token)
+			existing := &pb.Vertex{Key: "frame/conditional", Value: &pb.Vertex_String_{String_: "old"}}
+			if err := wire.runtime.GraphCache().PutVertexWithExpiration(
+				existing.Key, existing, time.Now().Add(time.Hour),
+			); err != nil {
+				t.Fatal(err)
+			}
+			request := &pb.PutVerticesRequest{
+				Vertices: []*pb.Vertex{
+					{
+						Key:        "frame/live",
+						Value:      &pb.Vertex_Bytes{Bytes: bytes.Repeat([]byte{0x5a}, 512)},
+						Expiration: timestamppb.New(time.Unix(time.Now().Add(time.Hour).Unix(), 600_000_000)),
+					},
+					{Key: existing.Key, Value: &pb.Vertex_String_{String_: "ignored"}},
+				},
+				IfAbsent: true,
+				ReceiptContext: publicReceiptWireContext(t, capability, seed, 2,
+					time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)),
+			}
+			if size := proto.Size(request); size >= recvLimit {
+				t.Fatalf("Vertex Put request size %d exceeds receive cap %d", size, recvLimit)
+			}
+			return wire, request
+		}
+		put := func(wire publicReceiptWireServer, request *pb.PutVerticesRequest) (*pb.PutVerticesResponse, error) {
+			response, err := wire.raw.PutVertices(
+				context.Background(), receiptRequestWithToken(request, token),
+			)
+			if err != nil {
+				return nil, err
+			}
+			return response.Msg, nil
+		}
+		want := []pb.PutOutcome{
+			pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+			pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+		}
+		reference, request := prepare(0, 0x31)
+		if response, err := put(reference, request); err != nil ||
+			!reflect.DeepEqual(response.GetOutcomes(), want) {
+			t.Fatalf("reference Vertex Put = %+v, %v", response, err)
+		}
+		frame := readFrame(t, reference)
+		items := frame.GetMutation().GetOp().GetReplicatedReceiptVertexPut().GetItems()
+		if len(items) != 2 || items[0].GetAccepted() == nil || items[1].GetAccepted() != nil {
+			t.Fatalf("mixed Vertex Put receipt frame = %+v", frame)
+		}
+		sendLimit := proto.Size(frame)
+		if sendLimit <= proto.Size(request) {
+			t.Fatalf("Vertex Put frame %d did not expand from request %d", sendLimit, proto.Size(request))
+		}
+
+		rejected, request := prepare(sendLimit-1, 0x32)
+		beforeWAL, err := os.Stat(rejected.config.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := put(rejected, request); connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
+			t.Fatalf("one-byte-under Vertex Put frame = %v, want ResourceExhausted", err)
+		}
+		checkRejected(t, rejected, request.GetReceiptContext(), beforeWAL.Size(), node)
+		if _, err := rejected.raw.GetVertex(context.Background(),
+			receiptRequestWithToken(&pb.GetVertexRequest{Key: "frame/live"}, token),
+		); connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("rejected Vertex Put left value live: %v", err)
+		}
+
+		exact, request := prepare(sendLimit, 0x33)
+		if response, err := put(exact, request); err != nil ||
+			!reflect.DeepEqual(response.GetOutcomes(), want) {
+			t.Fatalf("exact-fit Vertex Put = %+v, %v", response, err)
+		}
+		if size := proto.Size(readFrame(t, exact)); size != sendLimit {
+			t.Fatalf("exact-fit Vertex Put frame = %d, want %d", size, sendLimit)
+		}
+	})
+
+	t.Run("absent Delete reserves maximal receiver-local relay", func(t *testing.T) {
+		node := hlc.NodeID{0x96}
+		prepare := func(sendLimit int, seed byte) (publicReceiptWireServer, *pb.DeleteVerticesRequest) {
+			wire := newPublicReceiptWireServerWithNet(t, node, 8,
+				provider.NetConfig{MaxRecvMsgBytes: recvLimit, MaxSendMsgBytes: sendLimit}, token)
+			capability := publicReceiptCapability(t, wire, token)
+			if !wire.runtime.GraphCache().ApplyVertexCausalBarrierHLC("frame/protected", hlc.Timestamp{
+				WallNs: time.Now().Add(time.Minute).UnixNano(), NodeID: node,
+			}) {
+				t.Fatal("cannot seed Vertex causal barrier")
+			}
+			now := time.Now()
+			wire.server.svc.WithTombstoneTTL(2*time.Hour + 600*time.Millisecond - time.Duration(now.Nanosecond()))
+			return wire, &pb.DeleteVerticesRequest{
+				Keys: []string{"frame/protected", "frame/absent"},
+				ReceiptContext: publicReceiptWireContext(t, capability, seed, 2,
+					time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)),
+			}
+		}
+		deleteVertices := func(wire publicReceiptWireServer, request *pb.DeleteVerticesRequest) (*pb.DeleteVerticesResponse, error) {
+			response, err := wire.raw.DeleteVertices(
+				context.Background(), receiptRequestWithToken(request, token),
+			)
+			if err != nil {
+				return nil, err
+			}
+			return response.Msg, nil
+		}
+		reference, request := prepare(0, 0x34)
+		if response, err := deleteVertices(reference, request); err != nil ||
+			!reflect.DeepEqual(response.GetExisted(), []bool{false, false}) {
+			t.Fatalf("reference absent Vertex Delete = %+v, %v", response, err)
+		}
+		sparse := readFrame(t, reference)
+		maximal := proto.Clone(sparse).(*pb.SubscribeResponse)
+		items := maximal.GetMutation().GetOp().GetReplicatedReceiptVertexDelete().GetItems()
+		if len(items) != 2 || items[0].GetCausallyAccepted() || !items[1].GetCausallyAccepted() {
+			t.Fatalf("sparse Vertex Delete receipt frame = %+v", sparse)
+		}
+		items[0].CausallyAccepted = true
+		sendLimit := proto.Size(maximal)
+		if proto.Size(sparse) >= sendLimit {
+			t.Fatalf("Vertex Delete sparse frame %d did not grow to maximal %d",
+				proto.Size(sparse), sendLimit)
+		}
+
+		rejected, request := prepare(sendLimit-1, 0x35)
+		beforeWAL, err := os.Stat(rejected.config.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := deleteVertices(rejected, request); connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", sendLimit-1)) {
+			t.Fatalf("one-byte-under maximal Vertex Delete relay = %v, want ResourceExhausted", err)
+		}
+		checkRejected(t, rejected, request.GetReceiptContext(), beforeWAL.Size(), node)
+		graph := rejected.runtime.GraphCache().SnapshotReplication()
+		if len(graph.Barriers.Vertices) != 1 || len(graph.Tombstones.Vertices) != 0 ||
+			len(graph.Graph.Vertices) != 0 {
+			t.Fatalf("rejected Vertex Delete changed causal identities: %+v", graph)
+		}
+
+		exact, request := prepare(sendLimit, 0x36)
+		if response, err := deleteVertices(exact, request); err != nil ||
+			!reflect.DeepEqual(response.GetExisted(), []bool{false, false}) {
+			t.Fatalf("exact-fit absent Vertex Delete = %+v, %v", response, err)
+		}
+		if size := proto.Size(readFrame(t, exact)); size != proto.Size(sparse) {
+			t.Fatalf("exact-fit sparse Vertex Delete frame = %d, want %d", size, proto.Size(sparse))
+		}
+	})
+}
+
 func durableFollowerReceiptMutation(
 	t *testing.T,
 	config mutationreceipt.Config,

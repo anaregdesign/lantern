@@ -423,9 +423,13 @@ answer.
 The encoder rejects typed-nil message-valued oneof payloads, whose wire bytes
 are indistinguishable from present empty messages and would change meaning on
 replay. Each receipt kind retains strict envelope validation and an 8 MiB body
-cap under the FileWAL frame's 32 MiB bound. Vertex receipt decoders scan the
-raw protobuf framing and count item fields before unmarshalling; their
-10,000-item hard cap is the lower of the minimum-canonical-item byte ceiling
+cap under the FileWAL frame's 32 MiB bound. The actual full-mutation
+`SubscribeResponse` and the largest receiver-local relay of the same receipt
+must also fit the certified send limit before Store, graph, WAL, or origin
+publication; the 8 MiB envelope bound never overrides a lower send limit.
+Vertex receipt decoders scan raw protobuf framing and count item fields
+before unmarshalling; their 10,000-item hard cap is the lower of the
+minimum-canonical-item byte ceiling
 and the default plural-RPC batch limit. The `FileWAL` payload decoder cannot
 see frame metadata, so a
 replay/restore visitor must additionally validate the frame HLC against the

@@ -756,9 +756,9 @@ func (r *ServingRuntime) CertifyReceiptBackup(
 	return nil
 }
 
-// ActivatePublicReceipts enables capability, status, and receipt-bearing Edge
-// Delete only for the exact durable cut already certified for recovery,
-// replication, and backup.
+// ActivatePublicReceipts enables capability, status, and receipt-bearing Vertex
+// Put, exact Vertex Delete, and exact Edge Delete only for the durable cut
+// certified for recovery, replication, and backup.
 func (r *ServingRuntime) ActivatePublicReceipts(
 	primary *LanternService,
 	replication *LanternReplicationService,

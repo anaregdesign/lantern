@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -281,6 +282,95 @@ func TestReceiptVertexPutWALPreflightBoundsItems(t *testing.T) {
 		make([]*pb.ReplicatedReceiptVertexPutItem, receiptVertexWALMaxItems+1)
 	if _, err := decodeReceiptVertexPutMutation(wire); err == nil {
 		t.Fatal("decoded-message item cap was not enforced")
+	}
+}
+
+func TestReceiptVertexPutWALRequestCapacityExactLimit(t *testing.T) {
+	payload := make([]byte, receiptVertexWALMaxBytes/2)
+	large := &pb.Vertex{
+		Key:   "capacity",
+		Value: &pb.Vertex_Bytes{Bytes: payload[:0]},
+	}
+	receipt := worstCaseReceiptVertexWALReceipt(&pb.ReceiptResult{
+		Result: &pb.ReceiptResult_PutVertexOutcome{
+			PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_SUPERSEDED,
+		},
+	})
+	call := &pb.ReplicatedReceiptVertexPut{
+		DeploymentEpoch:   make([]byte, len(mutationreceipt.Epoch{})),
+		PolicyFingerprint: make([]byte, 32),
+		IfAbsent:          true,
+		Items: []*pb.ReplicatedReceiptVertexPutItem{{
+			Original: large,
+			Receipt:  receipt,
+			Accepted: &pb.ReplicatedPutVertex{
+				Outcome: &pb.ReplicatedPutVertex_Live{Live: large},
+			},
+		}},
+	}
+	frame := &pb.Mutation{
+		Seq: math.MaxUint64,
+		Hlc: &pb.HLCTimestamp{
+			WallNs: math.MaxInt64, Logical: math.MaxUint32,
+			NodeId: make([]byte, len(hlc.NodeID{})),
+		},
+		Origin: make([]byte, len(hlc.NodeID{})),
+		Op: &pb.MutationOp{
+			Op: &pb.MutationOp_ReplicatedReceiptVertexPut{
+				ReplicatedReceiptVertexPut: call,
+			},
+		},
+	}
+
+	var exact []*pb.Vertex
+	var exactLength int
+	for _, extraKey := range []string{"", "e", strings.Repeat("e", 124)} {
+		call.Items = call.Items[:1]
+		vertices := []*pb.Vertex{large}
+		if extraKey != "" {
+			extra := &pb.Vertex{Key: extraKey}
+			vertices = append(vertices, extra)
+			call.Items = append(call.Items, &pb.ReplicatedReceiptVertexPutItem{
+				Original: extra,
+				Receipt:  receipt,
+				Accepted: &pb.ReplicatedPutVertex{
+					Outcome: &pb.ReplicatedPutVertex_Live{Live: extra},
+				},
+			})
+		}
+		low, high := 0, len(payload)
+		best := -1
+		for low <= high {
+			mid := low + (high-low)/2
+			large.GetValue().(*pb.Vertex_Bytes).Bytes = payload[:mid]
+			if proto.Size(frame) <= receiptVertexWALMaxBytes {
+				best = mid
+				low = mid + 1
+			} else {
+				high = mid - 1
+			}
+		}
+		if best < 0 {
+			continue
+		}
+		large.GetValue().(*pb.Vertex_Bytes).Bytes = payload[:best]
+		if proto.Size(frame) == receiptVertexWALMaxBytes {
+			exact, exactLength = vertices, best
+			break
+		}
+	}
+	if exact == nil {
+		t.Fatal("could not construct an exact 8 MiB maximal Vertex Put WAL frame")
+	}
+	if err := validateReceiptVertexPutWALRequestCapacity(exact); err != nil {
+		t.Fatalf("exact 8 MiB WAL request was rejected: %v", err)
+	}
+	large.GetValue().(*pb.Vertex_Bytes).Bytes = payload[:exactLength+1]
+	if size := proto.Size(frame); size <= receiptVertexWALMaxBytes {
+		t.Fatalf("one byte more input produced WAL frame size %d, want over 8 MiB", size)
+	}
+	if err := validateReceiptVertexPutWALRequestCapacity(exact); !errors.Is(err, errReceiptVertexWALCapacity) {
+		t.Fatalf("over 8 MiB WAL request = %v, want capacity error", err)
 	}
 }
 
