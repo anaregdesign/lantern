@@ -706,9 +706,11 @@ Framing contract:
   advertises `PeerStatus.required_snapshot_format = RECEIPT_V1`, rejects
   legacy full Subscribe before checking the retained ring, and rejects every
   graph-only Snapshot request. An opt-in receipt producer exists, but it must
-  be configured with the exact service-owned atomic capture source and policy;
-  a missing or invalid configuration fails before a header is sent. No
-  production provider configures it, no receipt write/status capability is
+  be configured with the exact service-owned atomic capture source and policy.
+  The source's private identity must match the responder's primary service,
+  serving runtime, graph backend, mutation log, HLC clock, origin tracker, and
+  Store; a foreign or incomplete configuration fails before a header is sent.
+  No production provider configures it, no receipt write/status capability is
   enabled, and the atomic receiver/installer remains unimplemented.
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
   the primary's contiguous per-origin committed prefix (every prior
@@ -727,10 +729,12 @@ Framing contract:
   (deployment epoch, fingerprint, retention, entry capacity, and byte
   capacity), monotonic clock high-water, and sorted full origin rows with both
   HLC and sequence. Those origin rows must exactly agree with the legacy
-  cutoff map. Receipt rows immediately follow the header, are strictly sorted
-  by operation ID, and retain Store-reconstructable identity, grouping,
-  intent, deadline, exact original result bytes, and Add contribution
-  metadata. Zero receipt rows and a receipt-only graph cut are valid.
+  cutoff map. The clock high-water must be no later than `cutoff_hlc` at
+  millisecond precision. Receipt rows immediately follow the header, are
+  strictly sorted by operation ID, and retain Store-reconstructable identity,
+  grouping, intent, deadline, exact original result bytes, and Add
+  contribution metadata. Zero receipt rows and a receipt-only graph cut are
+  valid.
 - The **footer** is always the last frame. It reports eight separate actually
   streamed counts: live vertices, live edges, vertex causal barriers, edge
   causal barriers, vertex Delete tombstones, edge Delete tombstones, receipt
@@ -804,7 +808,12 @@ Implementation notes:
   it validates Store reconstruction, phase order, counts, field sizes, graph
   identities and endpoint closure, timestamp/HLC and contribution validity,
   duplicate/overlapping state, causal floors, origin/cutoff consistency, and
-  an 8 MiB per-frame bound across the complete stream. Any malformed capture
+  an 8 MiB per-frame bound across the complete stream. Every nonzero graph HLC
+  must be no later than both the global cutoff and that HLC origin's advertised
+  frontier. The preflight recursively rejects unknown protobuf fields and
+  typed-nil oneof wrappers before sizing or sending. The source reconciles the
+  HLC clock floor to the captured Store high-water under the same publication
+  cut before sampling the cutoff; overflow fails closed. Any malformed capture
   therefore sends no partial image. The ordinary graph-only producer and wire
   behavior are unchanged.
 - v1 materialises the full snapshot in memory. Bootstrap is a bounded,

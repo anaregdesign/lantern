@@ -309,9 +309,11 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount += 2
 		}},
 		{"vertex older than its barrier", "live vertex is older than its causal barrier", func(a *wholeStateArchive) {
-			newer := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
-			newer.WallNs++
-			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "tail", Hlc: newer}}})
+			barrier := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			older := proto.Clone(barrier).(*pb.HLCTimestamp)
+			older.WallNs--
+			a.Graph[1].GetVertex().Hlc = older
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_VertexCausalBarrier{VertexCausalBarrier: &pb.SnapshotVertexCausalBarrier{Key: "tail", Hlc: barrier}}})
 			a.Graph[len(a.Graph)-1].GetFooter().VertexCausalBarrierCount++
 		}},
 		{"invalid edge barrier", "invalid edge causal barrier", func(a *wholeStateArchive) {
@@ -319,9 +321,11 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount++
 		}},
 		{"edge floor differs from barrier", "live edge Put floor differs from its causal barrier", func(a *wholeStateArchive) {
-			newer := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
-			newer.WallNs++
-			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head", Hlc: newer}}})
+			barrier := proto.Clone(a.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			floor := proto.Clone(barrier).(*pb.HLCTimestamp)
+			floor.WallNs--
+			a.Graph[3].GetEdge().Hlc = floor
+			insertBody(a, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeCausalBarrier{EdgeCausalBarrier: &pb.SnapshotEdgeCausalBarrier{Tail: "tail", Head: "head", Hlc: barrier}}})
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeCausalBarrierCount++
 		}},
 		{"edge floor lacks barrier", "live edge Put floor lacks a causal barrier", func(a *wholeStateArchive) {

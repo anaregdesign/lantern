@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"reflect"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -149,12 +150,15 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 		}
 		contribs := make([]*pb.SnapshotEdgeContribution, 0, len(e.Contributions))
 		for _, c := range e.Contributions {
-			contribs = append(contribs, &pb.SnapshotEdgeContribution{
-				Weight:     c.Weight,
-				Expiration: timestamppb.New(c.Expiration),
-				ContribId:  contribIDBytes(c.ContribID),
-				Hlc:        hlcToProto(c.HLC),
-			})
+			contribution := &pb.SnapshotEdgeContribution{
+				Weight:    c.Weight,
+				ContribId: contribIDBytes(c.ContribID),
+				Hlc:       hlcToProto(c.HLC),
+			}
+			if !c.Expiration.IsZero() {
+				contribution.Expiration = timestamppb.New(c.Expiration)
+			}
+			contribs = append(contribs, contribution)
 		}
 		entry := &pb.SnapshotResponse{
 			Entry: &pb.SnapshotResponse_Edge{
@@ -263,6 +267,10 @@ func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested 
 	if err := ValidateReceiptSnapshotGraphCapture(capture.Graph, capture.Origins); err != nil {
 		return err
 	}
+	cutoff, _ := receiptSnapshotHLC(capture.Graph[0].GetHeader().GetCutoffHlc())
+	if capture.Receipts.ClockHighWaterMillis > cutoff.WallNs/int64(time.Millisecond) {
+		return fmt.Errorf("receipt Snapshot clock high-water exceeds graph cutoff: %w", mutationreceipt.ErrInvalidSnapshot)
+	}
 	return nil
 }
 
@@ -270,14 +278,22 @@ func validateReceiptSnapshotCapture(capture ReceiptWholeStateCapture, requested 
 // shared by the receipt Snapshot and private archive producers. It rejects any
 // frame sequence that a strict receiver could not install.
 func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins []OriginState) error {
-	if len(frames) < 2 || frames[0] == nil || frames[0].GetHeader() == nil ||
-		frames[len(frames)-1] == nil || frames[len(frames)-1].GetFooter() == nil {
+	if len(frames) < 2 {
 		return fmt.Errorf("receipt Snapshot graph capture lacks header or footer")
 	}
 	for _, frame := range frames {
-		if frame == nil || proto.Size(frame) > receiptSnapshotMaxFrameBytes {
+		if !validReceiptSnapshotFrameOneofs(frame) {
+			return fmt.Errorf("receipt Snapshot graph frame has a nil or unknown oneof")
+		}
+		if proto.Size(frame) > receiptSnapshotMaxFrameBytes {
 			return fmt.Errorf("receipt Snapshot graph frame is nil or exceeds %d bytes", receiptSnapshotMaxFrameBytes)
 		}
+		if err := rejectProtoUnknownFields(frame.ProtoReflect()); err != nil {
+			return fmt.Errorf("receipt Snapshot graph frame %v", err)
+		}
+	}
+	if frames[0].GetHeader() == nil || frames[len(frames)-1].GetFooter() == nil {
+		return fmt.Errorf("receipt Snapshot graph capture lacks header or footer")
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
@@ -286,18 +302,45 @@ func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 		footer.GetReceiptCount() != 0 || footer.GetReceiptOriginCount() != 0 {
 		return fmt.Errorf("receipt Snapshot graph capture has invalid receipt framing")
 	}
-	if _, ok := receiptSnapshotHLC(header.GetCutoffHlc()); !ok {
+	cutoff, ok := receiptSnapshotHLC(header.GetCutoffHlc())
+	if !ok {
 		return fmt.Errorf("receipt Snapshot graph capture has invalid cutoff HLC")
 	}
-	if err := validateReceiptSnapshotOrigins(header, origins); err != nil {
+	originLast, err := validateReceiptSnapshotOrigins(header, origins, cutoff)
+	if err != nil {
 		return err
 	}
-	return validateReceiptSnapshotGraphBody(frames[1:len(frames)-1], footer)
+	return validateReceiptSnapshotGraphBody(
+		frames[1:len(frames)-1],
+		footer,
+		receiptSnapshotCausalBounds{cutoff: cutoff, originLast: originLast},
+	)
 }
 
 type receiptSnapshotEdgeKey struct{ tail, head string }
 
-func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.SnapshotFooter) error {
+type receiptSnapshotCausalBounds struct {
+	cutoff     hlc.Timestamp
+	originLast map[hlc.NodeID]hlc.Timestamp
+}
+
+func (b receiptSnapshotCausalBounds) parse(stamp *pb.HLCTimestamp) (hlc.Timestamp, bool) {
+	value, ok := receiptSnapshotHLC(stamp)
+	if !ok || b.cutoff.Less(value) {
+		return hlc.Timestamp{}, false
+	}
+	last, ok := b.originLast[value.NodeID]
+	if !ok || last.Less(value) {
+		return hlc.Timestamp{}, false
+	}
+	return value, true
+}
+
+func validateReceiptSnapshotGraphBody(
+	frames []*pb.SnapshotResponse,
+	footer *pb.SnapshotFooter,
+	bounds receiptSnapshotCausalBounds,
+) error {
 	var counts [6]uint64
 	phase := 0
 	vertexBarriers := make(map[string]hlc.Timestamp)
@@ -318,27 +361,30 @@ func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.
 		switch entry := frame.GetEntry().(type) {
 		case *pb.SnapshotResponse_VertexCausalBarrier:
 			barrier := entry.VertexCausalBarrier
-			if barrier == nil || barrier.GetKey() == "" || !validReceiptSnapshotHLC(barrier.GetHlc()) {
+			stamp, ok := bounds.parse(barrier.GetHlc())
+			if barrier == nil || barrier.GetKey() == "" || !ok {
 				return fmt.Errorf("invalid vertex causal barrier")
 			}
 			if _, exists := vertexBarriers[barrier.GetKey()]; exists {
 				return fmt.Errorf("duplicate vertex causal barrier")
 			}
-			vertexBarriers[barrier.GetKey()], _ = receiptSnapshotHLC(barrier.GetHlc())
+			vertexBarriers[barrier.GetKey()] = stamp
 		case *pb.SnapshotResponse_EdgeCausalBarrier:
 			barrier := entry.EdgeCausalBarrier
+			stamp, ok := bounds.parse(barrier.GetHlc())
 			if barrier == nil || barrier.GetTail() == "" || barrier.GetHead() == "" ||
-				!validReceiptSnapshotHLC(barrier.GetHlc()) {
+				!ok {
 				return fmt.Errorf("invalid edge causal barrier")
 			}
 			key := receiptSnapshotEdgeKey{barrier.GetTail(), barrier.GetHead()}
 			if _, exists := edgeBarriers[key]; exists {
 				return fmt.Errorf("duplicate edge causal barrier")
 			}
-			edgeBarriers[key], _ = receiptSnapshotHLC(barrier.GetHlc())
+			edgeBarriers[key] = stamp
 		case *pb.SnapshotResponse_VertexTombstone:
 			marker := entry.VertexTombstone
-			if marker == nil || marker.GetKey() == "" || !validReceiptSnapshotHLC(marker.GetHlc()) ||
+			_, ok := bounds.parse(marker.GetHlc())
+			if marker == nil || marker.GetKey() == "" || !ok ||
 				!validReceiptSnapshotTimestamp(marker.GetExpiration()) {
 				return fmt.Errorf("invalid vertex tombstone")
 			}
@@ -351,8 +397,9 @@ func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.
 			vertexTombstones[marker.GetKey()] = struct{}{}
 		case *pb.SnapshotResponse_EdgeTombstone:
 			marker := entry.EdgeTombstone
+			stamp, ok := bounds.parse(marker.GetHlc())
 			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" ||
-				!validReceiptSnapshotHLC(marker.GetHlc()) ||
+				!ok ||
 				!validReceiptSnapshotTimestamp(marker.GetExpiration()) {
 				return fmt.Errorf("invalid edge tombstone")
 			}
@@ -363,14 +410,21 @@ func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.
 			if _, exists := edgeBarriers[key]; exists {
 				return fmt.Errorf("edge causal barrier and tombstone overlap")
 			}
-			edgeTombstones[key], _ = receiptSnapshotHLC(marker.GetHlc())
+			edgeTombstones[key] = stamp
 		case *pb.SnapshotResponse_Vertex:
 			item := entry.Vertex
 			if item == nil || item.GetVertex() == nil || item.GetVertex().GetKey() == "" ||
-				!validOptionalReceiptSnapshotHLC(item.GetHlc()) ||
 				!validOptionalReceiptSnapshotTimestamp(item.GetVertex().GetExpiration()) ||
 				!validReceiptSnapshotVertexValue(item.GetVertex()) {
 				return fmt.Errorf("invalid live vertex")
+			}
+			var liveHLC hlc.Timestamp
+			if item.GetHlc() != nil {
+				var ok bool
+				liveHLC, ok = bounds.parse(item.GetHlc())
+				if !ok {
+					return fmt.Errorf("invalid live vertex")
+				}
 			}
 			key := item.GetVertex().GetKey()
 			if _, exists := vertices[key]; exists {
@@ -386,10 +440,6 @@ func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.
 				}
 			}
 			if barrier, exists := vertexBarriers[key]; exists {
-				var liveHLC hlc.Timestamp
-				if item.GetHlc() != nil {
-					liveHLC, _ = receiptSnapshotHLC(item.GetHlc())
-				}
 				if liveHLC.Less(barrier) {
 					return fmt.Errorf("live vertex is older than its causal barrier")
 				}
@@ -398,15 +448,12 @@ func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.
 		case *pb.SnapshotResponse_Edge:
 			item := entry.Edge
 			key := receiptSnapshotEdgeKey{item.GetTail(), item.GetHead()}
-			if err := validateReceiptSnapshotEdge(item, edgeTombstones[key]); err != nil {
+			putFloor, err := validateReceiptSnapshotEdge(item, edgeTombstones[key], bounds)
+			if err != nil {
 				return err
 			}
 			if _, exists := edges[key]; exists {
 				return fmt.Errorf("duplicate live edge")
-			}
-			var putFloor hlc.Timestamp
-			if item.GetHlc() != nil {
-				putFloor, _ = receiptSnapshotHLC(item.GetHlc())
 			}
 			if barrier, exists := edgeBarriers[key]; exists {
 				if putFloor != barrier {
@@ -438,15 +485,6 @@ func validateReceiptSnapshotGraphBody(frames []*pb.SnapshotResponse, footer *pb.
 	return nil
 }
 
-func validReceiptSnapshotHLC(stamp *pb.HLCTimestamp) bool {
-	_, ok := receiptSnapshotHLC(stamp)
-	return ok
-}
-
-func validOptionalReceiptSnapshotHLC(stamp *pb.HLCTimestamp) bool {
-	return stamp == nil || validReceiptSnapshotHLC(stamp)
-}
-
 func validReceiptSnapshotTimestamp(stamp *timestamppb.Timestamp) bool {
 	return stamp != nil && stamp.CheckValid() == nil
 }
@@ -458,76 +496,117 @@ func validOptionalReceiptSnapshotTimestamp(stamp *timestamppb.Timestamp) bool {
 func validReceiptSnapshotVertexValue(vertex *pb.Vertex) bool {
 	switch value := vertex.GetValue().(type) {
 	case *pb.Vertex_Timestamp:
-		return validReceiptSnapshotTimestamp(value.Timestamp)
+		return !nilOneofWrapper(value) && validReceiptSnapshotTimestamp(value.Timestamp)
 	case *pb.Vertex_Duration:
-		return value.Duration != nil && value.Duration.CheckValid() == nil
+		return !nilOneofWrapper(value) && value.Duration != nil && value.Duration.CheckValid() == nil
 	case *pb.Vertex_Nil:
-		return value.Nil
+		return !nilOneofWrapper(value) && value.Nil
 	default:
-		return true
+		return !nilOneofWrapper(value)
 	}
 }
 
-func validateReceiptSnapshotEdge(edge *pb.SnapshotEdge, tombstone hlc.Timestamp) error {
+func nilOneofWrapper(value any) bool {
+	if value == nil {
+		return false
+	}
+	reflected := reflect.ValueOf(value)
+	return reflected.Kind() == reflect.Pointer && reflected.IsNil()
+}
+
+func validReceiptSnapshotFrameOneofs(frame *pb.SnapshotResponse) bool {
+	if frame == nil || frame.GetEntry() == nil || nilOneofWrapper(frame.GetEntry()) {
+		return false
+	}
+	switch entry := frame.GetEntry().(type) {
+	case *pb.SnapshotResponse_Header:
+		return entry.Header != nil
+	case *pb.SnapshotResponse_Receipt:
+		return entry.Receipt != nil
+	case *pb.SnapshotResponse_VertexCausalBarrier:
+		return entry.VertexCausalBarrier != nil
+	case *pb.SnapshotResponse_EdgeCausalBarrier:
+		return entry.EdgeCausalBarrier != nil
+	case *pb.SnapshotResponse_VertexTombstone:
+		return entry.VertexTombstone != nil
+	case *pb.SnapshotResponse_EdgeTombstone:
+		return entry.EdgeTombstone != nil
+	case *pb.SnapshotResponse_Vertex:
+		return entry.Vertex != nil &&
+			(entry.Vertex.Vertex == nil || !nilOneofWrapper(entry.Vertex.Vertex.GetValue()))
+	case *pb.SnapshotResponse_Edge:
+		return entry.Edge != nil
+	case *pb.SnapshotResponse_Footer:
+		return entry.Footer != nil
+	default:
+		return false
+	}
+}
+
+func validateReceiptSnapshotEdge(
+	edge *pb.SnapshotEdge,
+	tombstone hlc.Timestamp,
+	bounds receiptSnapshotCausalBounds,
+) (hlc.Timestamp, error) {
 	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || len(edge.GetContributions()) == 0 {
-		return fmt.Errorf("invalid live edge")
+		return hlc.Timestamp{}, fmt.Errorf("invalid live edge")
 	}
 	var putFloor hlc.Timestamp
 	if edge.GetHlc() != nil {
 		var ok bool
-		putFloor, ok = receiptSnapshotHLC(edge.GetHlc())
+		putFloor, ok = bounds.parse(edge.GetHlc())
 		if !ok {
-			return fmt.Errorf("invalid live edge Put floor")
+			return hlc.Timestamp{}, fmt.Errorf("invalid live edge Put floor")
 		}
 	}
 	var seenPut bool
 	seenAdds := make(map[[24]byte]struct{})
 	for _, contribution := range edge.GetContributions() {
 		if contribution == nil || !validOptionalReceiptSnapshotTimestamp(contribution.GetExpiration()) {
-			return fmt.Errorf("invalid live edge contribution")
+			return hlc.Timestamp{}, fmt.Errorf("invalid live edge contribution")
 		}
 		idBytes := contribution.GetContribId()
 		switch len(idBytes) {
 		case 0:
 			if tombstone != (hlc.Timestamp{}) {
-				return fmt.Errorf("live edge Put contribution conflicts with tombstone")
+				return hlc.Timestamp{}, fmt.Errorf("live edge Put contribution conflicts with tombstone")
 			}
 			if seenPut {
-				return fmt.Errorf("duplicate live edge Put contribution")
+				return hlc.Timestamp{}, fmt.Errorf("duplicate live edge Put contribution")
 			}
 			seenPut = true
 			if contribution.GetHlc() == nil {
 				if putFloor != (hlc.Timestamp{}) {
-					return fmt.Errorf("live edge Put contribution lacks its floor HLC")
+					return hlc.Timestamp{}, fmt.Errorf("live edge Put contribution lacks its floor HLC")
 				}
 			} else {
-				stamp, ok := receiptSnapshotHLC(contribution.GetHlc())
+				stamp, ok := bounds.parse(contribution.GetHlc())
 				if !ok || stamp != putFloor {
-					return fmt.Errorf("live edge Put contribution HLC mismatch")
+					return hlc.Timestamp{}, fmt.Errorf("live edge Put contribution HLC mismatch")
 				}
 			}
 		case 24:
 			var id [24]byte
 			copy(id[:], idBytes)
 			if id == ([24]byte{}) {
-				return fmt.Errorf("zero live edge Add ContribID")
+				return hlc.Timestamp{}, fmt.Errorf("zero live edge Add ContribID")
 			}
 			if _, exists := seenAdds[id]; exists {
-				return fmt.Errorf("duplicate live edge Add ContribID")
+				return hlc.Timestamp{}, fmt.Errorf("duplicate live edge Add ContribID")
 			}
 			seenAdds[id] = struct{}{}
-			addHLC, ok := receiptSnapshotHLC(contribution.GetHlc())
+			addHLC, ok := bounds.parse(contribution.GetHlc())
 			if !ok || (putFloor != (hlc.Timestamp{}) && !putFloor.Less(addHLC)) {
-				return fmt.Errorf("invalid live edge Add HLC")
+				return hlc.Timestamp{}, fmt.Errorf("invalid live edge Add HLC")
 			}
 			if tombstone != (hlc.Timestamp{}) && !tombstone.Less(addHLC) {
-				return fmt.Errorf("live edge Add does not follow tombstone")
+				return hlc.Timestamp{}, fmt.Errorf("live edge Add does not follow tombstone")
 			}
 		default:
-			return fmt.Errorf("invalid live edge ContribID length")
+			return hlc.Timestamp{}, fmt.Errorf("invalid live edge ContribID length")
 		}
 	}
-	return nil
+	return putFloor, nil
 }
 
 func snapshotGraphFrameRank(frame *pb.SnapshotResponse) int {
@@ -611,14 +690,22 @@ func receiptKindFromSnapshot(kind pb.SnapshotReceiptKind) (mutationreceipt.Kind,
 // the future receiver's structural and semantic obligations without
 // installing any state.
 func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
-	if len(frames) < 2 || frames[0] == nil || frames[0].GetHeader() == nil ||
-		frames[len(frames)-1] == nil || frames[len(frames)-1].GetFooter() == nil {
+	if len(frames) < 2 {
 		return fmt.Errorf("receipt Snapshot stream lacks header or footer")
 	}
 	for _, frame := range frames {
-		if frame == nil || proto.Size(frame) > receiptSnapshotMaxFrameBytes {
+		if !validReceiptSnapshotFrameOneofs(frame) {
+			return fmt.Errorf("receipt Snapshot frame has a nil or unknown oneof")
+		}
+		if proto.Size(frame) > receiptSnapshotMaxFrameBytes {
 			return fmt.Errorf("receipt Snapshot frame is nil or exceeds %d bytes", receiptSnapshotMaxFrameBytes)
 		}
+		if err := rejectProtoUnknownFields(frame.ProtoReflect()); err != nil {
+			return fmt.Errorf("receipt Snapshot frame %v", err)
+		}
+	}
+	if frames[0].GetHeader() == nil || frames[len(frames)-1].GetFooter() == nil {
+		return fmt.Errorf("receipt Snapshot stream lacks header or footer")
 	}
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
@@ -626,7 +713,8 @@ func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
 		header.GetReceiptMetadata() == nil || header.GetReceiptMetadata().GetPolicy() == nil {
 		return fmt.Errorf("receipt Snapshot header metadata is missing")
 	}
-	if _, ok := receiptSnapshotHLC(header.GetCutoffHlc()); !ok {
+	cutoff, ok := receiptSnapshotHLC(header.GetCutoffHlc())
+	if !ok {
 		return fmt.Errorf("receipt Snapshot cutoff HLC is invalid")
 	}
 
@@ -634,7 +722,11 @@ func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
 	if err != nil {
 		return err
 	}
-	if err := validateReceiptSnapshotWireOrigins(header); err != nil {
+	if state.ClockHighWaterMillis > cutoff.WallNs/int64(time.Millisecond) {
+		return fmt.Errorf("receipt Snapshot clock high-water exceeds cutoff HLC")
+	}
+	originLast, err := validateReceiptSnapshotWireOrigins(header, cutoff)
+	if err != nil {
 		return err
 	}
 
@@ -661,7 +753,11 @@ func validateReceiptSnapshotFrames(frames []*pb.SnapshotResponse) error {
 		uint64(len(header.GetReceiptMetadata().GetOriginCutoffs())) != footer.GetReceiptOriginCount() {
 		return fmt.Errorf("receipt Snapshot footer count mismatch")
 	}
-	if err := validateReceiptSnapshotGraphBody(graphFrames, footer); err != nil {
+	if err := validateReceiptSnapshotGraphBody(
+		graphFrames,
+		footer,
+		receiptSnapshotCausalBounds{cutoff: cutoff, originLast: originLast},
+	); err != nil {
 		return err
 	}
 	if _, err := mutationreceipt.NewFromSnapshot(config, state); err != nil {
@@ -734,35 +830,43 @@ func receiptFromSnapshotRow(row *pb.SnapshotReceipt) (mutationreceipt.Receipt, e
 	return receipt, nil
 }
 
-func validateReceiptSnapshotOrigins(header *pb.SnapshotHeader, origins []OriginState) error {
+func validateReceiptSnapshotOrigins(
+	header *pb.SnapshotHeader,
+	origins []OriginState,
+	cutoff hlc.Timestamp,
+) (map[hlc.NodeID]hlc.Timestamp, error) {
 	if len(header.GetCutoffSeqPerOrigin()) != len(origins) {
-		return fmt.Errorf("receipt Snapshot origin cutoffs do not match graph header")
+		return nil, fmt.Errorf("receipt Snapshot origin cutoffs do not match graph header")
 	}
 	var previous hlc.NodeID
-	cutoff, _ := receiptSnapshotHLC(header.GetCutoffHlc())
+	lastByOrigin := make(map[hlc.NodeID]hlc.Timestamp, len(origins))
 	for i, origin := range origins {
 		if origin.Origin == (hlc.NodeID{}) || origin.LastSeq == 0 ||
 			origin.LastHLC.NodeID != origin.Origin || origin.LastHLC.WallNs <= 0 ||
 			(i != 0 && bytes.Compare(previous[:], origin.Origin[:]) >= 0) ||
 			cutoff.Less(origin.LastHLC) ||
 			header.GetCutoffSeqPerOrigin()[hex.EncodeToString(origin.Origin[:])] != origin.LastSeq {
-			return fmt.Errorf("receipt Snapshot origin cutoff is invalid")
+			return nil, fmt.Errorf("receipt Snapshot origin cutoff is invalid")
 		}
+		lastByOrigin[origin.Origin] = origin.LastHLC
 		previous = origin.Origin
 	}
-	return nil
+	return lastByOrigin, nil
 }
 
-func validateReceiptSnapshotWireOrigins(header *pb.SnapshotHeader) error {
+func validateReceiptSnapshotWireOrigins(
+	header *pb.SnapshotHeader,
+	cutoff hlc.Timestamp,
+) (map[hlc.NodeID]hlc.Timestamp, error) {
 	metadata := header.GetReceiptMetadata()
 	if len(header.GetCutoffSeqPerOrigin()) != len(metadata.GetOriginCutoffs()) {
-		return fmt.Errorf("receipt Snapshot origin metadata count mismatch")
+		return nil, fmt.Errorf("receipt Snapshot origin metadata count mismatch")
 	}
-	cutoff, _ := receiptSnapshotHLC(header.GetCutoffHlc())
 	var previous hlc.NodeID
+	lastByOrigin := make(map[hlc.NodeID]hlc.Timestamp, len(metadata.GetOriginCutoffs()))
 	for i, row := range metadata.GetOriginCutoffs() {
 		if row == nil || len(row.GetOrigin()) != len(hlc.NodeID{}) || row.GetLastSeq() == 0 {
-			return fmt.Errorf("receipt Snapshot origin metadata is invalid")
+			return nil, fmt.Errorf("receipt Snapshot origin metadata is invalid")
 		}
 		var origin hlc.NodeID
 		copy(origin[:], row.GetOrigin())
@@ -771,11 +875,12 @@ func validateReceiptSnapshotWireOrigins(header *pb.SnapshotHeader) error {
 			(i != 0 && bytes.Compare(previous[:], origin[:]) >= 0) ||
 			cutoff.Less(last) ||
 			header.GetCutoffSeqPerOrigin()[hex.EncodeToString(origin[:])] != row.GetLastSeq() {
-			return fmt.Errorf("receipt Snapshot origin metadata is invalid")
+			return nil, fmt.Errorf("receipt Snapshot origin metadata is invalid")
 		}
+		lastByOrigin[origin] = last
 		previous = origin
 	}
-	return nil
+	return lastByOrigin, nil
 }
 
 func receiptSnapshotHLC(stamp *pb.HLCTimestamp) (hlc.Timestamp, bool) {

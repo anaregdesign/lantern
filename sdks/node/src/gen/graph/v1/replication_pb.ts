@@ -668,7 +668,8 @@ export const SnapshotRequestSchema: GenMessage<SnapshotRequest> = /*@__PURE__*/
  * required exactly when an RPC Snapshot header's format is RECEIPT_V1 and is
  * absent from GRAPH_ONLY_V1. origin_cutoffs is sorted by raw origin bytes and
  * must exactly match cutoff_seq_per_origin; the full rows retain each origin's
- * HLC as well as its sequence.
+ * HLC as well as its sequence. clock_high_water_unix_ms must not exceed
+ * floor(SnapshotHeader.cutoff_hlc.wall_ns / 1ms).
  *
  * @generated from message graph.v1.SnapshotReceiptMetadata
  */
@@ -715,6 +716,11 @@ export const SnapshotReceiptMetadataSchema: GenMessage<SnapshotReceiptMetadata> 
  * from each origin when the snapshot started. An empty map indicates
  * the server has not yet applied any origin (cold cluster) and the
  * resume Subscribe should pass an empty cursor.
+ *
+ * RECEIPT_V1 is strict: every frame and recursively nested message must have
+ * no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
+ * HLC must be at or below cutoff_hlc and at or below the matching full origin
+ * row; a graph HLC whose origin is absent from that vector is invalid.
  *
  * @generated from message graph.v1.SnapshotHeader
  */

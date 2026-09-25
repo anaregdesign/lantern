@@ -1630,7 +1630,8 @@ func (x *SnapshotRequest) GetRequiredFormat() SnapshotFormat {
 // required exactly when an RPC Snapshot header's format is RECEIPT_V1 and is
 // absent from GRAPH_ONLY_V1. origin_cutoffs is sorted by raw origin bytes and
 // must exactly match cutoff_seq_per_origin; the full rows retain each origin's
-// HLC as well as its sequence.
+// HLC as well as its sequence. clock_high_water_unix_ms must not exceed
+// floor(SnapshotHeader.cutoff_hlc.wall_ns / 1ms).
 type SnapshotReceiptMetadata struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	Policy               *ReceiptPolicy         `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
@@ -1709,6 +1710,11 @@ func (x *SnapshotReceiptMetadata) GetOriginCutoffs() []*OriginState {
 // from each origin when the snapshot started. An empty map indicates
 // the server has not yet applied any origin (cold cluster) and the
 // resume Subscribe should pass an empty cursor.
+//
+// RECEIPT_V1 is strict: every frame and recursively nested message must have
+// no unknown protobuf fields or typed-nil oneof wrapper. Every nonzero graph
+// HLC must be at or below cutoff_hlc and at or below the matching full origin
+// row; a graph HLC whose origin is absent from that vector is invalid.
 type SnapshotHeader struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	CutoffSeqPerOrigin map[string]uint64      `protobuf:"bytes,1,rep,name=cutoff_seq_per_origin,json=cutoffSeqPerOrigin,proto3" json:"cutoff_seq_per_origin,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`

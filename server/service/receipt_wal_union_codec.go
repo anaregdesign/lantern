@@ -499,11 +499,18 @@ func nilProtoMessage(m proto.Message) bool {
 }
 
 func rejectReceiptWALUnknownFields(m protoreflect.Message) error {
+	if err := rejectProtoUnknownFields(m); err != nil {
+		return receiptWALUnionError("graph mutation %v", err)
+	}
+	return nil
+}
+
+func rejectProtoUnknownFields(m protoreflect.Message) error {
 	if !m.IsValid() {
 		return nil
 	}
 	if len(m.GetUnknown()) != 0 {
-		return receiptWALUnionError("graph mutation contains unknown protobuf fields")
+		return errors.New("contains unknown protobuf fields")
 	}
 	// Protobuf encodes a message-valued oneof wrapper with a nil payload in
 	// exactly the same bytes as a present empty message. Unmarshal changes
@@ -513,7 +520,7 @@ func rejectReceiptWALUnknownFields(m protoreflect.Message) error {
 		field := m.WhichOneof(m.Descriptor().Oneofs().Get(i))
 		if field != nil && (field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind) &&
 			!m.Get(field).Message().IsValid() {
-			return receiptWALUnionError("graph mutation contains nil message-valued oneof payload")
+			return errors.New("contains nil message-valued oneof payload")
 		}
 	}
 	var nestedErr error
@@ -524,7 +531,7 @@ func rejectReceiptWALUnknownFields(m protoreflect.Message) error {
 		if field.IsList() {
 			list := value.List()
 			for i := 0; i < list.Len(); i++ {
-				if nestedErr = rejectReceiptWALUnknownFields(list.Get(i).Message()); nestedErr != nil {
+				if nestedErr = rejectProtoUnknownFields(list.Get(i).Message()); nestedErr != nil {
 					return false
 				}
 			}
@@ -535,12 +542,12 @@ func rejectReceiptWALUnknownFields(m protoreflect.Message) error {
 				return true
 			}
 			value.Map().Range(func(_ protoreflect.MapKey, item protoreflect.Value) bool {
-				nestedErr = rejectReceiptWALUnknownFields(item.Message())
+				nestedErr = rejectProtoUnknownFields(item.Message())
 				return nestedErr == nil
 			})
 			return nestedErr == nil
 		}
-		nestedErr = rejectReceiptWALUnknownFields(value.Message())
+		nestedErr = rejectProtoUnknownFields(value.Message())
 		return nestedErr == nil
 	})
 	return nestedErr

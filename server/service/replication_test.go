@@ -332,10 +332,12 @@ func TestLanternReplicationService_ReceiptSnapshotProducerUsesOneAtomicSourceCut
 		Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
 	}
 	calls := 0
-	if err := f.replication.ConfigureReceiptSnapshot(func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+	baseCapture := source.capture
+	source.capture = func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
 		calls++
-		return source(ctx, got)
-	}, policy); err != nil {
+		return baseCapture(ctx, got)
+	}
+	if err := f.replication.ConfigureReceiptSnapshot(source, policy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -414,35 +416,75 @@ func TestLanternReplicationService_ReceiptSnapshotConfigurationFailsClosed(t *te
 		Epoch: mutationreceipt.Epoch{0x71}, Retention: time.Hour,
 		MaxEntries: 8, MaxBytes: 1 << 20,
 	}
-	for _, tc := range []struct {
-		name   string
-		source ReceiptWholeStateSource
-		policy mutationreceipt.Config
-	}{
-		{"nil source", nil, valid},
-		{"invalid policy", func(context.Context, mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
-			return ReceiptWholeStateCapture{}, nil
-		}, mutationreceipt.Config{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-			replication := NewLanternReplicationService(nil, cache, hlc.New(hlc.NodeID{0x72}, hlc.Options{}))
-			if err := replication.ConfigureReceiptSnapshot(tc.source, tc.policy); err == nil {
-				t.Fatal("invalid receipt Snapshot configuration succeeded")
+	assertFailedClosed := func(t *testing.T, replication *LanternReplicationService) {
+		t.Helper()
+		for _, format := range []pb.SnapshotFormat{
+			pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
+			pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		} {
+			recorder := &replicationSnapshotRecorder{}
+			err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, recorder)
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
+				t.Fatalf("failed config format %v = %v, frames=%d", format, err, len(recorder.frames))
 			}
-			for _, format := range []pb.SnapshotFormat{
-				pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED,
-				pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
-				pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
-			} {
-				recorder := &replicationSnapshotRecorder{}
-				err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{RequiredFormat: format}, recorder)
-				if connect.CodeOf(err) != connect.CodeFailedPrecondition || len(recorder.frames) != 0 {
-					t.Fatalf("failed config format %v = %v, frames=%d", format, err, len(recorder.frames))
-				}
-			}
-		})
+		}
 	}
+
+	t.Run("nil source", func(t *testing.T) {
+		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+		replication := NewLanternReplicationService(nil, cache, hlc.New(hlc.NodeID{0x72}, hlc.Options{}))
+		if err := replication.ConfigureReceiptSnapshot(nil, valid); err == nil {
+			t.Fatal("nil receipt Snapshot source succeeded")
+		}
+		assertFailedClosed(t, replication)
+	})
+
+	t.Run("invalid policy", func(t *testing.T) {
+		f := newReceiptEdgeDeleteFixture(t, nil)
+		source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.replication.ConfigureReceiptSnapshot(source, mutationreceipt.Config{}); err == nil {
+			t.Fatal("invalid receipt Snapshot policy succeeded")
+		}
+		assertFailedClosed(t, f.replication)
+	})
+
+	t.Run("different primary", func(t *testing.T) {
+		f := newReceiptEdgeDeleteFixture(t, nil)
+		other := NewLanternService(f.cache).
+			WithReplication(f.service.log, f.service.clock, nil).
+			WithTombstoneTTL(time.Hour)
+		source, err := NewReceiptWholeStateSource(other, f.coordinator.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy := mutationreceipt.Config{
+			Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+		}
+		if err := f.replication.ConfigureReceiptSnapshot(source, policy); err == nil {
+			t.Fatal("receipt Snapshot source from a different primary succeeded")
+		}
+		assertFailedClosed(t, f.replication)
+	})
+
+	t.Run("different runtime", func(t *testing.T) {
+		f := newReceiptEdgeDeleteFixture(t, nil)
+		source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.replication.runtime = &ServingRuntime{}
+		policy := mutationreceipt.Config{
+			Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+		}
+		if err := f.replication.ConfigureReceiptSnapshot(source, policy); err == nil {
+			t.Fatal("receipt Snapshot source from a different runtime succeeded")
+		}
+		assertFailedClosed(t, f.replication)
+	})
 }
 
 func TestLanternReplicationService_ReceiptSnapshotRejectsMalformedCutBeforeHeader(t *testing.T) {
@@ -473,13 +515,15 @@ func TestLanternReplicationService_ReceiptSnapshotRejectsMalformedCutBeforeHeade
 			policy := mutationreceipt.Config{
 				Epoch: f.epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
 			}
-			if err := f.replication.ConfigureReceiptSnapshot(func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
-				capture, err := source(ctx, got)
+			baseCapture := source.capture
+			source.capture = func(ctx context.Context, got mutationreceipt.Config) (ReceiptWholeStateCapture, error) {
+				capture, err := baseCapture(ctx, got)
 				if err == nil {
 					tc.mutate(&capture)
 				}
 				return capture, err
-			}, policy); err != nil {
+			}
+			if err := f.replication.ConfigureReceiptSnapshot(source, policy); err != nil {
 				t.Fatal(err)
 			}
 			recorder := &replicationSnapshotRecorder{}

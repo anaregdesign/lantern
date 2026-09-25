@@ -438,16 +438,22 @@ boundary. `WithReceiptSnapshotRequired` is a lifetime service latch: when set,
 a legacy full Subscribe is rejected before the ring is inspected, and
 graph-only Snapshot requests fail closed. The opt-in `RECEIPT_V1` producer is
 configured separately with the exact service-owned
-`ReceiptWholeStateSource` and immutable Store policy. It calls that source
-once, preflights the complete detached image before sending its header, and
-streams the epoch, policy fingerprint/retention/capacity, clock high-water,
+`ReceiptWholeStateSource` and immutable Store policy. The source carries a
+private owner identity; configuration rejects a source unless its primary
+service, runtime, graph backend, mutation log, HLC clock, origin tracker, and
+Store are the exact state owned by the replication responder. It calls that
+source once, preflights the complete detached image before sending its header,
+and streams the epoch, policy fingerprint/retention/capacity, clock high-water,
 sorted unexpired receipt rows with original result and Add contribution
 metadata, full origin HLC/sequence rows, local cutoff, graph frames, and a
 counted footer. A receipt-only cut is valid. Missing, malformed, reordered,
-count-mismatched, or oversized receipt metadata produces no header. The same
-preflight validates graph payload identities, timestamps/HLCs, Add contribution
-IDs, duplicate/overlapping state, causal floors, and edge endpoints before the
-first frame is sent.
+count-mismatched, oversized, recursively unknown-field-bearing, or typed-nil
+oneof metadata produces no header. The same preflight validates graph payload
+identities, timestamps/HLCs, Add contribution IDs, duplicate/overlapping state,
+causal floors, and edge endpoints before the first frame is sent. Every
+nonzero graph HLC must be bounded by both the global cutoff and its matching
+origin row; an unknown origin is invalid. The receipt clock high-water must not
+exceed the cutoff's wall time at millisecond precision.
 `WithReceiptSnapshotRequired` without that configured source still fails
 closed.
 Current Pump and anti-entropy request graph-only format and reject a receipt
@@ -471,7 +477,9 @@ private [whole-state capture](../../server/service/receipt_snapshot_capture.go)
 now copies graph Snapshot frames, Store receipts/policy, origin cutoffs, local
 log seq, and an HLC frontier under one exclusive service publication cut. It
 clones mutable Vertex protobuf values before releasing that cut and rejects a
-publication fault or incomplete Store export. The opt-in replication Snapshot
+publication fault or incomplete Store export. Before sampling the cutoff, it
+restores the service clock floor from the captured Store high-water under that
+same cut; an unrepresentable high-water fails closed. The opt-in replication Snapshot
 producer and the private
 [archive producer](../../server/backup/receipt_archive_producer.go) each call
 this read-only source once and encode only that detached capture. The archive

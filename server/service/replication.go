@@ -130,7 +130,7 @@ type LanternReplicationService struct {
 	// lifetime latch: a graph-only Snapshot may never certify receipt state,
 	// including after receipt log entries have been evicted.
 	receiptSnapshotRequired bool
-	receiptSnapshotSource   ReceiptWholeStateSource
+	receiptSnapshotSource   *ReceiptWholeStateSource
 	receiptSnapshotPolicy   mutationreceipt.Config
 }
 
@@ -197,13 +197,16 @@ func (s *LanternReplicationService) WithReceiptSnapshotRequired() *LanternReplic
 // exact service-owned whole-state source used by the private archive producer.
 // Configuration happens before serving. A failed or duplicate configuration
 // leaves the service latched so it can never silently downgrade to graph-only.
-func (s *LanternReplicationService) ConfigureReceiptSnapshot(source ReceiptWholeStateSource, policy mutationreceipt.Config) error {
+func (s *LanternReplicationService) ConfigureReceiptSnapshot(source *ReceiptWholeStateSource, policy mutationreceipt.Config) error {
 	s.receiptSnapshotRequired = true
 	if s.receiptSnapshotSource != nil {
 		return errors.New("receipt Snapshot source is already configured")
 	}
 	if source == nil {
 		return errors.New("receipt Snapshot source is nil")
+	}
+	if !source.belongsTo(s) {
+		return errors.New("receipt Snapshot source does not belong to this replication service")
 	}
 	if _, err := mutationreceipt.New(policy); err != nil {
 		return fmt.Errorf("receipt Snapshot policy: %w", err)
@@ -433,7 +436,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		if s.receiptSnapshotSource == nil {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot producer is not configured"))
 		}
-		capture, err := s.receiptSnapshotSource(ctx, s.receiptSnapshotPolicy)
+		capture, err := s.receiptSnapshotSource.Capture(ctx, s.receiptSnapshotPolicy)
 		if err != nil {
 			return err
 		}

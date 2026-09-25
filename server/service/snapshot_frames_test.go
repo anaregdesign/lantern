@@ -44,9 +44,10 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 				{Key: "tail", Value: &pb.Vertex{Key: "tail"}, HLC: stamp},
 				{Key: "head"},
 			},
-			Edges: []graphcache.SnapshotEdge[string]{{Tail: "tail", Head: "head", Contributions: []graphcache.SnapshotContribution{{
-				Weight: 2, Expiration: expiration, ContribID: graphcache.ContribID{1}, HLC: stamp,
-			}}}},
+			Edges: []graphcache.SnapshotEdge[string]{{Tail: "tail", Head: "head", Contributions: []graphcache.SnapshotContribution{
+				{Weight: 2, Expiration: expiration, ContribID: graphcache.ContribID{1}, HLC: stamp},
+				{Weight: 3, ContribID: graphcache.ContribID{2}, HLC: stamp},
+			}}},
 		},
 	}
 	graphOnly := &snapshotFrameSink{}
@@ -70,6 +71,11 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 		graphOnly.frames[5].GetVertex() == nil || graphOnly.frames[6].GetVertex().GetVertex().GetNil() != true ||
 		graphOnly.frames[7].GetEdge() == nil || graphOnly.frames[8].GetFooter() == nil {
 		t.Fatalf("graph-only frame order or nil endpoint changed: %+v", graphOnly.frames)
+	}
+	contributions := graphOnly.frames[7].GetEdge().GetContributions()
+	if len(contributions) != 2 || contributions[0].GetExpiration() == nil ||
+		contributions[1].GetExpiration() != nil {
+		t.Fatalf("graph-only contribution expirations = %+v", contributions)
 	}
 
 	privateReceipt := &snapshotFrameSink{}
@@ -281,6 +287,29 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			frames[0].GetHeader().GetReceiptMetadata().GetPolicy().DeploymentEpoch = []byte{1}
 			return frames
 		}},
+		{"clock high-water beyond cutoff", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			cutoff := frames[0].GetHeader().GetCutoffHlc().GetWallNs() / int64(time.Millisecond)
+			frames[0].GetHeader().GetReceiptMetadata().ClockHighWaterUnixMs = uint64(cutoff + 1)
+			return frames
+		}},
+		{"unknown top-level field", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+			return frames
+		}},
+		{"unknown nested header field", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[0].GetHeader().GetReceiptMetadata().GetPolicy().ProtoReflect().
+				SetUnknown([]byte{0xa0, 0x06, 0x01})
+			return frames
+		}},
+		{"unknown nested receipt field", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[1].GetReceipt().GetContribution().ProtoReflect().
+				SetUnknown([]byte{0xa0, 0x06, 0x01})
+			return frames
+		}},
+		{"unknown nested body field", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+			return frames
+		}},
 		{"receipt after graph", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[1], frames[2] = frames[2], frames[1]
 			return frames
@@ -305,6 +334,10 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			frames[2].GetVertex().Vertex = nil
 			return frames
 		}},
+		{"typed-nil frame entry", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].Entry = (*pb.SnapshotResponse_Vertex)(nil)
+			return frames
+		}},
 		{"empty live vertex key", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[2].GetVertex().GetVertex().Key = ""
 			return frames
@@ -315,6 +348,66 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 		}},
 		{"invalid live vertex HLC", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[2].GetVertex().GetHlc().NodeId = make([]byte, 16)
+			return frames
+		}},
+		{"live vertex HLC beyond cutoff", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetHlc().WallNs++
+			return frames
+		}},
+		{"live vertex HLC from unknown origin", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetHlc().NodeId = append([]byte{0x66}, make([]byte, 15)...)
+			return frames
+		}},
+		{"live vertex HLC beyond origin frontier", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[0].GetHeader().GetReceiptMetadata().GetOriginCutoffs()[0].GetLastHlc().WallNs--
+			return frames
+		}},
+		{"typed-nil timestamp value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Timestamp)(nil)
+			return frames
+		}},
+		{"typed-nil duration value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Duration)(nil)
+			return frames
+		}},
+		{"typed-nil nil value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Nil)(nil)
+			return frames
+		}},
+		{"typed-nil float64 value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Float64)(nil)
+			return frames
+		}},
+		{"typed-nil float32 value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Float32)(nil)
+			return frames
+		}},
+		{"typed-nil int32 value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Int32)(nil)
+			return frames
+		}},
+		{"typed-nil int64 value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Int64)(nil)
+			return frames
+		}},
+		{"typed-nil uint32 value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Uint32)(nil)
+			return frames
+		}},
+		{"typed-nil uint64 value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Uint64)(nil)
+			return frames
+		}},
+		{"typed-nil bool value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Bool)(nil)
+			return frames
+		}},
+		{"typed-nil string value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_String_)(nil)
+			return frames
+		}},
+		{"typed-nil bytes value", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Value = (*pb.Vertex_Bytes)(nil)
 			return frames
 		}},
 		{"duplicate live vertex", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
@@ -342,6 +435,16 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			edge.GetEdge().Contributions[0].ContribId = []byte{1}
 			edge.GetEdge().Contributions[0].Hlc =
 				proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			frames[len(frames)-1].GetFooter().EdgeCount++
+			return insertReceiptSnapshotFrames(frames, len(frames)-1, edge)
+		}},
+		{"Add contribution HLC beyond cutoff", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			stamp := proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			stamp.WallNs++
+			edge := receiptSnapshotPutEdgeFrame("live", "live")
+			edge.GetEdge().Contributions[0].ContribId = make([]byte, 24)
+			edge.GetEdge().Contributions[0].ContribId[0] = 1
+			edge.GetEdge().Contributions[0].Hlc = stamp
 			frames[len(frames)-1].GetFooter().EdgeCount++
 			return insertReceiptSnapshotFrames(frames, len(frames)-1, edge)
 		}},
@@ -427,11 +530,38 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 		{"graph receipt metadata", func(c *ReceiptWholeStateCapture) {
 			c.Graph[0].GetHeader().ReceiptMetadata = &pb.SnapshotReceiptMetadata{}
 		}},
+		{"clock high-water beyond cutoff", func(c *ReceiptWholeStateCapture) {
+			cutoff := c.Graph[0].GetHeader().GetCutoffHlc().GetWallNs() / int64(time.Millisecond)
+			c.Receipts.ClockHighWaterMillis = cutoff + 1
+			c.Policy.ClockHighWater = time.UnixMilli(cutoff + 1)
+		}},
+		{"unknown nested graph field", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+		}},
 		{"nil live vertex", func(c *ReceiptWholeStateCapture) {
 			c.Graph[1].GetVertex().Vertex = nil
 		}},
 		{"invalid live vertex HLC", func(c *ReceiptWholeStateCapture) {
 			c.Graph[1].GetVertex().GetHlc().NodeId = make([]byte, 16)
+		}},
+		{"live vertex HLC beyond cutoff", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetHlc().WallNs++
+		}},
+		{"live vertex HLC from unknown origin", func(c *ReceiptWholeStateCapture) {
+			unknown := hlc.NodeID{0x66}
+			c.Graph[1].GetVertex().GetHlc().NodeId = unknown[:]
+		}},
+		{"live vertex HLC beyond origin frontier", func(c *ReceiptWholeStateCapture) {
+			c.Origins[0].LastHLC.WallNs--
+		}},
+		{"typed-nil timestamp value", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().Value = (*pb.Vertex_Timestamp)(nil)
+		}},
+		{"typed-nil duration value", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().Value = (*pb.Vertex_Duration)(nil)
+		}},
+		{"typed-nil nil value", func(c *ReceiptWholeStateCapture) {
+			c.Graph[1].GetVertex().GetVertex().Value = (*pb.Vertex_Nil)(nil)
 		}},
 		{"duplicate live vertex", func(c *ReceiptWholeStateCapture) {
 			duplicate := proto.Clone(c.Graph[1]).(*pb.SnapshotResponse)
@@ -443,6 +573,16 @@ func TestPrepareReceiptSnapshotFramesRejectsMalformedCapture(t *testing.T) {
 			edge.GetEdge().Contributions[0].ContribId = []byte{1}
 			edge.GetEdge().Contributions[0].Hlc =
 				proto.Clone(c.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			c.Graph[len(c.Graph)-1].GetFooter().EdgeCount++
+			c.Graph = insertReceiptSnapshotFrames(c.Graph, len(c.Graph)-1, edge)
+		}},
+		{"Add contribution HLC beyond cutoff", func(c *ReceiptWholeStateCapture) {
+			stamp := proto.Clone(c.Graph[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			stamp.WallNs++
+			edge := receiptSnapshotPutEdgeFrame("live", "live")
+			edge.GetEdge().Contributions[0].ContribId = make([]byte, 24)
+			edge.GetEdge().Contributions[0].ContribId[0] = 1
+			edge.GetEdge().Contributions[0].Hlc = stamp
 			c.Graph[len(c.Graph)-1].GetFooter().EdgeCount++
 			c.Graph = insertReceiptSnapshotFrames(c.Graph, len(c.Graph)-1, edge)
 		}},
