@@ -366,6 +366,12 @@ no status from this audit: aborted Store clock advances, graph/search state,
 and an atomic origin/log cut remain outside the WAL decision inventory. A
 non-genesis WAL requires a verified receipt-bearing Snapshot baseline before
 it can be audited or resumed.
+The detached recovery candidate exposes no receipt-status helper: a prior
+`Store.Lookup` or aborted `Store.Begin` can advance high-water beyond a
+receipt deadline without a WAL row. After wall-clock rollback, replay can
+retain that committed row again, but its bytes alone do not prove that
+`CONFIRMED` is still valid. Serving status needs a durable clock bound or
+must fail closed after epoch rollover.
 `mutationlog.AcquireFileWALLease` provides an advisory process lock for the
 WAL path across separate audit, replay, and append calls. A production owner
 must hold it throughout those calls and shutdown, use its canonical path,
