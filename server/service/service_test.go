@@ -271,6 +271,49 @@ func TestLanternService_OriginSeqIndependentOfRelayLogPosition(t *testing.T) {
 	}
 }
 
+func TestLanternService_AddEdgesRejectsSyntheticContribIndexBeforeCommit(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x44}
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	edges := make([]*pb.Edge, maxSyntheticContribIndex+2)
+	for i := range edges {
+		edges[i] = &pb.Edge{Tail: "tail", Head: "head", Weight: 1}
+	}
+	if _, err := svc.AddEdges(context.Background(), &pb.AddEdgesRequest{Edges: edges}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unkeyed index overflow = %v, want InvalidArgument", err)
+	}
+	if _, ok := cache.GetWeight("tail", "head"); ok || log.Len() != 0 || svc.LocalSeq(origin) != 0 {
+		t.Fatalf("invalid batch changed graph/log/origin: edges=%+v, log=%d, origin=%d", cache.SnapshotEdges(), log.Len(), svc.LocalSeq(origin))
+	}
+	if _, err := svc.AddEdge(context.Background(), &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 2}}); err != nil {
+		t.Fatalf("next valid AddEdge: %v", err)
+	}
+	if got, ok := cache.GetWeight("tail", "head"); !ok || got != 2 || log.Len() != 1 || svc.LocalSeq(origin) != 1 {
+		t.Fatalf("valid retry = %g, %v, log=%d, origin=%d", got, ok, log.Len(), svc.LocalSeq(origin))
+	}
+}
+
+func TestLanternService_AddEdgeRejectsSyntheticContribSequenceBeforeCommit(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x45}
+	clock := hlc.New(origin, hlc.Options{})
+	svc := NewLanternService(cache).WithReplication(log, clock, nil)
+	if !svc.origins.AdvanceSnapshot(origin, maxSyntheticContribSequence, clock.Now()) {
+		t.Fatal("failed to seed the last representable synthetic sequence")
+	}
+	request := &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 1}}
+	if _, err := svc.AddEdge(context.Background(), request); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("synthetic sequence overflow = %v, want ResourceExhausted", err)
+	}
+	if _, ok := cache.GetWeight("tail", "head"); ok || log.Len() != 0 || svc.LocalSeq(origin) != maxSyntheticContribSequence {
+		t.Fatalf("overflow changed graph/log/origin: edges=%+v, log=%d, origin=%d", cache.SnapshotEdges(), log.Len(), svc.LocalSeq(origin))
+	}
+}
+
 func TestLanternService_LocalOriginSeqExhaustionRejectsBeforeAppend(t *testing.T) {
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
 	t.Cleanup(func() { _ = log.Close() })

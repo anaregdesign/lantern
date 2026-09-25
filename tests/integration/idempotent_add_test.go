@@ -8,7 +8,10 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/hlc"
+	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -227,4 +230,32 @@ func TestAddEdges_BatchSemantics(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestAddEdges_SyntheticContribIndexOverflowRejectsAtomicallyOverWire(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x75}
+	svc := service.NewLanternService(cache).WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	validation := provider.NewValidationInterceptor(provider.ValidationLimits{MaxKeyLen: 256, MaxBatchSize: 65537})
+	srv := newConnectTestServer(t, svc, nil, validation.ConnectInterceptor())
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	edges := make([]*pb.Edge, 65537)
+	for i := range edges {
+		edges[i] = &pb.Edge{Tail: "tail", Head: "head", Weight: 1}
+	}
+	if _, err := raw.AddEdges(context.Background(), connect.NewRequest(&pb.AddEdgesRequest{Edges: edges})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unkeyed wire-index overflow = %v, want InvalidArgument", err)
+	}
+	if _, ok := cache.GetWeight("tail", "head"); ok || log.Len() != 0 || svc.LocalSeq(origin) != 0 {
+		t.Fatalf("invalid request changed graph/log/origin: edges=%+v, log=%d, origin=%d", cache.SnapshotEdges(), log.Len(), svc.LocalSeq(origin))
+	}
+	resp, err := raw.AddEdges(context.Background(), connect.NewRequest(&pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "tail", Head: "head", Weight: 2}}}))
+	if err != nil || resp.Msg.GetWritten() != 1 || len(resp.Msg.GetEffectiveWeights()) != 1 || resp.Msg.GetEffectiveWeights()[0] != 2 {
+		t.Fatalf("valid Add after rejection = %v, %v", resp, err)
+	}
+	if got, ok := cache.GetWeight("tail", "head"); !ok || got != 2 || log.Len() != 1 || svc.LocalSeq(origin) != 1 {
+		t.Fatalf("valid Add = %g, %v, log=%d, origin=%d", got, ok, log.Len(), svc.LocalSeq(origin))
+	}
 }

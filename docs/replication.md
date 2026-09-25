@@ -233,23 +233,34 @@ yield a strict total order without any extra tiebreak machinery.
 
 ## 6. Contribution IDs
 
-Every locally-originated mutation gets a 16-byte contribution ID:
+Every additive edge row carries a 24-byte `ContribID`. A caller can supply a
+nonzero 24-byte ID to make retries of the same contribution idempotent. For an
+unkeyed replicated Add, the origin and followers synthesize the same ID from
+the mutation's origin, origin-local sequence, and original request index:
 
 ```
-contribID = uint64(originID) << 64 | uint64(localSeq)
+contribID = originID[16 bytes] || bigEndian64((localSeq << 16) | wireIndex)
 ```
 
 - `originID` is `LANTERN_NODE_ID` parsed as 16 bytes of hex (32 chars, "0x"
   prefix tolerated). Malformed values fall back to a `crypto/rand` 16-byte
   identifier and emit a warning. Origin is stable for the pod's lifetime.
 - `localSeq` is a per-origin monotonic counter, 1-indexed at startup.
+- `wireIndex` is the original position in an `AddEdges` request, including nil
+  slots. Synthesis accepts only indexes 0–65,535 and sequences 1–2⁴⁸−1; an
+  out-of-range unkeyed Add is rejected before graph, log, or origin progress.
+  Explicit nonzero 24-byte IDs do not use this packing limit.
 
-Properties:
+Properties of synthesized IDs (assuming distinct origin IDs and monotonic
+origin sequences):
 
 - Globally unique without coordination.
-- Deterministic LWW tiebreak when HLCs collide (higher origin wins).
 - Suitable as a G-Set element for `AddEdge` contributions, so re-applying a
   mutation already present is a cheap set-insert no-op.
+
+Callers supplying explicit IDs must keep them unique across distinct Add
+intents; reusing one for a different payload is outside the contract until
+#1115 provides server-authoritative receipt evidence.
 
 ## 7. Mutation log
 

@@ -1482,6 +1482,13 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 			s.replicationCutMu.Unlock()
 			return nil, err
 		}
+		if err := validateSyntheticAddIDs(s.origins.LocalSeq(s.clock.NodeID())+1, len(in), contribIDs); err != nil {
+			s.replicationCutMu.Unlock()
+			if errors.Is(err, errSyntheticContribSequence) {
+				return nil, connect.NewError(connect.CodeResourceExhausted, err)
+			}
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 		ts := s.clock.Now()
 		// Log FIRST so the per-origin seq this mutation commits under is
 		// known, then synthesize a (origin, seq, idx) ContribID for every

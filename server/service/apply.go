@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 
@@ -61,6 +62,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		// FailedPrecondition is reserved for actual tail gaps: current pumps
 		// would otherwise try a graph-only Snapshot as recovery.
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("receipt-bearing replication apply is not enabled"))
+	}
+	if err := validateSyntheticAddMutationBounds(m); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
 	if _, err := s.validateIncomingTombstoneExpiration(m); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
@@ -470,12 +474,55 @@ func contribIDFromBytes(b []byte) graphcache.ContribID {
 // Folding the per-edge index into the low bits lets a single
 // MutationOp_AddEdges batch carry up to 65 536 distinct edges while still
 // guaranteeing a globally unique ContribID per (origin, seq, idx) triple.
-// Practical batch sizes are bounded by the Connect/gRPC message size cap
-// long before this limit; the assertion is defensive.
+// Validating the 16-bit wire index and 48-bit sequence before calling this
+// helper is mandatory: configurable batch caps can exceed 65,536 slots.
 func contribIDFor(origin []byte, seq uint64, idx uint16) graphcache.ContribID {
 	var c graphcache.ContribID
 	copy(c[:16], origin)
 	combined := (seq << 16) | uint64(idx)
 	binary.BigEndian.PutUint64(c[16:], combined)
 	return c
+}
+
+const (
+	maxSyntheticContribIndex    = (1 << 16) - 1
+	maxSyntheticContribSequence = (uint64(1) << 48) - 1
+)
+
+var (
+	errSyntheticContribIndex    = errors.New("synthesized Add ContribID wire index exceeds 16 bits")
+	errSyntheticContribSequence = errors.New("synthesized Add ContribID origin sequence exceeds 48 bits")
+)
+
+// The 24-byte legacy ID packs an origin into 16 bytes and seq/index into the
+// remaining 8. Reject out-of-range fallback inputs before any graph or log
+// effect rather than silently aliasing another contribution. Explicit client
+// IDs do not consume these packed fields.
+func validateSyntheticAddIDs(seq uint64, count int, ids [][]byte) error {
+	for i := 0; i < count; i++ {
+		if i < len(ids) && !contribIDFromBytes(ids[i]).IsZero() {
+			continue
+		}
+		if i > maxSyntheticContribIndex {
+			return fmt.Errorf("%w: %d", errSyntheticContribIndex, i)
+		}
+		if seq == 0 || seq > maxSyntheticContribSequence {
+			return fmt.Errorf("%w: %d", errSyntheticContribSequence, seq)
+		}
+	}
+	return nil
+}
+
+func validateSyntheticAddMutationBounds(m *pb.Mutation) error {
+	if m == nil || m.GetOp() == nil {
+		return nil
+	}
+	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_AddEdge:
+		return validateSyntheticAddIDs(m.GetSeq(), 1, [][]byte{op.AddEdge.GetContribId()})
+	case *pb.MutationOp_AddEdges:
+		return validateSyntheticAddIDs(m.GetSeq(), len(op.AddEdges.GetEdges()), op.AddEdges.GetContribIds())
+	default:
+		return nil
+	}
 }
