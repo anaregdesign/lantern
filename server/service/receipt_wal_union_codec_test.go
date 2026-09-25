@@ -523,6 +523,31 @@ func TestReceiptWALUnionCodecRejectsHiddenReceiptArmAndDuplicateOneofs(t *testin
 	if _, err := decodeReceiptWALUnion(receiptWALUnionRawGraphProto(receiptProto, 0)); !errors.Is(err, errReceiptWALUnion) {
 		t.Fatalf("receipt wire arm decoded as graph-only kind: %v", err)
 	}
+	addEnvelope := committedReceiptEdgeAddEnvelope(t, 1)
+	if _, err := encodeReceiptWALUnion(addEnvelope.Mutation); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("receipt Add wire arm encoded as graph-only kind: %v", err)
+	}
+	addProto, err := proto.Marshal(addEnvelope.Mutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeReceiptWALUnion(
+		receiptWALUnionRawGraphProto(addProto, 1),
+	); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("receipt Add wire arm decoded as graph-only kind: %v", err)
+	}
+	addRaw, err := encodeReceiptWALUnion(addEnvelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addRaw[8] != receiptWALUnionGraphAddEffect {
+		t.Fatalf("receipt Add envelope kind = %d", addRaw[8])
+	}
+	if decoded, err := decodeReceiptWALUnion(addRaw); err != nil {
+		t.Fatal(err)
+	} else if _, ok := decoded.(*graphAddEffectEnvelope); !ok {
+		t.Fatalf("receipt Add envelope decoded as %T", decoded)
+	}
 	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v"}}}})
 	graphArm, err := proto.Marshal(graph.Op)
 	if err != nil {

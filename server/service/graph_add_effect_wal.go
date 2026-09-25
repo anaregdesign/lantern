@@ -217,7 +217,7 @@ func decodeGraphAddEffectWAL(body []byte) (*graphAddEffectEnvelope, error) {
 		return nil, receiptWALUnionError("graph Add effect length mismatch")
 	}
 	graphEnd := graphAddEffectWALHeaderSize + int(graphSize)
-	m, err := decodeReceiptWALGraph(body[graphAddEffectWALHeaderSize:graphEnd])
+	m, err := decodeReceiptWALGraphAddEffect(body[graphAddEffectWALHeaderSize:graphEnd])
 	if err != nil {
 		return nil, err
 	}

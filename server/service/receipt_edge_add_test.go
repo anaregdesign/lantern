@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -73,6 +74,7 @@ func TestPublicReceiptEdgeAddReturnsOriginalResultAcrossDeleteAndRetry(t *testin
 	}}}); err != nil {
 		t.Fatal(err)
 	}
+
 	request := publicReceiptEdgeAddRequest(t, runtime, 0x41, &pb.Edge{
 		Tail: "tail", Head: "head", Weight: 2,
 		Expiration: timestamppb.New(time.Now().Add(time.Hour)),
@@ -122,12 +124,107 @@ func TestPublicReceiptEdgeAddReturnsOriginalResultAcrossDeleteAndRetry(t *testin
 	}
 }
 
+func TestPublicReceiptEdgeAddSurvivesDeleteAndRestart(t *testing.T) {
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	install := func(t *testing.T, runtime *ServingRuntime) (*LanternService, *LanternReplicationService) {
+		t.Helper()
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+		replication, err := runtime.NewLanternReplicationService(primary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CertifyInstallation(primary, replication); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CertifyReceiptBackup(primary, replication); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.ActivatePublicReceipts(primary, replication); err != nil {
+			t.Fatal(err)
+		}
+		return primary, replication
+	}
+
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, _ := install(t, runtime)
+	request := publicReceiptEdgeAddRequest(t, runtime, 0x44, &pb.Edge{
+		Tail: "restart", Head: "edge", Weight: 7,
+		Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+	})
+	response, err := primary.AddEdges(context.Background(), proto.Clone(request).(*pb.AddEdgesRequest))
+	if err != nil || response.GetEffectiveWeights()[0] != 7 {
+		t.Fatalf("initial Add = %+v, %v", response, err)
+	}
+	if _, err := primary.DeleteEdges(context.Background(), &pb.DeleteEdgesRequest{
+		Edges: []*pb.EdgeKey{{Tail: "restart", Head: "edge"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedPrimary, _ := install(t, restarted)
+	duplicate, err := restartedPrimary.AddEdges(
+		context.Background(),
+		proto.Clone(request).(*pb.AddEdgesRequest),
+	)
+	if err != nil || duplicate.GetEffectiveWeights()[0] != 7 {
+		t.Fatalf("post-restart duplicate = %+v, %v", duplicate, err)
+	}
+	if _, live := restarted.graph.GetWeight("restart", "edge"); live {
+		t.Fatal("post-restart duplicate re-applied the deleted contribution")
+	}
+	status, err := restartedPrimary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: request.GetReceiptContext().GetOperationIds()[0],
+	})
+	if err != nil || status.GetStatus().GetState() !=
+		pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+		status.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != 7 {
+		t.Fatalf("post-restart status = %+v, %v", status, err)
+	}
+}
+
+func TestPublicReceiptAddEdgeForwardsOneReceiptItem(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	batch := publicReceiptEdgeAddRequest(t, runtime, 0x47, &pb.Edge{
+		Tail: "singular", Head: "edge", Weight: 2.5,
+	})
+	request := &pb.AddEdgeRequest{
+		Edge:           batch.GetEdges()[0],
+		ContribId:      batch.GetContribIds()[0],
+		ReceiptContext: batch.GetReceiptContext(),
+	}
+	response, err := svc.AddEdge(t.Context(), request)
+	if err != nil || response.GetEffectiveWeight() != 2.5 {
+		t.Fatalf("AddEdge receipt = %+v, %v", response, err)
+	}
+	duplicate, err := svc.AddEdge(t.Context(), proto.Clone(request).(*pb.AddEdgeRequest))
+	if err != nil || duplicate.GetEffectiveWeight() != 2.5 {
+		t.Fatalf("AddEdge receipt duplicate = %+v, %v", duplicate, err)
+	}
+	if weight, live := runtime.graph.GetWeight("singular", "edge"); !live || weight != 2.5 {
+		t.Fatalf("singular duplicate changed graph = (%v, %v)", weight, live)
+	}
+}
+
 func TestPublicReceiptEdgeAddValidationAndConflicts(t *testing.T) {
 	t.Run("Explicit ContribID contract", func(t *testing.T) {
 		tests := []struct {
 			name   string
 			mutate func(*pb.AddEdgesRequest)
 		}{
+			{"invalid operation ID", func(r *pb.AddEdgesRequest) {
+				r.ReceiptContext.OperationIds[0] = []byte{1, 2, 3}
+			}},
 			{"missing", func(r *pb.AddEdgesRequest) { r.ContribIds = nil }},
 			{"mixed", func(r *pb.AddEdgesRequest) { r.ContribIds[1] = nil }},
 			{"wrong size", func(r *pb.AddEdgesRequest) { r.ContribIds[0] = []byte{1, 2, 3} }},
@@ -168,6 +265,23 @@ func TestPublicReceiptEdgeAddValidationAndConflicts(t *testing.T) {
 		}
 	})
 
+	t.Run("Batch bound", func(t *testing.T) {
+		runtime, svc, _ := newActivatedReceiptService(t, 16)
+		count := receiptVertexWALMaxItems + 1
+		request := &pb.AddEdgesRequest{
+			Edges:          make([]*pb.Edge, count),
+			ContribIds:     make([][]byte, count),
+			ReceiptContext: publicReceiptContext(t, runtime, 0x73, 1),
+		}
+		request.ReceiptContext.OperationIds = make([][]byte, count)
+		if _, err := svc.AddEdges(context.Background(), request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("AddEdges = %v, want InvalidArgument", err)
+		}
+		if svc.log.Len() != 0 || runtime.receipt.store.Stats().Entries != 0 {
+			t.Fatal("oversized request changed log or Store")
+		}
+	})
+
 	t.Run("Operation and contribution reuse", func(t *testing.T) {
 		runtime, svc, _ := newActivatedReceiptService(t, 16)
 		request := publicReceiptEdgeAddRequest(t, runtime, 0x75,
@@ -185,6 +299,12 @@ func TestPublicReceiptEdgeAddValidationAndConflicts(t *testing.T) {
 		newOperation.ReceiptContext = publicReceiptContext(t, runtime, 0x76, 1)
 		if _, err := svc.AddEdges(context.Background(), newOperation); connect.CodeOf(err) != connect.CodeInvalidArgument {
 			t.Fatalf("ContribID reuse = %v, want InvalidArgument", err)
+		}
+		newOperationDifferentIntent := proto.Clone(request).(*pb.AddEdgesRequest)
+		newOperationDifferentIntent.ReceiptContext = publicReceiptContext(t, runtime, 0x77, 1)
+		newOperationDifferentIntent.Edges[0].Head = "different"
+		if _, err := svc.AddEdges(context.Background(), newOperationDifferentIntent); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("ContribID reuse with different intent = %v, want InvalidArgument", err)
 		}
 		if weight, live := runtime.graph.GetWeight("a", "b"); !live || weight != 1 {
 			t.Fatalf("conflicts changed graph = (%v, %v)", weight, live)
@@ -342,5 +462,231 @@ func TestReceiptEdgeAddFollowerUsesLocalProjectionAndRelaysEvidence(t *testing.T
 	if err != nil || status != mutationreceipt.Confirmed ||
 		!sameReceiptWALDecision(receipt, sourceEnvelope.Receipts[0]) {
 		t.Fatalf("third-hop receipt = %v, %+v, %v", status, receipt, err)
+	}
+}
+
+func TestReceiptEdgeAddCombinedBaselineSuffixRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.wal")
+	config := baselineRuntimeTestConfig(path)
+	image := newReceiptBaselineTestImage(t, config)
+	config.BaselineCodec = image.codec
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil)
+	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+		t.Fatal(err)
+	}
+
+	origin := hlc.NodeID{0x79}
+	stamp := hlc.Timestamp{
+		WallNs: image.cutoff.WallNs + int64(time.Millisecond),
+		NodeID: origin,
+	}
+	issued := time.Unix(0, stamp.WallNs).Add(-time.Minute)
+	id, err := mutationreceipt.NewID(config.Receipt.Epoch, issued, [24]byte{0x79, 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contribID := graphcache.ContribID{0x79, 1, 0xa5}
+	edge := &pb.Edge{
+		Tail: "baseline", Head: "suffix", Weight: 6,
+		Expiration: timestamppb.New(time.Unix(0, stamp.WallNs).Add(time.Hour)),
+	}
+	digest, err := receiptEdgeAddDigest(edge, contribID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receiptContrib mutationreceipt.ContribID
+	copy(receiptContrib[:], contribID[:])
+	envelope := &graphAddEffectEnvelope{
+		Origin: origin, OriginSeq: 1, HLC: stamp,
+		Epoch:             config.Receipt.Epoch,
+		PolicyFingerprint: runtime.receipt.store.PolicyFingerprint(),
+		Original:          []*pb.Edge{edge},
+		ContribIDs:        []graphcache.ContribID{contribID},
+		AcceptedIndexes:   []uint32{0},
+		Receipts: []mutationreceipt.Receipt{{
+			Intent: mutationreceipt.Intent{
+				ID: id, Group: mutationreceipt.GroupID{0x79}, Index: 0, Count: 1,
+				Kind: mutationreceipt.AddEdge, Digest: digest,
+				HasContrib: true, ContribID: receiptContrib,
+			},
+			Result:         receiptEdgeAddResults([]float32{6})[0],
+			DeadlineMillis: issued.Add(config.Receipt.Retention).UnixMilli(),
+		}},
+	}
+	envelope.Mutation = receiptEdgeAddMutation(envelope)
+	if err := validateGraphAddEffectEnvelope(envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.log.Append(envelope, envelope.HLC); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if weight, live := restarted.graph.GetWeight("baseline", "suffix"); !live || weight != 6 {
+		t.Fatalf("combined-baseline Add = (%v, %v), want (6, true)", weight, live)
+	}
+	status, receipt, err := restarted.receipt.store.Lookup(id, time.Now())
+	if err != nil || status != mutationreceipt.Confirmed ||
+		!sameReceiptWALDecision(receipt, envelope.Receipts[0]) {
+		t.Fatalf("combined-baseline receipt = %v, %+v, %v", status, receipt, err)
+	}
+}
+
+func TestReceiptEdgeAddReceiptSnapshotAndBackupContinuity(t *testing.T) {
+	runtime, primary, replication := newActivatedReceiptService(t, 32)
+	request := publicReceiptEdgeAddRequest(t, runtime, 0x7a, &pb.Edge{
+		Tail: "snapshot", Head: "edge", Weight: 8,
+		Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+	})
+	if _, err := primary.AddEdges(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := replication.receiptSnapshotSource.CaptureForBackup(
+		t.Context(),
+		runtime.receipt.policy,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup.Generation != runtime.receipt.generation ||
+		backup.NodeID != runtime.clock.NodeID() ||
+		len(backup.WholeState.Receipts.Receipts) != 1 ||
+		backup.WholeState.Receipts.Receipts[0].Kind != mutationreceipt.AddEdge ||
+		!backup.WholeState.Receipts.Receipts[0].HasContrib {
+		t.Fatalf("backup capture lost Add receipt evidence: %+v", backup)
+	}
+
+	recorder := &replicationSnapshotRecorder{}
+	if err := replication.Snapshot(t.Context(), &pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+	}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	capture, err := DecodeReceiptSnapshotFrames(recorder.frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.Receipts.Receipts) != 1 ||
+		capture.Receipts.Receipts[0].Kind != mutationreceipt.AddEdge ||
+		!capture.Receipts.Receipts[0].HasContrib {
+		t.Fatalf("RECEIPT Snapshot lost Add evidence: %+v", capture.Receipts)
+	}
+
+	id, err := mutationreceipt.DecodeID(request.GetReceiptContext().GetOperationIds()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture.Receipts.Receipts[0].ID != id ||
+		!sameReceiptWALDecision(
+			capture.Receipts.Receipts[0],
+			backup.WholeState.Receipts.Receipts[0],
+		) {
+		t.Fatalf("Snapshot/backup Add evidence differs: snapshot=%+v backup=%+v",
+			capture.Receipts.Receipts[0],
+			backup.WholeState.Receipts.Receipts[0])
+	}
+}
+
+func TestReceiptEdgeAddRetiredEpochStatusContinuity(t *testing.T) {
+	oldConfig := mutationreceipt.Config{
+		Epoch: mutationreceipt.Epoch{0x91}, Retention: time.Hour,
+		MaxEntries: 32, MaxBytes: 1 << 20,
+	}
+	old := newReceiptEdgeDeleteFixtureWithStoreConfig(
+		t,
+		nil,
+		hlc.NodeID{0x91},
+		oldConfig,
+	)
+	oldAdd, err := newEdgeAddReceiptCoordinator(old.service, old.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := receiptEdgeAddTestCall(t, old.epoch, 0x51,
+		&pb.Edge{Tail: "retired", Head: "edge", Weight: 9},
+	)
+	if _, err := oldAdd.Commit(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+
+	activeRuntime, active, _ := newActivatedReceiptService(t, 32)
+	highWater := max(
+		old.coordinator.store.Stats().HighWaterMillis,
+		activeRuntime.receipt.store.Stats().HighWaterMillis,
+	)
+	effective := time.UnixMilli(highWater)
+	if _, _, err := old.coordinator.store.ObserveMany(nil, effective); err != nil {
+		t.Fatal(err)
+	}
+	oldState, err := old.coordinator.store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := mutationreceipt.RetiredCatalogSnapshot{
+		Version:              1,
+		ClockHighWaterMillis: highWater,
+		Epochs: []mutationreceipt.RetiredEpochSnapshot{{
+			Policy: mutationreceipt.RetiredEpochPolicy{
+				Epoch: oldConfig.Epoch, Retention: oldConfig.Retention,
+				MaxEntries: oldConfig.MaxEntries, MaxBytes: oldConfig.MaxBytes,
+			},
+			State: oldState,
+		}},
+	}
+	mustReplaceRetiredCatalog(
+		t,
+		activeRuntime.receipt.retired,
+		activeRuntime.receipt.policy,
+		highWater,
+		retired,
+	)
+	status, err := active.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{
+		OperationId: call.Items[0].ID.Bytes(),
+	})
+	if err != nil || status.GetStatus().GetState() !=
+		pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+		status.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != 9 {
+		t.Fatalf("retired Add status = %+v, %v", status, err)
+	}
+}
+
+func TestPublicReceiptEdgeAddBornExpiredResultIsStable(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	request := publicReceiptEdgeAddRequest(t, runtime, 0x7d, &pb.Edge{
+		Tail: "expired", Head: "edge", Weight: 11,
+		Expiration: timestamppb.New(time.Now().Add(-time.Minute)),
+	})
+	response, err := svc.AddEdges(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.GetEffectiveWeights()) != 1 || response.GetEffectiveWeights()[0] != 11 {
+		t.Fatalf("born-expired Add result = %+v, want original effective weight 11", response)
+	}
+	if _, live := runtime.graph.GetWeight("expired", "edge"); live {
+		t.Fatal("born-expired Add became graph-visible")
+	}
+	duplicate, err := svc.AddEdges(t.Context(), proto.Clone(request).(*pb.AddEdgesRequest))
+	if err != nil || duplicate.GetEffectiveWeights()[0] != 11 {
+		t.Fatalf("born-expired duplicate = %+v, %v", duplicate, err)
+	}
+	status, err := svc.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{
+		OperationId: request.GetReceiptContext().GetOperationIds()[0],
+	})
+	if err != nil ||
+		status.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != 11 {
+		t.Fatalf("born-expired status = %+v, %v", status, err)
 	}
 }

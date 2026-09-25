@@ -71,6 +71,9 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 		if isAnyGraphDelete(value) {
 			return nil, receiptWALUnionError("graph Delete requires accepted-effect envelope")
 		}
+		if value.GetOp().GetReplicatedReceiptEdgeAdd() != nil {
+			return nil, receiptWALUnionError("receipt Edge Add requires accepted-effect envelope")
+		}
 		kind = receiptWALUnionGraph
 		body, err = encodeReceiptWALGraph(value)
 	case *edgeDeleteReceiptEnvelope:
@@ -189,6 +192,9 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		if isAnyGraphDelete(value) {
 			return receiptWALUnionError("graph Delete lacks accepted-effect envelope")
 		}
+		if value.GetOp().GetReplicatedReceiptEdgeAdd() != nil {
+			return receiptWALUnionError("receipt Edge Add lacks accepted-effect envelope")
+		}
 		if err := validateReceiptWALGraph(value); err != nil {
 			return err
 		}
@@ -297,6 +303,14 @@ func encodeReceiptWALGraph(m *pb.Mutation) ([]byte, error) {
 }
 
 func decodeReceiptWALGraph(body []byte) (*pb.Mutation, error) {
+	return decodeReceiptWALGraphWithReceiptAdd(body, false)
+}
+
+func decodeReceiptWALGraphAddEffect(body []byte) (*pb.Mutation, error) {
+	return decodeReceiptWALGraphWithReceiptAdd(body, true)
+}
+
+func decodeReceiptWALGraphWithReceiptAdd(body []byte, allowReceiptAdd bool) (*pb.Mutation, error) {
 	if len(body) < receiptWALGraphHeaderSize {
 		return nil, receiptWALUnionError("graph body is truncated")
 	}
@@ -312,7 +326,12 @@ func decodeReceiptWALGraph(body []byte) (*pb.Mutation, error) {
 	}
 	indexes := body[receiptWALGraphHeaderSize : receiptWALGraphHeaderSize+indexBytes]
 	encoded := body[receiptWALGraphHeaderSize+indexBytes:]
-	if err := scanReceiptWALGraphWire(encoded, (&pb.Mutation{}).ProtoReflect().Descriptor(), 0); err != nil {
+	if err := scanReceiptWALGraphWireMode(
+		encoded,
+		(&pb.Mutation{}).ProtoReflect().Descriptor(),
+		0,
+		allowReceiptAdd,
+	); err != nil {
 		return nil, err
 	}
 	var m pb.Mutation
@@ -354,6 +373,15 @@ func decodeReceiptWALGraph(body []byte) (*pb.Mutation, error) {
 // Scalar duplicates retain protobuf's last-value-wins semantics; oneofs and
 // the outer Mutation.op field have the stricter WAL admission contract.
 func scanReceiptWALGraphWire(raw []byte, descriptor protoreflect.MessageDescriptor, depth int) error {
+	return scanReceiptWALGraphWireMode(raw, descriptor, depth, false)
+}
+
+func scanReceiptWALGraphWireMode(
+	raw []byte,
+	descriptor protoreflect.MessageDescriptor,
+	depth int,
+	allowReceiptAdd bool,
+) error {
 	if depth > 32 {
 		return receiptWALUnionError("protobuf message nesting exceeds limit")
 	}
@@ -378,7 +406,9 @@ func scanReceiptWALGraphWire(raw []byte, descriptor protoreflect.MessageDescript
 		}
 		if descriptor.FullName() == "graph.v1.MutationOp" {
 			if number < 1 || number > 14 {
-				return receiptWALUnionError("graph kind cannot contain receipt or unknown operation arm %d", number)
+				if !allowReceiptAdd || number != 18 {
+					return receiptWALUnionError("graph kind cannot contain receipt or unknown operation arm %d", number)
+				}
 			}
 			armCount++
 		}
@@ -399,7 +429,12 @@ func scanReceiptWALGraphWire(raw []byte, descriptor protoreflect.MessageDescript
 			if valueBytes < 0 {
 				return receiptWALUnionError("malformed protobuf message field")
 			}
-			if err := scanReceiptWALGraphWire(value, field.Message(), depth+1); err != nil {
+			if err := scanReceiptWALGraphWireMode(
+				value,
+				field.Message(),
+				depth+1,
+				allowReceiptAdd,
+			); err != nil {
 				return err
 			}
 			raw = raw[valueBytes:]

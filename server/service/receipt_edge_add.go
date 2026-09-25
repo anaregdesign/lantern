@@ -55,6 +55,12 @@ func (s *LanternService) commitPublicReceiptEdgeAdd(
 	edges := request.GetEdges()
 	rawIDs := receiptContext.GetOperationIds()
 	contribIDs := request.GetContribIds()
+	if len(edges) > receiptVertexWALMaxItems {
+		return nil, invalidReceiptRequest(fmt.Errorf(
+			"receipt Edge Add batch exceeds %d items",
+			receiptVertexWALMaxItems,
+		))
+	}
 	if len(rawIDs) != len(edges) || len(rawIDs) == 0 {
 		return nil, invalidReceiptRequest(errors.New(
 			"receipt operation IDs must be nonempty and index-aligned with edges",
