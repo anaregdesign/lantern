@@ -168,6 +168,41 @@ func TestCache_Get(t *testing.T) {
 			t.Fatalf("GetAt at expiration = (%d, %t), want (0, false)", got, ok)
 		}
 	})
+	t.Run("PeekWithExpiration", func(t *testing.T) {
+		type value struct{ n int }
+		now := time.Now()
+		liveExpiration := now.Add(time.Hour)
+		expiredExpiration := now.Add(-time.Hour)
+		c := NewCache[string, value](time.Hour)
+		c.PutWithExpiration("live", value{n: 1}, liveExpiration)
+		c.PutWithExpiration("expired", value{n: 2}, expiredExpiration)
+		c.PutWithExpiration("permanent", value{n: 3}, time.Time{})
+
+		tests := []struct {
+			key        string
+			wantValue  value
+			wantExpiry time.Time
+			wantFound  bool
+		}{
+			{key: "live", wantValue: value{n: 1}, wantExpiry: liveExpiration, wantFound: true},
+			{key: "expired", wantValue: value{n: 2}, wantExpiry: expiredExpiration, wantFound: true},
+			{key: "permanent", wantValue: value{n: 3}, wantExpiry: time.Time{}, wantFound: true},
+			{key: "absent", wantValue: value{}, wantExpiry: time.Time{}, wantFound: false},
+		}
+		for _, tt := range tests {
+			gotValue, gotExpiry, gotFound := c.PeekWithExpiration(tt.key)
+			if gotValue != tt.wantValue || !gotExpiry.Equal(tt.wantExpiry) || gotFound != tt.wantFound {
+				t.Errorf("PeekWithExpiration(%q) = (%+v, %v, %t), want (%+v, %v, %t)",
+					tt.key, gotValue, gotExpiry, gotFound, tt.wantValue, tt.wantExpiry, tt.wantFound)
+			}
+		}
+
+		valueBefore, expirationBefore, foundBefore := c.PeekWithExpiration("live")
+		c.PutWithExpiration("live", value{n: 4}, now.Add(2*time.Hour))
+		if valueBefore != (value{n: 1}) || !expirationBefore.Equal(liveExpiration) || !foundBefore {
+			t.Fatalf("peeked copy changed after overwrite: (%+v, %v, %t)", valueBefore, expirationBefore, foundBefore)
+		}
+	})
 }
 
 func TestCache_Set(t *testing.T) {

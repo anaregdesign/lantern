@@ -149,6 +149,22 @@ func (c *Cache[S, T]) GetAt(key S, now time.Time) (T, bool) {
 	return v.value, true
 }
 
+// PeekWithExpiration returns the physically stored value and absolute
+// expiration for key without applying liveness filtering. In particular, an
+// expired-but-not-yet-flushed slot is present. It takes only the cache read
+// lock and never evicts an entry or invokes an eviction callback. An absent key
+// returns the zero values of T and time.Time with physicallyPresent=false.
+func (c *Cache[S, T]) PeekWithExpiration(key S) (value T, expiration time.Time, physicallyPresent bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	entry, ok := c.cache[key]
+	if !ok {
+		return value, time.Time{}, false
+	}
+	return entry.value, entry.expiration, true
+}
+
 func (c *Cache[S, T]) PutWithExpiration(key S, value T, expiration time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

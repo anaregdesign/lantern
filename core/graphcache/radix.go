@@ -70,6 +70,21 @@ func (r *radix) len() int {
 	return r.size
 }
 
+func (r *radix) contains(key string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	node := r.root
+	for key != "" {
+		_, child := node.findChild(key[0])
+		if child == nil || len(key) < len(child.label) || key[:len(child.label)] != child.label {
+			return false
+		}
+		key = key[len(child.label):]
+		node = child
+	}
+	return node.terminal
+}
+
 // insert adds key to the trie. It returns true iff the key was not
 // already present (so the caller can keep an external count in sync
 // without a second lookup).
