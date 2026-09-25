@@ -134,21 +134,21 @@ const (
 	defaultSnapshotMaxStreamBytes = 512 << 20
 )
 
-func snapshotTransportLimitsFor(installer SnapshotInstaller) SnapshotTransportLimits {
-	limits := SnapshotTransportLimits{
-		MaxFrameBytes:  defaultSnapshotMaxFrameBytes,
-		MaxStreamBytes: defaultSnapshotMaxStreamBytes,
+func snapshotTransportLimitsFor(
+	installer SnapshotInstaller,
+) (SnapshotTransportLimits, bool, error) {
+	configured, ok := installer.(snapshotTransportLimiter)
+	if !ok {
+		return SnapshotTransportLimits{}, false, nil
 	}
-	if configured, ok := installer.(snapshotTransportLimiter); ok {
-		candidate := configured.SnapshotTransportLimits()
-		if candidate.MaxFrameBytes > 0 && candidate.MaxFrameBytes <= limits.MaxFrameBytes {
-			limits.MaxFrameBytes = candidate.MaxFrameBytes
-		}
-		if candidate.MaxStreamBytes > 0 && candidate.MaxStreamBytes <= limits.MaxStreamBytes {
-			limits.MaxStreamBytes = candidate.MaxStreamBytes
-		}
+	limits := configured.SnapshotTransportLimits()
+	if limits.MaxFrameBytes <= 0 ||
+		limits.MaxFrameBytes > defaultSnapshotMaxFrameBytes ||
+		limits.MaxStreamBytes == 0 ||
+		limits.MaxStreamBytes > defaultSnapshotMaxStreamBytes {
+		return SnapshotTransportLimits{}, false, errors.New("snapshot transport limits are invalid")
 	}
-	return limits
+	return limits, true, nil
 }
 
 type boundedSnapshotProtoCodec struct {
@@ -187,18 +187,28 @@ func (c *boundedSnapshotProtoCodec) Unmarshal(data []byte, message any) error {
 	return proto.Unmarshal(data, value)
 }
 
-func newBoundedSnapshotClient(
+func newSnapshotClient(
 	httpClient connect.HTTPClient,
 	addr string,
 	installer SnapshotInstaller,
-) graphv1connect.LanternReplicationServiceClient {
-	limits := snapshotTransportLimitsFor(installer)
+) (graphv1connect.LanternReplicationServiceClient, error) {
+	limits, bounded, err := snapshotTransportLimitsFor(installer)
+	if err != nil {
+		return nil, err
+	}
+	options := make([]connect.ClientOption, 0, 2)
+	if bounded {
+		options = append(
+			options,
+			connect.WithReadMaxBytes(limits.MaxFrameBytes),
+			connect.WithCodec(&boundedSnapshotProtoCodec{remaining: limits.MaxStreamBytes}),
+		)
+	}
 	return graphv1connect.NewLanternReplicationServiceClient(
 		httpClient,
 		peerBaseURL(addr),
-		connect.WithReadMaxBytes(limits.MaxFrameBytes),
-		connect.WithCodec(&boundedSnapshotProtoCodec{remaining: limits.MaxStreamBytes}),
-	)
+		options...,
+	), nil
 }
 
 type searchIndexRecovery interface {
@@ -1127,7 +1137,10 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 // watermark cut for the live tail. Replaying those cutoffs before Subscribe
 // prevents both duplicate application and an infinite gapped-snapshot loop.
 func (p *Pump) snapshot(ctx context.Context, addr string) (*pb.SnapshotHeader, error) {
-	cli := newBoundedSnapshotClient(p.cfg.HTTPClient, addr, p.installer)
+	cli, err := newSnapshotClient(p.cfg.HTTPClient, addr, p.installer)
+	if err != nil {
+		return nil, err
+	}
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
 		RequiredFormat: p.installer.RequiredFormat(),
 	}))

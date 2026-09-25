@@ -375,6 +375,41 @@ func marshalSnapshotTransportFrame(t *testing.T, frame *pb.SnapshotResponse) []b
 	return payload
 }
 
+func TestSnapshotTransportLimitsAreExplicitAndGraphOnlyPreserving(t *testing.T) {
+	if limits, bounded, err := snapshotTransportLimitsFor(
+		newGraphOnlySnapshotInstaller(nil, nil),
+	); err != nil || bounded || limits != (SnapshotTransportLimits{}) {
+		t.Fatalf("graph-only transport limits = (%+v, %t, %v), want unchanged", limits, bounded, err)
+	}
+
+	valid := &scriptedSnapshotInstaller{
+		required: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+		transport: SnapshotTransportLimits{
+			MaxFrameBytes:  8 << 20,
+			MaxStreamBytes: 512 << 20,
+		},
+	}
+	if limits, bounded, err := snapshotTransportLimitsFor(valid); err != nil ||
+		!bounded || limits != valid.transport {
+		t.Fatalf("receipt transport limits = (%+v, %t, %v), want %+v", limits, bounded, err, valid.transport)
+	}
+
+	for _, limits := range []SnapshotTransportLimits{
+		{MaxFrameBytes: -1, MaxStreamBytes: 1},
+		{MaxFrameBytes: 1, MaxStreamBytes: 0},
+		{MaxFrameBytes: defaultSnapshotMaxFrameBytes + 1, MaxStreamBytes: 1},
+		{MaxFrameBytes: 1, MaxStreamBytes: defaultSnapshotMaxStreamBytes + 1},
+	} {
+		installer := &scriptedSnapshotInstaller{
+			required:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
+			transport: limits,
+		}
+		if _, bounded, err := snapshotTransportLimitsFor(installer); err == nil || bounded {
+			t.Fatalf("invalid receipt transport limits %+v = bounded %t, err %v", limits, bounded, err)
+		}
+	}
+}
+
 func TestSnapshotClientsEnforceTransportLimitsBeforeInstall(t *testing.T) {
 	header := marshalSnapshotTransportFrame(t, &pb.SnapshotResponse{
 		Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{

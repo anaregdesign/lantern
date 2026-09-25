@@ -38,6 +38,12 @@ func (i *scriptedSnapshotInstaller) CompatibleFormat(format pb.SnapshotFormat) b
 }
 
 func (i *scriptedSnapshotInstaller) SnapshotTransportLimits() SnapshotTransportLimits {
+	if i.transport == (SnapshotTransportLimits{}) {
+		return SnapshotTransportLimits{
+			MaxFrameBytes:  defaultSnapshotMaxFrameBytes,
+			MaxStreamBytes: defaultSnapshotMaxStreamBytes,
+		}
+	}
 	return i.transport
 }
 

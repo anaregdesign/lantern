@@ -425,7 +425,10 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 // Triggered by FailedPrecondition on Subscribe. After this returns, the next
 // anti-entropy tick will re-probe PeerStatus and resume normal catch-up.
 func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string) error {
-	cli := newBoundedSnapshotClient(a.cfg.HTTPClient, addr, a.installer)
+	cli, err := newSnapshotClient(a.cfg.HTTPClient, addr, a.installer)
+	if err != nil {
+		return err
+	}
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
 		RequiredFormat: a.installer.RequiredFormat(),
 	}))
