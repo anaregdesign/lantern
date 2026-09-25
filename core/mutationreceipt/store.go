@@ -32,7 +32,14 @@ var (
 	ErrContributionConflict = errors.New("mutationreceipt: contribution ID is already bound")
 	ErrCapacity             = errors.New("mutationreceipt: live receipt capacity exhausted")
 	ErrTransactionState     = errors.New("mutationreceipt: invalid transaction state")
+	ErrHighWaterPersistence = errors.New("mutationreceipt: clock high-water persistence failed")
 )
+
+// ClockHighWaterSink must durably record at least millis before returning
+// nil. It runs while Store.mu is held and must not call back into the Store.
+// An error is indeterminate: the value may already be durable, so the Store
+// faults rather than retrying a receipt decision against an older clock.
+type ClockHighWaterSink func(millis int64) error
 
 // Config is immutable for an epoch. Changing the retention horizon or losing
 // ClockHighWater requires the caller to rotate the active epoch before any
@@ -136,6 +143,8 @@ type Store struct {
 	bytes           uint64
 	admissionReject uint64
 	unknownLookups  uint64
+	highWaterSink   ClockHighWaterSink
+	highWaterFault  error
 }
 
 // groupReceiptRows binds every currently retained item position to one
@@ -183,6 +192,32 @@ func New(config Config) (*Store, error) {
 		contributions: make(map[ContribID]ID),
 		deadlines:     newDeadlineIndex(),
 	}, nil
+}
+
+// NewWithClockHighWaterSink binds a synchronous persistence boundary before
+// any Store operation is visible. New remains available for detached tests;
+// a durable serving owner must also prove that the sink resumes the same
+// epoch, policy, and WAL cut before using this Store.
+func NewWithClockHighWaterSink(config Config, sink ClockHighWaterSink) (*Store, error) {
+	s, err := New(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachClockHighWaterSink(sink); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) attachClockHighWaterSink(sink ClockHighWaterSink) error {
+	if sink == nil {
+		return ErrInvalidConfig
+	}
+	if err := sink(s.highWaterMS); err != nil {
+		return errors.Join(ErrHighWaterPersistence, err)
+	}
+	s.highWaterSink = sink
+	return nil
 }
 
 func (s *Store) Epoch() Epoch { return s.epoch }
@@ -257,11 +292,20 @@ func (s *Store) Stats() Stats {
 }
 
 func (s *Store) advanceLocked(now time.Time) (int64, error) {
+	if s.highWaterFault != nil {
+		return 0, s.highWaterFault
+	}
 	ms := now.UnixMilli()
 	if ms < 0 {
 		return 0, ErrInvalidClock
 	}
 	if ms > s.highWaterMS {
+		if s.highWaterSink != nil {
+			if err := s.highWaterSink(ms); err != nil {
+				s.highWaterFault = errors.Join(ErrHighWaterPersistence, err)
+				return 0, s.highWaterFault
+			}
+		}
 		s.highWaterMS = ms
 	}
 	return s.highWaterMS, nil

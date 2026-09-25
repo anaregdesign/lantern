@@ -33,6 +33,9 @@ type Snapshot struct {
 func (s *Store) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.highWaterFault != nil {
+		return Snapshot{}, s.highWaterFault
+	}
 	state := Snapshot{
 		Version:              snapshotVersion,
 		Epoch:                s.epoch,
@@ -54,6 +57,21 @@ func (s *Store) Snapshot() (Snapshot, error) {
 		return bytes.Compare(state.Receipts[i].ID[:], state.Receipts[j].ID[:]) < 0
 	})
 	return state, nil
+}
+
+// NewFromSnapshotWithClockHighWaterSink validates the complete detached
+// snapshot before advancing the durable high-water and returning a Store.
+// The caller still must certify the matching graph, WAL, origin, and epoch
+// cut before publishing it for serving.
+func NewFromSnapshotWithClockHighWaterSink(config Config, state Snapshot, sink ClockHighWaterSink) (*Store, error) {
+	s, err := NewFromSnapshot(config, state)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachClockHighWaterSink(sink); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // NewFromSnapshot validates and rebuilds the bounded indexes for a complete
