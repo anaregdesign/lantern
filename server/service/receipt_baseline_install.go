@@ -146,7 +146,7 @@ func (s *LanternService) installReceiptBaseline(
 			return fmt.Errorf("service: encode combined receipt baseline: %w", err)
 		}
 		committed := receiptRuntime.committedBaseline
-		digest, _, err := sidecars.persist(ReceiptBaselineFormatCombinedV2, raw)
+		digest, _, err := sidecars.persist(ReceiptBaselineFormatCombined, raw)
 		if err != nil {
 			return errors.Join(err, sidecars.cleanup(committed))
 		}
@@ -167,7 +167,7 @@ func (s *LanternService) installReceiptBaseline(
 		)
 		if err == nil {
 			reference := receiptBaselineReference{
-				Format: ReceiptBaselineFormatCombinedV2,
+				Format: ReceiptBaselineFormatCombined,
 				Digest: digest,
 			}
 			receiptRuntime.committedBaseline = reference
@@ -447,7 +447,7 @@ func (s *LanternService) commitReceiptBaselineAttempt(
 		}
 		defer clockStage.Abort()
 		marker := receiptBaselineMarker{
-			Format:                 ReceiptBaselineFormatCombinedV2,
+			Format:                 ReceiptBaselineFormatCombined,
 			Digest:                 digest,
 			Size:                   uint64(len(raw)),
 			Epoch:                  receiptRuntime.epoch,

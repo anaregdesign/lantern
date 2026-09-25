@@ -122,8 +122,8 @@ The v1 set remains active-epoch-only and has no retired-catalog member. If the
 one-cut source contains any retired evidence, production rejects the attempt
 before encoding a member or creating a staging/final file. An empty retired
 catalog preserves the existing two-member bytes and manifest contract.
-Runtime-local baseline publication uses a separate private v2 sidecar; it does
-not silently change these scheduler backup members.
+Runtime-local baseline publication uses a separate private combined sidecar;
+it does not silently change these scheduler backup members.
 
 **Durable receipt backup installation and startup wiring are not implemented
 in this layer.**

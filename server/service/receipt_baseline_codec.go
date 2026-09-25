@@ -15,7 +15,7 @@ import (
 type ReceiptBaselineFormat uint32
 
 const (
-	ReceiptBaselineFormatCombinedV2 ReceiptBaselineFormat = 2
+	ReceiptBaselineFormatCombined ReceiptBaselineFormat = 1
 )
 
 // ReceiptBaselineArchiveCodec bridges the runtime to the canonical

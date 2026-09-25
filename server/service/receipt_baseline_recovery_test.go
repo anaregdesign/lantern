@@ -30,7 +30,7 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 			damage: func(t *testing.T, path string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
 				t.Helper()
 				digest := sha256.Sum256(image.codec.raw)
-				if err := os.Remove(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, digest)); err != nil {
+				if err := os.Remove(receiptBaselineSidecarPath(path, digest)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -40,7 +40,7 @@ func TestReceiptBaselineRecoveryRejectsMissingCorruptAndMismatchedState(t *testi
 			damage: func(t *testing.T, path string, _ DurableReceiptWALRuntimeConfig, image receiptBaselineTestImage) {
 				t.Helper()
 				digest := sha256.Sum256(image.codec.raw)
-				if err := os.WriteFile(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, digest), []byte("truncated"), 0o600); err != nil {
+				if err := os.WriteFile(receiptBaselineSidecarPath(path, digest), []byte("truncated"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -180,7 +180,7 @@ func TestReceiptBaselineRecoveryNeverFallsBackFromNewestMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstDigest := sha256.Sum256(image.codec.raw)
-	image.codec.raw = []byte("canonical-test-receipt-baseline-v2")
+	image.codec.raw = []byte("canonical-test-receipt-baseline")
 	if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
 		t.Fatal(err)
 	}
@@ -191,10 +191,10 @@ func TestReceiptBaselineRecoveryNeverFallsBackFromNewestMarker(t *testing.T) {
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, firstDigest)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(receiptBaselineSidecarPath(path, firstDigest)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("older committed sidecar was not reaped: %v", err)
 	}
-	if err := os.WriteFile(receiptBaselineSidecarPath(path, ReceiptBaselineFormatCombinedV2, secondDigest), []byte("bad newest"), 0o600); err != nil {
+	if err := os.WriteFile(receiptBaselineSidecarPath(path, secondDigest), []byte("bad newest"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if restarted, err := OpenDurableReceiptWALServingRuntime(config); restarted != nil || err == nil {

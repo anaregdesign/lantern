@@ -16,7 +16,7 @@ func receiptBaselineMarkerFixture() receiptBaselineMarker {
 	snapshotOrigin := hlc.NodeID{2}
 	localOrigin := hlc.NodeID{3}
 	return receiptBaselineMarker{
-		Format:                 ReceiptBaselineFormatCombinedV2,
+		Format:                 ReceiptBaselineFormatCombined,
 		Digest:                 [32]byte{1},
 		Size:                   4096,
 		Epoch:                  mutationreceipt.Epoch{4},
@@ -38,6 +38,9 @@ func TestReceiptBaselineMarkerCanonicalRoundTripAndFrameBinding(t *testing.T) {
 	}
 	if len(raw) != receiptBaselineMarkerSize {
 		t.Fatalf("marker length = %d, want %d", len(raw), receiptBaselineMarkerSize)
+	}
+	if got := binary.BigEndian.Uint32(raw[:4]); got != 1 {
+		t.Fatalf("marker format = %d, want 1", got)
 	}
 	got, err := unmarshalReceiptBaselineMarker(raw)
 	if err != nil || got != want {
@@ -62,11 +65,11 @@ func TestReceiptBaselineMarkerCanonicalRoundTripAndFrameBinding(t *testing.T) {
 	if err := validateReceiptWALUnionEntry(badFrame); !errors.Is(err, errReceiptBaselineMarker) {
 		t.Fatalf("mismatched frame HLC = %v", err)
 	}
-	legacy := bytes.Clone(raw)
-	binary.BigEndian.PutUint32(legacy[:4], 1)
-	if marker, err := unmarshalReceiptBaselineMarker(legacy); marker != (receiptBaselineMarker{}) ||
+	retired := bytes.Clone(raw)
+	binary.BigEndian.PutUint32(retired[:4], 2)
+	if marker, err := unmarshalReceiptBaselineMarker(retired); marker != (receiptBaselineMarker{}) ||
 		!errors.Is(err, errReceiptBaselineMarker) {
-		t.Fatalf("legacy marker decoded: %+v, %v", marker, err)
+		t.Fatalf("retired marker format decoded: %+v, %v", marker, err)
 	}
 }
 
@@ -75,7 +78,7 @@ func TestReceiptBaselineMarkerRejectsInvalidProvenance(t *testing.T) {
 	tests := map[string]func(*receiptBaselineMarker){
 		"unknown format":      func(m *receiptBaselineMarker) { m.Format = 3 },
 		"zero digest":         func(m *receiptBaselineMarker) { m.Digest = [32]byte{} },
-		"oversized":           func(m *receiptBaselineMarker) { m.Size = maxReceiptBaselineV2Bytes + 1 },
+		"oversized":           func(m *receiptBaselineMarker) { m.Size = maxCombinedReceiptBaselineBytes + 1 },
 		"zero epoch":          func(m *receiptBaselineMarker) { m.Epoch = mutationreceipt.Epoch{} },
 		"same generation":     func(m *receiptBaselineMarker) { m.RotatedGeneration = m.PreviousGeneration },
 		"backward HLC":        func(m *receiptBaselineMarker) { m.RestoreFloor.WallNs = m.SnapshotHLC.WallNs - 1 },

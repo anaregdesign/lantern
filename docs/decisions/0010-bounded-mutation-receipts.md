@@ -729,15 +729,19 @@ the retired catalog at that exact active high-water inside the same exclusive
 graph/origin/HLC/WAL cut. Runtime certification and source ownership bind the
 exact slot identity, not merely equivalent contents.
 
-A private fixed-size version-2 WAL baseline marker binds a canonical
-`LANTBLN2` sidecar digest and byte count to its source cutoff/HLC, epoch,
-policy fingerprint, previous generation, rotated generation, exact active and
-retired receipt clock high-water, and actual staged local HLC restore floor.
-`LANTBLN2` embeds the existing canonical active `LANTARCH` bytes unchanged and
-a bounded canonical `LANTRET1` retired section. The retired section binds the
-active epoch and aggregate caps; decoding requires those fields and its
-high-water to match the active section exactly. This private persistence path
-recognizes only marker version 2 and `.receipt-v2` sidecar names.
+A private fixed-size WAL baseline marker binds a canonical `LANTCBLN` sidecar
+digest and byte count to its source cutoff/HLC, epoch, policy fingerprint,
+previous generation, rotated generation, exact active and retired receipt
+clock high-water, and actual staged local HLC restore floor. The marker format
+is `ReceiptBaselineFormatCombined` with numeric value 1. The `LANTCBLN`
+container likewise has schema version 1 and embeds the existing canonical
+active `LANTARCH` bytes unchanged plus a bounded canonical `LANTRET1` retired
+section. The retired section binds the active epoch and aggregate caps;
+decoding requires those fields and its high-water to match the active section
+exactly. This private persistence path recognizes only
+`<wal>.receipt.<lowerhex-digest>.baseline` sidecars; all other magic, format
+values, and path shapes are unsupported foreign input and are neither read nor
+cleaned up.
 
 Before the marker commit, installation fully validates the incoming active and
 retired images, snapshots local retired evidence under a short exclusive cut,
@@ -746,11 +750,11 @@ and forms the deterministic exact union with
 overflow, or active high-water rollback fail closed. Encoding and sidecar
 fsync happen outside the publication cut; a bounded optimistic retry requires
 the active Store, retired revision, and origins to still match before staging.
-The immutable combined candidate is fsynced under a content-addressed
-`.receipt-v2` sidecar name before the marker commit. Graph, active Store,
-retired slot, origins, clock, and generation publish only in the WAL
-post-publication callback. Cancellation is checked again after reversible
-staging and immediately before the marker write.
+The immutable combined candidate is fsynced under its content-addressed
+`<wal>.receipt.<lowerhex-digest>.baseline` name before the marker commit.
+Graph, active Store, retired slot, origins, clock, and generation publish only
+in the WAL post-publication callback. Cancellation is checked again after
+reversible staging and immediately before the marker write.
 
 An indeterminate marker outcome or interrupted publication closes the
 graph/CDC publication generation and fail-stops external reads as well as
@@ -766,7 +770,8 @@ effective restart high-water, restores the existing GraphCache, Store,
 retired slot, origin tracker, HLC, and Log identities, and replays only the
 suffix. Suffix replay never mutates retired evidence. Natural D4 tombstone and
 receipt expiry is reaped during restore rather than treated as archive
-corruption. Orphan v2 sidecars without a marker are cleanup candidates;
+corruption. Orphan canonical baseline sidecars without a marker are cleanup
+candidates;
 missing, mismatched, noncanonical, oversized, or corrupt committed state fails
 startup.
 Live baseline installs are serialized before candidate encoding and sidecar

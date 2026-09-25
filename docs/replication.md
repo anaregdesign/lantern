@@ -721,7 +721,7 @@ Framing contract:
   `RECEIPT_V1` has no retired section, its producer rejects nonempty retired
   evidence before sending a header and its installer rejects a nonempty local
   retired catalog before mutating live state. With an empty retired catalog,
-  graph, active receipt Store, origin vector, HLC floor, private combined-v2
+  graph, active receipt Store, origin vector, HLC floor, private combined
   marker, and resume cutoff publish as one cut. Cancellation, corruption,
   truncation, capacity, epoch/policy mismatch, and downgrade failures publish
   nothing. No receipt write/status capability is enabled. Production bounds

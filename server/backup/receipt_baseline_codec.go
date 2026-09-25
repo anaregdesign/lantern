@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	receiptCombinedBaselineMagic      = "LANTBLN2"
-	receiptCombinedBaselineVersion    = uint16(2)
+	receiptCombinedBaselineMagic      = "LANTCBLN"
+	receiptCombinedBaselineVersion    = uint16(1)
 	receiptCombinedBaselineReserved   = uint16(0)
 	receiptCombinedBaselineHeaderSize = 8 + 2 + 2 + 2 + 2 + 8 + 8 + 2*sha256.Size
 	receiptCombinedBaselineFooterSize = sha256.Size
@@ -38,7 +38,7 @@ const (
 
 var errReceiptCombinedBaseline = errors.New("backup: invalid combined receipt baseline")
 
-// ReceiptBaselineCodec is the canonical private combined-v2 baseline adapter
+// ReceiptBaselineCodec is the canonical private combined baseline adapter
 // used by the durable runtime.
 type ReceiptBaselineCodec struct{}
 
