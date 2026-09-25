@@ -622,6 +622,9 @@ message GetEdgesResponse {
 message DeleteEdgeRequest {
   string tail = 1;
   string head = 2;
+  // Optional receipt context for one durable, status-queryable operation.
+  // When absent, this is an intentional receipt-less online Delete.
+  MutationReceiptContext receipt_context = 3;
 }
 
 message DeleteEdgeResponse {
@@ -672,6 +675,10 @@ message ScanEdgesResponse {
 // MaxBatchSize / MaxKeyLen guard rails.
 message DeleteEdgesRequest {
   repeated EdgeKey edges = 1;
+  // Optional durable receipt context. operation_ids must be index-aligned
+  // with edges. When absent, this is an intentional receipt-less online
+  // Delete with no receipt/status guarantee.
+  MutationReceiptContext receipt_context = 2;
 }
 
 message DeleteEdgesResponse {
@@ -1095,6 +1102,15 @@ message ReceiptPolicy {
 message ReceiptEndpoint {
   bytes node_id = 1; // Nonzero 16-byte HLC NodeID.
   bytes generation = 2; // Opaque, nonzero continuity marker.
+}
+
+// MutationReceiptContext opts one logical mutation call into durable receipt
+// coordination. The endpoint is copied from GetReceiptCapability; operation
+// IDs are exactly 49 bytes and logical_call_id is exactly 16 nonzero bytes.
+message MutationReceiptContext {
+  repeated bytes operation_ids = 1;
+  bytes logical_call_id = 2;
+  ReceiptEndpoint endpoint = 3;
 }
 
 message GetReceiptCapabilityRequest {}

@@ -72,6 +72,21 @@ type CausalMetadataSample struct {
 // A nil sampler leaves the pre-warmed per-kind series at zero.
 type CausalMetadataSampler func() CausalMetadataSample
 
+// ReceiptSample is the bounded receipt Store state and cumulative admission,
+// convergence, and status counters sampled from the certified serving runtime.
+type ReceiptSample struct {
+	Entries                   int
+	Bytes                     uint64
+	OldestDeadlineMillis      int64
+	LocalAdmissionRejects     uint64
+	ReplicationCapacityStalls uint64
+	NoLongerProvableLookups   uint64
+}
+
+// ReceiptSampler reports one lock-consistent receipt Store snapshot. A nil
+// sampler leaves all receipt collectors at zero.
+type ReceiptSampler func() ReceiptSample
+
 // DomainMetrics owns the Lantern-specific collectors. Construct with New and
 // pass the returned callbacks to GraphCache.SetGCHooks plus Start to begin
 // gauge sampling.
@@ -227,6 +242,13 @@ type DomainMetrics struct {
 	vertexCausalMetadataEstimatedBytes   prometheus.Gauge
 	vertexCausalMetadataOverLimit        prometheus.Gauge
 
+	receiptEntries                   prometheus.Gauge
+	receiptBytes                     prometheus.Gauge
+	receiptOldestDeadline            prometheus.Gauge
+	receiptLocalAdmissionRejects     prometheus.Counter
+	receiptReplicationCapacityStalls prometheus.Counter
+	receiptNoLongerProvable          prometheus.Counter
+
 	sampleInterval           time.Duration
 	sample                   Sampler
 	mlogSample               MutationLogSampler
@@ -236,9 +258,13 @@ type DomainMetrics struct {
 	vertexHLCHighWaterSample VertexHLCSampler
 	causalBarrierSample      CausalBarrierSampler
 	causalMetadataSample     CausalMetadataSampler
+	receiptSample            ReceiptSampler
 	lastEvicted              uint64 // last observed cumulative eviction count
 	lastVertexCausalRejected uint64
 	lastEdgeCausalRejected   uint64
+	lastReceiptLocalRejected uint64
+	lastReceiptReplicaStalls uint64
+	lastReceiptNoLonger      uint64
 }
 
 // Hot-path label values. Exposed so the service layer can reference the
@@ -673,6 +699,30 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_vertex_causal_metadata_over_limit",
 			Help: "Unlabelled release-gate alias of lantern_causal_metadata_over_limit{kind=\"vertex\"}.",
 		}),
+		receiptEntries: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_receipt_entries",
+			Help: "Current number of live operation receipts in the bounded active receipt Store.",
+		}),
+		receiptBytes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_receipt_bytes",
+			Help: "Current estimated bytes occupied by live operation receipts in the bounded active receipt Store.",
+		}),
+		receiptOldestDeadline: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lantern_receipt_oldest_deadline_seconds",
+			Help: "Unix timestamp of the oldest live operation-receipt deadline; 0 when no receipt is retained.",
+		}),
+		receiptLocalAdmissionRejects: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_receipt_local_admission_rejected_total",
+			Help: "Total local receipt-bearing calls rejected before graph mutation because the bounded receipt Store could not admit the complete logical call.",
+		}),
+		receiptReplicationCapacityStalls: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_receipt_replication_capacity_stalled_total",
+			Help: "Total replicated receipt envelopes stalled before graph publication because the bounded receipt Store could not admit them.",
+		}),
+		receiptNoLongerProvable: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "lantern_receipt_no_longer_provable_total",
+			Help: "Total public receipt status items returned as NO_LONGER_PROVABLE.",
+		}),
 		peerConnected: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_peer_connected",
 			Help: "1 when the local replication pump currently holds an open Subscribe (or Subscribe+Snapshot) session to the named peer; 0 otherwise. Updated on every pump connect/disconnect lifecycle event.",
@@ -760,6 +810,9 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		m.causalMetadataLimit, m.causalMetadataOverLimit,
 		m.vertexCausalMetadataEntries, m.vertexCausalMetadataEntriesHighWater,
 		m.vertexCausalMetadataEstimatedBytes, m.vertexCausalMetadataOverLimit,
+		m.receiptEntries, m.receiptBytes, m.receiptOldestDeadline,
+		m.receiptLocalAdmissionRejects, m.receiptReplicationCapacityStalls,
+		m.receiptNoLongerProvable,
 		m.peerConnected, m.replicationApplyTotal, m.snapshotReplayedTotal,
 		m.snapshotVertices, m.snapshotEdges, m.snapshotDuration,
 		m.mutationLogFillRatio, m.mutationLogEvicted, m.originStatesCount,
@@ -1374,6 +1427,12 @@ func (m *DomainMetrics) BindCausalMetadataSampler(s CausalMetadataSampler) {
 	m.causalMetadataSample = s
 }
 
+// BindReceiptSampler installs the certified runtime receipt callback. It must
+// be called before Run and is safe to call exactly once during wiring.
+func (m *DomainMetrics) BindReceiptSampler(s ReceiptSampler) {
+	m.receiptSample = s
+}
+
 // Run drives the gauge sampler on the configured cadence until ctx is done.
 // Safe to launch as a goroutine. A nil sampler is treated as a no-op so
 // tests can construct the collectors without wiring a cache.
@@ -1381,7 +1440,7 @@ func (m *DomainMetrics) Run(ctx context.Context) {
 	if m.sample == nil && m.mlogSample == nil && m.originSample == nil &&
 		m.searchIndexSample == nil && m.vertexHLCSample == nil &&
 		m.vertexHLCHighWaterSample == nil && m.causalBarrierSample == nil &&
-		m.causalMetadataSample == nil {
+		m.causalMetadataSample == nil && m.receiptSample == nil {
 		<-ctx.Done()
 		return
 	}
@@ -1478,6 +1537,33 @@ func (m *DomainMetrics) tick() {
 	if m.causalMetadataSample != nil {
 		m.sampleCausalMetadata(m.causalMetadataSample())
 	}
+	if m.receiptSample != nil {
+		m.sampleReceipts(m.receiptSample())
+	}
+}
+
+func (m *DomainMetrics) sampleReceipts(sample ReceiptSample) {
+	m.receiptEntries.Set(float64(sample.Entries))
+	m.receiptBytes.Set(float64(sample.Bytes))
+	if sample.OldestDeadlineMillis > 0 {
+		m.receiptOldestDeadline.Set(float64(sample.OldestDeadlineMillis) / 1000)
+	} else {
+		m.receiptOldestDeadline.Set(0)
+	}
+	addCounterDelta(m.receiptLocalAdmissionRejects, sample.LocalAdmissionRejects, &m.lastReceiptLocalRejected)
+	addCounterDelta(m.receiptReplicationCapacityStalls, sample.ReplicationCapacityStalls, &m.lastReceiptReplicaStalls)
+	addCounterDelta(m.receiptNoLongerProvable, sample.NoLongerProvableLookups, &m.lastReceiptNoLonger)
+}
+
+func addCounterDelta(counter prometheus.Counter, current uint64, previous *uint64) {
+	delta := current - *previous
+	if current < *previous {
+		delta = current
+	}
+	if delta > 0 {
+		counter.Add(float64(delta))
+	}
+	*previous = current
 }
 
 func (m *DomainMetrics) sampleCausalMetadata(sample CausalMetadataSample) {

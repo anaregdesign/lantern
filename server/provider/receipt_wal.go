@@ -30,7 +30,7 @@ const (
 	ReceiptWALModeRestart   ReceiptWALMode = "restart"
 )
 
-// ReceiptWALConfig is the private durable-runtime contract.
+// ReceiptWALConfig is the durable-runtime contract.
 //
 //   - LANTERN_RECEIPT_WAL_MODE        graph-only (default), fresh, or restart
 //   - LANTERN_RECEIPT_WAL_PATH        absolute FileWAL path; required in durable modes
@@ -40,9 +40,10 @@ const (
 //   - LANTERN_RECEIPT_MAX_BYTES       positive retained-receipt logical byte cap
 //   - LANTERN_NODE_ID                 explicit nonzero stable origin identity
 //
-// Durable mode is private infrastructure. It does not enable receipt
-// capability/status or any offline mutation surface. Fresh never overwrites
-// existing bytes; restart requires the WAL and every bound sidecar.
+// Durable construction alone does not enable a public receipt surface. Final
+// activation additionally requires runtime, backup, recovery, and bearer-auth
+// certification. Fresh never overwrites existing bytes; restart requires the
+// WAL and every bound sidecar.
 type ReceiptWALConfig struct {
 	Mode       ReceiptWALMode
 	Path       string
@@ -295,6 +296,13 @@ func NewRuntimeRestored(
 	return runtimeRestored{valid: true, runtime: runtime, primary: primary}, nil
 }
 
+// publicReceiptsCertified is the final pre-listener activation barrier. Wire
+// can construct it only after the exact runtime is certified and its
+// production backup path has been bound.
+type publicReceiptsCertified struct {
+	valid bool
+}
+
 // NewRuntimeCertified completes the production composition barrier.
 func NewRuntimeCertified(
 	runtime *service.ServingRuntime,
@@ -315,6 +323,43 @@ func NewRuntimeCertified(
 		primary:     primary,
 		replication: replication,
 	}, nil
+}
+
+// NewPublicReceiptsCertified enables the public receipt surface only for a
+// durable runtime with configured bearer auth. Graph-only and auth-disabled
+// deployments remain valid serving configurations but do not advertise or
+// accept receipt-bearing requests.
+func NewPublicReceiptsCertified(
+	config ReceiptWALConfig,
+	auth AuthConfig,
+	runtime *service.ServingRuntime,
+	primary *service.LanternService,
+	_ *backup.Backupper,
+	certified runtimeCertified,
+) (publicReceiptsCertified, error) {
+	if !certified.valid || runtime == nil || primary == nil ||
+		certified.runtime != runtime || certified.primary != primary ||
+		certified.replication == nil {
+		return publicReceiptsCertified{}, errors.New("public receipt activation requires the exact certified serving runtime")
+	}
+	switch config.Mode {
+	case ReceiptWALModeGraphOnly:
+		if runtime.DurableReceiptWAL() {
+			return publicReceiptsCertified{}, errors.New("public receipt activation mode differs from the serving runtime")
+		}
+	case ReceiptWALModeFresh, ReceiptWALModeRestart:
+		if !runtime.DurableReceiptWAL() {
+			return publicReceiptsCertified{}, errors.New("public receipt activation mode differs from the serving runtime")
+		}
+		if auth.Enabled() {
+			if err := runtime.ActivatePublicReceipts(primary, certified.replication); err != nil {
+				return publicReceiptsCertified{}, fmt.Errorf("activate public receipts: %w", err)
+			}
+		}
+	default:
+		return publicReceiptsCertified{}, errors.New("public receipt activation received an invalid runtime mode")
+	}
+	return publicReceiptsCertified{valid: true}, nil
 }
 
 func NewRuntimeGraph(runtime *service.ServingRuntime) *graphcache.GraphCache[string, *pb.Vertex] {

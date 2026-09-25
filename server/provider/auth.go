@@ -50,6 +50,18 @@ type AuthConfig struct {
 	ExemptReflection bool
 }
 
+// Enabled reports whether at least one usable bearer token is configured.
+// Token bytes remain authentication material only and never enter receipt
+// policy, epoch, or endpoint identity.
+func (c AuthConfig) Enabled() bool {
+	for _, token := range c.Tokens {
+		if strings.TrimSpace(token) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // AuthInterceptor enforces AuthConfig on every Connect call it wraps —
 // unary and streaming alike — and can also guard plain HTTP mounts via
 // RequireHTTP. The zero value (no tokens) is disabled and enforces

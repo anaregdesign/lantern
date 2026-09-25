@@ -655,6 +655,7 @@ type DomainMetricsWired struct{}
 
 func WireDomainMetrics(
 	cache *graphcache.GraphCache[string, *v1.Vertex],
+	runtime *service.ServingRuntime,
 	m *domainmetrics.DomainMetrics,
 ) DomainMetricsWired {
 	m.BindSampler(func() (int, int) {
@@ -691,6 +692,17 @@ func WireDomainMetrics(
 			EdgeOverLimit:                 stats.EdgeOverLimit,
 			OldestVertexRetentionDeadline: stats.OldestVertexRetentionDeadline,
 			OldestEdgeRetentionDeadline:   stats.OldestEdgeRetentionDeadline,
+		}
+	})
+	m.BindReceiptSampler(func() domainmetrics.ReceiptSample {
+		stats := runtime.ReceiptStats()
+		return domainmetrics.ReceiptSample{
+			Entries:                   stats.Entries,
+			Bytes:                     stats.Bytes,
+			OldestDeadlineMillis:      stats.OldestDeadlineMillis,
+			LocalAdmissionRejects:     stats.LocalAdmissionRejects,
+			ReplicationCapacityStalls: stats.ReplicationCapacityStalls,
+			NoLongerProvableLookups:   stats.NoLongerProvableLookups,
 		}
 	})
 	return DomainMetricsWired{}
@@ -757,9 +769,13 @@ func WireCacheGCHooks(
 	return CacheGCHooksWired{}
 }
 
-func NewListener(n NetConfig, certified runtimeCertified) (net.Listener, func(), error) {
-	if !certified.valid {
-		return nil, nil, errors.New("serving runtime is not certified")
+func NewListener(
+	n NetConfig,
+	certified runtimeCertified,
+	publicReceipts publicReceiptsCertified,
+) (net.Listener, func(), error) {
+	if !certified.valid || !publicReceipts.valid {
+		return nil, nil, errors.New("serving runtime or public receipt state is not certified")
 	}
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(n.Port))
 	if err != nil {

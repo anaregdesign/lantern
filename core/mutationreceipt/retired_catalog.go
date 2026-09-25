@@ -323,28 +323,51 @@ func NewRetiredCatalogFromUnion(
 // at the supplied nondecreasing clock high-water. Every absent or expired
 // retired ID is NoLongerProvable. Active-epoch IDs must be routed elsewhere.
 func (c *RetiredCatalog) Lookup(id ID, highWater time.Time) (Status, Receipt, error) {
-	epoch, _, err := id.parts()
+	observations, err := c.LookupMany([]ID{id}, highWater)
 	if err != nil {
 		return 0, Receipt{}, err
 	}
-	if epoch == c.activeEpoch {
-		return 0, Receipt{}, ErrActiveEpochReceipt
+	return observations[0].Status, observations[0].Receipt, nil
+}
+
+// LookupMany advances the catalog clock once and returns request-index-aligned
+// retired evidence. Active-epoch IDs are rejected as a whole so callers
+// cannot accidentally bypass the mutable Store.
+func (c *RetiredCatalog) LookupMany(ids []ID, highWater time.Time) ([]Observation, error) {
+	epochs := make([]Epoch, len(ids))
+	for i, id := range ids {
+		epoch, _, err := id.parts()
+		if err != nil {
+			return nil, err
+		}
+		if epoch == c.activeEpoch {
+			return nil, ErrActiveEpochReceipt
+		}
+		epochs[i] = epoch
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.advanceLocked(highWater); err != nil {
-		return 0, Receipt{}, err
+		return nil, err
 	}
-	retired, ok := c.epochs[epoch]
-	if !ok {
-		return NoLongerProvable, Receipt{}, nil
+	observations := make([]Observation, len(ids))
+	for i, id := range ids {
+		retired, ok := c.epochs[epochs[i]]
+		if !ok {
+			observations[i].Status = NoLongerProvable
+			continue
+		}
+		receipt, ok := retired.receipts[id]
+		if !ok || receipt.DeadlineMillis <= c.highWaterMS {
+			observations[i].Status = NoLongerProvable
+			continue
+		}
+		observations[i] = Observation{
+			Status: Confirmed, Receipt: cloneReceipt(receipt),
+		}
 	}
-	receipt, ok := retired.receipts[id]
-	if !ok || receipt.DeadlineMillis <= c.highWaterMS {
-		return NoLongerProvable, Receipt{}, nil
-	}
-	return Confirmed, cloneReceipt(receipt), nil
+	return observations, nil
 }
 
 // Snapshot returns a deterministic deep copy at the supplied nondecreasing

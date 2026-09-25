@@ -2360,3 +2360,540 @@ func TestDurableReceiptWALRuntime_RealConnectWireRecovery(t *testing.T) {
 		t.Fatalf("restarted PeerStatus = %+v", status.Msg)
 	}
 }
+
+func receiptRequestWithToken[T any](msg *T, token string) *connect.Request[T] {
+	req := connect.NewRequest(msg)
+	if token != "" {
+		req.Header().Set("Authorization", "Bearer "+token)
+	}
+	return req
+}
+
+type publicReceiptWireServer struct {
+	runtime *service.ServingRuntime
+	server  *connectTestServer
+	raw     graphv1connect.LanternServiceClient
+	config  service.DurableReceiptWALRuntimeConfig
+}
+
+func newPublicReceiptWireServer(
+	t *testing.T,
+	nodeID hlc.NodeID,
+	maxEntries int,
+	tokens ...string,
+) publicReceiptWireServer {
+	t.Helper()
+	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), nodeID)
+	config.Receipt.MaxEntries = maxEntries
+	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
+	replicationService, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certified, err := provider.NewRuntimeCertified(runtime, primary, replicationService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptConfig := provider.ReceiptWALConfig{
+		Mode: provider.ReceiptWALModeFresh, Path: config.Path,
+		Epoch: config.Receipt.Epoch, Retention: config.Receipt.Retention,
+		MaxEntries: config.Receipt.MaxEntries, MaxBytes: int(config.Receipt.MaxBytes),
+	}
+	backupper, err := provider.NewBackupper(
+		backup.Config{},
+		receiptConfig,
+		runtime,
+		primary,
+		certified,
+		prometheus.NewRegistry(),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authConfig := provider.AuthConfig{Tokens: append([]string(nil), tokens...)}
+	if _, err := provider.NewPublicReceiptsCertified(
+		receiptConfig,
+		authConfig,
+		runtime,
+		primary,
+		backupper,
+		certified,
+	); err != nil {
+		t.Fatal(err)
+	}
+	auth := provider.NewAuthInterceptor(authConfig)
+	var interceptors []connect.Interceptor
+	if auth.Enabled() {
+		interceptors = append(interceptors, auth)
+	}
+	server := newConnectTestServer(t, primary, replicationService, interceptors...)
+	return publicReceiptWireServer{
+		runtime: runtime,
+		server:  server,
+		raw:     graphv1connect.NewLanternServiceClient(h2cClient(), server.url),
+		config:  config,
+	}
+}
+
+func publicReceiptCapability(
+	t *testing.T,
+	wire publicReceiptWireServer,
+	token string,
+) *pb.GetReceiptCapabilityResponse {
+	t.Helper()
+	response, err := wire.raw.GetReceiptCapability(
+		context.Background(),
+		receiptRequestWithToken(&pb.GetReceiptCapabilityRequest{}, token),
+	)
+	if err != nil || !response.Msg.GetEnabled() {
+		t.Fatalf("public receipt capability = %+v, %v", response, err)
+	}
+	return response.Msg
+}
+
+func publicReceiptWireContext(
+	t *testing.T,
+	capability *pb.GetReceiptCapabilityResponse,
+	seed byte,
+	count int,
+	issued time.Time,
+) *pb.MutationReceiptContext {
+	t.Helper()
+	var epoch mutationreceipt.Epoch
+	if len(capability.GetPolicy().GetDeploymentEpoch()) != len(epoch) {
+		t.Fatalf("capability epoch length = %d", len(capability.GetPolicy().GetDeploymentEpoch()))
+	}
+	copy(epoch[:], capability.GetPolicy().GetDeploymentEpoch())
+	operationIDs := make([][]byte, count)
+	for i := range operationIDs {
+		id, err := mutationreceipt.NewID(epoch, issued, [24]byte{seed, byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		operationIDs[i] = id.Bytes()
+	}
+	group := [16]byte{seed, 1}
+	return &pb.MutationReceiptContext{
+		OperationIds:  operationIDs,
+		LogicalCallId: group[:],
+		Endpoint:      proto.Clone(capability.GetEndpoint()).(*pb.ReceiptEndpoint),
+	}
+}
+
+func putReceiptWireEdges(
+	t *testing.T,
+	raw graphv1connect.LanternServiceClient,
+	token string,
+	keys ...*pb.EdgeKey,
+) {
+	t.Helper()
+	edges := make([]*pb.Edge, len(keys))
+	for i, key := range keys {
+		edges[i] = &pb.Edge{
+			Tail: key.GetTail(), Head: key.GetHead(), Weight: 1,
+			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		}
+	}
+	if _, err := raw.PutEdges(
+		context.Background(),
+		receiptRequestWithToken(&pb.PutEdgesRequest{Edges: edges}, token),
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireReceiptWireEdge(
+	t *testing.T,
+	raw graphv1connect.LanternServiceClient,
+	token string,
+	key *pb.EdgeKey,
+) {
+	t.Helper()
+	if _, err := raw.GetEdge(context.Background(), receiptRequestWithToken(
+		&pb.GetEdgeRequest{Tail: key.GetTail(), Head: key.GetHead()},
+		token,
+	)); err != nil {
+		t.Fatalf("GetEdge(%q,%q): %v", key.GetTail(), key.GetHead(), err)
+	}
+}
+
+type dropFirstDeleteEdgesResponseTransport struct {
+	inner   http.RoundTripper
+	dropped atomic.Bool
+}
+
+func (t *dropFirstDeleteEdgesResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.inner.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasSuffix(request.URL.Path, "/DeleteEdges") &&
+		t.dropped.CompareAndSwap(false, true) {
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		return nil, errors.New("injected committed response loss")
+	}
+	return response, nil
+}
+
+func TestPublicEdgeDeleteReceipts_RealConnectWire(t *testing.T) {
+	const (
+		oldToken = "receipt-old-token"
+		newToken = "receipt-new-token"
+	)
+	t.Run("response loss replay alignment intent status and token rotation", func(t *testing.T) {
+		wire := newPublicReceiptWireServer(t, hlc.NodeID{0x31}, 8, oldToken, newToken)
+		oldCapability := publicReceiptCapability(t, wire, oldToken)
+		newCapability := publicReceiptCapability(t, wire, newToken)
+		if !proto.Equal(oldCapability.GetPolicy(), newCapability.GetPolicy()) ||
+			!proto.Equal(oldCapability.GetEndpoint(), newCapability.GetEndpoint()) {
+			t.Fatalf("token rotation changed receipt namespace: old=%+v new=%+v", oldCapability, newCapability)
+		}
+		if _, err := wire.raw.GetReceiptCapability(
+			context.Background(),
+			connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
+		); connect.CodeOf(err) != connect.CodeUnauthenticated {
+			t.Fatalf("tokenless capability = %v, want Unauthenticated", err)
+		}
+
+		present := &pb.EdgeKey{Tail: "present", Head: "edge"}
+		protected := &pb.EdgeKey{Tail: "protected", Head: "edge"}
+		receiptless := &pb.EdgeKey{Tail: "receiptless", Head: "edge"}
+		putReceiptWireEdges(t, wire.raw, newToken, present, protected, receiptless)
+		receiptlessResponse, err := wire.raw.DeleteEdge(
+			context.Background(),
+			receiptRequestWithToken(&pb.DeleteEdgeRequest{
+				Tail: receiptless.GetTail(), Head: receiptless.GetHead(),
+			}, newToken),
+		)
+		if err != nil || !receiptlessResponse.Msg.GetExisted() {
+			t.Fatalf("context-free online DeleteEdge = %+v, %v", receiptlessResponse, err)
+		}
+
+		issued := time.UnixMilli(int64(newCapability.GetServerNowUnixMs())).Add(-time.Second)
+		receiptContext := publicReceiptWireContext(t, newCapability, 0x61, 2, issued)
+		request := &pb.DeleteEdgesRequest{
+			Edges: []*pb.EdgeKey{
+				present,
+				{Tail: "absent", Head: "edge"},
+			},
+			ReceiptContext: receiptContext,
+		}
+		baseClient := h2cClient()
+		dropTransport := &dropFirstDeleteEdgesResponseTransport{inner: baseClient.Transport}
+		dropClient := &http.Client{Transport: dropTransport}
+		dropRaw := graphv1connect.NewLanternServiceClient(dropClient, wire.server.url)
+		if _, err := dropRaw.DeleteEdges(
+			context.Background(),
+			receiptRequestWithToken(proto.Clone(request).(*pb.DeleteEdgesRequest), newToken),
+		); err == nil || !dropTransport.dropped.Load() {
+			t.Fatalf("committed response loss = %v, dropped=%t", err, dropTransport.dropped.Load())
+		}
+
+		replay, err := wire.raw.DeleteEdges(
+			context.Background(),
+			receiptRequestWithToken(proto.Clone(request).(*pb.DeleteEdgesRequest), oldToken),
+		)
+		if err != nil || replay.Msg.GetDeleted() != 1 ||
+			!reflect.DeepEqual(replay.Msg.GetExisted(), []bool{true, false}) {
+			t.Fatalf("same-endpoint replay = %+v, %v", replay, err)
+		}
+		again, err := wire.raw.DeleteEdges(
+			context.Background(),
+			receiptRequestWithToken(proto.Clone(request).(*pb.DeleteEdgesRequest), newToken),
+		)
+		if err != nil || !proto.Equal(replay.Msg, again.Msg) {
+			t.Fatalf("exact duplicate response = %+v, %v, want %+v", again, err, replay)
+		}
+
+		statuses, err := wire.raw.GetReceiptStatuses(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptStatusesRequest{
+				OperationIds: receiptContext.GetOperationIds(),
+			}, newToken),
+		)
+		if err != nil || len(statuses.Msg.GetStatuses()) != 2 ||
+			!statuses.Msg.GetStatuses()[0].GetReceipt().GetOriginalResult().GetDeleteEdgeExisted() ||
+			statuses.Msg.GetStatuses()[1].GetReceipt().GetOriginalResult().GetDeleteEdgeExisted() {
+			t.Fatalf("confirmed mixed statuses = %+v, %v", statuses, err)
+		}
+
+		mismatch := proto.Clone(request).(*pb.DeleteEdgesRequest)
+		mismatch.Edges[1] = protected
+		if _, err := wire.raw.DeleteEdges(
+			context.Background(),
+			receiptRequestWithToken(mismatch, newToken),
+		); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("semantic-intent mismatch = %v, want InvalidArgument", err)
+		}
+		requireReceiptWireEdge(t, wire.raw, newToken, protected)
+
+		malformed := &pb.DeleteEdgesRequest{
+			Edges: []*pb.EdgeKey{
+				protected,
+				{Tail: "malformed", Head: "edge"},
+			},
+			ReceiptContext: publicReceiptWireContext(t, newCapability, 0x63, 1, issued),
+		}
+		if _, err := wire.raw.DeleteEdges(
+			context.Background(),
+			receiptRequestWithToken(malformed, newToken),
+		); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("misaligned receipt context = %v, want InvalidArgument", err)
+		}
+		requireReceiptWireEdge(t, wire.raw, newToken, protected)
+
+		mixed := proto.Clone(request).(*pb.DeleteEdgesRequest)
+		mixed.Edges[1] = protected
+		mixed.ReceiptContext.OperationIds[1] = publicReceiptWireContext(
+			t,
+			newCapability,
+			0x64,
+			1,
+			issued,
+		).GetOperationIds()[0]
+		if _, err := wire.raw.DeleteEdges(
+			context.Background(),
+			receiptRequestWithToken(mixed, newToken),
+		); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("mixed retained/fresh receipt context = %v, want InvalidArgument", err)
+		}
+		requireReceiptWireEdge(t, wire.raw, newToken, protected)
+
+		expired := publicReceiptWireContext(
+			t,
+			newCapability,
+			0x62,
+			1,
+			issued.Add(-2*time.Hour),
+		)
+		expiredStatus, err := wire.raw.GetReceiptStatus(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptStatusRequest{
+				OperationId: expired.GetOperationIds()[0],
+			}, newToken),
+		)
+		if err != nil ||
+			expiredStatus.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE ||
+			expiredStatus.Msg.GetStatus().GetReceipt() != nil {
+			t.Fatalf("expired status = %+v, %v", expiredStatus, err)
+		}
+	})
+
+	t.Run("capacity rejects before graph mutation", func(t *testing.T) {
+		wire := newPublicReceiptWireServer(t, hlc.NodeID{0x32}, 1, newToken)
+		capability := publicReceiptCapability(t, wire, newToken)
+		first := &pb.EdgeKey{Tail: "capacity-first", Head: "edge"}
+		second := &pb.EdgeKey{Tail: "capacity-second", Head: "edge"}
+		putReceiptWireEdges(t, wire.raw, newToken, first, second)
+		issued := time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)
+		if _, err := wire.raw.DeleteEdge(
+			context.Background(),
+			receiptRequestWithToken(&pb.DeleteEdgeRequest{
+				Tail: first.GetTail(), Head: first.GetHead(),
+				ReceiptContext: publicReceiptWireContext(t, capability, 0x71, 1, issued),
+			}, newToken),
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := wire.raw.DeleteEdge(
+			context.Background(),
+			receiptRequestWithToken(&pb.DeleteEdgeRequest{
+				Tail: second.GetTail(), Head: second.GetHead(),
+				ReceiptContext: publicReceiptWireContext(t, capability, 0x72, 1, issued),
+			}, newToken),
+		); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Fatalf("capacity rejection = %v, want ResourceExhausted", err)
+		}
+		requireReceiptWireEdge(t, wire.raw, newToken, second)
+	})
+
+	t.Run("unconverged endpoint observes without execution", func(t *testing.T) {
+		origin := newPublicReceiptWireServer(t, hlc.NodeID{0x41}, 8, newToken)
+		other := newPublicReceiptWireServer(t, hlc.NodeID{0x42}, 8, newToken)
+		originCapability := publicReceiptCapability(t, origin, newToken)
+		operation := publicReceiptWireContext(
+			t,
+			originCapability,
+			0x81,
+			1,
+			time.UnixMilli(int64(originCapability.GetServerNowUnixMs())).Add(-time.Second),
+		)
+		protected := &pb.EdgeKey{Tail: "other-protected", Head: "edge"}
+		putReceiptWireEdges(t, other.raw, newToken, protected)
+		status, err := other.raw.GetReceiptStatus(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptStatusRequest{
+				OperationId: operation.GetOperationIds()[0],
+			}, newToken),
+		)
+		if err != nil ||
+			status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED ||
+			status.Msg.GetStatus().GetReceipt() != nil {
+			t.Fatalf("unconverged status = %+v, %v", status, err)
+		}
+		if _, err := other.raw.DeleteEdge(
+			context.Background(),
+			receiptRequestWithToken(&pb.DeleteEdgeRequest{
+				Tail: protected.GetTail(), Head: protected.GetHead(), ReceiptContext: operation,
+			}, newToken),
+		); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("cross-endpoint execution = %v, want FailedPrecondition", err)
+		}
+		requireReceiptWireEdge(t, other.raw, newToken, protected)
+	})
+
+	t.Run("auth-disabled and closed runtime fail closed", func(t *testing.T) {
+		disabled := newPublicReceiptWireServer(t, hlc.NodeID{0x51}, 8)
+		capability, err := disabled.raw.GetReceiptCapability(
+			context.Background(),
+			connect.NewRequest(&pb.GetReceiptCapabilityRequest{}),
+		)
+		if err != nil || capability.Msg.GetEnabled() || capability.Msg.GetPolicy() != nil ||
+			capability.Msg.GetEndpoint() != nil {
+			t.Fatalf("auth-disabled capability = %+v, %v", capability, err)
+		}
+		id, err := mutationreceipt.NewID(
+			disabled.config.Receipt.Epoch,
+			time.Now().Add(-time.Second),
+			[24]byte{0x91},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := disabled.raw.GetReceiptStatus(
+			context.Background(),
+			connect.NewRequest(&pb.GetReceiptStatusRequest{OperationId: id.Bytes()}),
+		); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("auth-disabled status = %v, want FailedPrecondition", err)
+		}
+
+		closed := newPublicReceiptWireServer(t, hlc.NodeID{0x52}, 8, newToken)
+		closedCapability := publicReceiptCapability(t, closed, newToken)
+		protected := &pb.EdgeKey{Tail: "closed-protected", Head: "edge"}
+		putReceiptWireEdges(t, closed.raw, newToken, protected)
+		closedContext := publicReceiptWireContext(
+			t,
+			closedCapability,
+			0x92,
+			1,
+			time.UnixMilli(int64(closedCapability.GetServerNowUnixMs())).Add(-time.Second),
+		)
+		if err := closed.runtime.Close(); err != nil {
+			t.Fatal(err)
+		}
+		capability, err = closed.raw.GetReceiptCapability(
+			context.Background(),
+			receiptRequestWithToken(&pb.GetReceiptCapabilityRequest{}, newToken),
+		)
+		if err != nil || capability.Msg.GetEnabled() || capability.Msg.GetPolicy() != nil ||
+			capability.Msg.GetEndpoint() != nil {
+			t.Fatalf("closed capability = %+v, %v", capability, err)
+		}
+		if _, err := closed.raw.DeleteEdge(
+			context.Background(),
+			receiptRequestWithToken(&pb.DeleteEdgeRequest{
+				Tail: protected.GetTail(), Head: protected.GetHead(), ReceiptContext: closedContext,
+			}, newToken),
+		); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("closed receipt mutation = %v, want FailedPrecondition", err)
+		}
+		requireReceiptWireEdge(t, closed.raw, newToken, protected)
+	})
+}
+
+func durableFollowerReceiptMutation(
+	t *testing.T,
+	config mutationreceipt.Config,
+	origin hlc.NodeID,
+	seq uint64,
+	tail, head string,
+) (*pb.Mutation, []byte) {
+	t.Helper()
+	return durableFollowerReceiptMutationAt(t, config, origin, seq, tail, head, time.Now())
+}
+
+func durableFollowerReceiptMutationAt(
+	t *testing.T,
+	config mutationreceipt.Config,
+	origin hlc.NodeID,
+	seq uint64,
+	tail, head string,
+	acceptedAt time.Time,
+) (*pb.Mutation, []byte) {
+	t.Helper()
+	store, err := mutationreceipt.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := acceptedAt.Add(-time.Second)
+	id, err := mutationreceipt.NewID(config.Epoch, issued, [24]byte{0x39, byte(seq)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := mutationreceipt.GroupID{0x4a, byte(seq)}
+	canonical := []byte{byte(mutationreceipt.DeleteEdge)}
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(tail)))
+	canonical = append(canonical, length[:]...)
+	canonical = append(canonical, tail...)
+	binary.BigEndian.PutUint64(length[:], uint64(len(head)))
+	canonical = append(canonical, length[:]...)
+	canonical = append(canonical, head...)
+	digest := mutationreceipt.IntentDigest(canonical)
+	policy := store.PolicyFingerprint()
+	stamp := hlc.Timestamp{
+		WallNs: acceptedAt.UnixNano(),
+		NodeID: origin,
+	}
+	return &pb.Mutation{
+		Seq: seq, Origin: origin[:],
+		Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, NodeId: origin[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeDelete{
+			ReplicatedReceiptEdgeDelete: &pb.ReplicatedReceiptEdgeDelete{
+				DeploymentEpoch:     config.Epoch[:],
+				PolicyFingerprint:   policy[:],
+				TombstoneExpiration: timestamppb.New(acceptedAt.Add(time.Hour)),
+				Items: []*pb.ReplicatedReceiptEdgeDeleteItem{{
+					Key: &pb.EdgeKey{Tail: tail, Head: head},
+					Receipt: &pb.MutationReceipt{
+						OperationId: id.Bytes(), LogicalCallId: group[:],
+						ItemIndex: 0, ItemCount: 1, IntentSha256: digest[:],
+						DeadlineUnixMs: uint64(issued.Add(config.Retention).UnixMilli()),
+						OriginalResult: &pb.ReceiptResult{Result: &pb.ReceiptResult_DeleteEdgeExisted{
+							DeleteEdgeExisted: false,
+						}},
+					},
+					CausallyAccepted: false,
+				}},
+			},
+		}},
+	}, id.Bytes()
+}
+
+func mountDurableReceiptWireRuntime(
+	t *testing.T,
+	runtime *service.ServingRuntime,
+) (*connectTestServer, *client.Lantern) {
+	t.Helper()
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallation(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	server := newConnectTestServer(t, primary, replication)
+	sdk, err := client.NewLantern(server.url, client.WithHTTPClient(h2cClient()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server, sdk
+}

@@ -13,6 +13,19 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+func validReceiptOperationIDForTest(t *testing.T, seed byte) []byte {
+	t.Helper()
+	id, err := mutationreceipt.NewID(
+		mutationreceipt.Epoch{0x71},
+		time.Unix(1_700_000_000, 0),
+		[24]byte{seed},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Bytes()
+}
+
 func mustMutationLogEntry(t *testing.T, log *mutationlog.Log, seq uint64) mutationlog.Entry {
 	t.Helper()
 	entries, cancel, err := log.Subscribe(seq)

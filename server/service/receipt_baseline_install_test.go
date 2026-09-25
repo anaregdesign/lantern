@@ -292,7 +292,9 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	if err != nil || capability.GetEnabled() {
 		t.Fatalf("baseline install exposed receipt capability: %+v, %v", capability, err)
 	}
-	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: image.id.Bytes(),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("baseline install exposed receipt status: %v", err)
 	}
 

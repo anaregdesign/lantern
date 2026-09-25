@@ -1,6 +1,7 @@
 package mutationreceipt
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -178,6 +179,52 @@ func TestStoreRetainsOriginalBatchResultsAndRejectsChangedIntent(t *testing.T) {
 	tx.Abort()
 	if !errors.Is(err, ErrIntentConflict) {
 		t.Fatalf("same IDs reused in another valid group = %v", err)
+	}
+}
+
+func TestStoreObserveManyIsAlignedAndAllOrNothing(t *testing.T) {
+	s := testStore(t, 2, 1000)
+	group := GroupID{8}
+	intents := []Intent{
+		testIntent(t, 1, testStart, group, 0, 2),
+		testIntent(t, 2, testStart, group, 1, 2),
+	}
+	commitTestBatch(t, s, testStart, intents, [][]byte{{1}, {0}})
+
+	effective, observations, err := s.ObserveMany(
+		[]ID{intents[1].ID, intents[0].ID, intents[1].ID},
+		testStart.Add(time.Minute),
+	)
+	if err != nil || !effective.Equal(testStart.Add(time.Minute)) || len(observations) != 3 {
+		t.Fatalf("ObserveMany = %v, %+v, %v", effective, observations, err)
+	}
+	if observations[0].Status != Confirmed || observations[0].Receipt.ID != intents[1].ID ||
+		observations[1].Status != Confirmed || observations[1].Receipt.ID != intents[0].ID ||
+		observations[2].Status != Confirmed || observations[2].Receipt.ID != intents[1].ID {
+		t.Fatalf("aligned observations = %+v", observations)
+	}
+	observations[0].Receipt.Result[0] = 9
+	if status, receipt, err := s.Lookup(intents[1].ID, effective); err != nil ||
+		status != Confirmed || !bytes.Equal(receipt.Result, []byte{0}) {
+		t.Fatalf("caller-mutated observation changed Store = %v, %+v, %v", status, receipt, err)
+	}
+
+	before := s.Stats().HighWaterMillis
+	invalid := intents[0].ID
+	invalid[0] = 0xff
+	if _, _, err := s.ObserveMany(
+		[]ID{intents[0].ID, invalid},
+		testStart.Add(10*time.Minute),
+	); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("invalid plural observation error = %v", err)
+	}
+	if after := s.Stats().HighWaterMillis; after != before {
+		t.Fatalf("invalid plural observation advanced clock: %d -> %d", before, after)
+	}
+
+	effective, observations, err = s.ObserveMany(nil, testStart.Add(2*time.Minute))
+	if err != nil || len(observations) != 0 || !effective.Equal(testStart.Add(2*time.Minute)) {
+		t.Fatalf("empty observation preflight = %v, %+v, %v", effective, observations, err)
 	}
 }
 

@@ -60,7 +60,7 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
 
-	primary := runtime.NewLanternService(nil)
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
 	if replication, err := runtime.NewLanternReplicationService(nil); replication != nil || err == nil {
 		t.Fatalf("nil primary service produced replication service %p, %v", replication, err)
 	}
@@ -119,6 +119,87 @@ func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	}
 	if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); !errors.Is(err, mutationlog.ErrClosed) {
 		t.Fatalf("append after Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestServingRuntimePublicReceiptActivationProofs(t *testing.T) {
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "receipts.wal"))
+	install := func(t *testing.T, runtime *ServingRuntime) (*LanternService, *LanternReplicationService) {
+		t.Helper()
+		primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+		replication, err := runtime.NewLanternReplicationService(primary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.CertifyInstallation(primary, replication); err != nil {
+			t.Fatal(err)
+		}
+		return primary, replication
+	}
+
+	fresh, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, replication := install(t, fresh)
+	if err := fresh.ActivatePublicReceipts(primary, replication); err == nil {
+		t.Fatal("public receipts activated before backup certification")
+	}
+	if err := fresh.CertifyReceiptBackup(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.ActivatePublicReceipts(primary, replication); err != nil {
+		t.Fatal(err)
+	}
+	capability, err := primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || !capability.GetEnabled() ||
+		!bytes.Equal(capability.GetPolicy().GetDeploymentEpoch(), config.Receipt.Epoch[:]) ||
+		!bytes.Equal(capability.GetEndpoint().GetNodeId(), config.NodeID[:]) ||
+		len(capability.GetEndpoint().GetGeneration()) != 16 {
+		t.Fatalf("activated capability = %+v, %v", capability, err)
+	}
+	retired, err := fresh.receipt.retired.Snapshot(
+		time.UnixMilli(fresh.receipt.store.Stats().HighWaterMillis),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	capability, err = primary.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
+	if err != nil || capability.GetEnabled() || capability.GetPolicy() != nil ||
+		capability.GetEndpoint() != nil {
+		t.Fatalf("closed capability = %+v, %v", capability, err)
+	}
+
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedPrimary, restartedReplication := install(t, restarted)
+	if err := restarted.CertifyReceiptBackup(restartedPrimary, restartedReplication); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ActivatePublicReceipts(restartedPrimary, restartedReplication); err == nil {
+		t.Fatal("restart activated without a recovered retired-catalog proof")
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	config.RetiredReceipts = &retired
+	certifiedRestart, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = certifiedRestart.Close() })
+	certifiedPrimary, certifiedReplication := install(t, certifiedRestart)
+	if err := certifiedRestart.CertifyReceiptBackup(certifiedPrimary, certifiedReplication); err != nil {
+		t.Fatal(err)
+	}
+	if err := certifiedRestart.ActivatePublicReceipts(certifiedPrimary, certifiedReplication); err != nil {
+		t.Fatalf("restart with complete retired-catalog proof: %v", err)
 	}
 }
 
@@ -227,7 +308,9 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 	if capability.GetEnabled() {
 		t.Fatal("durable runtime enabled public receipt capability")
 	}
-	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+	if _, err := primary.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: validReceiptOperationIDForTest(t, 0x02),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("durable runtime receipt status error = %v, want failed precondition", err)
 	}
 	wantClockFloor := config.Receipt.ClockHighWater.UnixMilli() * int64(time.Millisecond)

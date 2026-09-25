@@ -100,6 +100,57 @@ func TestDomainMetrics_CausalMetadataBudget(t *testing.T) {
 	}
 }
 
+func TestDomainMetrics_ReceiptStore(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{SampleInterval: time.Hour})
+	sample := ReceiptSample{
+		Entries: 7, Bytes: 4096, OldestDeadlineMillis: 1_800_000_000_250,
+		LocalAdmissionRejects: 3, ReplicationCapacityStalls: 4,
+		NoLongerProvableLookups: 5,
+	}
+	m.BindReceiptSampler(func() ReceiptSample { return sample })
+	m.tick()
+
+	for _, check := range []struct {
+		collector prometheus.Collector
+		want      float64
+		name      string
+	}{
+		{m.receiptEntries, 7, "entries"},
+		{m.receiptBytes, 4096, "bytes"},
+		{m.receiptOldestDeadline, 1_800_000_000.25, "oldest deadline"},
+		{m.receiptLocalAdmissionRejects, 3, "local admission rejects"},
+		{m.receiptReplicationCapacityStalls, 4, "replication capacity stalls"},
+		{m.receiptNoLongerProvable, 5, "no longer provable"},
+	} {
+		if got := testutil.ToFloat64(check.collector); got != check.want {
+			t.Errorf("%s = %v, want %v", check.name, got, check.want)
+		}
+	}
+
+	sample.LocalAdmissionRejects = 8
+	sample.ReplicationCapacityStalls = 9
+	sample.NoLongerProvableLookups = 10
+	m.tick()
+	sample.LocalAdmissionRejects = 1
+	sample.ReplicationCapacityStalls = 2
+	sample.NoLongerProvableLookups = 3
+	sample.OldestDeadlineMillis = 0
+	m.tick()
+	if got := testutil.ToFloat64(m.receiptLocalAdmissionRejects); got != 9 {
+		t.Errorf("local admission rejects after reset = %v, want 9", got)
+	}
+	if got := testutil.ToFloat64(m.receiptReplicationCapacityStalls); got != 11 {
+		t.Errorf("replication stalls after reset = %v, want 11", got)
+	}
+	if got := testutil.ToFloat64(m.receiptNoLongerProvable); got != 13 {
+		t.Errorf("no longer provable after reset = %v, want 13", got)
+	}
+	if got := testutil.ToFloat64(m.receiptOldestDeadline); got != 0 {
+		t.Errorf("empty oldest deadline = %v, want 0", got)
+	}
+}
+
 func TestDomainMetrics_ExposesLanternFamilies(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg, Options{Version: "v0.7.0", Commit: "deadbeef", SampleInterval: time.Hour})

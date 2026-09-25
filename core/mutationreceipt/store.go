@@ -128,6 +128,13 @@ type Stats struct {
 	NoLongerProvableLookups   uint64
 }
 
+// Observation is one read-only, request-index-aligned receipt lookup result.
+// Receipt is populated exactly when Status is Confirmed.
+type Observation struct {
+	Status  Status
+	Receipt Receipt
+}
+
 // Store holds only receipt bookkeeping. It does not make graph mutations,
 // log entries, or Snapshot cuts atomic. Stage may allocate before WAL while
 // its writes are hidden by the lock; Abort reverses those writes, and Commit
@@ -261,36 +268,68 @@ func (tx *Tx) ClockHighWaterMillis() (int64, error) {
 // retained exact old-epoch receipt may answer Confirmed, but an absent
 // old-epoch ID is never executable or reported NotYetObserved.
 func (s *Store) Lookup(id ID, now time.Time) (Status, Receipt, error) {
+	_, observations, err := s.ObserveMany([]ID{id}, now)
+	if err != nil {
+		return 0, Receipt{}, err
+	}
+	return observations[0].Status, observations[0].Receipt, nil
+}
+
+// ObserveMany advances and persists the Store clock once, expires rows once,
+// and returns request-index-aligned observations. An empty ID list is valid
+// and is used by capability preflight to sample the authoritative clock.
+func (s *Store) ObserveMany(ids []ID, now time.Time) (time.Time, []Observation, error) {
+	type identity struct {
+		epoch  Epoch
+		issued int64
+	}
+	identities := make([]identity, len(ids))
+	for i, id := range ids {
+		epoch, issued, err := id.parts()
+		if err != nil {
+			return time.Time{}, nil, err
+		}
+		identities[i] = identity{epoch: epoch, issued: issued}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	effective, err := s.advanceLocked(now)
 	if err != nil {
-		return 0, Receipt{}, err
+		return time.Time{}, nil, err
 	}
 	s.expireLocked(effective)
-	epoch, issued, err := id.parts()
-	if err != nil {
-		return 0, Receipt{}, err
-	}
-	// An exact retained receipt remains authoritative even after an epoch
-	// rollover. It carries its own original deadline; the new active epoch
-	// may have a different retention policy. Absence in a retired epoch must
-	// still never authorize execution of that ID.
-	if r, ok := s.receipts[id]; ok {
-		if r.DeadlineMillis > effective {
-			return Confirmed, cloneReceipt(r), nil
+
+	observations := make([]Observation, len(ids))
+	for i, id := range ids {
+		// An exact retained receipt remains authoritative even after an epoch
+		// rollover. It carries its own original deadline; the new active epoch
+		// may have a different retention policy. Absence in a retired epoch
+		// must still never authorize execution of that ID.
+		if receipt, ok := s.receipts[id]; ok {
+			if receipt.DeadlineMillis > effective {
+				observations[i] = Observation{
+					Status: Confirmed, Receipt: cloneReceipt(receipt),
+				}
+				continue
+			}
+			s.unknownLookups++
+			observations[i].Status = NoLongerProvable
+			continue
 		}
-		s.unknownLookups++
-		return NoLongerProvable, Receipt{}, nil
+		identity := identities[i]
+		if identity.issued > math.MaxInt64-s.retentionMS ||
+			tooFarFuture(identity.issued, effective) {
+			return time.Time{}, nil, ErrInvalidID
+		}
+		if identity.issued+s.retentionMS <= effective || identity.epoch != s.epoch {
+			s.unknownLookups++
+			observations[i].Status = NoLongerProvable
+			continue
+		}
+		observations[i].Status = NotYetObserved
 	}
-	if issued > math.MaxInt64-s.retentionMS || tooFarFuture(issued, effective) {
-		return 0, Receipt{}, ErrInvalidID
-	}
-	if issued+s.retentionMS <= effective || epoch != s.epoch {
-		s.unknownLookups++
-		return NoLongerProvable, Receipt{}, nil
-	}
-	return NotYetObserved, Receipt{}, nil
+	return time.UnixMilli(effective), observations, nil
 }
 
 func (s *Store) Stats() Stats {

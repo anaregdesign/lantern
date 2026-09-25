@@ -175,6 +175,128 @@ func waitReceiptTest[T any](t *testing.T, label string, ch <-chan T) T {
 	}
 }
 
+func publicReceiptContext(
+	t *testing.T,
+	runtime *ServingRuntime,
+	seed byte,
+	count int,
+) *pb.MutationReceiptContext {
+	t.Helper()
+	ids := make([][]byte, count)
+	issued := time.Now().Add(-time.Second)
+	for i := range ids {
+		id := receiptOperationID(t, runtime.receipt.epoch, issued, seed+byte(i))
+		ids[i] = id.Bytes()
+	}
+	nodeID := runtime.clock.NodeID()
+	return &pb.MutationReceiptContext{
+		OperationIds:  ids,
+		LogicalCallId: append([]byte(nil), seed, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+		Endpoint: &pb.ReceiptEndpoint{
+			NodeId:     append([]byte(nil), nodeID[:]...),
+			Generation: append([]byte(nil), runtime.receipt.generation[:]...),
+		},
+	}
+}
+
+func TestPublicReceiptDeleteEdgesReplaysAlignedOriginalResults(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	ctx := context.Background()
+	if _, err := svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "present", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		{Tail: "protected", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	request := &pb.DeleteEdgesRequest{
+		Edges: []*pb.EdgeKey{
+			{Tail: "present", Head: "edge"},
+			{Tail: "absent", Head: "edge"},
+		},
+		ReceiptContext: publicReceiptContext(t, runtime, 0x61, 2),
+	}
+	first, err := svc.DeleteEdges(ctx, proto.Clone(request).(*pb.DeleteEdgesRequest))
+	if err != nil || first.GetDeleted() != 1 ||
+		!reflect.DeepEqual(first.GetExisted(), []bool{true, false}) {
+		t.Fatalf("first public receipt delete = %+v, %v", first, err)
+	}
+	replay, err := svc.DeleteEdges(ctx, proto.Clone(request).(*pb.DeleteEdgesRequest))
+	if err != nil || !proto.Equal(first, replay) {
+		t.Fatalf("duplicate public receipt delete = %+v, %v, want %+v", replay, err, first)
+	}
+
+	statuses, err := svc.GetReceiptStatuses(ctx, &pb.GetReceiptStatusesRequest{
+		OperationIds: request.GetReceiptContext().GetOperationIds(),
+	})
+	if err != nil || len(statuses.GetStatuses()) != 2 ||
+		!statuses.GetStatuses()[0].GetReceipt().GetOriginalResult().GetDeleteEdgeExisted() ||
+		statuses.GetStatuses()[1].GetReceipt().GetOriginalResult().GetDeleteEdgeExisted() {
+		t.Fatalf("committed receipt statuses = %+v, %v", statuses, err)
+	}
+
+	mismatch := proto.Clone(request).(*pb.DeleteEdgesRequest)
+	mismatch.Edges[1] = &pb.EdgeKey{Tail: "protected", Head: "edge"}
+	if _, err := svc.DeleteEdges(ctx, mismatch); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("semantic mismatch = %v, want InvalidArgument", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("protected", "edge"); !ok {
+		t.Fatal("semantic mismatch mutated a protected edge")
+	}
+}
+
+func TestPublicReceiptDeleteEdgesValidatesBeforeMutationAndCapacity(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 1)
+	ctx := context.Background()
+	if _, err := svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
+		{Tail: "first", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		{Tail: "second", Head: "edge", Weight: 1, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	duplicate := publicReceiptContext(t, runtime, 0x71, 2)
+	duplicate.OperationIds[1] = append([]byte(nil), duplicate.OperationIds[0]...)
+	if _, err := svc.DeleteEdges(ctx, &pb.DeleteEdgesRequest{
+		Edges: []*pb.EdgeKey{
+			{Tail: "first", Head: "edge"},
+			{Tail: "second", Head: "edge"},
+		},
+		ReceiptContext: duplicate,
+	}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("duplicate operation IDs = %v, want InvalidArgument", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("first", "edge"); !ok {
+		t.Fatal("invalid receipt context mutated first edge")
+	}
+
+	firstContext := publicReceiptContext(t, runtime, 0x72, 1)
+	if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{
+		Tail: "first", Head: "edge", ReceiptContext: firstContext,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondContext := publicReceiptContext(t, runtime, 0x73, 1)
+	if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{
+		Tail: "second", Head: "edge", ReceiptContext: secondContext,
+	}); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("capacity rejection = %v, want ResourceExhausted", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("second", "edge"); !ok {
+		t.Fatal("capacity rejection happened after graph mutation")
+	}
+
+	stale := proto.Clone(secondContext).(*pb.MutationReceiptContext)
+	stale.Endpoint.Generation[0] ^= 0xff
+	if _, err := svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{
+		Tail: "second", Head: "edge", ReceiptContext: stale,
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("stale endpoint = %v, want FailedPrecondition", err)
+	}
+	if _, _, ok := runtime.graph.GetEdgeDetail("second", "edge"); !ok {
+		t.Fatal("stale endpoint mutated the edge")
+	}
+}
+
 func TestEdgeDeleteReceiptCoordinatorBindsOneStore(t *testing.T) {
 	f := newReceiptEdgeDeleteFixture(t, nil)
 	if _, err := newEdgeDeleteReceiptCoordinator(f.service, f.coordinator.store); err != nil {
