@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -52,48 +51,19 @@ func (s *LanternService) commitPublicReceiptEdgeDelete(
 	}
 	defer release()
 
-	context := request.GetReceiptContext()
-	if context == nil || context.GetEndpoint() == nil {
-		return nil, invalidReceiptRequest(errors.New("receipt context and endpoint are required"))
-	}
 	edges := request.GetEdges()
-	rawIDs := context.GetOperationIds()
-	if len(rawIDs) != len(edges) || len(rawIDs) == 0 {
-		return nil, invalidReceiptRequest(errors.New("receipt operation IDs must be nonempty and index-aligned with edges"))
-	}
-	group, err := mutationreceipt.DecodeGroupID(context.GetLogicalCallId())
+	group, ids, err := s.validatePublicReceiptContext(
+		runtime,
+		request.GetReceiptContext(),
+		len(edges),
+		"edges",
+	)
 	if err != nil {
-		return nil, invalidReceiptRequest(err)
-	}
-	endpoint := context.GetEndpoint()
-	nodeID := s.clock.NodeID()
-	if len(endpoint.GetNodeId()) != len(nodeID) ||
-		len(endpoint.GetGeneration()) != len(runtime.generation) ||
-		!bytes.Equal(endpoint.GetNodeId(), nodeID[:]) ||
-		!bytes.Equal(endpoint.GetGeneration(), runtime.generation[:]) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("receipt endpoint does not match the active certified generation"))
+		return nil, err
 	}
 
 	items := make([]receiptEdgeDeleteItem, len(edges))
-	seen := make(map[mutationreceipt.ID]struct{}, len(edges))
-	for i, rawID := range rawIDs {
-		id, err := mutationreceipt.DecodeID(rawID)
-		if err != nil {
-			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
-		}
-		epoch, err := id.Epoch()
-		if err != nil {
-			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
-		}
-		if epoch != runtime.epoch {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("operation_ids[%d] is outside the active receipt epoch", i))
-		}
-		if _, duplicate := seen[id]; duplicate {
-			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d] duplicates an earlier item", i))
-		}
-		seen[id] = struct{}{}
+	for i, id := range ids {
 		edge := edges[i]
 		if edge == nil {
 			return nil, invalidReceiptRequest(fmt.Errorf("edges[%d] is nil", i))

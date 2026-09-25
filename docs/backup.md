@@ -205,10 +205,11 @@ restore barrier commits any pending baseline before `NewRuntimeCertified`;
 Snapshot installer, Pump, anti-entropy, and backup construction all depend on
 that certification. After the exact production backup source is certified, a
 final barrier enables receipt capability, three-state status, and the optional
-Edge Delete receipt context only when bearer authentication is configured.
-Graph-only, auth-disabled, recovering, faulted, or uncertified deployments
-remain fail-closed. Rotating configured bearer tokens does not change receipt
-epoch, policy, endpoint generation, or namespace.
+Vertex Put, exact Vertex Delete, and exact Edge Delete receipt contexts only
+when bearer authentication is configured. Graph-only, auth-disabled,
+recovering, faulted, or uncertified deployments remain fail-closed. Rotating
+configured bearer tokens does not change receipt epoch, policy, endpoint
+generation, or namespace.
 
 ### Why per-instance files (the shared-storage decision)
 

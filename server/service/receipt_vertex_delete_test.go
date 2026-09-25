@@ -88,6 +88,43 @@ func receiptVertexDeleteTestCall(
 	return call
 }
 
+func TestPublicVertexDeleteReceiptsPreserveExactAbsentResult(t *testing.T) {
+	runtime, service, _ := newActivatedReceiptService(t, 8)
+	receiptContext := publicReceiptContext(
+		t,
+		runtime,
+		0x41,
+		1,
+	)
+	beforeLog := runtime.log.Len()
+	beforeSeq := service.LocalSeq(service.clock.NodeID())
+	response, err := service.DeleteVertex(context.Background(), &pb.DeleteVertexRequest{
+		Key: "absent", ReceiptContext: receiptContext,
+	})
+	if err != nil || response.GetExisted() ||
+		runtime.log.Len() != beforeLog+1 ||
+		service.LocalSeq(service.clock.NodeID()) != beforeSeq+1 {
+		t.Fatalf("public absent Delete = (%+v, %v), log=%d seq=%d",
+			response, err, runtime.log.Len(), service.LocalSeq(service.clock.NodeID()))
+	}
+	replay, err := service.DeleteVertex(context.Background(), &pb.DeleteVertexRequest{
+		Key: "absent", ReceiptContext: receiptContext,
+	})
+	if err != nil || replay.GetExisted() || runtime.log.Len() != beforeLog+1 {
+		t.Fatalf("public absent Delete replay = (%+v, %v), log=%d", replay, err, runtime.log.Len())
+	}
+	status, err := service.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
+		OperationId: receiptContext.GetOperationIds()[0],
+	})
+	result := status.GetStatus().GetReceipt().GetOriginalResult()
+	_, hasDeleteResult := result.GetResult().(*pb.ReceiptResult_DeleteVertexExisted)
+	if err != nil ||
+		status.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+		!hasDeleteResult || result.GetDeleteVertexExisted() {
+		t.Fatalf("public absent Delete status = (%+v, %v)", status, err)
+	}
+}
+
 func TestVertexDeleteReceiptCoordinatorPreservesExactResultsAndRetry(t *testing.T) {
 	f := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x81}, 32, nil)
 	expiration := time.Now().Add(time.Hour)
@@ -257,6 +294,40 @@ func TestVertexDeleteReceiptCoordinatorRejectsOversizedReceiverLocalRelay(t *tes
 		rejected.service.LocalSeq(node) != 0 {
 		t.Fatal("rejected Vertex Delete changed Store, log, or origin")
 	}
+
+	sparseWire, err := envelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedRelay := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x84}, 32, nil)
+	rejectedRelay.service.replicationFrameCertified = true
+	rejectedRelay.service.replicationSendMaxBytes = maximalSize - 1
+	if err := rejectedRelay.service.ApplyMutation(context.Background(), sparseWire); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("one-byte-under sparse Vertex Delete relay = %v, want ResourceExhausted", err)
+	}
+	rejectedGraph := rejectedRelay.cache.SnapshotReplication()
+	if len(rejectedGraph.Tombstones.Vertices) != 0 ||
+		len(rejectedGraph.Barriers.Vertices) != 0 ||
+		len(rejectedGraph.Graph.Vertices) != 0 ||
+		rejectedRelay.store.Stats().Entries != 0 || rejectedRelay.log.Len() != 0 ||
+		rejectedRelay.service.LocalSeq(node) != 0 {
+		t.Fatal("rejected sparse Vertex Delete relay changed graph, Store, log, or origin")
+	}
+
+	exactRelay := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x85}, 32, nil)
+	exactRelay.service.replicationFrameCertified = true
+	exactRelay.service.replicationSendMaxBytes = maximalSize
+	if err := exactRelay.service.ApplyMutation(context.Background(), sparseWire); err != nil {
+		t.Fatalf("exact-fit sparse Vertex Delete relay: %v", err)
+	}
+	if tombstones := exactRelay.cache.SnapshotReplication().Tombstones.Vertices; len(tombstones) != itemCount ||
+		exactRelay.store.Stats().Entries != itemCount || exactRelay.log.Len() != 1 ||
+		exactRelay.service.LocalSeq(node) != 1 {
+		t.Fatal("exact-fit Vertex Delete relay lost causal effects, receipts, log, or origin")
+	}
+	if size, err := validateReplicationFrameSize(exactRelay.log.RetainedEntries()[0].Op, 0); err != nil || size != maximalSize {
+		t.Fatalf("exact-fit Vertex Delete relay frame = %d, %v, want %d", size, err, maximalSize)
+	}
 }
 
 func TestVertexDeleteReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
@@ -286,6 +357,28 @@ func TestVertexDeleteReceiptCoordinatorRejectsBeforeGraphOrLog(t *testing.T) {
 		if _, live := f.cache.GetVertex("one"); !live || f.log.Len() != 0 ||
 			f.service.LocalSeq(f.service.clock.NodeID()) != 0 {
 			t.Fatal("capacity rejection changed graph, log, or origin")
+		}
+	})
+
+	t.Run("WAL capacity", func(t *testing.T) {
+		f := newReceiptVertexDeleteFixture(t, nil, hlc.NodeID{0x85}, 8, nil)
+		beforeStore := f.store.Stats()
+		call := receiptVertexDeleteTestCall(
+			t,
+			f.epoch,
+			0x54,
+			strings.Repeat("k", receiptVertexWALMaxBytes),
+		)
+		_, err := f.coordinator.Commit(context.Background(), call)
+		if connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!errors.Is(err, errReceiptVertexWALCapacity) {
+			t.Fatalf("WAL capacity rejection = %v, want ResourceExhausted capacity error", err)
+		}
+		causal := f.cache.CausalMetadataStats()
+		if f.store.Stats() != beforeStore || f.log.Len() != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 ||
+			f.cache.VertexHLCCount() != 0 || causal.VertexEntries != 0 {
+			t.Fatal("WAL capacity rejection changed graph, Store, log, or origin")
 		}
 	})
 

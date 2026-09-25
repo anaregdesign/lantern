@@ -54,6 +54,35 @@ type vertexPutReceiptEnvelope struct {
 
 func (e *vertexPutReceiptEnvelope) GraphMutation() *pb.Mutation { return e.Mutation }
 
+func (s *LanternService) commitPublicReceiptVertexPut(
+	ctx context.Context,
+	request *pb.PutVerticesRequest,
+) (*pb.PutVerticesResponse, error) {
+	runtime, release, err := s.acquirePublicReceiptRuntime()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	vertices := request.GetVertices()
+	group, ids, err := s.validatePublicReceiptContext(
+		runtime,
+		request.GetReceiptContext(),
+		len(vertices),
+		"vertices",
+	)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]receiptVertexPutItem, len(vertices))
+	for i, id := range ids {
+		items[i] = receiptVertexPutItem{ID: id, Vertex: vertices[i]}
+	}
+	return s.receiptVertexPutCoordinator.Commit(ctx, receiptVertexPutCall{
+		Group: group, Items: items, IfAbsent: request.GetIfAbsent(),
+	})
+}
+
 func newVertexPutReceiptCoordinator(
 	s *LanternService,
 	store *mutationreceipt.Store,
@@ -225,15 +254,22 @@ func prepareVertexPutReceiptCall(
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, nil, nil, err
 		}
-		vertex := proto.Clone(item.Vertex).(*pb.Vertex)
-		original[i] = vertex
+		original[i] = item.Vertex
 		items[i] = graphcache.VertexItem[string, *pb.Vertex]{
-			Key: vertex.GetKey(), Value: vertex, Expiration: expiration,
+			Key: item.Vertex.GetKey(), Value: item.Vertex, Expiration: expiration,
 		}
 		intents[i] = mutationreceipt.Intent{
 			ID: item.ID, Group: call.Group, Index: uint32(i), Count: uint32(len(call.Items)),
 			Kind: mutationreceipt.PutVertex, Digest: digest,
 		}
+	}
+	if err := validateReceiptVertexPutWALRequestCapacity(original); err != nil {
+		return nil, nil, nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
+	for i, vertex := range original {
+		cloned := proto.Clone(vertex).(*pb.Vertex)
+		original[i] = cloned
+		items[i].Value = cloned
 	}
 	return original, items, intents, nil
 }

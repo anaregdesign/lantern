@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,11 +33,17 @@ func (s *LanternService) publicReceiptRuntime() *receiptServingRuntime {
 		return nil
 	}
 	runtime := s.runtime.receipt
-	coordinator := s.receiptEdgeDeleteCoordinator
+	edgeDelete := s.receiptEdgeDeleteCoordinator
+	vertexPut := s.receiptVertexPutCoordinator
+	vertexDelete := s.receiptVertexDeleteCoordinator
 	if runtime.store == nil || runtime.retired == nil ||
 		s.receiptStore != runtime.store ||
-		coordinator == nil || coordinator.service != s ||
-		coordinator.cache != s.runtime.graph || coordinator.store != runtime.store {
+		edgeDelete == nil || edgeDelete.service != s ||
+		edgeDelete.cache != s.runtime.graph || edgeDelete.store != runtime.store ||
+		vertexPut == nil || vertexPut.service != s ||
+		vertexPut.cache != s.runtime.graph || vertexPut.store != runtime.store ||
+		vertexDelete == nil || vertexDelete.service != s ||
+		vertexDelete.cache != s.runtime.graph || vertexDelete.store != runtime.store {
 		return nil
 	}
 	return runtime
@@ -52,6 +59,62 @@ func (s *LanternService) acquirePublicReceiptRuntime() (*receiptServingRuntime, 
 		return nil, nil, connect.NewError(connect.CodeFailedPrecondition, errReceiptsRecovering)
 	}
 	return runtime, release, nil
+}
+
+func (s *LanternService) validatePublicReceiptContext(
+	runtime *receiptServingRuntime,
+	receiptContext *pb.MutationReceiptContext,
+	itemCount int,
+	itemName string,
+) (mutationreceipt.GroupID, []mutationreceipt.ID, error) {
+	if receiptContext == nil || receiptContext.GetEndpoint() == nil {
+		return mutationreceipt.GroupID{}, nil,
+			invalidReceiptRequest(errors.New("receipt context and endpoint are required"))
+	}
+	rawIDs := receiptContext.GetOperationIds()
+	if len(rawIDs) != itemCount || len(rawIDs) == 0 {
+		return mutationreceipt.GroupID{}, nil, invalidReceiptRequest(fmt.Errorf(
+			"receipt operation IDs must be nonempty and index-aligned with %s", itemName,
+		))
+	}
+	group, err := mutationreceipt.DecodeGroupID(receiptContext.GetLogicalCallId())
+	if err != nil {
+		return mutationreceipt.GroupID{}, nil, invalidReceiptRequest(err)
+	}
+	endpoint := receiptContext.GetEndpoint()
+	nodeID := s.clock.NodeID()
+	if len(endpoint.GetNodeId()) != len(nodeID) ||
+		len(endpoint.GetGeneration()) != len(runtime.generation) ||
+		!bytes.Equal(endpoint.GetNodeId(), nodeID[:]) ||
+		!bytes.Equal(endpoint.GetGeneration(), runtime.generation[:]) {
+		return mutationreceipt.GroupID{}, nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("receipt endpoint does not match the active certified generation"))
+	}
+	ids := make([]mutationreceipt.ID, len(rawIDs))
+	seen := make(map[mutationreceipt.ID]struct{}, len(rawIDs))
+	for i, rawID := range rawIDs {
+		id, err := mutationreceipt.DecodeID(rawID)
+		if err != nil {
+			return mutationreceipt.GroupID{}, nil,
+				invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
+		}
+		epoch, err := id.Epoch()
+		if err != nil {
+			return mutationreceipt.GroupID{}, nil,
+				invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
+		}
+		if epoch != runtime.epoch {
+			return mutationreceipt.GroupID{}, nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("operation_ids[%d] is outside the active receipt epoch", i))
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return mutationreceipt.GroupID{}, nil,
+				invalidReceiptRequest(fmt.Errorf("operation_ids[%d] duplicates an earlier item", i))
+		}
+		seen[id] = struct{}{}
+		ids[i] = id
+	}
+	return group, ids, nil
 }
 
 // GetReceiptCapability samples the same persisted monotonic clock used for
@@ -101,6 +164,11 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 			Generation: append([]byte(nil), runtime.generation[:]...),
 		},
 		ServerNowUnixMs: uint64(effective.UnixMilli()),
+		SupportedMutations: []pb.ReceiptMutationKind{
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
+		},
 	}, nil
 }
 
@@ -205,7 +273,9 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 	switch observation.Status {
 	case mutationreceipt.Confirmed:
 		receipt := observation.Receipt
-		if receipt.ID != id || receipt.DeadlineMillis < 0 || len(receipt.Result) != 1 {
+		if receipt.ID != id || receipt.Group == (mutationreceipt.GroupID{}) ||
+			receipt.Count == 0 || receipt.Index >= receipt.Count ||
+			receipt.DeadlineMillis < 0 || len(receipt.Result) != 1 {
 			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed mutation receipt is invalid"))
 		}
 		var result *pb.ReceiptResult

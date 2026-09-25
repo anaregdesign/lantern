@@ -1222,10 +1222,12 @@ class PutVertexRequest extends $pb.GeneratedMessage {
   factory PutVertexRequest({
     Vertex? vertex,
     $core.bool? ifAbsent,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (vertex != null) result.vertex = vertex;
     if (ifAbsent != null) result.ifAbsent = ifAbsent;
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -1244,6 +1246,8 @@ class PutVertexRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOM<Vertex>(1, _omitFieldNames ? '' : 'vertex', subBuilder: Vertex.create)
     ..aOB(2, _omitFieldNames ? '' : 'ifAbsent')
+    ..aOM<MutationReceiptContext>(3, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1288,6 +1292,19 @@ class PutVertexRequest extends $pb.GeneratedMessage {
   $core.bool hasIfAbsent() => $_has(1);
   @$pb.TagNumber(2)
   void clearIfAbsent() => $_clearField(2);
+
+  /// Optional receipt context for one durable, status-queryable operation.
+  /// When absent, this is an intentional receipt-less online Put.
+  @$pb.TagNumber(3)
+  MutationReceiptContext get receiptContext => $_getN(2);
+  @$pb.TagNumber(3)
+  set receiptContext(MutationReceiptContext value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceiptContext() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceiptContext() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(2);
 }
 
 class PutVertexResponse extends $pb.GeneratedMessage {
@@ -1357,10 +1374,12 @@ class PutVerticesRequest extends $pb.GeneratedMessage {
   factory PutVerticesRequest({
     $core.Iterable<Vertex>? vertices,
     $core.bool? ifAbsent,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (vertices != null) result.vertices.addAll(vertices);
     if (ifAbsent != null) result.ifAbsent = ifAbsent;
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -1380,6 +1399,8 @@ class PutVerticesRequest extends $pb.GeneratedMessage {
     ..pc<Vertex>(1, _omitFieldNames ? '' : 'vertices', $pb.PbFieldType.PM,
         subBuilder: Vertex.create)
     ..aOB(2, _omitFieldNames ? '' : 'ifAbsent')
+    ..aOM<MutationReceiptContext>(3, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1417,6 +1438,20 @@ class PutVerticesRequest extends $pb.GeneratedMessage {
   $core.bool hasIfAbsent() => $_has(1);
   @$pb.TagNumber(2)
   void clearIfAbsent() => $_clearField(2);
+
+  /// Optional durable receipt context. operation_ids must be index-aligned
+  /// with vertices. When absent, this is an intentional receipt-less online
+  /// Put with no receipt/status guarantee.
+  @$pb.TagNumber(3)
+  MutationReceiptContext get receiptContext => $_getN(2);
+  @$pb.TagNumber(3)
+  set receiptContext(MutationReceiptContext value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceiptContext() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceiptContext() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(2);
 }
 
 class PutVerticesResponse extends $pb.GeneratedMessage {
@@ -1482,9 +1517,11 @@ class PutVerticesResponse extends $pb.GeneratedMessage {
 class DeleteVertexRequest extends $pb.GeneratedMessage {
   factory DeleteVertexRequest({
     $core.String? key,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (key != null) result.key = key;
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -1502,6 +1539,8 @@ class DeleteVertexRequest extends $pb.GeneratedMessage {
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
     ..aOS(1, _omitFieldNames ? '' : 'key')
+    ..aOM<MutationReceiptContext>(2, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1533,6 +1572,19 @@ class DeleteVertexRequest extends $pb.GeneratedMessage {
   $core.bool hasKey() => $_has(0);
   @$pb.TagNumber(1)
   void clearKey() => $_clearField(1);
+
+  /// Optional receipt context for one durable, status-queryable operation.
+  /// When absent, this is an intentional receipt-less online Delete.
+  @$pb.TagNumber(2)
+  MutationReceiptContext get receiptContext => $_getN(1);
+  @$pb.TagNumber(2)
+  set receiptContext(MutationReceiptContext value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceiptContext() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceiptContext() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(1);
 }
 
 class DeleteVertexResponse extends $pb.GeneratedMessage {
@@ -1599,9 +1651,11 @@ class DeleteVertexResponse extends $pb.GeneratedMessage {
 class DeleteVerticesRequest extends $pb.GeneratedMessage {
   factory DeleteVerticesRequest({
     $core.Iterable<$core.String>? keys,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (keys != null) result.keys.addAll(keys);
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -1619,6 +1673,8 @@ class DeleteVerticesRequest extends $pb.GeneratedMessage {
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
     ..pPS(1, _omitFieldNames ? '' : 'keys')
+    ..aOM<MutationReceiptContext>(2, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1646,6 +1702,20 @@ class DeleteVerticesRequest extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(1)
   $pb.PbList<$core.String> get keys => $_getList(0);
+
+  /// Optional durable receipt context. operation_ids must be index-aligned
+  /// with keys. When absent, this is an intentional receipt-less online
+  /// Delete with no receipt/status guarantee.
+  @$pb.TagNumber(2)
+  MutationReceiptContext get receiptContext => $_getN(1);
+  @$pb.TagNumber(2)
+  set receiptContext(MutationReceiptContext value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceiptContext() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceiptContext() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(1);
 }
 
 class DeleteVerticesResponse extends $pb.GeneratedMessage {
@@ -6595,12 +6665,15 @@ class GetReceiptCapabilityResponse extends $pb.GeneratedMessage {
     ReceiptPolicy? policy,
     ReceiptEndpoint? endpoint,
     $fixnum.Int64? serverNowUnixMs,
+    $core.Iterable<ReceiptMutationKind>? supportedMutations,
   }) {
     final result = create();
     if (enabled != null) result.enabled = enabled;
     if (policy != null) result.policy = policy;
     if (endpoint != null) result.endpoint = endpoint;
     if (serverNowUnixMs != null) result.serverNowUnixMs = serverNowUnixMs;
+    if (supportedMutations != null)
+      result.supportedMutations.addAll(supportedMutations);
     return result;
   }
 
@@ -6625,6 +6698,11 @@ class GetReceiptCapabilityResponse extends $pb.GeneratedMessage {
     ..a<$fixnum.Int64>(
         4, _omitFieldNames ? '' : 'serverNowUnixMs', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
+    ..pc<ReceiptMutationKind>(
+        5, _omitFieldNames ? '' : 'supportedMutations', $pb.PbFieldType.KE,
+        valueOf: ReceiptMutationKind.valueOf,
+        enumValues: ReceiptMutationKind.values,
+        defaultEnumValue: ReceiptMutationKind.RECEIPT_MUTATION_KIND_UNSPECIFIED)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -6694,6 +6772,10 @@ class GetReceiptCapabilityResponse extends $pb.GeneratedMessage {
   $core.bool hasServerNowUnixMs() => $_has(3);
   @$pb.TagNumber(4)
   void clearServerNowUnixMs() => $_clearField(4);
+
+  /// Stable ascending list of mutation families enabled at this endpoint.
+  @$pb.TagNumber(5)
+  $pb.PbList<ReceiptMutationKind> get supportedMutations => $_getList(4);
 }
 
 enum ReceiptResult_Result {
@@ -7258,8 +7340,8 @@ class GetReceiptStatusesResponse extends $pb.GeneratedMessage {
   static GetReceiptStatusesResponse? _defaultInstance;
 
   /// Index-aligned with operation_ids, including duplicate IDs. An invalid
-  /// request fails as a whole; a future implementation must not return a
-  /// partial list or silently interpret absence as NO_LONGER_PROVABLE.
+  /// request fails as a whole; the server never returns a partial list or
+  /// silently interprets absence as NO_LONGER_PROVABLE.
   @$pb.TagNumber(1)
   $pb.PbList<ReceiptStatus> get statuses => $_getList(0);
 }

@@ -86,7 +86,8 @@ func TestReceiptReadSurfaceDisabled(t *testing.T) {
 	svc := NewLanternService(nil)
 	id := validReceiptOperationIDForTest(t, 0x01)
 	capability, err := svc.GetReceiptCapability(context.Background(), &pb.GetReceiptCapabilityRequest{})
-	if err != nil || capability.GetEnabled() || capability.GetPolicy() != nil || capability.GetEndpoint() != nil {
+	if err != nil || capability.GetEnabled() || capability.GetPolicy() != nil ||
+		capability.GetEndpoint() != nil || len(capability.GetSupportedMutations()) != 0 {
 		t.Fatalf("disabled capability = (%v, %v)", capability, err)
 	}
 	if _, err := svc.GetReceiptStatus(context.Background(), &pb.GetReceiptStatusRequest{
@@ -176,7 +177,12 @@ func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {
 		!bytes.Equal(capability.GetPolicy().GetDeploymentEpoch(), epoch[:]) ||
 		!bytes.Equal(capability.GetEndpoint().GetNodeId(), nodeID[:]) ||
 		len(capability.GetEndpoint().GetGeneration()) != 16 ||
-		capability.GetServerNowUnixMs() == 0 {
+		capability.GetServerNowUnixMs() == 0 ||
+		!reflect.DeepEqual(capability.GetSupportedMutations(), []pb.ReceiptMutationKind{
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
+		}) {
 		t.Fatalf("capability = %+v, %v", capability, err)
 	}
 

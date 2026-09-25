@@ -189,6 +189,24 @@ final $typed_data.Uint8List searchIndexHealthDescriptor = $convert.base64Decode(
     'ASIAocU0VBUkNIX0lOREVYX0hFQUxUSF9ESVNBQkxFRBABEh8KG1NFQVJDSF9JTkRFWF9IRUFM'
     'VEhfSEVBTFRIWRACEiIKHlNFQVJDSF9JTkRFWF9IRUFMVEhfSU5DT01QTEVURRAD');
 
+@$core.Deprecated('Use receiptMutationKindDescriptor instead')
+const ReceiptMutationKind$json = {
+  '1': 'ReceiptMutationKind',
+  '2': [
+    {'1': 'RECEIPT_MUTATION_KIND_UNSPECIFIED', '2': 0},
+    {'1': 'RECEIPT_MUTATION_KIND_PUT_VERTEX', '2': 1},
+    {'1': 'RECEIPT_MUTATION_KIND_DELETE_VERTEX', '2': 2},
+    {'1': 'RECEIPT_MUTATION_KIND_DELETE_EDGE', '2': 3},
+  ],
+};
+
+/// Descriptor for `ReceiptMutationKind`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List receiptMutationKindDescriptor = $convert.base64Decode(
+    'ChNSZWNlaXB0TXV0YXRpb25LaW5kEiUKIVJFQ0VJUFRfTVVUQVRJT05fS0lORF9VTlNQRUNJRk'
+    'lFRBAAEiQKIFJFQ0VJUFRfTVVUQVRJT05fS0lORF9QVVRfVkVSVEVYEAESJwojUkVDRUlQVF9N'
+    'VVRBVElPTl9LSU5EX0RFTEVURV9WRVJURVgQAhIlCiFSRUNFSVBUX01VVEFUSU9OX0tJTkRfRE'
+    'VMRVRFX0VER0UQAw==');
+
 @$core.Deprecated('Use mutationReceiptStateDescriptor instead')
 const MutationReceiptState$json = {
   '1': 'MutationReceiptState',
@@ -573,13 +591,22 @@ const PutVertexRequest$json = {
       '10': 'vertex'
     },
     {'1': 'if_absent', '3': 2, '4': 1, '5': 8, '10': 'ifAbsent'},
+    {
+      '1': 'receipt_context',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `PutVertexRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putVertexRequestDescriptor = $convert.base64Decode(
     'ChBQdXRWZXJ0ZXhSZXF1ZXN0EigKBnZlcnRleBgBIAEoCzIQLmdyYXBoLnYxLlZlcnRleFIGdm'
-    'VydGV4EhsKCWlmX2Fic2VudBgCIAEoCFIIaWZBYnNlbnQ=');
+    'VydGV4EhsKCWlmX2Fic2VudBgCIAEoCFIIaWZBYnNlbnQSSQoPcmVjZWlwdF9jb250ZXh0GAMg'
+    'ASgLMiAuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0Q29udGV4dFIOcmVjZWlwdENvbnRleHQ=');
 
 @$core.Deprecated('Use putVertexResponseDescriptor instead')
 const PutVertexResponse$json = {
@@ -614,13 +641,23 @@ const PutVerticesRequest$json = {
       '10': 'vertices'
     },
     {'1': 'if_absent', '3': 2, '4': 1, '5': 8, '10': 'ifAbsent'},
+    {
+      '1': 'receipt_context',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `PutVerticesRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putVerticesRequestDescriptor = $convert.base64Decode(
     'ChJQdXRWZXJ0aWNlc1JlcXVlc3QSLAoIdmVydGljZXMYASADKAsyEC5ncmFwaC52MS5WZXJ0ZX'
-    'hSCHZlcnRpY2VzEhsKCWlmX2Fic2VudBgCIAEoCFIIaWZBYnNlbnQ=');
+    'hSCHZlcnRpY2VzEhsKCWlmX2Fic2VudBgCIAEoCFIIaWZBYnNlbnQSSQoPcmVjZWlwdF9jb250'
+    'ZXh0GAMgASgLMiAuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0Q29udGV4dFIOcmVjZWlwdENvbn'
+    'RleHQ=');
 
 @$core.Deprecated('Use putVerticesResponseDescriptor instead')
 const PutVerticesResponse$json = {
@@ -647,12 +684,22 @@ const DeleteVertexRequest$json = {
   '1': 'DeleteVertexRequest',
   '2': [
     {'1': 'key', '3': 1, '4': 1, '5': 9, '10': 'key'},
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `DeleteVertexRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List deleteVertexRequestDescriptor = $convert
-    .base64Decode('ChNEZWxldGVWZXJ0ZXhSZXF1ZXN0EhAKA2tleRgBIAEoCVIDa2V5');
+final $typed_data.Uint8List deleteVertexRequestDescriptor = $convert.base64Decode(
+    'ChNEZWxldGVWZXJ0ZXhSZXF1ZXN0EhAKA2tleRgBIAEoCVIDa2V5EkkKD3JlY2VpcHRfY29udG'
+    'V4dBgCIAEoCzIgLmdyYXBoLnYxLk11dGF0aW9uUmVjZWlwdENvbnRleHRSDnJlY2VpcHRDb250'
+    'ZXh0');
 
 @$core.Deprecated('Use deleteVertexResponseDescriptor instead')
 const DeleteVertexResponse$json = {
@@ -672,13 +719,22 @@ const DeleteVerticesRequest$json = {
   '1': 'DeleteVerticesRequest',
   '2': [
     {'1': 'keys', '3': 1, '4': 3, '5': 9, '10': 'keys'},
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `DeleteVerticesRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List deleteVerticesRequestDescriptor =
-    $convert.base64Decode(
-        'ChVEZWxldGVWZXJ0aWNlc1JlcXVlc3QSEgoEa2V5cxgBIAMoCVIEa2V5cw==');
+final $typed_data.Uint8List deleteVerticesRequestDescriptor = $convert.base64Decode(
+    'ChVEZWxldGVWZXJ0aWNlc1JlcXVlc3QSEgoEa2V5cxgBIAMoCVIEa2V5cxJJCg9yZWNlaXB0X2'
+    'NvbnRleHQYAiABKAsyIC5ncmFwaC52MS5NdXRhdGlvblJlY2VpcHRDb250ZXh0Ug5yZWNlaXB0'
+    'Q29udGV4dA==');
 
 @$core.Deprecated('Use deleteVerticesResponseDescriptor instead')
 const DeleteVerticesResponse$json = {
@@ -2066,6 +2122,14 @@ const GetReceiptCapabilityResponse$json = {
       '5': 4,
       '10': 'serverNowUnixMs'
     },
+    {
+      '1': 'supported_mutations',
+      '3': 5,
+      '4': 3,
+      '5': 14,
+      '6': '.graph.v1.ReceiptMutationKind',
+      '10': 'supportedMutations'
+    },
   ],
 };
 
@@ -2074,7 +2138,9 @@ final $typed_data.Uint8List getReceiptCapabilityResponseDescriptor = $convert.ba
     'ChxHZXRSZWNlaXB0Q2FwYWJpbGl0eVJlc3BvbnNlEhgKB2VuYWJsZWQYASABKAhSB2VuYWJsZW'
     'QSLwoGcG9saWN5GAIgASgLMhcuZ3JhcGgudjEuUmVjZWlwdFBvbGljeVIGcG9saWN5EjUKCGVu'
     'ZHBvaW50GAMgASgLMhkuZ3JhcGgudjEuUmVjZWlwdEVuZHBvaW50UghlbmRwb2ludBIrChJzZX'
-    'J2ZXJfbm93X3VuaXhfbXMYBCABKARSD3NlcnZlck5vd1VuaXhNcw==');
+    'J2ZXJfbm93X3VuaXhfbXMYBCABKARSD3NlcnZlck5vd1VuaXhNcxJOChNzdXBwb3J0ZWRfbXV0'
+    'YXRpb25zGAUgAygOMh0uZ3JhcGgudjEuUmVjZWlwdE11dGF0aW9uS2luZFISc3VwcG9ydGVkTX'
+    'V0YXRpb25z');
 
 @$core.Deprecated('Use receiptResultDescriptor instead')
 const ReceiptResult$json = {
