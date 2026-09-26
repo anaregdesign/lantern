@@ -209,8 +209,9 @@ profiles and Prometheus range queries, not steady resource sampling.
 For receipt runs, a failed forced-GC request on any replica or round
 disqualifies the pre/post live-set snapshots even when `/metrics` responds.
 Each pre/post `/metrics` scrape must also succeed and report finite,
-nonnegative goroutine, heap-alloc, heap-inuse, and heap-object gauges on
-every replica and round; a missing or malformed reading cannot become zero.
+nonnegative integral goroutine, heap-alloc, heap-inuse, and heap-object gauges
+on every replica and round; a fractional or malformed reading cannot round to
+zero.
 
 Five preliminary Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in

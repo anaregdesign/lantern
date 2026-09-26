@@ -365,9 +365,23 @@ receipt_runtime_scalar() {
   local name="$1" text="$2" raw
   raw="$(awk -v n="$name" '$1 == n { print $2 }' <<<"$text")"
   [[ "$raw" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]] || return 1
-  # Prometheus exports float64 gauges; keep converted snapshot integers exact.
-  awk -v raw="$raw" 'BEGIN { value = raw + 0; exit !(value >= 0 && value < 9007199254740992) }' ||
-    return 1
+  # Check decimal integrality before float parsing so rounding cannot hide a fraction.
+  awk -v raw="$raw" '
+    BEGIN {
+      split(raw, notation, /[eE]/)
+      mantissa = notation[1]
+      dot = index(mantissa, ".")
+      scale = (dot ? length(mantissa) - dot : 0) - (notation[2] + 0)
+      digits = mantissa
+      gsub(/\./, "", digits)
+      if (digits ~ /[1-9]/ && scale > 0 &&
+          (scale > length(digits) || substr(digits, length(digits) - scale + 1) ~ /[1-9]/)) {
+        exit 1
+      }
+      value = raw + 0
+      exit !(value >= 0 && value < 9007199254740992)
+    }
+  ' || return 1
   printf '%.0f' "$raw" 2>/dev/null
 }
 

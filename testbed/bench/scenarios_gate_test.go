@@ -427,6 +427,9 @@ func TestReceiptBenchSnapshotRejectsInvalidMetrics(t *testing.T) {
 		{name: "nonfinite_goroutines", wantErr: "invalid go_goroutines for localhost:9390 (round 1)"},
 		{name: "negative_heap_objects", wantErr: "invalid go_memstats_heap_objects for localhost:9390 (round 1)"},
 		{name: "duplicate_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "fractional_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "tiny_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "rounded_fractional_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
@@ -452,6 +455,15 @@ curl() {
     duplicate_heap_alloc)
       printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_alloc_bytes 1' 'go_memstats_heap_objects 10'
       ;;
+    fractional_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 1.5' 'go_memstats_heap_objects 10'
+      ;;
+    tiny_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 1e-40' 'go_memstats_heap_objects 10'
+      ;;
+    rounded_fractional_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 1.0000000000000001' 'go_memstats_heap_objects 10'
+      ;;
   esac
 }
 ` + receiptSnapshotShellFunctions(t) + `
@@ -469,6 +481,17 @@ snapshot_runtime "$OUTDIR/runtime.json"
 				t.Fatalf("invalid-metrics snapshot artifact exists or stat failed: %v", err)
 			}
 		})
+	}
+}
+
+func TestReceiptBenchSnapshotAcceptsIntegralScientificNotation(t *testing.T) {
+	fixture := `set -euo pipefail
+` + receiptSnapshotShellFunctions(t) + `
+receipt_runtime_scalar go_memstats_heap_alloc_bytes 'go_memstats_heap_alloc_bytes 1.949696e+07'
+`
+	output, err := exec.Command("bash", "-c", fixture).CombinedOutput()
+	if err != nil || string(output) != "19496960\n" {
+		t.Fatalf("integral scientific metric = %q, err = %v; want 19496960", output, err)
 	}
 }
 
