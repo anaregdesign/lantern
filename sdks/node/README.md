@@ -17,6 +17,10 @@ bun add lantern-sdk
 pnpm add lantern-sdk
 ```
 
+The npm `latest` package is currently `lantern-sdk@0.11.0` and does not
+include the receipt APIs below. Those APIs are merged in 0.12.0 source but
+are not yet available from a verified published npm archive.
+
 ## Quick start
 
 The Lantern server's primary `:6380` listener speaks Connect, gRPC,
@@ -82,13 +86,17 @@ split inputs into chunks (default 1000, override via
 `ConnectOptions.batchChunkSize`). On a chunk failure the call throws
 `BatchError`, which carries `.written` — the input-prefix length whose
 responses were fully observed and validated before the error — and the
-underlying `cause`. It is not an `appliedAndLive` count. Resume with
-`inputs.slice(err.written)`. A full retry from index 0 is safe for the
-idempotent batch ops (`putVertices`, `putEdges`, `deleteVertices`,
-`deleteEdges`) but **not** for a plain `addEdges`, whose already-applied
-prefix would be double-counted — attach contrib ids (see
-[Idempotent additive edges](#idempotent-additive-edges)) to make `addEdges`
-retries safe too.
+underlying `cause`. It is not an `appliedAndLive` count. The failed chunk
+may have committed: `inputs.slice(err.written)` is an unconfirmed suffix,
+not an automatically safe resume point. An unchanged unconditional Put is
+idempotent as a state write, subject to TTL and intervening writes, but
+replay cannot prove its original outcome. Plain Add or Delete replay cannot
+recover the original effective weight or exact `existed` result. A
+contribution ID deduplicates Add only while the contribution remains
+retained; after Delete or expiry, replay can add again. Surface an unknown
+original result rather than blindly retrying. The opt-in receipt APIs below
+recover Add and exact Delete results on a certified endpoint, but remain
+source-only until a verified npm release.
 
 `putVerticesIfAbsent` is deliberately not described as safely resumable. If a
 response is lost after the server commits the failed chunk, its original
@@ -116,6 +124,10 @@ try {
 ```
 
 ## Receipt-safe online mutations
+
+This section describes merged 0.12.0 source, **not** the npm 0.11.0
+`latest` package installed above. Wait for a verified receipt-bearing
+npm release before importing these APIs from npm.
 
 Receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and
 contribution-keyed Edge Add let an application mint and durably retain the
@@ -336,7 +348,13 @@ For `addEdges`, ids stay index-aligned with `edges` even when the batch is
 split across chunks. **Dedup horizon:** dedup only holds while the
 contribution is live — once the edge decays past its TTL (or is deleted) the
 id is forgotten, so a later add with the same id contributes weight again.
-Contrib IDs guard retries within a contribution's lifetime, not for all time.
+Contrib IDs guard receipt-less retries within a contribution's lifetime, not
+for all time. The existing `addEdge`/`addEdges` methods remain receipt-less;
+the separate opt-in `addEdgeWithReceipt`/`addEdgesWithReceipt` APIs require
+an explicit nonzero ID *and* a persisted operation context on a certified
+endpoint. Retained receipt proof can recover the original effective result
+after Delete: read-only status may converge across replicas, but mutation
+retries require the same endpoint/generation, never blind failover.
 
 `scanVerticesAll`, `scanEdgesAll`, and `scanVertexKeysAll` are async iterables
 that page through results until the server returns an empty cursor.

@@ -267,7 +267,28 @@ identity prefixes are not tenant access controls.
 `AddEdge` is **additive** (multiple calls add weight, each contribution
 carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
 single TTL). See the in-line discussion in `example/main.go` for the
-semantic difference.
+semantic difference. A contribution ID deduplicates only while its graph
+contribution is retained; it does not recover the original effective weight
+after Delete. The checked-in Go SDK now offers separate opt-in
+`PutVerticesWithReceipt`, `DeleteVerticesWithReceipt`,
+`DeleteEdgesWithReceipt`, and `AddEdgesWithReceipt` families, plus
+`GetReceiptCapability`, typed `GetReceiptStatus`/`GetReceiptStatuses`, and
+`NewReceiptContext`. Persist the context, explicit Add contribution IDs,
+and exact intent before the first send; retry only after proving continuity
+with the same endpoint and generation. The existing methods remain
+receipt-less. Published `sdks/go/v0.25.0` pins published `pb/v0.13.0`;
+external module consumers can resolve these opt-in APIs through that SDK
+release. Its independent fresh public-proxy/sumdb consumer build and test
+passed.
+
+**Published v0.25 retry caveat (#1468):** Do not use `WithRetry` or
+`NewLanternFailover` for receipt-less Add or exact/prefix Delete when a response
+could be lost. The published SDK may retry those operations after an ambiguous
+commit, changing an Add's effective weight or a Delete's original result;
+repeating a capped prefix Delete can remove a later page. Use the separate
+receipt-backed APIs for Add and exact Vertex/Edge Delete result recovery with
+same-endpoint/generation continuity. Prefix Delete has no receipt path. The
+retry-policy fix is pending #1468 and is not in the published tag.
 
 Every `PutVertex*` / `PutEdge*` singular call returns a typed `PutOutcome`.
 Plural Put calls return request-index-aligned `[]VertexPutResult` /

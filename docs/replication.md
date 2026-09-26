@@ -55,13 +55,14 @@ is required for either reads or writes.
    mismatch for repair and diagnosis. **Single-instance mode** (static
    discovery with empty `LANTERN_PEERS`) bypasses this gate; DNS discovery
    selects peer mode even before the first peer resolves.
-5. **No leader, no Raft, no external storage.** v1 is intentionally
-   ephemeral. Single-pod loss recovers from peers; total-cluster loss is
-   accepted data loss **unless snapshot backups are configured**
-   (`LANTERN_BACKUP_*`, see [backup.md](backup.md)). Graph-only nodes restore
-   their newest dump. A durable receipt-WAL deployment instead uses
-   `fresh` with an operator-supplied new active epoch to restore the strict
-   newest three-member receipt set before runtime certification.
+5. **No leader, no Raft, no external storage.** Default graph-only mode is
+   ephemeral; opt-in receipt-WAL mode uses local durable storage. Single-pod
+   loss recovers from peers; total-cluster loss loses any unbacked writes.
+   With snapshot backups configured (`LANTERN_BACKUP_*`, see
+   [backup.md](backup.md)), graph-only nodes restore their newest dump.
+   A durable receipt-WAL deployment instead uses `fresh` with an
+   operator-supplied new active epoch to restore the strict newest
+   three-member receipt set before runtime certification.
 6. **Rolling update safe.** One pod down → remaining pods serve → new pod
    bootstraps → ready → next. This invariant is about **cluster
    availability** (the cluster keeps accepting requests throughout). **Zero
@@ -75,11 +76,11 @@ is required for either reads or writes.
 
 | # | Decision | Default | Rationale |
 |---|---|---|---|
-| D1 | Crash persistence | **None for v1.** WAL is a hook only. | Bootstrap from peers covers single-node loss; persistence adds operational surface area we don't yet need. |
+| D1 | Crash persistence | **Graph-only by default:** no WAL; opt-in certified receipt-WAL mode persists the graph and receipts locally. | Bootstrap from peers covers graph-only single-node loss. Durable `restart` proves the current WAL before serving; `fresh` rotates the active epoch on total-cluster restore and uses only a strict receipt backup set. |
 | D2 | External CDC | **Same `Subscribe` RPC**, authenticated within one deployment-wide security domain; tenant ACLs are not defined. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. The offline storage contract is specified in [ADR 0002](decisions/0002-dart-offline-repository-contract.md#sqlite-and-asynchronous-store-implementation): atomically persist invalidation and chunk progress, advance the last-applied origin sequence only on the final chunk, then resume at that sequence plus one. The #1116 projection, typed SDK facades, and storage-neutral offline consumer are implemented. The production Dart bridge and physical release qualification remain in #1314. |
 | D3 | WAN replication | **Out of scope for v1**, single DC only. HLC max skew bound = **500 ms**. | Geo replication requires looser skew + read repair; defer until single-DC HA is proven. |
 | D4 | Tombstone TTL | **Cluster-wide config, default 1 year (8760h).** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
-| D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery; leaves room for an optional WAL PVC later. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
+| D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery and supports operator-managed volume ownership for optional receipt FileWAL storage. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
 | D6 | Cluster membership v1 | **Static `LANTERN_PEERS` env var.** v2 adds DNS-based discovery (#190). | Smallest surface that ships. Any DNS-routable platform (k8s headless Service, Compose service name, Nomad, plain DNS A-records) can populate it trivially. |
 | D7 | Supported deployment topologies | **Full HA:** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Single-instance (no HA):** any platform without stable per-instance addressing — Docker Compose single service, or any container runtime that hides/recycles instance addresses. **Not supported:** running multiple address-hidden instances as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Platforms that intentionally hide instance addresses and recycle instances fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
 
@@ -88,12 +89,14 @@ The bounded mutation-receipt extension is specified in
 graph/result/receipt/log boundary and the contiguous publication work in
 #1282. A certified, authenticated durable runtime exposes capability/status
 plus optional receipt-bearing Vertex Put, exact Vertex Delete, exact Edge
-Delete, and contribution-keyed Edge Add; high-level SDK mutation APIs remain
-disabled. In private durable
-receipt-WAL mode, the guarded follower, Snapshot producer, detached collector,
-and durable baseline primitive are wired into Pump and anti-entropy through
-one shared exact-`RECEIPT` installer. Graph-only mode and D1 remain
-unchanged.
+Delete, and contribution-keyed Edge Add. Online Go, Node, and Dart opt-in
+receipt APIs are merged in source; merged offline 0.4.0 source implements
+status-first reconciliation, but its receipt release remains unqualified.
+In private durable receipt-WAL mode, the guarded follower, Snapshot producer,
+detached collector, and durable baseline primitive are wired into Pump and
+anti-entropy through one shared exact-`RECEIPT` installer. The graph-only
+default remains unchanged; final #1399 HA, performance, security, physical,
+and SDK/archive release gates remain pending.
 
 ## 4. CRDT semantics per RPC
 
@@ -153,9 +156,13 @@ identity.
 For mixed edge histories, each replica keeps the winning reset floor and only
 the Add rows causally later than it. A Delete floor is D4-bounded: convergence
 requires all lagging replicas to learn it before that deadline, just as for
-Put/Delete histories. A reused `ContribID` with a different payload is outside
-the contract until server-authoritative operation receipts (#1115) provide
-matching evidence.
+Put/Delete histories. Receipt-bearing Add binds each explicit `ContribID` to
+one operation ID and semantic intent under bounded retention, rejecting reuse
+under another intent even after a later Delete removes the graph contribution.
+Receipt-less Add only deduplicates retained graph contributions: conflicting
+reuse of an explicit ID remains outside its contract, and a cross-Delete retry
+cannot recover the original result. Receipt status may converge to other
+replicas, but no cross-endpoint exactly-once execution is promised.
 
 Reads (`GetVertex(es)`, `GetEdge(s)`, `Illuminate`, `SearchVertices`) are
 local-only — they never block on peers and never read-repair. Read-after-write
@@ -265,16 +272,20 @@ origin sequences):
 - Suitable as a G-Set element for `AddEdge` contributions, so re-applying a
   mutation already present is a cheap set-insert no-op.
 
-Callers supplying explicit IDs must keep them unique across distinct Add
-intents; reusing one for a different payload is outside the contract until
-#1115 provides server-authoritative receipt evidence.
+Callers supplying explicit IDs to receipt-less Add must keep them unique
+across distinct intents; conflicting reuse is outside that contract. In
+certified receipt-bearing Add, a conflicting `ContribID`/operation binding
+fails before commit while receipt evidence is retained, even after a graph
+Delete. A receipt-less retry after that Delete cannot prove the original
+result.
 
 ## 7. Mutation log
 
-In-memory ring buffer (`core/mutationlog`), append-only, with a WAL hook
-(D1 leaves the hook empty for v1). Each stored `Entry.Seq` is a position in
-that replica's mixed local-and-relay log. The carried `Mutation.Seq` is a
-separate, contiguous sequence belonging to `Mutation.Origin`:
+In-memory ring buffer (`core/mutationlog`), append-only, with a no-op WAL in
+default graph-only mode and a certified FileWAL in durable receipt mode.
+Each stored `Entry.Seq` is a position in that replica's mixed
+local-and-relay log. The carried `Mutation.Seq` is a separate, contiguous
+sequence belonging to `Mutation.Origin`:
 
 ```go
 type Mutation struct {
@@ -345,6 +356,10 @@ message MutationOp {
     DeleteEdgesByPrefixRequest     delete_edges_by_prefix    = 12;
     ReplicatedPutVertices          replicated_put_vertices   = 13;
     ReplicatedPutEdges             replicated_put_edges      = 14;
+    ReplicatedReceiptEdgeDelete    replicated_receipt_edge_delete = 15;
+    ReplicatedReceiptVertexPut     replicated_receipt_vertex_put = 16;
+    ReplicatedReceiptVertexDelete  replicated_receipt_vertex_delete = 17;
+    ReplicatedReceiptEdgeAdd       replicated_receipt_edge_add = 18;
   }
 }
 
@@ -375,6 +390,7 @@ message Mutation {
   HLCTimestamp hlc    = 2;
   bytes        origin = 3;
   MutationOp   op     = 4;
+  google.protobuf.Timestamp tombstone_expiration = 5; // origin's absolute D4 Delete deadline
 }
 ```
 
@@ -405,6 +421,11 @@ Deviations from the §7 conceptual sketch (recorded as part of #178):
   reclassifying the origin's accepted-expired decision. `CONDITION_NOT_MET`
   and `SUPERSEDED` items made no committed state transition, so they are not
   replicated. If no item committed, no mutation is logged.
+- Receipt-bearing Vertex Put, exact Vertex/Edge Delete, and explicit-ContribID
+  Edge Add use their own result- and identity-preserving `ReplicatedReceipt*`
+  arms instead of nesting a receipt context in a generic graph mutation.
+  No-op receipts still consume an origin sequence; raw graph arms carrying a
+  receipt context fail closed.
 - A receiver applies all ordered authoritative entries under one graph-cache
   lock with the mutation HLC. It must not regroup live entries and barriers by
   outcome: doing so changes the result for duplicate keys/pairs in one request.
@@ -459,15 +480,18 @@ Consequence:
   Subscribe relay never overwrites `mu.Seq`, and the originating writer
   allocates it independently of the mixed relay log's `Entry.Seq`.
 
-Local Put/Delete and capped prefix Delete hold the same publication cut from
-graph apply through local log append. If the WAL rejects an append after the
-graph changes, the handler returns `Unavailable` because its original result
-is ambiguous. It keeps one exact mutation, including conditional Put outcomes
-and exact prefix victims, for append-only repair before any later local write
-can claim that origin seq. A failed repair leaves the graph untouched and CDC
-`gapped`. `AddEdges` remains log-first; it repairs an earlier local gap before
-its own append. A retried client request is a new operation after repair, so
-original-result recovery still requires #1115 receipts. The identity-only CDC
+Receipt-less local Put/Delete and capped prefix Delete hold the same
+publication cut from graph apply through local log append. If the WAL rejects
+an append after the graph changes, the handler returns `Unavailable` because
+its original result is ambiguous. It keeps one exact mutation, including
+conditional Put outcomes and exact prefix victims, for append-only repair
+before any later local write can claim that origin seq. A failed repair
+leaves the graph untouched and CDC `gapped`. Receipt-less `AddEdges` remains
+log-first; it repairs an earlier local gap before its own append. A retried
+receipt-less client request is a new operation after repair. A matching
+receipt-bearing retry instead recovers the original aligned result only when
+the same endpoint/generation proves continuity; status on a different
+replica is read-only and may not yet have converged. The identity-only CDC
 server and storage-neutral offline consumer are implemented under #1116;
 their production Dart package bridge and release qualification remain #1314.
 
@@ -480,7 +504,8 @@ suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
 **Full-mutation frame admission (#1440).** The canonical transport projection
 is the protobuf `SubscribeResponse` containing the mutation that `Subscribe`
 will send, including receipt evidence when present. Lantern measures that
-exact outer message, not only the inner `Mutation`. For receipt-bearing Edge Add, Edge Delete, Vertex Delete, and Vertex Put, a
+exact outer message, not only the inner `Mutation`. For receipt-bearing Edge
+Add, Edge Delete, Vertex Delete, and Vertex Put, a
 receiving replica can retain more causally accepted effects than the sender.
 Admission therefore also sizes the maximum valid receiver-local relay of the
 **same** receipt evidence (every contribution or eligible Delete item
@@ -581,15 +606,17 @@ The responder-local log sequence may optimize same-endpoint replay but is
 never a portable cursor. A client durably advances an origin only after every
 chunk of its mutation commits and verifies contiguous mutation sequence at
 the consumer boundary. An empty identity set still requires a final marker so
-it cannot create an invisible cursor hole.
+it cannot create an invisible cursor hole. Each receipt-bearing family uses
+a zero-key `RECEIPT_ONLY` final chunk for a no-graph-effect call.
 
 An identity chunk carries `(origin, origin_seq, HLC, operation category,
 chunk_index, is_last)` plus exact Vertex keys or collision-free Edge
 `(tail, head)` pairs. It has no graph value, Edge weight, contribution ID,
 credential, or auth metadata. `first_item_index` counts identities within the
-projected mutation, starting at zero, including earlier chunks. The projector maps origin-authoritative Put,
-Add, and exact Delete mutations to their exact committed identities. Capped
-prefix Delete is already logged as an exact victim list; projecting the old
+projected mutation, starting at zero, including earlier chunks. The
+projector maps origin-authoritative Put, Add, and exact Delete mutations to
+their exact committed identities. Capped prefix Delete is already logged
+as an exact victim list; projecting the old
 prefix predicate would invalidate keys outside the capped commit. Legacy
 predicate-shaped log entries fail closed because their committed victim set
 cannot be reconstructed safely after the fact. Projected chunks obey both
@@ -597,6 +624,9 @@ cannot be reconstructed safely after the fact. Projected chunks obey both
 an unrepresentable mutation closes the stream with a typed error rather than
 truncating its invalidation set. An invalidation may conservatively include an
 identity whose LWW write lost; it may never omit an identity that changed.
+Identity-only ProtoJSON (including browser/Node consumers) remains
+value-free: it never projects receipt bodies, contribution IDs, or weights,
+and its marker is not permission to retry an uncertain mutation.
 
 The stream is deployment-scoped. Current bearer auth protects one graph and
 does not define tenant principals or ACLs. Prefix filtering, if later added,
@@ -762,6 +792,7 @@ message SnapshotEdge {
   string head = 2;
   HLCTimestamp hlc = 3;
   repeated SnapshotEdgeContribution contributions = 4;
+  SnapshotEdgeDerivedAggregate derived_aggregate = 5; // graph-only folded base
 }
 
 message SnapshotEdgeContribution {
@@ -769,6 +800,12 @@ message SnapshotEdgeContribution {
   google.protobuf.Timestamp expiration = 2;
   bytes contrib_id = 3;   // 24-byte ContribID; empty = local-only
   HLCTimestamp hlc = 4;    // original Add HLC; Put row uses SnapshotEdge.hlc
+}
+
+message SnapshotEdgeDerivedAggregate {
+  float weight = 1; // effective graph-only backup value, not a new source
+  google.protobuf.Timestamp expiration = 2;
+  repeated SnapshotEdgeContribution adds = 3; // later finite Add rows
 }
 ```
 
@@ -807,15 +844,15 @@ Framing contract:
   generation, and resume cutoff publish as one cut. Cancellation, corruption,
   truncation, capacity, epoch/policy mismatch, and format downgrade failures
   publish nothing. Snapshot installation alone does not enable public receipt
-  writes or status; the production provider activates the Edge Delete surface
-  only after the exact runtime, recovery, replication, Snapshot, and backup
-  state is certified and bearer auth is configured. Production bounds are
-  8 MiB per frame,
-  512 MiB per complete wire/canonical image, 1,048,576 total frames, 65,536
-  origin rows, and independent nonzero caps for active receipt rows, retired
-  epochs, retired receipt rows, and graph frames. The active and retired row
-  caps are each further limited by the configured Store entry cap; the
-  complete frame cap still bounds their sum.
+  writes or status; the production provider activates all four certified
+  mutation families only after the exact runtime, recovery, replication,
+  Snapshot, and backup state is certified and bearer auth is configured.
+  Production bounds are 8 MiB per frame, 512 MiB per complete wire/canonical
+  image, 1,048,576 total frames, 65,536 origin rows, and independent nonzero
+  caps for active receipt rows, retired epochs, retired receipt rows, and
+  graph frames. The active and retired row caps are each further limited by
+  the configured Store entry cap; the complete frame cap still bounds their
+  sum.
 - The **header** is always the first frame. `cutoff_seq_per_origin` is
   the primary's contiguous per-origin committed prefix (every prior
   mutation has been applied to the graph and published to its relay log,
@@ -1174,7 +1211,7 @@ The [HA runbook](ha-runbook.md) describes detection (`lantern_replication_lag_se
 | Subscribe consumer read cap is lower than a sender's admitted frame | Consumer reports `ResourceExhausted` and cannot advance that cursor. | Make peer/client read limits at least the maximum sender send cap, then reconnect. |
 | Search config differs across replicas | `lantern_search_config_match{peer}=0`, mismatch counter/log, readiness `NOT_SERVING` | Make every search-affecting `LANTERN_SEARCH_*` value homogeneous, then wait for the next pump/anti-entropy comparison. |
 | All peers unreachable on boot | `Snapshot` fails on every peer | Pod stays `NOT_SERVING`; operator alert on readiness. |
-| Total-cluster loss | every replica down | **Accepted data loss** (D1) unless backups exist. Graph-only nodes restore their newest `.lbk`; durable receipt-WAL nodes use `fresh` with a new active epoch and the strict newest receipt set, retaining archived known receipts as bounded retired evidence. |
+| Total-cluster loss | every replica down | Unbacked writes are lost. Graph-only nodes restore their newest `.lbk` if available; durable receipt-WAL nodes use `fresh` with a new active epoch and the strict newest receipt set, retaining archived known receipts as bounded retired evidence. A graph-only dump cannot certify receipt continuity. |
 | NTP skew > 500ms | `lantern_hlc_skew_clamped_total > 0` (planned — #180/#182) | Fix NTP. Mutations from the drifted peer keep applying (their HLC wall is clamped, §5.3); convergence is preserved but the drifted peer's stamps land behind real wall time until it heals. |
 | Network partition < tombstone TTL | `lantern_replication_lag_seq` spike | Auto-converges via anti-entropy (#186) when partition heals. |
 | Network partition > tombstone TTL | same | Resurrection possible (§10). Manual reconciliation or operator-driven re-snapshot of the winning side. |
@@ -1196,7 +1233,7 @@ carries the full per-platform instructions; this is the summary.
 For every "not supported" platform, the **single-instance** deploy is fully
 supported: leave `LANTERN_PEERS` empty, the server runs without a pump, the
 readiness gate is bypassed, and `Subscribe` still works as a CDC stream for
-downstream consumers. Cold-start data loss is expected on these platforms
+downstream consumers. In graph-only mode, cold-start data loss is expected
 unless snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) or an
 external WAL consumer are in place. A durable `restart` always proves its
 current WAL first and uses receipt backup only for narrowly classified
@@ -1205,7 +1242,8 @@ replace an ambiguous or conflicting current generation.
 
 ## 13. Out of scope (v1)
 
-- Crash persistence / WAL writer (D1 leaves only the hook).
+- Graph-only crash persistence by default (D1); the opt-in receipt-WAL
+  runtime is a separate certified durability mode.
 - Cross-DC replication (D3).
 - ACL-gated `Subscribe` for external CDC consumers (D2 ships the unified RPC;
   policy is layered later).
