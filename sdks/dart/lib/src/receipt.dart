@@ -1092,7 +1092,7 @@ extension on LanternClient {
           );
         }
         try {
-          await _waitForRetry(policy!.delay(completedAttempts), options);
+          await _waitForRetry(policy.delay(completedAttempts), options);
           final capability = await getReceiptCapability(
             options: _receiptPreflightOptions(options),
           );
