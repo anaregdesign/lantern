@@ -22,6 +22,7 @@ part 'changes.dart';
 part 'crud.dart';
 part 'data.dart';
 part 'decay.dart';
+part 'receipt.dart';
 part 'retry.dart';
 part 'scan.dart';
 part 'search.dart';
@@ -467,19 +468,27 @@ final class LanternUnavailableException extends LanternException {
       );
 }
 
-/// An internal, unknown, or unmapped transport failure.
+/// An internal, unknown, unmapped transport, or malformed-response failure.
 final class LanternInternalException extends LanternException {
-  LanternInternalException._(_ErrorData data)
-    : super._(
-        code: LanternCode.internal,
-        transportCode: data.transportCode,
-        transportCodeName: data.transportCodeName,
-        message: data.message,
-        cause: data.cause,
-        headers: data.headers,
-        trailers: data.trailers,
-        metadata: data.metadata,
-      );
+  LanternInternalException._(
+    _ErrorData data, {
+    this.isSdkProtocolViolation = false,
+  }) : super._(
+         code: LanternCode.internal,
+         transportCode: data.transportCode,
+         transportCodeName: data.transportCodeName,
+         message: data.message,
+         cause: data.cause,
+         headers: data.headers,
+         trailers: data.trailers,
+         metadata: data.metadata,
+       );
+
+  /// Whether strict local response validation detected malformed server data.
+  ///
+  /// A genuine Connect `INTERNAL`, unknown transport failure, or unmapped
+  /// exception leaves this false.
+  final bool isSdkProtocolViolation;
 }
 
 /// Reusable Android/iOS-first Lantern client foundation.
@@ -494,6 +503,7 @@ final class LanternClient {
     required RetryPolicy? retryPolicy,
     required bool idempotentAdds,
     required _ContribIdGenerator contribIds,
+    required ReceiptRandomSource receiptRandomSource,
   }) : _invoker = invoker,
        _closeCallback = closeCallback,
        _healthHttpClient = healthHttpClient,
@@ -501,7 +511,8 @@ final class LanternClient {
        _clock = clock,
        _retryPolicy = retryPolicy?._normalized(),
        _idempotentAdds = idempotentAdds,
-       _contribIds = contribIds;
+       _contribIds = contribIds,
+       _receiptRandomSource = receiptRandomSource;
 
   /// Creates a client for [endpoint].
   ///
@@ -520,6 +531,8 @@ final class LanternClient {
   /// in-memory logical Add call, making only that call safe to replay. Automatic
   /// IDs are not persisted across process death; durable outboxes must persist
   /// caller-supplied 24-byte IDs with their intents.
+  /// [receiptRandomSource] defaults to cryptographically secure platform
+  /// entropy and exists for deterministic receipt identity tests.
   factory LanternClient.connect(
     Uri endpoint, {
     TokenProvider? tokenProvider,
@@ -534,6 +547,7 @@ final class LanternClient {
     LanternClock? clock,
     RetryPolicy? retryPolicy,
     bool idempotentAdds = false,
+    ReceiptRandomSource? receiptRandomSource,
   }) {
     final normalized = _normalizeEndpoint(
       endpoint,
@@ -604,6 +618,7 @@ final class LanternClient {
       retryPolicy: retryPolicy,
       idempotentAdds: idempotentAdds,
       contribIds: _ContribIdGenerator.secure(),
+      receiptRandomSource: receiptRandomSource ?? _secureReceiptRandomSource(),
     );
   }
 
@@ -620,6 +635,7 @@ final class LanternClient {
   final _NormalizedRetryPolicy? _retryPolicy;
   final bool _idempotentAdds;
   final _ContribIdGenerator _contribIds;
+  final ReceiptRandomSource _receiptRandomSource;
   Future<void>? _closing;
 
   /// Whether shutdown has started.
@@ -736,10 +752,12 @@ final class LanternInvoker {
   Future<T> invokeUnary<T>({
     required LanternUnaryCall<T> call,
     LanternCallOptions? options,
+    void Function()? onRequestStarted,
   }) async {
     final context = _InvocationContext(options, _defaultTimeout);
     try {
       final headers = await _requestHeaders(context);
+      onRequestStarted?.call();
       return await call(
         headers: headers,
         signal: context.signal,

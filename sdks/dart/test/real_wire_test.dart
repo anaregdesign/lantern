@@ -20,6 +20,9 @@ void main() {
   }
 
   final endpoint = Uri.parse(configured);
+  final receiptConfigured =
+      io.Platform.environment['LANTERN_DART_RECEIPT_ENDPOINT'];
+  final receiptToken = io.Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
   late LanternClient client;
   late String prefix;
 
@@ -326,6 +329,346 @@ void main() {
         1,
       );
     },
+  );
+
+  test(
+    'receipt Vertex and Edge mutations reconcile over real h2c',
+    () async {
+      final receiptEndpoint = Uri.parse(receiptConfigured!);
+      final receiptClient = LanternClient.connect(
+        receiptEndpoint,
+        allowInsecure: receiptEndpoint.scheme == 'http',
+        token: receiptToken,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(receiptClient.close);
+      final capability =
+          await receiptClient.getReceiptCapability()
+              as ReceiptCapabilityEnabled;
+      expect(
+        capability.supportedMutations,
+        containsAll({
+          ReceiptMutationKind.vertexPut,
+          ReceiptMutationKind.vertexDelete,
+          ReceiptMutationKind.edgeDelete,
+          ReceiptMutationKind.edgeAdd,
+        }),
+      );
+
+      final putKey = '$prefix-receipt-put';
+      final putContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.vertexPut,
+        itemCount: 1,
+      );
+      final put = await receiptClient.putVertexWithReceipt(
+        VertexInput(key: putKey, value: VertexValue.string('original')),
+        context: putContext,
+      );
+      expect(put.outcome, PutOutcome.appliedAndLive);
+      final putStatus = await receiptClient.getReceiptStatus(
+        putContext.operationIds.single,
+      );
+      expect(
+        (putStatus.receipt! as VertexPutReceipt).outcome,
+        PutOutcome.appliedAndLive,
+      );
+
+      await expectLater(
+        receiptClient.putVertexWithReceipt(
+          VertexInput(key: putKey, value: VertexValue.string('changed')),
+          context: putContext,
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+
+      final deleteContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.vertexDelete,
+        itemCount: 2,
+      );
+      final deleted = await receiptClient.deleteVerticesWithReceipt([
+        putKey,
+        '$prefix-receipt-absent',
+      ], context: deleteContext);
+      expect(deleted.map((result) => result.existed), [true, false]);
+      final deleteStatuses = await receiptClient.getReceiptStatuses(
+        deleteContext.operationIds,
+      );
+      expect(
+        deleteStatuses.map(
+          (status) => (status.receipt! as VertexDeleteReceipt).existed,
+        ),
+        [true, false],
+      );
+
+      final presentEdge = EdgeRef(
+        '$prefix-receipt-edge-tail',
+        '$prefix-receipt-edge-head',
+      );
+      final absentEdge = EdgeRef(
+        '$prefix-receipt-edge-absent-tail',
+        '$prefix-receipt-edge-absent-head',
+      );
+      expect(
+        await receiptClient.putEdge(
+          EdgeInput(tail: presentEdge.tail, head: presentEdge.head, weight: 1),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+      final edgeDeleteContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeDelete,
+        itemCount: 2,
+      );
+      final edgeDeleted = await receiptClient.deleteEdgesWithReceipt([
+        presentEdge,
+        absentEdge,
+      ], context: edgeDeleteContext);
+      expect(edgeDeleted.map((result) => result.existed), [true, false]);
+      final edgeDeleteStatuses = await receiptClient.getReceiptStatuses(
+        edgeDeleteContext.operationIds,
+      );
+      expect(
+        edgeDeleteStatuses.map(
+          (status) => (status.receipt! as EdgeDeleteReceipt).existed,
+        ),
+        [true, false],
+      );
+      await expectLater(
+        receiptClient.deleteEdgesWithReceipt([
+          presentEdge,
+          EdgeRef(absentEdge.tail, '$prefix-receipt-edge-changed-head'),
+        ], context: edgeDeleteContext),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+
+      final addEdge = EdgeRef(
+        '$prefix-receipt-add-tail',
+        '$prefix-receipt-add-head',
+      );
+      final firstContribution = Uint8List(24)..[23] = 1;
+      final secondContribution = Uint8List(24)..[23] = 2;
+      final edgeAddContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeAdd,
+        itemCount: 2,
+      );
+      final added = await receiptClient.addEdgesWithReceipt([
+        EdgeInput(
+          tail: addEdge.tail,
+          head: addEdge.head,
+          weight: 2,
+          contribId: firstContribution,
+        ),
+        EdgeInput(
+          tail: addEdge.tail,
+          head: addEdge.head,
+          weight: 3,
+          contribId: secondContribution,
+        ),
+      ], context: edgeAddContext);
+      expect(added.map((result) => result.effectiveWeight), [2, 5]);
+      final edgeAddStatuses = await receiptClient.getReceiptStatuses(
+        edgeAddContext.operationIds,
+      );
+      expect(
+        edgeAddStatuses.map(
+          (status) => (status.receipt! as EdgeAddReceipt).effectiveWeight,
+        ),
+        [2, 5],
+      );
+      final replayedAdd = await receiptClient.addEdgesWithReceipt([
+        EdgeInput(
+          tail: addEdge.tail,
+          head: addEdge.head,
+          weight: 2,
+          contribId: firstContribution,
+        ),
+        EdgeInput(
+          tail: addEdge.tail,
+          head: addEdge.head,
+          weight: 3,
+          contribId: secondContribution,
+        ),
+      ], context: edgeAddContext);
+      expect(replayedAdd.map((result) => result.effectiveWeight), [2, 5]);
+      await expectLater(
+        receiptClient.addEdgesWithReceipt([
+          EdgeInput(
+            tail: addEdge.tail,
+            head: addEdge.head,
+            weight: 2,
+            contribId: firstContribution,
+          ),
+          EdgeInput(
+            tail: addEdge.tail,
+            head: addEdge.head,
+            weight: 4,
+            contribId: secondContribution,
+          ),
+        ], context: edgeAddContext),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+
+      final expiredAddContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeAdd,
+        itemCount: 1,
+      );
+      final expiredAdd = await receiptClient.addEdgeWithReceipt(
+        EdgeInput(
+          tail: '$prefix-receipt-expired-add-tail',
+          head: '$prefix-receipt-expired-add-head',
+          weight: 9,
+          expiresAt: DateTime.now().toUtc().subtract(
+            const Duration(seconds: 1),
+          ),
+          contribId: Uint8List(24)..[23] = 3,
+        ),
+        context: expiredAddContext,
+      );
+      expect(expiredAdd.effectiveWeight, 0);
+      final expiredAddStatus = await receiptClient.getReceiptStatus(
+        expiredAddContext.operationIds.single,
+      );
+      expect((expiredAddStatus.receipt! as EdgeAddReceipt).effectiveWeight, 0);
+
+      const maxFloat32 = 3.4028234663852886e38;
+      final positiveOverflow = EdgeRef(
+        '$prefix-receipt-overflow-positive-tail',
+        '$prefix-receipt-overflow-positive-head',
+      );
+      final negativeOverflow = EdgeRef(
+        '$prefix-receipt-overflow-negative-tail',
+        '$prefix-receipt-overflow-negative-head',
+      );
+      expect(
+        await receiptClient.putEdge(
+          EdgeInput(
+            tail: positiveOverflow.tail,
+            head: positiveOverflow.head,
+            weight: maxFloat32,
+          ),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+      expect(
+        await receiptClient.putEdge(
+          EdgeInput(
+            tail: negativeOverflow.tail,
+            head: negativeOverflow.head,
+            weight: -maxFloat32,
+          ),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+      final overflowContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeAdd,
+        itemCount: 2,
+      );
+      final overflow = await receiptClient.addEdgesWithReceipt([
+        EdgeInput(
+          tail: positiveOverflow.tail,
+          head: positiveOverflow.head,
+          weight: maxFloat32,
+          contribId: Uint8List(24)..[23] = 4,
+        ),
+        EdgeInput(
+          tail: negativeOverflow.tail,
+          head: negativeOverflow.head,
+          weight: -maxFloat32,
+          contribId: Uint8List(24)..[23] = 5,
+        ),
+      ], context: overflowContext);
+      expect(overflow.map((result) => result.effectiveWeight), [
+        double.infinity,
+        double.negativeInfinity,
+      ]);
+      final overflowStatuses = await receiptClient.getReceiptStatuses(
+        overflowContext.operationIds,
+      );
+      expect(
+        overflowStatuses.map(
+          (status) => (status.receipt! as EdgeAddReceipt).effectiveWeight,
+        ),
+        [double.infinity, double.negativeInfinity],
+      );
+
+      final fault = _CommittedResponseLossTransport(
+        receiptEndpoint,
+        loseProcedure: '/graph.v1.LanternService/PutVertices',
+      );
+      final retrying = LanternClient.connect(
+        receiptEndpoint,
+        allowInsecure: receiptEndpoint.scheme == 'http',
+        transport: fault,
+        onClose: fault.close,
+        token: receiptToken,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(retrying.close);
+      final retryCapability =
+          await retrying.getReceiptCapability() as ReceiptCapabilityEnabled;
+      final retryContext = retrying.mintReceiptContext(
+        capability: retryCapability,
+        mutation: ReceiptMutationKind.vertexPut,
+        itemCount: 1,
+      );
+      final retried = await retrying.putVertexWithReceipt(
+        VertexInput(
+          key: '$prefix-receipt-response-loss',
+          value: VertexValue.string('once'),
+        ),
+        context: retryContext,
+      );
+      expect(retried.outcome, PutOutcome.appliedAndLive);
+      expect(fault.requestsFor('/graph.v1.LanternService/PutVertices'), 2);
+
+      final addFault = _CommittedResponseLossTransport(
+        receiptEndpoint,
+        loseProcedure: '/graph.v1.LanternService/AddEdges',
+      );
+      final retryingAdd = LanternClient.connect(
+        receiptEndpoint,
+        allowInsecure: receiptEndpoint.scheme == 'http',
+        transport: addFault,
+        onClose: addFault.close,
+        token: receiptToken,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(retryingAdd.close);
+      final retryAddCapability =
+          await retryingAdd.getReceiptCapability() as ReceiptCapabilityEnabled;
+      final retryAddContext = retryingAdd.mintReceiptContext(
+        capability: retryAddCapability,
+        mutation: ReceiptMutationKind.edgeAdd,
+        itemCount: 1,
+      );
+      final retriedAdd = await retryingAdd.addEdgeWithReceipt(
+        EdgeInput(
+          tail: '$prefix-receipt-add-response-loss-tail',
+          head: '$prefix-receipt-add-response-loss-head',
+          weight: 4,
+          contribId: Uint8List(24)..[23] = 6,
+        ),
+        context: retryAddContext,
+      );
+      expect(retriedAdd.effectiveWeight, 4);
+      expect(addFault.requestsFor('/graph.v1.LanternService/AddEdges'), 2);
+      final retriedAddStatus = await retryingAdd.getReceiptStatus(
+        retryAddContext.operationIds.single,
+      );
+      expect((retriedAddStatus.receipt! as EdgeAddReceipt).effectiveWeight, 4);
+    },
+    skip:
+        receiptConfigured == null ||
+            receiptConfigured.isEmpty ||
+            receiptToken == null ||
+            receiptToken.isEmpty
+        ? 'receipt real-wire endpoint and token are not configured'
+        : false,
   );
 
   test('decaying Add response loss does not double the curve', () async {

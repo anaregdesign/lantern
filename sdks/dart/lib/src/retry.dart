@@ -66,6 +66,9 @@ enum RpcRetryClass {
   /// Additive write requiring stable contribution IDs.
   additive,
 
+  /// Endpoint-bound mutation retried only by its continuity-aware coordinator.
+  receiptMutation,
+
   /// Observable-result mutation that must not be replayed.
   never,
 
@@ -107,6 +110,12 @@ final class RetryRegistry {
     'GetReceiptCapability': RpcRetryClass.read,
     'GetReceiptStatus': RpcRetryClass.read,
     'GetReceiptStatuses': RpcRetryClass.read,
+    'PutVertexWithReceipt': RpcRetryClass.receiptMutation,
+    'PutVerticesWithReceipt': RpcRetryClass.receiptMutation,
+    'DeleteVertexWithReceipt': RpcRetryClass.receiptMutation,
+    'DeleteVerticesWithReceipt': RpcRetryClass.receiptMutation,
+    'DeleteEdgeWithReceipt': RpcRetryClass.receiptMutation,
+    'DeleteEdgesWithReceipt': RpcRetryClass.receiptMutation,
     'BackupSnapshot': RpcRetryClass.stream,
     // High-level facades whose result semantics differ from their shared wire
     // request or whose operation expands into AddEdges.
@@ -127,7 +136,9 @@ final class RetryRegistry {
     return switch (classify(method)) {
       RpcRetryClass.read || RpcRetryClass.stablePut => true,
       RpcRetryClass.additive => additiveSafe,
-      RpcRetryClass.never || RpcRetryClass.stream => false,
+      RpcRetryClass.receiptMutation ||
+      RpcRetryClass.never ||
+      RpcRetryClass.stream => false,
     };
   }
 }

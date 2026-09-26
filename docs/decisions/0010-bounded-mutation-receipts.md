@@ -951,9 +951,12 @@ ID, and the capability endpoint. The complete group is validated and
 capacity-reserved before mutation. A matching duplicate returns the original
 request-index-aligned result: canonical `PutOutcome` values for Vertex Put,
 exact `existed` booleans for Delete, and the original effective float32 weight
-for Edge Add. Receipt-bearing Add additionally requires every item to carry an
-explicit nonzero 24-byte contribution ID; IDs are never synthesized. Intent,
-group, operation-ID, or contribution-ID reuse conflicts fail without mutation.
+for Edge Add, including signed infinity or NaN retained as opaque result bits.
+Numeric SDK surfaces preserve semantic NaN classification; NaN payload-bit
+identity cannot be promised across binary64 and ProtoJSON. Receipt-bearing Add
+additionally requires every item to carry an explicit nonzero 24-byte
+contribution ID; IDs are never synthesized. Intent, group, operation-ID, or
+contribution-ID reuse conflicts fail without mutation.
 `PutVertex`, `DeleteVertex`, `DeleteEdge`, and `AddEdge` are one-item facades.
 Omitting the context preserves receipt-less behavior; Put Edge and prefix
 Delete remain excluded.
@@ -965,7 +968,7 @@ alone do not fix the graph history. #1282's graph-before-relay retry rule is
 not itself sufficient for receipts: the receipt implementation must strengthen
 that seam to an atomic graph/receipt/relay publication. #1393 and #1394 supply
 the replication, Snapshot, backup, and startup continuity prerequisites used
-by #1395 and #1396. Edge Add, Edge Delete, conditional Vertex Put, and exact
+by #1395, #1396, and #1397. Edge Add, Edge Delete, conditional Vertex Put, and exact
 Vertex Delete now satisfy the public vertical-slice gate, including real Connect/h2c
 response-loss, lag, capacity, retention, intent-conflict, transport-bound,
 token-rotation, and fail-closed tests. Put Edge and prefix Delete remain

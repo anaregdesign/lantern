@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Add immutable online bounded-receipt capability, identity, endpoint,
+  reconciliation, and three-state status APIs for Vertex Put, exact Vertex
+  Delete, Edge Delete, and contribution-keyed Edge Add. Receipt-bearing
+  Add requires explicit nonzero 24-byte contribution IDs and retains each
+  original effective weight, including born-expired zero, signed infinity, and
+  semantic NaN. All mutations retain exact request-aligned original results
+  and permit opt-in same-endpoint retry only after continuity and family
+  support are revalidated; existing receipt-less mutations are unchanged.
+  Locally detected malformed successful responses are explicitly distinguished
+  from genuine server or transport `INTERNAL` failures so durable adapters can
+  fail closed without suppressing retryable uncertainty.
+
 ## 0.3.1
 
 - Regenerate the internal replication wire schema so D4 Delete mutations carry

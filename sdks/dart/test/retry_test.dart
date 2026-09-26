@@ -403,6 +403,18 @@ void main() {
     expect(RetryRegistry.classifications.keys.toSet(), containsAll(generated));
     expect(RetryRegistry.classify('FutureUnknownMethod'), RpcRetryClass.never);
     expect(RetryRegistry.classify('DeleteVertex'), RpcRetryClass.never);
+    expect(
+      RetryRegistry.classify('DeleteEdgesWithReceipt'),
+      RpcRetryClass.receiptMutation,
+    );
+    expect(
+      RetryRegistry.classify('PutVerticesWithReceipt'),
+      RpcRetryClass.receiptMutation,
+    );
+    expect(
+      RetryRegistry.classify('DeleteVerticesWithReceipt'),
+      RpcRetryClass.receiptMutation,
+    );
     expect(RetryRegistry.classify('BackupSnapshot'), RpcRetryClass.stream);
     expect(RetryRegistry.classify('SearchVerticesPage'), RpcRetryClass.read);
   });
