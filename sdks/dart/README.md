@@ -107,15 +107,15 @@ Automatic IDs do not turn two application calls into one operation and do not
 survive process restart. This package does not implement an offline queue. A
 contribution ID deduplicates only while the server retains that contribution.
 
-**Hosted 0.3.1 retry caveat (#1471):** Unlike the current source, published
+**Hosted 0.3.1 retry caveat (#1471):** Published
 `lantern_client 0.3.1` has the bug: with `retryPolicy` configured, a
 receipt-less Add carrying IDs (including `idempotentAdds` IDs) is eligible for
 automatic retry. An intervening Delete or expiry can erase dedup evidence, so
 the retried Add may execute again with a different result. Do not rely on
 `idempotentAdds` plus automatic retry to recover the original Add result;
-use receipt-backed Add/status on a certified endpoint. This source fix is not
-in the published 0.3.1 archive; a new, independently qualified online patch
-release is required before hosted clients receive it.
+upgrade to hosted `lantern_client 0.3.2` for single-attempt plain Add, or use
+receipt-backed Add/status on a certified endpoint to recover the original
+result after response loss. The 0.3.1 archive remains unsafe for this case.
 
 The hosted `lantern_client_offline` 0.3.0 outbox admits Put only. Merged
 offline 0.4.0 source separately implements receipt-backed conditional Vertex
@@ -123,8 +123,8 @@ Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add; it is not a
 published or qualified receipt release. Final #1399 performance, archive,
 and physical evidence remain open (#1449's generic capture is not device
 evidence). The opt-in online APIs described below are hosted in
-`lantern_client 0.3.1` on pub.dev; its published archive passed exact-content
-verification. Offline 0.4.0 source declares `lantern_client: ^0.3.1`;
+`lantern_client 0.3.2` on pub.dev; its published archive passed exact-content
+verification. Offline 0.4.0 source declares `lantern_client: ^0.3.2`;
 before its publication, resolve the offline candidate archive against
 that hosted parent outside the checkout and without a path override.
 
