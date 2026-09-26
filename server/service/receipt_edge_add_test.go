@@ -48,8 +48,8 @@ func BenchmarkPublicReceiptEdgeAddAdmission(b *testing.B) {
 				binary.BigEndian.PutUint64(contribID[16:], uint64(i+1))
 				requests[i] = &pb.AddEdgeRequest{
 					Edge: &pb.Edge{
-						Tail: fmt.Sprintf("benchmark-add-%d", i),
-						Head: "benchmark-head",
+						Tail:   fmt.Sprintf("benchmark-add-%d", i),
+						Head:   "benchmark-head",
 						Weight: 1.25,
 					},
 					ContribId: contribID,

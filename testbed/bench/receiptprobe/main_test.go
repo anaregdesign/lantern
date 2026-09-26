@@ -517,7 +517,7 @@ func confirmedResponse(operation receiptOperation) *graphv1.GetReceiptStatusResp
 				DeadlineUnixMs: operation.deadlineUnixMS,
 				ItemIndex:      operation.expectedItem,
 				ItemCount:      operation.expectedItemCount,
-				OriginalResult:  result,
+				OriginalResult: result,
 			},
 		},
 	}

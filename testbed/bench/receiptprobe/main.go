@@ -562,11 +562,11 @@ func newReceiptOperation(
 	)
 
 	operation := receiptOperation{
-		family: family,
-		operationID: id.Bytes(),
-		logicalCallID: logicalCallID,
-		deadlineUnixMS: deadlineUnixMS,
-		expectedItem: 0,
+		family:            family,
+		operationID:       id.Bytes(),
+		logicalCallID:     logicalCallID,
+		deadlineUnixMS:    deadlineUnixMS,
+		expectedItem:      0,
 		expectedItemCount: 1,
 	}
 	receiptContext := &graphv1.MutationReceiptContext{
