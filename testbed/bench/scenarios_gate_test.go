@@ -490,7 +490,7 @@ func TestReceiptBenchSnapshotAcceptsIntegralScientificNotation(t *testing.T) {
 receipt_runtime_scalar go_memstats_heap_alloc_bytes 'go_memstats_heap_alloc_bytes 1.949696e+07'
 `
 	output, err := exec.Command("bash", "-c", fixture).CombinedOutput()
-	if err != nil || string(output) != "19496960\n" {
+	if err != nil || string(output) != "19496960" {
 		t.Fatalf("integral scientific metric = %q, err = %v; want 19496960", output, err)
 	}
 }
