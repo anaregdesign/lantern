@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.3.2
+
+- Make receipt-less Edge Add (singular, plural, and decaying) single-attempt
+  even with contribution IDs and an opt-in retry policy. A lost response stays
+  ambiguous instead of risking reapplication after an intervening Delete or
+  expiry. Receipt-backed Add retains status-checked recovery on certified
+  endpoints. The published 0.3.1 archive still has the unsafe plain-Add retry.
+
 ## 0.3.1
 
 - Add immutable online bounded-receipt capability, identity, endpoint,
