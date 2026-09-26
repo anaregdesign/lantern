@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
+
 const _journalKind = 'physical_receipt_restart_journal';
 const _journalFields = <String>{
   'schema',
@@ -18,9 +20,77 @@ const _journalFields = <String>{
   'requiredScenarios',
   'completedScenarios',
   'requiredCleanups',
+  'receiptIdentitySha256',
 };
 const _maxJournalBytes = 16 * 1024;
 const _maxReceiptRun = Duration(hours: 4);
+final _digestPattern = RegExp(r'^[0-9a-f]{64}$');
+const _receiptMutations = <String>{
+  'vertexPut',
+  'vertexDelete',
+  'edgeDelete',
+  'edgeAdd',
+};
+
+typedef ReceiptHandoffIdentity = ({
+  String logicalOperationId,
+  String recordId,
+  String mutation,
+  List<int> receiptOperationId,
+  List<int> receiptGroupId,
+});
+
+String receiptIdentitySha256(Iterable<ReceiptHandoffIdentity> identities) {
+  final items = identities.toList();
+  if (items.length != 4 ||
+      items.any(
+        (item) =>
+            item.logicalOperationId.isEmpty ||
+            item.recordId.isEmpty ||
+            item.receiptOperationId.length != 49 ||
+            item.receiptGroupId.length != 16,
+      ) ||
+      items.map((item) => item.logicalOperationId).toSet().length != 4 ||
+      items.map((item) => item.recordId).toSet().length != 4 ||
+      items
+              .map((item) => base64Url.encode(item.receiptOperationId))
+              .toSet()
+              .length !=
+          4 ||
+      items
+              .map((item) => base64Url.encode(item.receiptGroupId))
+              .toSet()
+              .length !=
+          4 ||
+      items
+          .map((item) => item.mutation)
+          .toSet()
+          .difference(_receiptMutations)
+          .isNotEmpty ||
+      items.map((item) => item.mutation).toSet().length != 4) {
+    throw StateError('Invalid receipt identity handoff');
+  }
+  items.sort(
+    (left, right) =>
+        left.logicalOperationId.compareTo(right.logicalOperationId),
+  );
+  return sha256
+      .convert(
+        utf8.encode(
+          jsonEncode([
+            for (final item in items)
+              [
+                item.logicalOperationId,
+                item.recordId,
+                item.mutation,
+                base64Url.encode(item.receiptOperationId),
+                base64Url.encode(item.receiptGroupId),
+              ],
+          ]),
+        ),
+      )
+      .toString();
+}
 
 /// Private, durable handoff between two launches of the same installed target.
 final class ReceiptRestartJournal {
@@ -34,6 +104,7 @@ final class ReceiptRestartJournal {
     required this.startedAt,
     required this.preparedAt,
     required this.firstPid,
+    required this.receiptIdentitySha256,
     required List<String> requiredScenarios,
     required List<String> completedScenarios,
     required List<String> requiredCleanups,
@@ -45,6 +116,7 @@ final class ReceiptRestartJournal {
         preparedAt.isUtc != true ||
         preparedAt.isBefore(startedAt) ||
         preparedAt.isAfter(startedAt.add(_maxReceiptRun)) ||
+        !_digestPattern.hasMatch(receiptIdentitySha256) ||
         !_validNames(this.requiredScenarios) ||
         !_validNames(this.requiredCleanups) ||
         !_validNames(this.completedScenarios) ||
@@ -69,12 +141,13 @@ final class ReceiptRestartJournal {
   final DateTime startedAt;
   final DateTime preparedAt;
   final int firstPid;
+  final String receiptIdentitySha256;
   final List<String> requiredScenarios;
   final List<String> completedScenarios;
   final List<String> requiredCleanups;
 
   Map<String, Object> toJson() => {
-    'schema': 2,
+    'schema': 3,
     'kind': _journalKind,
     'phase': 'awaiting_sigkill',
     'testedCommit': testedCommit,
@@ -89,6 +162,7 @@ final class ReceiptRestartJournal {
     'requiredScenarios': requiredScenarios,
     'completedScenarios': completedScenarios,
     'requiredCleanups': requiredCleanups,
+    'receiptIdentitySha256': receiptIdentitySha256,
   };
 
   Future<void> write(File file) async {
@@ -120,7 +194,7 @@ final class ReceiptRestartJournal {
         decoded.keys.toSet().difference(_journalFields).isNotEmpty ||
         decoded.keys.length != _journalFields.length ||
         jsonEncode(decoded) != text ||
-        decoded['schema'] != 2 ||
+        decoded['schema'] != 3 ||
         decoded['kind'] != _journalKind ||
         decoded['phase'] != 'awaiting_sigkill' ||
         decoded['testedCommit'] is! String ||
@@ -132,7 +206,8 @@ final class ReceiptRestartJournal {
         decoded['firstPid'] is! int ||
         decoded['requiredScenarios'] is! List<dynamic> ||
         decoded['completedScenarios'] is! List<dynamic> ||
-        decoded['requiredCleanups'] is! List<dynamic>) {
+        decoded['requiredCleanups'] is! List<dynamic> ||
+        decoded['receiptIdentitySha256'] is! String) {
       throw StateError('Receipt restart handoff has invalid fields');
     }
     final startedAt = _readUtc(decoded['startedAt']);
@@ -150,6 +225,7 @@ final class ReceiptRestartJournal {
       startedAt: startedAt,
       preparedAt: preparedAt,
       firstPid: decoded['firstPid'] as int,
+      receiptIdentitySha256: decoded['receiptIdentitySha256'] as String,
       requiredScenarios: scenarios,
       completedScenarios: completed,
       requiredCleanups: cleanups,

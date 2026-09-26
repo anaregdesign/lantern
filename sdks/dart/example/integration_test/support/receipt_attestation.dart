@@ -139,7 +139,16 @@ class ReceiptAttestation {
   DateTime? _preparedAt;
   DateTime? _resumedAt;
   InstalledReceiptBinary? _binary;
+  String? _restartReceiptIdentitySha256;
   bool _running = false;
+
+  String get restartReceiptIdentitySha256 {
+    final digest = _restartReceiptIdentitySha256;
+    if (!_running || _resumedAt == null || digest == null) {
+      throw StateError('Verified receipt restart identity is unavailable');
+    }
+    return digest;
+  }
 
   void registerCleanup(ReceiptCleanup cleanup, {String? restartObligation}) {
     if (!_running) throw StateError('Receipt test is not running');
@@ -199,7 +208,7 @@ class ReceiptAttestation {
   /// Writes a non-passing durable handoff while the app and SQLite stay open.
   Future<void> prepareForRestart(
     File journal,
-    Future<void> Function(ReceiptAttestation) body,
+    Future<String> Function(ReceiptAttestation) body,
   ) async {
     if (_startedAt != null || _requiredRestartCleanups.isEmpty) {
       throw StateError('Receipt restart preparation is invalid');
@@ -217,7 +226,7 @@ class ReceiptAttestation {
     _running = true;
     final failures = <_RunFailure>[];
     try {
-      await body(this);
+      final receiptIdentitySha256 = await body(this);
       if (_completedScenarios.isEmpty ||
           _completedScenarios.length == _requiredScenarios.length) {
         throw StateError('Receipt restart has no verified handoff');
@@ -233,6 +242,7 @@ class ReceiptAttestation {
         startedAt: _startedAt!,
         preparedAt: _preparedAt!,
         firstPid: _processId(),
+        receiptIdentitySha256: receiptIdentitySha256,
         requiredScenarios: _requiredScenarios.toList()..sort(),
         completedScenarios: _completedScenarios.toList()..sort(),
         requiredCleanups: _requiredRestartCleanups.toList()..sort(),
@@ -358,6 +368,7 @@ class ReceiptAttestation {
     _preparedAt = handoff.preparedAt;
     _resumedAt = resumedAt;
     _binary = installed;
+    _restartReceiptIdentitySha256 = handoff.receiptIdentitySha256;
     _completedScenarios.addAll(handoff.completedScenarios);
     await _write(status: 'running', phase: 'verify');
     await _finishRun(body);

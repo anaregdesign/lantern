@@ -13,6 +13,7 @@ import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'support/receipt_attestation.dart';
 import 'support/receipt_physical_fixture.dart';
+import 'support/receipt_restart_journal.dart';
 import 'support/receipt_scenarios.dart';
 
 const _partition = 'physical-receipt';
@@ -72,16 +73,17 @@ void main() {
         });
         return;
       }
-      await run.prepareForRestart(journal, (attestation) async {
-        await _prepareForKill(
+      await run.prepareForRestart(
+        journal,
+        (attestation) => _prepareForKill(
           attestation,
           PhysicalReceiptFixture.fromBuild(),
           keys,
           actions,
           root,
           database,
-        );
-      });
+        ),
+      );
       await actions.announce('sigkill_now');
       await Future<void>.delayed(const Duration(minutes: 20));
       throw StateError('Receipt app was not SIGKILLed after preparation');
@@ -90,7 +92,7 @@ void main() {
   );
 }
 
-Future<void> _prepareForKill(
+Future<String> _prepareForKill(
   ReceiptAttestation run,
   PhysicalReceiptFixture fixture,
   _ReceiptKeys keys,
@@ -131,14 +133,28 @@ Future<void> _prepareForKill(
     await _verifyAndroidIdle(run, direct, actions);
   }
   await repository.dispose();
+  final observedRemote = _DispatchCheckedRemote(
+    LanternClientOfflineRemote(proxy),
+    store,
+    keys,
+  );
   repository = OfflineLanternRepository(
     store: store,
-    remote: LanternClientOfflineRemote(proxy),
+    remote: observedRemote,
     config: _ambiguousConfig(),
   );
-  await _verifyCommittedLoss(run, fixture, direct, repository, store, keys);
+  final receiptIdentitySha256 = await _verifyCommittedLoss(
+    run,
+    fixture,
+    direct,
+    repository,
+    store,
+    keys,
+    observedRemote,
+  );
   // Intentionally leave SQLite and both clients open until the host kills
   // this process; cleanup is reconstructed from this run ID after relaunch.
+  return receiptIdentitySha256;
 }
 
 Future<void> _verifyAfterKill(
@@ -190,6 +206,14 @@ Future<void> _verifyAfterKill(
       pending.map((record) => record.receipt?.state),
       everyElement(OfflineReceiptReconciliationState.statusRequired),
     );
+    expect(
+      pending.map((record) => record.receipt?.mayHaveDispatched),
+      everyElement(isTrue),
+    );
+    if (_receiptIdentityDigest(pending, keys) !=
+        run.restartReceiptIdentitySha256) {
+      throw StateError('Physical receipt identities changed across restart');
+    }
     for (final operation in keys.responseLossOperations) {
       final status = await repository.getWriteStatus(_partition, operation);
       expect(status?.items.single.state, OfflineWriteState.retryScheduled);
@@ -700,118 +724,139 @@ Future<void> _verifyAndroidIdle(
   }
 });
 
-Future<void> _verifyCommittedLoss(
+Future<String> _verifyCommittedLoss(
   ReceiptAttestation run,
   PhysicalReceiptFixture fixture,
   LanternClient direct,
   OfflineLanternRepository repository,
   SqliteOfflineStore store,
   _ReceiptKeys keys,
-) => run.verifyScenario('receipt_committed_response_loss', () async {
-  final expiration = DateTime.now().toUtc().add(_expiresIn);
-  expect(
-    await direct.putVertex(
-      VertexInput(
-        key: keys.vertex('lost_put'),
-        value: VertexValue.string('original'),
-        expiresAt: expiration,
-      ),
-    ),
-    PutOutcome.appliedAndLive,
-  );
-  expect(
-    await direct.putVertex(
-      VertexInput(
-        key: keys.vertex('lost_vertex_delete'),
-        value: VertexValue.string('delete'),
-        expiresAt: expiration,
-      ),
-    ),
-    PutOutcome.appliedAndLive,
-  );
-  for (final name in ['lost_edge_delete', 'lost_add']) {
-    final edge = keys.edge(name);
+  _DispatchCheckedRemote observedRemote,
+) async {
+  late final String receiptIdentitySha256;
+  await run.verifyScenario('receipt_committed_response_loss', () async {
+    final expiration = DateTime.now().toUtc().add(_expiresIn);
     expect(
-      await direct.putEdge(
-        EdgeInput(
-          tail: edge.tail,
-          head: edge.head,
-          weight: 1,
+      await direct.putVertex(
+        VertexInput(
+          key: keys.vertex('lost_put'),
+          value: VertexValue.string('original'),
           expiresAt: expiration,
         ),
       ),
       PutOutcome.appliedAndLive,
     );
-  }
-  expect(await direct.deleteEdge(keys.edge('lost_add')), isTrue);
-  await _missingEdge(direct, keys.edge('lost_add'));
-
-  await repository.putVertexIfAbsent(
-    partitionId: _partition,
-    operationId: keys.operation('lost_put'),
-    input: VertexInput(
-      key: keys.vertex('lost_put'),
-      value: VertexValue.string('replacement'),
-      expiresAt: expiration,
-    ),
-  );
-  await repository.deleteVertex(
-    partitionId: _partition,
-    operationId: keys.operation('lost_vertex_delete'),
-    key: keys.vertex('lost_vertex_delete'),
-  );
-  await repository.deleteEdge(
-    partitionId: _partition,
-    operationId: keys.operation('lost_edge_delete'),
-    edge: keys.edge('lost_edge_delete'),
-  );
-  await repository.addEdge(
-    partitionId: _partition,
-    operationId: keys.operation('lost_add'),
-    input: EdgeInput(
-      tail: keys.edge('lost_add').tail,
-      head: keys.edge('lost_add').head,
-      weight: 4,
-      expiresAt: expiration,
-      contribId: _contribution(5),
-    ),
-  );
-  final beforeSend = await store.transaction(
-    (transaction) => transaction.outbox(_partition),
-  );
-  expect(beforeSend, hasLength(4));
-  expect(
-    beforeSend.map((record) => record.operationId).toSet(),
-    keys.responseLossOperations.toSet(),
-  );
-  expect(
-    beforeSend.map((record) => record.receipt?.operationId).toSet().length,
-    4,
-  );
-  expect(beforeSend.map((record) => record.attemptCount), everyElement(0));
-  expect(await repository.drain(_partition), 0);
-  final ambiguous = await store.transaction(
-    (transaction) => transaction.outbox(_partition),
-  );
-  expect(ambiguous, hasLength(4));
-  for (final record in ambiguous) {
-    expect(record.attemptCount, 1);
-    expect(record.diagnosticCode, 'receipt_response_unknown');
     expect(
-      record.receipt!.state,
-      OfflineReceiptReconciliationState.statusRequired,
+      await direct.putVertex(
+        VertexInput(
+          key: keys.vertex('lost_vertex_delete'),
+          value: VertexValue.string('delete'),
+          expiresAt: expiration,
+        ),
+      ),
+      PutOutcome.appliedAndLive,
     );
-    final server = await direct.getReceiptStatus(record.receipt!.operationId);
-    expect(server.state, ReceiptStatusState.confirmed);
-    expect(server.receipt, isNotNull);
-  }
-  expect((await direct.getEdge(keys.edge('lost_add'))).weight, 4);
-  expect(await direct.deleteEdge(keys.edge('lost_add')), isTrue);
-  await _missingEdge(direct, keys.edge('lost_add'));
-  final trace = await fixture.proxyTrace();
-  trace.assertInitialLoss();
-  await fixture.sealProxyHandoff();
-});
+    for (final name in ['lost_edge_delete', 'lost_add']) {
+      final edge = keys.edge(name);
+      expect(
+        await direct.putEdge(
+          EdgeInput(
+            tail: edge.tail,
+            head: edge.head,
+            weight: 1,
+            expiresAt: expiration,
+          ),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+    }
+    expect(await direct.deleteEdge(keys.edge('lost_add')), isTrue);
+    await _missingEdge(direct, keys.edge('lost_add'));
+
+    await repository.putVertexIfAbsent(
+      partitionId: _partition,
+      operationId: keys.operation('lost_put'),
+      input: VertexInput(
+        key: keys.vertex('lost_put'),
+        value: VertexValue.string('replacement'),
+        expiresAt: expiration,
+      ),
+    );
+    await repository.deleteVertex(
+      partitionId: _partition,
+      operationId: keys.operation('lost_vertex_delete'),
+      key: keys.vertex('lost_vertex_delete'),
+    );
+    await repository.deleteEdge(
+      partitionId: _partition,
+      operationId: keys.operation('lost_edge_delete'),
+      edge: keys.edge('lost_edge_delete'),
+    );
+    await repository.addEdge(
+      partitionId: _partition,
+      operationId: keys.operation('lost_add'),
+      input: EdgeInput(
+        tail: keys.edge('lost_add').tail,
+        head: keys.edge('lost_add').head,
+        weight: 4,
+        expiresAt: expiration,
+        contribId: _contribution(5),
+      ),
+    );
+    final beforeSend = await store.transaction(
+      (transaction) => transaction.outbox(_partition),
+    );
+    expect(beforeSend, hasLength(4));
+    final queued = beforeSend.map((record) => record.operationId).toSet();
+    if (queued.length != 4 ||
+        !queued.containsAll(keys.responseLossOperations)) {
+      throw StateError('Physical receipt queue is incomplete');
+    }
+    expect(
+      beforeSend.map((record) => record.receipt?.operationId).toSet().length,
+      4,
+    );
+    expect(beforeSend.map((record) => record.attemptCount), everyElement(0));
+    expect(
+      beforeSend.map((record) => record.receipt?.mayHaveDispatched),
+      everyElement(isFalse),
+    );
+    expect(
+      beforeSend.map((record) => record.receipt?.state),
+      everyElement(OfflineReceiptReconciliationState.statusRequired),
+    );
+    expect(await repository.drain(_partition), 0);
+    final checked = observedRemote.checkedOperations;
+    if (checked.length != 4 ||
+        !checked.containsAll(keys.responseLossOperations)) {
+      throw StateError('Physical receipt dispatch guard missed a mutation');
+    }
+    final ambiguous = await store.transaction(
+      (transaction) => transaction.outbox(_partition),
+    );
+    expect(ambiguous, hasLength(4));
+    for (final record in ambiguous) {
+      expect(record.attemptCount, 1);
+      expect(record.diagnosticCode, 'receipt_response_unknown');
+      expect(
+        record.receipt!.state,
+        OfflineReceiptReconciliationState.statusRequired,
+      );
+      expect(record.receipt!.mayHaveDispatched, isTrue);
+      final server = await direct.getReceiptStatus(record.receipt!.operationId);
+      expect(server.state, ReceiptStatusState.confirmed);
+      expect(server.receipt, isNotNull);
+    }
+    receiptIdentitySha256 = _receiptIdentityDigest(ambiguous, keys);
+    expect((await direct.getEdge(keys.edge('lost_add'))).weight, 4);
+    expect(await direct.deleteEdge(keys.edge('lost_add')), isTrue);
+    await _missingEdge(direct, keys.edge('lost_add'));
+    final trace = await fixture.proxyTrace();
+    trace.assertInitialLoss();
+    await fixture.sealProxyHandoff();
+  });
+  return receiptIdentitySha256;
+}
 
 Future<void> _waitForTransportFailure(
   Future<Object?> Function() attempt, {
@@ -887,6 +932,33 @@ Uint8List _contribution(int suffix) => Uint8List(24)..[23] = suffix;
 int _float32Bits(double value) =>
     (ByteData(4)..setFloat32(0, value, Endian.big)).getUint32(0, Endian.big);
 
+String _receiptIdentityDigest(
+  List<OfflineOutboxRecord> records,
+  _ReceiptKeys keys,
+) {
+  final expected = keys.responseLossMutations;
+  if (records.length != expected.length ||
+      records.map((record) => record.operationId).toSet().length !=
+          expected.length ||
+      records.any(
+        (record) =>
+            record.receipt == null ||
+            expected[record.operationId] != record.receipt!.mutation,
+      )) {
+    throw StateError('Incomplete physical receipt identity set');
+  }
+  return receiptIdentitySha256([
+    for (final record in records)
+      (
+        logicalOperationId: record.operationId,
+        recordId: record.recordId,
+        mutation: record.receipt!.mutation.name,
+        receiptOperationId: record.receipt!.operationId.bytes,
+        receiptGroupId: record.receipt!.groupId.bytes,
+      ),
+  ]);
+}
+
 final class _ReceiptKeys {
   const _ReceiptKeys(this.runId);
 
@@ -920,6 +992,126 @@ final class _ReceiptKeys {
     'lost_edge_delete',
     'lost_add',
   ].map(operation);
+  Map<String, ReceiptMutationKind> get responseLossMutations => {
+    operation('lost_put'): ReceiptMutationKind.vertexPut,
+    operation('lost_vertex_delete'): ReceiptMutationKind.vertexDelete,
+    operation('lost_edge_delete'): ReceiptMutationKind.edgeDelete,
+    operation('lost_add'): ReceiptMutationKind.edgeAdd,
+  };
+}
+
+final class _DispatchCheckedRemote
+    implements OfflineRemote, OfflineReceiptRemote, OfflineRecoveryRemote {
+  _DispatchCheckedRemote(this._delegate, this._store, this._keys);
+
+  final LanternClientOfflineRemote _delegate;
+  final SqliteOfflineStore _store;
+  final _ReceiptKeys _keys;
+  final Set<String> _checkedOperations = {};
+
+  Set<String> get checkedOperations => Set.unmodifiable(_checkedOperations);
+
+  @override
+  Future<void> probe({LanternCancellationToken? cancellation}) =>
+      _delegate.probe(cancellation: cancellation);
+
+  @override
+  Future<OfflineRemoteRead<Vertex>> getVertex(
+    String key, {
+    LanternCancellationToken? cancellation,
+  }) => _delegate.getVertex(key, cancellation: cancellation);
+
+  @override
+  Future<OfflineRemoteRead<Edge>> getEdge(
+    EdgeRef edge, {
+    LanternCancellationToken? cancellation,
+  }) => _delegate.getEdge(edge, cancellation: cancellation);
+
+  @override
+  Future<List<OfflineRemoteRead<Vertex>>> getVertices(
+    List<String> keys, {
+    LanternCancellationToken? cancellation,
+  }) => _delegate.getVertices(keys, cancellation: cancellation);
+
+  @override
+  Future<List<OfflineRemoteRead<Edge>>> getEdges(
+    List<EdgeRef> edges, {
+    LanternCancellationToken? cancellation,
+  }) => _delegate.getEdges(edges, cancellation: cancellation);
+
+  @override
+  Future<PutOutcome> putVertex(
+    Vertex vertex, {
+    LanternCancellationToken? cancellation,
+  }) async => throw StateError('Receipt matrix must not send plain Vertex Put');
+
+  @override
+  Future<PutOutcome> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  }) async => throw StateError('Receipt matrix must not send plain Edge Put');
+
+  @override
+  Future<OfflineReceiptPreparation> prepareReceipts(
+    ReceiptMutationKind mutation, {
+    required int itemCount,
+    LanternCancellationToken? cancellation,
+  }) => _delegate.prepareReceipts(
+    mutation,
+    itemCount: itemCount,
+    cancellation: cancellation,
+  );
+
+  @override
+  Future<OfflineReceiptStatus> getReceiptStatus(
+    ReceiptOperationId operationId, {
+    LanternCancellationToken? cancellation,
+  }) => _delegate.getReceiptStatus(operationId, cancellation: cancellation);
+
+  @override
+  Future<OfflineReceiptCapability> getReceiptCapability({
+    LanternCancellationToken? cancellation,
+  }) => _delegate.getReceiptCapability(cancellation: cancellation);
+
+  @override
+  Future<OfflineReceiptResult> sendReceiptMutation(
+    OfflineIntent intent, {
+    required ReceiptContext context,
+    LanternCancellationToken? cancellation,
+  }) async {
+    if (context.operationIds.length != 1) {
+      throw StateError('Physical receipt context must have one item');
+    }
+    final pending = await _store.transaction(
+      (transaction) => transaction.outbox(_partition),
+    );
+    final matches = pending
+        .where(
+          (record) =>
+              record.receipt?.operationId == context.operationIds.single,
+        )
+        .toList();
+    if (matches.length != 1) {
+      throw StateError('Physical receipt dispatch has no unique durable item');
+    }
+    final record = matches.single;
+    final receipt = record.receipt!;
+    if (record.state != OfflineOutboxState.sending ||
+        record.attemptCount != 0 ||
+        !receipt.mayHaveDispatched ||
+        receipt.mutation != _keys.responseLossMutations[record.operationId] ||
+        receipt.mutation != context.mutation ||
+        receipt.groupId != context.groupId ||
+        receipt.endpoint != context.endpoint ||
+        !_checkedOperations.add(record.operationId)) {
+      throw StateError('Physical receipt was not durably marked before send');
+    }
+    return _delegate.sendReceiptMutation(
+      intent,
+      context: context,
+      cancellation: cancellation,
+    );
+  }
 }
 
 final class _OperatorActions {

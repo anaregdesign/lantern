@@ -16,19 +16,31 @@ publish while either receipt record is absent.
 scenarios are constants in source, not operator-supplied. The first launch
 calls `prepareForRestart`, executes each pre-kill assertion under
 `verifyScenario`, and writes an atomic **running / awaiting_sigkill** marker
-plus a private, bounded SQLite-directory restart journal. It leaves the
-repository, database, and clients open. The operator must kill that process
-with an actual SIGKILL and relaunch the **same installed binary** without
-uninstalling, reinstalling, clearing app data, or using hot restart. A
-graceful close, crash-probe-only run, or initial-launch marker is not a pass.
+plus a private, bounded SQLite-directory restart journal. The four queued
+receipt families must start with durable `mayHaveDispatched=false`; immediately
+before each real mutation RPC, the SQLite outbox must already hold
+`mayHaveDispatched=true`. After each committed response is lost, the target
+checks the durable true flag and status-required state, then stores a
+canonical SHA-256 of all four post-drop logical/record, receipt operation,
+mutation, and group associations in the **private journal only**. Provisional
+pre-send receipt IDs may change safely before dispatch; the comparison is
+against the post-drop identities, not the initial queue snapshot. The first
+launch leaves the repository, database, and clients open. The operator must
+kill that process with an actual SIGKILL and relaunch the **same installed
+binary** without uninstalling, reinstalling, clearing app data, or using hot
+restart. A graceful close, crash-probe-only run, or initial-launch marker
+is not a pass.
 
 The second launch calls `resumeAfterRestart`. It requires the original
 canonical marker and journal, exact commit/target/run/platform/package,
 the same installed SHA-256 and completed pre-kill scenario set, a different
 process ID, and a valid UTC handoff. It reopens the file-backed SQLite store
 and checks the four pending ambiguous writes before sending anything. It
-then performs status-first reconciliation, checks **no mutation resend**
-across the proxy's sealed kill boundary, asserts persisted receipt results
+requires all four durable dispatch flags to remain true and compares the
+reopened SQLite identities to the private journal digest before any status
+lookup or drain. It then performs status-first reconciliation, checks **no
+mutation resend** across the proxy's sealed kill boundary, asserts persisted
+receipt results
 (including finite-source float32 overflow), and runs each registered
 cleanup. Only after all required scenario IDs and cleanup obligations have
 passed and the installed bytes have been rehashed does it atomically write a
@@ -38,8 +50,10 @@ dedicated release check.
 
 The marker stays content-free at `tmp/lantern-receipt-attestation.json`
 (Android app cache); it never records an endpoint, token, graph data,
-device identifier, binary path, or raw exception. Android hashes the installed
-single APK containing the Dart AOT target; iOS hashes the installed signed
+receipt IDs or their identity digest, device identifier, binary path, or raw
+exception. The private journal is app-local and is not a public artifact.
+Android hashes the installed single APK containing the Dart AOT target;
+iOS hashes the installed signed
 `Runner.app/Frameworks/App.framework/App`, **not** `Runner.app/Runner`.
 Missing channels, unreadable bytes, split/debug-only APKs, and simulators
 fail closed.

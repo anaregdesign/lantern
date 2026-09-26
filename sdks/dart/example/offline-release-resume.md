@@ -3,9 +3,12 @@
 This is the repeatable device procedure for `lantern_client_offline` releases.
 The first `0.2.0` publication in
 [#1162](https://github.com/anaregdesign/lantern/issues/1162) is complete. The
-`0.3.0` identity CDC release added a dedicated CDC test and evidence
-record on each physical platform. The next receipt-bearing release additionally
-requires a distinct two-launch receipt target and paired on-device markers.
+published `0.3.0` identity CDC release added a dedicated CDC test and
+evidence record on each physical platform; it remains legacy Put-only. The
+receipt-bearing `0.4.0` source candidate additionally requires a distinct
+two-launch receipt target and paired on-device markers. Source version
+`0.4.0` is not a hosted release or physical qualification.
+
 The existing [physical-device smoke guide](physical-device-smoke.md) defines the
 evidence schema and historical observations. Earlier h2c or simulator results
 do not qualify the release. Do not tag or publish until
@@ -152,8 +155,12 @@ adjacent README) as the immediate child of the exact tested code commit.
 The offline tag points to this evidence-only child; preflight checks all
 eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
 manifests, and absence of changed code. The parent `lantern_client 0.3.1`
-publication currently awaits human protected-environment approval; hosted
-remains `0.3.0`. Do not change the offline hosted pin/lock, tag, or publish
-until that approval, both actual physical receipt runs, custody review, and
-every release gate are complete. The pub.dev OIDC process is described in
-[CONTRIBUTING.md](../../../CONTRIBUTING.md).
+is hosted on pub.dev. Offline `0.3.0` is already published and cannot be
+reused for the receipt-bearing source;
+the example's offline `^0.4.0` dependency and lock describe the candidate,
+not a published package. Do not retarget that dependency to the hosted
+Put-only `0.3.0`, tag, or publish until both actual physical receipt runs,
+approved private immutable custody, and every release gate are complete.
+An offline package administrator must also confirm the offline pub.dev OIDC
+binding; it is not verified by this source change. The pub.dev OIDC process
+is described in [CONTRIBUTING.md](../../../CONTRIBUTING.md).
