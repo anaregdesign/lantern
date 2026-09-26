@@ -3,11 +3,11 @@
  *
  * Two entrypoints, one client class:
  *
- *   - `import { Lantern } from "lantern-sdk";`
- *     `Lantern.connect("http://host:6380")` — Node h2c (HTTP/2)
+ *   - `import { connect } from "lantern-sdk";`
+ *     `connect("http://host:6380")` — Node h2c (HTTP/2)
  *     via `@connectrpc/connect-node`.
- *   - `import { Lantern } from "lantern-sdk/web";`
- *     `Lantern.connectWeb("http://host:6380")` — browser fetch
+ *   - `import { connectWeb } from "lantern-sdk/web";`
+ *     `connectWeb("http://host:6380")` — browser fetch
  *     (HTTP/1.1) via `@connectrpc/connect-web`. No
  *     `@connectrpc/connect-node` code is pulled into the browser
  *     bundle.
@@ -20,7 +20,8 @@
  * Batch helpers (`putVertices`, `addEdges`, `putEdges`,
  * `deleteVertices`, `deleteEdges`) auto-chunk at
  * `ConnectOptions.batchChunkSize` (default 1000) and throw
- * `BatchError` with a resumable `written` offset on partial failure.
+ * `BatchError` with a fully observed `written` prefix on partial failure;
+ * the failed chunk's original result may be unknown.
  *
  * Wire: Connect protocol. The Node transport uses binary by default; the
  * browser entrypoint intentionally keeps Connect-Web JSON unless callers opt
@@ -534,16 +535,17 @@ export interface LanternArgs {
    * Optional list of Connect interceptors run on every unary call.
    * The order matches @connectrpc/connect's `Interceptor[]` chain —
    * the first entry sees outgoing requests first and responses last.
+   * Use an interceptor to set custom request headers. The SDK adds no
+   * retry interceptor; callers own the safety of any retry they install.
    */
   interceptors?: Interceptor[];
   /**
    * Override the transport options forwarded to
-   * `createConnectTransport`. `baseUrl` is filled in from the
-   * constructor arg and cannot be overridden here. The shape is the
-   * underlying `@connectrpc/connect-node` / `@connectrpc/connect-web`
-   * options object minus `baseUrl`; passed through verbatim so
-   * consumers can flip `useBinaryFormat`, override the fetch
-   * implementation, etc.
+   * `createConnectTransport`. Pass `baseUrl` as the constructor argument;
+   * this object is spread verbatim over transport defaults, so overriding
+   * `interceptors` here also replaces `token` and `args.interceptors`.
+   * Use `args.interceptors` for custom headers instead. Other supported
+   * transport options can flip `useBinaryFormat`, override fetch, etc.
    */
   transportOptions?: Record<string, unknown>;
 }
@@ -602,15 +604,15 @@ function normaliseBaseUrl(caller: string, baseUrl: string): string {
 export { normaliseBaseUrl };
 
 /**
- * Promise-based Lantern client built on Connect-Node v2.
+ * Promise-based Lantern client built on Connect v2.
  *
- * Construct with `Lantern.connect("http://host:6380")`. All methods
+ * Construct with `connect("http://host:6380")` or `connectWeb()`. All methods
  * return Promises; pass `signal` for AbortController-driven
  * cancellation.
  *
  * Batch helpers auto-chunk at `ConnectOptions.batchChunkSize`
- * (default 1000) and throw `BatchError` with a resumable `written`
- * offset on partial failure.
+ * (default 1000) and throw `BatchError` with a fully observed `written`
+ * prefix on partial failure. The SDK does not automatically retry calls.
  */
 export class Lantern {
   private readonly client: Client<typeof LanternService>;
@@ -655,6 +657,9 @@ export class Lantern {
    *     transport, …),
    *   - the test injects a mock transport,
    *   - the runtime is unsupported by the bundled transport helpers.
+   *
+   * This class does not add retries: any retries or interceptors on the
+   * supplied transport are the transport owner's responsibility.
    *
    * `baseUrl` is optional and used only by `ping()`, which POSTs a
    * Connect+JSON Health/Check outside the typed transport (the
@@ -2191,8 +2196,9 @@ export class Lantern {
    * applies (so the wire field stays absent → legacy). Otherwise every edge
    * gets a slot: a caller id (validated) wins, else an automatic id when
    * enabled, else an empty slot the server reads as absent. One sequence is
-   * consumed per chunk so a retried chunk re-sends identical bytes and the
-   * ids stay aligned with `edges` regardless of how the batch was chunked.
+   * consumed per chunk so the ids stay aligned with `edges`. Resending the
+   * same constructed transport request keeps its ids; invoking this SDK
+   * method again generates a different sequence of automatic ids.
    */
   private chunkContribIds(chunk: readonly EdgeInput[]): Uint8Array[] | undefined {
     const auto = this.autoContrib;

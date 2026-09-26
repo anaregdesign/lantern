@@ -228,8 +228,8 @@ export interface EdgeInput {
    * Optional 24-byte idempotency key for this additive contribution (#895).
    * When present it must be exactly 24 bytes; re-adding the same edge with
    * the same id while the contribution is live is a no-op instead of
-   * double-counting weight. Omit (or leave empty) for the legacy additive
-   * path. See `contrib.ts` for the layout and dedup horizon.
+   * double-counting weight. Omit for the legacy additive path. See
+   * `contrib.ts` for the layout and dedup horizon.
    */
   contribId?: Uint8Array;
 }

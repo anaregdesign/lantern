@@ -28,8 +28,9 @@ they must not conflict.
 - **Dependency direction is a DAG — no back edges.** `pb` and `core` are leaves.
   `sdks/go` imports `pb` only (never `core`/`server`). `server` imports `pb` and `core`
   only (**never** the client SDK). The root module (cli + tests/integration) is the only
-  place that depends on everything. Cross-module/full-stack tests live in
-  `tests/integration/`, not under the producing package.
+  place that depends on everything. Cross-module Go integration tests live in
+  `tests/integration/`, not under the producing package; standalone Node real-wire
+  tests live in `sdks/node/test/` per `CONTRIBUTING.md`.
 - **SDK value accessors are free functions, not methods**: `Kind(v)`, `IntValue(v)`,
   `StringValue(v)`, etc. `client.Vertex`/`client.Edge` are true aliases of the `pb`
   types (one `Vertex` type, no boundary casts). Adding a value type updates three sites
