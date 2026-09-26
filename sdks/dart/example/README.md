@@ -109,8 +109,12 @@ placeholder byte variables shown above.
 - an opt-in `lantern_client_offline` screen with immediate cached snapshots,
   locally committed Put pending state, explicit probe/replay, and authorized
   dead-letter inspect/retry/delete controls, plus an independently opt-in
-  foreground identity CDC session. The 0.4.0 offline core candidate adds
-  receipt-backed mutations, but this example screen still exercises Put only.
+  foreground identity CDC session. This screen remains Put-only: hosted
+  offline 0.3.0 has no receipt outbox, and merged offline 0.4.0 source
+  implements receipt-backed conditional Put, exact Delete, and explicit-ID
+  Add separately. It does not add those flows to this UI or qualify their
+  physical release gates (#1399); #1449's generic capture preparation is
+  not receipt-specific device evidence.
 
 The app deliberately does not close its app-scoped client on `inactive`, which
 can be caused by a phone call or system dialog. It cancels screen work on
