@@ -1,47 +1,62 @@
-# Receipt-only physical attestation (prepared, inactive)
+# Receipt-only physical matrix (release-enforced, not yet qualified)
 
-Issue #1449 prepares an **opt-in** receipt evidence path. It does not add a
-receipt test target, qualify a device, change the four existing smoke/CDC
-records, or alter `physical_release_gate.py`. The final #1398 receipt target
-must implement the real assertions first; #1399 will then define its immutable
-required scenario IDs and activate the receipt check in the release gate. Do
-not use the historical smoke/CDC evidence or the probe below as receipt proof.
+The dedicated `integration_test/physical_receipt_matrix_test.dart` target,
+the fixed 12-ID per-platform matrix in `support/receipt_scenarios.dart`,
+and the paired-marker release check are source implementations for #1399/#1449.
+They do **not** qualify Android or iPhone until the exact frozen commit is
+run on both physical devices and its signed originals are placed under
+approved private immutable custody. The existing smoke/CDC results and the
+binary probe below cannot substitute for a receipt run. Do not tag or
+publish while either receipt record is absent.
 
-## What the final target must do
+## Two-launch on-device contract
 
-In its own `integration_test/*_test.dart` target, construct
-`ReceiptAttestation.fromBuild` from
-`integration_test/support/receipt_attestation.dart` with the **fixed target
-path and scenario IDs in source**. The factory reads the exact 40-character
-source commit and fresh 32-hex run ID supplied with `--dart-define` from
-the compiled app, rejecting missing or malformed values. Wrap the entire test body in
-`attestation.run((run) async { ... })`. Put each scenario's actual work and
-assertions inside `await run.verifyScenario('<fixed-id>', () async { ... })`;
-the runner marks it complete **only after the callback's last assertion
-succeeds**. Register every owned cleanup through
-`run.registerCleanup(...)`, not an untracked `addTearDown`: the marker is
-`passed` only after all registered cleanups succeed and all required IDs have
-actually been marked. An assertion, missing ID, duplicate mark, cleanup
-failure, missing native channel, unreadable binary, or changed installed
-platform/package/hash makes the run fail. The runner re-reads and re-hashes
-the installed binary after tracked cleanup, before writing `passed`; a
-change or read failure writes `failed` with phase `attestation`.
-Failed/running markers do not qualify. Never pass an operator-provided
-scenario list or target path into the test.
+`ReceiptAttestation.fromBuild` reads the 40-character source SHA and fresh
+32-hex run ID compiled with `--dart-define`. The target and required
+scenarios are constants in source, not operator-supplied. The first launch
+calls `prepareForRestart`, executes each pre-kill assertion under
+`verifyScenario`, and writes an atomic **running / awaiting_sigkill** marker
+plus a private, bounded SQLite-directory restart journal. The four queued
+receipt families must start with durable `mayHaveDispatched=false`; immediately
+before each real mutation RPC, the SQLite outbox must already hold
+`mayHaveDispatched=true`. After each committed response is lost, the target
+checks the durable true flag and status-required state, then stores a
+canonical SHA-256 of all four post-drop logical/record, receipt operation,
+mutation, and group associations in the **private journal only**. Provisional
+pre-send receipt IDs may change safely before dispatch; the comparison is
+against the post-drop identities, not the initial queue snapshot. The first
+launch leaves the repository, database, and clients open. The operator must
+kill that process with an actual SIGKILL and relaunch the **same installed
+binary** without uninstalling, reinstalling, clearing app data, or using hot
+restart. A graceful close, crash-probe-only run, or initial-launch marker
+is not a pass.
 
-The runner first discards any old marker, asks the native app for its
-**installed** binary path, hashes that file via streaming SHA-256, and
-atomically writes a content-free marker in the app temp directory:
-`lantern-receipt-attestation.json`. It records the commit, target, run ID,
-native platform and package ID, installed hash, UTC start/finish, actual
-completed IDs, and status/phase. It never records an endpoint, token, graph
-key/value, app-bundle path, device ID, or raw exception. Android exposes
-`ApplicationInfo.sourceDir` only for a single readable installed APK
-containing `libapp.so` (the profile Dart AOT target); split installs and
-debug/kernel-only APKs fail closed. iOS exposes the physical app's
-`Runner.app/Frameworks/App.framework/App`, **not** `Runner.app/Runner`;
-simulator lookup fails closed. No build-directory path is accepted by the
-on-device reader.
+The second launch calls `resumeAfterRestart`. It requires the original
+canonical marker and journal, exact commit/target/run/platform/package,
+the same installed SHA-256 and completed pre-kill scenario set, a different
+process ID, and a valid UTC handoff. It reopens the file-backed SQLite store
+and checks the four pending ambiguous writes before sending anything. It
+requires all four durable dispatch flags to remain true and compares the
+reopened SQLite identities to the private journal digest before any status
+lookup or drain. It then performs status-first reconciliation, checks **no
+mutation resend** across the proxy's sealed kill boundary, asserts persisted
+receipt results
+(including finite-source float32 overflow), and runs each registered
+cleanup. Only after all required scenario IDs and cleanup obligations have
+passed and the installed bytes have been rehashed does it atomically write a
+schema-2 **passed / complete** marker with the `restart` proof. An
+incomplete, `running`, `failed`, or schema-1 marker cannot satisfy the
+dedicated release check.
+
+The marker stays content-free at `tmp/lantern-receipt-attestation.json`
+(Android app cache); it never records an endpoint, token, graph data,
+receipt IDs or their identity digest, device identifier, binary path, or raw
+exception. The private journal is app-local and is not a public artifact.
+Android hashes the installed single APK containing the Dart AOT target;
+iOS hashes the installed signed
+`Runner.app/Frameworks/App.framework/App`, **not** `Runner.app/Runner`.
+Missing channels, unreadable bytes, split/debug-only APKs, and simulators
+fail closed.
 
 ## Nonqualifying native lookup probe
 
@@ -66,121 +81,139 @@ this probe's kind and missing receipt scenarios; its hash can never be
 reused for a different receipt target. No device probe has been run as part
 of #1449; get a serial device slot before attempting one.
 
-## Capture a future receipt run on physical hardware
+## Fixture, physical actions, and capture
 
-Use a clean, committed checkout with the exact intended code SHA, compatible
-server, private authenticated TLS fixture, and a serial device slot. Keep
-device IDs and any endpoint or token defines in private local files outside
-this repository; do not upload commands/logs containing them. Sync host and
-device UTC clocks. Pick a **new** random run ID for each platform and build
-(`python3 -c 'import secrets; print(secrets.token_hex(16))'`). The final
-target must use `ReceiptAttestation.fromBuild` so
-`LANTERN_TESTED_COMMIT` and `LANTERN_RECEIPT_RUN_ID` are compiled into
-the target and validated. Set `TARGET` to that target's fixed path; do not
-substitute the probe.
+Obtain the exclusive device/host slot. Freeze **one clean code commit** after
+the offline receipt fix and source checks. Prepare a receipt-certified durable
+WAL responder (not graph-only) with all four mutations enabled, a retention
+window **greater than four hours**, and adequate receipt caps. Its endpoint
+must remain stable across both launches. Make its API and runtime-token BFF
+device-reachable over platform-trusted HTTPS. Provide a separately reachable
+hostname-mismatched or untrusted HTTPS listener (certificate verification
+failure, **not** connection refusal), and a private LAN HTTPS route for
+iOS permission denial.
+Start `tool/physical_receipt_proxy.dart` with
+`LANTERN_RECEIPT_PROXY_CONFIG` pointing to a mode-600 private JSON file
+outside the repository. Its six keys are `listenHost`, `listenPort`,
+`certificateChain`, `privateKey`, `upstream`, and `controlToken`. The proxy
+control token must be the token that the runtime BFF issues to this app. The proxy
+must be reachable over trusted HTTPS from the phone; it forwards only
+receipt capability/status and the four receipt mutations, consumes the
+upstream success before dropping each mutation's downstream socket once,
+and exposes an authenticated, content-free count/order trace. The app fetches
+its token at runtime from the BFF. Put all addresses, credentials, device IDs,
+certificates, and private configuration outside this checkout; never publish
+raw commands, logs, or transcripts containing them.
 
-For Android, from `sdks/dart/example`:
+Before requesting physical devices, run the example's
+`test/receipt_attestation_test.dart` and `test/physical_receipt_proxy_test.dart`
+with `flutter test --no-pub`. The proxy unit test uses OpenSSL to generate
+throwaway test-only CA/leaf files in a temporary directory and listens only
+on loopback. It tests TLS trust and committed-response drops but does not
+qualify a physical device or the real signed proxy certificate.
 
-```bash
-flutter build apk --profile --no-pub --target="$TARGET" \
-  --dart-define=LANTERN_TESTED_COMMIT="$TESTED_SHA" \
-  --dart-define=LANTERN_RECEIPT_RUN_ID="$RUN_ID" \
-  --dart-define-from-file="$PRIVATE_DEFINES"
-shasum -a 256 build/app/outputs/flutter-apk/app-profile.apk
-adb -d install -r build/app/outputs/flutter-apk/app-profile.apk
-adb -d shell pm path com.anaregdesign.lantern_example
-adb -d shell getprop ro.kernel.qemu
-RUN_STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-adb -d shell am start -n com.anaregdesign.lantern_example/.MainActivity
-adb -d exec-out run-as com.anaregdesign.lantern_example \
-  cat cache/lantern-receipt-attestation.json > "$PRIVATE_DIR/android-marker.json"
-```
+Supply these **private** compile-time defines in `--dart-define-from-file`:
+`LANTERN_RECEIPT_ENDPOINT`, `LANTERN_RECEIPT_PROXY_ENDPOINT`,
+`LANTERN_RECEIPT_UNTRUSTED_ENDPOINT`, `LANTERN_RECEIPT_LAN_ENDPOINT`, and
+`LANTERN_RECEIPT_TOKEN_ENDPOINT`. Use HTTPS for all five; a loopback or
+plaintext substitute cannot qualify. Generate a fresh random 32-hex
+`LANTERN_RECEIPT_RUN_ID` for **each** platform and build, and compile the
+same `LANTERN_TESTED_COMMIT` into both. Keep host/device UTC clocks synchronized.
+The target is fixed to `integration_test/physical_receipt_matrix_test.dart`.
 
-Select an actual USB-connected physical device; check the private `pm path`
-output is a single installed APK and `ro.kernel.qemu` is not `1`. The native
-code hashes the installed `sourceDir` APK, not the host build path. If
-`run-as` cannot retrieve the app-temp marker for this profile installation,
-**stop**: a built APK or a handwritten JSON replacement is not evidence.
-Optionally pull that `pm path` APK privately and compare its hash as a second
-installed-path check; never upload the path or device ID.
+From `sdks/dart/example`, build a **signed profile** app once per platform
+and install it once. For Android use
+`flutter build apk --profile --no-pub --target="$TARGET"` with both defines
+and the private define file, then `adb -d install` that exact
+`build/app/outputs/flutter-apk/app-profile.apk`; require a single `pm path`
+APK and `getprop ro.kernel.qemu` not equal to `1`. For iOS use
+`flutter build ios --profile --no-pub --target="$TARGET"` with the same
+defines and private file, then `xcrun devicectl device install app` of the
+signed `build/ios/iphoneos/Runner.app`. Preserve the original signed APK and
+signed iOS app/executable **privately and immutably** with their digests and
+the sanitized capture transcript under approved custody; do not store
+signed originals or device output in Git. A fresh rebuild or re-sign cannot
+be substituted for the installed bytes.
 
-For physical iOS, build a **signed profile** app with the same target/defines:
+Record `RUN_STARTED_AT` in UTC immediately before launch. Monitor the
+content-free app-temp `lantern-receipt-operator-phase.json`, obey each
+`radio_disable`, `radio_restore_foreground`, `android_enter_idle`,
+`ios_deny_local_network`, and `ios_allow_local_network` instruction on
+the **actual** device, and restore the original radio/privacy/idle settings
+afterward. Require the proxy's committed-drop counters for conditional Put,
+Vertex Delete, Edge Delete, and contribution-keyed Add. Wait for
+`sigkill_now` and the **running / awaiting_sigkill** marker. Verify the
+process remains live, send a genuine SIGKILL that does not
+clear app data, record the private kill method/PIDs, and relaunch that same
+installed app. Do not use `--terminate-existing` as evidence of SIGKILL.
+The second process must produce a fresh schema-2 `passed / complete` marker
+after post-relaunch assertions and cleanup. On Android retrieve it from
+`cache/lantern-receipt-attestation.json` via `adb -d exec-out run-as`;
+on iOS use CoreDevice `device copy from` with appDataContainer source
+`tmp/lantern-receipt-attestation.json`. If marker extraction, an operator
+phase, or any cleanup cannot be proven, stop and rerun from a fresh build
+and run ID.
 
-```bash
-flutter build ios --profile --no-pub --target="$TARGET" \
-  --dart-define=LANTERN_TESTED_COMMIT="$TESTED_SHA" \
-  --dart-define=LANTERN_RECEIPT_RUN_ID="$RUN_ID" \
-  --dart-define-from-file="$PRIVATE_DEFINES"
-shasum -a 256 build/ios/iphoneos/Runner.app/Frameworks/App.framework/App
-xcrun devicectl device install app --device "$PRIVATE_IOS_DEVICE_ID" \
-  build/ios/iphoneos/Runner.app
-RUN_STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-xcrun devicectl device process launch --device "$PRIVATE_IOS_DEVICE_ID" \
-  --terminate-existing com.anaregdesign.lanternExample
-xcrun devicectl device copy from --device "$PRIVATE_IOS_DEVICE_ID" \
-  --domain-type appDataContainer \
-  --domain-identifier com.anaregdesign.lanternExample \
-  --source tmp/lantern-receipt-attestation.json \
-  --destination "$PRIVATE_DIR/ios-marker.json"
-```
+On Android, capture each current phase and the pre-kill marker with
+`adb -d exec-out run-as com.anaregdesign.lantern_example cat
+cache/<file>.json` into a private file, and obtain the live PID with
+`adb -d shell pidof com.anaregdesign.lantern_example`. When and only when
+the phase is `sigkill_now`, use
+`adb -d shell run-as com.anaregdesign.lantern_example kill -9 <pre-kill-PID>`.
+Confirm that PID is gone, then start the **already installed** target with
+`adb -d shell am start -n
+com.anaregdesign.lantern_example/.MainActivity`. On iPhone, copy each
+`tmp/<file>.json` from the appDataContainer using CoreDevice as for the
+marker, verify the running process ID, and send **signal 9** using an
+approved device process tool (confirm the exact supported command on that
+host); verify process exit before relaunching via CoreDevice **without**
+`--terminate-existing`. If SIGKILL cannot be established on either device,
+do not promote the marker or substitute a Home gesture, IDE restart, or
+normal app termination. Store process IDs and operator actions only in the
+approved private transcript.
 
-The native channel reads `Bundle.main.privateFrameworksURL/App.framework/App`
-inside the **installed** app and Dart hashes its bytes. Hashing just the
-Runner launcher is invalid. If signing/install changes the executable bytes,
-the host/installed comparison must fail; investigate rather than substituting
-a different artifact. Capture each marker as soon as the run and tracked
-cleanup finish. The host UTC `recordedAt` must be within 30 minutes of
-`finishedAt` (2-minute clock tolerance), and `RUN_STARTED_AT` must be taken
-just before launch: the marker start must fall within 2 minutes before to
-10 minutes after it. A run may last at most 4 hours. Run the capture validator
-within 30 minutes of the record's `recordedAt` (and create the record within
-30 minutes of the marker finish); old matching marker/record pairs cannot
-pass a later capture-time check. The marker and record are each limited to
-64 KiB, including direct device output. Keep the marker and host artifact
-in private storage until independently validated.
-
-Create a **new** sanitized receipt record for each platform only from that
-captured marker. Keep markers and records outside the checkout while
-validating: the capture CLI checks `git rev-parse HEAD`, a clean `git status`,
-that the target exists in that commit, and the exact example build-artifact
-path in that checkout. It also re-reads the marker directly from the
-installed app (`adb -d run-as` after checking `ro.kernel.qemu` on Android,
-CoreDevice app-data copy on iOS) and requires a byte-for-byte match with the
-private marker file. A handwritten JSON file alone cannot pass the capture
-CLI. The receipt record has the exact keys `schema`, `kind`
-(`physical_offline_receipt_evidence`), `repository` (`anaregdesign/lantern`),
-`contentFree` and `physicalDevice` (both true), `testedCommit`, `runId`,
-`runStartedAt`, `recordedAt`, `platform` (`{"kind":"physical-android"}` or
-`physical-ios`), `application` (`packageId`, fixed `target`,
-`binarySha256`), sorted `scenarios`, and `result` (`passed`). Copy only
-completed IDs and the installed digest from the marker, never planned IDs or
-a build-only hash. **Do not check in receipt evidence yet.** The validator
-also requires an independently supplied fixed scenario set and hash of the
-exact target-specific host profile artifact:
+Create a **content-free** schema-1 `physical_offline_receipt_evidence` record
+per platform using only the passed marker's actual IDs and installed hash.
+Its top-level fields are `schema`, `kind`, `repository`, `contentFree`,
+`physicalDevice`, `testedCommit`, `runId`, `runStartedAt`, `recordedAt`,
+`platform`, `application`, `network`, `scenarios`, and `result`.
+`application` has `packageId`, fixed `target`, `binarySha256`; `network`
+has `transport: Connect/HTTPS`, `authenticated: true`,
+`platformTrustedTls: true`, `fault: committed-response-socket-drop`.
+Do not include a URL, IP, token, graph key/value, device ID, or raw trace
+in this record or the marker. Copy the private pair outside the checkout
+first; within 30 minutes of `recordedAt`, run:
 
 ```bash
 python3 ../offline/tool/physical_receipt_attestation.py \
   --marker "$PRIVATE_DIR/android-marker.json" \
   --record "$PRIVATE_DIR/android-record.json" \
   --built-binary build/app/outputs/flutter-apk/app-profile.apk \
-  --tested-commit "$TESTED_SHA" --target "$TARGET" --platform android \
-  --run-id "$RUN_ID" --run-started-at "$RUN_STARTED_AT" \
-  --scenario "$FIRST_FIXED_SCENARIO" --scenario "$NEXT_FIXED_SCENARIO"
+  --tested-commit "$TESTED_SHA" \
+  --target integration_test/physical_receipt_matrix_test.dart \
+  --platform android --run-id "$RUN_ID" \
+  --run-started-at "$RUN_STARTED_AT" \
+  --scenario <repeat-for-every-fixed-Android-scenario>
 ```
 
-For iOS use its marker/record, `--platform ios`, and
-`--built-binary build/ios/iphoneos/Runner.app/Frameworks/App.framework/App`,
-plus `--device-id "$PRIVATE_IOS_DEVICE_ID"` for the private CoreDevice copy.
-Pass **every** scenario ID from the final target's fixed contract, not a list
-copied from the marker. The validator rejects missing/stale/failed markers,
-unexpected or duplicate keys (including nested fields), incorrect
-commit/target/platform/run/scenarios, and
-installed-vs-built hash drift. Its standalone CLI is a **capture-time**
-check, not a release switch: after #1398 the blocking gate must require both
-new physical records and a code-defined target/scenario set, and extend the
-evidence-only tag change set. The exact signed iOS executable and installed
-Android APK may not be reproducible from source in tag CI; #1399 must decide
-how to retain or attest the capture-time host-byte comparison without
-substituting a new build or accepting just a declared hash. A marker/record
-cannot cryptographically attest a dishonest operator; retain device capture
-and clean-checkout provenance privately for human review.
+For iOS use its marker/record, `--platform ios`, the exact signed
+`build/ios/iphoneos/Runner.app/Frameworks/App.framework/App` as
+`--built-binary`, and a private `--device-id`. Supply **each** ID from
+`receipt_scenarios.dart` independently, never a list copied from the marker.
+The validator checks the clean checkout, committed target, exact host build
+path, byte-for-byte on-device marker, full scenario set, timestamp windows,
+run/platform/target/commit, and installed-vs-host artifact digest. It cannot
+recreate or independently attest signed originals after capture; retain the
+privately approved immutable artifacts and capture transcript for review.
+
+Only after both physical runs pass and private custody is approved may the
+eight content-free public files be committed in an **evidence-only immediate
+child** of the tested commit under `sdks/dart/example/evidence/offline-release/`:
+four smoke/CDC records independently re-run on that same code commit,
+`android-receipt.json`,
+`ios-receipt.json`, `android-receipt-marker.json`, and
+`ios-receipt-marker.json`. The release gate independently checks complete
+fixed scenario sets, two-launch markers, cross-file identity, distinct run
+IDs, and the evidence-only diff; a previously captured marker cannot be
+re-used for a new binary or branch. No physical receipt run or approved
+custody has been performed by this source change.
