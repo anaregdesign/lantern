@@ -100,6 +100,9 @@ export {
 export type {
   ConfirmedMutationReceipt,
   DisabledReceiptCapability,
+  EdgeAddReceiptBatchResult,
+  EdgeAddReceiptInput,
+  EdgeAddReceiptResult,
   EdgeDeleteReceiptBatchResult,
   EdgeDeleteReceiptResult,
   EnabledReceiptCapability,

@@ -13,6 +13,7 @@ import {
   parseOperationID,
   parseReceiptOperationContext,
   type EnabledReceiptCapability,
+  type EdgeAddReceiptInput,
   type OperationID,
   type ReceiptOperationContext,
   type ReceiptReconciliationReason,
@@ -20,6 +21,7 @@ import {
 import { authTokenInterceptor } from "../src/client.js";
 import {
   LanternService,
+  EdgeSchema,
   MutationReceiptState,
   PutOutcome as PbPutOutcome,
   ReceiptMutationKind as PbReceiptMutationKind,
@@ -83,6 +85,10 @@ type StoredOriginalResult =
   | {
       case: "deleteEdgeExisted";
       value: boolean;
+    }
+  | {
+      case: "addEdgeEffectiveWeight";
+      value: number;
     };
 
 interface StoredReceipt {
@@ -113,6 +119,7 @@ class ReceiptTransportFake {
       PbReceiptMutationKind.PUT_VERTEX,
       PbReceiptMutationKind.DELETE_VERTEX,
       PbReceiptMutationKind.DELETE_EDGE,
+      PbReceiptMutationKind.ADD_EDGE,
     ],
   };
   capabilityUnavailable = false;
@@ -120,34 +127,47 @@ class ReceiptTransportFake {
   dropNextDeleteResponse = false;
   dropNextPutResponse = false;
   dropNextVertexDeleteResponse = false;
+  dropNextAddResponse = false;
   malformedDeleteResponse = false;
   malformedPutResponse = false;
   malformedVertexDeleteResponse = false;
+  malformedAddResponse = false;
   malformedStatusResponse = false;
   putOutcomesOverride?: PbPutOutcome[];
+  addWrittenOverride?: number;
   capabilityCalls = 0;
   putCalls = 0;
   vertexDeleteCalls = 0;
   deleteCalls = 0;
+  addCalls = 0;
   mutationCount = 0;
   statusCalls = 0;
   readonly authorizationHeaders: Array<string | null> = [];
   readonly vertices = new Map<string, string>();
   readonly edges = new Set<string>();
+  readonly edgeWeights = new Map<string, number>();
   readonly receipts = new Map<string, StoredReceipt>();
   readonly statusOverrides = new Map<string, "notYetObserved" | "noLongerProvable">();
   lastPutVertexJson: string[] = [];
+  lastAddEdgeJson: string[] = [];
+  lastAddContribIds: Uint8Array[] = [];
 
   private edgeKey(tail: string, head: string): string {
     return `${tail}\u0000${head}`;
   }
 
-  addEdge(tail: string, head: string): void {
-    this.edges.add(this.edgeKey(tail, head));
+  addEdge(tail: string, head: string, weight = 1): void {
+    const key = this.edgeKey(tail, head);
+    this.edges.add(key);
+    this.edgeWeights.set(key, weight);
   }
 
   hasEdge(tail: string, head: string): boolean {
     return this.edges.has(this.edgeKey(tail, head));
+  }
+
+  edgeWeight(tail: string, head: string): number | undefined {
+    return this.edgeWeights.get(this.edgeKey(tail, head));
   }
 
   addVertex(key: string, value = "seed"): void {
@@ -361,6 +381,70 @@ class ReceiptTransportFake {
               existed,
             };
           },
+          addEdges: (request, context) => {
+            this.addCalls++;
+            this.authorizationHeaders.push(context.requestHeader.get("Authorization"));
+            const receiptContext = request.receiptContext;
+            if (!receiptContext) {
+              throw new ConnectError("receipt context required by fake", Code.InvalidArgument);
+            }
+            const edgeJson = request.edges.map((edge) => {
+              const json = JSON.stringify(toJson(EdgeSchema, edge));
+              if (json === undefined) {
+                throw new ConnectError("failed to serialize fake Edge", Code.Internal);
+              }
+              return json;
+            });
+            this.lastAddEdgeJson = edgeJson;
+            this.lastAddContribIds = request.contribIds.map(
+              (contribId) => new Uint8Array(contribId),
+            );
+            const intents = edgeJson.map(
+              (edge, index) =>
+                `addEdge:${hex(request.contribIds[index] ?? new Uint8Array())}:${edge}`,
+            );
+            this.validateReceiptIntents(receiptContext, intents);
+            const effectiveWeights = request.edges.map((edge, index) => {
+              const operationId = receiptContext.operationIds[index]!;
+              const prior = this.receipts.get(hex(operationId));
+              if (prior) {
+                if (prior.originalResult.case !== "addEdgeEffectiveWeight") {
+                  throw new ConnectError("receipt result family conflict", Code.InvalidArgument);
+                }
+                return prior.originalResult.value;
+              }
+              const json = JSON.parse(edgeJson[index]!) as Record<string, unknown>;
+              const expiration =
+                typeof json.expiration === "string" ? Date.parse(json.expiration) : undefined;
+              const edgeKey = this.edgeKey(edge.tail, edge.head);
+              const effective =
+                expiration !== undefined && expiration <= Number(this.capability.serverNowUnixMs)
+                  ? 0
+                  : Math.fround((this.edgeWeights.get(edgeKey) ?? 0) + edge.weight);
+              if (effective === 0) {
+                this.edges.delete(edgeKey);
+                this.edgeWeights.delete(edgeKey);
+              } else {
+                this.edges.add(edgeKey);
+                this.edgeWeights.set(edgeKey, effective);
+              }
+              this.storeReceipt(receiptContext, index, request.edges.length, intents[index]!, {
+                case: "addEdgeEffectiveWeight",
+                value: effective,
+              });
+              return effective;
+            });
+            if (this.dropNextAddResponse) {
+              this.dropNextAddResponse = false;
+              throw new ConnectError("injected committed response loss", Code.Unavailable);
+            }
+            return {
+              written: this.addWrittenOverride ?? request.edges.length,
+              effectiveWeights: this.malformedAddResponse
+                ? effectiveWeights.slice(1)
+                : effectiveWeights,
+            };
+          },
           deleteEdges: (request, context) => {
             this.deleteCalls++;
             this.authorizationHeaders.push(context.requestHeader.get("Authorization"));
@@ -391,6 +475,7 @@ class ReceiptTransportFake {
               }
               const edgeKey = this.edgeKey(edge.tail, edge.head);
               const original = this.edges.delete(edgeKey);
+              this.edgeWeights.delete(edgeKey);
               this.storeReceipt(receiptContext, index, request.edges.length, intents[index]!, {
                 case: "deleteEdgeExisted",
                 value: original,
@@ -554,13 +639,14 @@ describe("receipt capability and continuity", () => {
     const client = Lantern.withTransport(fake.transport());
     await expect(client.getReceiptCapability()).resolves.toMatchObject({
       enabled: true,
-      supportedMutations: ["putVertex", "deleteVertex", "deleteEdge"],
+      supportedMutations: ["putVertex", "deleteVertex", "deleteEdge", "addEdge"],
     });
 
     for (const supportedMutations of [
       [PbReceiptMutationKind.UNSPECIFIED],
       [PbReceiptMutationKind.DELETE_VERTEX, PbReceiptMutationKind.PUT_VERTEX],
       [PbReceiptMutationKind.PUT_VERTEX, PbReceiptMutationKind.PUT_VERTEX],
+      [PbReceiptMutationKind.ADD_EDGE, PbReceiptMutationKind.DELETE_EDGE],
       [99 as PbReceiptMutationKind],
     ]) {
       fake.capability.supportedMutations = supportedMutations;
@@ -915,6 +1001,245 @@ describe("receipt Vertex Delete", () => {
   });
 });
 
+describe("receipt Edge Add", () => {
+  test("maps exact plural results and keeps singular zero as a plural facade", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    fake.addEdge("add", "shared", 1);
+    const context = await contextFor(client, 2, 0xda);
+    const firstContrib = filled(24, 0x31);
+    const secondContrib = filled(24, 0x32);
+
+    const plural = await client.addEdgesWithReceipt(
+      [
+        { tail: "add", head: "shared", weight: 2, contribId: firstContrib },
+        { tail: "add", head: "shared", weight: 3, contribId: secondContrib },
+      ],
+      context,
+    );
+    expect(plural.written).toBe(2);
+    expect(plural.results).toEqual([
+      {
+        tail: "add",
+        head: "shared",
+        operationId: context.operationIds[0],
+        contribId: firstContrib,
+        effectiveWeight: 3,
+      },
+      {
+        tail: "add",
+        head: "shared",
+        operationId: context.operationIds[1],
+        contribId: secondContrib,
+        effectiveWeight: 6,
+      },
+    ]);
+
+    const zeroContext = await contextFor(client, 1, 0xdc);
+    const zeroContrib = filled(24, 0x33);
+    const zero = await client.addEdgeWithReceipt(
+      {
+        tail: "add",
+        head: "expired",
+        weight: 7,
+        expiration: new Date("2000-01-01T00:00:00.000Z"),
+        contribId: zeroContrib,
+      },
+      zeroContext,
+    );
+    expect(zero).toEqual({
+      tail: "add",
+      head: "expired",
+      operationId: zeroContext.operationIds[0],
+      contribId: zeroContrib,
+      effectiveWeight: 0,
+    });
+    const status = await client.getReceiptStatus(zeroContext.operationIds[0]!);
+    expect(status.state === "confirmed" ? status.receipt.originalResult : status.state).toEqual({
+      kind: "addEdge",
+      effectiveWeight: 0,
+    });
+    expect(fake.addCalls).toBe(2);
+  });
+
+  test("rejects missing, mixed, zero, and wrong-sized contrib IDs before transport", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const singularContext = await contextFor(client, 1, 0xde);
+    const pluralContext = await contextFor(client, 2, 0xe0);
+    fake.capabilityCalls = 0;
+
+    // @ts-expect-error Receipt Add requires an explicit contribId at compile time too.
+    const missing: EdgeAddReceiptInput = { tail: "missing", head: "id", weight: 1 };
+    await expect(client.addEdgeWithReceipt(missing, singularContext)).rejects.toBeInstanceOf(
+      InvalidArgumentError,
+    );
+
+    const mixed: EdgeAddReceiptInput[] = [
+      { tail: "mixed", head: "keyed", weight: 1, contribId: filled(24, 0x41) },
+      // @ts-expect-error The second item intentionally exercises malformed runtime input.
+      { tail: "mixed", head: "unkeyed", weight: 1 },
+    ];
+    await expect(client.addEdgesWithReceipt(mixed, pluralContext)).rejects.toBeInstanceOf(
+      InvalidArgumentError,
+    );
+    await expect(
+      client.addEdgeWithReceipt(
+        { tail: "zero", head: "id", weight: 1, contribId: filled(24, 0) },
+        singularContext,
+      ),
+    ).rejects.toThrow(/nonzero/);
+    await expect(
+      client.addEdgeWithReceipt(
+        { tail: "wrong", head: "size", weight: 1, contribId: filled(23, 0x42) },
+        singularContext,
+      ),
+    ).rejects.toThrow(/exactly 24 bytes/);
+
+    expect(fake.capabilityCalls).toBe(0);
+    expect(fake.addCalls).toBe(0);
+    expect(fake.mutationCount).toBe(0);
+  });
+
+  test("reuses cloned inputs and contribution identity after committed response loss", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0xe2);
+    const contribId = filled(24, 0x51);
+    const input: EdgeAddReceiptInput = {
+      tail: "add",
+      head: "lost",
+      weight: 2,
+      ttlSeconds: 60,
+      contribId,
+    };
+    fake.dropNextAddResponse = true;
+
+    let uncertain: ReceiptMutationUncertainError | undefined;
+    try {
+      await client.addEdgeWithReceipt(input, context);
+    } catch (error) {
+      if (error instanceof ReceiptMutationUncertainError) uncertain = error;
+    }
+    if (!uncertain || uncertain.mutation.kind !== "addEdge") {
+      throw new Error("expected uncertain Edge Add");
+    }
+    const firstWire = fake.lastAddEdgeJson[0]!;
+    expect(JSON.parse(firstWire)).toMatchObject({
+      tail: "add",
+      head: "lost",
+      weight: 2,
+      expiration: new Date(Number(fake.capability.serverNowUnixMs) + 60_000).toISOString(),
+    });
+    expect(fake.lastAddContribIds[0]).toEqual(filled(24, 0x51));
+    expect(uncertain.mutation.inputs[0]!.contribId).not.toBe(contribId);
+
+    contribId[0] = 0x99;
+    input.ttlSeconds = 90;
+    fake.edges.delete("add\u0000lost");
+    fake.edgeWeights.delete("add\u0000lost");
+    const replay = await client.addEdgesWithReceipt(uncertain.mutation.inputs, uncertain.context);
+    expect(replay.results[0]!.effectiveWeight).toBe(2);
+    expect(fake.lastAddEdgeJson[0]).toBe(firstWire);
+    expect(fake.lastAddContribIds[0]).toEqual(filled(24, 0x51));
+    expect(fake.hasEdge("add", "lost")).toBe(false);
+    expect(fake.mutationCount).toBe(1);
+  });
+
+  test("keeps intent conflicts definite and malformed responses uncertain", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0xe6);
+    const input: EdgeAddReceiptInput = {
+      tail: "add",
+      head: "conflict",
+      weight: 4,
+      contribId: filled(24, 0x61),
+    };
+
+    await client.addEdgeWithReceipt(input, context);
+    await expect(
+      client.addEdgeWithReceipt({ ...input, weight: 9 }, context),
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+    expect(fake.edgeWeight("add", "conflict")).toBe(4);
+    expect(fake.mutationCount).toBe(1);
+
+    const malformedContext = await contextFor(client, 1, 0xe8);
+    fake.malformedAddResponse = true;
+    await expect(
+      client.addEdgeWithReceipt(
+        {
+          tail: "add",
+          head: "malformed",
+          weight: 1,
+          contribId: filled(24, 0x62),
+        },
+        malformedContext,
+      ),
+    ).rejects.toBeInstanceOf(ReceiptMutationUncertainError);
+
+    fake.malformedAddResponse = false;
+    fake.addWrittenOverride = 0;
+    const malformedCountContext = await contextFor(client, 1, 0xe9);
+    await expect(
+      client.addEdgeWithReceipt(
+        {
+          tail: "add",
+          head: "malformed-count",
+          weight: 1,
+          contribId: filled(24, 0x63),
+        },
+        malformedCountContext,
+      ),
+    ).rejects.toBeInstanceOf(ReceiptMutationUncertainError);
+  });
+
+  test("honors token rotation and rejects unsupported Add before transport", async () => {
+    const fake = new ReceiptTransportFake();
+    const oldClient = Lantern.withTransport(fake.transport("old-token"));
+    const context = await contextFor(oldClient, 1, 0xea);
+    const newClient = Lantern.withTransport(fake.transport("new-token"));
+
+    await expect(
+      newClient.addEdgeWithReceipt(
+        {
+          tail: "add",
+          head: "token-rotation",
+          weight: 1,
+          contribId: filled(24, 0x71),
+        },
+        context,
+      ),
+    ).resolves.toMatchObject({ effectiveWeight: 1 });
+
+    const unsupportedContext = await contextFor(newClient, 1, 0xec);
+    fake.capability.supportedMutations = [
+      PbReceiptMutationKind.PUT_VERTEX,
+      PbReceiptMutationKind.DELETE_VERTEX,
+      PbReceiptMutationKind.DELETE_EDGE,
+    ];
+    const callsBefore = fake.addCalls;
+    let unsupported: unknown;
+    try {
+      await newClient.addEdgeWithReceipt(
+        {
+          tail: "add",
+          head: "unsupported",
+          weight: 1,
+          contribId: filled(24, 0x72),
+        },
+        unsupportedContext,
+      );
+    } catch (error) {
+      unsupported = error;
+    }
+    expect(unsupported).toBeInstanceOf(ReceiptReconciliationError);
+    expect((unsupported as ReceiptReconciliationError).reason).toBe("mutationUnsupported");
+    expect((unsupported as ReceiptReconciliationError).mutationKind).toBe("addEdge");
+    expect(fake.addCalls).toBe(callsBefore);
+  });
+});
+
 describe("receipt Edge Delete", () => {
   test("maps plural results by request index and keeps singular as a plural facade", async () => {
     const fake = new ReceiptTransportFake();
@@ -1042,11 +1367,22 @@ describe("receipt status", () => {
     fake.addEdge("status", "edge");
     const edgeDeleteContext = await contextFor(client, 1, 0xec);
     await client.deleteEdgeWithReceipt("status", "edge", edgeDeleteContext);
+    const edgeAddContext = await contextFor(client, 1, 0xee);
+    await client.addEdgeWithReceipt(
+      {
+        tail: "status",
+        head: "add",
+        weight: 3,
+        contribId: filled(24, 0x74),
+      },
+      edgeAddContext,
+    );
 
     const statuses = await client.getReceiptStatuses([
       putContext.operationIds[0]!,
       vertexDeleteContext.operationIds[0]!,
       edgeDeleteContext.operationIds[0]!,
+      edgeAddContext.operationIds[0]!,
     ]);
     expect(
       statuses.map((status) =>
@@ -1056,6 +1392,7 @@ describe("receipt status", () => {
       { kind: "putVertex", outcome: "appliedAndLive" },
       { kind: "deleteVertex", existed: true },
       { kind: "deleteEdge", existed: true },
+      { kind: "addEdge", effectiveWeight: 3 },
     ]);
   });
 

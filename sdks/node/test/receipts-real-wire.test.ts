@@ -55,6 +55,22 @@ if (endpoint && token) {
         );
         expect(conditional.outcome).toBe("conditionNotMet");
 
+        const addContext = mintReceiptOperationContext(capability, 1);
+        const added = await client.addEdgeWithReceipt(
+          {
+            tail: key,
+            head: `${key}:head`,
+            weight: 2,
+            contribId: new Uint8Array(24).fill(0x61),
+          },
+          addContext,
+        );
+        expect(added.effectiveWeight).toBe(2);
+        const addStatus = await client.getReceiptStatus(addContext.operationIds[0]!);
+        expect(
+          addStatus.state === "confirmed" ? addStatus.receipt.originalResult : addStatus.state,
+        ).toEqual({ kind: "addEdge", effectiveWeight: 2 });
+
         let receiptOnly = false;
         for (let count = 0; count < 10_000; count++) {
           const next = await nextWithin(stream);

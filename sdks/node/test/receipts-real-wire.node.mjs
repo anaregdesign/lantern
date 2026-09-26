@@ -35,13 +35,30 @@ function dropNextPutVerticesResponse() {
   };
 }
 
-test("receipt Vertex Put/Delete and Edge Delete reconcile exact results over real Connect/h2c", async () => {
+function dropNextAddEdgesResponse() {
+  let armed = true;
+  return (next) => async (request) => {
+    const response = await next(request);
+    if (armed && request.method.name === "AddEdges") {
+      armed = false;
+      throw new ConnectError("injected post-commit response loss", Code.Unavailable);
+    }
+    return response;
+  };
+}
+
+test("all receipt mutation families reconcile exact results over real Connect/h2c", async () => {
   const client = connect(endpoint, { token });
   const prefix = `node-receipt-${randomUUID()}`;
   try {
     const capability = await client.getReceiptCapability();
     assert.equal(capability.enabled, true, "receipt test endpoint is disabled");
-    assert.deepEqual(capability.supportedMutations, ["putVertex", "deleteVertex", "deleteEdge"]);
+    assert.deepEqual(capability.supportedMutations, [
+      "putVertex",
+      "deleteVertex",
+      "deleteEdge",
+      "addEdge",
+    ]);
 
     const putContext = mintReceiptOperationContext(capability, 2);
     const put = await client.putVerticesWithReceipt(
@@ -185,6 +202,68 @@ test("receipt Vertex Put/Delete and Edge Delete reconcile exact results over rea
       InvalidArgumentError,
     );
     assert.equal((await client.getEdge(protectedEdge.tail, protectedEdge.head)).weight, 3);
+
+    const addEdge = {
+      tail: `${prefix}:add:tail`,
+      head: `${prefix}:add:head`,
+    };
+    const addContribIds = [new Uint8Array(24).fill(0x31), new Uint8Array(24).fill(0x32)];
+    const addContext = mintReceiptOperationContext(capability, 2);
+    const added = await client.addEdgesWithReceipt(
+      [
+        { ...addEdge, weight: 2, contribId: addContribIds[0] },
+        { ...addEdge, weight: 3, contribId: addContribIds[1] },
+      ],
+      addContext,
+    );
+    assert.equal(added.written, 2);
+    assert.deepEqual(
+      added.results.map((result) => result.effectiveWeight),
+      [2, 5],
+    );
+    assert.deepEqual(
+      added.results.map((result) => result.contribId),
+      addContribIds,
+    );
+    const addStatuses = await client.getReceiptStatuses(addContext.operationIds);
+    assert.deepEqual(
+      addStatuses.map((status) =>
+        status.state === "confirmed" ? status.receipt.originalResult : status.state,
+      ),
+      [
+        { kind: "addEdge", effectiveWeight: 2 },
+        { kind: "addEdge", effectiveWeight: 5 },
+      ],
+    );
+    await assert.rejects(
+      client.addEdgesWithReceipt(
+        [
+          { ...addEdge, weight: 2, contribId: addContribIds[0] },
+          { ...addEdge, weight: 4, contribId: addContribIds[1] },
+        ],
+        addContext,
+      ),
+      InvalidArgumentError,
+    );
+    assert.equal((await client.getEdge(addEdge.tail, addEdge.head)).weight, 5);
+
+    const zeroContext = mintReceiptOperationContext(capability, 1);
+    const zero = await client.addEdgeWithReceipt(
+      {
+        tail: `${prefix}:add:expired`,
+        head: "edge",
+        weight: 11,
+        expiration: new Date("2000-01-01T00:00:00.000Z"),
+        contribId: new Uint8Array(24).fill(0x33),
+      },
+      zeroContext,
+    );
+    assert.equal(zero.effectiveWeight, 0);
+    const zeroStatus = await client.getReceiptStatus(zeroContext.operationIds[0]);
+    assert.deepEqual(
+      zeroStatus.state === "confirmed" ? zeroStatus.receipt.originalResult : zeroStatus.state,
+      { kind: "addEdge", effectiveWeight: 0 },
+    );
   } finally {
     client.close();
   }
@@ -233,25 +312,88 @@ test("real h2c response loss replays the exact original conditional Put result",
   }
 });
 
+test("real h2c response loss replays Add proof without reapplying after Delete", async () => {
+  const lossy = connect(endpoint, {
+    token,
+    interceptors: [dropNextAddEdgesResponse()],
+  });
+  const edge = {
+    tail: `node-receipt-add-loss-${randomUUID()}`,
+    head: "edge",
+  };
+  const input = {
+    ...edge,
+    weight: 4,
+    ttlSeconds: 3600,
+    contribId: new Uint8Array(24).fill(0x41),
+  };
+  let persistedContext = "";
+  let uncertain;
+  try {
+    const capability = await lossy.getReceiptCapability();
+    assert.equal(capability.enabled, true, "receipt test endpoint is disabled");
+    const context = mintReceiptOperationContext(capability, 1);
+    persistedContext = JSON.stringify(context);
+    try {
+      await lossy.addEdgeWithReceipt(input, context);
+    } catch (error) {
+      if (!(error instanceof ReceiptMutationUncertainError)) throw error;
+      uncertain = error;
+    }
+  } finally {
+    lossy.close();
+  }
+  assert.ok(uncertain instanceof ReceiptMutationUncertainError);
+  assert.equal(uncertain.mutation.kind, "addEdge");
+  assert.deepEqual(uncertain.mutation.inputs[0].contribId, input.contribId);
+
+  const replay = connect(endpoint, { token });
+  try {
+    assert.equal((await replay.getEdge(edge.tail, edge.head)).weight, 4);
+    assert.equal(await replay.deleteEdge(edge.tail, edge.head), true);
+
+    const restored = parseReceiptOperationContext(JSON.parse(persistedContext));
+    const status = await replay.getReceiptStatus(restored.operationIds[0]);
+    assert.deepEqual(status.state === "confirmed" ? status.receipt.originalResult : status.state, {
+      kind: "addEdge",
+      effectiveWeight: 4,
+    });
+    const result = await replay.addEdgeWithReceipt(input, restored);
+    assert.equal(result.effectiveWeight, 4);
+    await assert.rejects(replay.getEdge(edge.tail, edge.head), { name: "NotFoundError" });
+  } finally {
+    replay.close();
+  }
+});
+
 test("receipt retry rejects a different real endpoint before mutation", async () => {
   const first = connect(endpoint, { token });
   const second = connect(otherEndpoint, { token });
-  const key = `node-receipt-endpoint-${randomUUID()}`;
+  const edge = {
+    tail: `node-receipt-endpoint-${randomUUID()}`,
+    head: "edge",
+  };
   try {
-    await second.putVertex({ key, value: "must-survive" });
     const capability = await first.getReceiptCapability();
     assert.equal(capability.enabled, true, "receipt test endpoint is disabled");
     const context = mintReceiptOperationContext(capability, 1);
 
     let caught;
     try {
-      await second.deleteVertexWithReceipt(key, context);
+      await second.addEdgeWithReceipt(
+        {
+          ...edge,
+          weight: 1,
+          contribId: new Uint8Array(24).fill(0x51),
+        },
+        context,
+      );
     } catch (error) {
       caught = error;
     }
     assert.ok(caught instanceof ReceiptReconciliationError);
     assert.equal(caught.reason, "nodeChanged");
-    assert.equal((await second.getVertex(key)).value, "must-survive");
+    await assert.rejects(second.getEdge(edge.tail, edge.head), { name: "NotFoundError" });
   } finally {
     first.close();
     second.close();

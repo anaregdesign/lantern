@@ -22,11 +22,11 @@
  * `ConnectOptions.batchChunkSize` (default 1000) and throw
  * `BatchError` with a resumable `written` offset on partial failure.
  *
- * Wire: Connect protocol (Connect/JSON by default; flip to binary via
- * `transportOptions.useBinaryFormat`). Built on
- * @connectrpc/connect v2 + codegen via @bufbuild/protoc-gen-es
- * (single plugin emits both message classes and the service schema
- * descriptor `LanternService`).
+ * Wire: Connect protocol. The Node transport uses binary by default; the
+ * browser entrypoint intentionally keeps Connect-Web JSON unless callers opt
+ * into binary. Built on @connectrpc/connect v2 + codegen via
+ * @bufbuild/protoc-gen-es (single plugin emits both message classes and the
+ * service schema descriptor `LanternService`).
  */
 
 import {
@@ -169,6 +169,9 @@ import {
   receiptContinuityDifference,
   receiptStatusesFromWire,
   RECEIPT_STATUS_MAX_ITEMS,
+  type EdgeAddReceiptBatchResult,
+  type EdgeAddReceiptInput,
+  type EdgeAddReceiptResult,
   type EdgeDeleteReceiptBatchResult,
   type EdgeDeleteReceiptResult,
   type OperationID,
@@ -277,6 +280,100 @@ function prepareReceiptVertexInputs(
     }),
   );
   return { snapshots, vertices };
+}
+
+function cloneReceiptEdgeAddInput(
+  input: EdgeAddReceiptInput,
+  index: number,
+): Readonly<EdgeAddReceiptInput> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    typeof input.tail !== "string" ||
+    input.tail.length === 0 ||
+    typeof input.head !== "string" ||
+    input.head.length === 0
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] requires nonempty tail and head`,
+    );
+  }
+  const weight = Math.fround(input.weight);
+  if (
+    typeof input.weight !== "number" ||
+    !Number.isFinite(input.weight) ||
+    !Number.isFinite(weight)
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] weight must be finite float32`,
+    );
+  }
+  if (input.ttlSeconds !== undefined && !Number.isFinite(input.ttlSeconds)) {
+    throw new InvalidArgumentError(`receipt Edge Add input[${index}] ttlSeconds must be finite`);
+  }
+  if (
+    input.expiration !== undefined &&
+    (!(input.expiration instanceof Date) || !Number.isFinite(input.expiration.getTime()))
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] expiration must be a valid Date`,
+    );
+  }
+  if (input.ttlSeconds !== undefined && input.expiration !== undefined) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] cannot specify both ttlSeconds and expiration`,
+    );
+  }
+  if (!(input.contribId instanceof Uint8Array)) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] contribId must be a Uint8Array`,
+    );
+  }
+  const contribId = new Uint8Array(validateContribId(input.contribId));
+  if (!contribId.some((value) => value !== 0)) {
+    throw new InvalidArgumentError(`receipt Edge Add input[${index}] contribId must be nonzero`);
+  }
+  const snapshot: EdgeAddReceiptInput = {
+    tail: input.tail,
+    head: input.head,
+    weight,
+    contribId,
+  };
+  if (input.ttlSeconds !== undefined) snapshot.ttlSeconds = input.ttlSeconds;
+  if (input.expiration !== undefined) {
+    snapshot.expiration = new Date(input.expiration.getTime());
+  }
+  return Object.freeze(snapshot);
+}
+
+function prepareReceiptEdgeAddInputs(
+  inputs: readonly EdgeAddReceiptInput[],
+  context: ReceiptOperationContext,
+): {
+  snapshots: readonly Readonly<EdgeAddReceiptInput>[];
+  edges: readonly PbEdge[];
+  contribIds: readonly Uint8Array[];
+} {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw new InvalidArgumentError("receipt Edge Add requires at least one edge");
+  }
+  const snapshots = Object.freeze(inputs.map(cloneReceiptEdgeAddInput));
+  const edges = Object.freeze(
+    snapshots.map((input, index) => {
+      const issuedAt = operationIDIssuedAtUnixMs(context.operationIds[index]!);
+      if (issuedAt > MAX_JAVASCRIPT_DATE_MS) {
+        throw new InvalidArgumentError(
+          `receipt operationIds[${index}] issuance time exceeds the JavaScript Date range`,
+        );
+      }
+      return fromJson(EdgeSchema, edgeInputToJsonAt(input, Number(issuedAt)) as JsonValue);
+    }),
+  );
+  return {
+    snapshots,
+    edges,
+    contribIds: Object.freeze(snapshots.map((input) => new Uint8Array(input.contribId))),
+  };
 }
 
 function normalizeReceiptVertexKeys(keys: readonly string[]): readonly string[] {
@@ -1178,6 +1275,15 @@ export class Lantern {
     });
   }
 
+  /** Thin singular facade over {@link addEdgesWithReceipt}. */
+  async addEdgeWithReceipt(
+    input: EdgeAddReceiptInput,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeAddReceiptResult> {
+    return (await this.addEdgesWithReceipt([input], context, signal)).results[0]!;
+  }
+
   async putEdge(input: EdgeInput, signal?: AbortSignal): Promise<PutOutcome> {
     return (await this.putEdges([input], signal))[0]!.outcome;
   }
@@ -1241,6 +1347,70 @@ export class Lantern {
       }
     });
     return effective;
+  }
+
+  /**
+   * Atomically applies one receipt-bearing logical Edge Add call without
+   * chunking. Every item must carry an explicit nonzero 24-byte contrib ID;
+   * the SDK never synthesizes contribution identity for receipt mode.
+   */
+  async addEdgesWithReceipt(
+    inputs: readonly EdgeAddReceiptInput[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeAddReceiptBatchResult> {
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      throw new InvalidArgumentError("receipt Edge Add requires at least one edge");
+    }
+    const normalizedContext = receiptContextForItemCount(context, inputs.length);
+    const prepared = prepareReceiptEdgeAddInputs(inputs, normalizedContext);
+    const mutation = Object.freeze({
+      kind: "addEdge",
+      inputs: prepared.snapshots,
+    }) satisfies ReceiptMutationIntent;
+    await this.requireReceiptContinuity(normalizedContext, "addEdge", signal);
+
+    try {
+      const response = await this.client.addEdges(
+        {
+          edges: [...prepared.edges],
+          contribIds: prepared.contribIds.map((contribId) => new Uint8Array(contribId)),
+          receiptContext: receiptContextToWire(normalizedContext),
+        },
+        this.callOpts(signal),
+      );
+      if (response.written !== prepared.edges.length) {
+        throw new LanternError(
+          `server returned written=${response.written} for ${prepared.edges.length} receipt Edge Add items`,
+        );
+      }
+      if (response.effectiveWeights.length !== prepared.edges.length) {
+        throw new LanternError(
+          `server returned ${response.effectiveWeights.length} receipt Edge Add outcomes for ${prepared.edges.length} items`,
+        );
+      }
+      if (response.effectiveWeights.some((weight) => !Number.isFinite(weight))) {
+        throw new LanternError("server returned a non-finite receipt Edge Add outcome");
+      }
+      const results = Object.freeze(
+        prepared.snapshots.map((input, index) =>
+          Object.freeze({
+            tail: input.tail,
+            head: input.head,
+            operationId: normalizedContext.operationIds[index]!,
+            contribId: new Uint8Array(input.contribId),
+            effectiveWeight: response.effectiveWeights[index]!,
+          }),
+        ),
+      );
+      return Object.freeze({
+        context: normalizedContext,
+        written: response.written,
+        results,
+      });
+    } catch (error) {
+      throw await this.receiptMutationError(normalizedContext, mutation, error, signal);
+    }
   }
 
   /**

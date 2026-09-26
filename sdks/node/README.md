@@ -96,7 +96,7 @@ per-item outcomes are unknown; replay evaluates the condition again and can
 return `"conditionNotMet"` for an originally applied item. Reconcile current
 state before explicitly retrying that suffix.
 
-The existing Put and Vertex/Edge Delete methods remain intentionally
+The existing Put, Add, and Vertex/Edge Delete methods remain intentionally
 receipt-less online operations. A replay can recover current graph state, but
 not necessarily the first attempt's exact per-item outcome. Use the opt-in
 receipt API below when that original result matters.
@@ -115,13 +115,14 @@ try {
 }
 ```
 
-## Receipt-safe Vertex Put and Delete
+## Receipt-safe online mutations
 
-Receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete let an
-application mint and durably retain the wire identity of one logical call
-before sending it. Each call uses one `GroupID` and one request-index-aligned
-`OperationID` per item. Receipt calls are not automatically chunked because
-splitting one would change that logical-call boundary.
+Receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and
+contribution-keyed Edge Add let an application mint and durably retain the
+wire identity of one logical call before sending it. Each call uses one
+`GroupID` and one request-index-aligned `OperationID` per item. Receipt calls
+are not automatically chunked because splitting one would change that
+logical-call boundary.
 
 ```ts
 import {
@@ -173,25 +174,56 @@ try {
 const restored = parseReceiptOperationContext(JSON.parse(persisted));
 ```
 
+Receipt-bearing Edge Add additionally requires every input to carry an
+explicit, nonzero, exactly 24-byte `contribId`. The SDK never synthesizes one
+from `idempotentAdds`, and it rejects missing, mixed keyed/unkeyed, zero, or
+wrong-sized identities before transport. Persist each contribution ID with
+the input and reuse the exact bytes with the original operation context:
+
+```ts
+import { CONTRIB_ID_BYTES } from "lantern-sdk";
+
+const contribId = crypto.getRandomValues(new Uint8Array(CONTRIB_ID_BYTES));
+if (contribId.every((byte) => byte === 0)) {
+  throw new Error("contribution identity must be nonzero");
+}
+const addContext = mintReceiptOperationContext(capability, 1);
+const added = await client.addEdgeWithReceipt(
+  {
+    tail: "session:123",
+    head: "member:a",
+    weight: 1,
+    ttlSeconds: 3600,
+    contribId,
+  },
+  addContext,
+);
+console.log(added.effectiveWeight); // exact original application result
+```
+
 The plural methods are canonical:
 
 - `putVerticesWithReceipt` and `putVerticesIfAbsentWithReceipt`
 - `deleteVerticesWithReceipt`
 - `deleteEdgesWithReceipt`
+- `addEdgesWithReceipt`
 
 `putVertexWithReceipt`, `putVertexIfAbsentWithReceipt`,
 `deleteVertexWithReceipt`, `deleteEdgeWithReceipt`, and
-`getReceiptStatus` are thin one-item facades over their plural methods.
+`addEdgeWithReceipt` are thin one-item facades over their plural methods;
+`getReceiptStatus` similarly forwards one operation ID to the plural status
+lookup.
 Receipt-bearing Vertex Put resolves a relative `ttlSeconds` against the server
 clock embedded in the persisted operation ID, so replaying the same input and
 context reproduces the same absolute expiration rather than extending the TTL.
-Mutable `Date` and `Uint8Array` inputs are cloned before the capability
-preflight.
+Receipt-bearing Edge Add applies the same rule and preserves the server's
+exact float32 effective weight, including zero. Mutable `Date` and
+`Uint8Array` inputs are cloned before the capability preflight.
 
 A receipt status is one of:
 
 - `"confirmed"` — carries the exact original Vertex Put outcome, Vertex Delete
-  `existed`, or Edge Delete `existed` result.
+  `existed`, Edge Delete `existed`, or Edge Add effective-weight result.
 - `"notYetObserved"` — no matching receipt is currently observed; if the
   application retries, it must reuse the exact semantic inputs and persisted
   context.

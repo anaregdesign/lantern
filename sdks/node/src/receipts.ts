@@ -6,7 +6,7 @@ import {
 } from "./gen/graph/v1/graph_pb.js";
 import { InvalidArgumentError, LanternError } from "./errors.js";
 import { putOutcomeFromWire, type PutOutcome } from "./put-outcome.js";
-import type { VertexInput } from "./values.js";
+import type { EdgeInput, VertexInput } from "./values.js";
 
 export const RECEIPT_OPERATION_ID_BYTES = 49;
 export const RECEIPT_GROUP_ID_BYTES = 16;
@@ -53,7 +53,7 @@ export type ReceiptGeneration = string & { readonly [generationBrand]: true };
 export type ReceiptIntentDigest = string & { readonly [intentDigestBrand]: true };
 
 /** Receipt-bearing mutation families currently supported by the public wire contract. */
-export type ReceiptMutationKind = "putVertex" | "deleteVertex" | "deleteEdge";
+export type ReceiptMutationKind = "putVertex" | "deleteVertex" | "deleteEdge" | "addEdge";
 
 export interface ReceiptEndpointContinuity {
   readonly deploymentEpoch: ReceiptDeploymentEpoch;
@@ -113,6 +113,24 @@ export interface EdgeDeleteReceiptBatchResult {
   readonly results: readonly EdgeDeleteReceiptResult[];
 }
 
+/** Edge Add input with the contribution identity required by receipt mode. */
+export interface EdgeAddReceiptInput extends Omit<EdgeInput, "contribId"> {
+  readonly contribId: Uint8Array;
+}
+
+export interface EdgeAddReceiptResult extends ReceiptEdgeRef {
+  readonly operationId: OperationID;
+  readonly contribId: Uint8Array;
+  /** The exact effective weight returned by the original application. */
+  readonly effectiveWeight: number;
+}
+
+export interface EdgeAddReceiptBatchResult {
+  readonly context: ReceiptOperationContext;
+  readonly written: number;
+  readonly results: readonly EdgeAddReceiptResult[];
+}
+
 export interface VertexPutReceiptResult {
   readonly key: string;
   readonly operationId: OperationID;
@@ -150,6 +168,10 @@ export type ReceiptOriginalResult =
   | {
       readonly kind: "deleteEdge";
       readonly existed: boolean;
+    }
+  | {
+      readonly kind: "addEdge";
+      readonly effectiveWeight: number;
     };
 
 export interface ConfirmedMutationReceipt {
@@ -207,6 +229,10 @@ export type ReceiptMutationIntent =
   | {
       readonly kind: "deleteEdge";
       readonly edges: readonly ReceiptEdgeRef[];
+    }
+  | {
+      readonly kind: "addEdge";
+      readonly inputs: readonly Readonly<EdgeAddReceiptInput>[];
     };
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -387,6 +413,7 @@ const RECEIPT_MUTATION_ORDER: Readonly<Record<ReceiptMutationKind, number>> = Ob
   putVertex: 1,
   deleteVertex: 2,
   deleteEdge: 3,
+  addEdge: 4,
 });
 
 function normalizeReceiptMutationKinds(value: unknown): readonly ReceiptMutationKind[] {
@@ -397,7 +424,12 @@ function normalizeReceiptMutationKinds(value: unknown): readonly ReceiptMutation
   let previous = 0;
   for (let index = 0; index < value.length; index++) {
     const kind: unknown = value[index];
-    if (kind !== "putVertex" && kind !== "deleteVertex" && kind !== "deleteEdge") {
+    if (
+      kind !== "putVertex" &&
+      kind !== "deleteVertex" &&
+      kind !== "deleteEdge" &&
+      kind !== "addEdge"
+    ) {
       throw new InvalidArgumentError(
         `receipt supportedMutations[${index}] is not a supported mutation kind`,
       );
@@ -542,6 +574,8 @@ function receiptMutationKindFromWire(
       return "deleteVertex";
     case PbReceiptMutationKind.DELETE_EDGE:
       return "deleteEdge";
+    case PbReceiptMutationKind.ADD_EDGE:
+      return "addEdge";
     case PbReceiptMutationKind.UNSPECIFIED:
     default:
       throw new LanternError(
@@ -721,6 +755,17 @@ function receiptStatusFromWire(raw: PbReceiptStatus, expected: OperationID): Rec
           originalResult = Object.freeze({
             kind: "deleteEdge",
             existed: result.value,
+          });
+          break;
+        case "addEdgeEffectiveWeight":
+          if (!Number.isFinite(result.value)) {
+            throw new LanternError(
+              "confirmed Edge Add receipt carried a non-finite effective weight",
+            );
+          }
+          originalResult = Object.freeze({
+            kind: "addEdge",
+            effectiveWeight: result.value,
           });
           break;
         case undefined:
