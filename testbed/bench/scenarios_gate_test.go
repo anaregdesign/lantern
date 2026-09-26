@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -296,6 +297,80 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		if !strings.Contains(nightly, contract) {
 			t.Errorf("nightly workflow missing receipt contract %q", contract)
 		}
+	}
+}
+
+func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "cleanup() {\n")
+	if !found {
+		t.Fatal("run.sh is missing cleanup")
+	}
+	body, _, found := strings.Cut(rest, "\n}\ntrap cleanup EXIT")
+	if !found {
+		t.Fatal("run.sh cleanup is not registered as an EXIT trap")
+	}
+	cleanup := "cleanup() {\n" + body + "\n}\n"
+
+	for _, tc := range []struct {
+		name         string
+		dockerStatus int
+		runStatus    int
+		keepUp       int
+		wantStatus   int
+		wantDown     bool
+	}{
+		{name: "clean teardown", wantDown: true},
+		{name: "teardown failure disqualifies pass", dockerStatus: 19, wantStatus: 1, wantDown: true},
+		{name: "primary failure preserved", dockerStatus: 19, runStatus: 23, wantStatus: 23, wantDown: true},
+		{name: "explicit keep up", dockerStatus: 19, keepUp: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			reportPath := filepath.Join(outDir, "report.md")
+			if err := os.WriteFile(reportPath, []byte("**Perf gate verdict:** `pass`\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixture := fmt.Sprintf(`set -euo pipefail
+export COMPOSE_PROJECT_NAME=lantern-bench-cleanup-fixture
+COMPOSE_STARTED=1
+COMPOSE_FILES=(-f fixture-compose.yml)
+KEEP_UP=%d
+log() { :; }
+docker() {
+  [[ "$COMPOSE_PROJECT_NAME" == "lantern-bench-cleanup-fixture" ]] || return 88
+  [[ "$*" == "compose -f fixture-compose.yml down -v --remove-orphans" ]] || return 89
+  echo "docker down invoked" >&2
+  return %d
+}
+%s
+trap cleanup EXIT
+exit %d
+`, tc.keepUp, tc.dockerStatus, cleanup, tc.runStatus)
+			cmd := exec.Command("bash", "-c", fixture)
+			cmd.Env = append(os.Environ(), "OUTDIR="+outDir)
+			output, err := cmd.CombinedOutput()
+			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != tc.wantStatus {
+				t.Fatalf("cleanup exit = %v, err = %v, output = %s; want %d",
+					cmd.ProcessState, err, output, tc.wantStatus)
+			}
+			if got := strings.Contains(string(output), "docker down invoked"); got != tc.wantDown {
+				t.Errorf("compose down invoked = %v, want %v; output = %s", got, tc.wantDown, output)
+			}
+			if tc.dockerStatus != 0 && tc.wantDown && !strings.Contains(string(output), "run is unqualified") {
+				t.Errorf("teardown failure is not reported: %s", output)
+			}
+			report, err := os.ReadFile(reportPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := strings.Contains(string(report), "unqualified"), tc.dockerStatus != 0 && tc.wantDown; got != want {
+				t.Errorf("report marked unqualified = %v, want %v: %s", got, want, report)
+			}
+		})
 	}
 }
 

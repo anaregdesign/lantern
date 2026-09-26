@@ -73,11 +73,20 @@ die() { echo "run.sh: $*" >&2; exit 1; }
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
 cleanup() {
+  local status=$?
+  trap - EXIT
   if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then
-    log "compose down -v"
-    docker compose "${COMPOSE_FILES[@]}" down -v >/dev/null 2>&1 || true
-    COMPOSE_STARTED=0
+    log "compose down -v (project=$COMPOSE_PROJECT_NAME)"
+    if ! docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null; then
+      echo "run.sh: compose teardown failed (project=$COMPOSE_PROJECT_NAME); run is unqualified" >&2
+      if [[ -n "${OUTDIR:-}" && -f "$OUTDIR/report.md" ]] &&
+        ! printf '\n**Bench run:** unqualified (named Compose teardown failed).\n' >> "$OUTDIR/report.md"; then
+        echo "run.sh: could not mark report as unqualified" >&2
+      fi
+      if (( status == 0 )); then status=1; fi
+    fi
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -849,8 +858,5 @@ log "perf gate verdict: $perf_verdict"
 
 # ----- Render report ---------------------------------------------------------
 render_report
-
-# ----- Teardown --------------------------------------------------------------
-cleanup
 
 if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$producer_failed" == "0" ]]; then exit 0; else exit 1; fi

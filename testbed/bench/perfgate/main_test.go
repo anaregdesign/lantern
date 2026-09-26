@@ -178,6 +178,67 @@ func TestLoadProducerSummaryRequiresCompleteStatusDistribution(t *testing.T) {
 	}
 }
 
+func TestEvaluateRejectsMissingP99WithOtherwisePassingReceiptFloor(t *testing.T) {
+	dir := t.TempDir()
+	scenario := filepath.Join(dir, "scenario.yaml")
+	writeText(t, scenario, `target:
+  endpoints: ["localhost:6380"]
+  calls: [{ name: receipt_admission, call: graph.v1.LanternService/DeleteEdge }]
+perf_gate:
+  min_steady_rps_total: 150
+  max_p99_ms: 500
+  max_non_ok_ratio: 0
+  producers:
+    receipt_admission: { min_steady_rps: 75, max_p99_ms: 500, max_non_ok_ratio: 0 }
+`)
+	writeText(t, filepath.Join(dir, "ghz_steady_0_localhost_6380.json"), `{
+  "count": 4500,
+  "rps": 150,
+  "statusCodeDistribution": {"OK": 4500}
+}`)
+	_, err := evaluate(scenario, dir, "", "")
+	if err == nil || !strings.Contains(err.Error(), "missing p99 latency") {
+		t.Fatalf("evaluate error = %v, want missing p99 rejection", err)
+	}
+	writeText(t, filepath.Join(dir, "ghz_steady_0_localhost_6380.json"), `{
+  "count": 0,
+  "rps": 150,
+  "statusCodeDistribution": {}
+}`)
+	_, err = evaluate(scenario, dir, "", "")
+	if err == nil || !strings.Contains(err.Error(), "inconsistent count 0 and rps 150") {
+		t.Fatalf("evaluate error = %v, want empty producer with claimed throughput rejection", err)
+	}
+}
+
+func TestLoadProducerSummaryRejectsMalformedLatencyDistribution(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		points  string
+		wantErr string
+	}{
+		{"missing latency", `[{"percentage":99}]`, "invalid latency percentile"},
+		{"null latency", `[{"percentage":99,"latency":null}]`, "invalid latency percentile"},
+		{"negative latency", `[{"percentage":99,"latency":-1}]`, "invalid latency percentile"},
+		{"duplicate p99", `[{"percentage":99,"latency":1},{"percentage":99,"latency":2}]`, "invalid latency percentile"},
+		{"invalid percentile", `[{"percentage":101,"latency":1}]`, "invalid latency percentile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeText(t, filepath.Join(dir, "ghz_steady_0_localhost_6380.json"), fmt.Sprintf(`{
+  "count": 100,
+  "rps": 100,
+  "statusCodeDistribution": {"OK": 100},
+  "latencyDistribution": %s
+}`, tc.points))
+			_, err := loadProducerSummary(dir, 0, true)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("loadProducerSummary error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadProducerSummaryRejectsStatusDistributionOverflow(t *testing.T) {
 	if strconv.IntSize < 64 {
 		t.Skip("requires 64-bit int status counts")
@@ -289,10 +350,11 @@ func seriesFor(phrase bool, value float64) snapshotSeries {
 func writeGhz(t *testing.T, path string, count uint64, rps float64, statuses map[string]int) {
 	t.Helper()
 	summary := ghzSummary{Count: count, RPS: rps, StatusCodeDistribution: statuses}
+	p99 := int64(10_000_000)
 	summary.LatencyDistribution = append(summary.LatencyDistribution, struct {
-		Percentage int   `json:"percentage"`
-		Latency    int64 `json:"latency"`
-	}{Percentage: 99, Latency: 10_000_000})
+		Percentage int    `json:"percentage"`
+		Latency    *int64 `json:"latency"`
+	}{Percentage: 99, Latency: &p99})
 	if err := writeJSON(path, summary); err != nil {
 		t.Fatal(err)
 	}

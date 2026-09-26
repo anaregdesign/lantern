@@ -83,8 +83,8 @@ type ghzSummary struct {
 	RPS                    float64        `json:"rps"`
 	StatusCodeDistribution map[string]int `json:"statusCodeDistribution"`
 	LatencyDistribution    []struct {
-		Percentage int   `json:"percentage"`
-		Latency    int64 `json:"latency"`
+		Percentage int    `json:"percentage"`
+		Latency    *int64 `json:"latency"`
 	} `json:"latencyDistribution"`
 }
 
@@ -489,13 +489,27 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 	if math.IsNaN(summary.RPS) || math.IsInf(summary.RPS, 0) || summary.RPS < 0 {
 		return ghzSummary{}, fmt.Errorf("invalid rps %v", summary.RPS)
 	}
+	if (summary.Count == 0) != (summary.RPS == 0) {
+		return ghzSummary{}, fmt.Errorf("inconsistent count %d and rps %v", summary.Count, summary.RPS)
+	}
+	seenPercentiles := make(map[int]bool, len(summary.LatencyDistribution))
+	for _, point := range summary.LatencyDistribution {
+		if point.Percentage < 0 || point.Percentage > 100 || point.Latency == nil ||
+			*point.Latency < 0 || seenPercentiles[point.Percentage] {
+			return ghzSummary{}, fmt.Errorf("invalid latency percentile %d=%v", point.Percentage, point.Latency)
+		}
+		seenPercentiles[point.Percentage] = true
+	}
+	if summary.Count > 0 && !seenPercentiles[99] {
+		return ghzSummary{}, errors.New("missing p99 latency for nonempty producer")
+	}
 	return summary, nil
 }
 
 func percentile(summary ghzSummary, percentage int) int64 {
 	for _, point := range summary.LatencyDistribution {
 		if point.Percentage == percentage {
-			return point.Latency
+			return *point.Latency
 		}
 	}
 	return 0

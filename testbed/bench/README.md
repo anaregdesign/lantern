@@ -89,8 +89,10 @@ LANTERN_IMAGE=lantern:local ./testbed/bench/run.sh receipt_admission_lookup
 ```
 
 The exit code folds together the leak gate and any declared metric, semantic,
-and perf gates (`0` = all pass, `1` = at least one failed). Run artifacts are
-written under `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
+and perf gates (`0` = all pass, `1` = at least one failed). Unless `KEEP_UP=1`,
+teardown of the named Compose project must also succeed; a teardown failure
+disqualifies the run without masking an earlier gate failure. Run artifacts
+are written under `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
 
 ## Host-only GC and periodic-backup stress (#1183)
 
@@ -335,7 +337,10 @@ perf_gate:
 ```
 
 All named producer gates are conjunctive with the aggregate gate and appear
-as separate rows in `perf_gate.json` and the rendered report.
+as separate rows in `perf_gate.json` and the rendered report. A nonempty
+producer summary without p99, or with duplicate or invalid latency percentiles,
+fails closed rather than treating missing latency as zero. A reported throughput
+must also agree with whether the producer recorded any calls.
 
 #### Typed recovery lifecycle (`lifecycle_gate:` block)
 
