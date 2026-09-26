@@ -280,19 +280,20 @@ after Delete. The checked-in Go SDK now offers separate opt-in
 `NewReceiptContext`. Persist the context, explicit Add contribution IDs,
 and exact intent before the first send; retry only after proving continuity
 with the same endpoint and generation. The existing methods remain
-receipt-less. Published `sdks/go/v0.25.0` pins published `pb/v0.13.0`;
-external module consumers can resolve these opt-in APIs through that SDK
-release. Its independent fresh public-proxy/sumdb consumer build and test
-passed.
+receipt-less. Independently published `sdks/go/v0.25.1` pins `pb/v0.13.1`;
+both modules are available from the public Go proxy, so external consumers
+can resolve these opt-in APIs through that SDK release.
 
-**Published v0.25 retry caveat (#1468):** Do not use `WithRetry` or
-`NewLanternFailover` for receipt-less Add or exact/prefix Delete when a response
-could be lost. The published SDK may retry those operations after an ambiguous
-commit, changing an Add's effective weight or a Delete's original result;
-repeating a capped prefix Delete can remove a later page. Use the separate
-receipt-backed APIs for Add and exact Vertex/Edge Delete result recovery with
-same-endpoint/generation continuity. Prefix Delete has no receipt path. The
-#1468 source fix is not in the published tag.
+**Retry safety (#1468):** In v0.25.1, receipt-less Add and exact/prefix
+Delete take one attempt even when `WithRetry` or `NewLanternFailover` is
+enabled. The older v0.25.0 can retry these writes after an ambiguous
+commit, changing Add's effective weight or Delete's original result;
+repeating a capped prefix Delete can remove a later page. Callers pinned
+to v0.25.0 should avoid those policies for these operations or upgrade.
+Use receipt-backed APIs for Add and exact Vertex/Edge Delete result
+recovery with same-endpoint/generation continuity. Prefix Delete has no
+receipt path; one attempt does not make manual replay safe after a lost
+response.
 
 Every `PutVertex*` / `PutEdge*` singular call returns a typed `PutOutcome`.
 Plural Put calls return request-index-aligned `[]VertexPutResult` /

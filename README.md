@@ -410,14 +410,15 @@ Operational tiers compose in: `client.WithAuthToken` for bearer-token
 servers, `client.WithRetry` for opt-in full-jitter retries of eligible reads
 and unconditional Put, and `client.NewLanternFailover` for sticky-cursor
 rotation of replay-eligible calls across HA replicas. Receipt-bearing writes
-use a separate same-endpoint continuity check before retry; plain Add and
-exact/prefix Delete make one attempt in checked-in source.
-In published `sdks/go/v0.25.0`, these policies may retry receipt-less Add
-and exact/prefix Delete after an ambiguous commit, changing the original
-result or deleting a later prefix page. Avoid them for those operations;
-use receipt-backed APIs for supported exact mutations with same-endpoint
-continuity. Prefix Delete has no receipt path; the #1468 fix is present
-in checked-in source, not in the published v0.25.0 tag.
+use a separate same-endpoint continuity check before retry. Independently
+published `sdks/go/v0.25.1` includes #1468: receipt-less Add and exact/prefix
+Delete make one attempt even with `WithRetry` or `NewLanternFailover`. The
+older v0.25.0 can retry them after an ambiguous commit, changing the original
+result or deleting a later prefix page; callers pinned to v0.25.0 should
+avoid those policies for these operations or upgrade. Receipt-backed APIs
+recover results for supported exact mutations with same-endpoint continuity.
+Prefix Delete has no receipt path; a lost response is still ambiguous and
+manual replay is unsafe.
 Full worked example: [sdks/go/example/main.go](sdks/go/example/main.go).
 
 ### TypeScript / Node
