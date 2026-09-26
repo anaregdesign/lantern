@@ -275,12 +275,19 @@ test.
 ## After editing `.proto`
 
 ```bash
-go generate ./...   # runs buf generate (NO --clean) + wire
+go generate ./...                                # buf generate (NO --clean) + wire
+sdks/dart/scripts/codegen.sh
+(cd sdks/node && bun run codegen)
+testbed/dart-transport-probe/scripts/codegen.sh
 ```
 
-Commit the regenerated stubs under `pb/`. Never pass `--clean` to buf — its output root
-is `pb/`, so `--clean` would delete `pb/go.mod` and `pb/doc.go` alongside the stubs.
-The same schema change triggers `dart-sdk.yml`; regenerate the private Dart stubs too.
+Commit regenerated stubs under `pb/`, `sdks/dart/lib/src/gen/`,
+`sdks/node/src/gen/`, and both `testbed/dart-transport-probe/{connect,grpc}/lib/src/gen/`
+when they change. Never hand-edit generated files. CI reruns these generators and
+checks for drift in `go.yml`, `dart-sdk.yml`, `node-sdk.yml`, and
+`dart-transport-probe.yml`; even a comment-only proto edit can change generated docs.
+Never pass `--clean` to buf — its output root is `pb/`, so `--clean` would delete
+`pb/go.mod` and `pb/doc.go` alongside the stubs.
 If the wire shape consumed or shipped by `lantern_client` changes, cut an independent
 `sdks/dart/vX.Y.Z` release after the compatible server/proto change lands.
 
