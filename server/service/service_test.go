@@ -776,6 +776,166 @@ func TestLanternService_PutEdge_Replaces(t *testing.T) {
 	}
 }
 
+func TestLanternService_EdgeWritesRejectNonFiniteSourceBeforePublication(t *testing.T) {
+	for _, weight := range []struct {
+		name  string
+		value float32
+	}{
+		{"NaN", float32(math.NaN())},
+		{"positive infinity", float32(math.Inf(1))},
+		{"negative infinity", float32(math.Inf(-1))},
+	} {
+		for _, write := range []struct {
+			name string
+			run  func(*LanternService, *pb.Edge) error
+		}{
+			{"PutEdge", func(s *LanternService, e *pb.Edge) error {
+				_, err := s.PutEdge(context.Background(), &pb.PutEdgeRequest{Edge: e})
+				return err
+			}},
+			{"PutEdges", func(s *LanternService, e *pb.Edge) error {
+				_, err := s.PutEdges(context.Background(), &pb.PutEdgesRequest{
+					Edges: []*pb.Edge{{Tail: "new", Head: "head", Weight: 1}, e},
+				})
+				return err
+			}},
+			{"AddEdge", func(s *LanternService, e *pb.Edge) error {
+				_, err := s.AddEdge(context.Background(), &pb.AddEdgeRequest{Edge: e})
+				return err
+			}},
+			{"AddEdges", func(s *LanternService, e *pb.Edge) error {
+				_, err := s.AddEdges(context.Background(), &pb.AddEdgesRequest{
+					Edges: []*pb.Edge{{Tail: "new", Head: "head", Weight: 1}, e},
+				})
+				return err
+			}},
+		} {
+			t.Run(write.name+"/"+weight.name, func(t *testing.T) {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+				cache.AddEdgeWithExpiration("tail", "head", 5, time.Now().Add(time.Hour))
+				log := mutationlog.New(mutationlog.Options{Capacity: 8})
+				t.Cleanup(func() { _ = log.Close() })
+				origin := hlc.NodeID{0x4d}
+				svc := NewLanternService(cache).WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+				err := write.run(svc, &pb.Edge{Tail: "tail", Head: "head", Weight: weight.value})
+				if connect.CodeOf(err) != connect.CodeInvalidArgument {
+					t.Fatalf("source weight rejection = %v, want InvalidArgument", err)
+				}
+				if got, live := cache.GetWeight("tail", "head"); !live || got != 5 {
+					t.Fatalf("invalid write changed existing weight to %v, live=%t", got, live)
+				}
+				if _, live := cache.GetWeight("new", "head"); live {
+					t.Fatal("valid batch prefix was applied before invalid weight")
+				}
+				if got := svc.LocalSeq(origin); got != 0 || log.Len() != 0 {
+					t.Fatalf("invalid write advanced origin/log to %d/%d", got, log.Len())
+				}
+			})
+		}
+	}
+}
+
+func TestLanternService_FiniteContributionsMayOverflowEffectiveWeight(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x4e}
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	resp, err := svc.AddEdges(context.Background(), &pb.AddEdgesRequest{
+		Edges: []*pb.Edge{
+			{Tail: "tail", Head: "head", Weight: math.MaxFloat32},
+			{Tail: "tail", Head: "head", Weight: math.MaxFloat32},
+		},
+	})
+	if err != nil || len(resp.GetEffectiveWeights()) != 2 ||
+		resp.GetEffectiveWeights()[0] != math.MaxFloat32 ||
+		!math.IsInf(float64(resp.GetEffectiveWeights()[1]), 1) {
+		t.Fatalf("finite AddEdges overflow = (%+v, %v), want MaxFloat32 then +Inf", resp, err)
+	}
+	edges := cache.SnapshotEdges()
+	if len(edges) != 1 || len(edges[0].Contributions) != 2 ||
+		edges[0].Contributions[0].Weight != math.MaxFloat32 ||
+		edges[0].Contributions[1].Weight != math.MaxFloat32 ||
+		log.Len() != 1 || svc.LocalSeq(origin) != 1 {
+		t.Fatalf("finite contributions or publication changed: edges=%+v, log=%d, seq=%d",
+			edges, log.Len(), svc.LocalSeq(origin))
+	}
+}
+
+func TestLanternService_GraphReadsFailClosedUntilVerifiedSnapshot(t *testing.T) {
+	svc := newTestService(t)
+	seedTriangle(t, svc)
+	ctx := context.Background()
+	reads := []struct {
+		name string
+		run  func() error
+	}{
+		{"GetVertex", func() error {
+			_, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "a"})
+			return err
+		}},
+		{"GetVertices", func() error {
+			_, err := svc.GetVertices(ctx, &pb.GetVerticesRequest{Keys: []string{"a", "b"}})
+			return err
+		}},
+		{"GetEdge", func() error {
+			_, err := svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "a", Head: "b"})
+			return err
+		}},
+		{"GetEdges", func() error {
+			_, err := svc.GetEdges(ctx, &pb.GetEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "a", Head: "b"}}})
+			return err
+		}},
+		{"Illuminate BFS", func() error {
+			_, err := svc.Illuminate(ctx, &pb.IlluminateRequest{
+				Seed: "a", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 2, FanOut: 2}},
+			})
+			return err
+		}},
+		{"Illuminate PPR", func() error {
+			_, err := svc.Illuminate(ctx, &pb.IlluminateRequest{
+				Seed: "a", Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 3}},
+			})
+			return err
+		}},
+		{"Illuminate community", func() error {
+			_, err := svc.Illuminate(ctx, &pb.IlluminateRequest{
+				Seed: "a", Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{MaxSize: 3}},
+			})
+			return err
+		}},
+	}
+	assertFaulted := func(stage string) {
+		t.Helper()
+		for _, read := range reads {
+			t.Run(stage+"/"+read.name, func(t *testing.T) {
+				if err := read.run(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read during %s = %v, want FailedPrecondition", stage, err)
+				}
+			})
+		}
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFaulted("active install")
+	finish(false)
+	assertFaulted("failed install")
+	retry, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry(true)
+	for _, read := range reads {
+		t.Run("verified retry/"+read.name, func(t *testing.T) {
+			if err := read.run(); err != nil {
+				t.Fatalf("read after verified retry: %v", err)
+			}
+		})
+	}
+}
+
 func TestLanternService_DeleteEdge(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
@@ -874,6 +1034,48 @@ func TestLanternService_Illuminate_NoAlgorithm(t *testing.T) {
 	}
 	if len(resp.Graph.Vertices) != 3 {
 		t.Errorf("vertices = %d, want 3", len(resp.Graph.Vertices))
+	}
+}
+
+func TestLanternService_IlluminateDetachesVerticesBeforeReturning(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		params func() *pb.IlluminateRequest
+	}{
+		{"BFS", func() *pb.IlluminateRequest {
+			return &pb.IlluminateRequest{Seed: "seed", Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 1}}}
+		}},
+		{"PPR", func() *pb.IlluminateRequest {
+			return &pb.IlluminateRequest{Seed: "seed", Params: &pb.IlluminateRequest_Ppr{Ppr: &pb.PprParams{TopN: 1}}}
+		}},
+		{"community", func() *pb.IlluminateRequest {
+			return &pb.IlluminateRequest{Seed: "seed", Params: &pb.IlluminateRequest_Community{Community: &pb.LocalCommunityParams{MaxSize: 1}}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fb := newFakeBackend()
+			source := &pb.Vertex{Key: "seed", Value: &pb.Vertex_String_{String_: "before"}}
+			fb.vertices["seed"] = source
+			if tc.name == "community" {
+				fb.communityGraph = coregraph.NewGraph[string, *pb.Vertex]()
+				fb.communityGraph.Vertices["seed"] = source
+			}
+			svc := NewLanternService(fb)
+			resp, err := svc.Illuminate(context.Background(), tc.params())
+			if err != nil {
+				t.Fatal(err)
+			}
+			source.Value = &pb.Vertex_String_{String_: "changed during replay"}
+			for _, vertex := range resp.GetGraph().GetVertices() {
+				if vertex.GetKey() == "seed" {
+					if vertex == source || vertex.GetString_() != "before" {
+						t.Fatalf("traversal response retained a mutable cache vertex: %v", vertex)
+					}
+					return
+				}
+			}
+			t.Fatal("traversal response omitted seed vertex")
+		})
 	}
 }
 

@@ -31,12 +31,15 @@ changes a leaderless-replication invariant.
 
 - **Dump** drives the same `BackupSnapshot` surface the CLI `lantern-cli dump`
   uses — a whole-graph, point-in-time snapshot taken under one lock — and
-  writes it as length-delimited protobuf. The on-disk format is **identical**
-  to `lantern-cli dump --format proto`, so a server-written dump loads with
-  `lantern-cli restore` and vice-versa.
-- **Restore** replays the newest valid dump through the normal write path, so
-  absolute expirations and HLC ordering are honoured; an entry whose TTL has
-  already elapsed since the dump is **not** resurrected.
+  writes it as length-delimited protobuf. The record format matches
+  `lantern-cli dump --format proto`, but CLI restore replays edges through
+  public `PutEdges`, which accepts only finite input weights. Finite-weight
+  records can be restored either way; a dump with an edge aggregate folded
+  to ±Infinity by earlier finite Adds (or a historical NaN weight) requires
+  the server's internal graph-only startup restore, not `lantern-cli restore`.
+- **Restore** replays the newest valid dump through the internal zero-HLC
+  write path, so absolute expirations and HLC ordering are honoured; an
+  entry whose TTL has already elapsed since the dump is **not** resurrected.
 - **Derived search recovery** marks the index `INCOMPLETE` before replay,
   restores the live graph, then rebuilds the exact index before it can become
   `HEALTHY`. A bounded rebuild failure leaves graph restore intact but search
@@ -55,7 +58,9 @@ changes a leaderless-replication invariant.
 
 The `.lbk` format contains graph records only. It does not preserve mutation
 receipts, contribution identities, origin cutoffs, or receipt clock
-high-water, so it cannot prove receipt continuity after restore.
+high-water, so it cannot prove receipt continuity after restore. Durable
+receipt backup sets use a separate private format and are not CLI restore
+inputs.
 
 ## Durable receipt-WAL mode
 

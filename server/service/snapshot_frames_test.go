@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +94,88 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 		if !proto.Equal(graphOnly.frames[i], privateReceipt.frames[i]) {
 			t.Fatalf("private format changed graph frame %d", i)
 		}
+	}
+}
+
+func TestSendSnapshotFramesDerivedAggregate(t *testing.T) {
+	baseExpiration := time.Now().Add(time.Hour)
+	addExpiration := baseExpiration.Add(-time.Minute)
+	addHLC := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: hlc.NodeID{0x52}}
+	addID := graphcache.ContribID{0x52}
+	cut := func(weight float32) replicationSnapshotCut {
+		return replicationSnapshotCut{graph: graphcache.GraphSnapshot[string, *pb.Vertex]{
+			Edges: []graphcache.SnapshotEdge[string]{{
+				Tail: "tail", Head: "head",
+				Contributions: []graphcache.SnapshotContribution{
+					{Weight: weight, Expiration: baseExpiration, DerivedAggregate: true},
+					{Weight: 7, Expiration: addExpiration, ContribID: addID, HLC: addHLC},
+				},
+			}},
+		}}
+	}
+	for _, tc := range []struct {
+		name   string
+		weight float32
+	}{
+		{"positive infinity", float32(math.Inf(1))},
+		{"negative infinity", float32(math.Inf(-1))},
+		{"historical NaN", float32(math.NaN())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &snapshotFrameSink{}
+			if err := sendSnapshotFrames(context.Background(), cut(tc.weight), pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, sink); err != nil {
+				t.Fatal(err)
+			}
+			if len(sink.frames) != 3 || sink.frames[2].GetFooter().GetEdgeCount() != 1 {
+				t.Fatalf("derived edge frames = %+v", sink.frames)
+			}
+			edge := sink.frames[1].GetEdge()
+			aggregate := edge.GetDerivedAggregate()
+			if aggregate == nil || len(edge.GetContributions()) != 0 ||
+				math.Float32bits(aggregate.GetWeight()) != math.Float32bits(tc.weight) ||
+				!aggregate.GetExpiration().AsTime().Equal(baseExpiration) ||
+				len(aggregate.GetAdds()) != 1 {
+				t.Fatalf("derived aggregate encoding = %+v", edge)
+			}
+			add := aggregate.GetAdds()[0]
+			if add.GetWeight() != 7 || !add.GetExpiration().AsTime().Equal(addExpiration) ||
+				!bytes.Equal(add.GetContribId(), addID[:]) ||
+				add.GetHlc().GetWallNs() != addHLC.WallNs {
+				t.Fatalf("independent finite Add lost identity, HLC, or TTL: %+v", add)
+			}
+
+			receipt := &snapshotFrameSink{}
+			err := sendSnapshotFrames(context.Background(), cut(tc.weight), pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, receipt)
+			if err == nil || !strings.Contains(err.Error(), "invalid derived aggregate") || len(receipt.frames) != 1 {
+				t.Fatalf("receipt Snapshot of derived aggregate = (%v, %d frames)", err, len(receipt.frames))
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		change func(*replicationSnapshotCut)
+	}{
+		{"empty live edge", func(c *replicationSnapshotCut) { c.graph.Edges[0].Contributions = nil }},
+		{"finite forged marker", func(c *replicationSnapshotCut) { c.graph.Edges[0].Contributions[0].Weight = 7 }},
+		{"marked Add identity", func(c *replicationSnapshotCut) { c.graph.Edges[0].Contributions[0].ContribID = graphcache.ContribID{1} }},
+		{"marked Add HLC", func(c *replicationSnapshotCut) { c.graph.Edges[0].Contributions[0].HLC = addHLC }},
+		{"marked edge Put floor", func(c *replicationSnapshotCut) { c.graph.Edges[0].HLC = addHLC }},
+		{"duplicate marker", func(c *replicationSnapshotCut) {
+			c.graph.Edges[0].Contributions = append(c.graph.Edges[0].Contributions, c.graph.Edges[0].Contributions[0])
+		}},
+		{"unidentified later Add", func(c *replicationSnapshotCut) { c.graph.Edges[0].Contributions[1].ContribID = graphcache.ContribID{} }},
+		{"later Add without HLC", func(c *replicationSnapshotCut) { c.graph.Edges[0].Contributions[1].HLC = hlc.Timestamp{} }},
+		{"nonfinite later source", func(c *replicationSnapshotCut) { c.graph.Edges[0].Contributions[1].Weight = float32(math.Inf(1)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := cut(float32(math.Inf(1)))
+			tc.change(&bad)
+			sink := &snapshotFrameSink{}
+			if err := sendSnapshotFrames(context.Background(), bad, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, sink); err == nil || len(sink.frames) != 1 {
+				t.Fatalf("malformed captured aggregate emitted %d frames, err=%v", len(sink.frames), err)
+			}
+		})
 	}
 }
 
@@ -821,6 +905,95 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 				t.Fatal("malformed receipt Snapshot was accepted")
 			}
 		})
+	}
+	for _, weight := range []struct {
+		name  string
+		value float32
+	}{
+		{"NaN", float32(math.NaN())},
+		{"positive infinity", float32(math.Inf(1))},
+		{"negative infinity", float32(math.Inf(-1))},
+	} {
+		for _, contribution := range []string{"Put", "Add"} {
+			t.Run(contribution+"/"+weight.name, func(t *testing.T) {
+				frames := cloneReceiptSnapshotFrames(valid)
+				edge := receiptSnapshotPutEdgeFrame("live", "live")
+				row := edge.GetEdge().Contributions[0]
+				row.Weight = weight.value
+				if contribution == "Add" {
+					row.ContribId = append([]byte{1}, make([]byte, 23)...)
+					row.Hlc = proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+				}
+				frames = insertReceiptSnapshotFrames(frames, len(frames)-1, edge)
+				frames[len(frames)-1].GetFooter().EdgeCount++
+				decoded, err := DecodeReceiptSnapshotFrames(
+					frames, policy, receiptSnapshotTestCatalogConfig(capture),
+				)
+				if err == nil || !strings.Contains(err.Error(), "non-finite live edge contribution weight") ||
+					len(decoded.Graph) != 0 {
+					t.Fatalf("invalid receipt Snapshot returned graph=%v, err=%v", decoded.Graph, err)
+				}
+			})
+		}
+	}
+}
+
+func TestReceiptSnapshotPreservesFiniteOverflowSourcesAndNaNResultBits(t *testing.T) {
+	capture, policy := receiptSnapshotTestCapture(t, true, true)
+	result := []byte{0x7f, 0xc0, 0, 1}
+	capture.Receipts.Receipts[0].Result = append([]byte(nil), result...)
+	stamp := capture.Graph[0].GetHeader().GetCutoffHlc()
+	edge := receiptSnapshotPutEdgeFrame("live", "live")
+	edge.GetEdge().Contributions = []*pb.SnapshotEdgeContribution{
+		{Weight: math.MaxFloat32, ContribId: append([]byte{1}, make([]byte, 23)...), Hlc: stamp},
+		{Weight: math.MaxFloat32, ContribId: append([]byte{2}, make([]byte, 23)...), Hlc: stamp},
+	}
+	capture.Graph = insertReceiptSnapshotFrames(capture.Graph, len(capture.Graph)-1, edge)
+	capture.Graph[len(capture.Graph)-1].GetFooter().EdgeCount++
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatalf("prepare finite-source receipt Snapshot: %v", err)
+	}
+	decoded, err := DecodeReceiptSnapshotFrames(frames, policy, receiptSnapshotTestCatalogConfig(capture))
+	if err != nil {
+		t.Fatalf("decode finite-source receipt Snapshot: %v", err)
+	}
+	if len(decoded.Receipts.Receipts) != 1 || !bytes.Equal(decoded.Receipts.Receipts[0].Result, result) {
+		t.Fatalf("authoritative original result bits changed: %+v", decoded.Receipts.Receipts)
+	}
+	if len(decoded.Graph) != 4 || len(decoded.Graph[2].GetEdge().GetContributions()) != 2 {
+		t.Fatalf("source contributions changed: %+v", decoded.Graph)
+	}
+	contributions := decoded.Graph[2].GetEdge().GetContributions()
+	if contributions[0].GetWeight() != math.MaxFloat32 ||
+		contributions[1].GetWeight() != math.MaxFloat32 ||
+		!math.IsInf(float64(contributions[0].GetWeight()+contributions[1].GetWeight()), 1) {
+		t.Fatalf("finite contributions no longer permit derived +Inf: %+v", contributions)
+	}
+}
+
+func TestReceiptSnapshotRejectsDerivedAggregate(t *testing.T) {
+	capture, policy := receiptSnapshotTestCapture(t, true, true)
+	valid, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge := receiptSnapshotPutEdgeFrame("live", "live")
+	edge.GetEdge().Contributions = nil
+	edge.GetEdge().DerivedAggregate = &pb.SnapshotEdgeDerivedAggregate{Weight: float32(math.Inf(1))}
+	capture.Graph = insertReceiptSnapshotFrames(capture.Graph, len(capture.Graph)-1, proto.Clone(edge).(*pb.SnapshotResponse))
+	capture.Graph[len(capture.Graph)-1].GetFooter().EdgeCount++
+	if frames, err := PrepareReceiptSnapshotFrames(capture, policy); err == nil ||
+		!strings.Contains(err.Error(), "receipt Snapshot cannot contain a derived edge aggregate") || frames != nil {
+		t.Fatalf("prepared receipt Snapshot with derived marker: frames=%v, err=%v", frames, err)
+	}
+	malformed := insertReceiptSnapshotFrames(valid, len(valid)-1, edge)
+	malformed[len(malformed)-1].GetFooter().EdgeCount++
+	if decoded, err := DecodeReceiptSnapshotFrames(
+		malformed, policy, receiptSnapshotTestCatalogConfig(capture),
+	); err == nil || !strings.Contains(err.Error(), "receipt Snapshot cannot contain a derived edge aggregate") ||
+		len(decoded.Graph) != 0 {
+		t.Fatalf("decoded receipt Snapshot with derived marker: graph=%v, err=%v", decoded.Graph, err)
 	}
 }
 

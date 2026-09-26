@@ -2,11 +2,13 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -395,6 +397,23 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 		{"invalid contribution expiration", "invalid live edge contribution", func(a *wholeStateArchive) {
 			a.Graph[3].GetEdge().Contributions[0].Expiration = badTimestamp()
 		}},
+		{"NaN Add source", "non-finite live edge contribution weight", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Contributions[0].Weight = float32(math.NaN())
+		}},
+		{"negative infinity Add source", "non-finite live edge contribution weight", func(a *wholeStateArchive) {
+			a.Graph[3].GetEdge().Contributions[0].Weight = float32(math.Inf(-1))
+		}},
+		{"positive infinity Put source", "non-finite live edge contribution weight", func(a *wholeStateArchive) {
+			contribution := a.Graph[3].GetEdge().Contributions[0]
+			contribution.ContribId = nil
+			contribution.Hlc = nil
+			contribution.Weight = float32(math.Inf(1))
+		}},
+		{"graph-only derived marker", "receipt Snapshot cannot contain a derived edge aggregate", func(a *wholeStateArchive) {
+			edge := a.Graph[3].GetEdge()
+			edge.Contributions = nil
+			edge.DerivedAggregate = &pb.SnapshotEdgeDerivedAggregate{Weight: float32(math.Inf(1))}
+		}},
 		{"duplicate edge", "duplicate live edge", func(a *wholeStateArchive) {
 			a.Graph = append(a.Graph[:4], append([]*pb.SnapshotResponse{proto.Clone(a.Graph[3]).(*pb.SnapshotResponse)}, a.Graph[4:]...)...)
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeCount++
@@ -490,6 +509,29 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 			if decoded, err := decodeWholeStateArchive(bytes.NewReader(raw)); !errors.Is(err, errWholeStateArchive) ||
 				!strings.Contains(err.Error(), tc.want) || len(decoded.Graph) != 0 {
 				t.Fatalf("decode malformed graph = %+v, %v, want %q", decoded, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestWholeStateArchiveRejectsNonFiniteSourceBeforeStaging(t *testing.T) {
+	for _, weight := range []struct {
+		name  string
+		value float32
+	}{
+		{"NaN", float32(math.NaN())},
+		{"positive infinity", float32(math.Inf(1))},
+		{"negative infinity", float32(math.Inf(-1))},
+	} {
+		t.Run(weight.name, func(t *testing.T) {
+			archive := wholeStateArchiveFixture(t)
+			archive.Graph[3].GetEdge().Contributions[0].Weight = weight.value
+			raw := uncheckedArchiveWithGraph(t, archive)
+			candidate, err := stageReceiptWholeStateArchive(
+				context.Background(), bytes.NewReader(raw), archive.Policy, time.Hour, nil,
+			)
+			if candidate != nil || !errors.Is(err, errWholeStateArchive) {
+				t.Fatalf("invalid source archive yielded candidate=%p, err=%v", candidate, err)
 			}
 		})
 	}

@@ -148,3 +148,33 @@ func TestTopVerticesByDegree(t *testing.T) {
 		}
 	})
 }
+
+func TestTopVerticesByDegree_FailsClosedUntilVerifiedSnapshot(t *testing.T) {
+	svc := newDegreeFakeService(t)
+	ctx := context.Background()
+	request := &pb.TopVerticesByDegreeRequest{
+		Prefix: "n:", K: 3, Direction: pb.TopVerticesByDegreeRequest_DIRECTION_BOTH,
+		Weighted: true,
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"active", "failed"} {
+		if stage == "failed" {
+			finish(false)
+		}
+		resp, err := svc.TopVerticesByDegree(ctx, request)
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition || resp != nil {
+			t.Fatalf("degree during %s install = (%+v, %v), want FailedPrecondition", stage, resp, err)
+		}
+	}
+	retry, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry(true)
+	if resp, err := svc.TopVerticesByDegree(ctx, request); err != nil || len(resp.GetEntries()) != 3 {
+		t.Fatalf("degree after verified retry = (%+v, %v), want three vertices", resp, err)
+	}
+}

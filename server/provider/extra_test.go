@@ -156,6 +156,51 @@ func TestValidationInterceptorValidatesSingularAddEdge(t *testing.T) {
 	})
 }
 
+func TestValidationInterceptorValidatesSingularAndPluralPutEdge(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		edge   *pb.Edge
+		reason string
+	}{
+		{"nil", nil, "nil_item"},
+		{"empty tail", &pb.Edge{Head: "b", Weight: 1}, "empty_key"},
+		{"empty head", &pb.Edge{Tail: "a", Weight: 1}, "empty_key"},
+		{"long key", &pb.Edge{Tail: "abcde", Head: "b", Weight: 1}, "key_too_long"},
+		{"NaN", &pb.Edge{Tail: "a", Head: "b", Weight: float32(math.NaN())}, "bad_weight"},
+		{"positive infinity", &pb.Edge{Tail: "a", Head: "b", Weight: float32(math.Inf(1))}, "bad_weight"},
+		{"negative infinity", &pb.Edge{Tail: "a", Head: "b", Weight: float32(math.Inf(-1))}, "bad_weight"},
+	} {
+		for _, call := range []struct {
+			name string
+			run  func(*testing.T, *ValidationInterceptor, *pb.Edge) error
+		}{
+			{"singular", func(t *testing.T, v *ValidationInterceptor, edge *pb.Edge) error {
+				return connectCallValidator(t, v, &pb.PutEdgeRequest{Edge: edge})
+			}},
+			{"plural", func(t *testing.T, v *ValidationInterceptor, edge *pb.Edge) error {
+				return connectCallValidator(t, v, &pb.PutEdgesRequest{Edges: []*pb.Edge{edge}})
+			}},
+		} {
+			t.Run(call.name+"/"+tc.name, func(t *testing.T) {
+				var reason string
+				v := NewValidationInterceptor(ValidationLimits{MaxKeyLen: 4, MaxBatchSize: 2}).
+					WithRejectHook(func(got string) { reason = got })
+				err := call.run(t, v, tc.edge)
+				if connect.CodeOf(err) != connect.CodeInvalidArgument || reason != tc.reason {
+					t.Fatalf("validation = (%v, %q), want InvalidArgument / %q", err, reason, tc.reason)
+				}
+			})
+		}
+	}
+	v := NewValidationInterceptor(ValidationLimits{MaxKeyLen: 4, MaxBatchSize: 2})
+	connectCallValidatorOK(t, v, &pb.PutEdgeRequest{
+		Edge: &pb.Edge{Tail: "a", Head: "b", Weight: math.MaxFloat32},
+	})
+	connectCallValidatorOK(t, v, &pb.PutEdgesRequest{
+		Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: -math.MaxFloat32}},
+	})
+}
+
 func TestValidationInterceptorReceiptStatusBatchUsesLowerEffectiveLimit(t *testing.T) {
 	id := make([]byte, 49)
 	tests := []struct {

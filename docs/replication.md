@@ -615,6 +615,33 @@ identities against the repaired responder. The server identity projection,
 typed SDK facades, and storage-neutral mobile consumer are implemented;
 physical-device release qualification retains its separate #1314 gate.
 
+Graph-only replay applies frames to the serving cache as they arrive. A later
+invalid frame may leave earlier frames in that cache, but public graph-data
+reads (including prefix/dry-run queries, search, traversal, degree ranking,
+and backup) hold a Snapshot-admission read latch across their GraphCache
+access, detach returned Vertex values before releasing it, and return
+`FAILED_PRECONDITION` throughout an active or failed install. Snapshot
+admission and verified fault-clear take the exclusive side of that same
+latch. Status and replication Snapshot also capture under this latch and
+their committed cut; neither holds the cut while serializing or streaming
+the detached result.
+Public graph writes, including conditional/outcome-bearing Puts, effective
+Adds, exact/prefix Deletes, and receipt commits, reject the same fault before
+reading or changing graph, receipt Store, origin, or log state.
+Peer mutation admission also rejects an active or failed graph-only Snapshot
+before queueing a new effect, including a duplicate retry. An earlier remote
+effect applied before Snapshot admission but waiting for relay WAL append
+remains owned: after complete frame validation, installer watermarks either
+cover it with the verified cutoff or append its retained WAL envelope above
+the cutoff without reapplying the graph effect. Outside Snapshot installation,
+ordinary peer retries still repair failed relay WAL appends.
+The ordinary publication cut is sampled before and after a graph-data read,
+not held through a slow query; an overlapping local publication causes a
+retryable `UNAVAILABLE` instead of a mixed result. Only a complete, verified
+Snapshot retry clears the fault and makes the graph readable again.
+`GetReplicationStatus` remains available for diagnosis without reading the
+graph; direct in-process GraphCache access is outside this public-read gate.
+
 After `gapped`, a mobile consumer opens bootstrap and atomically marks its
 **resident confirmed cache** Unknown at that checkpoint. It retains resident
 identities in durable, bounded key-only recovery state, revalidates them in
@@ -859,17 +886,32 @@ Framing contract:
   resume watermarks advance. Replay follows the existing remote-apply rule:
   it may exceed a locally configured causal budget rather than diverging from
   a peer that already committed the Delete.
-- The snapshot deliberately preserves **per-contribution decomposition**:
+- Ordinary Snapshot edges preserve **per-contribution decomposition**:
   each `SnapshotEdge` carries its full list of live `SnapshotEdgeContribution`
   rows rather than a pre-summed weight. A zero-`ContribID` row represents the
   LWW Put value and is restored through `PutEdgeWithExpirationHLC`; non-zero
   rows retain their original Add HLC and are restored through
   `AddEdgeWithExpirationContribHLC`. `SnapshotEdge.hlc` carries the winning Put
   floor, including a retained accepted-expired Put barrier. Receivers reject
-  malformed or missing Add HLCs and duplicate contribution identities before
-  applying the frame. `ContribID` dedup makes the snapshot-then-Subscribe-tail handoff idempotent:
+  malformed or missing Add HLCs, duplicate contribution identities, and
+  non-finite source contribution weights before applying the frame. These
+  weights are individual inputs, not the summed effective edge weight: finite
+  contributions may legitimately overflow to +/-Infinity. `ContribID` dedup
+  makes the snapshot-then-Subscribe-tail handoff idempotent:
   any additive contribution that also appears in the replayed tail is detected
   and dropped at apply time.
+- A graph-only `.lbk` retains only the effective edge weight, not its source
+  rows. Internal startup restore marks a non-finite restored weight as a
+  derived base. A graph-only Snapshot carries that base solely in
+  `SnapshotEdge.derived_aggregate`, with a zero Put floor and no ordinary
+  contributions; later finite Adds retain their own IDs, HLCs, and
+  expirations in `derived_aggregate.adds`. Receivers validate the complete
+  exclusive edge frame before applying it and retain the marker for subsequent
+  relays. A finite Put replaces the marked base; Delete and TTL expiry retain
+  their usual semantics. Receipt Snapshots and archives never accept this
+  graph-only variant: they must preserve the original finite source rows.
+  Historical NaN aggregates may be relayed, but no public or peer Add/Put
+  accepts a new NaN source.
 - A live additive edge may coexist with a retained Put barrier or Delete
   tombstone. The source streams those floors before the live edge, then replays
   only Add rows newer than the floor at their own HLCs. Repeating Snapshot or

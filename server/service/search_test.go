@@ -403,6 +403,75 @@ func TestSearchVertices_CursorPaginationSnapshot(t *testing.T) {
 	}
 }
 
+func TestSearchVertices_FailsClosedDuringSnapshotInstallAndRetainsCursor(t *testing.T) {
+	fb := newFakeBackend()
+	fb.searchResults = []search.Result[string]{{ID: "a", Score: 3}, {ID: "b", Score: 2}, {ID: "c", Score: 1}}
+	for _, key := range []string{"a", "b", "c"} {
+		fb.vertices[key] = &pb.Vertex{Key: key}
+	}
+	metrics := &fakeHotPathMetrics{}
+	svc := NewLanternService(fb).
+		WithSearchLimits(SearchLimits{
+			Enabled: true, DefaultLimit: 2, MaxLimit: 2,
+			CursorTTL: time.Minute, MaxSessions: 4, MaxSessionHits: 10, MaxSessionBytes: 1 << 20,
+		}).
+		WithHotPathMetrics(metrics)
+	ctx := context.Background()
+	first, err := svc.SearchVertices(ctx, &pb.SearchVerticesRequest{Query: "alpha", Limit: 2})
+	if err != nil || len(first.GetNextCursor()) == 0 {
+		t.Fatalf("first page = (%+v, %v), want cursor", first, err)
+	}
+	reads := []struct {
+		name    string
+		request *pb.SearchVerticesRequest
+	}{
+		{"key and score", &pb.SearchVerticesRequest{Query: "alpha", Limit: 2}},
+		{"full vertex", &pb.SearchVerticesRequest{
+			Query: "alpha", Limit: 2, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX,
+		}},
+		{"cursor continuation", &pb.SearchVerticesRequest{
+			Query: "alpha", Limit: 2, Cursor: first.GetNextCursor(),
+		}},
+	}
+	assertFaulted := func(stage string) {
+		t.Helper()
+		callsBefore := fb.searchCalls
+		for _, read := range reads {
+			t.Run(stage+"/"+read.name, func(t *testing.T) {
+				resp, err := svc.SearchVertices(ctx, read.request)
+				if connect.CodeOf(err) != connect.CodeFailedPrecondition || resp != nil {
+					t.Fatalf("search during %s = (%+v, %v), want FailedPrecondition", stage, resp, err)
+				}
+				if got := metrics.searchExecution[len(metrics.searchExecution)-1].Reason; got != "publication_gap" {
+					t.Fatalf("search observation reason = %q, want publication_gap", got)
+				}
+			})
+		}
+		if fb.searchCalls != callsBefore {
+			t.Fatalf("faulted search called backend %d times, want 0", fb.searchCalls-callsBefore)
+		}
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFaulted("active install")
+	finish(false)
+	assertFaulted("failed install")
+	retry, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry(true)
+	for _, read := range reads {
+		t.Run("verified retry/"+read.name, func(t *testing.T) {
+			if _, err := svc.SearchVertices(ctx, read.request); err != nil {
+				t.Fatalf("search after verified retry: %v", err)
+			}
+		})
+	}
+}
+
 func TestSearchVertices_FullVertexSnapshotAndContinuationLimit(t *testing.T) {
 	fb := newFakeBackend()
 	for i, key := range []string{"a", "b", "c", "d", "e"} {

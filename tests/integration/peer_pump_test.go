@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +63,14 @@ func newPumpNodeWithWAL(t *testing.T, nodeID hlc.NodeID, logCapacity int, positi
 }
 
 func newPumpNodeWithWALAndMetrics(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool, wal mutationlog.WAL, metrics service.SubscribeMetrics) *pumpNode {
+	return newPumpNodeWithToken(t, nodeID, logCapacity, positions, wal, metrics, "")
+}
+
+func newAuthedPumpNode(t *testing.T, nodeID hlc.NodeID, logCapacity int) *pumpNode {
+	return newPumpNodeWithToken(t, nodeID, logCapacity, true, nil, nil, testToken)
+}
+
+func newPumpNodeWithToken(t *testing.T, nodeID hlc.NodeID, logCapacity int, positions bool, wal mutationlog.WAL, metrics service.SubscribeMetrics, token string) *pumpNode {
 	t.Helper()
 	log := mutationlog.New(mutationlog.Options{Capacity: logCapacity, SubscriberBuffer: 1024, WAL: wal})
 	t.Cleanup(func() { _ = log.Close() })
@@ -80,7 +90,16 @@ func newPumpNodeWithWALAndMetrics(t *testing.T, nodeID hlc.NodeID, logCapacity i
 	// newConnectTestServer but the URL form is what the pump
 	// consumes directly (replication.peerBaseURL accepts both
 	// "host:port" and "http://host:port" forms).
-	srv := newConnectTestServer(t, svc, rep)
+	var interceptors []connect.Interceptor
+	var sdkOptions []client.Option
+	if token != "" {
+		interceptors = []connect.Interceptor{
+			provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{token}}),
+			provider.NewValidationInterceptor(defaultIntegrationValidationLimits()).ConnectInterceptor(),
+		}
+		sdkOptions = append(sdkOptions, client.WithAuthToken(token))
+	}
+	srv := newConnectTestServer(t, svc, rep, interceptors...)
 
 	return &pumpNode{
 		url:    srv.url,
@@ -88,7 +107,7 @@ func newPumpNodeWithWALAndMetrics(t *testing.T, nodeID hlc.NodeID, logCapacity i
 		clock:  clock,
 		log:    log,
 		svc:    svc,
-		sdk:    newConnectClientFor(t, srv.url),
+		sdk:    newConnectClientFor(t, srv.url, sdkOptions...),
 		raw:    graphv1connect.NewLanternServiceClient(h2cClient(), srv.url),
 		nodeID: nodeID,
 	}
@@ -566,6 +585,91 @@ func assertGraphReadsGapped(t *testing.T, ctx context.Context, n *pumpNode) {
 	}
 }
 
+func assertGraphWritesGapped(t *testing.T, ctx context.Context, n *pumpNode, remote hlc.NodeID) {
+	t.Helper()
+	beforeVertices, beforeEdges := n.cache.VertexCount(), n.cache.EdgeCount()
+	beforeLog := n.log.Len()
+	beforeLocalSeq, beforeRemoteSeq := n.svc.LocalSeq(n.nodeID), n.svc.LocalSeq(remote)
+	checks := []struct {
+		name  string
+		write func() error
+	}{
+		{"PutVertex", func() error {
+			_, err := n.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "not-admitted"}}))
+			return err
+		}},
+		{"PutVertices if_absent", func() error {
+			_, err := n.raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{
+				IfAbsent: true, Vertices: []*pb.Vertex{{Key: "not-admitted"}},
+			}))
+			return err
+		}},
+		{"PutEdge", func() error {
+			_, err := n.raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "fault-tail", Head: "fault-head", Weight: 3}}))
+			return err
+		}},
+		{"PutEdges outcomes", func() error {
+			_, err := n.raw.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "fault-tail", Head: "fault-head", Weight: 3}}}))
+			return err
+		}},
+		{"AddEdge effective", func() error {
+			_, err := n.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "fault-tail", Head: "fault-head", Weight: 3}}))
+			return err
+		}},
+		{"AddEdges effective", func() error {
+			_, err := n.raw.AddEdges(ctx, connect.NewRequest(&pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "fault-tail", Head: "fault-head", Weight: 3}}}))
+			return err
+		}},
+		{"DeleteVertex", func() error {
+			_, err := n.raw.DeleteVertex(ctx, connect.NewRequest(&pb.DeleteVertexRequest{Key: "relay-warmup"}))
+			return err
+		}},
+		{"DeleteVertices outcomes", func() error {
+			_, err := n.raw.DeleteVertices(ctx, connect.NewRequest(&pb.DeleteVerticesRequest{Keys: []string{"relay-warmup"}}))
+			return err
+		}},
+		{"DeleteEdge", func() error {
+			_, err := n.raw.DeleteEdge(ctx, connect.NewRequest(&pb.DeleteEdgeRequest{Tail: "fault-tail", Head: "fault-head"}))
+			return err
+		}},
+		{"DeleteEdges outcomes", func() error {
+			_, err := n.raw.DeleteEdges(ctx, connect.NewRequest(&pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "fault-tail", Head: "fault-head"}}}))
+			return err
+		}},
+		{"DeleteVerticesByPrefix", func() error {
+			_, err := n.raw.DeleteVerticesByPrefix(ctx, connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{Prefix: "relay"}))
+			return err
+		}},
+		{"DeleteEdgesByPrefix", func() error {
+			_, err := n.raw.DeleteEdgesByPrefix(ctx, connect.NewRequest(&pb.DeleteEdgesByPrefixRequest{TailPrefix: "fault"}))
+			return err
+		}},
+		{"empty PutEdges", func() error {
+			_, err := n.raw.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{}))
+			return err
+		}},
+	}
+	for _, check := range checks {
+		if err := check.write(); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+			t.Errorf("%s during Snapshot fault = %v, want gapped FailedPrecondition", check.name, err)
+		}
+		if n.cache.VertexCount() != beforeVertices || n.cache.EdgeCount() != beforeEdges {
+			t.Fatalf("%s changed graph counts from %d/%d to %d/%d",
+				check.name, beforeVertices, beforeEdges, n.cache.VertexCount(), n.cache.EdgeCount())
+		}
+		if got, live := n.cache.GetWeight("fault-tail", "fault-head"); !live || got != 1 {
+			t.Fatalf("%s changed partially installed edge to (%v, %t)", check.name, got, live)
+		}
+		if value, live := n.cache.GetVertex("relay-warmup"); !live || value.GetString_() != "ready" {
+			t.Fatalf("%s changed partially installed vertex to (%v, %t)", check.name, value, live)
+		}
+		if n.svc.LocalSeq(n.nodeID) != beforeLocalSeq || n.svc.LocalSeq(remote) != beforeRemoteSeq || n.log.Len() != beforeLog {
+			t.Fatalf("%s changed local/remote seq or log to %d/%d/%d",
+				check.name, n.svc.LocalSeq(n.nodeID), n.svc.LocalSeq(remote), n.log.Len())
+		}
+	}
+}
+
 // startPump attaches a Pump to the node aimed at the supplied peer
 // URLs (or "host:port" — replication.peerBaseURL coerces both).
 func (n *pumpNode) startPump(ctx context.Context, t *testing.T, peers []string) {
@@ -573,6 +677,10 @@ func (n *pumpNode) startPump(ctx context.Context, t *testing.T, peers []string) 
 }
 
 func (n *pumpNode) startPumpWithMetrics(ctx context.Context, t *testing.T, peers []string, metrics replication.Metrics) {
+	n.startPumpWithMetricsAndToken(ctx, t, peers, metrics, "")
+}
+
+func (n *pumpNode) startPumpWithMetricsAndToken(ctx context.Context, t *testing.T, peers []string, metrics replication.Metrics, token string) {
 	t.Helper()
 	p := replication.NewPump(replication.Config{
 		NodeID:                  n.nodeID,
@@ -582,6 +690,7 @@ func (n *pumpNode) startPumpWithMetrics(ctx context.Context, t *testing.T, peers
 		HTTPClient:              h2cClient(),
 		SearchConfigFingerprint: n.svc.SearchConfigFingerprint(),
 		Metrics:                 metrics,
+		AuthToken:               token,
 	}, n.svc, n.cache)
 	n.pump = p
 	pumpCtx, cancel := context.WithCancel(ctx)
@@ -1792,6 +1901,213 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	}
 }
 
+func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping three-node graph-only restore and relay")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseExpiration := time.Now().Add(50 * time.Minute)
+	addExpiration := baseExpiration.Add(-time.Minute)
+
+	source := newPumpNode(t, hlc.NodeID{0xD1})
+	for i := range 2 {
+		result, err := source.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
+			Edge: &pb.Edge{
+				Tail: "tail", Head: "head", Weight: math.MaxFloat32,
+				Expiration: timestamppb.New(baseExpiration),
+			},
+		}))
+		if err != nil || result == nil || (i == 1 && !math.IsInf(float64(result.Msg.GetEffectiveWeight()), 1)) {
+			t.Fatalf("finite source Add[%d] = (%+v, %v), want derived +Inf on second Add", i, result, err)
+		}
+	}
+	_, backupEdges := drainBackup(t, ctx, source.raw, &pb.BackupSnapshotRequest{})
+	folded := backupEdges["tail->head"]
+	if folded == nil || !math.IsInf(float64(folded.GetWeight()), 1) ||
+		!folded.GetExpiration().AsTime().Equal(baseExpiration) {
+		t.Fatalf("finite sources did not fold into the graph-only backup: %+v", folded)
+	}
+
+	a := newAuthedPumpNode(t, hlc.NodeID{0xD2}, 2)
+	if _, err := a.svc.RestoreEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{folded}}); err != nil {
+		t.Fatalf("startup RestoreEdges: %v", err)
+	}
+	restored := a.cache.SnapshotEdges()
+	if len(restored) != 1 || len(restored[0].Contributions) != 1 ||
+		!restored[0].Contributions[0].DerivedAggregate {
+		t.Fatalf("startup restore lost derived provenance: %+v", restored)
+	}
+	put := connect.NewRequest(&pb.PutEdgeRequest{Edge: folded})
+	put.Header().Set("Authorization", "Bearer "+testToken)
+	if _, err := a.raw.PutEdge(ctx, put); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("public PutEdge of folded aggregate = %v, want InvalidArgument", err)
+	}
+
+	unauthenticated := newReplicationRawClient(t, a.url)
+	stream, err := unauthenticated.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}))
+	if err == nil {
+		if stream.Receive() {
+			t.Fatal("tokenless Snapshot exposed the restored graph")
+		}
+		err = stream.Err()
+		_ = stream.Close()
+	}
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("tokenless Snapshot = %v, want Unauthenticated", err)
+	}
+
+	add := connect.NewRequest(&pb.AddEdgeRequest{Edge: &pb.Edge{
+		Tail: "tail", Head: "head", Weight: 7, Expiration: timestamppb.New(addExpiration),
+	}})
+	add.Header().Set("Authorization", "Bearer "+testToken)
+	result, err := a.raw.AddEdge(ctx, add)
+	if err != nil || !math.IsInf(float64(result.Msg.GetEffectiveWeight()), 1) {
+		t.Fatalf("finite Add to restored aggregate = (%+v, %v), want effective +Inf", result, err)
+	}
+	for i := range 4 {
+		if _, err := a.sdk.PutVertex(ctx, fmt.Sprintf("a-gap-%d", i), "value", time.Minute); err != nil {
+			t.Fatalf("source gap write %d: %v", i, err)
+		}
+	}
+
+	snapshotEdge := func(n *pumpNode) *pb.SnapshotEdge {
+		t.Helper()
+		req := connect.NewRequest(&pb.SnapshotRequest{
+			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		})
+		req.Header().Set("Authorization", "Bearer "+testToken)
+		stream, err := newReplicationRawClient(t, n.url).Snapshot(ctx, req)
+		if err != nil {
+			t.Fatalf("authenticated Snapshot from %x: %v", n.nodeID[:1], err)
+		}
+		defer func() { _ = stream.Close() }()
+		var edge *pb.SnapshotEdge
+		var footer *pb.SnapshotFooter
+		for stream.Receive() {
+			if item := stream.Msg().GetEdge(); item != nil && item.GetTail() == "tail" && item.GetHead() == "head" {
+				edge = proto.Clone(item).(*pb.SnapshotEdge)
+			}
+			if item := stream.Msg().GetFooter(); item != nil {
+				footer = item
+			}
+		}
+		if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("Snapshot from %x: %v", n.nodeID[:1], err)
+		}
+		if edge == nil || footer.GetEdgeCount() != 1 {
+			t.Fatalf("Snapshot from %x omitted the restored edge or footer: edge=%+v footer=%+v",
+				n.nodeID[:1], edge, footer)
+		}
+		return edge
+	}
+	assertAggregate := func(n *pumpNode, adds int) {
+		t.Helper()
+		edge := snapshotEdge(n)
+		base := edge.GetDerivedAggregate()
+		if base == nil || len(edge.GetContributions()) != 0 ||
+			!math.IsInf(float64(base.GetWeight()), 1) ||
+			!base.GetExpiration().AsTime().Equal(baseExpiration) || len(base.GetAdds()) != adds {
+			t.Fatalf("Snapshot from %x lost exclusive aggregate variant: %+v", n.nodeID[:1], edge)
+		}
+		first := base.GetAdds()[0]
+		if first.GetWeight() != 7 || !first.GetExpiration().AsTime().Equal(addExpiration) ||
+			len(first.GetContribId()) != 24 || first.GetHlc().GetWallNs() <= 0 {
+			t.Fatalf("Snapshot from %x lost independently timed Add: %+v", n.nodeID[:1], first)
+		}
+	}
+	assertLive := func(n *pumpNode) {
+		t.Helper()
+		req := connect.NewRequest(&pb.GetEdgeRequest{Tail: "tail", Head: "head"})
+		req.Header().Set("Authorization", "Bearer "+testToken)
+		got, err := n.raw.GetEdge(ctx, req)
+		if err != nil || !math.IsInf(float64(got.Msg.GetEdge().GetWeight()), 1) ||
+			!got.Msg.GetEdge().GetExpiration().AsTime().Equal(baseExpiration) {
+			t.Fatalf("public GetEdge on %x = (%+v, %v), want +Inf with backup TTL", n.nodeID[:1], got, err)
+		}
+	}
+	awaitSnapshot := func(n *pumpNode, metrics *observedSearchConfigMetrics, origin hlc.NodeID, want uint64) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			if metrics.snapshots.Load() > 0 && n.svc.LocalSeq(origin) >= want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("node %x did not Snapshot origin %x through seq %d (snapshots=%d, seq=%d)",
+			n.nodeID[:1], origin[:1], want, metrics.snapshots.Load(), n.svc.LocalSeq(origin))
+	}
+
+	assertAggregate(a, 1)
+	assertLive(a)
+	b := newAuthedPumpNode(t, hlc.NodeID{0xD3}, 2)
+	bMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
+	b.startPumpWithMetricsAndToken(ctx, t, []string{a.url}, bMetrics, testToken)
+	awaitSnapshot(b, bMetrics, a.nodeID, 5)
+	assertAggregate(b, 1)
+	assertLive(b)
+
+	for i := range 4 {
+		if _, err := b.sdk.PutVertex(ctx, fmt.Sprintf("b-gap-%d", i), "value", time.Minute); err != nil {
+			t.Fatalf("relay gap write %d: %v", i, err)
+		}
+	}
+	c := newAuthedPumpNode(t, hlc.NodeID{0xD4}, 2)
+	cMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
+	c.startPumpWithMetricsAndToken(ctx, t, []string{b.url}, cMetrics, testToken)
+	awaitSnapshot(c, cMetrics, b.nodeID, 4)
+	if got := c.svc.LocalSeq(a.nodeID); got != 5 {
+		t.Fatalf("relay Snapshot lost original origin cutoff: %d, want 5", got)
+	}
+	assertAggregate(c, 1)
+	assertLive(c)
+
+	later := connect.NewRequest(&pb.AddEdgeRequest{Edge: &pb.Edge{
+		Tail: "tail", Head: "head", Weight: 9,
+		Expiration: timestamppb.New(addExpiration.Add(-time.Minute)),
+	}})
+	later.Header().Set("Authorization", "Bearer "+testToken)
+	if result, err := a.raw.AddEdge(ctx, later); err != nil || !math.IsInf(float64(result.Msg.GetEffectiveWeight()), 1) {
+		t.Fatalf("post-Snapshot Add = (%+v, %v), want effective +Inf", result, err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for c.svc.LocalSeq(a.nodeID) < 6 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := c.svc.LocalSeq(a.nodeID); got != 6 {
+		t.Fatalf("live tail did not pass through B to C: origin seq %d, want 6", got)
+	}
+	assertAggregate(c, 2)
+	assertLive(c)
+
+	beforeLocalSeq, beforeLog := c.svc.LocalSeq(c.nodeID), c.log.Len()
+	invalid := connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: "tail", Head: "head", Weight: float32(math.NaN()),
+	}})
+	invalid.Header().Set("Authorization", "Bearer "+testToken)
+	if _, err := c.raw.PutEdge(ctx, invalid); connect.CodeOf(err) != connect.CodeInvalidArgument ||
+		c.svc.LocalSeq(c.nodeID) != beforeLocalSeq || c.log.Len() != beforeLog {
+		t.Fatalf("non-finite source reached relay graph/log: %v, seq=%d log=%d", err, c.svc.LocalSeq(c.nodeID), c.log.Len())
+	}
+	assertAggregate(c, 2)
+
+	finite := connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: "tail", Head: "head", Weight: 11, Expiration: timestamppb.New(baseExpiration),
+	}})
+	finite.Header().Set("Authorization", "Bearer "+testToken)
+	if _, err := c.raw.PutEdge(ctx, finite); err != nil {
+		t.Fatalf("finite Put after relayed aggregate: %v", err)
+	}
+	replaced := snapshotEdge(c)
+	if replaced.GetDerivedAggregate() != nil || len(replaced.GetContributions()) != 1 ||
+		replaced.GetContributions()[0].GetWeight() != 11 {
+		t.Fatalf("finite Put did not clear derived provenance: %+v", replaced)
+	}
+}
+
 // TestPeerPump_SnapshotCarriesDeleteTombstones covers a three-peer partition:
 // A deletes identities while B holds older writes, then C bootstraps from A
 // after A's log has gapped. The pre-cutoff Deletes cannot arrive in C's tail;
@@ -1894,19 +2210,20 @@ func TestPeerPump_SnapshotCarriesDeleteTombstones(t *testing.T) {
 	}
 }
 
-type scriptedTombstoneSnapshotPeer struct {
+type scriptedGraphSnapshotPeer struct {
 	graphv1connect.UnimplementedLanternReplicationServiceHandler
 	frames         []*pb.SnapshotResponse
+	afterSend      func(context.Context, *pb.SnapshotResponse) error
 	subscribeCalls atomic.Int32
 }
 
-func (*scriptedTombstoneSnapshotPeer) PeerStatus(context.Context, *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
+func (*scriptedGraphSnapshotPeer) PeerStatus(context.Context, *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
 	return connect.NewResponse(&pb.PeerStatusResponse{
 		RequiredSnapshotFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 	}), nil
 }
 
-func (p *scriptedTombstoneSnapshotPeer) Subscribe(ctx context.Context, _ *connect.Request[pb.SubscribeRequest], _ *connect.ServerStream[pb.SubscribeResponse]) error {
+func (p *scriptedGraphSnapshotPeer) Subscribe(ctx context.Context, _ *connect.Request[pb.SubscribeRequest], _ *connect.ServerStream[pb.SubscribeResponse]) error {
 	if p.subscribeCalls.Add(1) == 1 {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped"))
 	}
@@ -1914,10 +2231,15 @@ func (p *scriptedTombstoneSnapshotPeer) Subscribe(ctx context.Context, _ *connec
 	return ctx.Err()
 }
 
-func (p *scriptedTombstoneSnapshotPeer) Snapshot(_ context.Context, _ *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+func (p *scriptedGraphSnapshotPeer) Snapshot(ctx context.Context, _ *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
 	for _, frame := range p.frames {
 		if err := stream.Send(frame); err != nil {
 			return err
+		}
+		if p.afterSend != nil {
+			if err := p.afterSend(ctx, frame); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1978,7 +2300,7 @@ func TestPeerPump_SnapshotTombstoneFraming_E2E(t *testing.T) {
 			if tc.footer != nil {
 				frames = append(frames, &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Footer{Footer: tc.footer}})
 			}
-			peer := &scriptedTombstoneSnapshotPeer{frames: frames}
+			peer := &scriptedGraphSnapshotPeer{frames: frames}
 			mux := http.NewServeMux()
 			mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
 			srv := httptest.NewUnstartedServer(mux)
@@ -2017,6 +2339,264 @@ func TestPeerPump_SnapshotTombstoneFraming_E2E(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPeerPump_LateNonFiniteSnapshotEdgeFailsClosedUntilVerifiedRetry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	boot := newPumpNode(t, hlc.NodeID{0xF3})
+	origin := hlc.NodeID{0xF4}
+	remote := newPumpNode(t, hlc.NodeID{0xF5})
+	if result, err := remote.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{
+		Edge: &pb.Edge{
+			Tail: "peer-tail", Head: "peer-head", Weight: 4,
+			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		},
+	})); err != nil || result.Msg.GetEffectiveWeight() != 4 {
+		t.Fatalf("source peer AddEdge = (%+v, %v), want effective 4", result, err)
+	}
+	remoteMutation := readFullMutationFrame(t, ctx, remote.url, 1).GetMutation()
+	if remoteMutation == nil || remoteMutation.GetSeq() != 1 {
+		t.Fatalf("source peer Subscribe mutation = %v, want seq 1", remoteMutation)
+	}
+	edgeFrame := func(tail, head string, weight float32) *pb.SnapshotResponse {
+		return &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+			Tail: tail, Head: head,
+			Contributions: []*pb.SnapshotEdgeContribution{{Weight: weight}},
+		}}}
+	}
+	frames := []*pb.SnapshotResponse{
+		{Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
+			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			CutoffSeqPerOrigin: map[string]uint64{
+				hex.EncodeToString(origin[:]): 7,
+			},
+			CutoffHlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]},
+		}}},
+	}
+	for _, key := range []string{"relay-warmup", "fault-tail", "fault-head", "bad-tail", "bad-head"} {
+		vertex := &pb.Vertex{Key: key}
+		if key == "relay-warmup" {
+			vertex.Value = &pb.Vertex_String_{String_: "ready"}
+		}
+		frames = append(frames, &pb.SnapshotResponse{
+			Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: vertex}},
+		})
+	}
+	frames = append(frames,
+		edgeFrame("fault-tail", "fault-head", 1),
+		edgeFrame("bad-tail", "bad-head", float32(math.NaN())),
+		&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{
+			VertexCount: 5, EdgeCount: 2,
+		}}},
+	)
+	runAttempt := func(frames []*pb.SnapshotResponse, afterSend func(context.Context, *pb.SnapshotResponse) error) (*tombstoneSnapshotMetrics, func()) {
+		t.Helper()
+		peer := &scriptedGraphSnapshotPeer{frames: frames, afterSend: afterSend}
+		mux := http.NewServeMux()
+		mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+		srv := httptest.NewUnstartedServer(mux)
+		protocols := new(http.Protocols)
+		protocols.SetHTTP1(true)
+		protocols.SetUnencryptedHTTP2(true)
+		srv.Config.Protocols = protocols
+		srv.Start()
+		t.Cleanup(srv.Close)
+		metrics := &tombstoneSnapshotMetrics{failed: make(chan struct{}, 1), snapshots: make(chan struct{}, 1)}
+		pumpCtx, stopPump := context.WithCancel(ctx)
+		pump := replication.NewPump(replication.Config{
+			NodeID: boot.nodeID, Peers: []string{srv.URL}, HTTPClient: h2cClient(),
+			BackoffMin: time.Second, BackoffMax: time.Second, Metrics: metrics,
+		}, boot.svc, boot.cache)
+		done := make(chan struct{})
+		go func() {
+			_ = pump.Run(pumpCtx)
+			close(done)
+		}()
+		stop := func() {
+			stopPump()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Error("snapshot pump did not stop")
+			}
+		}
+		t.Cleanup(stop)
+		return metrics, stop
+	}
+
+	firstEdgeSent := make(chan struct{})
+	allowMalformed := make(chan struct{})
+	defer func() {
+		select {
+		case <-allowMalformed:
+		default:
+			close(allowMalformed)
+		}
+	}()
+	failed, stopFailed := runAttempt(frames, func(streamCtx context.Context, frame *pb.SnapshotResponse) error {
+		if frame.GetEdge().GetTail() != "fault-tail" {
+			return nil
+		}
+		close(firstEdgeSent)
+		select {
+		case <-allowMalformed:
+			return nil
+		case <-streamCtx.Done():
+			return streamCtx.Err()
+		}
+	})
+	select {
+	case <-firstEdgeSent:
+	case <-ctx.Done():
+		t.Fatalf("first Snapshot edge was not sent: %v", ctx.Err())
+	}
+	for {
+		if weight, live := boot.cache.GetWeight("fault-tail", "fault-head"); live && weight == 1 {
+			break
+		}
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatalf("first Snapshot edge was not installed: %v", ctx.Err())
+		}
+	}
+	if _, err := boot.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
+		Tail: "fault-tail", Head: "fault-head",
+	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("in-flight Snapshot exposed first edge over GetEdge: %v", err)
+	}
+	applyResult := make(chan error, 1)
+	go func() { applyResult <- boot.svc.ApplyMutation(ctx, remoteMutation) }()
+	select {
+	case err := <-applyResult:
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+			t.Fatalf("concurrent peer apply during Snapshot = %v, want gapped FailedPrecondition", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("concurrent peer apply did not return while Snapshot was paused: %v", ctx.Err())
+	}
+	if _, live := boot.cache.GetWeight("peer-tail", "peer-head"); live ||
+		boot.svc.LocalSeq(remote.nodeID) != 0 || boot.log.Len() != 0 {
+		t.Fatalf("in-flight Snapshot admitted peer mutation: seq/log=%d/%d",
+			boot.svc.LocalSeq(remote.nodeID), boot.log.Len())
+	}
+	close(allowMalformed)
+	select {
+	case <-failed.failed:
+	case <-ctx.Done():
+		t.Fatalf("malformed second edge frame did not fail Snapshot: %v", ctx.Err())
+	}
+	if got, live := boot.cache.GetWeight("fault-tail", "fault-head"); !live || got != 1 {
+		t.Fatalf("earlier finite frame = (%v, %t), want installed weight 1", got, live)
+	}
+	if _, live := boot.cache.GetWeight("bad-tail", "bad-head"); live {
+		t.Fatal("malformed later edge frame changed the graph")
+	}
+	if seq := boot.svc.LocalSeq(origin); seq != 0 ||
+		boot.svc.LocalSeq(remote.nodeID) != 0 || boot.log.Len() != 0 {
+		t.Fatalf("failed Snapshot advanced snapshot/peer origin or log to %d/%d/%d",
+			seq, boot.svc.LocalSeq(remote.nodeID), boot.log.Len())
+	}
+	assertGraphReadsGapped(t, ctx, boot)
+	stopFailed()
+	assertGraphWritesGapped(t, ctx, boot, origin)
+	if err := boot.svc.ApplyMutation(ctx, remoteMutation); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("peer after failed Snapshot = %v, want FailedPrecondition", err)
+	}
+	if _, live := boot.cache.GetWeight("peer-tail", "peer-head"); live ||
+		boot.svc.LocalSeq(remote.nodeID) != 0 || boot.log.Len() != 0 {
+		t.Fatalf("failed Snapshot admitted peer mutation: seq/log=%d/%d",
+			boot.svc.LocalSeq(remote.nodeID), boot.log.Len())
+	}
+
+	forgedFrames := append([]*pb.SnapshotResponse(nil), frames...)
+	forgedFrames[len(forgedFrames)-2] = &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+			Tail: "bad-tail", Head: "bad-head",
+			DerivedAggregate: &pb.SnapshotEdgeDerivedAggregate{Weight: 5},
+		}},
+	}
+	forged, stopForged := runAttempt(forgedFrames, nil)
+	select {
+	case <-forged.failed:
+	case <-ctx.Done():
+		t.Fatalf("forged derived marker did not fail Snapshot retry: %v", ctx.Err())
+	}
+	stopForged()
+	assertGraphReadsGapped(t, ctx, boot)
+	if _, live := boot.cache.GetWeight("bad-tail", "bad-head"); live ||
+		boot.svc.LocalSeq(origin) != 0 || boot.log.Len() != 0 {
+		t.Fatalf("forged marker changed graph or watermark: seq=%d log=%d",
+			boot.svc.LocalSeq(origin), boot.log.Len())
+	}
+
+	verifiedFrames := append([]*pb.SnapshotResponse(nil), frames...)
+	verifiedFrames[len(verifiedFrames)-2] = edgeFrame("bad-tail", "bad-head", 2)
+	succeeded, stopSucceeded := runAttempt(verifiedFrames, nil)
+	select {
+	case <-succeeded.snapshots:
+	case <-ctx.Done():
+		t.Fatalf("valid Snapshot retry did not finish: %v", ctx.Err())
+	}
+	stopSucceeded()
+	if seq := boot.svc.LocalSeq(origin); seq != 7 {
+		t.Fatalf("verified Snapshot watermark = %d, want 7", seq)
+	}
+	for _, edge := range []struct {
+		tail, head string
+		weight     float32
+	}{
+		{"fault-tail", "fault-head", 1},
+		{"bad-tail", "bad-head", 2},
+	} {
+		got, err := boot.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
+			Tail: edge.tail, Head: edge.head,
+		}))
+		if err != nil || got.Msg.GetEdge().GetWeight() != edge.weight {
+			t.Fatalf("public GetEdge(%s,%s) after retry = (%+v, %v), want %v",
+				edge.tail, edge.head, got, err, edge.weight)
+		}
+	}
+	status, err := boot.raw.GetServerStatus(ctx, connect.NewRequest(&pb.GetServerStatusRequest{}))
+	if err != nil || status.Msg.GetVertexCount() != 5 || status.Msg.GetEdgeCount() != 2 {
+		t.Fatalf("public status after verified retry = (%+v, %v), want five vertices and two edges", status, err)
+	}
+	put, err := boot.raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{
+		Tail: "post-retry", Head: "edge", Weight: 3,
+	}}))
+	if err != nil || put.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatalf("public PutEdge after retry = (%+v, %v), want applied", put, err)
+	}
+	add, err := boot.raw.AddEdge(ctx, connect.NewRequest(&pb.AddEdgeRequest{Edge: &pb.Edge{
+		Tail: "post-retry", Head: "edge", Weight: 2,
+	}}))
+	if err != nil || add.Msg.GetEffectiveWeight() != 5 {
+		t.Fatalf("public AddEdge after retry = (%+v, %v), want effective 5", add, err)
+	}
+	read, err := boot.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "post-retry", Head: "edge"}))
+	if err != nil || read.Msg.GetEdge().GetWeight() != 5 {
+		t.Fatalf("public GetEdge after new writes = (%+v, %v), want weight 5", read, err)
+	}
+	deleted, err := boot.raw.DeleteEdge(ctx, connect.NewRequest(&pb.DeleteEdgeRequest{Tail: "post-retry", Head: "edge"}))
+	if err != nil || !deleted.Msg.GetExisted() || boot.svc.LocalSeq(boot.nodeID) != 3 || boot.log.Len() != 3 {
+		t.Fatalf("public DeleteEdge after retry = (%+v, %v), local seq/log = %d/%d",
+			deleted, err, boot.svc.LocalSeq(boot.nodeID), boot.log.Len())
+	}
+	if err := boot.svc.ApplyMutation(ctx, remoteMutation); err != nil {
+		t.Fatalf("peer after verified Snapshot retry: %v", err)
+	}
+	if err := boot.svc.ApplyMutation(ctx, remoteMutation); err != nil {
+		t.Fatalf("duplicate peer after verified Snapshot retry: %v", err)
+	}
+	read, err = boot.raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
+		Tail: "peer-tail", Head: "peer-head",
+	}))
+	if err != nil || read.Msg.GetEdge().GetWeight() != 4 ||
+		boot.svc.LocalSeq(remote.nodeID) != 1 || boot.log.Len() != 4 {
+		t.Fatalf("peer convergence after retry = (%+v,%v), origin/log=%d/%d, want one weight-4 effect",
+			read, err, boot.svc.LocalSeq(remote.nodeID), boot.log.Len())
 	}
 }
 

@@ -126,6 +126,14 @@ failure (#847). The most common knobs:
 | `LANTERN_LLM_*` | `PROVIDER=disabled` | LLM engine wiring (#828): provider, model, key/base-URL, and the injectable auth modes. |
 | `LANTERN_TOMBSTONE_TTL` | `8760h` (1 year) | Tombstone retention + clamp on caller-supplied `Expiration`; set to `0` to disable (see HA RFC). |
 
+Public edge Put/Add RPCs accept only finite source weights, for both singular and
+plural calls. Peer mutations and restored Snapshot/archive contributions follow
+the same rule. Finite contributions may still overflow to an infinite effective
+Add weight; the server does not normalize that result or an authoritative
+receipt's original four-byte result (including NaN). Direct startup
+`RestoreEdges` can import a folded infinite backup weight; public `PutEdges`
+cannot treat that derived value as a new finite source.
+
 Replication-specific variables (`LANTERN_PEERS`, `LANTERN_MAX_REPLICATION_LAG`,
 anti-entropy intervals, etc.) are documented in
 [docs/replication.md](../docs/replication.md) and the runbook at

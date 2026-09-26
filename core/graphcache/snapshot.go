@@ -25,10 +25,11 @@ type SnapshotVertex[S comparable, T any] struct {
 // to suppress duplicates when the live tail re-delivers the same
 // contribution after bootstrap.
 type SnapshotContribution struct {
-	Weight     float32
-	Expiration time.Time
-	ContribID  ContribID
-	HLC        hlc.Timestamp
+	Weight           float32
+	Expiration       time.Time
+	ContribID        ContribID
+	HLC              hlc.Timestamp
+	DerivedAggregate bool
 }
 
 // SnapshotEdge is one entry of GraphCache.SnapshotEdges. HLC carries the

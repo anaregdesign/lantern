@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"math"
 	"path/filepath"
@@ -124,6 +126,87 @@ func TestPublicReceiptEdgeAddReturnsOriginalResultAcrossDeleteAndRetry(t *testin
 	result, ok := status.GetStatus().GetReceipt().GetOriginalResult().GetResult().(*pb.ReceiptResult_AddEdgeEffectiveWeight)
 	if !ok || result.AddEdgeEffectiveWeight != 5 {
 		t.Fatalf("status result = %+v, want Add effective weight 5", status)
+	}
+}
+
+func TestPublicReceiptEdgeAddPreservesFiniteOverflowResultBits(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		weight float32
+		bits   uint32
+	}{
+		{"positive infinity", math.MaxFloat32, 0x7f800000},
+		{"negative infinity", -math.MaxFloat32, 0xff800000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, svc, _ := newActivatedReceiptService(t, 8)
+			request := publicReceiptEdgeAddRequest(t, runtime, 0x52,
+				&pb.Edge{Tail: "overflow", Head: "edge", Weight: tc.weight},
+				&pb.Edge{Tail: "overflow", Head: "edge", Weight: tc.weight},
+			)
+			response, err := svc.AddEdges(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			weights := response.GetEffectiveWeights()
+			if len(weights) != 2 || math.Float32bits(weights[0]) != math.Float32bits(tc.weight) ||
+				math.Float32bits(weights[1]) != tc.bits {
+				t.Fatalf("finite Add sources returned %+v, want %v then result bits %08x", weights, tc.weight, tc.bits)
+			}
+			snapshot, err := runtime.receipt.store.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, receipt := range snapshot.Receipts {
+				if bytes.Equal(receipt.ID[:], request.GetReceiptContext().GetOperationIds()[1]) {
+					found = true
+					if len(receipt.Result) != 4 || binary.BigEndian.Uint32(receipt.Result) != tc.bits {
+						t.Fatalf("original receipt RESULT = %x, want %08x", receipt.Result, tc.bits)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("overflow receipt was not committed")
+			}
+			retry, err := svc.AddEdges(t.Context(), proto.Clone(request).(*pb.AddEdgesRequest))
+			if err != nil || len(retry.GetEffectiveWeights()) != 2 ||
+				math.Float32bits(retry.GetEffectiveWeights()[1]) != tc.bits {
+				t.Fatalf("receipt retry lost original result bits: %+v, %v", retry, err)
+			}
+		})
+	}
+}
+
+func TestPublicReceiptEdgeAddPreservesNaNResultFromPriorGraph(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	// Seed a value admitted before source ingress validation was enforced.
+	runtime.graph.PutEdgeWithExpiration(
+		"legacy", "edge", math.Float32frombits(0x7fc00001), time.Now().Add(time.Hour),
+	)
+	request := publicReceiptEdgeAddRequest(t, runtime, 0x53,
+		&pb.Edge{Tail: "legacy", Head: "edge", Weight: 1},
+	)
+	response, err := svc.AddEdges(t.Context(), request)
+	if err != nil || len(response.GetEffectiveWeights()) != 1 ||
+		!math.IsNaN(float64(response.GetEffectiveWeights()[0])) {
+		t.Fatalf("finite Add over prior NaN graph = %+v, %v", response, err)
+	}
+	originalBits := math.Float32bits(response.GetEffectiveWeights()[0])
+	snapshot, err := runtime.receipt.store.Snapshot()
+	if err != nil || len(snapshot.Receipts) != 1 || len(snapshot.Receipts[0].Result) != 4 ||
+		binary.BigEndian.Uint32(snapshot.Receipts[0].Result) != originalBits {
+		t.Fatalf("original NaN RESULT bits = %+v, %v, want %08x", snapshot.Receipts, err, originalBits)
+	}
+	if _, err := svc.PutEdge(t.Context(), &pb.PutEdgeRequest{
+		Edge: &pb.Edge{Tail: "legacy", Head: "edge", Weight: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := svc.AddEdges(t.Context(), proto.Clone(request).(*pb.AddEdgesRequest))
+	if err != nil || len(retry.GetEffectiveWeights()) != 1 ||
+		math.Float32bits(retry.GetEffectiveWeights()[0]) != originalBits {
+		t.Fatalf("retry after finite Put changed authoritative NaN bits: %+v, %v", retry, err)
 	}
 }
 

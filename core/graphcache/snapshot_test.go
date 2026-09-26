@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -49,12 +50,85 @@ func replayReplicationSnapshot(dst *GraphCache[string, string], snapshot Replica
 	}
 	for _, edge := range snapshot.Graph.Edges {
 		for _, contribution := range edge.Contributions {
+			if contribution.DerivedAggregate {
+				dst.PutEdgeDerivedAggregateWithExpirationHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, edge.HLC)
+				continue
+			}
 			if contribution.ContribID.IsZero() {
 				dst.PutEdgeWithExpirationHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, edge.HLC)
 				continue
 			}
 			dst.AddEdgeWithExpirationContribHLC(edge.Tail, edge.Head, contribution.Weight, contribution.Expiration, contribution.ContribID, contribution.HLC)
 		}
+	}
+}
+
+func TestGraphCache_SnapshotReplicationPreservesDerivedAggregate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		weight float32
+		sign   int
+	}{
+		{"positive", float32(math.Inf(1)), 1},
+		{"negative", float32(math.Inf(-1)), -1},
+		{"historical NaN", float32(math.NaN()), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expiration := time.Now().Add(time.Hour)
+			source := NewGraphCache[string, string](time.Hour)
+			outcomes := source.PutEdgesWithExpirationHLCOutcomes([]EdgeItem[string]{{
+				Tail: "tail", Head: "head", Weight: tc.weight,
+				Expiration: expiration, DerivedAggregate: true,
+			}}, hlc.Timestamp{})
+			if len(outcomes) != 1 || outcomes[0] != PutOutcomeAppliedAndLive {
+				t.Fatalf("restore outcomes = %v, want one applied and live", outcomes)
+			}
+			addID := ContribID{0x41}
+			addHLC := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: hlc.NodeID{0x41}}
+			if !source.AddEdgeWithExpirationContribHLC("tail", "head", 3, expiration.Add(-time.Minute), addID, addHLC) {
+				t.Fatal("finite Add after restored aggregate was rejected")
+			}
+			snapshot := source.SnapshotReplication()
+			edges := edgeByEndpoints(snapshot.Graph.Edges)
+			edge := edges[EdgeKey[string]{Tail: "tail", Head: "head"}]
+			if len(edge.Contributions) != 2 ||
+				!edge.Contributions[0].DerivedAggregate || edge.Contributions[1].DerivedAggregate ||
+				math.Float32bits(edge.Contributions[0].Weight) != math.Float32bits(tc.weight) ||
+				edge.Contributions[1].Weight != 3 ||
+				edge.Contributions[1].ContribID != addID {
+				t.Fatalf("Snapshot lost restored aggregate or finite Add: %+v", edge)
+			}
+
+			replica := NewGraphCache[string, string](time.Hour)
+			replayReplicationSnapshot(replica, snapshot)
+			replayReplicationSnapshot(replica, snapshot)
+			if got, live := replica.GetWeight("tail", "head"); !live ||
+				(tc.sign == 0 && !math.IsNaN(float64(got))) ||
+				(tc.sign != 0 && !math.IsInf(float64(got), tc.sign)) {
+				t.Fatalf("replayed aggregate weight = %v, live=%t", got, live)
+			}
+			replayed := edgeByEndpoints(replica.SnapshotReplication().Graph.Edges)[EdgeKey[string]{Tail: "tail", Head: "head"}]
+			if len(replayed.Contributions) != 2 || !replayed.Contributions[0].DerivedAggregate ||
+				replayed.Contributions[1].ContribID != addID {
+				t.Fatalf("repeated Snapshot changed aggregate/added rows: %+v", replayed)
+			}
+
+			replacementHLC := hlc.Timestamp{WallNs: addHLC.WallNs + 1, NodeID: addHLC.NodeID}
+			if !replica.PutEdgeWithExpirationHLC("tail", "head", 7, expiration, replacementHLC) {
+				t.Fatal("finite Put failed to replace restored aggregate")
+			}
+			if got, live := replica.GetWeight("tail", "head"); !live || got != 7 {
+				t.Fatalf("finite Put left aggregate behind: weight=%v, live=%t", got, live)
+			}
+			replaced := replica.SnapshotEdges()
+			if len(replaced) != 1 || len(replaced[0].Contributions) != 1 || replaced[0].Contributions[0].DerivedAggregate {
+				t.Fatalf("finite Put did not clear aggregate provenance: %+v", replaced)
+			}
+			replica.DeleteEdgeHLC("tail", "head", hlc.Timestamp{WallNs: replacementHLC.WallNs + 1, NodeID: replacementHLC.NodeID}, expiration)
+			if _, live := replica.GetWeight("tail", "head"); live || len(replica.SnapshotEdges()) != 0 {
+				t.Fatal("Delete retained restored aggregate")
+			}
+		})
 	}
 }
 

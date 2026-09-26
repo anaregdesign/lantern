@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"math"
@@ -150,6 +152,50 @@ func TestReceiptEdgeAddWireAndWALRoundTrip(t *testing.T) {
 	if !ok || info.origin != envelope.Origin ||
 		len(info.receipts) != len(envelope.Receipts) {
 		t.Fatalf("receipt WAL classification = %+v, %v", info, ok)
+	}
+}
+
+func TestReceiptEdgeAddOriginalResultBitsSurviveWireAndWAL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bits uint32
+	}{
+		{"NaN", 0x7fc00001},
+		{"positive infinity", 0x7f800000},
+		{"negative infinity", 0xff800000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envelope := committedReceiptEdgeAddEnvelope(t, 1)
+			result := make([]byte, 4)
+			binary.BigEndian.PutUint32(result, tc.bits)
+			envelope.Receipts[0].Result = result
+			envelope.Mutation = receiptEdgeAddMutation(envelope)
+			wire, err := envelope.ReplicationMutation()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateMutationEdgeSourceWeights(wire.GetOp()); err != nil {
+				t.Fatalf("finite original rejected for non-finite RESULT: %v", err)
+			}
+			decoded, err := decodeReceiptEdgeAddMutation(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(decoded.Receipts[0].Result, result) {
+				t.Fatalf("original wire result = %+v, %v, want %x", decoded, err, result)
+			}
+			raw, err := encodeGraphAddEffectWAL(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replayed, err := decodeGraphAddEffectWAL(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(replayed.Receipts[0].Result, result) {
+				t.Fatalf("original WAL result = %+v, %v, want %x", replayed, err, result)
+			}
+		})
 	}
 }
 

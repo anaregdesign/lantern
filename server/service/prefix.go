@@ -59,17 +59,23 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 	// one page, so a resumed page costs O(page), not O(matching set).
 	vertices := make([]*pb.Vertex, 0, limit)
 	var lastKey string
-	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, v *pb.Vertex) bool {
-		// Normalise nil-valued vertices the same way GetVertex does so
-		// callers see a uniform shape.
-		if v == nil {
-			vertices = append(vertices, &pb.Vertex{Key: key, Value: &pb.Vertex_Nil{Nil: true}})
-		} else {
-			vertices = append(vertices, v)
-		}
-		lastKey = key
-		return true
-	})
+	var more bool
+	if err := s.withPublicGraphRead(func() error {
+		more, _ = s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, v *pb.Vertex) bool {
+			// Normalise nil-valued vertices the same way GetVertex does so
+			// callers see a uniform shape.
+			if v == nil {
+				vertices = append(vertices, &pb.Vertex{Key: key, Value: &pb.Vertex_Nil{Nil: true}})
+			} else {
+				vertices = append(vertices, detachedGraphVertex(v))
+			}
+			lastKey = key
+			return true
+		})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	resp := &pb.ScanVerticesResponse{Vertices: vertices}
 	if more && lastKey != "" {
@@ -124,11 +130,17 @@ func (s *LanternService) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKe
 
 	keys := make([]string, 0, limit)
 	var lastKey string
-	more, _ := s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, _ *pb.Vertex) bool {
-		keys = append(keys, key)
-		lastKey = key
-		return true
-	})
+	var more bool
+	if err := s.withPublicGraphRead(func() error {
+		more, _ = s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, _ *pb.Vertex) bool {
+			keys = append(keys, key)
+			lastKey = key
+			return true
+		})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	resp := &pb.ScanVertexKeysResponse{Keys: keys}
 	if more && lastKey != "" {
@@ -148,7 +160,13 @@ func (s *LanternService) CountVerticesByPrefix(ctx context.Context, in *pb.Count
 		return nil, ctxToConnect(err)
 	}
 	start := time.Now()
-	n := s.cache.CountByPrefix(in.GetPrefix())
+	var n int
+	if err := s.withPublicGraphRead(func() error {
+		n = s.cache.CountByPrefix(in.GetPrefix())
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	s.metrics.OnScan("CountVerticesByPrefix", n, time.Since(start))
 	return &pb.CountVerticesByPrefixResponse{Count: uint64(n)}, nil
 }
@@ -168,7 +186,13 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 	limit := clampLimit(in.GetLimit(), s.scan.DeleteByPrefixDefaultLimit, s.scan.DeleteByPrefixMaxLimit)
 
 	if in.GetDryRun() {
-		n := uint64(s.cache.CountByPrefix(in.GetPrefix()))
+		var n uint64
+		if err := s.withPublicGraphRead(func() error {
+			n = uint64(s.cache.CountByPrefix(in.GetPrefix()))
+			return nil
+		}); err != nil {
+			return nil, err
+		}
 		if n > uint64(limit) {
 			n = uint64(limit)
 		}
@@ -209,6 +233,11 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 			}
 		}
 	} else {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
 		deleted = s.cache.DeleteByPrefix(ctx, in.GetPrefix(), int(limit))
 	}
 	s.metrics.OnScan("DeleteVerticesByPrefix", deleted, time.Since(start))
@@ -245,11 +274,16 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 		// without mutating state; the page collector caps the count at the
 		// effective limit and applies the identical live-visibility filter.
 		n := 0
-		s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), "", "", int(limit),
-			func(string, string, string, string, float32, time.Time) bool {
-				n++
-				return true
-			})
+		if err := s.withPublicGraphRead(func() error {
+			s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), "", "", int(limit),
+				func(string, string, string, string, float32, time.Time) bool {
+					n++
+					return true
+				})
+			return nil
+		}); err != nil {
+			return nil, err
+		}
 		s.metrics.OnScan("DeleteEdgesByPrefix", n, time.Since(start))
 		return &pb.DeleteEdgesByPrefixResponse{Deleted: uint64(n)}, nil
 	}
@@ -295,6 +329,11 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 			}
 		}
 	} else {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
 		deleted = s.cache.DeleteEdgesByPrefix(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), int(limit))
 	}
 	s.metrics.OnScan("DeleteEdgesByPrefix", deleted, time.Since(start))
@@ -386,16 +425,22 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 	// past the cursor head, buffering at most one page.
 	edges := make([]*pb.Edge, 0, limit)
 	var lastTail, lastHead string
-	more, _ := s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), cursor.LastTail, cursor.LastHead, int(limit),
-		func(_ string, tail string, _ string, head string, weight float32, exp time.Time) bool {
-			edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}
-			if !exp.IsZero() {
-				edge.Expiration = timestamppb.New(exp)
-			}
-			edges = append(edges, edge)
-			lastTail, lastHead = tail, head
-			return true
-		})
+	var more bool
+	if err := s.withPublicGraphRead(func() error {
+		more, _ = s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), cursor.LastTail, cursor.LastHead, int(limit),
+			func(_ string, tail string, _ string, head string, weight float32, exp time.Time) bool {
+				edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}
+				if !exp.IsZero() {
+					edge.Expiration = timestamppb.New(exp)
+				}
+				edges = append(edges, edge)
+				lastTail, lastHead = tail, head
+				return true
+			})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	resp := &pb.ScanEdgesResponse{Edges: edges}
 	if more && (lastTail != "" || lastHead != "") {

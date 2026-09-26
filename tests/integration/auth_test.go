@@ -3,6 +3,9 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"math"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -10,9 +13,11 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
@@ -133,6 +138,142 @@ func TestAuth_SDKRoundTrip(t *testing.T) {
 			t.Fatalf("failover put: %v", err)
 		}
 	})
+}
+
+func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
+	nodeID := hlc.NodeID{0x7a}
+	now := time.Now()
+	runtime, err := service.CreateDurableReceiptWALServingRuntime(service.DurableReceiptWALRuntimeConfig{
+		Path: filepath.Join(t.TempDir(), "receipts.wal"),
+		Receipt: mutationreceipt.Config{
+			Epoch: mutationreceipt.Epoch{0x7a}, Retention: time.Hour,
+			MaxEntries: 32, MaxBytes: 1 << 20, ClockHighWater: now,
+		},
+		Log:        mutationlog.Options{Capacity: 16, SubscriberBuffer: 16},
+		DefaultTTL: time.Hour,
+		ConfigureGraph: func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+			provider.ConfigureGraphCache(graph, provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+			return nil
+		},
+		NodeID:        nodeID,
+		Now:           now,
+		BaselineCodec: backup.ReceiptBaselineCodec{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close durable runtime: %v", err)
+		}
+	})
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replicationService, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallation(primary, replicationService); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyReceiptBackup(primary, replicationService); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ActivatePublicReceipts(primary, replicationService); err != nil {
+		t.Fatal(err)
+	}
+	srv := newConnectTestServer(
+		t, primary, replicationService,
+		provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{testToken}}),
+		provider.NewValidationInterceptor(defaultIntegrationValidationLimits()).ConnectInterceptor(),
+	)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx := t.Context()
+	authorizedPutEdge := func(edge *pb.Edge) *connect.Request[pb.PutEdgeRequest] {
+		req := connect.NewRequest(&pb.PutEdgeRequest{Edge: edge})
+		req.Header().Set("Authorization", "Bearer "+testToken)
+		return req
+	}
+	authorizedPutEdges := func(edges []*pb.Edge) *connect.Request[pb.PutEdgesRequest] {
+		req := connect.NewRequest(&pb.PutEdgesRequest{Edges: edges})
+		req.Header().Set("Authorization", "Bearer "+testToken)
+		return req
+	}
+	if _, err := raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{
+		Edge: &pb.Edge{Tail: "singular", Head: "edge", Weight: 1},
+	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("tokenless raw PutEdge = %v, want Unauthenticated", err)
+	}
+
+	beforeReceipts := runtime.ReceiptStats()
+	beforeOrigins := primary.OriginStates()
+	beforeLog, beforeCapacity, beforeEvicted := runtime.MutationLogStats()
+	assertUnchanged := func(t *testing.T) {
+		t.Helper()
+		length, capacity, evicted := runtime.MutationLogStats()
+		if runtime.ReceiptStats() != beforeReceipts ||
+			!reflect.DeepEqual(primary.OriginStates(), beforeOrigins) ||
+			primary.LocalSeq(nodeID) != 0 ||
+			length != beforeLog || capacity != beforeCapacity || evicted != beforeEvicted ||
+			runtime.GraphCache().VertexCount() != 0 || runtime.GraphCache().EdgeCount() != 0 {
+			t.Fatalf("rejected source changed receipts/origin/log/graph: receipt=%+v origin=%+v log=%d/%d/%d vertices=%d edges=%d",
+				runtime.ReceiptStats(), primary.OriginStates(), length, capacity, evicted,
+				runtime.GraphCache().VertexCount(), runtime.GraphCache().EdgeCount())
+		}
+	}
+	for _, weight := range []struct {
+		name  string
+		value float32
+	}{
+		{"NaN", float32(math.NaN())},
+		{"positive infinity", float32(math.Inf(1))},
+		{"negative infinity", float32(math.Inf(-1))},
+	} {
+		t.Run("singular/"+weight.name, func(t *testing.T) {
+			// SDK PutEdge conveniences call PutEdges; the generated client
+			// exercises the singular RPC and its own interceptor path.
+			_, err := raw.PutEdge(ctx, authorizedPutEdge(&pb.Edge{
+				Tail: "singular", Head: "edge", Weight: weight.value,
+			}))
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("raw PutEdge = %v, want InvalidArgument", err)
+			}
+			assertUnchanged(t)
+		})
+		t.Run("plural/"+weight.name, func(t *testing.T) {
+			_, err := raw.PutEdges(ctx, authorizedPutEdges([]*pb.Edge{
+				{Tail: "prefix", Head: "edge", Weight: 1},
+				{Tail: "plural", Head: "edge", Weight: weight.value},
+			}))
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("raw PutEdges = %v, want InvalidArgument", err)
+			}
+			assertUnchanged(t)
+		})
+	}
+	put, err := raw.PutEdge(ctx, authorizedPutEdge(&pb.Edge{
+		Tail: "singular", Head: "edge", Weight: 2.5,
+	}))
+	if err != nil || put.Msg.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatalf("finite raw PutEdge = %+v, %v", put, err)
+	}
+	plural, err := raw.PutEdges(ctx, authorizedPutEdges([]*pb.Edge{
+		{Tail: "plural", Head: "edge", Weight: math.MaxFloat32},
+	}))
+	if err != nil || len(plural.Msg.GetOutcomes()) != 1 ||
+		plural.Msg.GetOutcomes()[0] != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatalf("finite raw PutEdges = %+v, %v", plural, err)
+	}
+	if got, live := runtime.GraphCache().GetWeight("singular", "edge"); !live || got != 2.5 {
+		t.Fatalf("finite singular edge = %v, live=%t", got, live)
+	}
+	if got, live := runtime.GraphCache().GetWeight("plural", "edge"); !live || got != math.MaxFloat32 {
+		t.Fatalf("finite plural edge = %v, live=%t", got, live)
+	}
+	length, _, _ := runtime.MutationLogStats()
+	if primary.LocalSeq(nodeID) != 2 || length != beforeLog+2 || runtime.ReceiptStats() != beforeReceipts {
+		t.Fatalf("finite writes did not publish exactly twice: origin=%d log=%d receipts=%+v",
+			primary.LocalSeq(nodeID), length, runtime.ReceiptStats())
+	}
 }
 
 // TestAuth_PumpReplicatesAgainstAuthedPeer pins the peer-credential path:

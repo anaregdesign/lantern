@@ -1281,6 +1281,37 @@ final $typed_data.Uint8List snapshotEdgeContributionDescriptor = $convert.base64
     'HQoKY29udHJpYl9pZBgDIAEoDFIJY29udHJpYklkEigKA2hsYxgEIAEoCzIWLmdyYXBoLnYxLk'
     'hMQ1RpbWVzdGFtcFIDaGxj');
 
+@$core.Deprecated('Use snapshotEdgeDerivedAggregateDescriptor instead')
+const SnapshotEdgeDerivedAggregate$json = {
+  '1': 'SnapshotEdgeDerivedAggregate',
+  '2': [
+    {'1': 'weight', '3': 1, '4': 1, '5': 2, '10': 'weight'},
+    {
+      '1': 'expiration',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'expiration'
+    },
+    {
+      '1': 'adds',
+      '3': 3,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.SnapshotEdgeContribution',
+      '10': 'adds'
+    },
+  ],
+};
+
+/// Descriptor for `SnapshotEdgeDerivedAggregate`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotEdgeDerivedAggregateDescriptor = $convert.base64Decode(
+    'ChxTbmFwc2hvdEVkZ2VEZXJpdmVkQWdncmVnYXRlEhYKBndlaWdodBgBIAEoAlIGd2VpZ2h0Ej'
+    'oKCmV4cGlyYXRpb24YAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpleHBpcmF0'
+    'aW9uEjYKBGFkZHMYAyADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb25SBG'
+    'FkZHM=');
+
 @$core.Deprecated('Use snapshotEdgeDescriptor instead')
 const SnapshotEdge$json = {
   '1': 'SnapshotEdge',
@@ -1303,6 +1334,14 @@ const SnapshotEdge$json = {
       '6': '.graph.v1.SnapshotEdgeContribution',
       '10': 'contributions'
     },
+    {
+      '1': 'derived_aggregate',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotEdgeDerivedAggregate',
+      '10': 'derivedAggregate'
+    },
   ],
 };
 
@@ -1311,7 +1350,8 @@ final $typed_data.Uint8List snapshotEdgeDescriptor = $convert.base64Decode(
     'CgxTbmFwc2hvdEVkZ2USEgoEdGFpbBgBIAEoCVIEdGFpbBISCgRoZWFkGAIgASgJUgRoZWFkEi'
     'gKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcFIDaGxjEkgKDWNvbnRyaWJ1dGlv'
     'bnMYBCADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb25SDWNvbnRyaWJ1dG'
-    'lvbnM=');
+    'lvbnMSUwoRZGVyaXZlZF9hZ2dyZWdhdGUYBSABKAsyJi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VE'
+    'ZXJpdmVkQWdncmVnYXRlUhBkZXJpdmVkQWdncmVnYXRl');
 
 @$core.Deprecated('Use snapshotEdgeCausalBarrierDescriptor instead')
 const SnapshotEdgeCausalBarrier$json = {
@@ -1661,6 +1701,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SnapshotVertex': SnapshotVertex$json,
   '.graph.v1.SnapshotEdge': SnapshotEdge$json,
   '.graph.v1.SnapshotEdgeContribution': SnapshotEdgeContribution$json,
+  '.graph.v1.SnapshotEdgeDerivedAggregate': SnapshotEdgeDerivedAggregate$json,
   '.graph.v1.SnapshotFooter': SnapshotFooter$json,
   '.graph.v1.SnapshotVertexCausalBarrier': SnapshotVertexCausalBarrier$json,
   '.graph.v1.SnapshotEdgeCausalBarrier': SnapshotEdgeCausalBarrier$json,

@@ -5,12 +5,14 @@
 # - ScanEdges        : edge-weight scan
 # - CountVerticesByPrefix : aggregate count, now emits lantern_scan_* metrics
 # - DeleteVerticesByPrefix: bulk delete — asserts count returns 0 after delete
+# - TopVerticesByDegree  : bounded degree ranking over seeded vertices
 #
 # The "k-*" keyspace is seeded by broad_rw.  Run this scenario AFTER
 # broad_rw, or add a seed phase here.
 #
-# thread-safety: all four calls may run concurrently under the read lock
-# of GraphCache; DeleteVerticesByPrefix takes the write lock.
+# thread-safety: graph reads hold the Snapshot-admission latch, not the
+# publication mutex, while accessing GraphCache; prefix Delete takes the
+# GraphCache write lock under the publication mutex.
 # consistency: CountVerticesByPrefix must be ≤ the count observed just
 # before the delete phase.
 name: prefix_surface
@@ -51,6 +53,12 @@ target:
     - call: graph.v1.LanternService/DeleteVerticesByPrefix
       data_template: |
         {"prefix":"k-{{mod .RequestNumber 200}}-"}
+    # [5] bounded degree ranking over the seeded k-* vertices. Even without
+    #     k-* edges, this exercises candidate selection and its publication
+    #     Snapshot latch and optimistic publication check under concurrent writes.
+    - call: graph.v1.LanternService/TopVerticesByDegree
+      data_template: |
+        {"prefix":"k-","k":20,"direction":"DIRECTION_OUT"}
 leak_gate:
   goroutine_max_delta: 20
   heap_alloc_max_delta_mb: 24
