@@ -1,7 +1,7 @@
 // Package client: failover.go owns *Failover, an opt-in wrapper that
 // fans a fixed, caller-supplied set of Lantern endpoints into a single
-// client which transparently rotates to a healthy replica when the
-// current one is unreachable.
+// client which rotates replay-eligible operations to a healthy replica
+// when the current one is unreachable.
 //
 // This is the SDK-native generalisation of the failover helper the MCP
 // server used to carry privately (#592): it is a STATIC-endpoint, no-
@@ -14,31 +14,26 @@
 //
 //   - The endpoints form an ordered ring with a sticky cursor (cur).
 //   - Each call tries the current endpoint first.
-//   - Ordinary calls advance to the next endpoint ONLY when the current one
-//     reports ErrUnavailable (connect.CodeUnavailable: dial failure or a
-//     server UNAVAILABLE reply). They walk the ring at most once.
+//   - Replay-eligible calls advance to the next endpoint ONLY when the
+//     current one reports ErrUnavailable (connect.CodeUnavailable: dial
+//     failure or a server UNAVAILABLE reply). They walk the ring at most once.
+//   - Receipt-less Add, exact Delete, and prefix Delete make one attempt
+//     on the current endpoint. ErrUnavailable may mean the write committed,
+//     so these calls never automatically retry or rotate.
 //   - The FIRST endpoint that returns success — or any non-Unavailable
 //     application error (NotFound, InvalidArgument, …) — wins, and the
 //     cursor sticks to it so subsequent calls start there.
-//   - If every endpoint is Unavailable the last error is returned.
+//   - If every endpoint is Unavailable for a replay-eligible call, the last
+//     error is returned.
 //   - Receipt-bearing mutations are the exception: read-only capability
 //     probes locate the persisted continuity marker, then every mutation
 //     attempt stays pinned to that endpoint.
 //
-// Keying failover on ErrUnavailable (not a blanket retry) is the
-// correctness boundary: for the additive write surface (AddEdge/AddEdges)
-// an Unavailable result means the dead node committed NOTHING, so retrying
-// the same contribution on a sibling replica cannot double-count. A non-
-// Unavailable error means the request was actually processed (and rejected
-// or not-found) somewhere — failing over would be wrong, so we surface it
-// verbatim. Combined with WithIdempotentAdds (#588), even the residual
-// at-least-once window of a mid-flight Unavailable retry is dedup-safe:
-// Failover mints the per-edge contrib ids ONCE per logical call (from its
-// own failover-level generator) and reuses those exact bytes across every
-// retry attempt AND every node it rotates through. Minting per attempt —
-// or per node — would re-count, because the replicas converge via
-// replication, so a re-mint through node B lands as a distinct contribution
-// just like a re-mint through node A (#916).
+// ErrUnavailable alone cannot distinguish a failed send from a lost
+// response after commit. ContribIDs deduplicate Add only while the
+// contribution remains live; an intervening Delete or expiration permits
+// re-application. Receipt-bearing writes instead verify the persisted
+// continuity marker and stay pinned to its endpoint for safe replay.
 package client
 
 import (
@@ -52,9 +47,10 @@ import (
 // Failover is a fixed-membership, sticky-current failover client over a
 // set of Lantern replicas. Construct one via NewLanternFailover and share
 // it across goroutines (the cursor is updated atomically). Methods mirror
-// the matching *Lantern surface. Ordinary calls use transparent rotation;
-// receipt-bearing mutations use read-only endpoint discovery and pinned
-// same-endpoint replay.
+// the matching *Lantern surface. Replay-eligible calls use transparent
+// rotation; plain result-bearing writes stay on one endpoint for one
+// attempt. Receipt-bearing mutations use read-only endpoint discovery
+// and pinned same-endpoint replay.
 //
 // Failover wraps already-constructed *Lantern endpoints, so all per-client
 // options (WithIdempotentAdds, WithDefaultTimeout, …) apply uniformly to
@@ -68,18 +64,14 @@ type Failover struct {
 	// the ring walk through a bounded full-jitter backoff loop: each retry
 	// attempt re-runs try, resuming from the sticky cursor the previous
 	// attempt advanced on ErrUnavailable, so MaxAttempts is the cross-replica
-	// budget (#849). The endpoints' own per-node unary retry is neutralised
-	// (clearNodeRetry) so the loop runs exactly once, here.
+	// budget (#849). Only replay-eligible calls use it. The endpoints' own
+	// per-node unary retry is neutralised (clearNodeRetry) so the loop runs
+	// exactly once, here.
 	retry *RetryPolicy
-	// idempotentAdds mirrors WithIdempotentAdds so call can gate the additive
-	// write surface (AddEdge/AddEdgeAt/AddEdges) — retried only when the nodes
-	// stamp per-edge ContribIDs.
-	idempotentAdds bool
 	// contribIDs is the single failover-level ContribID generator. Non-nil
-	// only when idempotentAdds is set. Minting ids here — once per logical
-	// AddEdge/AddEdges call, before the retry loop — and reusing them across
-	// every attempt and every node is what makes a mid-flight Unavailable
-	// retry dedup-safe; a fresh id per attempt would double-count (#916).
+	// only when WithIdempotentAdds is set. Minting once per logical Add
+	// call preserves contribution identity without making an ambiguous
+	// response safe to replay after Delete or expiration.
 	contribIDs *contribIDGen
 	receiptIDs receiptIdentitySource
 }
@@ -110,9 +102,9 @@ type failoverNode interface {
 	AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (float32, error)
 	AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error)
 	// addEdgeAtWithIDs / addEdgesWithIDs are the id-accepting seams the
-	// failover ring drives so it can mint contrib ids once per logical call
-	// and reuse them across retry attempts (#916). Unexported: they are an
-	// internal contract between *Failover and *Lantern, not client API.
+	// failover wrapper drives so it can mint contrib ids once per call.
+	// Unexported: they are an internal contract between *Failover and
+	// *Lantern, not client API.
 	addEdgeAtWithIDs(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
 	addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
 	PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (PutOutcome, error)
@@ -140,8 +132,8 @@ type failoverNode interface {
 var _ failoverNode = (*Lantern)(nil)
 
 // NewLanternFailover dials every address in addrs and returns a single
-// client that transparently fails over between them. addrs must be non-
-// empty; each address follows the same scheme contract as NewLantern
+// client that transparently fails over replay-eligible calls between them.
+// addrs must be non-empty; each address follows NewLantern's scheme contract
 // ("http://host:port" for h2c, "https://host[:port]" for TLS). The opts
 // apply identically to every endpoint.
 //
@@ -166,9 +158,8 @@ func NewLanternFailover(addrs []string, opts ...Option) (*Failover, error) {
 		apply(&probe)
 	}
 	// Seed a single failover-level ContribID generator when idempotent adds
-	// are enabled, so every AddEdge/AddEdges call mints its ids once and
-	// reuses them across retries and node switches (#916). Done before
-	// dialing so a seed failure leaks no connections.
+	// are enabled. Each Add call mints its own ids once; this does not
+	// authorize automatic replay after an ambiguous response.
 	var contribIDs *contribIDGen
 	if probe.idempotentAdds {
 		g, err := newContribIDGen()
@@ -193,7 +184,7 @@ func NewLanternFailover(addrs []string, opts ...Option) (*Failover, error) {
 		nodes = append(nodes, l)
 	}
 	return &Failover{
-		nodes: nodes, retry: probe.retry, idempotentAdds: probe.idempotentAdds,
+		nodes: nodes, retry: probe.retry,
 		contribIDs: contribIDs, receiptIDs: defaultReceiptIdentitySource(), clock: time.Now,
 	}, nil
 }
@@ -213,8 +204,8 @@ func (f *Failover) now() time.Time {
 // budget (MaxAttempts per node × the ring walk).
 func clearNodeRetry(o *options) { o.retry = nil }
 
-// try runs fn against the sticky-current endpoint, rotating to the next
-// endpoint only on ErrUnavailable and walking the ring at most once. The
+// try runs a replay-eligible fn against the sticky-current endpoint,
+// rotating to the next only on ErrUnavailable and walking the ring at most once. The
 // first success or non-Unavailable application error wins and becomes the
 // new sticky current. If every endpoint is Unavailable the last error is
 // returned.
@@ -239,15 +230,17 @@ func (f *Failover) try(fn func(failoverNode) error) error {
 
 // call wraps try in the retry policy when one is armed (WithRetry) and the
 // method is retry-eligible — retryableMethod consults the code-enforced
-// methodRetryClasses matrix and folds in idempotentAdds for the additive
-// write surface. Each retry attempt re-runs the whole ring walk, resuming
-// from the cursor the previous attempt advanced on ErrUnavailable, so
-// retries spread across replicas with no second rotation mechanism (#849);
-// backoff sleeps honour ctx. When no policy is armed or the method is not
-// eligible, call is a straight pass-through to try, so zero-config failover
-// clients behave exactly as before.
+// methodRetryClasses matrix. Each retry attempt re-runs the whole ring
+// walk, resuming from the cursor the previous attempt advanced on
+// ErrUnavailable, so retries spread across replicas with no second rotation
+// mechanism (#849); backoff sleeps honour ctx. Ineligible calls make one
+// attempt on the current endpoint even without WithRetry: a ring walk
+// would itself replay an ambiguous write.
 func (f *Failover) call(ctx context.Context, method string, fn func(failoverNode) error) error {
-	if f.retry == nil || !retryableMethod(method, f.idempotentAdds) {
+	if !retryableMethod(method) {
+		return f.callCurrent(ctx, method, fn)
+	}
+	if f.retry == nil {
 		return f.try(fn)
 	}
 	return f.retry.run(ctx, func() error { return f.try(fn) })
@@ -263,7 +256,7 @@ func (f *Failover) callCurrent(ctx context.Context, method string, fn func(failo
 
 func (f *Failover) callNode(ctx context.Context, idx int, method string, fn func(failoverNode) error) error {
 	run := func() error { return fn(f.nodes[idx]) }
-	if f.retry == nil || !retryableMethod(method, f.idempotentAdds) {
+	if f.retry == nil || !retryableMethod(method) {
 		return run()
 	}
 	return f.retry.run(ctx, run)
@@ -370,8 +363,8 @@ func (f *Failover) GetVertices(ctx context.Context, keys []string) (found []*Ver
 	return found, missing, e
 }
 
-// DeleteVertex forwards to the current endpoint's DeleteVertex, failing
-// over on ErrUnavailable.
+// DeleteVertex sends once to the current endpoint; an unavailable response
+// leaves the original existed result unknown and is never replayed.
 func (f *Failover) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	var existed bool
 	err := f.call(ctx, "DeleteVertex", func(l failoverNode) error {
@@ -382,8 +375,8 @@ func (f *Failover) DeleteVertex(ctx context.Context, key string) (bool, error) {
 	return existed, err
 }
 
-// DeleteVertices forwards to the current endpoint's DeleteVertices, failing
-// over on ErrUnavailable.
+// DeleteVertices sends once per chunk to the current endpoint; an
+// unavailable response leaves the current chunk's result unknown.
 func (f *Failover) DeleteVertices(ctx context.Context, keys []string) (int, error) {
 	var deleted int
 	err := f.call(ctx, "DeleteVertices", func(l failoverNode) error {
@@ -501,8 +494,8 @@ func (f *Failover) CountVerticesByPrefix(ctx context.Context, prefix string) (ui
 	return count, err
 }
 
-// DeleteVerticesByPrefix forwards to the current endpoint's
-// DeleteVerticesByPrefix, failing over on ErrUnavailable.
+// DeleteVerticesByPrefix sends once to the current endpoint; replay could
+// delete the next capped set of vertices.
 func (f *Failover) DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...DeleteByPrefixOption) (uint64, error) {
 	var deleted uint64
 	err := f.call(ctx, "DeleteVerticesByPrefix", func(l failoverNode) error {
@@ -513,21 +506,15 @@ func (f *Failover) DeleteVerticesByPrefix(ctx context.Context, prefix string, op
 	return deleted, err
 }
 
-// AddEdge forwards to the current endpoint's AddEdge, failing over on
-// ErrUnavailable. Because an Unavailable result means the dead node
-// committed nothing, the additive contribution is retried on a sibling
-// replica; with WithIdempotentAdds the contrib ids are minted once (below,
-// via AddEdgeAt) and reused across every attempt, so even the residual
-// at-least-once window of a mid-flight Unavailable retry cannot double-count
-// (#916). It returns the post-accumulation effective weight (#897).
+// AddEdge sends once to the current endpoint and returns the
+// post-accumulation effective weight (#897). An unavailable response leaves
+// the result ambiguous, even with WithIdempotentAdds.
 func (f *Failover) AddEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (float32, error) {
 	return f.AddEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
 }
 
-// AddEdgeAt forwards to the current endpoint's AddEdgeAt, failing over on
-// ErrUnavailable. It mints the contrib id ONCE, before the retry loop, and
-// reuses it across every attempt and node (#916). It returns the
-// post-accumulation effective weight (#897).
+// AddEdgeAt sends once to the current endpoint. It mints the contrib id
+// once for this call but does not replay after an ambiguous response.
 func (f *Failover) AddEdgeAt(ctx context.Context, tail, head string, weight float32, expiration time.Time) (float32, error) {
 	ids := f.nextContribIDs(1)
 	var effective float32
@@ -539,11 +526,10 @@ func (f *Failover) AddEdgeAt(ctx context.Context, tail, head string, weight floa
 	return effective, err
 }
 
-// AddEdges forwards to the current endpoint's AddEdges, failing over on
-// ErrUnavailable. The per-edge contrib ids are minted ONCE for the whole
-// batch, before the retry loop, and reused across every attempt and node so a
-// retry cannot double-count (#916). It returns the per-edge post-accumulation
-// effective weights (#897), index-aligned with inputs.
+// AddEdges sends each batch chunk once to the current endpoint. Per-edge
+// contrib ids are minted once for the call, but cannot prove the original
+// result after an intervening Delete. The returned effective weights (#897)
+// are index-aligned with inputs.
 func (f *Failover) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error) {
 	ids := f.nextContribIDs(len(inputs))
 	var effective []float32
@@ -556,12 +542,11 @@ func (f *Failover) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32,
 }
 
 // AddDecayingEdge forwards the geometric decay staircase (see the *Lantern
-// method of the same name) through the failover ring. The curve is expanded
-// ONCE — a single base time and a single mint of the per-contribution ids,
-// both captured before the retry loop — so every attempt and every node
-// replays byte-identical contributions and ids and a mid-flight Unavailable
-// retry cannot double-count or skew the schedule (#916). It returns the edge's
-// post-add effective (live-sum) weight.
+// method of the same name) on the current endpoint. The curve is expanded
+// ONCE — one base time and one mint of the per-contribution ids. An
+// unavailable response does not trigger replay because an intervening
+// Delete can remove those ids. It returns the edge's post-add effective
+// (live-sum) weight.
 func (f *Failover) AddDecayingEdge(ctx context.Context, tail, head string, opts DecayOpts) (float32, error) {
 	inputs, err := DecayContributions(tail, head, opts, time.Now())
 	if err != nil {
@@ -584,11 +569,9 @@ func (f *Failover) AddDecayingEdge(ctx context.Context, tail, head string, opts 
 }
 
 // nextContribIDs mints n contrib ids from the failover-level generator, or
-// nil when idempotent adds are disabled (contribIDs is nil) — the legacy
-// non-idempotent additive path. Minting at the failover layer (not per node)
-// is deliberate: both replicas converge via replication, so re-minting
-// through a sibling on failover double-counts exactly like re-minting through
-// the same node (#916).
+// nil when idempotent adds are disabled (contribIDs is nil). The keys
+// identify this contribution while it remains live; they do not authorize
+// automatic failover after an ambiguous Add result.
 func (f *Failover) nextContribIDs(n int) [][]byte {
 	if f.contribIDs == nil {
 		return nil
@@ -692,8 +675,8 @@ func (f *Failover) ScanEdges(ctx context.Context, opts ...EdgeScanOption) (edges
 	return edges, nextCursor, e
 }
 
-// DeleteEdgesByPrefix forwards to the current endpoint's
-// DeleteEdgesByPrefix, failing over on ErrUnavailable.
+// DeleteEdgesByPrefix sends once to the current endpoint; replay could
+// delete the next capped set of edges.
 func (f *Failover) DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error) {
 	var deleted uint64
 	err := f.call(ctx, "DeleteEdgesByPrefix", func(l failoverNode) error {
@@ -704,8 +687,8 @@ func (f *Failover) DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesB
 	return deleted, err
 }
 
-// DeleteEdge forwards to the current endpoint's DeleteEdge, failing over on
-// ErrUnavailable.
+// DeleteEdge sends once to the current endpoint; an unavailable response
+// leaves the original existed result unknown and is never replayed.
 func (f *Failover) DeleteEdge(ctx context.Context, tail, head string) (bool, error) {
 	var existed bool
 	err := f.call(ctx, "DeleteEdge", func(l failoverNode) error {
@@ -716,8 +699,8 @@ func (f *Failover) DeleteEdge(ctx context.Context, tail, head string) (bool, err
 	return existed, err
 }
 
-// DeleteEdges forwards to the current endpoint's DeleteEdges, failing over
-// on ErrUnavailable.
+// DeleteEdges sends once per chunk to the current endpoint; an
+// unavailable response leaves the current chunk's result unknown.
 func (f *Failover) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) {
 	var deleted int
 	err := f.call(ctx, "DeleteEdges", func(l failoverNode) error {
@@ -956,8 +939,9 @@ func (f *Failover) DeleteVertexWithReceipt(
 
 // DeleteEdgesWithReceipt locates the endpoint matching the persisted
 // continuity marker with read-only capability probes, then pins every
-// mutation attempt to that endpoint. Unlike legacy receipt-less DeleteEdges,
-// it never rotates an uncertain destructive mutation to a sibling.
+// mutation attempt to that endpoint. Only the receipt-bearing path can
+// replay an uncertain destructive mutation while recovering its original
+// result.
 func (f *Failover) DeleteEdgesWithReceipt(
 	ctx context.Context,
 	refs []EdgeRef,

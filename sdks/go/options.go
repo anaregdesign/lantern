@@ -102,12 +102,11 @@ func (t authTokenInterceptor) WrapStreamingHandler(next connect.StreamingHandler
 }
 
 // WithRetry arms the opt-in retry policy (#849): bounded attempts with
-// full-jitter exponential backoff, applied ONLY to RPCs that are
-// idempotent under the client's configuration (see the eligibility matrix
-// in retry.go / doc.go). Zero-config clients behave exactly as before.
-// Under NewLanternFailover the retry loop drives the endpoint rotation:
-// an Unavailable attempt advances the sticky endpoint, so MaxAttempts
-// doubles as the cross-replica budget.
+// full-jitter exponential backoff for reads, unconditional Put, and
+// continuity-checked receipt mutations (see retry.go / doc.go). Plain Add,
+// exact Delete, and prefix Delete are never automatically replayed, even
+// with WithIdempotentAdds. Under NewLanternFailover only eligible calls
+// rotate on Unavailable; MaxAttempts is their cross-replica budget.
 func WithRetry(p RetryPolicy) Option {
 	return func(o *options) {
 		n := p.normalized()
@@ -139,17 +138,15 @@ func WithBatchChunkSize(n int) Option {
 }
 
 // WithIdempotentAdds makes AddEdge / AddEdgeAt / AddEdges attach a
-// client-generated, per-call idempotency key (ContribID) to every edge
-// contribution (#588). The server records each ContribID at most once, so a
-// transport-level retry that re-sends the identical request — e.g. a Connect
-// retry interceptor reacting to a transient Unavailable — adds the edge
-// weight exactly once instead of double-counting.
+// client-generated, per-call contribution ID to every edge (#588). The
+// server ignores identical re-deliveries only while that contribution
+// remains live. WithRetry and Failover never automatically replay a plain
+// Add after an ambiguous response; custom transport retry middleware must
+// also exclude it. Use Add*WithReceipt with a persisted operation ID to
+// recover the original result.
 //
-// The guarantee is scoped to retries of a single logical call: the SDK bakes
-// the keys into the request when it is built, and a transport retry re-sends
-// those same bytes. Calling AddEdge twice yourself is still two distinct
-// contributions (their keys differ), preserving the additive semantics of
-// the API. Off by default; opt in per client.
+// The SDK bakes the keys into each request once. Calling AddEdge twice
+// yourself still creates distinct contributions. Off by default.
 //
 // Dedup horizon: the server records each ContribID on the contribution it
 // belongs to (weightValue{value, expiration, contribID}), not in a separate
@@ -157,7 +154,9 @@ func WithBatchChunkSize(n int) Option {
 // contribution is live. A contribution with no TTL is deduped forever; a
 // TTL'd one is deduped for precisely the window in which a replay could
 // double-count. Once it decays (or the edge is deleted) the id is forgotten
-// and a later add with the same id contributes weight again.
+// and a later add with the same id contributes weight again. An intervening
+// Delete or expiration can therefore make even a byte-identical Add retry
+// recreate an edge and report a different effective weight.
 func WithIdempotentAdds() Option {
 	return func(o *options) { o.idempotentAdds = true }
 }
