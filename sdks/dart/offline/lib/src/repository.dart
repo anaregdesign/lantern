@@ -674,10 +674,6 @@ final class OfflineLanternRepository {
           if (rawContributionId == null) {
             throw const OfflineArgumentException();
           }
-          final contributionId = _copyOfflineContributionId(rawContributionId);
-          if (!seenContributionIds.add(base64UrlEncode(contributionId))) {
-            throw const OfflineArgumentException();
-          }
           final edge = Edge(
             tail: input.tail,
             head: input.head,
@@ -688,7 +684,13 @@ final class OfflineLanternRepository {
               now,
             ),
           );
-          return () => OfflineReceiptAddEdgeIntent(edge, contributionId);
+          final intent = OfflineReceiptAddEdgeIntent(edge, rawContributionId);
+          if (!seenContributionIds.add(
+            base64UrlEncode(intent.contributionId),
+          )) {
+            throw const OfflineArgumentException();
+          }
+          return () => intent;
         })
         .toList(growable: false);
     return _enqueueReceiptOperation(
@@ -2813,6 +2815,8 @@ final class OfflineLanternRepository {
       return const _ReplayOutcome();
     }
 
+    final capabilityRequestAge = Stopwatch()..start();
+    final capabilityRequestedAt = config.clock().toUtc();
     late final OfflineReceiptCapability capability;
     try {
       capability = await receiptRemote.getReceiptCapability(
@@ -2845,7 +2849,6 @@ final class OfflineLanternRepository {
     if (authEpoch.pauseInProgress) {
       return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
     }
-    final capabilityObservedAt = config.clock().toUtc();
     final continuityFailure = _receiptContinuityFailure(
       observed.receipt!,
       capability,
@@ -2863,38 +2866,23 @@ final class OfflineLanternRepository {
     if (!_freshForSample(
       observed.receipt!,
       enabled.serverNow,
-      capabilityObservedAt,
+      capabilityRequestedAt,
+      capabilityRequestAge,
     )) {
-      if (observed.receipt!.mayHaveDispatched ||
-          !allowPostStatusRefresh ||
-          observed.receipt!.freshFor(enabled.serverNow)) {
-        return _recordReceiptUnresolved(
-          partitionId,
-          observed,
-          owner,
-          receiptState: OfflineReceiptReconciliationState.notYetObserved,
-          diagnosticCode: 'receipt_id_not_fresh',
-        );
-      }
-      final refreshed = await _refreshProvisionalReceiptIfStale(
+      return _refreshAndReplayProvisionalReceipt(
         partitionId,
         observed,
-        owner: owner,
-        receiptRemote: receiptRemote,
-        runtime: runtime,
-        authEpoch: authEpoch,
-        cancellation: cancellation,
-        capability: capability,
-      );
-      if (refreshed.outcome != null) return refreshed.outcome!;
-      return _replayReceiptOne(
-        partitionId,
-        refreshed.record!,
-        owner: owner,
-        runtime: runtime,
-        authEpoch: authEpoch,
-        cancellation: cancellation,
-        allowPostStatusRefresh: false,
+        owner,
+        receiptRemote,
+        runtime,
+        authEpoch,
+        cancellation,
+        allowPostStatusRefresh,
+        (
+          capability: capability,
+          requestedAt: capabilityRequestedAt,
+          requestAge: capabilityRequestAge,
+        ),
       );
     }
     if (observed.attemptCount >= config.maxAttempts ||
@@ -2907,14 +2895,35 @@ final class OfflineLanternRepository {
         diagnosticCode: 'receipt_attempts_exhausted',
       );
     }
-    final dispatch = await _updateReceiptUnderClaim(
-      partitionId,
-      observed,
-      owner,
-      (evidence) => evidence.mayHaveDispatched
-          ? evidence
-          : evidence.copyWith(mayHaveDispatched: true),
-    );
+    late final ({OfflineOutboxRecord? record, _ClaimSendState state}) dispatch;
+    try {
+      dispatch = await _updateReceiptUnderClaim(
+        partitionId,
+        observed,
+        owner,
+        (evidence) => evidence.mayHaveDispatched
+            ? evidence
+            : evidence.copyWith(mayHaveDispatched: true),
+        authorize: () => _freshForSample(
+          observed.receipt!,
+          enabled.serverNow,
+          capabilityRequestedAt,
+          capabilityRequestAge,
+        ),
+      );
+    } on _ReceiptFreshnessExpired {
+      return _refreshAndReplayProvisionalReceipt(
+        partitionId,
+        observed,
+        owner,
+        receiptRemote,
+        runtime,
+        authEpoch,
+        cancellation,
+        allowPostStatusRefresh,
+        null,
+      );
+    }
     final prevented = await _settleReceiptClaimState(
       partitionId,
       observed,
@@ -2944,7 +2953,8 @@ final class OfflineLanternRepository {
     if (!_freshForSample(
       dispatch.record!.receipt!,
       enabled.serverNow,
-      capabilityObservedAt,
+      capabilityRequestedAt,
+      capabilityRequestAge,
     )) {
       return _recordReceiptUnresolved(
         partitionId,
@@ -2996,6 +3006,53 @@ final class OfflineLanternRepository {
     }
   }
 
+  Future<_ReplayOutcome> _refreshAndReplayProvisionalReceipt(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    OfflineReceiptRemote receiptRemote,
+    _PartitionRuntime runtime,
+    _ReplayAuthEpoch authEpoch,
+    LanternCancellationToken? cancellation,
+    bool allowPostStatusRefresh,
+    ({
+      OfflineReceiptCapability capability,
+      DateTime requestedAt,
+      Stopwatch requestAge,
+    })?
+    capabilityObservation,
+  ) async {
+    if (claimed.receipt!.mayHaveDispatched || !allowPostStatusRefresh) {
+      return _recordReceiptUnresolved(
+        partitionId,
+        claimed,
+        owner,
+        receiptState: OfflineReceiptReconciliationState.notYetObserved,
+        diagnosticCode: 'receipt_id_not_fresh',
+      );
+    }
+    final refreshed = await _refreshProvisionalReceiptIfStale(
+      partitionId,
+      claimed,
+      owner: owner,
+      receiptRemote: receiptRemote,
+      runtime: runtime,
+      authEpoch: authEpoch,
+      cancellation: cancellation,
+      capabilityObservation: capabilityObservation,
+    );
+    if (refreshed.outcome != null) return refreshed.outcome!;
+    return _replayReceiptOne(
+      partitionId,
+      refreshed.record!,
+      owner: owner,
+      runtime: runtime,
+      authEpoch: authEpoch,
+      cancellation: cancellation,
+      allowPostStatusRefresh: false,
+    );
+  }
+
   Future<({OfflineOutboxRecord? record, _ReplayOutcome? outcome})>
   _refreshProvisionalReceiptIfStale(
     String partitionId,
@@ -3005,12 +3062,25 @@ final class OfflineLanternRepository {
     required _PartitionRuntime runtime,
     required _ReplayAuthEpoch authEpoch,
     required LanternCancellationToken? cancellation,
-    OfflineReceiptCapability? capability,
+    ({
+      OfflineReceiptCapability capability,
+      DateTime requestedAt,
+      Stopwatch requestAge,
+    })?
+    capabilityObservation,
   }) async {
-    if (capability == null) {
+    var observation = capabilityObservation;
+    if (observation == null) {
+      final requestAge = Stopwatch()..start();
+      final requestedAt = config.clock().toUtc();
       try {
-        capability = await receiptRemote.getReceiptCapability(
+        final capability = await receiptRemote.getReceiptCapability(
           cancellation: cancellation,
+        );
+        observation = (
+          capability: capability,
+          requestedAt: requestedAt,
+          requestAge: requestAge,
         );
       } on OfflineRemoteFailure catch (failure) {
         return (
@@ -3064,7 +3134,7 @@ final class OfflineLanternRepository {
     }
     final continuityFailure = _receiptContinuityFailure(
       claimed.receipt!,
-      capability,
+      observation.capability,
     );
     if (continuityFailure != null) {
       return (
@@ -3078,11 +3148,18 @@ final class OfflineLanternRepository {
         ),
       );
     }
-    final enabled = capability as OfflineReceiptCapabilityEnabled;
-    if (claimed.receipt!.freshFor(enabled.serverNow)) {
+    final enabled = observation.capability as OfflineReceiptCapabilityEnabled;
+    if (_freshForSample(
+      claimed.receipt!,
+      enabled.serverNow,
+      observation.requestedAt,
+      observation.requestAge,
+    )) {
       return (record: claimed, outcome: null);
     }
 
+    final preparationRequestAge = Stopwatch()..start();
+    final preparationRequestedAt = config.clock().toUtc();
     late final OfflineReceiptPreparation preparation;
     try {
       preparation = await receiptRemote.prepareReceipts(
@@ -3208,6 +3285,23 @@ final class OfflineLanternRepository {
         ),
       );
     }
+    if (!_freshForSample(
+      replacement,
+      preparation.capability.serverNow,
+      preparationRequestedAt,
+      preparationRequestAge,
+    )) {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: 'receipt_id_not_fresh',
+        ),
+      );
+    }
     final refresh = await _updateReceiptUnderClaim(
       partitionId,
       claimed,
@@ -3233,13 +3327,18 @@ final class OfflineLanternRepository {
   bool _freshForSample(
     OfflineReceiptEvidence evidence,
     DateTime serverNow,
-    DateTime observedAt,
+    DateTime requestStartedAt,
+    Stopwatch requestAge,
   ) {
-    // Project elapsed local time onto the server-issued sample, not the ID.
-    final elapsed = config.clock().toUtc().difference(observedAt);
-    if (elapsed.isNegative) return false;
+    // Include the whole request latency in the server-time upper bound.
+    final wallElapsed = config.clock().toUtc().difference(requestStartedAt);
+    if (wallElapsed.isNegative) return false;
+    final elapsed = wallElapsed > requestAge.elapsed
+        ? wallElapsed
+        : requestAge.elapsed;
     try {
-      return evidence.freshFor(serverNow.add(elapsed));
+      return evidence.freshFor(serverNow) &&
+          evidence.freshFor(serverNow.add(elapsed));
     } on ArgumentError {
       return false;
     }
@@ -3250,8 +3349,9 @@ final class OfflineLanternRepository {
     String partitionId,
     OfflineOutboxRecord claimed,
     String owner,
-    OfflineReceiptEvidence Function(OfflineReceiptEvidence) update,
-  ) => store.transaction((transaction) async {
+    OfflineReceiptEvidence Function(OfflineReceiptEvidence) update, {
+    bool Function()? authorize,
+  }) => store.transaction((transaction) async {
     final current = await transaction.getOutbox(partitionId, claimed.recordId);
     final generation = await transaction.generation(partitionId);
     final paused = await transaction.replayPausedForAuth(partitionId);
@@ -3276,12 +3376,18 @@ final class OfflineLanternRepository {
         evidence.mayHaveDispatched != expected.mayHaveDispatched) {
       return (record: null, state: _ClaimSendState.stale);
     }
+    if (authorize != null && !authorize()) {
+      throw const _ReceiptFreshnessExpired();
+    }
     final next = update(evidence);
     if (identical(next, evidence)) {
       return (record: current, state: _ClaimSendState.sendable);
     }
     final updated = current.copyWith(receipt: next);
     await transaction.updateOutbox(updated);
+    if (authorize != null && !authorize()) {
+      throw const _ReceiptFreshnessExpired();
+    }
     return (record: updated, state: _ClaimSendState.sendable);
   });
 
@@ -4692,7 +4798,11 @@ final class OfflineLanternRepository {
     if (_eligible(snapshot, allowStale: false)) return snapshot;
     return snapshot.state == OfflineReadState.expired
         ? snapshot
-        : _unknown<T>();
+        : OfflineSnapshot<T>(
+            state: OfflineReadState.unknown,
+            source: null,
+            hasPendingWrites: snapshot.hasPendingWrites,
+          );
   }
 
   OfflineSnapshot<T> _withSource<T>(
@@ -5491,6 +5601,10 @@ final class _ReadStamp {
 }
 
 enum _ClaimSendState { sendable, pausedForAuth, maxAge, stale }
+
+final class _ReceiptFreshnessExpired implements Exception {
+  const _ReceiptFreshnessExpired();
+}
 
 const _authPauseDiagnostic = 'unauthenticated';
 

@@ -552,8 +552,7 @@ void main() {
       );
       addTearDown(serverClient.close);
       final capability =
-          await serverClient.getReceiptCapability()
-              as ReceiptCapabilityEnabled;
+          await serverClient.getReceiptCapability() as ReceiptCapabilityEnabled;
       expect(
         capability.supportedMutations,
         containsAll(<ReceiptMutationKind>{
@@ -567,7 +566,10 @@ void main() {
       final prefix =
           'dart-offline-receipt:${DateTime.now().microsecondsSinceEpoch}:';
       final deleteVertexKey = '${prefix}delete-vertex';
-      final deleteEdge = EdgeRef('${prefix}delete-tail', '${prefix}delete-head');
+      final deleteEdge = EdgeRef(
+        '${prefix}delete-tail',
+        '${prefix}delete-head',
+      );
       final addEdge = EdgeRef('${prefix}add-tail', '${prefix}add-head');
       expect(
         await serverClient.putVertex(
@@ -658,9 +660,7 @@ void main() {
       expect(pending.map((record) => record.attemptCount), everyElement(1));
       expect(
         pending
-            .where(
-              (record) => record.intent is OfflineReceiptAddEdgeIntent,
-            )
+            .where((record) => record.intent is OfflineReceiptAddEdgeIntent)
             .single
             .receipt!
             .mutation,
@@ -696,8 +696,7 @@ void main() {
         put.operationId,
       );
       expect(
-        (putStatus!.items.single.receiptResult
-                as OfflineVertexPutReceiptResult)
+        (putStatus!.items.single.receiptResult as OfflineVertexPutReceiptResult)
             .outcome,
         PutOutcome.appliedAndLive,
       );
@@ -726,8 +725,7 @@ void main() {
         add.operationId,
       );
       expect(
-        (addStatus!.items.single.receiptResult
-                as OfflineEdgeAddReceiptResult)
+        (addStatus!.items.single.receiptResult as OfflineEdgeAddReceiptResult)
             .effectiveWeight,
         4,
       );

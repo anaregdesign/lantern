@@ -49,6 +49,7 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
   final List<ReceiptContext> receiptSendContexts = <ReceiptContext>[];
   final List<String> receiptCalls = <String>[];
   Future<void> Function()? beforeReceiptPrepare;
+  Future<void> Function()? beforeReceiptPreparationReturn;
   Future<void> Function()? beforeReceiptCapabilityReturn;
   Future<void> Function(ReceiptOperationId)? beforeReceiptStatusReturn;
   Future<void> Function(ReceiptContext)? beforeReceiptSend;
@@ -84,7 +85,7 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
         OfflineReceiptCapabilityFailure.mutationUnavailable,
       );
     }
-    return OfflineReceiptPreparation(
+    final preparation = OfflineReceiptPreparation(
       mutation: mutation,
       capability: enabled,
       evidence: List<OfflineReceiptEvidence>.generate(itemCount, (_) {
@@ -109,6 +110,8 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
         );
       }, growable: false),
     );
+    await beforeReceiptPreparationReturn?.call();
+    return preparation;
   }
 
   @override
@@ -120,8 +123,9 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
     if (receiptCapabilityFailures.isNotEmpty) {
       throw receiptCapabilityFailures.removeAt(0);
     }
+    final capability = receiptCapability;
     await beforeReceiptCapabilityReturn?.call();
-    return receiptCapability;
+    return capability;
   }
 
   @override
@@ -317,8 +321,9 @@ OfflineReceiptResult _defaultReceiptResult(OfflineIntent intent) =>
         true,
       ),
       OfflineDeleteEdgeIntent() => const OfflineEdgeDeleteReceiptResult(true),
-      OfflineReceiptAddEdgeIntent(:final edge) =>
-        OfflineEdgeAddReceiptResult(edge.weight),
+      OfflineReceiptAddEdgeIntent(:final edge) => OfflineEdgeAddReceiptResult(
+        edge.weight,
+      ),
       _ => throw StateError('receipt send received unsupported intent'),
     };
 
@@ -401,9 +406,10 @@ String encodeLegacySnapshot({
 
 /// Exercises database-style asynchronous operations against the reference store.
 final class DelayedOfflineStore implements OfflineStore {
-  DelayedOfflineStore(this.inner);
+  DelayedOfflineStore(this.inner, {this.afterUpdateOutbox});
 
   final InMemoryOfflineStore inner;
+  Future<void> Function(OfflineOutboxRecord)? afterUpdateOutbox;
 
   @override
   Stream<OfflineStoreChange> changes(String partitionId) =>
@@ -413,14 +419,16 @@ final class DelayedOfflineStore implements OfflineStore {
   Future<T> transaction<T>(
     FutureOr<T> Function(OfflineStoreTransaction transaction) action,
   ) => inner.transaction(
-    (transaction) => action(_DelayedTransaction(transaction)),
+    (transaction) =>
+        action(_DelayedTransaction(transaction, afterUpdateOutbox)),
   );
 }
 
 final class _DelayedTransaction implements OfflineStoreTransaction {
-  const _DelayedTransaction(this.inner);
+  const _DelayedTransaction(this.inner, this.afterUpdateOutbox);
 
   final OfflineStoreTransaction inner;
+  final Future<void> Function(OfflineOutboxRecord)? afterUpdateOutbox;
 
   @override
   Future<int> changeEpoch(String partitionId) async =>
@@ -588,7 +596,8 @@ final class _DelayedTransaction implements OfflineStoreTransaction {
   @override
   Future<void> updateOutbox(OfflineOutboxRecord record) async {
     await Future<void>.delayed(Duration.zero);
-    return await inner.updateOutbox(record);
+    await inner.updateOutbox(record);
+    await afterUpdateOutbox?.call(record);
   }
 
   @override

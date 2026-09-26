@@ -130,8 +130,7 @@ final class OfflineReceiptPreparation {
           item.reconciliationAttemptCount != 0 ||
           !item.freshFor(capability.serverNow) ||
           item.endpoint != capability.endpoint ||
-          item.policy.deploymentEpoch !=
-              capability.policy.deploymentEpoch ||
+          item.policy.deploymentEpoch != capability.policy.deploymentEpoch ||
           item.policy.retention != capability.policy.retention ||
           item.policy.maxEntries != capability.policy.maxEntries ||
           item.policy.maxBytes != capability.policy.maxBytes ||
@@ -471,8 +470,9 @@ final class LanternClientOfflineRemote
         EdgeDeleteReceipt(:final existed) => OfflineEdgeDeleteReceiptResult(
           existed,
         ),
-        EdgeAddReceipt(:final effectiveWeight) =>
-          OfflineEdgeAddReceiptResult(effectiveWeight),
+        EdgeAddReceipt(:final effectiveWeight) => OfflineEdgeAddReceiptResult(
+          effectiveWeight,
+        ),
         null => null,
       };
       return OfflineReceiptStatus(

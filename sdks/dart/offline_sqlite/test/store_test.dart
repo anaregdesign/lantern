@@ -308,7 +308,7 @@ void main() {
           itemIndex: 0,
           partitionId: 'p',
           intent: OfflineReceiptAddEdgeIntent(
-            const Edge(tail: 'tail', head: 'head', weight: 3),
+            const Edge(tail: 'tail', head: 'head', weight: 3, expiration: null),
             _bytes(24, 7),
           ),
           enqueuedAt: now,
@@ -349,7 +349,6 @@ void main() {
     );
     final confirmedAt = now.add(const Duration(seconds: 1));
     await store.transaction((transaction) async {
-      await transaction.deleteOutbox('p', restored.recordId);
       await transaction.putOperation(
         OfflineOperationRecord(
           partitionId: 'p',
@@ -371,6 +370,7 @@ void main() {
           terminalAt: confirmedAt,
         ),
       );
+      await transaction.deleteOutbox('p', restored.recordId);
     });
 
     store = await reopen(store) as SqliteOfflineStore;
@@ -444,16 +444,24 @@ void main() {
         (transaction) => transaction.getOutbox('p', queued.recordId),
       );
       expect(restored!.receipt!.mayHaveDispatched, isFalse);
-      final claimed = await store.transaction(
-        (transaction) async => (await transaction.claim(
+      final claimed = await store.transaction((transaction) async {
+        final claimed = (await transaction.claim(
           'p',
           owner: 'owner',
           now: now.add(const Duration(seconds: 1)),
           maxAge: const Duration(days: 7),
           leaseDuration: const Duration(minutes: 2),
           limit: 1,
-        )).single,
-      );
+        )).single;
+        await transaction.putOperation(
+          _operation(
+            claimed,
+            now: now.add(const Duration(seconds: 1)),
+            state: OfflineWriteState.sending,
+          ),
+        );
+        return claimed;
+      });
       final idBytes = claimed.receipt!.operationId.bytes;
       idBytes[48] = 99;
       final rekeyed = claimed.copyWith(
@@ -497,9 +505,7 @@ void main() {
         store.transaction(
           (transaction) => transaction.updateOutbox(
             possiblySent.copyWith(
-              receipt: possiblySent.receipt!.copyWith(
-                mayHaveDispatched: false,
-              ),
+              receipt: possiblySent.receipt!.copyWith(mayHaveDispatched: false),
             ),
           ),
         ),
@@ -1142,9 +1148,7 @@ void main() {
         jsonDecode(utf8.decode(row['payload']! as List<int>))
             as Map<String, Object?>;
     payload['schema'] = 3;
-    (payload['receipt']! as Map<String, Object?>).remove(
-      'mayHaveDispatched',
-    );
+    (payload['receipt']! as Map<String, Object?>).remove('mayHaveDispatched');
     final priorBytes = utf8.encode(jsonEncode(payload));
     await old.update('outbox', {
       'payload': Uint8List.fromList(priorBytes),
@@ -1176,7 +1180,9 @@ void main() {
       'lantern-offline-4',
     );
     expect(
-      utf8.decode((await check.query('outbox')).single['payload']! as List<int>),
+      utf8.decode(
+        (await check.query('outbox')).single['payload']! as List<int>,
+      ),
       contains('"mayHaveDispatched":true'),
     );
     await check.close();
@@ -1366,6 +1372,7 @@ OfflineOperationRecord _operation(
   OfflineOutboxRecord record, {
   required DateTime now,
   bool paused = false,
+  OfflineWriteState? state,
 }) {
   final dead = record.state == OfflineOutboxState.deadLetter;
   return OfflineOperationRecord(
@@ -1377,11 +1384,13 @@ OfflineOperationRecord _operation(
         recordId: record.recordId,
         operationId: record.operationId,
         itemIndex: 0,
-        state: dead
-            ? OfflineWriteState.deadLetter
-            : paused
-            ? OfflineWriteState.pausedForAuth
-            : OfflineWriteState.locallyCommitted,
+        state:
+            state ??
+            (dead
+                ? OfflineWriteState.deadLetter
+                : paused
+                ? OfflineWriteState.pausedForAuth
+                : OfflineWriteState.locallyCommitted),
         attemptCount: record.attemptCount,
         diagnosticCode: record.diagnosticCode,
       ),

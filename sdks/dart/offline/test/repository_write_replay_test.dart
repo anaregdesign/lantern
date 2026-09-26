@@ -422,9 +422,8 @@ void main() {
         final status = await repository.getWriteStatus('p', 'add-edges');
         expect(
           status!.items.map(
-            (item) =>
-                (item.receiptResult as OfflineEdgeAddReceiptResult)
-                    .effectiveWeight,
+            (item) => (item.receiptResult as OfflineEdgeAddReceiptResult)
+                .effectiveWeight,
           ),
           <double>[2, double.infinity],
         );
@@ -439,57 +438,60 @@ void main() {
       },
     );
 
-    test('receipt Add validates contribution IDs before capability I/O', () async {
-      final clock = MutableClock(initial);
-      final remote = FakeOfflineRemote();
-      final repository = OfflineLanternRepository(
-        store: InMemoryOfflineStore(),
-        remote: remote,
-        config: testConfig(clock),
-      );
-      addTearDown(repository.dispose);
+    test(
+      'receipt Add validates contribution IDs before capability I/O',
+      () async {
+        final clock = MutableClock(initial);
+        final remote = FakeOfflineRemote();
+        final repository = OfflineLanternRepository(
+          store: InMemoryOfflineStore(),
+          remote: remote,
+          config: testConfig(clock),
+        );
+        addTearDown(repository.dispose);
 
-      for (final contributionId in <Uint8List?>[
-        null,
-        Uint8List(24),
-        testBytes(23, 1),
-        testBytes(25, 1),
-      ]) {
-        await expectLater(
-          repository.addEdge(
-            partitionId: 'p',
-            input: EdgeInput(
-              tail: 'tail',
-              head: 'head',
-              weight: 1,
-              contribId: contributionId,
+        for (final contributionId in <Uint8List?>[
+          null,
+          Uint8List(24),
+          testBytes(23, 1),
+          testBytes(25, 1),
+        ]) {
+          await expectLater(
+            repository.addEdge(
+              partitionId: 'p',
+              input: EdgeInput(
+                tail: 'tail',
+                head: 'head',
+                weight: 1,
+                contribId: contributionId,
+              ),
             ),
+            throwsA(isA<OfflineArgumentException>()),
+          );
+        }
+        await expectLater(
+          () => repository.addEdges(
+            partitionId: 'p',
+            inputs: <EdgeInput>[
+              EdgeInput(
+                tail: 'tail',
+                head: 'one',
+                weight: 1,
+                contribId: testBytes(24, 1),
+              ),
+              EdgeInput(
+                tail: 'tail',
+                head: 'two',
+                weight: 1,
+                contribId: testBytes(24, 1),
+              ),
+            ],
           ),
           throwsA(isA<OfflineArgumentException>()),
         );
-      }
-      await expectLater(
-        repository.addEdges(
-          partitionId: 'p',
-          inputs: <EdgeInput>[
-            EdgeInput(
-              tail: 'tail',
-              head: 'one',
-              weight: 1,
-              contribId: testBytes(24, 1),
-            ),
-            EdgeInput(
-              tail: 'tail',
-              head: 'two',
-              weight: 1,
-              contribId: testBytes(24, 1),
-            ),
-          ],
-        ),
-        throwsA(isA<OfflineArgumentException>()),
-      );
-      expect(remote.receiptPrepareCalls, 0);
-    });
+        expect(remote.receiptPrepareCalls, 0);
+      },
+    );
 
     test('born-expired receipt Add retains exact zero after restart', () async {
       final clock = MutableClock(initial);
@@ -695,10 +697,8 @@ void main() {
           final clock = MutableClock(initial);
           final store = InMemoryOfflineStore();
           final remote = FakeOfflineRemote()
-            ..receiptCapability = offlineReceiptCapability(
-              serverNow: clock.now,
-            )
-            ..receiptSendResults.add(const OfflineEdgeAddReceiptResult(4));
+            ..receiptCapability = offlineReceiptCapability(serverNow: clock.now)
+            ..receiptSendResults.add(OfflineEdgeAddReceiptResult(4));
           final repository = OfflineLanternRepository(
             store: store,
             remote: remote,
@@ -786,6 +786,247 @@ void main() {
       );
     }
 
+    for (final delay in <Duration>[
+      const Duration(minutes: 4, seconds: 1),
+      const Duration(minutes: 6),
+    ]) {
+      test('delayed capability $delay rekeys before status and send', () async {
+        final clock = MutableClock(initial);
+        final store = InMemoryOfflineStore();
+        final remote = FakeOfflineRemote()
+          ..receiptCapability = offlineReceiptCapability(serverNow: clock.now)
+          ..receiptSendResults.add(
+            const OfflineVertexDeleteReceiptResult(false),
+          );
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: OfflineConfig(
+            clock: clock.call,
+            idGenerator: testConfig(clock).idGenerator,
+            jitter: (_) => Duration.zero,
+            leaseDuration: const Duration(hours: 1),
+          ),
+        );
+        addTearDown(repository.dispose);
+        final handle = await repository.deleteVertex(
+          partitionId: 'p',
+          key: 'target',
+        );
+        final queued = await store.transaction(
+          (transaction) async => (await transaction.outbox('p')).single,
+        );
+        if (delay >= const Duration(minutes: 6)) {
+          remote.receiptStatuses[queued.receipt!.operationId] =
+              OfflineReceiptStatus(
+                operationId: queued.receipt!.operationId,
+                state: ReceiptStatusState.noLongerProvable,
+              );
+        }
+        var delayed = false;
+        remote.beforeReceiptCapabilityReturn = () async {
+          if (delayed) return;
+          delayed = true;
+          clock.advance(delay);
+          remote.receiptCapability = offlineReceiptCapability(
+            serverNow: clock.now,
+          );
+        };
+        remote.beforeReceiptSend = (context) async {
+          final record = await store.transaction(
+            (transaction) async => (await transaction.outbox('p')).single,
+          );
+          expect(record.receipt!.mayHaveDispatched, isTrue);
+          expect(record.receipt!.operationId, context.operationIds.single);
+          expect(record.attemptCount, 0);
+        };
+        remote.receiptCalls.clear();
+
+        expect(await repository.drain('p'), 1);
+        expect(remote.receiptCalls, <String>[
+          'capability',
+          'prepare',
+          'status',
+          'capability',
+          'send',
+        ]);
+        expect(remote.receiptStatusIds, hasLength(1));
+        expect(
+          remote.receiptStatusIds.single,
+          remote.receiptSendContexts.single.operationIds.single,
+        );
+        expect(
+          remote.receiptStatusIds.single,
+          isNot(queued.receipt!.operationId),
+        );
+        expect(remote.receiptSendCalls, 1);
+        final status = await repository.getWriteStatus('p', handle.operationId);
+        expect(status!.items.single.attemptCount, 1);
+        expect(
+          (status.items.single.receiptResult
+                  as OfflineVertexDeleteReceiptResult)
+              .existed,
+          isFalse,
+        );
+      });
+    }
+
+    test('delayed rekey preparation cannot mark a stale ID sent', () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final remote = FakeOfflineRemote()
+        ..receiptCapability = offlineReceiptCapability(serverNow: clock.now);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          leaseDuration: const Duration(hours: 1),
+        ),
+      );
+      addTearDown(repository.dispose);
+      final handle = await repository.deleteEdge(
+        partitionId: 'p',
+        edge: const EdgeRef('tail', 'head'),
+      );
+      final original = await store.transaction(
+        (transaction) async => (await transaction.outbox('p')).single,
+      );
+      clock.advance(const Duration(minutes: 6));
+      remote.receiptCapability = offlineReceiptCapability(serverNow: clock.now);
+      remote.beforeReceiptPreparationReturn = () async {
+        clock.advance(const Duration(minutes: 6));
+      };
+      remote.receiptCalls.clear();
+
+      expect(await repository.drain('p'), 0);
+      expect(remote.receiptCalls, <String>['capability', 'prepare']);
+      expect(remote.receiptSendCalls, 0);
+      final retained = await store.transaction(
+        (transaction) async => (await transaction.outbox('p')).single,
+      );
+      expect(retained.receipt!.mayHaveDispatched, isFalse);
+      expect(retained.receipt!.operationId, original.receipt!.operationId);
+      expect(retained.attemptCount, 0);
+      final status = await repository.getWriteStatus('p', handle.operationId);
+      expect(status!.items.single.state, OfflineWriteState.outcomeUnknown);
+      expect(status.items.single.diagnosticCode, 'receipt_id_not_fresh');
+    });
+
+    test('marker transaction latency rolls back before rekeying', () async {
+      final clock = MutableClock(initial);
+      final store = DelayedOfflineStore(InMemoryOfflineStore());
+      final remote = FakeOfflineRemote()
+        ..receiptCapability = offlineReceiptCapability(serverNow: clock.now);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          leaseDuration: const Duration(hours: 1),
+        ),
+      );
+      addTearDown(repository.dispose);
+      final handle = await repository.deleteEdge(
+        partitionId: 'p',
+        edge: const EdgeRef('tail', 'head'),
+      );
+      final original = await store.transaction(
+        (transaction) async => (await transaction.outbox('p')).single,
+      );
+      var delayed = false;
+      store.afterUpdateOutbox = (record) async {
+        if (delayed || record.receipt?.mayHaveDispatched != true) return;
+        delayed = true;
+        clock.advance(const Duration(minutes: 4, seconds: 1));
+        remote.receiptCapability = offlineReceiptCapability(
+          serverNow: clock.now,
+        );
+      };
+      var checkedRollback = false;
+      remote.beforeReceiptPrepare = () async {
+        if (!delayed) return;
+        final rolledBack = await store.transaction(
+          (transaction) async => (await transaction.outbox('p')).single,
+        );
+        expect(rolledBack.receipt!.mayHaveDispatched, isFalse);
+        expect(rolledBack.receipt!.operationId, original.receipt!.operationId);
+        expect(rolledBack.attemptCount, 0);
+        checkedRollback = true;
+      };
+
+      expect(await repository.drain('p'), 1);
+      expect(delayed, isTrue);
+      expect(checkedRollback, isTrue);
+      expect(remote.receiptStatusIds, hasLength(2));
+      expect(remote.receiptStatusIds.first, original.receipt!.operationId);
+      expect(
+        remote.receiptStatusIds.last,
+        isNot(original.receipt!.operationId),
+      );
+      expect(
+        remote.receiptSendContexts.single.operationIds.single,
+        remote.receiptStatusIds.last,
+      );
+      expect(remote.receiptSendCalls, 1);
+      final status = await repository.getWriteStatus('p', handle.operationId);
+      expect(status!.items.single.attemptCount, 1);
+    });
+
+    test(
+      'possibly sent receipt checks status before a delayed capability',
+      () async {
+        final clock = MutableClock(initial);
+        final store = InMemoryOfflineStore();
+        final remote = FakeOfflineRemote()
+          ..receiptCapability = offlineReceiptCapability(serverNow: clock.now)
+          ..receiptSendFailures.add(
+            failure(OfflineRemoteErrorKind.outcomeUnknown),
+          );
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: OfflineConfig(
+            clock: clock.call,
+            idGenerator: testConfig(clock).idGenerator,
+            jitter: (delay) => delay,
+            baseRetryDelay: const Duration(microseconds: 1),
+            leaseDuration: const Duration(hours: 1),
+          ),
+        );
+        addTearDown(repository.dispose);
+        final handle = await repository.deleteEdge(
+          partitionId: 'p',
+          edge: const EdgeRef('tail', 'head'),
+        );
+        expect(await repository.drain('p'), 0);
+        final sent = remote.receiptSendContexts.single.operationIds.single;
+        clock.advance(const Duration(microseconds: 1));
+        remote.beforeReceiptCapabilityReturn = () async {
+          clock.advance(const Duration(minutes: 6));
+        };
+        remote.receiptCalls.clear();
+
+        expect(await repository.drain('p'), 0);
+        expect(remote.receiptCalls, <String>['status', 'capability']);
+        expect(remote.receiptSendCalls, 1);
+        expect(remote.receiptPrepareCalls, 1);
+        final retained = await store.transaction(
+          (transaction) async => (await transaction.outbox('p')).single,
+        );
+        expect(retained.receipt!.mayHaveDispatched, isTrue);
+        expect(retained.receipt!.operationId, sent);
+        final status = await repository.getWriteStatus('p', handle.operationId);
+        expect(status!.items.single.state, OfflineWriteState.outcomeUnknown);
+        expect(status.items.single.attemptCount, 1);
+        expect(status.items.single.diagnosticCode, 'receipt_id_not_fresh');
+      },
+    );
+
     test('status latency cannot send a newly stale unsent ID', () async {
       final clock = MutableClock(initial);
       final store = InMemoryOfflineStore();
@@ -866,9 +1107,7 @@ void main() {
         (transaction) async => (await transaction.outbox('p')).single,
       );
       clock.advance(const Duration(minutes: 6));
-      remote.receiptCapability = offlineReceiptCapability(
-        serverNow: clock.now,
-      );
+      remote.receiptCapability = offlineReceiptCapability(serverNow: clock.now);
       final draining = repository.drain('p');
       late final String snapshot;
       late final OfflineOutboxRecord rekeyed;
@@ -930,9 +1169,7 @@ void main() {
         final clock = MutableClock(initial);
         final store = InMemoryOfflineStore();
         final remote = FakeOfflineRemote()
-          ..receiptCapability = offlineReceiptCapability(
-            serverNow: clock.now,
-          );
+          ..receiptCapability = offlineReceiptCapability(serverNow: clock.now);
         final repository = OfflineLanternRepository(
           store: store,
           remote: remote,
@@ -970,10 +1207,7 @@ void main() {
         );
         expect(record.receipt!.operationId, original.receipt!.operationId);
         expect(record.receipt!.mayHaveDispatched, isFalse);
-        final status = await repository.getWriteStatus(
-          'p',
-          handle.operationId,
-        );
+        final status = await repository.getWriteStatus('p', handle.operationId);
         expect(status!.items.single.state, OfflineWriteState.outcomeUnknown);
         expect(
           status.items.single.diagnosticCode,
@@ -992,6 +1226,7 @@ void main() {
       final sent = Completer<void>();
       final release = Completer<void>();
       final remote = FakeOfflineRemote()
+        ..receiptSendResults.add(const OfflineVertexDeleteReceiptResult(false))
         ..afterReceiptSend = (_) async {
           sent.complete();
           await release.future;
@@ -1032,9 +1267,7 @@ void main() {
       await repository.dispose();
 
       clock.advance(const Duration(minutes: 6));
-      remote.receiptCapability = offlineReceiptCapability(
-        serverNow: clock.now,
-      );
+      remote.receiptCapability = offlineReceiptCapability(serverNow: clock.now);
       remote.receiptCalls.clear();
       final restored = OfflineLanternRepository(
         store: InMemoryOfflineStore.fromSnapshot(snapshot),
@@ -1112,10 +1345,7 @@ void main() {
       expect(remote.receiptCalls, <String>['status']);
       expect(remote.receiptSendCalls, 0);
       expect(remote.receiptPrepareCalls, 0);
-      final unresolved = await restored.getWriteStatus(
-        'p',
-        handle.operationId,
-      );
+      final unresolved = await restored.getWriteStatus('p', handle.operationId);
       expect(unresolved!.items.single.state, OfflineWriteState.outcomeUnknown);
       expect(unresolved.items.single.attemptCount, 0);
       expect(
@@ -1148,19 +1378,15 @@ void main() {
           (snapshot['partitions']! as List<Object?>).single!
               as Map<String, Object?>;
       final outbox = partition['outbox']! as List<Object?>;
-      final record = jsonDecode(outbox.single! as String)
-          as Map<String, Object?>;
+      final record =
+          jsonDecode(outbox.single! as String) as Map<String, Object?>;
       record['schema'] = 3;
-      (record['receipt']! as Map<String, Object?>).remove(
-        'mayHaveDispatched',
-      );
+      (record['receipt']! as Map<String, Object?>).remove('mayHaveDispatched');
       outbox[0] = jsonEncode(record);
       await repository.dispose();
 
       clock.advance(const Duration(hours: 25));
-      remote.receiptCapability = offlineReceiptCapability(
-        serverNow: clock.now,
-      );
+      remote.receiptCapability = offlineReceiptCapability(serverNow: clock.now);
       remote.receiptStatuses[queued.receipt!.operationId] =
           OfflineReceiptStatus(
             operationId: queued.receipt!.operationId,
@@ -1190,10 +1416,7 @@ void main() {
         )).receipt!.operationId,
         queued.receipt!.operationId,
       );
-      final unresolved = await restored.getWriteStatus(
-        'p',
-        handle.operationId,
-      );
+      final unresolved = await restored.getWriteStatus('p', handle.operationId);
       expect(unresolved!.items.single.state, OfflineWriteState.outcomeUnknown);
       expect(unresolved.items.single.attemptCount, 0);
     });

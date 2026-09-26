@@ -139,8 +139,8 @@ final class OfflineCodec {
       return false;
     }
     if (replaced) {
-      final original = oldReceipt!;
-      final replacement = newReceipt!;
+      final original = oldReceipt;
+      final replacement = newReceipt;
       if (original.mayHaveDispatched ||
           replacement.mayHaveDispatched ||
           previous.state != OfflineOutboxState.sending ||
@@ -165,8 +165,8 @@ final class OfflineCodec {
           state: OfflineOutboxState.enqueued,
           attemptCount: 0,
           receipt: record.receipt?.copyWith(
-            operationId: replaced ? newReceipt!.operationId : null,
-            groupId: replaced ? newReceipt!.groupId : null,
+            operationId: replaced ? newReceipt.operationId : null,
+            groupId: replaced ? newReceipt.groupId : null,
             state: OfflineReceiptReconciliationState.statusRequired,
             mayHaveDispatched: true,
             reconciliationAttemptCount: 0,
@@ -719,11 +719,7 @@ Map<String, Object?> _receiptResultToMap(OfflineReceiptResult result) =>
         'kind': 'edgeAdd',
         'outcome': null,
         'existed': null,
-        'effectiveWeight': _floatBits(
-          effectiveWeight,
-          4,
-          allowNonFinite: true,
-        ),
+        'effectiveWeight': _floatBits(effectiveWeight, 4, allowNonFinite: true),
       },
     };
 
@@ -736,16 +732,13 @@ OfflineReceiptResult _receiptResultFromMap(Map<String, Object?> value) {
   });
   return switch (_string(value['kind'])) {
     'vertexPut'
-        when value['existed'] == null &&
-            value['effectiveWeight'] == null =>
+        when value['existed'] == null && value['effectiveWeight'] == null =>
       OfflineVertexPutReceiptResult(_putOutcome(_string(value['outcome']))),
     'vertexDelete'
-        when value['outcome'] == null &&
-            value['effectiveWeight'] == null =>
+        when value['outcome'] == null && value['effectiveWeight'] == null =>
       OfflineVertexDeleteReceiptResult(_bool(value['existed'])),
     'edgeDelete'
-        when value['outcome'] == null &&
-            value['effectiveWeight'] == null =>
+        when value['outcome'] == null && value['effectiveWeight'] == null =>
       OfflineEdgeDeleteReceiptResult(_bool(value['existed'])),
     'edgeAdd' when value['outcome'] == null && value['existed'] == null =>
       OfflineEdgeAddReceiptResult(
@@ -860,11 +853,7 @@ String _floatBits(double value, int length, {bool allowNonFinite = false}) {
   ).join();
 }
 
-double _floatFromBits(
-  String value,
-  int length, {
-  bool allowNonFinite = false,
-}) {
+double _floatFromBits(String value, int length, {bool allowNonFinite = false}) {
   if (value.length != length * 2 || !RegExp(r'^[0-9a-f]+$').hasMatch(value)) {
     throw const OfflineCodecException();
   }

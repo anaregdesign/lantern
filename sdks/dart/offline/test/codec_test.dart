@@ -484,8 +484,7 @@ void main() {
       );
       final encodedRecord = OfflineCodec.encodeOutboxRecord(record);
       final decodedRecord = OfflineCodec.decodeOutboxRecord(encodedRecord);
-      final decodedIntent =
-          decodedRecord.intent as OfflineReceiptAddEdgeIntent;
+      final decodedIntent = decodedRecord.intent as OfflineReceiptAddEdgeIntent;
       expect(OfflineCodec.encodeOutboxRecord(decodedRecord), encodedRecord);
       expect(decodedIntent.contributionId, contributionId);
       expect(decodedIntent.edge.weight, normalizeOfflineFloat32(0.1));

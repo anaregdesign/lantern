@@ -623,10 +623,8 @@ final class OfflineReceiptEvidence {
   /// Whether a server-issued clock sample leaves room for a first send.
   bool freshFor(DateTime serverNow) =>
       serverNow.isUtc &&
-      serverNow.difference(operationId.issuedAt) <
-          preDispatchFreshnessLimit &&
-      operationId.issuedAt.difference(serverNow) <
-          preDispatchFreshnessLimit;
+      serverNow.difference(operationId.issuedAt) < preDispatchFreshnessLimit &&
+      operationId.issuedAt.difference(serverNow) < preDispatchFreshnessLimit;
 
   /// Reconstructs the exact immutable online receipt context.
   ReceiptContext get context => ReceiptContext(
@@ -644,9 +642,7 @@ final class OfflineReceiptEvidence {
     bool? mayHaveDispatched,
     int? reconciliationAttemptCount,
   }) => OfflineReceiptEvidence(
-    operationId: ReceiptOperationId(
-      (operationId ?? this.operationId).bytes,
-    ),
+    operationId: ReceiptOperationId((operationId ?? this.operationId).bytes),
     groupId: ReceiptGroupId((groupId ?? this.groupId).bytes),
     endpoint: ReceiptEndpoint(
       nodeId: endpoint.nodeId,
@@ -1637,8 +1633,7 @@ OfflineReceiptEvidence copyOfflineReceiptEvidence(
 ) => evidence.copyWith();
 
 Uint8List _copyOfflineContributionId(Uint8List contributionId) {
-  if (contributionId.length != 24 ||
-      !contributionId.any((byte) => byte != 0)) {
+  if (contributionId.length != 24 || !contributionId.any((byte) => byte != 0)) {
     throw const OfflineArgumentException();
   }
   return Uint8List.fromList(contributionId);

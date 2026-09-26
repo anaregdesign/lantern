@@ -85,6 +85,8 @@ that ID and group under a live claim *before* status lookup, but only while the
 durable marker proves no send could have begun. The marker becomes
 `mayHaveDispatched` before the first mutation RPC; missing markers in older
 records mean it may already have been sent and can never authorize rekeying.
+The freshness check includes elapsed time since the capability request began,
+including response latency; a delayed preparation cannot make an old ID safe.
 A retained `CONFIRMED` receipt completes the local aggregate with the exact
 original result. `NOT_YET_OBSERVED` permits one send only after mutation
 support, endpoint continuity, deployment epoch, retention, caps, and policy

@@ -942,25 +942,30 @@ void main() {
       store.transaction((transaction) => transaction.updateOutbox(replacement)),
       throwsA(isA<OfflineArgumentException>()),
     );
-    final claimed = await store.transaction(
-      (transaction) async => (await transaction.claim(
+    final claimed = await store.transaction((transaction) async {
+      final claimed = (await transaction.claim(
         'p',
         owner: 'owner',
         now: now.add(const Duration(seconds: 1)),
         maxAge: const Duration(days: 1),
         leaseDuration: const Duration(minutes: 1),
         limit: 1,
-      )).single,
-    );
+      )).single;
+      await putStatus(
+        transaction,
+        claimed,
+        OfflineWriteState.sending,
+        updatedAt: now.add(const Duration(seconds: 1)),
+      );
+      return claimed;
+    });
     final rekeyed = claimed.copyWith(
       receipt: claimed.receipt!.copyWith(
         operationId: replacementId,
         groupId: replacementGroup,
       ),
     );
-    await store.transaction(
-      (transaction) => transaction.updateOutbox(rekeyed),
-    );
+    await store.transaction((transaction) => transaction.updateOutbox(rekeyed));
     expect(
       (await store.transaction(
         (transaction) => transaction.getOutbox('p', queued.recordId),
@@ -970,9 +975,7 @@ void main() {
     final marked = rekeyed.copyWith(
       receipt: rekeyed.receipt!.copyWith(mayHaveDispatched: true),
     );
-    await store.transaction(
-      (transaction) => transaction.updateOutbox(marked),
-    );
+    await store.transaction((transaction) => transaction.updateOutbox(marked));
     expect(marked.attemptCount, 0);
     expect(
       () => marked.copyWith(
@@ -982,9 +985,7 @@ void main() {
       throwsA(isA<OfflineArgumentException>()),
     );
     await expectLater(
-      store.transaction(
-        (transaction) => transaction.updateOutbox(rekeyed),
-      ),
+      store.transaction((transaction) => transaction.updateOutbox(rekeyed)),
       throwsA(isA<OfflineArgumentException>()),
     );
     await expectLater(

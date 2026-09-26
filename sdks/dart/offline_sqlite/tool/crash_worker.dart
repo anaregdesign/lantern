@@ -176,7 +176,8 @@ Future<void> _crashReceipt(String path) async {
       }.every(capability.supports),
     );
 
-    final prefix = 'receipt-crash:${DateTime.now().microsecondsSinceEpoch}:$pid:';
+    final prefix =
+        'receipt-crash:${DateTime.now().microsecondsSinceEpoch}:$pid:';
     final putKey = '${prefix}conditional';
     final deleteKey = '${prefix}delete-vertex';
     // Per-key FIFO would hold Add behind an ambiguous Delete of that same edge.
@@ -251,11 +252,15 @@ Future<void> _crashReceipt(String path) async {
                 record.attemptCount == 0 &&
                 record.state == OfflineOutboxState.enqueued,
           ) &&
-          prepared.map((record) => record.receipt!.operationId).toSet().length ==
+          prepared
+                  .map((record) => record.receipt!.operationId)
+                  .toSet()
+                  .length ==
               4 &&
           prepared.map((record) => record.receipt!.groupId).toSet().length ==
               4 &&
-          prepared.map((record) => record.receipt!.mutation).toSet().length == 4,
+          prepared.map((record) => record.receipt!.mutation).toSet().length ==
+              4,
     );
 
     _require(await repository.drain(_receiptPartition) == 0);
@@ -352,9 +357,7 @@ Future<void> _verifyReceipt(String path) async {
       _require(switch ((record.intent, result)) {
         (
           OfflinePutVertexIfAbsentIntent(),
-          OfflineVertexPutReceiptResult(
-            outcome: PutOutcome.conditionNotMet,
-          ),
+          OfflineVertexPutReceiptResult(outcome: PutOutcome.conditionNotMet),
         ) =>
           true,
         (
