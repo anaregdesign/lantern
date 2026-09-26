@@ -1007,8 +1007,12 @@ intent-conflict, transport-bound, token-rotation, and fail-closed tests.
 Put Edge and prefix Delete remain outside this receipt context. Online Go,
 Node, and Dart receipt APIs are merged in source; the hosted
 `lantern_client 0.3.2` online archive passed exact-content verification.
-Published `sdks/go/v0.25.0` pins published `pb/v0.13.0`. Node receipt APIs
-are in merged 0.12.0 source, not npm's current 0.11.0 `latest` package.
+Independently published `sdks/go/v0.25.1` pins public `pb/v0.13.1`; root
+and MCP pin v0.25.1. It includes #1468's one-attempt policy for receipt-less
+Add and exact/prefix Delete, unlike older v0.25.0. A single attempt does
+not recover an ambiguous receipt-less result; prefix Delete has no receipt
+path. Node receipt APIs are in merged 0.12.0 source, not npm's current
+0.11.0 `latest` package.
 Merged offline 0.4.0 source implements the four receipt families, but no
 receipt-bearing offline release has been published or qualified. Its
 `lantern_client: ^0.3.2` constraint selects the hosted parent; verify
