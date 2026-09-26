@@ -16,6 +16,6 @@ export function putOutcomeFromWire(outcome: PbPutOutcome): PutOutcome {
       return "superseded";
     case PbPutOutcome.UNSPECIFIED:
     default:
-      throw new LanternError(`server returned invalid Put outcome ${outcome}`);
+      throw new LanternError(`server returned unknown Put outcome ${outcome}`);
   }
 }

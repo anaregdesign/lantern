@@ -217,8 +217,9 @@ Receipt-bearing Vertex Put resolves a relative `ttlSeconds` against the server
 clock embedded in the persisted operation ID, so replaying the same input and
 context reproduces the same absolute expiration rather than extending the TTL.
 Receipt-bearing Edge Add applies the same rule and preserves the server's
-exact float32 effective weight, including zero. Mutable `Date` and
-`Uint8Array` inputs are cloned before the capability preflight.
+exact float32 effective weight, including zero and signed infinity when finite
+additions overflow float32. Mutable `Date` and `Uint8Array` inputs are cloned
+before the capability preflight.
 
 A receipt status is one of:
 

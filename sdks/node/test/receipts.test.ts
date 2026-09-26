@@ -1062,6 +1062,47 @@ describe("receipt Edge Add", () => {
     expect(fake.addCalls).toBe(2);
   });
 
+  test("preserves signed infinity when finite float32 accumulation overflows", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const maxFloat32 = 3.4028234663852886e38;
+    fake.addEdge("overflow", "positive", maxFloat32);
+    fake.addEdge("overflow", "negative", -maxFloat32);
+    const context = await contextFor(client, 2, 0xdd);
+
+    const added = await client.addEdgesWithReceipt(
+      [
+        {
+          tail: "overflow",
+          head: "positive",
+          weight: maxFloat32,
+          contribId: filled(24, 0x34),
+        },
+        {
+          tail: "overflow",
+          head: "negative",
+          weight: -maxFloat32,
+          contribId: filled(24, 0x35),
+        },
+      ],
+      context,
+    );
+    expect(added.results.map((result) => result.effectiveWeight)).toEqual([
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]);
+
+    const statuses = await client.getReceiptStatuses(context.operationIds);
+    expect(
+      statuses.map((status) =>
+        status.state === "confirmed" ? status.receipt.originalResult : status.state,
+      ),
+    ).toEqual([
+      { kind: "addEdge", effectiveWeight: Number.POSITIVE_INFINITY },
+      { kind: "addEdge", effectiveWeight: Number.NEGATIVE_INFINITY },
+    ]);
+  });
+
   test("rejects missing, mixed, zero, and wrong-sized contrib IDs before transport", async () => {
     const fake = new ReceiptTransportFake();
     const client = Lantern.withTransport(fake.transport());

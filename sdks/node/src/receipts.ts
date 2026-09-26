@@ -121,7 +121,7 @@ export interface EdgeAddReceiptInput extends Omit<EdgeInput, "contribId"> {
 export interface EdgeAddReceiptResult extends ReceiptEdgeRef {
   readonly operationId: OperationID;
   readonly contribId: Uint8Array;
-  /** The exact effective weight returned by the original application. */
+  /** The exact effective weight, including signed infinity after float32 overflow. */
   readonly effectiveWeight: number;
 }
 
@@ -758,10 +758,8 @@ function receiptStatusFromWire(raw: PbReceiptStatus, expected: OperationID): Rec
           });
           break;
         case "addEdgeEffectiveWeight":
-          if (!Number.isFinite(result.value)) {
-            throw new LanternError(
-              "confirmed Edge Add receipt carried a non-finite effective weight",
-            );
+          if (Number.isNaN(result.value)) {
+            throw new LanternError("confirmed Edge Add receipt carried a NaN effective weight");
           }
           originalResult = Object.freeze({
             kind: "addEdge",

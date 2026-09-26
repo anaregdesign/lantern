@@ -6,6 +6,12 @@ import { connectWeb } from "../src/web.js";
 const endpoint = process.env.LANTERN_NODE_RECEIPT_ENDPOINT;
 const token = process.env.LANTERN_NODE_RECEIPT_TOKEN;
 
+function randomContribId(): Uint8Array {
+  const contribId = crypto.getRandomValues(new Uint8Array(24));
+  if (!contribId.some((value) => value !== 0)) contribId[0] = 1;
+  return contribId;
+}
+
 async function nextWithin<T>(
   iterator: AsyncIterator<T>,
   timeoutMs = 10_000,
@@ -61,7 +67,7 @@ if (endpoint && token) {
             tail: key,
             head: `${key}:head`,
             weight: 2,
-            contribId: new Uint8Array(24).fill(0x61),
+            contribId: randomContribId(),
           },
           addContext,
         );
@@ -70,6 +76,29 @@ if (endpoint && token) {
         expect(
           addStatus.state === "confirmed" ? addStatus.receipt.originalResult : addStatus.state,
         ).toEqual({ kind: "addEdge", effectiveWeight: 2 });
+
+        const maxFloat32 = 3.4028234663852886e38;
+        const overflowEdge = {
+          tail: key,
+          head: `${key}:overflow`,
+        };
+        await client.putEdge({ ...overflowEdge, weight: maxFloat32 });
+        const overflowContext = mintReceiptOperationContext(capability, 1);
+        const overflow = await client.addEdgeWithReceipt(
+          {
+            ...overflowEdge,
+            weight: maxFloat32,
+            contribId: randomContribId(),
+          },
+          overflowContext,
+        );
+        expect(overflow.effectiveWeight).toBe(Number.POSITIVE_INFINITY);
+        const overflowStatus = await client.getReceiptStatus(overflowContext.operationIds[0]!);
+        expect(
+          overflowStatus.state === "confirmed"
+            ? overflowStatus.receipt.originalResult
+            : overflowStatus.state,
+        ).toEqual({ kind: "addEdge", effectiveWeight: Number.POSITIVE_INFINITY });
 
         let receiptOnly = false;
         for (let count = 0; count < 10_000; count++) {

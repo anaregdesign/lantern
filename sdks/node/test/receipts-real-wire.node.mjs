@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import process from "node:process";
 import test from "node:test";
 
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -22,6 +23,12 @@ function requiredEnvironment(name) {
 const endpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_ENDPOINT");
 const otherEndpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_OTHER_ENDPOINT");
 const token = requiredEnvironment("LANTERN_NODE_RECEIPT_TOKEN");
+
+function randomContribId() {
+  const contribId = new Uint8Array(randomBytes(24));
+  if (!contribId.some((value) => value !== 0)) contribId[0] = 1;
+  return contribId;
+}
 
 function dropNextPutVerticesResponse() {
   let armed = true;
@@ -207,7 +214,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       tail: `${prefix}:add:tail`,
       head: `${prefix}:add:head`,
     };
-    const addContribIds = [new Uint8Array(24).fill(0x31), new Uint8Array(24).fill(0x32)];
+    const addContribIds = [randomContribId(), randomContribId()];
     const addContext = mintReceiptOperationContext(capability, 2);
     const added = await client.addEdgesWithReceipt(
       [
@@ -254,7 +261,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
         head: "edge",
         weight: 11,
         expiration: new Date("2000-01-01T00:00:00.000Z"),
-        contribId: new Uint8Array(24).fill(0x33),
+        contribId: randomContribId(),
       },
       zeroContext,
     );
@@ -263,6 +270,30 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
     assert.deepEqual(
       zeroStatus.state === "confirmed" ? zeroStatus.receipt.originalResult : zeroStatus.state,
       { kind: "addEdge", effectiveWeight: 0 },
+    );
+
+    const maxFloat32 = 3.4028234663852886e38;
+    const overflowEdge = {
+      tail: `${prefix}:add:overflow`,
+      head: "edge",
+    };
+    await client.putEdge({ ...overflowEdge, weight: maxFloat32 });
+    const overflowContext = mintReceiptOperationContext(capability, 1);
+    const overflow = await client.addEdgeWithReceipt(
+      {
+        ...overflowEdge,
+        weight: maxFloat32,
+        contribId: randomContribId(),
+      },
+      overflowContext,
+    );
+    assert.equal(overflow.effectiveWeight, Number.POSITIVE_INFINITY);
+    const overflowStatus = await client.getReceiptStatus(overflowContext.operationIds[0]);
+    assert.deepEqual(
+      overflowStatus.state === "confirmed"
+        ? overflowStatus.receipt.originalResult
+        : overflowStatus.state,
+      { kind: "addEdge", effectiveWeight: Number.POSITIVE_INFINITY },
     );
   } finally {
     client.close();
@@ -325,7 +356,7 @@ test("real h2c response loss replays Add proof without reapplying after Delete",
     ...edge,
     weight: 4,
     ttlSeconds: 3600,
-    contribId: new Uint8Array(24).fill(0x41),
+    contribId: randomContribId(),
   };
   let persistedContext = "";
   let uncertain;
@@ -384,7 +415,7 @@ test("receipt retry rejects a different real endpoint before mutation", async ()
         {
           ...edge,
           weight: 1,
-          contribId: new Uint8Array(24).fill(0x51),
+          contribId: randomContribId(),
         },
         context,
       );

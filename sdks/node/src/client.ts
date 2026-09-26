@@ -1389,8 +1389,8 @@ export class Lantern {
           `server returned ${response.effectiveWeights.length} receipt Edge Add outcomes for ${prepared.edges.length} items`,
         );
       }
-      if (response.effectiveWeights.some((weight) => !Number.isFinite(weight))) {
-        throw new LanternError("server returned a non-finite receipt Edge Add outcome");
+      if (response.effectiveWeights.some((weight) => Number.isNaN(weight))) {
+        throw new LanternError("server returned a NaN receipt Edge Add outcome");
       }
       const results = Object.freeze(
         prepared.snapshots.map((input, index) =>
