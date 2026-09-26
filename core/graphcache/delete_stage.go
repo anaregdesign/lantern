@@ -253,7 +253,7 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLockedWithCapacity(
 			before := c.edges.bucket(key.Tail, key.Head)
 			projection, hasProjection := projected[key]
 			plan = &stagedEdgeDeletePlan[S]{
-				key: key, before: before, after: cloneWeightForStagedDelete(before),
+				key: key, before: before, after: cloneWeightForStaging(before),
 				headProjected: projection,
 			}
 			if before != nil {
@@ -315,7 +315,7 @@ func (c *GraphCache[S, T]) prepareStagedEdgeDeleteLockedWithCapacity(
 	return stage, nil
 }
 
-func cloneWeightForStagedDelete(before *weight) *weight {
+func cloneWeightForStaging(before *weight) *weight {
 	if before == nil {
 		return nil
 	}

@@ -42,7 +42,7 @@ const (
 	// encode/decode rejects any populated context so persisted v4 semantics
 	// remain receipt-free. Review every later reachable field before changing
 	// this pin or the WAL version.
-	receiptWALGraphSchemaFingerprintV4 = "8d677f373d720ec99d55cbcbc4ce1ce575e1510e9b32c82dfe1d0f054dabe8bc"
+	receiptWALGraphSchemaFingerprintV4 = "feace74a806ec20caf51ff18f59d916c7a48ec512a33b9d118a959977d4f322c"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
@@ -70,6 +70,9 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 	case *pb.Mutation:
 		if isAnyGraphDelete(value) {
 			return nil, receiptWALUnionError("graph Delete requires accepted-effect envelope")
+		}
+		if value.GetOp().GetReplicatedReceiptEdgeAdd() != nil {
+			return nil, receiptWALUnionError("receipt Edge Add requires accepted-effect envelope")
 		}
 		kind = receiptWALUnionGraph
 		body, err = encodeReceiptWALGraph(value)
@@ -189,6 +192,9 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		if isAnyGraphDelete(value) {
 			return receiptWALUnionError("graph Delete lacks accepted-effect envelope")
 		}
+		if value.GetOp().GetReplicatedReceiptEdgeAdd() != nil {
+			return receiptWALUnionError("receipt Edge Add lacks accepted-effect envelope")
+		}
 		if err := validateReceiptWALGraph(value); err != nil {
 			return err
 		}
@@ -297,6 +303,14 @@ func encodeReceiptWALGraph(m *pb.Mutation) ([]byte, error) {
 }
 
 func decodeReceiptWALGraph(body []byte) (*pb.Mutation, error) {
+	return decodeReceiptWALGraphWithReceiptAdd(body, false)
+}
+
+func decodeReceiptWALGraphAddEffect(body []byte) (*pb.Mutation, error) {
+	return decodeReceiptWALGraphWithReceiptAdd(body, true)
+}
+
+func decodeReceiptWALGraphWithReceiptAdd(body []byte, allowReceiptAdd bool) (*pb.Mutation, error) {
 	if len(body) < receiptWALGraphHeaderSize {
 		return nil, receiptWALUnionError("graph body is truncated")
 	}
@@ -312,7 +326,12 @@ func decodeReceiptWALGraph(body []byte) (*pb.Mutation, error) {
 	}
 	indexes := body[receiptWALGraphHeaderSize : receiptWALGraphHeaderSize+indexBytes]
 	encoded := body[receiptWALGraphHeaderSize+indexBytes:]
-	if err := scanReceiptWALGraphWire(encoded, (&pb.Mutation{}).ProtoReflect().Descriptor(), 0); err != nil {
+	if err := scanReceiptWALGraphWireMode(
+		encoded,
+		(&pb.Mutation{}).ProtoReflect().Descriptor(),
+		0,
+		allowReceiptAdd,
+	); err != nil {
 		return nil, err
 	}
 	var m pb.Mutation
@@ -354,6 +373,15 @@ func decodeReceiptWALGraph(body []byte) (*pb.Mutation, error) {
 // Scalar duplicates retain protobuf's last-value-wins semantics; oneofs and
 // the outer Mutation.op field have the stricter WAL admission contract.
 func scanReceiptWALGraphWire(raw []byte, descriptor protoreflect.MessageDescriptor, depth int) error {
+	return scanReceiptWALGraphWireMode(raw, descriptor, depth, false)
+}
+
+func scanReceiptWALGraphWireMode(
+	raw []byte,
+	descriptor protoreflect.MessageDescriptor,
+	depth int,
+	allowReceiptAdd bool,
+) error {
 	if depth > 32 {
 		return receiptWALUnionError("protobuf message nesting exceeds limit")
 	}
@@ -378,7 +406,9 @@ func scanReceiptWALGraphWire(raw []byte, descriptor protoreflect.MessageDescript
 		}
 		if descriptor.FullName() == "graph.v1.MutationOp" {
 			if number < 1 || number > 14 {
-				return receiptWALUnionError("graph kind cannot contain receipt or unknown operation arm %d", number)
+				if !allowReceiptAdd || number != 18 {
+					return receiptWALUnionError("graph kind cannot contain receipt or unknown operation arm %d", number)
+				}
 			}
 			armCount++
 		}
@@ -399,7 +429,12 @@ func scanReceiptWALGraphWire(raw []byte, descriptor protoreflect.MessageDescript
 			if valueBytes < 0 {
 				return receiptWALUnionError("malformed protobuf message field")
 			}
-			if err := scanReceiptWALGraphWire(value, field.Message(), depth+1); err != nil {
+			if err := scanReceiptWALGraphWireMode(
+				value,
+				field.Message(),
+				depth+1,
+				allowReceiptAdd,
+			); err != nil {
 				return err
 			}
 			raw = raw[valueBytes:]
@@ -449,6 +484,14 @@ func validateReceiptWALGraph(m *pb.Mutation) error {
 
 func rejectGraphReceiptContext(m *pb.Mutation) error {
 	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_AddEdge:
+		if op != nil && op.AddEdge != nil && op.AddEdge.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph AddEdge cannot carry receipt context")
+		}
+	case *pb.MutationOp_AddEdges:
+		if op != nil && op.AddEdges != nil && op.AddEdges.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph AddEdges cannot carry receipt context")
+		}
 	case *pb.MutationOp_PutVertex:
 		if op.PutVertex.GetReceiptContext() != nil {
 			return receiptWALUnionError("graph PutVertex cannot carry a receipt context")
@@ -570,6 +613,24 @@ func receiptWALGraphArm(m *pb.Mutation) (receiptWALRepeatedArm, error) {
 			}
 		}
 		return receiptWALRepeatedArm{len(items), func(i int) proto.Message { return items[i] }, func(i int) { items[i] = nil }}, nil
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		if value == nil || value.ReplicatedReceiptEdgeAdd == nil {
+			break
+		}
+		items := value.ReplicatedReceiptEdgeAdd.Items
+		for i, item := range items {
+			if item == nil || item.GetOriginal() == nil || item.GetReceipt() == nil {
+				return receiptWALRepeatedArm{}, receiptWALUnionError(
+					"replicated receipt Edge Add item %d is incomplete",
+					i,
+				)
+			}
+		}
+		return receiptWALRepeatedArm{
+			len(items),
+			func(i int) proto.Message { return items[i] },
+			func(i int) { items[i] = nil },
+		}, nil
 	default:
 		return receiptWALRepeatedArm{}, receiptWALUnionError("unknown graph mutation operation %T", m.Op.GetOp())
 	}

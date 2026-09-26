@@ -102,6 +102,7 @@ type LanternService struct {
 	// the same policy still cannot substitute an incomplete receipt image.
 	receiptStore                   *mutationreceipt.Store
 	receiptRetiredCatalog          *retiredReceiptCatalogSlot
+	receiptEdgeAddCoordinator      *edgeAddReceiptCoordinator
 	receiptEdgeDeleteCoordinator   *edgeDeleteReceiptCoordinator
 	receiptVertexPutCoordinator    *vertexPutReceiptCoordinator
 	receiptVertexDeleteCoordinator *vertexDeleteReceiptCoordinator
@@ -1526,11 +1527,22 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 }
 
 func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
-	batch := &pb.AddEdgesRequest{Edges: []*pb.Edge{request.GetEdge()}}
+	if request == nil {
+		request = &pb.AddEdgeRequest{}
+	}
+	if request.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(request.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
+	batch := &pb.AddEdgesRequest{
+		Edges:          []*pb.Edge{request.GetEdge()},
+		ReceiptContext: request.GetReceiptContext(),
+	}
 	// Forward the optional idempotency key into the plural request's
 	// index-aligned contrib_ids so the canonical AddEdges path applies the
 	// same dedup (#588). An empty key stays absent (legacy additive path).
-	if cid := request.GetContribId(); len(cid) > 0 {
+	if cid := request.GetContribId(); len(cid) > 0 || request.GetReceiptContext() != nil {
 		batch.ContribIds = [][]byte{cid}
 	}
 	resp, err := s.AddEdges(ctx, batch)
@@ -1550,8 +1562,19 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	if request == nil {
+		request = &pb.AddEdgesRequest{}
+	}
+	if request.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(request.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
 	in := request.GetEdges()
 	s.metrics.OnBatch("AddEdges", len(in))
+	if request.GetReceiptContext() != nil {
+		return s.commitPublicReceiptEdgeAdd(ctx, request)
+	}
 	contribIDs := request.GetContribIds()
 	items := make([]graphcache.EdgeItem[string], 0, len(in))
 	wireIndexes := make([]int, 0, len(in))

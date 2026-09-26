@@ -759,6 +759,27 @@ func Test_weight_effectiveExcludesExpired(t *testing.T) {
 		}
 	})
 
+	t.Run("born-expired contribution reports the unchanged live sum", func(t *testing.T) {
+		w := newWeight()
+		w.addWithExpirationContribAt(2, base.Add(time.Hour), ContribID{1}, base)
+		applied, effective := w.addWithExpirationContribAt(
+			11,
+			base.Add(-time.Second),
+			ContribID{2},
+			base,
+		)
+		if !applied {
+			t.Fatal("born-expired contribution was not accepted")
+		}
+		if effective != 2 {
+			t.Fatalf("effective = %v, want unchanged live sum 2", effective)
+		}
+		sum, _, _ := w.snapshotAt(base)
+		if sum != effective {
+			t.Fatalf("snapshot sum %v != add-path effective %v", sum, effective)
+		}
+	})
+
 	t.Run("permanent contributions are never flushed away", func(t *testing.T) {
 		w := newWeight()
 		w.addWithExpirationContribAt(3, time.Time{}, ContribID{}, base) // zero expiration = permanent

@@ -119,14 +119,17 @@ func TestGraphCache_GCSweepStatsDistinguishesLiveContributionCompaction(t *testi
 	for _, budget := range []int{0, 1} {
 		t.Run(fmt.Sprintf("budget_%d", budget), func(t *testing.T) {
 			c := NewGraphCache[string, string](time.Hour)
-			live := time.Now().Add(time.Hour)
-			past := time.Now().Add(-time.Second)
+			now := time.Now()
+			live := now.Add(time.Hour)
+			past := now.Add(-time.Second)
 			for _, key := range []string{"a", "b", "c", "d"} {
 				c.PutVertexWithExpiration(key, key, live)
 			}
 			c.AddEdgeWithExpiration("a", "b", 1, live)
-			c.AddEdgeWithExpiration("a", "b", 2, past)
-			c.AddEdgeWithExpiration("a", "c", 1, past)
+			c.mu.Lock()
+			c.addEdgeContribLocked("a", "b", 2, past, ContribID{}, now.Add(-2*time.Second))
+			c.addEdgeContribLocked("a", "c", 1, past, ContribID{}, now.Add(-2*time.Second))
+			c.mu.Unlock()
 			c.AddEdgeWithExpiration("c", "d", 1, live)
 			c.DeleteVertex("d")
 			c.SetGCEdgeBudget(budget)

@@ -281,6 +281,121 @@ func TestServingRuntimeRestartRejectsRetainedSparseReceiptRelay(t *testing.T) {
 	}
 }
 
+func TestServingRuntimeRestartRejectsRetainedSparseReceiptAddRelay(t *testing.T) {
+	source := newReceiptEdgeDeleteFixtureWithLimits(
+		t, nil, hlc.NodeID{0x51}, 32, 1<<20,
+	)
+	sourceAdd, err := newEdgeAddReceiptCoordinator(
+		source.service,
+		source.coordinator.store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := receiptEdgeAddTestCall(
+		t,
+		source.epoch,
+		0x51,
+		&pb.Edge{Tail: "protected-add", Head: "restart", Weight: 1},
+		&pb.Edge{Tail: "accepted-add", Head: "restart", Weight: 1},
+	)
+	if _, err := sourceAdd.Commit(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := source.log.RetainedEntries()[0].Op.(*graphAddEffectEnvelope).ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	config := durableRuntimeTestConfig(filepath.Join(t.TempDir(), "add-follower.wal"))
+	config.NodeID = hlc.NodeID{0x52}
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	replication, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallationWithReplicationSendLimit(
+		primary,
+		replication,
+		0,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := primary.PutEdges(t.Context(), &pb.PutEdgesRequest{Edges: []*pb.Edge{{
+		Tail: "protected-add", Head: "restart", Weight: 1,
+		Expiration: timestamppb.New(time.Now().Add(-time.Second)),
+	}}}); err != nil {
+		t.Fatalf("persist follower's newer Add barrier: %v", err)
+	}
+	if err := primary.ApplyMutation(t.Context(), wire); err != nil {
+		t.Fatalf("apply sparse receiver-local Add receipt: %v", err)
+	}
+	entries := runtime.log.RetainedEntries()
+	if len(entries) != 2 {
+		t.Fatalf("follower retained %d entries, want barrier and Add receipt", len(entries))
+	}
+	envelope := entries[1].Op.(*graphAddEffectEnvelope)
+	if len(envelope.AcceptedIndexes) != 1 || envelope.AcceptedIndexes[0] != 1 {
+		t.Fatalf("receiver-local Add accepted indexes = %v, want only index 1", envelope.AcceptedIndexes)
+	}
+	sparseSize, err := validateReplicationFrameSize(envelope, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximal, err := maximalReplicationRelayEnvelope(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximalSize, err := validateReplicationFrameSize(maximal, 0)
+	if err != nil || maximalSize <= sparseSize {
+		t.Fatalf("retained sparse/maximal Add frame sizes = %d/%d, %v",
+			sparseSize, maximalSize, err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	config.Now = time.Now()
+	config.Receipt.ClockHighWater = config.Now
+	restarted, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedPrimary := restarted.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	restartedReplication, err := restarted.NewLanternReplicationService(restartedPrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = restarted.CertifyInstallationWithReplicationSendLimit(
+		restartedPrimary,
+		restartedReplication,
+		maximalSize-1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "retained replication frame at local log seq 2") ||
+		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", maximalSize-1)) {
+		t.Fatalf("lowered receiver-local Add relay cap certification = %v", err)
+	}
+	if restarted.replicationFrameCertified || restartedPrimary.replicationFrameCertified ||
+		restartedReplication.replicationFrameCertified {
+		t.Fatal("failed retained Add certification installed frame limit")
+	}
+	if length, _, _ := restarted.MutationLogStats(); length != 2 {
+		t.Fatalf("failed Add certification changed retained log length to %d", length)
+	}
+	if err := restarted.CertifyInstallationWithReplicationSendLimit(
+		restartedPrimary,
+		restartedReplication,
+		maximalSize,
+	); err != nil {
+		t.Fatalf("exact-fit retained Add relay certification: %v", err)
+	}
+}
+
 func TestServingRuntimeGraphOnlyPreservesComposition(t *testing.T) {
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8})
@@ -449,6 +564,7 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		t.Fatalf("durable installation without tombstone policy = %v, want failed precondition", err)
 	}
 	if primary.receiptEdgeDeleteCoordinator != nil ||
+		primary.receiptEdgeAddCoordinator != nil ||
 		primary.receiptVertexPutCoordinator != nil ||
 		primary.receiptVertexDeleteCoordinator != nil {
 		t.Fatal("failed certification bound a receipt follower coordinator")
@@ -466,6 +582,8 @@ func TestServingRuntimeDurableFreshRestartCertifiesOneCut(t *testing.T) {
 		primary.runtime != fresh || primary.receiptEdgeDeleteCoordinator == nil ||
 		primary.receiptEdgeDeleteCoordinator.store != fresh.receipt.store ||
 		primary.receiptEdgeDeleteCoordinator.retired != fresh.receipt.retired ||
+		primary.receiptEdgeAddCoordinator == nil ||
+		primary.receiptEdgeAddCoordinator.store != fresh.receipt.store ||
 		primary.receiptVertexPutCoordinator == nil ||
 		primary.receiptVertexPutCoordinator.store != fresh.receipt.store ||
 		primary.receiptVertexDeleteCoordinator == nil ||

@@ -3,8 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"connectrpc.com/connect"
@@ -33,11 +35,14 @@ func (s *LanternService) publicReceiptRuntime() *receiptServingRuntime {
 		return nil
 	}
 	runtime := s.runtime.receipt
+	edgeAdd := s.receiptEdgeAddCoordinator
 	edgeDelete := s.receiptEdgeDeleteCoordinator
 	vertexPut := s.receiptVertexPutCoordinator
 	vertexDelete := s.receiptVertexDeleteCoordinator
 	if runtime.store == nil || runtime.retired == nil ||
 		s.receiptStore != runtime.store ||
+		edgeAdd == nil || edgeAdd.service != s ||
+		edgeAdd.cache != s.runtime.graph || edgeAdd.store != runtime.store ||
 		edgeDelete == nil || edgeDelete.service != s ||
 		edgeDelete.cache != s.runtime.graph || edgeDelete.store != runtime.store ||
 		vertexPut == nil || vertexPut.service != s ||
@@ -168,6 +173,7 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE,
 		},
 	}, nil
 }
@@ -275,12 +281,15 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 		receipt := observation.Receipt
 		if receipt.ID != id || receipt.Group == (mutationreceipt.GroupID{}) ||
 			receipt.Count == 0 || receipt.Index >= receipt.Count ||
-			receipt.DeadlineMillis < 0 || len(receipt.Result) != 1 {
+			receipt.DeadlineMillis < 0 {
 			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed mutation receipt is invalid"))
 		}
 		var result *pb.ReceiptResult
 		switch receipt.Kind {
 		case mutationreceipt.PutVertex:
+			if len(receipt.Result) != 1 {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Vertex Put receipt result is invalid"))
+			}
 			outcome := pb.PutOutcome(receipt.Result[0])
 			if outcome < pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
 				outcome > pb.PutOutcome_PUT_OUTCOME_SUPERSEDED {
@@ -290,18 +299,27 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 				Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: outcome},
 			}
 		case mutationreceipt.DeleteVertex:
-			if receipt.Result[0] > 1 {
+			if len(receipt.Result) != 1 || receipt.Result[0] > 1 {
 				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Vertex Delete receipt result is invalid"))
 			}
 			result = &pb.ReceiptResult{
 				Result: &pb.ReceiptResult_DeleteVertexExisted{DeleteVertexExisted: receipt.Result[0] == 1},
 			}
 		case mutationreceipt.DeleteEdge:
-			if receipt.Result[0] > 1 {
+			if len(receipt.Result) != 1 || receipt.Result[0] > 1 {
 				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Delete receipt result is invalid"))
 			}
 			result = &pb.ReceiptResult{
 				Result: &pb.ReceiptResult_DeleteEdgeExisted{DeleteEdgeExisted: receipt.Result[0] == 1},
+			}
+		case mutationreceipt.AddEdge:
+			if len(receipt.Result) != 4 {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Add receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_AddEdgeEffectiveWeight{
+					AddEdgeEffectiveWeight: math.Float32frombits(binary.BigEndian.Uint32(receipt.Result)),
+				},
 			}
 		default:
 			return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed mutation receipt kind is not public"))

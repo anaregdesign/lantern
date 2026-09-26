@@ -87,8 +87,9 @@ The bounded mutation-receipt extension is specified in
 [ADR 0010](decisions/0010-bounded-mutation-receipts.md). It requires an atomic
 graph/result/receipt/log boundary and the contiguous publication work in
 #1282. A certified, authenticated durable runtime exposes capability/status
-plus optional receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge
-Delete; high-level SDK mutation APIs remain disabled. In private durable
+plus optional receipt-bearing Vertex Put, exact Vertex Delete, exact Edge
+Delete, and contribution-keyed Edge Add; high-level SDK mutation APIs remain
+disabled. In private durable
 receipt-WAL mode, the guarded follower, Snapshot producer, detached collector,
 and durable baseline primitive are wired into Pump and anti-entropy through
 one shared exact-`RECEIPT` installer. Graph-only mode and D1 remain
@@ -479,13 +480,13 @@ suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
 **Full-mutation frame admission (#1440).** The canonical transport projection
 is the protobuf `SubscribeResponse` containing the mutation that `Subscribe`
 will send, including receipt evidence when present. Lantern measures that
-exact outer message, not only the inner `Mutation`. For receipt-bearing Edge
-Delete, Vertex Delete, and Vertex Put, a receiving replica can retain more
-causally accepted effects than the sender. Admission therefore also sizes the
-maximum valid receiver-local relay of the **same** receipt evidence (all
-eligible Delete items accepted; all original Put effects accepted), before
-local graph/Store/WAL/origin publication. Follower ingress applies the same
-bound before its own publication. Prefix Deletes choose their exact bounded,
+exact outer message, not only the inner `Mutation`. For receipt-bearing Edge Add, Edge Delete, Vertex Delete, and Vertex Put, a
+receiving replica can retain more causally accepted effects than the sender.
+Admission therefore also sizes the maximum valid receiver-local relay of the
+**same** receipt evidence (every contribution or eligible Delete item
+accepted; all original Put effects accepted), before local
+graph/Store/WAL/origin publication. Follower ingress applies the same bound
+before its own publication. Prefix Deletes choose their exact bounded,
 causally accepted victims and preflight their projected frame under a single
 GraphCache write lock; an expired victim cannot disappear between selection
 and deletion and leave a matching live key behind a zero-count response.
@@ -760,9 +761,10 @@ Framing contract:
   receipt-less full Subscribe before checking the retained ring, and rejects every
   graph-only Snapshot request. An opt-in receipt producer exists, but it must
   be configured with the exact service-owned atomic capture source and policy.
-  Generic `DeleteEdge`/`DeleteEdges` mutation arms reject a nested receipt
-  context before queue, graph apply, or graph-effect WAL encoding; receipt
-  replication must use the dedicated `ReplicatedReceiptEdgeDelete` arm.
+  Generic `AddEdge`/`AddEdges` and `DeleteEdge`/`DeleteEdges` mutation arms
+  reject a nested receipt context before queue, graph apply, or graph-effect
+  WAL encoding; receipt replication must use the dedicated evidence-preserving
+  arms.
   The source's private identity must match the responder's primary service,
   serving runtime, graph backend, mutation log, HLC clock, origin tracker, and
   active Store plus the runtime-owned retired-catalog slot; a foreign or
@@ -924,9 +926,10 @@ Implementation notes:
   the exact runtime, primary service, replication service, backup source, and
   recovery evidence are certified and bearer authentication is configured.
   Its public mutation families are optional receipt-bearing Vertex Put, exact
-  Vertex Delete, and exact Edge Delete; capability and singular/plural status
-  share the same committed view. A faulted, recovering, closed, auth-disabled,
-  or uncertified runtime omits receipt identity and fails closed. Restart
+  Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add;
+  capability and singular/plural status share the same committed view. A
+  faulted, recovering, closed, auth-disabled, or uncertified runtime omits
+  receipt identity and fails closed. Restart
   activation additionally requires complete lease-owned WAL recovery and
   same-cut reconstruction of the active Store and retired catalog from any
   committed private combined baseline.
@@ -938,7 +941,8 @@ Implementation notes:
   anti-entropy plus tail resumption; #1394 covers receipt-bearing backup and
   startup restore continuity, and #1395 activates the authenticated public
   Edge Delete layer on that proof. #1396 extends the same public envelope to
-  conditional Vertex Put and exact Vertex Delete. Exhaustive multi-replica
+  conditional Vertex Put and exact Vertex Delete; #1397 adds exact
+  contribution-keyed Edge Add. Exhaustive multi-replica
   partition, restart, and soak acceptance remains a separate #1399 follow-up.
 - Delete tombstones committed before the Snapshot cutoff cannot be re-derived
   from the Subscribe tail. Explicit tombstone frames preserve their exact D4

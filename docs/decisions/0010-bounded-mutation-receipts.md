@@ -1,8 +1,8 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Add, Put Edge, and prefix Delete remain disabled
+- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Put Edge and prefix Delete remain disabled
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397
 
 ## Context and boundary
 
@@ -26,8 +26,9 @@ replicate, while `BackupSnapshot` and restore carry live graph records only.
 Simply adding a receipt map to any one of these paths would permit graph,
 result, receipt, and log to disagree. #1395 replaces that ordering for exact
 Edge Delete, and #1396 extends the same envelope to conditional Vertex Put and
-exact Vertex Delete when their optional receipt context is present. All
-context-free writes retain their existing behavior.
+exact Vertex Delete. #1397 extends it to contribution-keyed Edge Add when the
+optional receipt context is present. All context-free writes retain their
+existing behavior.
 
 ## Decision
 
@@ -886,9 +887,9 @@ private identity-bearing barrier before `NewRuntimeCertified`. Snapshot
 installer, Pump, anti-entropy, and backup construction follow that barrier.
 After the exact production backup source is certified, a separate public
 receipt barrier activates capability, status, and receipt-bearing Vertex Put,
-exact Vertex Delete, and exact Edge Delete only when bearer authentication is
-configured; primary listener construction follows that decision. Graph-only
-mode alone keeps the
+exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add only
+when bearer authentication is configured; primary listener construction
+follows that decision. Graph-only mode alone keeps the
 historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
 metrics, and behavior are unchanged.
 
@@ -942,16 +943,20 @@ marker that receipt-bearing requests must echo.
 `GetReceiptStatus` and plural-first `GetReceiptStatuses` are read-only and
 return exactly `CONFIRMED`, `NOT_YET_OBSERVED`, or
 `NO_LONGER_PROVABLE`; only `CONFIRMED` carries the exact original result.
-`PutVertices`, exact `DeleteVertices`, and exact `DeleteEdges` are the enabled
-receipt-bearing mutation families. Their optional context carries one
+`PutVertices`, exact `DeleteVertices`, exact `DeleteEdges`, and
+contribution-keyed `AddEdges` are the enabled receipt-bearing mutation
+families. Their optional context carries one
 index-aligned 49-byte operation ID per item, one nonzero 16-byte logical-call
 ID, and the capability endpoint. The complete group is validated and
 capacity-reserved before mutation. A matching duplicate returns the original
-request-index-aligned result: canonical `PutOutcome` values for Vertex Put and
-exact `existed` booleans for Delete. Intent or group mismatch fails without
-mutation. `PutVertex`, `DeleteVertex`, and `DeleteEdge` are one-item facades.
-Omitting the context preserves receipt-less behavior; Add, Put Edge, and
-prefix Delete remain excluded.
+request-index-aligned result: canonical `PutOutcome` values for Vertex Put,
+exact `existed` booleans for Delete, and the original effective float32 weight
+for Edge Add. Receipt-bearing Add additionally requires every item to carry an
+explicit nonzero 24-byte contribution ID; IDs are never synthesized. Intent,
+group, operation-ID, or contribution-ID reuse conflicts fail without mutation.
+`PutVertex`, `DeleteVertex`, `DeleteEdge`, and `AddEdge` are one-item facades.
+Omitting the context preserves receipt-less behavior; Put Edge and prefix
+Delete remain excluded.
 
 #1282 must establish contiguous relay publication and Snapshot cutoffs before
 receipt envelopes can claim replica-safe status. #1203 must establish mixed
@@ -960,10 +965,10 @@ alone do not fix the graph history. #1282's graph-before-relay retry rule is
 not itself sufficient for receipts: the receipt implementation must strengthen
 that seam to an atomic graph/receipt/relay publication. #1393 and #1394 supply
 the replication, Snapshot, backup, and startup continuity prerequisites used
-by #1395 and #1396. Edge Delete, conditional Vertex Put, and exact Vertex
-Delete now satisfy the public vertical-slice gate, including real Connect/h2c
+by #1395 and #1396. Edge Add, Edge Delete, conditional Vertex Put, and exact
+Vertex Delete now satisfy the public vertical-slice gate, including real Connect/h2c
 response-loss, lag, capacity, retention, intent-conflict, transport-bound,
-token-rotation, and fail-closed tests. Durable Add, Put Edge, and prefix Delete
-remain outside this public receipt context. The offline package continues to
+token-rotation, and fail-closed tests. Put Edge and prefix Delete remain
+outside this public receipt context. The offline package continues to
 reject durable Add, conditional Put, and Delete until its client layer adopts
 the corresponding certified receipt families.

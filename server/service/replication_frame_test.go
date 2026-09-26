@@ -102,6 +102,7 @@ func TestLanternServiceReplicationFrameRejectsWithMetric(t *testing.T) {
 
 func TestLanternServiceReceiptWireCapacityRejectsWithUnlimitedSendCap(t *testing.T) {
 	for _, capacity := range []error{
+		errReceiptEdgeAddWireCapacity,
 		errReceiptEdgeDeleteWireCapacity,
 		errReceiptVertexDeleteWireCapacity,
 		errReceiptVertexPutWireCapacity,
@@ -159,5 +160,54 @@ func TestGraphPublicationFrameUsesLoggableEffectProjection(t *testing.T) {
 	svc.replicationSendMaxBytes = rawSize - 1
 	if err := svc.validateGraphPublicationShape(mutation); connect.CodeOf(err) != connect.CodeResourceExhausted {
 		t.Fatalf("maximal publication effect validation = %v, want ResourceExhausted", err)
+	}
+}
+
+func TestReceiptEdgeAddMaximalRelayFrame(t *testing.T) {
+	envelope := committedReceiptEdgeAddEnvelope(t, 4)
+	envelope.AcceptedIndexes = []uint32{1, 3}
+	envelope.Mutation = receiptEdgeAddMutation(envelope)
+	sparseSize, err := validateReplicationFrameSize(envelope, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximalOp, err := maximalReplicationRelayEnvelope(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximal, ok := maximalOp.(*graphAddEffectEnvelope)
+	if !ok {
+		t.Fatalf("maximal receipt Add envelope = %T", maximalOp)
+	}
+	if len(maximal.AcceptedIndexes) != 4 {
+		t.Fatalf("maximal receipt Add accepted indexes = %v", maximal.AcceptedIndexes)
+	}
+	maximalSize, err := validateReplicationFrameSize(maximal, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maximalSize <= sparseSize {
+		t.Fatalf("receipt Add sparse/maximal frame sizes = %d/%d", sparseSize, maximalSize)
+	}
+
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](0))
+	svc.replicationFrameCertified = true
+	svc.replicationSendMaxBytes = maximalSize - 1
+	if err := svc.validateReplicationRelayFrame(envelope); connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("maximal Add relay at max-1 = %v, want ResourceExhausted", err)
+	}
+	svc.replicationSendMaxBytes = maximalSize
+	if err := svc.validateReplicationRelayFrame(envelope); err != nil {
+		t.Fatalf("maximal Add relay at exact bound: %v", err)
+	}
+
+	graphOnly := &graphAddEffectEnvelope{Mutation: &pb.Mutation{
+		Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+			AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 1}},
+		}},
+	}}
+	got, err := maximalReplicationRelayEnvelope(graphOnly)
+	if err != nil || got != graphOnly {
+		t.Fatalf("graph-only Add maximal projection = %T %v, want unchanged", got, err)
 	}
 }

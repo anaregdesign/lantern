@@ -199,6 +199,7 @@ const ReceiptMutationKind$json = {
     {'1': 'RECEIPT_MUTATION_KIND_PUT_VERTEX', '2': 1},
     {'1': 'RECEIPT_MUTATION_KIND_DELETE_VERTEX', '2': 2},
     {'1': 'RECEIPT_MUTATION_KIND_DELETE_EDGE', '2': 3},
+    {'1': 'RECEIPT_MUTATION_KIND_ADD_EDGE', '2': 4},
   ],
 };
 
@@ -207,7 +208,7 @@ final $typed_data.Uint8List receiptMutationKindDescriptor = $convert.base64Decod
     'ChNSZWNlaXB0TXV0YXRpb25LaW5kEiUKIVJFQ0VJUFRfTVVUQVRJT05fS0lORF9VTlNQRUNJRk'
     'lFRBAAEiQKIFJFQ0VJUFRfTVVUQVRJT05fS0lORF9QVVRfVkVSVEVYEAESJwojUkVDRUlQVF9N'
     'VVRBVElPTl9LSU5EX0RFTEVURV9WRVJURVgQAhIlCiFSRUNFSVBUX01VVEFUSU9OX0tJTkRfRE'
-    'VMRVRFX0VER0UQAw==');
+    'VMRVRFX0VER0UQAxIiCh5SRUNFSVBUX01VVEFUSU9OX0tJTkRfQUREX0VER0UQBA==');
 
 @$core.Deprecated('Use mutationReceiptStateDescriptor instead')
 const MutationReceiptState$json = {
@@ -1331,13 +1332,22 @@ const AddEdgeRequest$json = {
   '2': [
     {'1': 'edge', '3': 1, '4': 1, '5': 11, '6': '.graph.v1.Edge', '10': 'edge'},
     {'1': 'contrib_id', '3': 2, '4': 1, '5': 12, '10': 'contribId'},
+    {
+      '1': 'receipt_context',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `AddEdgeRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List addEdgeRequestDescriptor = $convert.base64Decode(
     'Cg5BZGRFZGdlUmVxdWVzdBIiCgRlZGdlGAEgASgLMg4uZ3JhcGgudjEuRWRnZVIEZWRnZRIdCg'
-    'pjb250cmliX2lkGAIgASgMUgljb250cmliSWQ=');
+    'pjb250cmliX2lkGAIgASgMUgljb250cmliSWQSSQoPcmVjZWlwdF9jb250ZXh0GAMgASgLMiAu'
+    'Z3JhcGgudjEuTXV0YXRpb25SZWNlaXB0Q29udGV4dFIOcmVjZWlwdENvbnRleHQ=');
 
 @$core.Deprecated('Use addEdgeResponseDescriptor instead')
 const AddEdgeResponse$json = {
@@ -1365,13 +1375,22 @@ const AddEdgesRequest$json = {
       '10': 'edges'
     },
     {'1': 'contrib_ids', '3': 2, '4': 3, '5': 12, '10': 'contribIds'},
+    {
+      '1': 'receipt_context',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
   ],
 };
 
 /// Descriptor for `AddEdgesRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List addEdgesRequestDescriptor = $convert.base64Decode(
     'Cg9BZGRFZGdlc1JlcXVlc3QSJAoFZWRnZXMYASADKAsyDi5ncmFwaC52MS5FZGdlUgVlZGdlcx'
-    'IfCgtjb250cmliX2lkcxgCIAMoDFIKY29udHJpYklkcw==');
+    'IfCgtjb250cmliX2lkcxgCIAMoDFIKY29udHJpYklkcxJJCg9yZWNlaXB0X2NvbnRleHQYAyAB'
+    'KAsyIC5ncmFwaC52MS5NdXRhdGlvblJlY2VpcHRDb250ZXh0Ug5yZWNlaXB0Q29udGV4dA==');
 
 @$core.Deprecated('Use addEdgesResponseDescriptor instead')
 const AddEdgesResponse$json = {
@@ -2173,6 +2192,14 @@ const ReceiptResult$json = {
       '9': 0,
       '10': 'deleteVertexExisted'
     },
+    {
+      '1': 'add_edge_effective_weight',
+      '3': 4,
+      '4': 1,
+      '5': 2,
+      '9': 0,
+      '10': 'addEdgeEffectiveWeight'
+    },
   ],
   '8': [
     {'1': 'result'},
@@ -2184,7 +2211,8 @@ final $typed_data.Uint8List receiptResultDescriptor = $convert.base64Decode(
     'Cg1SZWNlaXB0UmVzdWx0EjAKE2RlbGV0ZV9lZGdlX2V4aXN0ZWQYASABKAhIAFIRZGVsZXRlRW'
     'RnZUV4aXN0ZWQSRAoScHV0X3ZlcnRleF9vdXRjb21lGAIgASgOMhQuZ3JhcGgudjEuUHV0T3V0'
     'Y29tZUgAUhBwdXRWZXJ0ZXhPdXRjb21lEjQKFWRlbGV0ZV92ZXJ0ZXhfZXhpc3RlZBgDIAEoCE'
-    'gAUhNkZWxldGVWZXJ0ZXhFeGlzdGVkQggKBnJlc3VsdA==');
+    'gAUhNkZWxldGVWZXJ0ZXhFeGlzdGVkEjsKGWFkZF9lZGdlX2VmZmVjdGl2ZV93ZWlnaHQYBCAB'
+    'KAJIAFIWYWRkRWRnZUVmZmVjdGl2ZVdlaWdodEIICgZyZXN1bHQ=');
 
 @$core.Deprecated('Use mutationReceiptDescriptor instead')
 const MutationReceipt$json = {

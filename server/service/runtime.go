@@ -620,6 +620,7 @@ func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
 	}
 	if r.receipt == nil {
 		if primary.receiptStore != nil || primary.receiptRetiredCatalog != nil ||
+			primary.receiptEdgeAddCoordinator != nil ||
 			primary.receiptEdgeDeleteCoordinator != nil ||
 			primary.receiptVertexPutCoordinator != nil ||
 			primary.receiptVertexDeleteCoordinator != nil {
@@ -670,6 +671,11 @@ func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
 		if coordinator == nil || coordinator.service != primary || coordinator.cache != r.graph ||
 			coordinator.store != r.receipt.store || coordinator.retired != r.receipt.retired {
 			return errors.New("service: durable receipt follower coordinator is not installed from the serving runtime")
+		}
+		edgeAdd := primary.receiptEdgeAddCoordinator
+		if edgeAdd == nil || edgeAdd.service != primary || edgeAdd.cache != r.graph ||
+			edgeAdd.store != r.receipt.store {
+			return errors.New("service: durable receipt Edge Add coordinator is not installed from the serving runtime")
 		}
 		vertexPut := primary.receiptVertexPutCoordinator
 		if vertexPut == nil || vertexPut.service != primary || vertexPut.cache != r.graph ||
@@ -757,8 +763,8 @@ func (r *ServingRuntime) CertifyReceiptBackup(
 }
 
 // ActivatePublicReceipts enables capability, status, and receipt-bearing Vertex
-// Put, exact Vertex Delete, and exact Edge Delete only for the durable cut
-// certified for recovery, replication, and backup.
+// Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add
+// only for the durable cut certified for recovery, replication, and backup.
 func (r *ServingRuntime) ActivatePublicReceipts(
 	primary *LanternService,
 	replication *LanternReplicationService,

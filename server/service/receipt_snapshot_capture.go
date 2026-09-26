@@ -126,6 +126,9 @@ func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store)
 	if _, err := newVertexDeleteReceiptCoordinator(s, store); err != nil {
 		return nil, err
 	}
+	if _, err := newEdgeAddReceiptCoordinator(s, store); err != nil {
+		return nil, err
+	}
 	return &ReceiptWholeStateSource{
 		owner:         s,
 		store:         store,

@@ -442,7 +442,7 @@ Repository disposal follows the same quiescence rule for every partition.
 | Cross-user/tenant data leak | Isolate application/gateway credentials and the storage/security domain; partition every local key/record; atomically wipe on logout/user switch; do not reuse a partition identifier. |
 | Device backup or file extraction | Application chooses encryption and platform key storage; document backup exclusion/rotation policy. |
 | Corrupt/tampered record | Authenticated storage where required, strict schema/length/range checks, quarantine/dead-letter without sending. |
-| Crash between network commit and local confirmation | Put replays to the same final state; Add remains outside the offline API until server-authoritative receipts exist; unsafe conditional/Delete operations remain explicit ambiguous. |
+| Crash between network commit and local confirmation | Put replays to the same final state; receipt-capable online mutations reconcile through server-authoritative status; Add, conditional Put, and Delete remain outside the offline outbox until it adopts those receipt families. |
 | Crash during migration | Copy-on-write/versioned migration with transaction marker; old schema remains readable until commit or is quarantined. |
 | Disk exhaustion/queue flood | Per-partition/global byte and count caps, backpressure, bounded claims, read-cache eviction before outbox loss. |
 | Sensitive telemetry | Default metrics expose category, state, age bucket, attempts, counts, and error code only—never keys, values, graph content, IDs, or credentials. |
@@ -603,11 +603,12 @@ from an earlier scope, but none may add implicit persistence to
    physical-device evidence for the online SDK and the earlier offline MVP. The
    current Put-only release candidate is qualified by #1180 and must record its
    own exact-revision physical run before #1162 publishes it.
-5. [#1115](https://github.com/anaregdesign/lantern/issues/1115) adds
+5. [#1115](https://github.com/anaregdesign/lantern/issues/1115) established
    server-authoritative operation receipts so mutations whose public result is
-   ambiguous after response loss can be reconciled safely. Offline Add remains
-   disabled until those receipts define authoritative TTL/outcome semantics and
-   the offline package adds response-loss, restart, and conformance evidence.
+   ambiguous after response loss can be reconciled safely. #1397 extends that
+   surface to contribution-keyed Add. Offline Add remains disabled until the
+   package adopts the receipt family and adds response-loss, restart, and
+   conformance evidence.
 6. [#1116](https://github.com/anaregdesign/lantern/issues/1116) adds a
    client-facing revision/change stream for explicit Put, Add, Delete, prefix
    Delete, and HA-arrival invalidation. TTL expiration remains enforced locally
@@ -627,4 +628,5 @@ without taking ownership of application identity, encryption, UX, or OS
 lifecycle. It cannot silently change TTL, send a legacy Add, replay ambiguous
 Deletes, or persist credentials; those are compatibility constraints for every
 offline-package version. Direct-online Add remains available in
-`lantern_client`; durable offline Add is deferred to the #1115 receipt contract.
+`lantern_client`; durable offline Add is deferred until the offline package
+adopts the #1397 Add receipt contract.

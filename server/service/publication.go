@@ -44,6 +44,16 @@ type receiptMutationEnvelope interface {
 
 func (s *LanternService) validateReplicatedReceiptEnvelope(envelope receiptMutationEnvelope) error {
 	switch value := envelope.(type) {
+	case *graphAddEffectEnvelope:
+		if !value.receiptBearing() {
+			return connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("graph-only Edge Add is not a receipt envelope"))
+		}
+		if s.receiptEdgeAddCoordinator == nil {
+			return connect.NewError(connect.CodeUnimplemented,
+				fmt.Errorf("receipt-bearing Edge Add replication apply is not enabled"))
+		}
+		return s.receiptEdgeAddCoordinator.validateReplicatedEnvelope(value)
 	case *edgeDeleteReceiptEnvelope:
 		if s.receiptEdgeDeleteCoordinator == nil {
 			return connect.NewError(connect.CodeUnimplemented,
@@ -70,6 +80,10 @@ func (s *LanternService) validateReplicatedReceiptEnvelope(envelope receiptMutat
 
 func sameReceiptMutationIntent(left, right receiptMutationEnvelope) bool {
 	switch value := left.(type) {
+	case *graphAddEffectEnvelope:
+		other, ok := right.(*graphAddEffectEnvelope)
+		return ok && value.receiptBearing() && other.receiptBearing() &&
+			sameReceiptEdgeAddIntent(value, other)
 	case *edgeDeleteReceiptEnvelope:
 		other, ok := right.(*edgeDeleteReceiptEnvelope)
 		return ok && sameReceiptEdgeDeleteIntent(value, other)
@@ -92,6 +106,13 @@ func (s *LanternService) commitReplicatedReceipt(
 	pending *pendingMutation,
 ) (string, error) {
 	switch pending.receipt.(type) {
+	case *graphAddEffectEnvelope:
+		if s.receiptEdgeAddCoordinator == nil {
+			return "", connect.NewError(connect.CodeInternal,
+				fmt.Errorf("receipt-bearing Edge Add coordinator became unavailable"))
+		}
+		return "replicated_receipt_edge_add",
+			s.receiptEdgeAddCoordinator.commitReplicated(ctx, origin, seq, ts, pending)
 	case *edgeDeleteReceiptEnvelope:
 		if s.receiptEdgeDeleteCoordinator == nil {
 			return "", connect.NewError(connect.CodeInternal,

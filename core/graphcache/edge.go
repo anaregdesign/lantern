@@ -186,7 +186,8 @@ func (w *weight) addWithExpirationContribHLCAt(value float32, expiration time.Ti
 	}
 	w.sum += value
 	w.noteExpirationLocked(expiration)
-	if n := len(w.values); w.needsSort || (n > weightCompactMin && n > 2*w.lastFlushLen) {
+	if n := len(w.values); !cache.IsLiveAt(expiration, now) ||
+		w.needsSort || (n > weightCompactMin && n > 2*w.lastFlushLen) {
 		w.flushLockedAt(now)
 	}
 	return true, w.sum

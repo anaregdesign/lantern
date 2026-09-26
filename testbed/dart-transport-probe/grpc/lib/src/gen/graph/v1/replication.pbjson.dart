@@ -262,6 +262,15 @@ const MutationOp$json = {
       '9': 0,
       '10': 'replicatedReceiptVertexDelete'
     },
+    {
+      '1': 'replicated_receipt_edge_add',
+      '3': 18,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptEdgeAdd',
+      '9': 0,
+      '10': 'replicatedReceiptEdgeAdd'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -294,7 +303,9 @@ final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
     'FwaC52MS5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEgAUhpyZXBsaWNhdGVkUmVjZWlwdFZl'
     'cnRleFB1dBJyCiByZXBsaWNhdGVkX3JlY2VpcHRfdmVydGV4X2RlbGV0ZRgRIAEoCzInLmdyYX'
     'BoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0VmVydGV4RGVsZXRlSABSHXJlcGxpY2F0ZWRSZWNlaXB0'
-    'VmVydGV4RGVsZXRlQgQKAm9w');
+    'VmVydGV4RGVsZXRlEmMKG3JlcGxpY2F0ZWRfcmVjZWlwdF9lZGdlX2FkZBgSIAEoCzIiLmdyYX'
+    'BoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0RWRnZUFkZEgAUhhyZXBsaWNhdGVkUmVjZWlwdEVkZ2VB'
+    'ZGRCBAoCb3A=');
 
 @$core.Deprecated('Use replicatedReceiptEdgeDeleteItemDescriptor instead')
 const ReplicatedReceiptEdgeDeleteItem$json = {
@@ -511,6 +522,74 @@ final $typed_data.Uint8List replicatedReceiptVertexDeleteDescriptor = $convert.b
     'aW5nZXJwcmludBJNChR0b21ic3RvbmVfZXhwaXJhdGlvbhgDIAEoCzIaLmdvb2dsZS5wcm90b2'
     'J1Zi5UaW1lc3RhbXBSE3RvbWJzdG9uZUV4cGlyYXRpb24SQQoFaXRlbXMYBCADKAsyKy5ncmFw'
     'aC52MS5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleERlbGV0ZUl0ZW1SBWl0ZW1z');
+
+@$core.Deprecated('Use replicatedReceiptEdgeAddItemDescriptor instead')
+const ReplicatedReceiptEdgeAddItem$json = {
+  '1': 'ReplicatedReceiptEdgeAddItem',
+  '2': [
+    {
+      '1': 'original',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Edge',
+      '10': 'original'
+    },
+    {'1': 'contrib_id', '3': 2, '4': 1, '5': 12, '10': 'contribId'},
+    {
+      '1': 'receipt',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+    {
+      '1': 'causally_accepted',
+      '3': 4,
+      '4': 1,
+      '5': 8,
+      '10': 'causallyAccepted'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptEdgeAddItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptEdgeAddItemDescriptor = $convert.base64Decode(
+    'ChxSZXBsaWNhdGVkUmVjZWlwdEVkZ2VBZGRJdGVtEioKCG9yaWdpbmFsGAEgASgLMg4uZ3JhcG'
+    'gudjEuRWRnZVIIb3JpZ2luYWwSHQoKY29udHJpYl9pZBgCIAEoDFIJY29udHJpYklkEjMKB3Jl'
+    'Y2VpcHQYAyABKAsyGS5ncmFwaC52MS5NdXRhdGlvblJlY2VpcHRSB3JlY2VpcHQSKwoRY2F1c2'
+    'FsbHlfYWNjZXB0ZWQYBCABKAhSEGNhdXNhbGx5QWNjZXB0ZWQ=');
+
+@$core.Deprecated('Use replicatedReceiptEdgeAddDescriptor instead')
+const ReplicatedReceiptEdgeAdd$json = {
+  '1': 'ReplicatedReceiptEdgeAdd',
+  '2': [
+    {'1': 'deployment_epoch', '3': 1, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 2,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+    {
+      '1': 'items',
+      '3': 3,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptEdgeAddItem',
+      '10': 'items'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptEdgeAdd`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptEdgeAddDescriptor = $convert.base64Decode(
+    'ChhSZXBsaWNhdGVkUmVjZWlwdEVkZ2VBZGQSKQoQZGVwbG95bWVudF9lcG9jaBgBIAEoDFIPZG'
+    'VwbG95bWVudEVwb2NoEi0KEnBvbGljeV9maW5nZXJwcmludBgCIAEoDFIRcG9saWN5RmluZ2Vy'
+    'cHJpbnQSPAoFaXRlbXMYAyADKAsyJi5ncmFwaC52MS5SZXBsaWNhdGVkUmVjZWlwdEVkZ2VBZG'
+    'RJdGVtUgVpdGVtcw==');
 
 @$core.Deprecated('Use vertexCausalBarrierDescriptor instead')
 const VertexCausalBarrier$json = {

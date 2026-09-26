@@ -298,6 +298,7 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 	}
 	var category pb.IdentityOperation
 	var receiptEdgeKeys []*pb.EdgeKey
+	var receiptAddEdges []*pb.Edge
 	var receiptVertexKeys []string
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_PutVertex, *pb.MutationOp_PutVertices, *pb.MutationOp_ReplicatedPutVertices:
@@ -306,6 +307,16 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_VERTEX
 	case *pb.MutationOp_AddEdge, *pb.MutationOp_AddEdges:
 		category = pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		var err error
+		receiptAddEdges, err = acceptedReceiptEdgeAddEdges(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity projection invalid receipt envelope: %w", err))
+		}
+		category = pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE
+		if len(receiptAddEdges) == 0 {
+			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+		}
 	case *pb.MutationOp_PutEdge, *pb.MutationOp_PutEdges, *pb.MutationOp_ReplicatedPutEdges:
 		category = pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE
 	case *pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
@@ -439,6 +450,12 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		}
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
 		for _, edge := range receiptEdgeKeys {
+			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		for _, edge := range receiptAddEdges {
 			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
 				return err
 			}

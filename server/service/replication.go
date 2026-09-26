@@ -86,6 +86,9 @@ type publicationStatusProvider interface {
 
 func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
 	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		_, err := acceptedReceiptEdgeAddEdges(m)
+		return true, err
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
 		_, err := acceptedReceiptEdgeDeleteKeys(m)
 		return true, err

@@ -103,7 +103,7 @@ var descriptions = map[string]string{
 
 	"LANTERN_MUTATION_LOG_CAPACITY":          "Replication mutation-log ring capacity in entries; size for peak_cluster_rps x retention_seconds.",
 	"LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER": "Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped.",
-	"LANTERN_RECEIPT_WAL_MODE":               "Receipt-WAL runtime mode: graph-only (default), fresh, or restart. Durable modes expose authenticated receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete only after runtime, recovery, replication, Snapshot, and backup certification.",
+	"LANTERN_RECEIPT_WAL_MODE":               "Receipt-WAL runtime mode: graph-only (default), fresh, or restart. Durable modes expose authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add only after runtime, recovery, replication, Snapshot, and backup certification.",
 	"LANTERN_RECEIPT_WAL_PATH":               "Absolute FileWAL path for fresh/restart mode; its .clock, .tip, .generation, and stable .lease sidecars share the same ownership boundary.",
 	"LANTERN_RECEIPT_EPOCH":                  "Nonzero 32-hex-character deployment epoch required by fresh/restart mode and immutable for restart.",
 	"LANTERN_RECEIPT_RETENTION":              "Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart.",

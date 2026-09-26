@@ -76,6 +76,14 @@ func validateReplicationFrameSize(op mutationlog.MutationOp, limit int) (int, er
 // not just the current node's accepted subset.
 func maximalReplicationRelayEnvelope(op mutationlog.MutationOp) (mutationlog.MutationOp, error) {
 	switch envelope := op.(type) {
+	case *graphAddEffectEnvelope:
+		if envelope == nil {
+			return nil, errors.New("nil receipt Edge Add envelope")
+		}
+		if !envelope.receiptBearing() {
+			return envelope, nil
+		}
+		return maximalReceiptEdgeAddEnvelope(envelope)
 	case *edgeDeleteReceiptEnvelope:
 		if envelope == nil {
 			return nil, errors.New("nil receipt Edge Delete envelope")
@@ -119,6 +127,7 @@ func (s *LanternService) validateReplicationFrame(op mutationlog.MutationOp) err
 	if _, err := validateReplicationFrameSize(op, limit); err != nil {
 		var sizeErr *replicationFrameSizeError
 		if errors.As(err, &sizeErr) ||
+			errors.Is(err, errReceiptEdgeAddWireCapacity) ||
 			errors.Is(err, errReceiptEdgeDeleteWireCapacity) ||
 			errors.Is(err, errReceiptVertexDeleteWireCapacity) ||
 			errors.Is(err, errReceiptVertexPutWireCapacity) {
