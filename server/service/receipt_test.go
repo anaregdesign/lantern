@@ -14,12 +14,21 @@ import (
 )
 
 func newActivatedReceiptService(
-	t *testing.T,
+	t testing.TB,
 	maxEntries int,
+) (*ServingRuntime, *LanternService, *LanternReplicationService) {
+	return newActivatedReceiptServiceWithLimits(t, maxEntries, 1<<20)
+}
+
+func newActivatedReceiptServiceWithLimits(
+	t testing.TB,
+	maxEntries int,
+	maxBytes uint64,
 ) (*ServingRuntime, *LanternService, *LanternReplicationService) {
 	t.Helper()
 	config := durableRuntimeTestConfig(t.TempDir() + "/receipts.wal")
 	config.Receipt.MaxEntries = maxEntries
+	config.Receipt.MaxBytes = maxBytes
 	runtime, err := CreateDurableReceiptWALServingRuntime(config)
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +52,7 @@ func newActivatedReceiptService(
 }
 
 func receiptOperationID(
-	t *testing.T,
+	t testing.TB,
 	epoch mutationreceipt.Epoch,
 	issued time.Time,
 	seed byte,
@@ -57,7 +66,7 @@ func receiptOperationID(
 }
 
 func commitReceiptForStatus(
-	t *testing.T,
+	t testing.TB,
 	store *mutationreceipt.Store,
 	now time.Time,
 	intent mutationreceipt.Intent,
@@ -403,5 +412,27 @@ func TestReceiptReadSurfaceCancellation(t *testing.T) {
 	}
 	if _, err := svc.GetReceiptStatuses(ctx, &pb.GetReceiptStatusesRequest{}); connect.CodeOf(err) != connect.CodeCanceled {
 		t.Fatalf("canceled status = %v, want Canceled", err)
+	}
+}
+
+func BenchmarkReceiptStatusLookup(b *testing.B) {
+	runtime, svc, _ := newActivatedReceiptService(b, 32)
+	now := time.Now().Add(-time.Second)
+	id := receiptOperationID(b, runtime.receipt.epoch, now, 0x7a)
+	commitReceiptForStatus(b, runtime.receipt.store, now, mutationreceipt.Intent{
+		ID: id, Group: mutationreceipt.GroupID{0x7b}, Count: 1,
+		Kind: mutationreceipt.DeleteEdge, Digest: mutationreceipt.IntentDigest([]byte("benchmark")),
+	}, 0)
+	request := &pb.GetReceiptStatusRequest{OperationId: id.Bytes()}
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		response, err := svc.GetReceiptStatus(ctx, request)
+		if err != nil ||
+			response.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED {
+			b.Fatalf("GetReceiptStatus() = %+v, %v", response, err)
+		}
 	}
 }

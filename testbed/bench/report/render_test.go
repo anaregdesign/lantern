@@ -149,6 +149,42 @@ func TestRenderReport_HandlesMissingArtifactsGracefully(t *testing.T) {
 	}
 }
 
+func TestRenderReport_ShowsReceiptSteadyPeaks(t *testing.T) {
+	gate := &LeakGate{
+		Verdict:              "fail",
+		SteadySampleInterval: "5s",
+		SteadySampleCount:    9,
+		Replicas: []LeakGateReplica{{
+			Endpoint:           "localhost:9391",
+			GoroutinesPre:      40,
+			GoroutinesPost:     40,
+			GoroutinesPeak:     56,
+			GoroutinePeakDelta: 16,
+			HeapAllocPreBytes:  100 << 20,
+			HeapAllocPostBytes: 100 << 20,
+			HeapAllocPeakBytes: 133 << 20,
+			HeapAllocPeakDelta: 33 << 20,
+		}},
+		Failures: []string{"localhost:9391 goroutine post/steady growth exceeds +15"},
+	}
+	gate.Thresholds.GoroutineMaxDelta = 15
+	gate.Thresholds.HeapAllocMaxDeltaMB = 32
+	var buf bytes.Buffer
+	if err := RenderReport(&buf, Input{Scenario: "receipt_admission_lookup", LeakGate: gate}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"**Leak gate verdict:** `fail`",
+		"9 complete three-replica `/metrics` rounds at nominal 5s intervals, without forced GC",
+		"| `localhost:9391` | 56 (**+16**) | 133.0 (**+33.0**) |",
+		"localhost:9391 goroutine post/steady growth exceeds +15",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("missing %q in report:\n%s", want, buf.String())
+		}
+	}
+}
+
 func TestRenderReport_ShowsIndependentProducerGates(t *testing.T) {
 	minRPS, maxP99 := 10.0, 250.0
 	pg := &PerfGate{Verdict: "fail"}

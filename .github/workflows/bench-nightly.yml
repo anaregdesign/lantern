@@ -104,11 +104,18 @@ jobs:
         # No continue-on-error: a non-zero exit (any scenario's leak gate failed,
         # or a harness/setup error) fails this required nightly check.
         run: ./testbed/bench/release.sh --out bench-report.md
+      - name: Run receipt admission and lookup gate (blocking)
+        env:
+          LANTERN_IMAGE: lantern:local
+          LEAK_GATE_ONLY: "1"
+        run: ./testbed/bench/run.sh receipt_admission_lookup
       - name: Upload bench report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: bench-report-nightly
-          path: bench-report.md
+          path: |
+            bench-report.md
+            testbed/bench/out/receipt_admission_lookup/
           if-no-files-found: warn
           retention-days: 30

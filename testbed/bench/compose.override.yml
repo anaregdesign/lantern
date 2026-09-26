@@ -50,19 +50,35 @@ x-lantern-bench-env: &lantern-bench-env
   # unique content (e.g. replication_apply_churn isolating vertexHLC) can turn
   # search off so the InvertedIndex does not dominate the heap signal.
   LANTERN_SEARCH_ENABLED: "${LANTERN_BENCH_SEARCH_ENABLED:-true}"
+  # Receipt scenarios opt into one fresh durable WAL per replica. Empty
+  # defaults preserve graph-only behavior for every existing scenario.
+  LANTERN_AUTH_TOKENS: "${LANTERN_BENCH_AUTH_TOKEN:-}"
+  LANTERN_BACKUP_RESTORE_ON_START: "${LANTERN_BENCH_BACKUP_RESTORE_ON_START:-true}"
+  LANTERN_RECEIPT_EPOCH: "${LANTERN_BENCH_RECEIPT_EPOCH:-}"
+  LANTERN_RECEIPT_MAX_BYTES: "${LANTERN_BENCH_RECEIPT_MAX_BYTES:-}"
+  LANTERN_RECEIPT_MAX_ENTRIES: "${LANTERN_BENCH_RECEIPT_MAX_ENTRIES:-}"
+  LANTERN_RECEIPT_RETENTION: "${LANTERN_BENCH_RECEIPT_RETENTION:-}"
+  LANTERN_RECEIPT_WAL_MODE: "${LANTERN_BENCH_RECEIPT_WAL_MODE:-graph-only}"
+  LANTERN_RECEIPT_WAL_PATH: "${LANTERN_BENCH_RECEIPT_WAL_PATH:-}"
 
 services:
   lantern-0:
-    environment: *lantern-bench-env
+    environment:
+      <<: *lantern-bench-env
+      LANTERN_NODE_ID: "${LANTERN_BENCH_NODE_ID_0:-}"
     ports:
       - "9390:9090"
 
   lantern-1:
-    environment: *lantern-bench-env
+    environment:
+      <<: *lantern-bench-env
+      LANTERN_NODE_ID: "${LANTERN_BENCH_NODE_ID_1:-}"
     ports:
       - "9391:9090"
 
   lantern-2:
-    environment: *lantern-bench-env
+    environment:
+      <<: *lantern-bench-env
+      LANTERN_NODE_ID: "${LANTERN_BENCH_NODE_ID_2:-}"
     ports:
       - "9392:9090"

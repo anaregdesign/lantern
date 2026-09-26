@@ -1,0 +1,56 @@
+# Durable Edge Delete receipt admission followed by same-operation status
+# reconciliation. A dedicated driver is required because ghz cannot safely
+# generate one canonical binary operation ID and reuse it across both RPCs.
+name: receipt_admission_lookup
+description: "Durable Edge Delete receipt admission and confirmed same-operation lookup over h2c"
+
+target:
+  driver: receipt_edge_delete
+  endpoints:
+    - "localhost:6380"
+    - "localhost:6381"
+    - "localhost:6382"
+  calls:
+    - name: receipt_admission
+      call: graph.v1.LanternService/DeleteEdge
+      rps: 100
+    - name: receipt_lookup
+      call: graph.v1.LanternService/GetReceiptStatus
+      rps: 100
+
+cluster:
+  receipt_wal:
+    enabled: true
+    retention: 1h
+    max_entries: 8000
+    max_bytes: 16777216
+
+phases:
+  warmup:
+    duration: 10s
+    rps: 200
+    concurrency: 12
+  steady:
+    duration: 45s
+    rps: 200
+    concurrency: 12
+  cooldown: 10s
+
+perf_gate:
+  min_steady_rps_total: 150
+  max_p99_ms: 500
+  max_non_ok_ratio: 0
+  producers:
+    receipt_admission:
+      min_steady_rps: 75
+      max_p99_ms: 500
+      max_non_ok_ratio: 0
+    receipt_lookup:
+      min_steady_rps: 75
+      max_p99_ms: 200
+      max_non_ok_ratio: 0
+
+leak_gate:
+  goroutine_max_delta: 15
+  heap_alloc_max_delta_mb: 32
+  steady_sample_interval: 5s

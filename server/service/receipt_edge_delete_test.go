@@ -207,7 +207,7 @@ func bindPublicReceiptFixtureForConcurrencyTest(
 }
 
 func publicReceiptContext(
-	t *testing.T,
+	t testing.TB,
 	runtime *ServingRuntime,
 	seed byte,
 	count int,
@@ -219,6 +219,7 @@ func publicReceiptContext(
 		id := receiptOperationID(t, runtime.receipt.epoch, issued, seed+byte(i))
 		ids[i] = id.Bytes()
 	}
+
 	nodeID := runtime.clock.NodeID()
 	return &pb.MutationReceiptContext{
 		OperationIds:  ids,
@@ -227,6 +228,65 @@ func publicReceiptContext(
 			NodeId:     append([]byte(nil), nodeID[:]...),
 			Generation: append([]byte(nil), runtime.receipt.generation[:]...),
 		},
+	}
+}
+
+func BenchmarkPublicReceiptEdgeDeleteAdmission(b *testing.B) {
+	for _, withReceipt := range []bool{false, true} {
+		name := "no_receipt"
+		if withReceipt {
+			name = "admitted_receipt"
+		}
+		b.Run(name, func(b *testing.B) {
+			maxEntries := 32
+			if withReceipt {
+				maxEntries = b.N + 1
+			}
+			maxBytes := uint64(maxEntries) * 2048
+			if maxBytes < 1<<20 {
+				maxBytes = 1 << 20
+			}
+			runtime, svc, _ := newActivatedReceiptServiceWithLimits(b, maxEntries, maxBytes)
+			requests := make([]*pb.DeleteEdgeRequest, b.N)
+			issued := time.Now().Add(-time.Second)
+			nodeID := runtime.clock.NodeID()
+			for i := range requests {
+				requests[i] = &pb.DeleteEdgeRequest{
+					Tail: "benchmark-tail",
+					Head: "benchmark-head",
+				}
+				if !withReceipt {
+					continue
+				}
+				var randomness [24]byte
+				randomness[0] = 1
+				binary.BigEndian.PutUint64(randomness[16:], uint64(i+1))
+				id, err := mutationreceipt.NewID(runtime.receipt.epoch, issued, randomness)
+				if err != nil {
+					b.Fatal(err)
+				}
+				group := mutationreceipt.GroupID{1}
+				binary.BigEndian.PutUint64(group[8:], uint64(i+1))
+				requests[i].ReceiptContext = &pb.MutationReceiptContext{
+					OperationIds:  [][]byte{id.Bytes()},
+					LogicalCallId: append([]byte(nil), group[:]...),
+					Endpoint: &pb.ReceiptEndpoint{
+						NodeId:     append([]byte(nil), nodeID[:]...),
+						Generation: append([]byte(nil), runtime.receipt.generation[:]...),
+					},
+				}
+			}
+			ctx := context.Background()
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				response, err := svc.DeleteEdge(ctx, requests[i])
+				if err != nil || response.GetExisted() {
+					b.Fatalf("DeleteEdge() = %+v, %v", response, err)
+				}
+			}
+		})
 	}
 }
 
