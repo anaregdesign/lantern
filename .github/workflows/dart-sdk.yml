@@ -225,7 +225,7 @@ jobs:
             LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6384 \
             LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             dart test \
-              --name '^receipt Vertex Put and exact Delete reconcile over real h2c$' \
+              --name '^receipt Vertex and Edge mutations reconcile over real h2c$' \
               test/real_wire_test.dart
 
       - name: Build API documentation

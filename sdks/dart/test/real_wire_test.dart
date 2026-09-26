@@ -332,7 +332,7 @@ void main() {
   );
 
   test(
-    'receipt Vertex Put and exact Delete reconcile over real h2c',
+    'receipt Vertex and Edge mutations reconcile over real h2c',
     () async {
       final receiptEndpoint = Uri.parse(receiptConfigured!);
       final receiptClient = LanternClient.connect(
@@ -350,6 +350,7 @@ void main() {
         containsAll({
           ReceiptMutationKind.vertexPut,
           ReceiptMutationKind.vertexDelete,
+          ReceiptMutationKind.edgeDelete,
         }),
       );
 
@@ -398,6 +399,47 @@ void main() {
           (status) => (status.receipt! as VertexDeleteReceipt).existed,
         ),
         [true, false],
+      );
+
+      final presentEdge = EdgeRef(
+        '$prefix-receipt-edge-tail',
+        '$prefix-receipt-edge-head',
+      );
+      final absentEdge = EdgeRef(
+        '$prefix-receipt-edge-absent-tail',
+        '$prefix-receipt-edge-absent-head',
+      );
+      expect(
+        await receiptClient.putEdge(
+          EdgeInput(tail: presentEdge.tail, head: presentEdge.head, weight: 1),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+      final edgeDeleteContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeDelete,
+        itemCount: 2,
+      );
+      final edgeDeleted = await receiptClient.deleteEdgesWithReceipt([
+        presentEdge,
+        absentEdge,
+      ], context: edgeDeleteContext);
+      expect(edgeDeleted.map((result) => result.existed), [true, false]);
+      final edgeDeleteStatuses = await receiptClient.getReceiptStatuses(
+        edgeDeleteContext.operationIds,
+      );
+      expect(
+        edgeDeleteStatuses.map(
+          (status) => (status.receipt! as EdgeDeleteReceipt).existed,
+        ),
+        [true, false],
+      );
+      await expectLater(
+        receiptClient.deleteEdgesWithReceipt([
+          presentEdge,
+          EdgeRef(absentEdge.tail, '$prefix-receipt-edge-changed-head'),
+        ], context: edgeDeleteContext),
+        throwsA(isA<LanternInvalidArgumentException>()),
       );
 
       final fault = _CommittedResponseLossTransport(
