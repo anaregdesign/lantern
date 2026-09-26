@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Require published `lantern_client ^0.3.1` for receipt-capable offline writes.
 - Add storage-neutral, status-first bounded-receipt reconciliation for

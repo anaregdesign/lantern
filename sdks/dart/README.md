@@ -103,9 +103,9 @@ A chunked plural logical call may still issue multiple RPCs.
 Automatic IDs do not turn two application calls into one operation and do not
 survive process restart. This package does not implement an offline queue. A
 contribution ID deduplicates only while the server retains that contribution.
-The experimental `lantern_client_offline` package therefore admits Put only;
-durable Add remains disabled until its client layer adopts the certified
-receipt family.
+The published `lantern_client_offline` 0.3.0 package admits Put only; the
+unpublished 0.4.0 candidate adds receipt-backed conditional Put, exact Delete,
+and contribution-keyed Add with status-first reconciliation.
 
 `addDecayingEdge` expands a geometric curve into at most 16 staggered-TTL
 contributions whose initial live sum is exact. With `idempotentAdds` enabled,

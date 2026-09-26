@@ -452,8 +452,9 @@ token in GitHub Secrets, CI, or the repository. On the new package's pub.dev
 Admin page, enable GitHub Actions automated publishing for
 `anaregdesign/lantern` with tag pattern `sdks/dart/offline/v{{version}}` and
 require the existing `pub.dev` GitHub environment. That environment currently
-selects only parent `sdks/dart/v*.*.*` tags; add a separate selected-tag rule
-for `sdks/dart/offline/v*.*.*` before later offline OIDC publication. Use
+selects both parent `sdks/dart/v*.*.*` and offline
+`sdks/dart/offline/v*.*.*` tags with required reviewers. This GitHub-side
+protection does not verify the separate pub.dev package-admin binding. Use
 **Re-run all jobs** on the same tag push workflow, so the physical gate can
 compare against Android/iOS simulator artifacts from the current attempt:
 preflight must compare the published archive with the exact candidate,
@@ -480,6 +481,21 @@ pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run
 manual `dart pub publish`. Immediately before tagging, check
 `https://pub.dev/api/packages/lantern_client` and confirm the target version does not
 already exist. Never force-move a published Dart tag/version—bump patch.
+
+**Offline receipt release preparation (#1398/#1115).** Offline `0.2.0` and
+`0.3.0` are published; the `0.4.0` candidate requires hosted
+`lantern_client ^0.3.1`. The maintained Flutter example and unpublished SQLite
+adapter use local path overrides. Before tagging, recheck the target version
+and tag are unused, and have a pub.dev package admin verify that
+`lantern_client_offline` automated publishing is bound to
+`anaregdesign/lantern` with `sdks/dart/offline/v{{version}}` and the `pub.dev`
+environment. The GitHub environment's tag rules alone cannot prove this
+private setting. Receipt-specific physical assertions and release evidence
+must qualify one frozen code SHA on Android and iOS before its evidence-only
+child can be tagged; the existing simulator/CDC matrix is not a substitute.
+Do not manually publish a later version, move a published tag, or create a
+GitHub Release before the offline tag's full gate, OIDC publication, and
+published-archive equality pass.
 
 **Release title convention (locked).** Every GitHub Release title MUST equal its tag name
 verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `sdks/dart/v0.1.0`,

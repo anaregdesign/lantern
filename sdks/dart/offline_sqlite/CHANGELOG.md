@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Target offline core `^0.4.0` and hosted `lantern_client ^0.3.1` receipt
+  APIs while retaining local path overrides in the unpublished adapter.
 - Align the unpublished adapter and maintained example with offline core
   `0.3.0` and the hosted parent `lantern_client 0.3.0` identity stream.
 - Migrate schema 1 to 2 transactionally, adding indexed key-only resident
