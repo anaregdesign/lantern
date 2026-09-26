@@ -440,3 +440,13 @@ to the tag's Android/iOS simulator manifests from the current workflow attempt.
 This proves the tagged code is
 the exact code tested on devices while allowing the evidence to be checked in
 without a self-referential Git SHA.
+
+## Receipt attestation preparation (not release-enabled)
+
+The separate [receipt attestation runbook](receipt-attestation.md) describes
+the reusable on-device receipt marker, installed Android APK / iOS
+`App.framework/App` digest, nonqualifying native probe, and opt-in validator
+prepared for #1449. The four smoke/CDC records and the release gate above
+remain unchanged. No receipt scenario target or physical receipt qualification
+exists yet; #1398 must add and run the actual assertions before #1399 may
+require receipt evidence at release time.
