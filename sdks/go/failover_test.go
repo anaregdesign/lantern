@@ -27,10 +27,17 @@ type fakeNode struct {
 	// failover ring actually calls for additive writes (#916); the failover
 	// AddEdge/AddEdgeAt/AddEdges methods route through these, so tests wire
 	// them to observe the contrib ids passed down.
-	addEdgeAtWithIDsFn func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
-	addEdgesWithIDsFn  func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
-	pingErr            error
-	closed             int
+	addEdgeAtWithIDsFn               func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
+	addEdgesWithIDsFn                func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
+	getReceiptCapabilityFn           func(ctx context.Context) (ReceiptCapability, error)
+	getReceiptStatusesFn             func(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
+	putVerticesWithReceiptFn         func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
+	putVerticesIfAbsentWithReceiptFn func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
+	deleteVerticesWithReceiptFn      func(ctx context.Context, keys []string, receiptContext ReceiptContext) ([]VertexDeleteReceiptResult, error)
+	deleteEdgesWithReceiptFn         func(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
+	addEdgesWithReceiptFn            func(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error)
+	pingErr                          error
+	closed                           int
 }
 
 func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) (PutOutcome, error) {
@@ -140,11 +147,435 @@ func (f *fakeNode) DeleteEdgesByPrefix(context.Context, ...DeleteEdgesByPrefixOp
 }
 func (f *fakeNode) DeleteEdge(context.Context, string, string) (bool, error) { return false, nil }
 func (f *fakeNode) DeleteEdges(context.Context, []EdgeRef) (int, error)      { return 0, nil }
+func (f *fakeNode) GetReceiptCapability(ctx context.Context) (ReceiptCapability, error) {
+	if f.getReceiptCapabilityFn != nil {
+		return f.getReceiptCapabilityFn(ctx)
+	}
+	return ReceiptCapability{}, nil
+}
+func (f *fakeNode) GetReceiptStatuses(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error) {
+	if f.getReceiptStatusesFn != nil {
+		return f.getReceiptStatusesFn(ctx, ids)
+	}
+	return nil, nil
+}
+func (f *fakeNode) PutVerticesWithReceipt(
+	ctx context.Context,
+	inputs []VertexInput,
+	receiptContext ReceiptContext,
+) ([]VertexPutReceiptResult, error) {
+	if f.putVerticesWithReceiptFn != nil {
+		return f.putVerticesWithReceiptFn(ctx, inputs, receiptContext)
+	}
+	return nil, nil
+}
+func (f *fakeNode) PutVerticesIfAbsentWithReceipt(
+	ctx context.Context,
+	inputs []VertexInput,
+	receiptContext ReceiptContext,
+) ([]VertexPutReceiptResult, error) {
+	if f.putVerticesIfAbsentWithReceiptFn != nil {
+		return f.putVerticesIfAbsentWithReceiptFn(ctx, inputs, receiptContext)
+	}
+	return nil, nil
+}
+func (f *fakeNode) DeleteVerticesWithReceipt(
+	ctx context.Context,
+	keys []string,
+	receiptContext ReceiptContext,
+) ([]VertexDeleteReceiptResult, error) {
+	if f.deleteVerticesWithReceiptFn != nil {
+		return f.deleteVerticesWithReceiptFn(ctx, keys, receiptContext)
+	}
+	return nil, nil
+}
+func (f *fakeNode) DeleteEdgesWithReceipt(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error) {
+	if f.deleteEdgesWithReceiptFn != nil {
+		return f.deleteEdgesWithReceiptFn(ctx, refs, receiptContext)
+	}
+	return nil, nil
+}
+func (f *fakeNode) AddEdgesWithReceipt(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error) {
+	if f.addEdgesWithReceiptFn != nil {
+		return f.addEdgesWithReceiptFn(ctx, inputs, receiptContext)
+	}
+	return nil, nil
+}
 func (f *fakeNode) Illuminate(context.Context, string, ...IlluminateOption) (*Graph, error) {
 	return nil, nil
 }
 func (f *fakeNode) Ping(context.Context) error { return f.pingErr }
 func (f *fakeNode) Close() error               { f.closed++; return nil }
+
+func TestFailoverReceiptDeleteNeverRotates(t *testing.T) {
+	capability := testReceiptCapability(0x70)
+	receiptContext := testReceiptContext(t, capability, 1, 0x71)
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		deleteEdgesWithReceiptFn: func(
+			context.Context,
+			[]EdgeRef,
+			ReceiptContext,
+		) ([]EdgeDeleteReceiptResult, error) {
+			firstCalls++
+			return nil, wrapConnectErr(connect.NewError(connect.CodeUnavailable, errors.New("response lost")))
+		},
+	}
+	second := &fakeNode{deleteEdgesWithReceiptFn: func(
+		context.Context,
+		[]EdgeRef,
+		ReceiptContext,
+	) ([]EdgeDeleteReceiptResult, error) {
+		secondCalls++
+		return []EdgeDeleteReceiptResult{{Existed: true}}, nil
+	}}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(3),
+	}
+	if _, err := f.DeleteEdgeWithReceipt(context.Background(), "tail", "head", receiptContext); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("error = %v, want ErrUnavailable", err)
+	}
+	if firstCalls != 3 || secondCalls != 0 {
+		t.Fatalf("receipt attempts rotated: first=%d second=%d", firstCalls, secondCalls)
+	}
+}
+
+func TestFailoverReceiptDeleteFindsAndPinsPersistedEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x72)
+	other := testReceiptCapability(0x73)
+	receiptContext := testReceiptContext(t, capability, 1, 0x74)
+	firstCapabilityCalls, secondCapabilityCalls := 0, 0
+	firstDeleteCalls, secondDeleteCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			firstCapabilityCalls++
+			return other, nil
+		},
+		deleteEdgesWithReceiptFn: func(
+			context.Context,
+			[]EdgeRef,
+			ReceiptContext,
+		) ([]EdgeDeleteReceiptResult, error) {
+			firstDeleteCalls++
+			return nil, errors.New("wrong endpoint received mutation")
+		},
+	}
+	second := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			secondCapabilityCalls++
+			return capability, nil
+		},
+		deleteEdgesWithReceiptFn: func(
+			_ context.Context,
+			refs []EdgeRef,
+			got ReceiptContext,
+		) ([]EdgeDeleteReceiptResult, error) {
+			secondDeleteCalls++
+			if got.Continuity != receiptContext.Continuity {
+				t.Fatalf("continuity = %+v, want %+v", got.Continuity, receiptContext.Continuity)
+			}
+			if secondDeleteCalls == 1 {
+				return nil, wrapConnectErr(connect.NewError(connect.CodeUnavailable, errors.New("response lost")))
+			}
+			return []EdgeDeleteReceiptResult{{
+				Edge:        refs[0],
+				OperationID: got.OperationIDs[0],
+				Existed:     true,
+			}}, nil
+		},
+	}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(2),
+	}
+
+	result, err := f.DeleteEdgeWithReceipt(context.Background(), "tail", "head", receiptContext)
+	if err != nil || !result.Existed {
+		t.Fatalf("result = (%+v, %v)", result, err)
+	}
+	if firstCapabilityCalls != 1 || secondCapabilityCalls != 1 {
+		t.Fatalf("capability calls first=%d second=%d, want 1/1", firstCapabilityCalls, secondCapabilityCalls)
+	}
+	if firstDeleteCalls != 0 || secondDeleteCalls != 2 {
+		t.Fatalf("delete calls first=%d second=%d, want 0/2", firstDeleteCalls, secondDeleteCalls)
+	}
+}
+
+func TestFailoverReceiptDeleteRejectsMalformedContextBeforeDiscovery(t *testing.T) {
+	capabilityCalls := 0
+	node := &fakeNode{getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+		capabilityCalls++
+		return ReceiptCapability{}, nil
+	}}
+	f := &Failover{nodes: []failoverNode{node}}
+
+	if _, err := f.DeleteEdgeWithReceipt(
+		context.Background(),
+		"tail",
+		"head",
+		ReceiptContext{},
+	); !errors.Is(err, ErrInvalidReceipt) {
+		t.Fatalf("error = %v", err)
+	}
+	if capabilityCalls != 0 {
+		t.Fatalf("capability calls = %d, want 0", capabilityCalls)
+	}
+	if f.cur.Load() != 0 {
+		t.Fatalf("cursor moved to %d", f.cur.Load())
+	}
+}
+
+func TestFailoverReceiptVertexPutFindsAndPinsPersistedEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x75)
+	other := testReceiptCapability(0x76)
+	receiptContext := testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationPutVertex,
+		1,
+		0x77,
+	)
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return other, nil
+		},
+		putVerticesWithReceiptFn: func(
+			context.Context,
+			[]VertexInput,
+			ReceiptContext,
+		) ([]VertexPutReceiptResult, error) {
+			firstCalls++
+			return nil, errors.New("wrong endpoint received mutation")
+		},
+	}
+	second := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		putVerticesWithReceiptFn: func(
+			_ context.Context,
+			inputs []VertexInput,
+			got ReceiptContext,
+		) ([]VertexPutReceiptResult, error) {
+			secondCalls++
+			if secondCalls == 1 {
+				return nil, wrapConnectErr(connect.NewError(
+					connect.CodeUnavailable,
+					errors.New("response lost"),
+				))
+			}
+			return []VertexPutReceiptResult{{
+				Key:         inputs[0].Key,
+				OperationID: got.OperationIDs[0],
+				Outcome:     PutOutcomeAppliedAndLive,
+			}}, nil
+		},
+	}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(2),
+	}
+
+	result, err := f.PutVertexWithReceipt(
+		context.Background(),
+		"vertex",
+		"value",
+		time.Minute,
+		receiptContext,
+	)
+	if err != nil || result.Outcome != PutOutcomeAppliedAndLive {
+		t.Fatalf("result = (%+v, %v)", result, err)
+	}
+	if firstCalls != 0 || secondCalls != 2 {
+		t.Fatalf("put calls first=%d second=%d, want 0/2", firstCalls, secondCalls)
+	}
+}
+
+func TestFailoverReceiptVertexDeleteRejectsUnsupportedEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x78)
+	receiptContext := testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationDeleteVertex,
+		1,
+		0x79,
+	)
+	capability.SupportedMutations = []ReceiptMutationKind{
+		ReceiptMutationPutVertex,
+		ReceiptMutationDeleteEdge,
+	}
+	mutationCalls := 0
+	node := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		deleteVerticesWithReceiptFn: func(
+			context.Context,
+			[]string,
+			ReceiptContext,
+		) ([]VertexDeleteReceiptResult, error) {
+			mutationCalls++
+			return nil, nil
+		},
+	}
+	f := &Failover{nodes: []failoverNode{node}}
+
+	_, err := f.DeleteVertexWithReceipt(
+		context.Background(),
+		"vertex",
+		receiptContext,
+	)
+	if !errors.Is(err, ErrReceiptMutationUnsupported) ||
+		!errors.Is(err, ErrReceiptReconciliationRequired) {
+		t.Fatalf("error = %v", err)
+	}
+	if mutationCalls != 0 {
+		t.Fatalf("mutation calls = %d, want 0", mutationCalls)
+	}
+}
+
+func TestFailoverReceiptAddFindsAndPinsPersistedEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x7a)
+	other := testReceiptCapability(0x7b)
+	receiptContext := testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationAddEdge,
+		1,
+		0x7c,
+	)
+	input := EdgeAddReceiptInput{
+		Edge: EdgeInput{
+			Tail: "tail", Head: "head", Weight: 2,
+			Expiration: capability.ServerTime.Add(time.Hour),
+		},
+		ContribID: testContribID(0x81),
+	}
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return other, nil
+		},
+		addEdgesWithReceiptFn: func(
+			context.Context,
+			[]EdgeAddReceiptInput,
+			ReceiptContext,
+		) ([]EdgeAddReceiptResult, error) {
+			firstCalls++
+			return nil, errors.New("wrong endpoint received mutation")
+		},
+	}
+	second := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		addEdgesWithReceiptFn: func(
+			_ context.Context,
+			inputs []EdgeAddReceiptInput,
+			got ReceiptContext,
+		) ([]EdgeAddReceiptResult, error) {
+			secondCalls++
+			if secondCalls == 1 {
+				return nil, wrapConnectErr(connect.NewError(
+					connect.CodeUnavailable,
+					errors.New("committed response lost"),
+				))
+			}
+			return []EdgeAddReceiptResult{{
+				Edge: EdgeRef{
+					Tail: inputs[0].Edge.Tail,
+					Head: inputs[0].Edge.Head,
+				},
+				ContribID:       inputs[0].ContribID,
+				OperationID:     got.OperationIDs[0],
+				EffectiveWeight: 2,
+			}}, nil
+		},
+	}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(2),
+	}
+
+	result, err := f.AddEdgeAtWithReceipt(
+		context.Background(),
+		input.Edge.Tail,
+		input.Edge.Head,
+		input.Edge.Weight,
+		input.Edge.Expiration,
+		input.ContribID,
+		receiptContext,
+	)
+	if err != nil || result.EffectiveWeight != 2 {
+		t.Fatalf("result = (%+v, %v)", result, err)
+	}
+	if firstCalls != 0 || secondCalls != 2 {
+		t.Fatalf("Add calls first=%d second=%d, want 0/2", firstCalls, secondCalls)
+	}
+}
+
+func TestFailoverReceiptAddNeverRotatesAfterAmbiguousResponse(t *testing.T) {
+	capability := testReceiptCapability(0x7d)
+	receiptContext := testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationAddEdge,
+		1,
+		0x7e,
+	)
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		addEdgesWithReceiptFn: func(
+			context.Context,
+			[]EdgeAddReceiptInput,
+			ReceiptContext,
+		) ([]EdgeAddReceiptResult, error) {
+			firstCalls++
+			return nil, wrapConnectErr(connect.NewError(
+				connect.CodeUnavailable,
+				errors.New("committed response lost"),
+			))
+		},
+	}
+	second := &fakeNode{
+		addEdgesWithReceiptFn: func(
+			context.Context,
+			[]EdgeAddReceiptInput,
+			ReceiptContext,
+		) ([]EdgeAddReceiptResult, error) {
+			secondCalls++
+			return []EdgeAddReceiptResult{{EffectiveWeight: 2}}, nil
+		},
+	}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(3),
+	}
+
+	_, err := f.AddEdgeWithReceipt(
+		context.Background(),
+		"tail",
+		"head",
+		2,
+		time.Hour,
+		testContribID(0x91),
+		receiptContext,
+	)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("error = %v, want ErrUnavailable", err)
+	}
+	if firstCalls != 3 || secondCalls != 0 {
+		t.Fatalf("receipt attempts rotated: first=%d second=%d", firstCalls, secondCalls)
+	}
+}
 
 func TestFailoverSearchPageCursorIsEndpointSticky(t *testing.T) {
 	firstCalls, secondCalls := 0, 0

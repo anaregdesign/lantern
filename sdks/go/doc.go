@@ -48,6 +48,22 @@
 // Shared axes such as WithWeighting and WithVertexPrefix remain freely
 // composable with the one family option.
 //
+// # Mutation receipts
+//
+// Vertex Put, exact Vertex Delete, exact Edge Delete, and Edge Add can opt into
+// durable, status-queryable results. First call GetReceiptCapability, mint a
+// mutation-family-bound ReceiptContext with NewReceiptContext, persist that
+// context, then pass it to the matching *WithReceipt method. Edge Add also
+// requires one explicit caller-owned ContribID per item; mint each with
+// NewContribID and persist it with the exact input and receipt context before
+// the first send. Receipt-bearing calls never rotate to a different failover
+// endpoint after an uncertain response; every retry verifies the same epoch,
+// node ID, generation, and advertised mutation family. GetReceiptStatus and
+// GetReceiptStatuses are read-only reconciliation calls. Prefix Delete is not
+// exposed as a receipt-bearing SDK operation. The existing receipt-less Add
+// methods remain a separate direct-online mode; WithIdempotentAdds deduplicates
+// transport retries but does not create durable, queryable receipts.
+//
 // # Content search
 //
 // SearchVertices, SearchVerticesPage, SearchVerticesIter, and
@@ -69,8 +85,10 @@
 //	RPC family                                   Retried?
 //	-------------------------------------------  ------------------------------
 //	Get*/Scan*/Count*/Search*/Illuminate/status  yes (reads are idempotent)
-//	Put*/Delete*/DeleteVerticesByPrefix          yes (idempotent by semantics)
-//	PutVertexIfAbsent/PutVerticesIfAbsent        no (response loss changes outcome)
+//	Put*/legacy Delete*/DeleteVerticesByPrefix   yes (idempotent by semantics)
+//	*WithReceipt                                 yes, but only after the same
+//	                                             endpoint continuity preflight
+//	PutVertexIfAbsent/PutVerticesIfAbsent        no unless using *WithReceipt
 //	AddEdge/AddEdgeAt/AddEdges                    only under WithIdempotentAdds
 //	                                             (or explicit ContribIDs): the
 //	                                             per-edge keys let a retry record
@@ -83,12 +101,14 @@
 // Unavailable; add ResourceExhausted via RetryPolicy.RetryableCodes to retry
 // through the server-side capacity cap / rate limiter.
 //
-// Under NewLanternFailover the policy drives the ring walk: each retry
+// Under NewLanternFailover the policy normally drives the ring walk: each retry
 // attempt re-runs the failover rotation, so a persistently-unavailable
 // endpoint is retried against its siblings with backoff and MaxAttempts is
 // the cross-replica budget — there is no second rotation mechanism. The
 // per-endpoint clients' own retry is neutralised so the attempt budget is
-// never squared.
+// never squared. Receipt-bearing mutations are the deliberate exception:
+// every attempt remains pinned to one endpoint and verifies the same epoch,
+// node ID, generation, and supported mutation family before sending.
 //
 // # Model definition policy
 //

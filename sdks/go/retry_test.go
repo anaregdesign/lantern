@@ -258,11 +258,47 @@ func TestRequestRetryable(t *testing.T) {
 			&pb.DeleteVerticesByPrefixRequest{}, &pb.ScanVerticesRequest{}, &pb.ScanVertexKeysRequest{},
 			&pb.ScanEdgesRequest{}, &pb.CountVerticesByPrefixRequest{}, &pb.SearchVerticesRequest{},
 			&pb.IlluminateRequest{}, &pb.GetServerStatusRequest{}, &pb.GetReplicationStatusRequest{},
+			&pb.GetReceiptCapabilityRequest{}, &pb.GetReceiptStatusRequest{}, &pb.GetReceiptStatusesRequest{},
 		}
 		for _, r := range reqs {
 			if !requestRetryable(r) {
 				t.Errorf("requestRetryable(%T) = false, want true", r)
 			}
+		}
+	})
+
+	t.Run("receipt-bearing mutations use their continuity-aware retry path", func(t *testing.T) {
+		context := &pb.MutationReceiptContext{}
+		if requestRetryable(&pb.PutVertexRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing PutVertex must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.PutVerticesRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing PutVertices must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.DeleteVertexRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing DeleteVertex must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.DeleteVerticesRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing DeleteVertices must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.DeleteEdgeRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing DeleteEdge must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.DeleteEdgesRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing DeleteEdges must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.AddEdgeRequest{
+			ContribId:      contrib,
+			ReceiptContext: context,
+		}) {
+			t.Error("receipt-bearing AddEdge must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.AddEdgesRequest{
+			Edges:          []*pb.Edge{{Tail: "a", Head: "b"}},
+			ContribIds:     [][]byte{contrib},
+			ReceiptContext: context,
+		}) {
+			t.Error("receipt-bearing AddEdges must bypass generic unary retry")
 		}
 	})
 
@@ -322,9 +358,15 @@ func TestRetryableMethod(t *testing.T) {
 	}{
 		{"GetVertex", false, true},
 		{"PutVertices", false, true},
+		{"PutVerticesWithReceipt", false, true},
+		{"PutVerticesIfAbsentWithReceipt", false, true},
+		{"DeleteVerticesWithReceipt", false, true},
 		{"PutVertexIfAbsent", false, false},
 		{"PutVerticesIfAbsent", false, false},
 		{"DeleteEdges", false, true},
+		{"DeleteEdgesWithReceipt", false, true},
+		{"AddEdgesWithReceipt", false, true},
+		{"GetReceiptStatuses", false, true},
 		{"AddEdges", false, false},         // additive write, no idempotency
 		{"AddEdges", true, true},           // idempotency armed
 		{"AddEdge", true, true},            // idempotency armed

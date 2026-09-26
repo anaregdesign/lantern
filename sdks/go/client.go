@@ -283,6 +283,7 @@ type Lantern struct {
 	httpClient        *http.Client
 	baseURL           string
 	clock             func() time.Time
+	receiptIDs        receiptIdentitySource
 
 	// contribIDs mints the per-call ContribID idempotency keys when
 	// WithIdempotentAdds is set (#588). It is always non-nil after
@@ -324,6 +325,7 @@ func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 		httpClient:        o.httpClient,
 		baseURL:           baseURL,
 		clock:             time.Now,
+		receiptIDs:        defaultReceiptIdentitySource(),
 	}
 	// A per-client random nonce namespaces this client's ContribIDs so two
 	// processes (or two NewLantern calls) never collide their idempotency
@@ -388,13 +390,7 @@ func unary[Req, Resp any](
 	req *Req,
 	fn func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error),
 ) (*Resp, error) {
-	do := func() (*Resp, error) {
-		resp, err := fn(ctx, connect.NewRequest(req))
-		if err != nil {
-			return nil, wrapConnectErr(err)
-		}
-		return resp.Msg, nil
-	}
+	do := func() (*Resp, error) { return unaryOnce(ctx, req, fn) }
 	if l == nil || l.opts.retry == nil || !requestRetryable(req) {
 		return do()
 	}
@@ -410,6 +406,18 @@ func unary[Req, Resp any](
 		return nil, err
 	}
 	return out, nil
+}
+
+func unaryOnce[Req, Resp any](
+	ctx context.Context,
+	req *Req,
+	fn func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error),
+) (*Resp, error) {
+	resp, err := fn(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, wrapConnectErr(err)
+	}
+	return resp.Msg, nil
 }
 
 // wrapConnectErr lifts a *connect.Error into a joined error that
