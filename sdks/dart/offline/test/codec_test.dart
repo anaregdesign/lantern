@@ -1,9 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:test/test.dart';
+
+import 'helpers.dart';
 
 void main() {
   final time = DateTime.utc(2026, 7, 22, 7, 2, 3, 4, 5);
@@ -232,19 +235,28 @@ void main() {
             ),
             encoded,
           );
-          expect(encoded, contains('"schema":2'));
+          expect(encoded, contains('"schema":4'));
           expect(encoded, contains('"deadLetteredAt":null'));
+          expect(encoded, contains('"receipt":null'));
         }
       }
     });
 
-    test('matches the canonical outbox v2 transition fixture', () {
+    test('migrates the canonical outbox v2 transition fixture', () {
       final fixture = File(
         'test/fixtures/v2_outbox_dead_letter.json',
       ).readAsStringSync().trim();
       final decoded = OfflineCodec.decodeOutboxRecord(fixture);
+      final encoded = OfflineCodec.encodeOutboxRecord(decoded);
 
-      expect(OfflineCodec.encodeOutboxRecord(decoded), fixture);
+      expect(encoded, contains('"schema":4'));
+      expect(encoded, contains('"receipt":null'));
+      expect(
+        OfflineCodec.encodeOutboxRecord(
+          OfflineCodec.decodeOutboxRecord(encoded),
+        ),
+        encoded,
+      );
       expect(
         decoded.deadLetteredAt,
         DateTime.fromMicrosecondsSinceEpoch(1000000, isUtc: true),
@@ -287,6 +299,459 @@ void main() {
           encoded.replaceFirst('"type":"operation"', '"type":"unknown"'),
         ),
         throwsA(isA<OfflineCodecException>()),
+      );
+    });
+
+    test('round trips strict receipt evidence and exact original results', () {
+      final capability = offlineReceiptCapability();
+      final evidence = OfflineReceiptEvidence(
+        operationId: testReceiptOperationId(
+          epoch: capability.policy.deploymentEpoch,
+          random: 1,
+        ),
+        groupId: ReceiptGroupId(testBytes(16, 21)),
+        endpoint: capability.endpoint,
+        mutation: ReceiptMutationKind.vertexPut,
+        policy: capability.policy,
+        itemIndex: 0,
+        itemCount: 1,
+        state: OfflineReceiptReconciliationState.lookupUnknown,
+        reconciliationAttemptCount: 2,
+      );
+      final record = OfflineOutboxRecord(
+        recordId: 'receipt-record',
+        operationId: 'receipt-operation',
+        itemIndex: 0,
+        partitionId: 'partition',
+        intent: OfflinePutVertexIfAbsentIntent(
+          Vertex(
+            key: 'key',
+            value: VertexValue.string('value'),
+            expiration: null,
+          ),
+        ),
+        enqueuedAt: time,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 1,
+        generation: 0,
+        receipt: evidence,
+        nextAttemptAt: time.add(const Duration(seconds: 1)),
+        diagnosticCode: 'receipt_status_unavailable',
+      );
+      final encodedRecord = OfflineCodec.encodeOutboxRecord(record);
+      final decodedRecord = OfflineCodec.decodeOutboxRecord(encodedRecord);
+      expect(OfflineCodec.encodeOutboxRecord(decodedRecord), encodedRecord);
+      expect(decodedRecord.receipt!.operationId, evidence.operationId);
+      expect(decodedRecord.receipt!.groupId, evidence.groupId);
+      expect(decodedRecord.receipt!.endpoint, evidence.endpoint);
+      expect(
+        decodedRecord.receipt!.policy.fingerprint,
+        evidence.policy.fingerprint,
+      );
+      expect(
+        decodedRecord.receipt!.state,
+        OfflineReceiptReconciliationState.lookupUnknown,
+      );
+
+      final operation = OfflineOperationRecord(
+        partitionId: 'partition',
+        generation: 0,
+        operationId: 'receipt-operation',
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: 'receipt-record',
+            operationId: 'receipt-operation',
+            itemIndex: 0,
+            state: OfflineWriteState.confirmed,
+            attemptCount: 1,
+            receiptResult: const OfflineVertexPutReceiptResult(
+              PutOutcome.conditionNotMet,
+            ),
+          ),
+        ],
+        updatedAt: time,
+        terminalAt: time,
+      );
+      final encodedOperation = OfflineCodec.encodeOperationRecord(operation);
+      final decodedOperation = OfflineCodec.decodeOperationRecord(
+        encodedOperation,
+      );
+      expect(
+        OfflineCodec.encodeOperationRecord(decodedOperation),
+        encodedOperation,
+      );
+      expect(
+        (decodedOperation.items.single.receiptResult
+                as OfflineVertexPutReceiptResult)
+            .outcome,
+        PutOutcome.conditionNotMet,
+      );
+    });
+
+    test('v3 receipt without a dispatch marker is never treated as unsent', () {
+      final capability = offlineReceiptCapability();
+      final record = OfflineOutboxRecord(
+        recordId: 'unmarked',
+        operationId: 'unmarked-operation',
+        itemIndex: 0,
+        partitionId: 'p',
+        intent: OfflineDeleteVertexIntent('target'),
+        enqueuedAt: time,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 0,
+        generation: 0,
+        receipt: OfflineReceiptEvidence(
+          operationId: testReceiptOperationId(
+            epoch: capability.policy.deploymentEpoch,
+            random: 2,
+          ),
+          groupId: ReceiptGroupId(testBytes(16, 21)),
+          endpoint: capability.endpoint,
+          mutation: ReceiptMutationKind.vertexDelete,
+          policy: capability.policy,
+          itemIndex: 0,
+          itemCount: 1,
+          state: OfflineReceiptReconciliationState.statusRequired,
+          mayHaveDispatched: false,
+        ),
+      );
+      final encoded = OfflineCodec.encodeOutboxRecord(record);
+      expect(
+        OfflineCodec.decodeOutboxRecord(encoded).receipt!.mayHaveDispatched,
+        isFalse,
+      );
+      final old = jsonDecode(encoded) as Map<String, Object?>;
+      final evidence = old['receipt']! as Map<String, Object?>;
+      evidence.remove('mayHaveDispatched');
+      expect(
+        () => OfflineCodec.decodeOutboxRecord(jsonEncode(old)),
+        throwsA(isA<OfflineCodecException>()),
+      );
+      old['schema'] = 3;
+      final migrated = OfflineCodec.decodeOutboxRecord(jsonEncode(old));
+      expect(migrated.receipt!.mayHaveDispatched, isTrue);
+      expect(migrated.receipt!.operationId, record.receipt!.operationId);
+      expect(
+        OfflineCodec.encodeOutboxRecord(migrated),
+        contains('"mayHaveDispatched":true'),
+      );
+      old['schema'] = 4;
+      evidence['mayHaveDispatched'] = 'false';
+      expect(
+        () => OfflineCodec.decodeOutboxRecord(jsonEncode(old)),
+        throwsA(isA<OfflineCodecException>()),
+      );
+    });
+
+    test('round trips receipt Add intent and exact effective weight', () {
+      final capability = offlineReceiptCapability();
+      final contributionId = testBytes(24, 33);
+      final evidence = OfflineReceiptEvidence(
+        operationId: testReceiptOperationId(
+          epoch: capability.policy.deploymentEpoch,
+          random: 8,
+        ),
+        groupId: ReceiptGroupId(testBytes(16, 22)),
+        endpoint: capability.endpoint,
+        mutation: ReceiptMutationKind.edgeAdd,
+        policy: capability.policy,
+        itemIndex: 0,
+        itemCount: 1,
+        state: OfflineReceiptReconciliationState.statusRequired,
+      );
+      final record = OfflineOutboxRecord(
+        recordId: 'add-record',
+        operationId: 'add-operation',
+        itemIndex: 0,
+        partitionId: 'partition',
+        intent: OfflineReceiptAddEdgeIntent(
+          Edge(
+            tail: 'tail',
+            head: 'head',
+            weight: normalizeOfflineFloat32(0.1),
+            expiration: time,
+          ),
+          contributionId,
+        ),
+        enqueuedAt: time,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 0,
+        generation: 0,
+        receipt: evidence,
+      );
+      final encodedRecord = OfflineCodec.encodeOutboxRecord(record);
+      final decodedRecord = OfflineCodec.decodeOutboxRecord(encodedRecord);
+      final decodedIntent = decodedRecord.intent as OfflineReceiptAddEdgeIntent;
+      expect(OfflineCodec.encodeOutboxRecord(decodedRecord), encodedRecord);
+      expect(decodedIntent.contributionId, contributionId);
+      expect(decodedIntent.edge.weight, normalizeOfflineFloat32(0.1));
+      expect(decodedRecord.receipt!.mutation, ReceiptMutationKind.edgeAdd);
+
+      final operation = OfflineOperationRecord(
+        partitionId: 'partition',
+        generation: 0,
+        operationId: 'add-operation',
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: 'add-record',
+            operationId: 'add-operation',
+            itemIndex: 0,
+            state: OfflineWriteState.confirmed,
+            attemptCount: 1,
+            receiptResult: OfflineEdgeAddReceiptResult(5),
+          ),
+        ],
+        updatedAt: time,
+        terminalAt: time,
+      );
+      final encodedOperation = OfflineCodec.encodeOperationRecord(operation);
+      final decodedOperation = OfflineCodec.decodeOperationRecord(
+        encodedOperation,
+      );
+      expect(
+        OfflineCodec.encodeOperationRecord(decodedOperation),
+        encodedOperation,
+      );
+      expect(
+        (decodedOperation.items.single.receiptResult
+                as OfflineEdgeAddReceiptResult)
+            .effectiveWeight,
+        5,
+      );
+    });
+
+    test('preserves non-finite Add results but rejects non-finite intents', () {
+      for (final weight in <double>[
+        -0.0,
+        double.infinity,
+        double.negativeInfinity,
+        double.nan,
+      ]) {
+        final operation = OfflineOperationRecord(
+          partitionId: 'partition',
+          generation: 0,
+          operationId: 'add-operation',
+          items: <OfflineWriteStatus>[
+            OfflineWriteStatus(
+              recordId: 'add-record',
+              operationId: 'add-operation',
+              itemIndex: 0,
+              state: OfflineWriteState.confirmed,
+              attemptCount: 1,
+              receiptResult: OfflineEdgeAddReceiptResult(weight),
+            ),
+          ],
+          updatedAt: time,
+          terminalAt: time,
+        );
+        final encoded = OfflineCodec.encodeOperationRecord(operation);
+        final decoded = OfflineCodec.decodeOperationRecord(encoded);
+        final result =
+            decoded.items.single.receiptResult as OfflineEdgeAddReceiptResult;
+        expect(OfflineCodec.encodeOperationRecord(decoded), encoded);
+        if (weight.isNaN) {
+          expect(result.effectiveWeight.isNaN, isTrue);
+        } else {
+          expect(result.effectiveWeight, weight);
+          if (weight == 0) expect(result.effectiveWeight.isNegative, isTrue);
+        }
+      }
+
+      for (final weight in <double>[
+        double.infinity,
+        double.negativeInfinity,
+        double.nan,
+        double.maxFinite,
+      ]) {
+        expect(
+          () => OfflineReceiptAddEdgeIntent(
+            Edge(tail: 'tail', head: 'head', weight: weight, expiration: null),
+            testBytes(24, 1),
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+      }
+      expect(
+        () => OfflineEdgeAddReceiptResult(double.maxFinite),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+    });
+
+    test('rejects malformed or mismatched receipt persistence', () {
+      final capability = offlineReceiptCapability();
+      final fingerprint = testBytes(32, 7);
+      final copiedPolicy = OfflineReceiptPolicy(
+        deploymentEpoch: capability.policy.deploymentEpoch,
+        retention: const Duration(hours: 1),
+        maxEntries: BigInt.one,
+        maxBytes: BigInt.one,
+        fingerprint: fingerprint,
+      );
+      fingerprint[0] = 0;
+      final exposedFingerprint = copiedPolicy.fingerprint;
+      exposedFingerprint[1] = 0;
+      expect(copiedPolicy.fingerprint, everyElement(7));
+      expect(
+        () => OfflineReceiptPolicy(
+          deploymentEpoch: capability.policy.deploymentEpoch,
+          retention: const Duration(minutes: 59),
+          maxEntries: BigInt.one,
+          maxBytes: BigInt.one,
+          fingerprint: testBytes(32, 1),
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+      expect(
+        () => OfflineReceiptPolicy(
+          deploymentEpoch: capability.policy.deploymentEpoch,
+          retention: const Duration(days: 31),
+          maxEntries: BigInt.one,
+          maxBytes: BigInt.one,
+          fingerprint: testBytes(32, 1),
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+      expect(
+        () => OfflineReceiptPolicy(
+          deploymentEpoch: capability.policy.deploymentEpoch,
+          retention: const Duration(hours: 1),
+          maxEntries: BigInt.one,
+          maxBytes: BigInt.one,
+          fingerprint: Uint8List(32),
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+      expect(
+        () => OfflineReceiptEvidence(
+          operationId: testReceiptOperationId(
+            epoch: ReceiptEpoch(testBytes(16, 99)),
+            random: 1,
+          ),
+          groupId: ReceiptGroupId(testBytes(16, 21)),
+          endpoint: capability.endpoint,
+          mutation: ReceiptMutationKind.vertexDelete,
+          policy: capability.policy,
+          itemIndex: 0,
+          itemCount: 1,
+          state: OfflineReceiptReconciliationState.statusRequired,
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+
+      final valid = OfflineOutboxRecord(
+        recordId: 'receipt-record',
+        operationId: 'receipt-operation',
+        itemIndex: 0,
+        partitionId: 'partition',
+        intent: OfflineDeleteVertexIntent('key'),
+        enqueuedAt: time,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 0,
+        generation: 0,
+        receipt: OfflineReceiptEvidence(
+          operationId: testReceiptOperationId(
+            epoch: capability.policy.deploymentEpoch,
+            random: 1,
+          ),
+          groupId: ReceiptGroupId(testBytes(16, 21)),
+          endpoint: capability.endpoint,
+          mutation: ReceiptMutationKind.vertexDelete,
+          policy: capability.policy,
+          itemIndex: 0,
+          itemCount: 1,
+          state: OfflineReceiptReconciliationState.statusRequired,
+        ),
+      );
+      expect(
+        () => valid.copyWith(state: OfflineOutboxState.expired),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+      expect(
+        () => valid.copyWith(
+          receipt: valid.receipt!.copyWith(
+            state: OfflineReceiptReconciliationState.noLongerProvable,
+          ),
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+      final map =
+          jsonDecode(OfflineCodec.encodeOutboxRecord(valid))
+              as Map<String, Object?>;
+      final receipt = map['receipt']! as Map<String, Object?>;
+      receipt['operationId'] = base64Url
+          .encode(Uint8List(48))
+          .replaceAll('=', '');
+      expect(
+        () => OfflineCodec.decodeOutboxRecord(jsonEncode(map)),
+        throwsA(isA<OfflineCodecException>()),
+      );
+
+      final putMap =
+          jsonDecode(
+                OfflineCodec.encodeOutboxRecord(
+                  OfflineOutboxRecord(
+                    recordId: 'put-record',
+                    operationId: 'put-operation',
+                    itemIndex: 0,
+                    partitionId: 'partition',
+                    intent: OfflinePutVertexIntent(
+                      Vertex(
+                        key: 'key',
+                        value: VertexValue.string('value'),
+                        expiration: null,
+                      ),
+                    ),
+                    enqueuedAt: time,
+                    ordinal: 1,
+                    state: OfflineOutboxState.enqueued,
+                    attemptCount: 0,
+                    generation: 0,
+                  ),
+                ),
+              )
+              as Map<String, Object?>;
+      final putIntent = putMap['intent']! as Map<String, Object?>;
+      putIntent['contributionId'] = 'AQ';
+      expect(
+        () => OfflineCodec.decodeOutboxRecord(jsonEncode(putMap)),
+        throwsA(isA<OfflineCodecException>()),
+      );
+    });
+
+    test('reads operation schema v1 without receipt results', () {
+      final current = OfflineOperationRecord(
+        partitionId: 'partition',
+        generation: 0,
+        operationId: 'operation',
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: 'record',
+            operationId: 'operation',
+            itemIndex: 0,
+            state: OfflineWriteState.confirmed,
+            attemptCount: 1,
+          ),
+        ],
+        updatedAt: time,
+        terminalAt: time,
+      );
+      final map =
+          jsonDecode(OfflineCodec.encodeOperationRecord(current))
+              as Map<String, Object?>;
+      map['schema'] = 1;
+      final item =
+          (map['items']! as List<Object?>).single as Map<String, Object?>;
+      item.remove('receiptResult');
+
+      final decoded = OfflineCodec.decodeOperationRecord(jsonEncode(map));
+      expect(decoded.items.single.receiptResult, isNull);
+      expect(
+        OfflineCodec.encodeOperationRecord(decoded),
+        contains('"schema":2'),
       );
     });
   });

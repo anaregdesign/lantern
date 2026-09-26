@@ -694,7 +694,11 @@ void main() {
     'outbox reservation preserves exact-limit lifecycle round-trip',
     () async {
       const maxOwnerBytes = 4;
-      const maxDiagnosticBytes = 19;
+      const maxDiagnosticBytes = offlineMinimumDiagnosticCodeBytes;
+      final overlongDiagnostic = List<String>.filled(
+        maxDiagnosticBytes + 1,
+        '0',
+      ).join();
       final expected = OfflineOutboxRecord(
         recordId: 'one',
         operationId: 'op-one',
@@ -799,7 +803,7 @@ void main() {
               nextAttemptAt: now.add(const Duration(seconds: 1)),
               clearLeaseOwner: true,
               clearLeaseUntil: true,
-              diagnosticCode: '01234567890123456789',
+              diagnosticCode: overlongDiagnostic,
             ),
           );
         }),
@@ -898,75 +902,229 @@ void main() {
     },
   );
 
-  test('operation byte caps include escaped diagnostics exactly', () async {
-    const maxDiagnosticBytes = 128;
-    final diagnostic = List<String>.filled(128, '\u0000').join();
-    final operation = OfflineOperationRecord(
-      partitionId: 'p',
-      generation: 0,
-      operationId: 'escaped-diagnostic',
-      items: <OfflineWriteStatus>[
-        OfflineWriteStatus(
-          recordId: 'escaped-record',
-          operationId: 'escaped-diagnostic',
+  test('receipt identity changes only while dispatch is impossible', () async {
+    final store = InMemoryOfflineStore();
+    final evidence = (await FakeOfflineRemote().prepareReceipts(
+      ReceiptMutationKind.vertexDelete,
+      itemCount: 1,
+    )).evidence.single;
+    late OfflineOutboxRecord queued;
+    await store.transaction((transaction) async {
+      queued = await enqueueOperation(
+        transaction,
+        OfflineOutboxRecord(
+          recordId: 'unsent-record',
+          operationId: 'unsent-operation',
           itemIndex: 0,
-          state: OfflineWriteState.deadLetter,
-          attemptCount: 1,
-          diagnosticCode: diagnostic,
-        ),
-      ],
-      updatedAt: now,
-      terminalAt: now,
-    );
-    final admissionBase = OfflineOperationRecord(
-      partitionId: 'p',
-      generation: 0,
-      operationId: operation.operationId,
-      items: <OfflineWriteStatus>[
-        OfflineWriteStatus(
-          recordId: 'escaped-record',
-          operationId: operation.operationId,
-          itemIndex: 0,
-          state: OfflineWriteState.locallyCommitted,
+          partitionId: 'p',
+          intent: OfflineDeleteVertexIntent('target'),
+          enqueuedAt: now,
+          ordinal: 0,
+          state: OfflineOutboxState.enqueued,
           attemptCount: 0,
+          generation: 0,
+          receipt: evidence,
         ),
-      ],
-      updatedAt: DateTime.fromMicrosecondsSinceEpoch(0, isUtc: true),
+      );
+    });
+    final replacementId = testReceiptOperationId(
+      epoch: evidence.policy.deploymentEpoch,
+      random: 90,
     );
-    final exactBytes =
-        utf8.encode(OfflineCodec.encodeOperationRecord(admissionBase)).length +
-        ((19 - 1) + ((6 * maxDiagnosticBytes) - 2)) +
-        ((20 - 3) + (20 - 4));
-    OfflineStoreLimits limits(int bytes) => OfflineStoreLimits(
-      maxOperationBytes: bytes,
-      maxOperationBytesPerPartition: bytes,
-      maxDiagnosticCodeBytes: maxDiagnosticBytes,
-    );
-    final store = InMemoryOfflineStore(limits: limits(exactBytes));
-    await store.transaction<void>(
-      (transaction) async => await transaction.putOperation(operation),
-    );
-    final snapshot = await store.exportSnapshot();
-    expect(
-      await InMemoryOfflineStore.fromSnapshot(
-        snapshot,
-        limits: limits(exactBytes),
-      ).exportSnapshot(),
-      snapshot,
-    );
-    final below = InMemoryOfflineStore(limits: limits(exactBytes - 1));
-    await expectLater(
-      below.transaction<void>(
-        (transaction) async => await transaction.putOperation(operation),
+    final replacementGroup = ReceiptGroupId(testBytes(16, 91));
+    final replacement = queued.copyWith(
+      receipt: queued.receipt!.copyWith(
+        operationId: replacementId,
+        groupId: replacementGroup,
       ),
-      throwsA(isA<OfflineCapacityException>()),
+    );
+    await expectLater(
+      store.transaction((transaction) => transaction.updateOutbox(replacement)),
+      throwsA(isA<OfflineArgumentException>()),
+    );
+    final claimed = await store.transaction((transaction) async {
+      final claimed = (await transaction.claim(
+        'p',
+        owner: 'owner',
+        now: now.add(const Duration(seconds: 1)),
+        maxAge: const Duration(days: 1),
+        leaseDuration: const Duration(minutes: 1),
+        limit: 1,
+      )).single;
+      await putStatus(
+        transaction,
+        claimed,
+        OfflineWriteState.sending,
+        updatedAt: now.add(const Duration(seconds: 1)),
+      );
+      return claimed;
+    });
+    final rekeyed = claimed.copyWith(
+      receipt: claimed.receipt!.copyWith(
+        operationId: replacementId,
+        groupId: replacementGroup,
+      ),
+    );
+    await store.transaction((transaction) => transaction.updateOutbox(rekeyed));
+    expect(
+      (await store.transaction(
+        (transaction) => transaction.getOutbox('p', queued.recordId),
+      ))!.receipt!.operationId,
+      replacementId,
+    );
+    final marked = rekeyed.copyWith(
+      receipt: rekeyed.receipt!.copyWith(mayHaveDispatched: true),
+    );
+    await store.transaction((transaction) => transaction.updateOutbox(marked));
+    expect(marked.attemptCount, 0);
+    expect(
+      () => marked.copyWith(
+        receipt: marked.receipt!.copyWith(mayHaveDispatched: false),
+        attemptCount: 1,
+      ),
+      throwsA(isA<OfflineArgumentException>()),
+    );
+    await expectLater(
+      store.transaction((transaction) => transaction.updateOutbox(rekeyed)),
+      throwsA(isA<OfflineArgumentException>()),
+    );
+    await expectLater(
+      store.transaction(
+        (transaction) => transaction.updateOutbox(
+          marked.copyWith(
+            receipt: marked.receipt!.copyWith(
+              operationId: queued.receipt!.operationId,
+              groupId: queued.receipt!.groupId,
+            ),
+          ),
+        ),
+      ),
+      throwsA(isA<OfflineArgumentException>()),
     );
   });
+
+  test(
+    'operation byte caps include diagnostics and receipt results exactly',
+    () async {
+      const maxDiagnosticBytes = 128;
+      final diagnostic = List<String>.filled(128, '\u0000').join();
+      final operation = OfflineOperationRecord(
+        partitionId: 'p',
+        generation: 0,
+        operationId: 'escaped-diagnostic',
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: 'escaped-record',
+            operationId: 'escaped-diagnostic',
+            itemIndex: 0,
+            state: OfflineWriteState.deadLetter,
+            attemptCount: 1,
+            diagnosticCode: diagnostic,
+          ),
+        ],
+        updatedAt: now,
+        terminalAt: now,
+      );
+      final admissionBase = OfflineOperationRecord(
+        partitionId: 'p',
+        generation: 0,
+        operationId: operation.operationId,
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: 'escaped-record',
+            operationId: operation.operationId,
+            itemIndex: 0,
+            state: OfflineWriteState.locallyCommitted,
+            attemptCount: 0,
+          ),
+        ],
+        updatedAt: DateTime.fromMicrosecondsSinceEpoch(0, isUtc: true),
+      );
+      final resultBase = OfflineOperationRecord(
+        partitionId: 'p',
+        generation: 0,
+        operationId: operation.operationId,
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: 'escaped-record',
+            operationId: operation.operationId,
+            itemIndex: 0,
+            state: OfflineWriteState.confirmed,
+            attemptCount: 1,
+            diagnosticCode: diagnostic,
+          ),
+        ],
+        updatedAt: now,
+        terminalAt: now,
+      );
+      final resultMaximum = OfflineOperationRecord(
+        partitionId: 'p',
+        generation: 0,
+        operationId: operation.operationId,
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: 'escaped-record',
+            operationId: operation.operationId,
+            itemIndex: 0,
+            state: OfflineWriteState.confirmed,
+            attemptCount: 1,
+            receiptResult: const OfflineVertexPutReceiptResult(
+              PutOutcome.conditionNotMet,
+            ),
+            diagnosticCode: diagnostic,
+          ),
+        ],
+        updatedAt: now,
+        terminalAt: now,
+      );
+      final receiptResultGrowth =
+          utf8
+              .encode(OfflineCodec.encodeOperationRecord(resultMaximum))
+              .length -
+          utf8.encode(OfflineCodec.encodeOperationRecord(resultBase)).length;
+      final exactBytes =
+          utf8
+              .encode(OfflineCodec.encodeOperationRecord(admissionBase))
+              .length +
+          ((19 - 1) + ((6 * maxDiagnosticBytes) - 2)) +
+          ((20 - 3) + (20 - 4)) +
+          receiptResultGrowth;
+      OfflineStoreLimits limits(int bytes) => OfflineStoreLimits(
+        maxOperationBytes: bytes,
+        maxOperationBytesPerPartition: bytes,
+        maxDiagnosticCodeBytes: maxDiagnosticBytes,
+      );
+      final store = InMemoryOfflineStore(limits: limits(exactBytes));
+      await store.transaction<void>(
+        (transaction) async => await transaction.putOperation(operation),
+      );
+      await store.transaction<void>(
+        (transaction) async => await transaction.putOperation(resultMaximum),
+      );
+      final snapshot = await store.exportSnapshot();
+      expect(
+        await InMemoryOfflineStore.fromSnapshot(
+          snapshot,
+          limits: limits(exactBytes),
+        ).exportSnapshot(),
+        snapshot,
+      );
+      final below = InMemoryOfflineStore(limits: limits(exactBytes - 1));
+      await expectLater(
+        below.transaction<void>(
+          (transaction) async => await transaction.putOperation(operation),
+        ),
+        throwsA(isA<OfflineCapacityException>()),
+      );
+    },
+  );
 
   test('store rejects diagnostic bounds below SDK-owned codes', () {
     expect(
       () => InMemoryOfflineStore(
-        limits: const OfflineStoreLimits(maxDiagnosticCodeBytes: 18),
+        limits: const OfflineStoreLimits(
+          maxDiagnosticCodeBytes: offlineMinimumDiagnosticCodeBytes - 1,
+        ),
       ),
       throwsA(isA<OfflineArgumentException>()),
     );

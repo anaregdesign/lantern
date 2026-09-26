@@ -9,6 +9,7 @@ import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 const _partition = 'crash-probe';
+const _receiptPartition = 'receipt-crash-probe';
 const _origin = '00112233445566778899aabbccddeeff';
 const _keys = ['first', 'last', 'untouched', 'pending-a', 'pending-b'];
 final _now = DateTime.utc(2026, 9, 24);
@@ -28,15 +29,23 @@ Future<void> main(List<String> arguments) async {
           'cursor-final',
           'checkpoint-reset',
           'wipe',
+          'receipt',
         ].contains(scenario) ||
-        !['before', 'after'].contains(boundary)) {
+        !['before', 'after'].contains(boundary) ||
+        (scenario == 'receipt' && boundary != 'after')) {
       throw StateError('arguments');
     }
     sqfliteFfiInit();
-    if (mode == 'crash') {
+    if (scenario == 'receipt' && mode == 'crash') {
+      await _crashReceipt(path);
+    } else if (scenario == 'receipt') {
+      await _verifyReceipt(path);
+    } else if (mode == 'crash') {
       await _crash(path, scenario, boundary);
     } else {
       await _verify(path, scenario, boundary);
+    }
+    if (mode == 'verify') {
       stdout.writeln(jsonEncode({'event': 'verified'}));
       await stdout.flush();
     }
@@ -95,7 +104,7 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       _require(
         boundary == 'before'
             ? tables.isEmpty && version == 0
-            : tables.isNotEmpty && version == 2,
+            : tables.isNotEmpty && version == 4,
       );
     } finally {
       await raw.close();
@@ -126,6 +135,324 @@ Future<void> _verify(String path, String scenario, String boundary) async {
   } finally {
     await store.close();
   }
+}
+
+Future<void> _crashReceipt(String path) async {
+  final token = _receiptToken();
+  final direct = _receiptClient(
+    _receiptEndpoint('LANTERN_DART_RECEIPT_ENDPOINT'),
+    token,
+  );
+  final remote = _receiptClient(
+    _receiptEndpoint('LANTERN_DART_RECEIPT_PROXY_ENDPOINT'),
+    token,
+  );
+  final store = await SqliteOfflineStore.open(
+    path: path,
+    databaseFactory: databaseFactoryFfi,
+  );
+  final repository = OfflineLanternRepository(
+    store: store,
+    remote: LanternClientOfflineRemote(remote),
+    config: OfflineConfig(
+      maxConcurrency: 1,
+      maxConcurrencyPerPartition: 1,
+      baseRetryDelay: const Duration(minutes: 5),
+      maxRetryDelay: const Duration(minutes: 5),
+      jitter: (ceiling) => ceiling,
+    ),
+  );
+  try {
+    final capability = await direct.getReceiptCapability();
+    if (capability is! ReceiptCapabilityEnabled) {
+      throw StateError('receipt_capability_disabled');
+    }
+    _require(
+      const <ReceiptMutationKind>{
+        ReceiptMutationKind.vertexPut,
+        ReceiptMutationKind.vertexDelete,
+        ReceiptMutationKind.edgeDelete,
+        ReceiptMutationKind.edgeAdd,
+      }.every(capability.supports),
+    );
+
+    final prefix =
+        'receipt-crash:${DateTime.now().microsecondsSinceEpoch}:$pid:';
+    final putKey = '${prefix}conditional';
+    final deleteKey = '${prefix}delete-vertex';
+    // Per-key FIFO would hold Add behind an ambiguous Delete of that same edge.
+    final deleteEdge = EdgeRef('${prefix}delete-tail', '${prefix}delete-head');
+    final addEdge = EdgeRef('${prefix}add-tail', '${prefix}add-head');
+    _require(
+      await direct.putVertex(
+            VertexInput(key: putKey, value: VertexValue.string('original')),
+          ) ==
+          PutOutcome.appliedAndLive,
+    );
+    _require(
+      await direct.putVertex(
+            VertexInput(key: deleteKey, value: VertexValue.string('delete')),
+          ) ==
+          PutOutcome.appliedAndLive,
+    );
+    _require(
+      await direct.putEdge(
+            EdgeInput(tail: deleteEdge.tail, head: deleteEdge.head, weight: 2),
+          ) ==
+          PutOutcome.appliedAndLive,
+    );
+    _require(
+      await direct.putEdge(
+            EdgeInput(tail: addEdge.tail, head: addEdge.head, weight: 3),
+          ) ==
+          PutOutcome.appliedAndLive,
+    );
+    // The receipt Add must follow a real Delete of its edge.
+    _require(await direct.deleteEdge(addEdge));
+    await _requireEdgeMissing(direct, addEdge);
+
+    await repository.putVertexIfAbsent(
+      partitionId: _receiptPartition,
+      operationId: '${prefix}put',
+      input: VertexInput(key: putKey, value: VertexValue.string('replacement')),
+    );
+    await repository.deleteVertex(
+      partitionId: _receiptPartition,
+      operationId: '${prefix}delete-vertex',
+      key: deleteKey,
+    );
+    await repository.deleteEdge(
+      partitionId: _receiptPartition,
+      operationId: '${prefix}delete-edge',
+      edge: deleteEdge,
+    );
+    await repository.addEdge(
+      partitionId: _receiptPartition,
+      operationId: '${prefix}add',
+      input: EdgeInput(
+        tail: addEdge.tail,
+        head: addEdge.head,
+        weight: 4,
+        contribId: Uint8List(24)..[23] = 1,
+      ),
+    );
+    final prepared = await store.transaction(
+      (transaction) => transaction.outbox(_receiptPartition),
+    );
+    _require(
+      prepared.length == 4 &&
+          prepared.every(
+            (record) =>
+                record.receipt != null &&
+                record.receipt!.endpoint == capability.endpoint &&
+                record.receipt!.policy.deploymentEpoch ==
+                    capability.policy.deploymentEpoch &&
+                record.receipt!.itemIndex == 0 &&
+                record.receipt!.itemCount == 1 &&
+                record.attemptCount == 0 &&
+                record.state == OfflineOutboxState.enqueued,
+          ) &&
+          prepared
+                  .map((record) => record.receipt!.operationId)
+                  .toSet()
+                  .length ==
+              4 &&
+          prepared.map((record) => record.receipt!.groupId).toSet().length ==
+              4 &&
+          prepared.map((record) => record.receipt!.mutation).toSet().length ==
+              4,
+    );
+
+    _require(await repository.drain(_receiptPartition) == 0);
+    final unresolved = await store.transaction(
+      (transaction) => transaction.outbox(_receiptPartition),
+    );
+    _require(
+      unresolved.length == 4 &&
+          unresolved.every(
+            (record) =>
+                record.state == OfflineOutboxState.enqueued &&
+                record.attemptCount == 1 &&
+                record.receipt!.state ==
+                    OfflineReceiptReconciliationState.statusRequired &&
+                record.diagnosticCode == 'receipt_response_unknown',
+          ),
+    );
+    _require((await direct.getEdge(addEdge)).weight == 4);
+    _require(await direct.deleteEdge(addEdge));
+    await _requireEdgeMissing(direct, addEdge);
+    await _readyAndHold();
+  } finally {
+    await repository.dispose();
+    await store.close();
+    await remote.close();
+    await direct.close();
+  }
+}
+
+Future<void> _verifyReceipt(String path) async {
+  final token = _receiptToken();
+  final direct = _receiptClient(
+    _receiptEndpoint('LANTERN_DART_RECEIPT_ENDPOINT'),
+    token,
+  );
+  final remote = _receiptClient(
+    _receiptEndpoint('LANTERN_DART_RECEIPT_PROXY_ENDPOINT'),
+    token,
+  );
+  final store = await SqliteOfflineStore.open(
+    path: path,
+    databaseFactory: databaseFactoryFfi,
+  );
+  final repository = OfflineLanternRepository(
+    store: store,
+    remote: LanternClientOfflineRemote(remote),
+    config: OfflineConfig(
+      // Virtual time clears the durable backoff without waiting five minutes.
+      clock: () => DateTime.now().toUtc().add(const Duration(minutes: 6)),
+      maxConcurrency: 1,
+      maxConcurrencyPerPartition: 1,
+      jitter: (_) => Duration.zero,
+    ),
+  );
+  try {
+    final pending = await store.transaction(
+      (transaction) => transaction.outbox(_receiptPartition),
+    );
+    _require(
+      pending.length == 4 &&
+          pending.every(
+            (record) =>
+                record.receipt != null &&
+                record.state == OfflineOutboxState.enqueued &&
+                record.attemptCount == 1 &&
+                record.diagnosticCode == 'receipt_response_unknown',
+          ),
+    );
+    for (final record in pending) {
+      final status = await repository.getWriteStatus(
+        _receiptPartition,
+        record.operationId,
+      );
+      _require(
+        status != null &&
+            status.items.single.state == OfflineWriteState.retryScheduled &&
+            status.items.single.attemptCount == 1,
+      );
+    }
+
+    _require(await repository.drain(_receiptPartition) == 4);
+    for (final record in pending) {
+      final status = await repository.getWriteStatus(
+        _receiptPartition,
+        record.operationId,
+      );
+      _require(
+        status != null &&
+            status.items.single.state == OfflineWriteState.confirmed &&
+            status.items.single.attemptCount == 1 &&
+            status.items.single.diagnosticCode == null,
+      );
+      final result = status!.items.single.receiptResult;
+      _require(switch ((record.intent, result)) {
+        (
+          OfflinePutVertexIfAbsentIntent(),
+          OfflineVertexPutReceiptResult(outcome: PutOutcome.conditionNotMet),
+        ) =>
+          true,
+        (
+          OfflineDeleteVertexIntent(),
+          OfflineVertexDeleteReceiptResult(existed: true),
+        ) =>
+          true,
+        (
+          OfflineDeleteEdgeIntent(),
+          OfflineEdgeDeleteReceiptResult(existed: true),
+        ) =>
+          true,
+        (
+          OfflineReceiptAddEdgeIntent(),
+          OfflineEdgeAddReceiptResult(effectiveWeight: 4.0),
+        ) =>
+          true,
+        _ => false,
+      });
+    }
+    _require(
+      (await store.transaction(
+        (transaction) => transaction.outbox(_receiptPartition),
+      )).isEmpty,
+    );
+    final put = pending
+        .map((record) => record.intent)
+        .whereType<OfflinePutVertexIfAbsentIntent>()
+        .single;
+    final deletedVertex = pending
+        .map((record) => record.intent)
+        .whereType<OfflineDeleteVertexIntent>()
+        .single;
+    final deletedEdge = pending
+        .map((record) => record.intent)
+        .whereType<OfflineDeleteEdgeIntent>()
+        .single;
+    final add = pending
+        .map((record) => record.intent)
+        .whereType<OfflineReceiptAddEdgeIntent>()
+        .single;
+    final original = (await direct.getVertex(put.vertex.key)).value;
+    _require(original is StringValue && original.value == 'original');
+    await _requireVertexMissing(direct, deletedVertex.vertexKey);
+    await _requireEdgeMissing(direct, deletedEdge.edge);
+    await _requireEdgeMissing(direct, EdgeRef(add.edge.tail, add.edge.head));
+  } finally {
+    await repository.dispose();
+    await store.close();
+    await remote.close();
+    await direct.close();
+  }
+}
+
+Uri _receiptEndpoint(String name) {
+  final value = Platform.environment[name];
+  final endpoint = value == null ? null : Uri.tryParse(value);
+  if (endpoint == null ||
+      endpoint.scheme != 'http' ||
+      !['127.0.0.1', 'localhost', '::1'].contains(endpoint.host) ||
+      endpoint.userInfo.isNotEmpty) {
+    throw StateError('receipt_endpoint');
+  }
+  return endpoint;
+}
+
+String _receiptToken() {
+  final token = Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
+  if (token == null || token.isEmpty) throw StateError('receipt_token');
+  return token;
+}
+
+LanternClient _receiptClient(Uri endpoint, String token) =>
+    LanternClient.connect(
+      endpoint,
+      allowInsecure: endpoint.scheme == 'http',
+      token: token,
+    );
+
+Future<void> _requireVertexMissing(LanternClient client, String key) async {
+  try {
+    await client.getVertex(key);
+  } on LanternNotFoundException {
+    return;
+  }
+  throw StateError('receipt_vertex_resurrected');
+}
+
+Future<void> _requireEdgeMissing(LanternClient client, EdgeRef edge) async {
+  try {
+    await client.getEdge(edge);
+  } on LanternNotFoundException {
+    return;
+  }
+  throw StateError('receipt_edge_resurrected');
 }
 
 Future<void> _seed(OfflineStore store, String scenario) async {

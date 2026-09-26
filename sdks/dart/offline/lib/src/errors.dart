@@ -22,6 +22,25 @@ final class OfflineUnsupportedOperationException extends OfflineException {
   const OfflineUnsupportedOperationException() : super('unsupported_operation');
 }
 
+/// Why receipt capability could not authorize a durable enqueue.
+enum OfflineReceiptCapabilityFailure {
+  /// The endpoint did not advertise active receipt support.
+  disabled,
+
+  /// The endpoint did not advertise the requested mutation family.
+  mutationUnavailable,
+}
+
+/// A fresh receipt-required enqueue could not obtain usable capability.
+final class OfflineReceiptCapabilityException extends OfflineException {
+  /// Creates a content-free capability failure.
+  const OfflineReceiptCapabilityException(this.failure)
+    : super('receipt_capability');
+
+  /// Exact capability failure category.
+  final OfflineReceiptCapabilityFailure failure;
+}
+
 /// A cache or outbox record could not be decoded safely.
 final class OfflineCodecException extends OfflineException {
   /// Creates a fail-closed codec failure.

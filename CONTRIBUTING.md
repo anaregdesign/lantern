@@ -136,7 +136,7 @@ manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
 record required before an offline release. The offline core has a hosted
-`lantern_client: ^0.3.0` dependency and an independent candidate archive gate;
+`lantern_client: ^0.3.1` dependency and an independent candidate archive gate;
 the parent `lantern_client` publish archive continues to exclude `offline/` and
 `offline_sqlite/`. The maintained Flutter app under `sdks/dart/example/` is a
 repository integration fixture with local development overrides, so only its
@@ -473,7 +473,7 @@ Release. Never replace or move a published tag/version; prepare a corrected new
 version if a published archive is wrong. The release operator should inspect
 the pub.dev audit log and GitHub Release after each successful run.
 
-**Dart publishing status.** The parent `lantern_client` 0.3.0 is published and
+**Dart publishing status.** The parent `lantern_client` 0.3.1 is published and
 its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a

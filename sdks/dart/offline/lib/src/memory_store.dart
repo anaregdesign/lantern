@@ -581,6 +581,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
             state: record.state,
             attemptCount: record.attemptCount,
             generation: record.generation,
+            receipt: record.receipt,
             nextAttemptAt: record.nextAttemptAt,
             leaseOwner: record.leaseOwner,
             leaseUntil: record.leaseUntil,
@@ -624,7 +625,8 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     _validatePartition(record.partitionId);
     final partition = _state.partition(record.partitionId);
     final previous = partition.outbox[record.recordId];
-    if (previous == null || !_sameOutboxIdentity(previous, record)) {
+    if (previous == null ||
+        !OfflineCodec.sameOutboxIdentity(previous, record)) {
       throw const OfflineArgumentException();
     }
     final replacement = _copyOutboxRecord(record);
@@ -1101,21 +1103,6 @@ bool _recordIdExists(_MemoryPartition partition, String recordId) =>
     partition.outbox.containsKey(recordId) ||
     partition.operationByRecordId.containsKey(recordId);
 
-bool _sameOutboxIdentity(OfflineOutboxRecord left, OfflineOutboxRecord right) {
-  OfflineOutboxRecord normalized(OfflineOutboxRecord record) => record.copyWith(
-    state: OfflineOutboxState.enqueued,
-    attemptCount: 0,
-    clearNextAttemptAt: true,
-    clearLeaseOwner: true,
-    clearLeaseUntil: true,
-    clearDeadLetteredAt: true,
-    clearDiagnosticCode: true,
-  );
-
-  return OfflineCodec.encodeOutboxRecord(normalized(left)) ==
-      OfflineCodec.encodeOutboxRecord(normalized(right));
-}
-
 bool _sameOperationTopology(
   OfflineOperationRecord left,
   OfflineOperationRecord right,
@@ -1537,6 +1524,7 @@ OfflineOutboxRecord _copyOutboxRecord(OfflineOutboxRecord record) =>
       state: record.state,
       attemptCount: record.attemptCount,
       generation: record.generation,
+      receipt: record.receipt,
       nextAttemptAt: record.nextAttemptAt?.toUtc(),
       leaseOwner: record.leaseOwner,
       leaseUntil: record.leaseUntil?.toUtc(),
@@ -1557,6 +1545,7 @@ OfflineOperationRecord _copyOperationRecord(OfflineOperationRecord record) =>
               itemIndex: item.itemIndex,
               state: item.state,
               attemptCount: item.attemptCount,
+              receiptResult: item.receiptResult,
               diagnosticCode: item.diagnosticCode,
             ),
           )
@@ -1655,8 +1644,31 @@ int _outboxAdmissionBytesFor(
     state: OfflineOutboxState.enqueued,
     attemptCount: 0,
     generation: record.generation,
+    receipt: record.receipt?.copyWith(
+      state: OfflineReceiptReconciliationState.statusRequired,
+      reconciliationAttemptCount: 0,
+    ),
   );
-  return _outboxBytesFor(base) + _outboxLifecycleReservationBytes(limits);
+  var receiptGrowth = 0;
+  if (base.receipt != null) {
+    final receiptGrowthBase = base.copyWith(
+      state: OfflineOutboxState.deadLetter,
+      deadLetteredAt: base.enqueuedAt,
+    );
+    receiptGrowth =
+        _outboxBytesFor(
+          receiptGrowthBase.copyWith(
+            receipt: base.receipt!.copyWith(
+              state: OfflineReceiptReconciliationState.noLongerProvable,
+              reconciliationAttemptCount: _maxDurableInt,
+            ),
+          ),
+        ) -
+        _outboxBytesFor(receiptGrowthBase);
+  }
+  return _outboxBytesFor(base) +
+      _outboxLifecycleReservationBytes(limits) +
+      receiptGrowth;
 }
 
 // This is a mechanical upper bound over every mutable field in the canonical
@@ -1673,6 +1685,14 @@ const int _maxQuotedUtcTimestampJsonBytes = 20;
 const int _quotedUnixEpochJsonBytes = 3;
 const int _nullJsonBytes = 4;
 const int _mutableTimestampCount = 3;
+final int _receiptResultReservationBytes =
+    utf8
+        .encode(
+          '{"kind":"vertexPut","outcome":"conditionNotMet",'
+          '"existed":null,"effectiveWeight":null}',
+        )
+        .length -
+    _nullJsonBytes;
 const int _outboxFixedLifecycleGrowthBytes =
     (_maxSignedInt64JsonBytes - _zeroJsonBytes) +
     (_longestStateJsonBytes - _baseStateJsonBytes) +
@@ -1743,7 +1763,8 @@ int _operationAdmissionBytesFor(
   );
   final perItemGrowth =
       (_maxSignedInt64JsonBytes - _zeroJsonBytes) +
-      _optionalJsonStringGrowth(limits.maxDiagnosticCodeBytes);
+      _optionalJsonStringGrowth(limits.maxDiagnosticCodeBytes) +
+      _receiptResultReservationBytes;
   final timestampGrowth =
       (_maxQuotedUtcTimestampJsonBytes - _quotedUnixEpochJsonBytes) +
       (_maxQuotedUtcTimestampJsonBytes - _nullJsonBytes);
@@ -2308,7 +2329,10 @@ bool _outboxStatusMatches(
                   record.diagnosticCode == 'unauthenticated')),
     OfflineOutboxState.sending => status.state == OfflineWriteState.sending,
     OfflineOutboxState.deadLetter =>
-      status.state == OfflineWriteState.deadLetter,
+      status.state ==
+          (record.receipt == null
+              ? OfflineWriteState.deadLetter
+              : OfflineWriteState.outcomeUnknown),
     OfflineOutboxState.expired => status.state == OfflineWriteState.expired,
   };
 }
@@ -2613,7 +2637,7 @@ void _validateLimits(OfflineStoreLimits limits) {
       limits.maxOperationRecordsPerPartition < 0 ||
       limits.maxOperationBytesPerPartition < 0 ||
       limits.maxLeaseOwnerBytes < 1 ||
-      limits.maxDiagnosticCodeBytes < 19 ||
+      limits.maxDiagnosticCodeBytes < offlineMinimumDiagnosticCodeBytes ||
       limits.maxChangeControllers < 1) {
     throw const OfflineArgumentException();
   }

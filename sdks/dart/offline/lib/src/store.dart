@@ -127,6 +127,9 @@ abstract interface class OfflineStoreTransaction {
   /// Replaces one existing durable record within its admitted lifecycle
   /// envelope. Implementations reject lease owners and diagnostic codes above
   /// their explicit per-record UTF-8 bounds before mutating durable state.
+  /// Receipt dispatch evidence is monotone. Replacing a receipt ID/group is
+  /// allowed only under the same live claim while both records prove that
+  /// mutation dispatch has not begun.
   FutureOr<void> updateOutbox(OfflineOutboxRecord record);
 
   /// Removes one terminal confirmed record.

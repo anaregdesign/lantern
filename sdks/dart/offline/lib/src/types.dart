@@ -16,6 +16,9 @@ typedef OfflineIdGenerator = String Function();
 /// Produces a full-jitter delay no greater than its supplied ceiling.
 typedef OfflineJitter = Duration Function(Duration ceiling);
 
+/// Minimum diagnostic capacity required for SDK-owned lifecycle codes.
+const int offlineMinimumDiagnosticCodeBytes = 28;
+
 /// Receives content-free diagnostic events.
 abstract interface class OfflineDiagnostics {
   /// Receives one aggregate-safe event.
@@ -310,6 +313,15 @@ enum OfflineOperationCategory {
   /// An unconditional vertex replacement.
   putVertex,
 
+  /// A receipt-bearing conditional vertex insertion.
+  putVertexIfAbsent,
+
+  /// A receipt-bearing exact vertex deletion.
+  deleteVertex,
+
+  /// A receipt-bearing exact edge deletion.
+  deleteEdge,
+
   /// An idempotent edge replacement.
   putEdge,
 
@@ -354,6 +366,73 @@ final class OfflinePutVertexIntent extends OfflineIntent {
   DateTime? get expiration => vertex.expiration;
 }
 
+/// A persisted receipt-bearing conditional vertex insertion.
+final class OfflinePutVertexIfAbsentIntent extends OfflineIntent {
+  /// Creates a conditional insertion from one expiration-resolved vertex.
+  OfflinePutVertexIfAbsentIntent(Vertex vertex)
+    : vertex = copyOfflineVertex(vertex) {
+    if (!_isOptionalDurableTimestamp(this.vertex.expiration)) {
+      throw const OfflineArgumentException();
+    }
+  }
+
+  /// Exact target vertex.
+  final Vertex vertex;
+
+  @override
+  OfflineOperationCategory get category =>
+      OfflineOperationCategory.putVertexIfAbsent;
+
+  @override
+  OfflineEntityKey get key => OfflineEntityKey.vertex(vertex.key);
+
+  @override
+  DateTime? get expiration => vertex.expiration;
+}
+
+/// A persisted receipt-bearing exact vertex deletion.
+final class OfflineDeleteVertexIntent extends OfflineIntent {
+  /// Creates an exact vertex deletion.
+  OfflineDeleteVertexIntent(this.vertexKey) {
+    if (vertexKey.isEmpty) throw const OfflineArgumentException();
+  }
+
+  /// Exact vertex key.
+  final String vertexKey;
+
+  @override
+  OfflineOperationCategory get category =>
+      OfflineOperationCategory.deleteVertex;
+
+  @override
+  OfflineEntityKey get key => OfflineEntityKey.vertex(vertexKey);
+
+  @override
+  DateTime? get expiration => null;
+}
+
+/// A persisted receipt-bearing exact edge deletion.
+final class OfflineDeleteEdgeIntent extends OfflineIntent {
+  /// Creates an exact edge deletion.
+  OfflineDeleteEdgeIntent(EdgeRef edge) : edge = EdgeRef(edge.tail, edge.head) {
+    if (edge.tail.isEmpty || edge.head.isEmpty) {
+      throw const OfflineArgumentException();
+    }
+  }
+
+  /// Exact edge identity.
+  final EdgeRef edge;
+
+  @override
+  OfflineOperationCategory get category => OfflineOperationCategory.deleteEdge;
+
+  @override
+  OfflineEntityKey get key => OfflineEntityKey.edge(edge.tail, edge.head);
+
+  @override
+  DateTime? get expiration => null;
+}
+
 /// An idempotent persisted edge replacement.
 final class OfflinePutEdgeIntent extends OfflineIntent {
   /// Creates an edge replacement intent from an exact edge.
@@ -376,6 +455,216 @@ final class OfflinePutEdgeIntent extends OfflineIntent {
   DateTime? get expiration => edge.expiration;
 }
 
+/// A persisted receipt-bearing contribution-keyed edge addition.
+final class OfflineReceiptAddEdgeIntent extends OfflineIntent {
+  /// Creates an exact Add intent with one explicit contribution ID.
+  OfflineReceiptAddEdgeIntent(Edge edge, Uint8List contributionId)
+    : edge = copyOfflineEdge(edge),
+      _contributionId = _copyOfflineContributionId(contributionId) {
+    if (!_isOptionalDurableTimestamp(this.edge.expiration)) {
+      throw const OfflineArgumentException();
+    }
+  }
+
+  /// Exact additive contribution.
+  final Edge edge;
+  final Uint8List _contributionId;
+
+  /// A defensive copy of the persisted contribution ID.
+  Uint8List get contributionId => Uint8List.fromList(_contributionId);
+
+  @override
+  OfflineOperationCategory get category => OfflineOperationCategory.addEdge;
+
+  @override
+  OfflineEntityKey get key => OfflineEntityKey.edge(edge.tail, edge.head);
+
+  @override
+  DateTime? get expiration => edge.expiration;
+}
+
+/// Last durable receipt-reconciliation observation for one outbox item.
+enum OfflineReceiptReconciliationState {
+  /// Receipt status must be checked before any mutation send.
+  statusRequired,
+
+  /// Status reported that the operation has not yet been observed.
+  notYetObserved,
+
+  /// The latest status lookup failed without authoritative evidence.
+  lookupUnknown,
+
+  /// The server can no longer prove the original operation result.
+  noLongerProvable,
+}
+
+/// Immutable receipt policy captured before a durable enqueue.
+final class OfflineReceiptPolicy {
+  /// Creates and validates an exact persisted policy.
+  OfflineReceiptPolicy({
+    required this.deploymentEpoch,
+    required this.retention,
+    required this.maxEntries,
+    required this.maxBytes,
+    required Uint8List fingerprint,
+  }) : _fingerprint = Uint8List.fromList(fingerprint) {
+    final maxUint64 = (BigInt.one << 64) - BigInt.one;
+    if (retention < const Duration(hours: 1) ||
+        retention > const Duration(days: 30) ||
+        maxEntries <= BigInt.zero ||
+        maxEntries > maxUint64 ||
+        maxBytes <= BigInt.zero ||
+        maxBytes > maxUint64 ||
+        _fingerprint.length != 32 ||
+        !_fingerprint.any((byte) => byte != 0)) {
+      throw const OfflineArgumentException();
+    }
+  }
+
+  /// Captures the active online capability policy.
+  factory OfflineReceiptPolicy.fromCapability(
+    ReceiptCapabilityEnabled capability,
+  ) => OfflineReceiptPolicy(
+    deploymentEpoch: ReceiptEpoch(capability.policy.deploymentEpoch.bytes),
+    retention: capability.policy.retention,
+    maxEntries: capability.policy.maxEntries,
+    maxBytes: capability.policy.maxBytes,
+    fingerprint: capability.policy.fingerprint,
+  );
+
+  /// Deployment epoch accepted by this policy.
+  final ReceiptEpoch deploymentEpoch;
+
+  /// Receipt evidence retention window.
+  final Duration retention;
+
+  /// Maximum retained receipt entries.
+  final BigInt maxEntries;
+
+  /// Maximum retained receipt bytes.
+  final BigInt maxBytes;
+
+  final Uint8List _fingerprint;
+
+  /// Returns a defensive policy-fingerprint copy.
+  Uint8List get fingerprint => Uint8List.fromList(_fingerprint);
+}
+
+/// Exact receipt identity and continuity evidence for one durable item.
+///
+/// Offline replay uses one server receipt group per outbox item. This preserves
+/// the existing independent per-key FIFO and lease model while retaining the
+/// exact original `itemIndex=0` and `itemCount=1` topology.
+final class OfflineReceiptEvidence {
+  /// Leaves a one-minute margin inside the server's five-minute admission
+  /// window.
+  static const Duration preDispatchFreshnessLimit = Duration(minutes: 4);
+
+  /// Creates and validates one persisted receipt context.
+  OfflineReceiptEvidence({
+    required this.operationId,
+    required this.groupId,
+    required this.endpoint,
+    required this.mutation,
+    required this.policy,
+    required this.itemIndex,
+    required this.itemCount,
+    required this.state,
+    this.mayHaveDispatched = true,
+    this.reconciliationAttemptCount = 0,
+  }) {
+    if (itemIndex != 0 ||
+        itemCount != 1 ||
+        operationId.epoch != policy.deploymentEpoch ||
+        reconciliationAttemptCount < 0 ||
+        reconciliationAttemptCount > _maxDurableInt) {
+      throw const OfflineArgumentException();
+    }
+    ReceiptContext(
+      operationIds: <ReceiptOperationId>[operationId],
+      groupId: groupId,
+      endpoint: endpoint,
+      mutation: mutation,
+    );
+  }
+
+  /// Globally scoped ID, provisional only while dispatch is proven impossible.
+  final ReceiptOperationId operationId;
+
+  /// One-item logical-call group, provisional under the same proof.
+  final ReceiptGroupId groupId;
+
+  /// Exact endpoint continuity marker selected before enqueue.
+  final ReceiptEndpoint endpoint;
+
+  /// Receipt mutation family.
+  final ReceiptMutationKind mutation;
+
+  /// Exact policy selected before enqueue.
+  final OfflineReceiptPolicy policy;
+
+  /// Original receipt item index.
+  final int itemIndex;
+
+  /// Original receipt item count.
+  final int itemCount;
+
+  /// Last durable reconciliation observation.
+  final OfflineReceiptReconciliationState state;
+
+  /// False only when the store durably proves no mutation send could have begun.
+  ///
+  /// A missing marker in an older record is conservatively decoded as true.
+  final bool mayHaveDispatched;
+
+  /// Completed read-only reconciliation attempts.
+  final int reconciliationAttemptCount;
+
+  /// Whether a server-issued clock sample leaves room for a first send.
+  bool freshFor(DateTime serverNow) =>
+      serverNow.isUtc &&
+      serverNow.difference(operationId.issuedAt) < preDispatchFreshnessLimit &&
+      operationId.issuedAt.difference(serverNow) < preDispatchFreshnessLimit;
+
+  /// Reconstructs the exact immutable online receipt context.
+  ReceiptContext get context => ReceiptContext(
+    operationIds: <ReceiptOperationId>[operationId],
+    groupId: groupId,
+    endpoint: endpoint,
+    mutation: mutation,
+  );
+
+  /// Returns an immutable modified copy.
+  OfflineReceiptEvidence copyWith({
+    ReceiptOperationId? operationId,
+    ReceiptGroupId? groupId,
+    OfflineReceiptReconciliationState? state,
+    bool? mayHaveDispatched,
+    int? reconciliationAttemptCount,
+  }) => OfflineReceiptEvidence(
+    operationId: ReceiptOperationId((operationId ?? this.operationId).bytes),
+    groupId: ReceiptGroupId((groupId ?? this.groupId).bytes),
+    endpoint: ReceiptEndpoint(
+      nodeId: endpoint.nodeId,
+      generation: endpoint.generation,
+    ),
+    mutation: mutation,
+    policy: OfflineReceiptPolicy(
+      deploymentEpoch: ReceiptEpoch(policy.deploymentEpoch.bytes),
+      retention: policy.retention,
+      maxEntries: policy.maxEntries,
+      maxBytes: policy.maxBytes,
+      fingerprint: policy.fingerprint,
+    ),
+    itemIndex: itemIndex,
+    itemCount: itemCount,
+    state: state ?? this.state,
+    mayHaveDispatched: mayHaveDispatched ?? this.mayHaveDispatched,
+    reconciliationAttemptCount:
+        reconciliationAttemptCount ?? this.reconciliationAttemptCount,
+  );
+}
+
 /// A legacy persisted Add retained only for fail-closed migration and inspection.
 ///
 /// [OfflineLanternRepository] cannot enqueue or replay this intent. The type
@@ -385,10 +674,8 @@ final class OfflineAddEdgeIntent extends OfflineIntent {
   /// Creates a migration-only Add intent with one exact contribution ID.
   OfflineAddEdgeIntent(Edge edge, Uint8List contributionId)
     : edge = copyOfflineEdge(edge),
-      _contributionId = Uint8List.fromList(contributionId) {
-    if (_contributionId.length != 24 ||
-        !_contributionId.any((byte) => byte != 0) ||
-        !_isOptionalDurableTimestamp(this.edge.expiration)) {
+      _contributionId = _copyOfflineContributionId(contributionId) {
+    if (!_isOptionalDurableTimestamp(this.edge.expiration)) {
       throw const OfflineArgumentException();
     }
   }
@@ -421,7 +708,7 @@ enum OfflineOutboxState {
   /// Removed from automatic replay for safe inspection.
   deadLetter,
 
-  /// Reached its absolute Lantern expiration before confirmation.
+  /// A receipt-less item reached its absolute expiration before confirmation.
   expired,
 }
 
@@ -439,13 +726,22 @@ final class OfflineOutboxRecord {
     required this.state,
     required this.attemptCount,
     required this.generation,
+    OfflineReceiptEvidence? receipt,
     this.nextAttemptAt,
     this.leaseOwner,
     this.leaseUntil,
     this.deadLetteredAt,
     this.diagnosticCode,
-  }) : intent = copyOfflineIntent(intent) {
+  }) : intent = copyOfflineIntent(intent),
+       receipt = receipt == null ? null : copyOfflineReceiptEvidence(receipt) {
     final hasLease = leaseOwner != null && leaseUntil != null;
+    final expectedReceiptMutation = switch (this.intent) {
+      OfflinePutVertexIfAbsentIntent() => ReceiptMutationKind.vertexPut,
+      OfflineDeleteVertexIntent() => ReceiptMutationKind.vertexDelete,
+      OfflineDeleteEdgeIntent() => ReceiptMutationKind.edgeDelete,
+      OfflineReceiptAddEdgeIntent() => ReceiptMutationKind.edgeAdd,
+      _ => null,
+    };
     if (recordId.isEmpty ||
         operationId.isEmpty ||
         itemIndex < 0 ||
@@ -470,7 +766,15 @@ final class OfflineOutboxRecord {
         !_isOptionalDurableTimestamp(deadLetteredAt) ||
         (deadLetteredAt != null && deadLetteredAt!.isBefore(enqueuedAt)) ||
         (state == OfflineOutboxState.deadLetter) != (deadLetteredAt != null) ||
-        diagnosticCode?.isEmpty == true) {
+        diagnosticCode?.isEmpty == true ||
+        (expectedReceiptMutation == null) != (this.receipt == null) ||
+        (this.receipt != null && state == OfflineOutboxState.expired) ||
+        (this.receipt?.mayHaveDispatched == false && attemptCount != 0) ||
+        (this.receipt?.state ==
+                OfflineReceiptReconciliationState.noLongerProvable &&
+            state != OfflineOutboxState.deadLetter) ||
+        (expectedReceiptMutation != null &&
+            this.receipt!.mutation != expectedReceiptMutation)) {
       throw const OfflineArgumentException();
     }
   }
@@ -505,6 +809,9 @@ final class OfflineOutboxRecord {
   /// Partition generation that owns this record.
   final int generation;
 
+  /// Persisted receipt context and reconciliation evidence, when required.
+  final OfflineReceiptEvidence? receipt;
+
   /// Earliest next retry time.
   final DateTime? nextAttemptAt;
 
@@ -520,8 +827,12 @@ final class OfflineOutboxRecord {
   /// Content-free terminal diagnostic code.
   final String? diagnosticCode;
 
-  /// Returns the intent expiration.
-  DateTime? get absoluteExpiration => intent.expiration;
+  /// Returns the local expiration cutoff for receipt-less intents.
+  ///
+  /// Receipt-backed work retains its intent expiration for the server's exact
+  /// result but never infers a local terminal outcome from that timestamp.
+  DateTime? get absoluteExpiration =>
+      receipt == null ? intent.expiration : null;
 
   /// Returns an immutable modified copy.
   OfflineOutboxRecord copyWith({
@@ -535,6 +846,7 @@ final class OfflineOutboxRecord {
     bool clearLeaseUntil = false,
     DateTime? deadLetteredAt,
     bool clearDeadLetteredAt = false,
+    OfflineReceiptEvidence? receipt,
     String? diagnosticCode,
     bool clearDiagnosticCode = false,
   }) => OfflineOutboxRecord(
@@ -548,6 +860,7 @@ final class OfflineOutboxRecord {
     state: state ?? this.state,
     attemptCount: attemptCount ?? this.attemptCount,
     generation: generation,
+    receipt: receipt ?? this.receipt,
     nextAttemptAt: clearNextAttemptAt
         ? null
         : nextAttemptAt ?? this.nextAttemptAt,
@@ -640,6 +953,52 @@ final class OfflineSnapshot<T> {
   final bool hasPendingWrites;
 }
 
+/// Exact original result retained in a durable operation aggregate.
+sealed class OfflineReceiptResult {
+  /// Creates a typed exact receipt result.
+  const OfflineReceiptResult();
+}
+
+/// Original result of a receipt-bearing conditional Vertex Put.
+final class OfflineVertexPutReceiptResult extends OfflineReceiptResult {
+  /// Creates an exact Vertex Put result.
+  const OfflineVertexPutReceiptResult(this.outcome);
+
+  /// Server-authoritative original outcome.
+  final PutOutcome outcome;
+}
+
+/// Original result of a receipt-bearing exact Vertex Delete.
+final class OfflineVertexDeleteReceiptResult extends OfflineReceiptResult {
+  /// Creates an exact Vertex Delete result.
+  const OfflineVertexDeleteReceiptResult(this.existed);
+
+  /// Whether the vertex existed at the original operation.
+  final bool existed;
+}
+
+/// Original result of a receipt-bearing exact Edge Delete.
+final class OfflineEdgeDeleteReceiptResult extends OfflineReceiptResult {
+  /// Creates an exact Edge Delete result.
+  const OfflineEdgeDeleteReceiptResult(this.existed);
+
+  /// Whether the edge existed at the original operation.
+  final bool existed;
+}
+
+/// Original result of a receipt-bearing contribution-keyed Edge Add.
+final class OfflineEdgeAddReceiptResult extends OfflineReceiptResult {
+  /// Creates an exact Edge Add result.
+  OfflineEdgeAddReceiptResult(double effectiveWeight)
+    : effectiveWeight = effectiveWeight.isFinite
+          ? normalizeOfflineFloat32(effectiveWeight)
+          : effectiveWeight;
+
+  /// Effective live edge weight immediately after the original Add, including
+  /// signed infinity or semantic NaN when returned by the server.
+  final double effectiveWeight;
+}
+
 /// Observable write lifecycle state.
 enum OfflineWriteState {
   /// The local durable transaction committed.
@@ -648,8 +1007,10 @@ enum OfflineWriteState {
   /// A bounded replay lease is actively sending.
   sending,
 
-  /// The server reported `appliedAndLive`, every local expiration sample was
-  /// still live, and the response was transactionally confirmed locally.
+  /// The server-authoritative result was transactionally confirmed locally.
+  ///
+  /// Receipt-bearing operations retain their exact result separately, including
+  /// conditional Put no-ops and explicit `false` Delete results.
   confirmed,
 
   /// A retryable transport failure scheduled a retry.
@@ -662,11 +1023,11 @@ enum OfflineWriteState {
   /// item inspectable and require explicit action.
   deadLetter,
 
-  /// The item reached its resolved absolute expiration locally or the server
-  /// authoritatively reported that its Put was expired.
+  /// A receipt-less item reached its resolved absolute expiration locally
+  /// before server confirmation.
   expired,
 
-  /// A legacy snapshot no longer contained this item's terminal outcome.
+  /// The original result cannot be proved and must not be inferred.
   outcomeUnknown,
 }
 
@@ -679,6 +1040,7 @@ final class OfflineWriteStatus {
     required this.itemIndex,
     required this.state,
     required this.attemptCount,
+    this.receiptResult,
     this.diagnosticCode,
   }) {
     if (recordId.isEmpty ||
@@ -687,6 +1049,7 @@ final class OfflineWriteStatus {
         itemIndex > _maxDurableInt ||
         attemptCount < 0 ||
         attemptCount > _maxDurableInt ||
+        (receiptResult != null && state != OfflineWriteState.confirmed) ||
         diagnosticCode?.isEmpty == true) {
       throw const OfflineArgumentException();
     }
@@ -706,6 +1069,9 @@ final class OfflineWriteStatus {
 
   /// Completed durable adapter attempt count.
   final int attemptCount;
+
+  /// Exact original result for a confirmed receipt-bearing mutation.
+  final OfflineReceiptResult? receiptResult;
 
   /// Content-free bounded diagnostic code.
   final String? diagnosticCode;
@@ -752,6 +1118,11 @@ final class OfflineOperationStatus {
   /// Number of items that expired before confirmation.
   int get expiredCount =>
       items.where((item) => item.state == OfflineWriteState.expired).length;
+
+  /// Number of items whose original result is no longer provable.
+  int get outcomeUnknownCount => items
+      .where((item) => item.state == OfflineWriteState.outcomeUnknown)
+      .length;
 }
 
 /// Durable content-free metadata backing [OfflineOperationStatus].
@@ -1008,8 +1379,9 @@ final class OfflineStoreLimits {
   /// Maximum UTF-8 bytes in one outbox diagnostic code.
   ///
   /// Outbox byte admission reserves this full amount so retry and terminal
-  /// transitions cannot exceed the store's byte budgets. The minimum is 19,
-  /// which admits every SDK-owned lifecycle and migration diagnostic.
+  /// transitions cannot exceed the store's byte budgets. The minimum is
+  /// [offlineMinimumDiagnosticCodeBytes], which admits every SDK-owned
+  /// lifecycle, reconciliation, and migration diagnostic.
   final int maxDiagnosticCodeBytes;
 
   /// Maximum partitions with an active reference-store change controller.
@@ -1242,10 +1614,30 @@ VertexValue copyOfflineValue(VertexValue value) => switch (value) {
 /// Creates a defensive exact durable-intent copy for storage boundaries.
 OfflineIntent copyOfflineIntent(OfflineIntent intent) => switch (intent) {
   OfflinePutVertexIntent(:final vertex) => OfflinePutVertexIntent(vertex),
+  OfflinePutVertexIfAbsentIntent(:final vertex) =>
+    OfflinePutVertexIfAbsentIntent(vertex),
+  OfflineDeleteVertexIntent(:final vertexKey) => OfflineDeleteVertexIntent(
+    vertexKey,
+  ),
+  OfflineDeleteEdgeIntent(:final edge) => OfflineDeleteEdgeIntent(edge),
   OfflinePutEdgeIntent(:final edge) => OfflinePutEdgeIntent(edge),
+  OfflineReceiptAddEdgeIntent(:final edge, :final contributionId) =>
+    OfflineReceiptAddEdgeIntent(edge, contributionId),
   OfflineAddEdgeIntent(:final edge, :final contributionId) =>
     OfflineAddEdgeIntent(edge, contributionId),
 };
+
+/// Creates a defensive exact receipt-evidence copy for storage boundaries.
+OfflineReceiptEvidence copyOfflineReceiptEvidence(
+  OfflineReceiptEvidence evidence,
+) => evidence.copyWith();
+
+Uint8List _copyOfflineContributionId(Uint8List contributionId) {
+  if (contributionId.length != 24 || !contributionId.any((byte) => byte != 0)) {
+    throw const OfflineArgumentException();
+  }
+  return Uint8List.fromList(contributionId);
+}
 
 /// Normalizes a finite number to exact IEEE-754 binary32 precision.
 double normalizeOfflineFloat32(double value) {
