@@ -72,14 +72,39 @@ same finding, also add a one-line entry to the relevant section of `AGENTS.md`.
 
 ## Before starting any non-trivial fix or feature
 
-**File a GitHub Issue first, then implement.** This is a hard rule. The Issue pins down
-the problem, the chosen option among alternatives, and the scope *before* a diff exists.
+**Search for a GitHub Issue first; link one or file one before implementing.** This is
+a hard rule for non-trivial changes, including bugs, improvements, and validation
+repairs discovered while another PR is in flight. Record the expected outcome,
+boundaries, dependencies, and verification before editing, not after a diff exists.
 
-- One Issue per coherent problem (`gh issue create`).
-- The closing PR references it (`Closes #N`) so the merge wires discussion to diff.
+- One Issue per coherent problem (`gh issue create` if none exists). Related Issues
+  may share a cohesive PR when each outcome remains independently reviewable.
+- Reference every closing Issue in the PR (`Closes #N` per Issue) so the merge
+  wires each discussion to the diff.
 - Exceptions (no Issue required): pure doc-only edits; direct follow-ups requested in an
-  in-flight PR review; one-line obvious bug fixes with nothing to discuss.
+  in-flight PR review; one-line obvious bug fixes with nothing to discuss. A new
+  user-requested bug or improvement is not an in-flight review follow-up.
 - When in doubt, file the Issue — the overhead is tiny next to a reworked PR.
+
+## Track independent exits and budget expensive validation
+
+For an epic or other multi-stage effort, keep a concise, issue-linked progress ledger
+in the driving Issue. Separately count completed/total outcomes for **merged source
+and CI**, **final exact-source acceptance**, **external publication**, and
+**human/physical-device evidence**; link the next unblocker for each unfinished
+bucket. Update at meaningful milestones, not every diagnostic sample. Do not
+collapse these buckets into one percentage or treat preliminary branch-image
+performance, partial CI, or simulator runs as final-source or physical acceptance.
+
+Before costly whole-host or device validation, record the owner, dependencies,
+acceptance matrix, pinned source/image revision, fresh-state requirements, and
+test budget (including any predeclared stability repetitions) in the driving
+Issue. Preflight once, then run the complete declared matrix on the final exact
+merged source/image, using separate fresh state where required. Preserve raw
+evidence securely and record its exact SHA-256 alongside a content-free public
+verdict. Repeat a costly run only after a relevant build change, a documented
+invalid run, or a predeclared stability check; never cherry-pick a passing
+sample, force GC in a measured steady window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
@@ -111,6 +136,14 @@ go test ./...                    # root module
   && flutter analyze && flutter test && dart run tool/crash_probe.dart \
   && dart run tool/performance_probe.dart)
 ```
+
+During edits, run the narrowest targeted checks for changed behavior rather than
+repeating the whole gate after each intermediate change. Plan one complete
+mandatory gate for the reviewed, cohesive PR head before pushing; every later
+push must again have passing results for all required components. A passing
+component can carry across a documentation-only follow-up only when its inputs
+and any required documentation-dependent checks are unchanged. CI then
+validates the exact synthetic merge, not a preliminary local branch image.
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
@@ -264,8 +297,9 @@ test.
 
 ## Before merging a PR
 
-- Wait for **all required checks** green. Never use `--admin` or `--no-verify`. One PR
-  per Issue from clean `main`.
+- Wait for **all required checks** green. Never use `--admin` or `--no-verify`.
+  A cohesive PR from clean `main` may close multiple related Issues when their
+  outcomes and verification remain independently reviewable.
 - Merge with `gh pr merge <n> --squash --delete-branch`, then
   `git checkout main && git pull --rebase`.
 - **Multi-issue `Closes` syntax:** GitHub only auto-links the *first* issue on a
