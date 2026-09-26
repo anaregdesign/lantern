@@ -16,6 +16,7 @@ package bench_test
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,12 +65,14 @@ type scenarioDoc struct {
 	} `yaml:"subscribe"`
 }
 
-func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("scenarios", "receipt_admission_lookup.yaml"))
+func testReceiptScenarioContract(t *testing.T, name, driver, admissionMethod string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("scenarios", name+".yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var doc struct {
+		Name   string `yaml:"name"`
 		Target struct {
 			Driver    string         `yaml:"driver"`
 			Endpoints []string       `yaml:"endpoints"`
@@ -115,20 +118,27 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse receipt scenario: %v", err)
 	}
-	if doc.Target.Driver != "receipt_edge_delete" {
-		t.Fatalf("target.driver = %q, want receipt_edge_delete", doc.Target.Driver)
+	if doc.Name != name || doc.Target.Driver != driver {
+		t.Fatalf("scenario name/driver = %q/%q, want %q/%q", doc.Name, doc.Target.Driver, name, driver)
 	}
 	if len(doc.Target.Endpoints) != 3 {
 		t.Fatalf("target endpoints = %d, want 3", len(doc.Target.Endpoints))
 	}
+	for i, endpoint := range doc.Target.Endpoints {
+		want := fmt.Sprintf("localhost:%d", 6380+i)
+		if endpoint != want {
+			t.Errorf("target.endpoints[%d] = %q, want %q", i, endpoint, want)
+		}
+	}
 	wantCalls := []struct {
 		name         string
 		call         string
+		offeredRPS   int
 		minSteadyRPS float64
 		maxP99MS     float64
 	}{
-		{name: "receipt_admission", call: "graph.v1.LanternService/DeleteEdge", minSteadyRPS: 75, maxP99MS: 500},
-		{name: "receipt_lookup", call: "graph.v1.LanternService/GetReceiptStatus", minSteadyRPS: 75, maxP99MS: 200},
+		{name: "receipt_admission", call: "graph.v1.LanternService/" + admissionMethod, offeredRPS: 100, minSteadyRPS: 75, maxP99MS: 500},
+		{name: "receipt_lookup", call: "graph.v1.LanternService/GetReceiptStatus", offeredRPS: 100, minSteadyRPS: 75, maxP99MS: 200},
 	}
 	if len(doc.Target.Calls) != len(wantCalls) {
 		t.Fatalf("target calls = %d, want %d", len(doc.Target.Calls), len(wantCalls))
@@ -138,6 +148,9 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		call := doc.Target.Calls[i]
 		if call.Name != want.name || call.Call != want.call {
 			t.Errorf("target.calls[%d] = (%q, %q), want (%q, %q)", i, call.Name, call.Call, want.name, want.call)
+		}
+		if call.RPS != want.offeredRPS {
+			t.Errorf("target.calls[%d].rps = %d, want %d", i, call.RPS, want.offeredRPS)
 		}
 		if strings.TrimSpace(call.DataTemplate) != "" {
 			t.Errorf("target.calls[%d] must leave data_template to the receipt driver", i)
@@ -200,13 +213,19 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if warmupDuration > 15*time.Second || steadyDuration > time.Minute || cooldown > 15*time.Second {
-		t.Errorf("receipt scenario phases are not bounded: %s/%s/%s", warmupDuration, steadyDuration, cooldown)
+	if warmupDuration != 10*time.Second || steadyDuration != 45*time.Second ||
+		cooldown != 10*time.Second || doc.Phases.Warmup.RPS != 200 ||
+		doc.Phases.Steady.RPS != 200 || doc.Phases.Warmup.Concurrency != 12 ||
+		doc.Phases.Steady.Concurrency != 12 {
+		t.Errorf("receipt scenario phases = %s/%s/%s, rps %d/%d, concurrency %d/%d; want 10s/45s/10s, 200/200, 12/12",
+			warmupDuration, steadyDuration, cooldown,
+			doc.Phases.Warmup.RPS, doc.Phases.Steady.RPS,
+			doc.Phases.Warmup.Concurrency, doc.Phases.Steady.Concurrency)
 	}
 	if interval, err := time.ParseDuration(doc.LeakGate.SteadySampleInterval); err != nil ||
-		interval <= 0 || interval > steadyDuration/3 {
-		t.Errorf("receipt steady sampling interval = %q, want bounded coverage of %s",
-			doc.LeakGate.SteadySampleInterval, steadyDuration)
+		interval != 5*time.Second {
+		t.Errorf("receipt steady sampling interval = %q, want 5s",
+			doc.LeakGate.SteadySampleInterval)
 	}
 	admissionRPS := totalProducerRPS / len(wantCalls)
 	requiredEntries := int(warmupDuration.Seconds())*(doc.Phases.Warmup.RPS/len(wantCalls)) +
@@ -217,6 +236,24 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	if doc.Cluster.ReceiptWAL.MaxBytes < doc.Cluster.ReceiptWAL.MaxEntries*512 {
 		t.Errorf("receipt max_bytes = %d, want >= 512 bytes per retained entry", doc.Cluster.ReceiptWAL.MaxBytes)
 	}
+}
+
+func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
+	scenarios := []struct {
+		name   string
+		driver string
+		method string
+	}{
+		{"receipt_vertex_put_admission_lookup", "receipt_vertex_put", "PutVertex"},
+		{"receipt_vertex_delete_admission_lookup", "receipt_vertex_delete", "DeleteVertex"},
+		{"receipt_admission_lookup", "receipt_edge_delete", "DeleteEdge"},
+		{"receipt_edge_add_admission_lookup", "receipt_edge_add", "AddEdge"},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			testReceiptScenarioContract(t, scenario.name, scenario.driver, scenario.method)
+		})
+	}
 
 	runScript, err := os.ReadFile("run.sh")
 	if err != nil {
@@ -225,8 +262,15 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	for _, contract := range []string{
 		`target_driver="$(yq -r '.target.driver // "ghz"'`,
 		`go run ./testbed/bench/receiptprobe`,
-		`receipt_edge_delete requires a fresh Compose lifecycle`,
+		`receipt driver requires a fresh Compose lifecycle`,
 		`docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`,
+		`-family "$target_driver"`,
+		`pin_receipt_image`,
+		`verify_receipt_image_provenance "$OUTDIR/image_provenance_pre.json"`,
+		`verify_receipt_image_provenance "$OUTDIR/image_provenance_post.json"`,
+		`EXPECTED_LANTERN_IMAGE_ID`,
+		`EXPECTED_LANTERN_COMMIT`,
+		`{{.Image}}|{{.Config.Image}}|{{.State.Running}}`,
 		`ghz_steady_0_receipt_admission.json`,
 		`ghz_steady_1_receipt_lookup.json`,
 		`-metrics-endpoints "$metrics_urls"`,
@@ -281,8 +325,10 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(string(releaseList), "\n") {
-		if strings.TrimSpace(strings.SplitN(line, "#", 2)[0]) == "receipt_admission_lookup" {
-			t.Fatal("receipt scenario must stay out of the release sweep until thresholds have stable evidence")
+		for _, scenario := range scenarios {
+			if strings.TrimSpace(strings.SplitN(line, "#", 2)[0]) == scenario.name {
+				t.Fatalf("%s must stay out of the release sweep until thresholds have stable evidence", scenario.name)
+			}
 		}
 	}
 	nightlyWorkflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "bench-nightly.yml"))
@@ -291,12 +337,192 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	}
 	nightly := string(nightlyWorkflow)
 	for _, contract := range []string{
-		"./testbed/bench/run.sh receipt_admission_lookup",
-		"testbed/bench/out/receipt_admission_lookup/",
+		`EXPECTED_LANTERN_IMAGE_ID: ${{ env.RECEIPT_IMAGE_ID }}`,
+		`EXPECTED_LANTERN_COMMIT: ${{ github.sha }}`,
+		`docker image inspect --format '{{.Id}}' lantern:local`,
+		`./testbed/bench/run.sh "$scenario"`,
 	} {
 		if !strings.Contains(nightly, contract) {
 			t.Errorf("nightly workflow missing receipt contract %q", contract)
 		}
+	}
+	loop := strings.Index(nightly, "for scenario in")
+	if loop < 0 {
+		t.Fatal("nightly workflow has no sequential receipt scenario loop")
+	}
+	ordered := nightly[loop:]
+	for _, scenario := range scenarios {
+		index := strings.Index(ordered, scenario.name)
+		if index < 0 {
+			t.Errorf("nightly receipt scenario %s is missing or out of order", scenario.name)
+			continue
+		}
+		ordered = ordered[index+len(scenario.name):]
+		if !strings.Contains(nightly, "testbed/bench/out/"+scenario.name+"/") {
+			t.Errorf("nightly workflow does not upload %s artifacts", scenario.name)
+		}
+	}
+}
+
+func receiptImageShellFunctions(t *testing.T) string {
+	t.Helper()
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "pin_receipt_image() {\n")
+	if !found {
+		t.Fatal("run.sh has no receipt image pin")
+	}
+	body, _, found := strings.Cut(rest, "\nif [[ \"$receipt_driver\" == \"1\" ]]; then\n  pin_receipt_image")
+	if !found {
+		t.Fatal("run.sh has no receipt image provenance verifier")
+	}
+	return "pin_receipt_image() {\n" + body + "\n"
+}
+
+func TestReceiptBenchImageProvenanceFailsClosed(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required for the receipt harness")
+	}
+	imageID := "sha256:" + strings.Repeat("a", 64)
+	wrongID := "sha256:" + strings.Repeat("b", 64)
+	commit := strings.Repeat("c", 40)
+	for _, tc := range []struct {
+		name    string
+		wantErr string
+	}{
+		{name: "three matching replicas"},
+		{name: "wrong pinned ID", wantErr: "differs from pinned"},
+		{name: "wrong pinned commit", wantErr: "differs from pinned"},
+		{name: "missing source commit", wantErr: "lacks a full source commit"},
+		{name: "image retagged", wantErr: "changed since startup"},
+		{name: "missing replica", wantErr: "has no unique running container"},
+		{name: "replica image drift", wantErr: "not a running, restart-free"},
+		{name: "wrong Compose project", wantErr: "not a running, restart-free"},
+		{name: "replica restarted", wantErr: "not a running, restart-free"},
+		{name: "replica recreated", wantErr: "was recreated during the run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			fixture := `set -euo pipefail
+COMPOSE_FILES=(-f fixture.yml)
+COMPOSE_PROJECT_NAME=lantern-bench-fixture
+receipt_image_ref=lantern:local
+receipt_image_id=""
+receipt_image_commit=""
+receipt_container_ids=()
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+log() { :; }
+docker() {
+  if [[ "$1" == image && "$2" == inspect ]]; then
+    if [[ "$4" == '{{.Id}}' ]]; then
+      if [[ "$CASE" == "image retagged" && -f "$OUTDIR/proof_pre.json" ]]; then
+        echo "$WRONG_ID"
+      else
+        echo "$GOOD_ID"
+      fi
+      return
+    fi
+    if [[ "$CASE" == "missing source commit" ]]; then
+      echo "LANTERN_COMMIT="
+    else
+      echo "LANTERN_COMMIT=$GOOD_COMMIT"
+    fi
+    return
+  fi
+  if [[ "$1" == compose ]]; then
+    case "${@: -1}" in
+      lantern-0) printf '%064d\n' 1 ;;
+      lantern-1)
+        if [[ "$CASE" == "missing replica" ]]; then
+          return
+        elif [[ "$CASE" == "replica recreated" && -f "$OUTDIR/proof_pre.json" ]]; then
+          printf '%064d\n' 9
+        else
+          printf '%064d\n' 2
+        fi ;;
+      lantern-2) printf '%064d\n' 3 ;;
+      *) return 88 ;;
+    esac
+    return
+  fi
+  if [[ "$1" == inspect ]]; then
+    local container="${@: -1}" service image="$GOOD_ID" project="$COMPOSE_PROJECT_NAME"
+    case "${container: -1}" in
+      1) service=lantern-0 ;;
+      2|9) service=lantern-1 ;;
+      3) service=lantern-2 ;;
+      *) return 89 ;;
+    esac
+    if [[ "$CASE" == "replica image drift" && "$service" == "lantern-0" ]]; then image="$WRONG_ID"; fi
+    if [[ "$CASE" == "wrong Compose project" && "$service" == "lantern-0" ]]; then project=unrelated; fi
+    local restarts=0
+    if [[ "$CASE" == "replica restarted" && "$service" == "lantern-0" ]]; then restarts=1; fi
+    printf '%s|%s|lantern:local|true|%s|%s|%s\n' "$container" "$image" "$project" "$service" "$restarts"
+    return
+  fi
+  return 90
+}
+` + receiptImageShellFunctions(t) + `
+pin_receipt_image
+verify_receipt_image_provenance "$OUTDIR/proof_pre.json"
+verify_receipt_image_provenance "$OUTDIR/proof_post.json"
+`
+			pinnedID := imageID
+			if tc.name == "wrong pinned ID" {
+				pinnedID = wrongID
+			}
+			pinnedCommit := commit
+			if tc.name == "wrong pinned commit" {
+				pinnedCommit = strings.Repeat("d", 40)
+			}
+			cmd := exec.Command("bash", "-c", fixture)
+			cmd.Env = append(os.Environ(),
+				"OUTDIR="+outDir, "CASE="+tc.name,
+				"GOOD_ID="+imageID, "WRONG_ID="+wrongID,
+				"GOOD_COMMIT="+commit, "EXPECTED_LANTERN_IMAGE_ID="+pinnedID,
+				"EXPECTED_LANTERN_COMMIT="+pinnedCommit,
+			)
+			output, err := cmd.CombinedOutput()
+			if tc.wantErr != "" {
+				if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
+					!strings.Contains(string(output), tc.wantErr) {
+					t.Fatalf("provenance exit = %v, err = %v, output = %s; want %s",
+						cmd.ProcessState, err, output, tc.wantErr)
+				}
+				if _, err := os.Stat(filepath.Join(outDir, "proof_post.json")); !os.IsNotExist(err) {
+					t.Fatalf("invalid post-run provenance was recorded: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("valid receipt image provenance = %v, output = %s", err, output)
+			}
+			data, err := os.ReadFile(filepath.Join(outDir, "proof_post.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var proof struct {
+				ImageID      string `json:"image_id"`
+				SourceCommit string `json:"source_commit"`
+				Replicas     []struct {
+					ImageID string `json:"image_id"`
+				} `json:"replicas"`
+			}
+			if err := json.Unmarshal(data, &proof); err != nil {
+				t.Fatal(err)
+			}
+			if proof.ImageID != imageID || proof.SourceCommit != commit ||
+				len(proof.Replicas) != 3 {
+				t.Fatalf("incomplete image proof: %+v", proof)
+			}
+			for _, replica := range proof.Replicas {
+				if replica.ImageID != imageID {
+					t.Fatalf("replica image drift in proof: %+v", proof)
+				}
+			}
+		})
 	}
 }
 
@@ -394,7 +620,7 @@ func receiptSnapshotShellFunctions(t *testing.T) string {
 func TestReceiptBenchSnapshotRejectsFailedGC(t *testing.T) {
 	outDir := t.TempDir()
 	fixture := `set -euo pipefail
-target_driver=receipt_edge_delete
+receipt_driver=1
 REPLICA_METRICS_PORTS=(9390 9391 9392)
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 curl() {
@@ -434,7 +660,7 @@ func TestReceiptBenchSnapshotRejectsInvalidMetrics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
 			fixture := `set -euo pipefail
-target_driver=receipt_edge_delete
+receipt_driver=1
 REPLICA_METRICS_PORTS=(9390 9391 9392)
 SNAPSHOT_ROUNDS=1
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
@@ -1077,6 +1303,15 @@ func requestDescriptor(call string) (protoreflect.MessageDescriptor, error) {
 	return md.Input(), nil
 }
 
+func isReceiptScenarioDriver(driver string) bool {
+	switch driver {
+	case "receipt_vertex_put", "receipt_vertex_delete", "receipt_edge_delete", "receipt_edge_add":
+		return true
+	default:
+		return false
+	}
+}
+
 func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("scenarios", "*.yaml"))
 	if err != nil {
@@ -1104,7 +1339,8 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 			if err := yaml.Unmarshal(raw, &doc); err != nil {
 				t.Fatalf("parse yaml: %v", err)
 			}
-			if doc.Target.Driver != "" && doc.Target.Driver != "receipt_edge_delete" {
+			if doc.Target.Driver != "" && doc.Target.Driver != "ghz" &&
+				!isReceiptScenarioDriver(doc.Target.Driver) {
 				t.Fatalf("unknown target.driver %q", doc.Target.Driver)
 			}
 			calls := doc.calls()
@@ -1122,7 +1358,7 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 					continue
 				}
 				if strings.TrimSpace(c.DataTemplate) == "" {
-					if doc.Target.Driver == "receipt_edge_delete" && strings.HasPrefix(site, "target.calls[") {
+					if isReceiptScenarioDriver(doc.Target.Driver) && strings.HasPrefix(site, "target.calls[") {
 						continue
 					}
 					t.Errorf("%s (%s): empty data_template", site, c.Call)

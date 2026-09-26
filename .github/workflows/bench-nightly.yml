@@ -45,10 +45,11 @@ jobs:
     # LEAK_GATE_ONLY=1 below, which drops the diagnostic captures the gate never
     # reads (24 pprof + 12 prom curls per scenario); that returns the sweep to
     # ~deterministic phase time plus isolated cluster lifecycles (~25-26 min)
-    # and image build/setup, ~35-40 min total.
-    # 50 min leaves headroom for a slow cold build while still bounding a wedged
-    # scenario — and is well under the rejected 90 min.
-    timeout-minutes: 50
+    # and image build/setup, ~35-40 min before the receipt qualification.
+    # Four sequential fresh-WAL receipt families add 4 x (10/45/10s plus
+    # Compose setup/teardown). 60 min bounds a wedged run without truncating
+    # the added families, and remains below the rejected 90 min cap.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -85,6 +86,11 @@ jobs:
             --build-arg VERSION=nightly \
             --build-arg COMMIT=${{ github.sha }} \
             -t lantern:local .
+      - name: Pin receipt image identity
+        run: |
+          image_id="$(docker image inspect --format '{{.Id}}' lantern:local)"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          echo "RECEIPT_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
       - name: Run nightly leak-gate sweep (blocking)
         env:
           TAG: nightly
@@ -104,11 +110,21 @@ jobs:
         # No continue-on-error: a non-zero exit (any scenario's leak gate failed,
         # or a harness/setup error) fails this required nightly check.
         run: ./testbed/bench/release.sh --out bench-report.md
-      - name: Run receipt admission and lookup gate (blocking)
+      - name: Run four receipt admission and lookup gates (blocking)
         env:
           LANTERN_IMAGE: lantern:local
+          EXPECTED_LANTERN_IMAGE_ID: ${{ env.RECEIPT_IMAGE_ID }}
+          EXPECTED_LANTERN_COMMIT: ${{ github.sha }}
           LEAK_GATE_ONLY: "1"
-        run: ./testbed/bench/run.sh receipt_admission_lookup
+        run: |
+          set -euo pipefail
+          for scenario in \
+            receipt_vertex_put_admission_lookup \
+            receipt_vertex_delete_admission_lookup \
+            receipt_admission_lookup \
+            receipt_edge_add_admission_lookup; do
+            ./testbed/bench/run.sh "$scenario"
+          done
       - name: Upload bench report
         if: always()
         uses: actions/upload-artifact@v7
@@ -117,5 +133,8 @@ jobs:
           path: |
             bench-report.md
             testbed/bench/out/receipt_admission_lookup/
+            testbed/bench/out/receipt_vertex_put_admission_lookup/
+            testbed/bench/out/receipt_vertex_delete_admission_lookup/
+            testbed/bench/out/receipt_edge_add_admission_lookup/
           if-no-files-found: warn
           retention-days: 30

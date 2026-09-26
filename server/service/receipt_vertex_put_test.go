@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -20,6 +21,52 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func BenchmarkPublicReceiptVertexPutAdmission(b *testing.B) {
+	for _, withReceipt := range []bool{false, true} {
+		name := "no_receipt"
+		if withReceipt {
+			name = "admitted_receipt"
+		}
+		b.Run(name, func(b *testing.B) {
+			maxEntries := 32
+			if withReceipt {
+				maxEntries = b.N + 1
+			}
+			maxBytes := uint64(maxEntries) * 4096
+			if maxBytes < 1<<20 {
+				maxBytes = 1 << 20
+			}
+			runtime, svc, _ := newActivatedReceiptServiceWithLimits(b, maxEntries, maxBytes)
+			requests := make([]*pb.PutVertexRequest, b.N)
+			issued := time.Now().Add(-time.Second)
+			for i := range requests {
+				requests[i] = &pb.PutVertexRequest{
+					Vertex: &pb.Vertex{
+						Key: fmt.Sprintf("benchmark-conditional-put-%d", i),
+						Value: &pb.Vertex_String_{
+							String_: "receipt-bench",
+						},
+					},
+					IfAbsent: true,
+				}
+				if withReceipt {
+					requests[i].ReceiptContext = receiptBenchmarkContext(b, runtime, issued, uint64(i))
+				}
+			}
+			ctx := context.Background()
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				response, err := svc.PutVertex(ctx, requests[i])
+				if err != nil || response.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+					b.Fatalf("PutVertex() = %+v, %v", response, err)
+				}
+			}
+		})
+	}
+}
 
 type receiptVertexPutWALFunc func(mutationlog.Entry) error
 

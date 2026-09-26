@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 	"reflect"
@@ -22,6 +23,54 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func BenchmarkPublicReceiptEdgeAddAdmission(b *testing.B) {
+	for _, withReceipt := range []bool{false, true} {
+		name := "no_receipt"
+		if withReceipt {
+			name = "admitted_receipt"
+		}
+		b.Run(name, func(b *testing.B) {
+			maxEntries := 32
+			if withReceipt {
+				maxEntries = b.N + 1
+			}
+			maxBytes := uint64(maxEntries) * 4096
+			if maxBytes < 1<<20 {
+				maxBytes = 1 << 20
+			}
+			runtime, svc, _ := newActivatedReceiptServiceWithLimits(b, maxEntries, maxBytes)
+			requests := make([]*pb.AddEdgeRequest, b.N)
+			issued := time.Now().Add(-time.Second)
+			for i := range requests {
+				contribID := make([]byte, len(graphcache.ContribID{}))
+				contribID[0] = 2
+				binary.BigEndian.PutUint64(contribID[16:], uint64(i+1))
+				requests[i] = &pb.AddEdgeRequest{
+					Edge: &pb.Edge{
+						Tail:   fmt.Sprintf("benchmark-add-%d", i),
+						Head:   "benchmark-head",
+						Weight: 1.25,
+					},
+					ContribId: contribID,
+				}
+				if withReceipt {
+					requests[i].ReceiptContext = receiptBenchmarkContext(b, runtime, issued, uint64(i))
+				}
+			}
+			ctx := context.Background()
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				response, err := svc.AddEdge(ctx, requests[i])
+				if err != nil || response.GetEffectiveWeight() != 1.25 {
+					b.Fatalf("AddEdge() = %+v, %v", response, err)
+				}
+			}
+		})
+	}
+}
 
 func receiptEdgeAddTestCall(
 	t *testing.T,

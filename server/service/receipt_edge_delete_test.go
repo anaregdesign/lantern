@@ -249,7 +249,6 @@ func BenchmarkPublicReceiptEdgeDeleteAdmission(b *testing.B) {
 			runtime, svc, _ := newActivatedReceiptServiceWithLimits(b, maxEntries, maxBytes)
 			requests := make([]*pb.DeleteEdgeRequest, b.N)
 			issued := time.Now().Add(-time.Second)
-			nodeID := runtime.clock.NodeID()
 			for i := range requests {
 				requests[i] = &pb.DeleteEdgeRequest{
 					Tail: "benchmark-tail",
@@ -258,23 +257,7 @@ func BenchmarkPublicReceiptEdgeDeleteAdmission(b *testing.B) {
 				if !withReceipt {
 					continue
 				}
-				var randomness [24]byte
-				randomness[0] = 1
-				binary.BigEndian.PutUint64(randomness[16:], uint64(i+1))
-				id, err := mutationreceipt.NewID(runtime.receipt.epoch, issued, randomness)
-				if err != nil {
-					b.Fatal(err)
-				}
-				group := mutationreceipt.GroupID{1}
-				binary.BigEndian.PutUint64(group[8:], uint64(i+1))
-				requests[i].ReceiptContext = &pb.MutationReceiptContext{
-					OperationIds:  [][]byte{id.Bytes()},
-					LogicalCallId: append([]byte(nil), group[:]...),
-					Endpoint: &pb.ReceiptEndpoint{
-						NodeId:     append([]byte(nil), nodeID[:]...),
-						Generation: append([]byte(nil), runtime.receipt.generation[:]...),
-					},
-				}
+				requests[i].ReceiptContext = receiptBenchmarkContext(b, runtime, issued, uint64(i))
 			}
 			ctx := context.Background()
 
