@@ -159,9 +159,10 @@ func HalfLifeDecay(initialWeight float32, halfLife, interval, horizon time.Durat
 // follows the geometric decay staircase described by opts, using time.Now()
 // as the t=0 reference. It expands opts (see DecayContributions) into up to
 // opts.Steps additive contributions and applies them in one AddEdges batch,
-// so it inherits AddEdges' automatic chunking, WithIdempotentAdds dedup
-// (#588), retry policy, and post-accumulation effective-weight reporting
-// (#897).
+// so it inherits AddEdges' automatic chunking, live-contribution ContribID
+// dedup (#588), and post-accumulation effective-weight reporting (#897).
+// Like plain AddEdges, it is not automatically retried after an ambiguous
+// response, even with WithIdempotentAdds.
 //
 // It returns the edge's effective (live-sum) weight immediately after the
 // add — any preexisting live weight on (tail, head) plus opts.InitialWeight.
