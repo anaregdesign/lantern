@@ -374,19 +374,24 @@ exit %d
 	}
 }
 
-func TestReceiptBenchSnapshotRejectsFailedGC(t *testing.T) {
+func receiptSnapshotShellFunctions(t *testing.T) string {
+	t.Helper()
 	script, err := os.ReadFile("run.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rest, found := strings.Cut(string(script), "snapshot_runtime() {\n")
+	_, rest, found := strings.Cut(string(script), "receipt_runtime_scalar() {\n")
 	if !found {
-		t.Fatal("run.sh is missing snapshot_runtime")
+		t.Fatal("run.sh is missing receipt_runtime_scalar")
 	}
 	body, _, found := strings.Cut(rest, "\n}\n\nrun_ghz() {")
 	if !found {
-		t.Fatal("run.sh snapshot_runtime does not precede run_ghz")
+		t.Fatal("run.sh receipt_runtime_scalar and snapshot_runtime do not precede run_ghz")
 	}
+	return "receipt_runtime_scalar() {\n" + body + "\n}\n"
+}
+
+func TestReceiptBenchSnapshotRejectsFailedGC(t *testing.T) {
 	outDir := t.TempDir()
 	fixture := `set -euo pipefail
 target_driver=receipt_edge_delete
@@ -397,9 +402,7 @@ curl() {
   echo "metrics must not be sampled without GC" >&2
   return 98
 }
-snapshot_runtime() {
-` + body + `
-}
+` + receiptSnapshotShellFunctions(t) + `
 snapshot_runtime "$OUTDIR/runtime.json"
 `
 	cmd := exec.Command("bash", "-c", fixture)
@@ -411,6 +414,61 @@ snapshot_runtime "$OUTDIR/runtime.json"
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); !os.IsNotExist(err) {
 		t.Fatalf("failed-GC snapshot artifact exists or stat failed: %v", err)
+	}
+}
+
+func TestReceiptBenchSnapshotRejectsInvalidMetrics(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wantErr string
+	}{
+		{name: "failed_scrape", wantErr: "metrics scrape failed for localhost:9390 (round 1)"},
+		{name: "missing_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "nonfinite_goroutines", wantErr: "invalid go_goroutines for localhost:9390 (round 1)"},
+		{name: "negative_heap_objects", wantErr: "invalid go_memstats_heap_objects for localhost:9390 (round 1)"},
+		{name: "duplicate_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			fixture := `set -euo pipefail
+target_driver=receipt_edge_delete
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+SNAPSHOT_ROUNDS=1
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+curl() {
+  if [[ "$*" == *"/debug/pprof/heap?gc=1"* ]]; then return 0; fi
+  if [[ "$*" != *"/metrics"* ]]; then return 98; fi
+  if [[ "$METRICS_CASE" == "failed_scrape" ]]; then return 22; fi
+  case "$METRICS_CASE" in
+    missing_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_objects 10'
+      ;;
+    nonfinite_goroutines)
+      printf '%s\n' 'go_goroutines NaN' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_objects 10'
+      ;;
+    negative_heap_objects)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_objects -1'
+      ;;
+    duplicate_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_alloc_bytes 1' 'go_memstats_heap_objects 10'
+      ;;
+  esac
+}
+` + receiptSnapshotShellFunctions(t) + `
+snapshot_runtime "$OUTDIR/runtime.json"
+`
+			cmd := exec.Command("bash", "-c", fixture)
+			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "METRICS_CASE="+tc.name)
+			output, err := cmd.CombinedOutput()
+			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
+				!strings.Contains(string(output), tc.wantErr) {
+				t.Fatalf("snapshot exit = %v, err = %v, output = %s; want %s",
+					cmd.ProcessState, err, output, tc.wantErr)
+			}
+			if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); !os.IsNotExist(err) {
+				t.Fatalf("invalid-metrics snapshot artifact exists or stat failed: %v", err)
+			}
+		})
 	}
 }
 

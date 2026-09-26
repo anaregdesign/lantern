@@ -361,6 +361,16 @@ prom_scalar() {
   awk -v n="$name" '$1 == n { print $2; exit }' <<<"$text"
 }
 
+receipt_runtime_scalar() {
+  local name="$1" text="$2" raw
+  raw="$(awk -v n="$name" '$1 == n { print $2 }' <<<"$text")"
+  [[ "$raw" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]] || return 1
+  # Prometheus exports float64 gauges; keep converted snapshot integers exact.
+  awk -v raw="$raw" 'BEGIN { value = raw + 0; exit !(value >= 0 && value < 9007199254740992) }' ||
+    return 1
+  printf '%.0f' "$raw" 2>/dev/null
+}
+
 snapshot_runtime() {
   # Force a GC on every replica before sampling so heap_alloc_bytes reflects
   # live (post-GC) memory rather than transient allocation between cycles.
@@ -389,14 +399,30 @@ snapshot_runtime() {
         fi
       fi
       local text
-      text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
+      if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+        text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics")" ||
+          die "receipt runtime snapshot: metrics scrape failed for localhost:${port} (round ${round})"
+      else
+        text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
+      fi
       local rg rhi rha rho rvhe rvhw
       # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
       # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
-      rg="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; rg="${rg:-0}"
-      rhi="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; rhi="${rhi:-0}"
-      rha="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; rha="${rha:-0}"
-      rho="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; rho="${rho:-0}"
+      if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+        rg="$(receipt_runtime_scalar go_goroutines "$text")" ||
+          die "receipt runtime snapshot: invalid go_goroutines for localhost:${port} (round ${round})"
+        rhi="$(receipt_runtime_scalar go_memstats_heap_inuse_bytes "$text")" ||
+          die "receipt runtime snapshot: invalid go_memstats_heap_inuse_bytes for localhost:${port} (round ${round})"
+        rha="$(receipt_runtime_scalar go_memstats_heap_alloc_bytes "$text")" ||
+          die "receipt runtime snapshot: invalid go_memstats_heap_alloc_bytes for localhost:${port} (round ${round})"
+        rho="$(receipt_runtime_scalar go_memstats_heap_objects "$text")" ||
+          die "receipt runtime snapshot: invalid go_memstats_heap_objects for localhost:${port} (round ${round})"
+      else
+        rg="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; rg="${rg:-0}"
+        rhi="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; rhi="${rhi:-0}"
+        rha="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; rha="${rha:-0}"
+        rho="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; rho="${rho:-0}"
+      fi
       # vertexHLC LWW watermark map (#727): the instantaneous entry count
       # (lantern_vertex_hlc_entries — drained low right after a GC sweep) and
       # its sticky per-cycle peak (lantern_vertex_hlc_entries_high_water).
