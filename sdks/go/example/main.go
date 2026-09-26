@@ -458,12 +458,11 @@ func appliedVertexPuts(results []client.VertexPutResult, err error) error {
 }
 
 // retryAndFailoverExample shows the opt-in retry policy (#849) composed with
-// static-endpoint failover and idempotent adds. Retries are OFF unless
-// WithRetry is passed, and even then apply ONLY to RPCs that are idempotent
-// under the client's configuration: reads, Put*/Delete*, and — because
-// WithIdempotentAdds stamps a stable per-edge ContribID — AddEdge(s). A
-// deterministic error (NotFound, InvalidArgument) or an exhausted deadline is
-// never retried.
+// static-endpoint failover and contribution IDs. Retries are OFF unless
+// WithRetry is passed, and even then apply only to replay-eligible reads,
+// unconditional Put, and continuity-checked receipt mutations. Plain Add
+// and Delete never replay automatically after an ambiguous response:
+// ContribIDs disappear after Delete/expiration and Delete results can change.
 func retryAndFailoverExample(ctx context.Context) {
 	// Single endpoint with a bounded, full-jitter exponential backoff. A
 	// transient Unavailable (rolling update, load-balancer flap) is retried
@@ -483,9 +482,10 @@ func retryAndFailoverExample(ctx context.Context) {
 	}
 	defer func() { _ = retrying.Close() }()
 
-	// AddEdges is retried safely: WithIdempotentAdds stamps a stable ContribID
-	// per edge, so a re-sent chunk records each weight exactly once. (Distinct
-	// keys keep this demo out of the Illuminate graph printed above.)
+	// WithIdempotentAdds stamps a ContribID per edge, but AddEdges still
+	// makes only one attempt. A lost response needs explicit reconciliation
+	// (or a persisted receipt operation ID) before deciding what to do next.
+	// Distinct keys keep this demo out of the Illuminate graph above.
 	if _, err := retrying.AddEdges(ctx, []client.EdgeInput{
 		{Tail: "retry-demo:a", Head: "retry-demo:b", Weight: 1},
 		{Tail: "retry-demo:b", Head: "retry-demo:c", Weight: 1},
@@ -493,10 +493,9 @@ func retryAndFailoverExample(ctx context.Context) {
 		log.Printf("retry example: AddEdges: %v", err)
 	}
 
-	// Failover across a fixed replica set. The retry loop drives the ring
-	// walk: an Unavailable endpoint is retried against its siblings with
-	// backoff, so MaxAttempts is the cross-replica budget — no second rotation
-	// mechanism. Construction is lazy (no dial here); swap in real replicas.
+	// Failover across a fixed replica set. Eligible calls rotate across the
+	// ring on Unavailable; result-bearing plain writes do not. Construction
+	// is lazy (no dial here); swap in real replicas.
 	failover, err := client.NewLanternFailover(
 		[]string{
 			"http://localhost:6380",

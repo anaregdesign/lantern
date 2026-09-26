@@ -61,9 +61,9 @@
 // endpoint after an uncertain response; every retry verifies the same epoch,
 // node ID, generation, and advertised mutation family. GetReceiptStatus and
 // GetReceiptStatuses are read-only reconciliation calls. Prefix Delete is not
-// exposed as a receipt-bearing SDK operation. The existing receipt-less Add
-// methods remain a separate direct-online mode; WithIdempotentAdds deduplicates
-// transport retries but does not create durable, queryable receipts.
+// exposed as a receipt-bearing SDK operation. Receipt-less Add remains a
+// separate direct-online mode: WithIdempotentAdds only deduplicates while a
+// contribution remains live and cannot safely replay after Delete/expiration.
 //
 // # Content search
 //
@@ -80,20 +80,21 @@
 // Retries are opt-in and off by default — a zero-config client behaves
 // exactly as before. WithRetry(RetryPolicy{...}) arms a bounded,
 // context-aware backoff loop with full-jitter exponential delays, applied
-// ONLY to RPCs that are idempotent under the client's configuration. The
-// eligibility matrix is enforced in code (see retry.go), not documentation:
+// ONLY to replay-eligible RPCs. The eligibility matrix is enforced in code
+// (see retry.go), not documentation:
 //
 //	RPC family                                   Retried?
 //	-------------------------------------------  ------------------------------
 //	Get*/Scan*/Count*/Search*/Illuminate/status  yes (reads are idempotent)
-//	Put*/legacy Delete*/DeleteVerticesByPrefix   yes (idempotent by semantics)
+//	unconditional PutVertex(es)/PutEdge(s)        yes (same request)
 //	*WithReceipt                                 yes, but only after the same
 //	                                             endpoint continuity preflight
 //	PutVertexIfAbsent/PutVerticesIfAbsent        no unless using *WithReceipt
-//	AddEdge/AddEdgeAt/AddEdges                    only under WithIdempotentAdds
-//	                                             (or explicit ContribIDs): the
-//	                                             per-edge keys let a retry record
-//	                                             each contribution exactly once
+//	plain exact/prefix Deletes                    no (original existed/count
+//	                                             may change; capped prefix may
+//	                                             remove the next matching set)
+//	plain AddEdge/AddEdges/AddDecayingEdge        no (ContribIDs are forgotten
+//	                                             after Delete or expiration)
 //	Subscribe/Backup/Restore                     no (streaming / io, excluded v1)
 //
 // Never retried regardless of policy: deterministic outcomes (NotFound,
@@ -103,13 +104,14 @@
 // through the server-side capacity cap / rate limiter.
 //
 // Under NewLanternFailover the policy normally drives the ring walk: each retry
-// attempt re-runs the failover rotation, so a persistently-unavailable
-// endpoint is retried against its siblings with backoff and MaxAttempts is
-// the cross-replica budget — there is no second rotation mechanism. The
-// per-endpoint clients' own retry is neutralised so the attempt budget is
-// never squared. Receipt-bearing mutations are the deliberate exception:
-// every attempt remains pinned to one endpoint and verifies the same epoch,
-// node ID, generation, and supported mutation family before sending.
+// attempt of a replay-eligible operation re-runs the failover rotation,
+// so MaxAttempts is the cross-replica budget. Plain Add, exact Delete,
+// conditional Put, and prefix Delete instead make one attempt on the current
+// endpoint even without WithRetry, and an unavailable result stays an error
+// requiring caller-controlled reconciliation. The per-endpoint clients' own
+// retry is neutralised. Receipt-bearing mutations are the deliberate
+// exception: every attempt remains pinned to one endpoint and verifies
+// the same epoch, node ID, generation, and supported mutation family.
 //
 // # Model definition policy
 //

@@ -102,9 +102,12 @@ func WithEdgeDeleteDryRun() DeleteEdgesByPrefixOption {
 // Operational notes mirror DeleteVerticesByPrefix:
 //   - This is a destructive bulk operation. Run with WithEdgeDeleteDryRun
 //     first to confirm the matched count before issuing a real delete.
+//   - Neither WithRetry nor Failover replays this call. On an unavailable
+//     response the original count is unknown; a retry could remove the
+//     next N edges. Exclude it from custom HTTP retry middleware too.
 //   - To remove EVERY matching edge when the set exceeds the server's max
-//     delete-by-prefix limit, call repeatedly until the returned count is
-//     zero — the server applies the limit per call.
+//     delete-by-prefix limit, repeat only after a successful response until
+//     the returned count is zero — the limit applies per call.
 func (l *Lantern) DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error) {
 	o := deleteEdgesByPrefixOptions{}
 	for _, apply := range opts {

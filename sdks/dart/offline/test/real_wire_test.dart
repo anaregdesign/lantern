@@ -1530,7 +1530,7 @@ void main() {
         proxy.endpoint,
         allowInsecure: true,
         idempotentAdds: true,
-        retryPolicy: const RetryPolicy(maxAttempts: 1),
+        retryPolicy: const RetryPolicy(maxAttempts: 3),
       );
       addTearDown(legacyClient.close);
 
@@ -1544,16 +1544,9 @@ void main() {
             contribId: contributionId,
           ),
         ),
-        throwsA(
-          isA<LanternRetryExhaustedException>()
-              .having((error) => error.attempts, 'attempts', 1)
-              .having(
-                (error) => error.cause,
-                'cause',
-                isA<LanternUnavailableException>(),
-              ),
-        ),
+        throwsA(isA<LanternUnavailableException>()),
       );
+      expect(proxy.forwarded('AddEdges'), 1);
       expect(proxy.dropped('AddEdges'), 1);
       expect(
         (await serverClient.getEdge(edgeRef)).weight,
