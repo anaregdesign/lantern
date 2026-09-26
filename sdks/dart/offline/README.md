@@ -89,6 +89,12 @@ be generically retried. Token rotation alone does not change endpoint
 continuity: rotate credentials, then call `resume` to perform status-first
 reconciliation.
 
+CI runs the real-wire receipt matrix against a separate authenticated
+receipt-WAL server while retaining the graph-only fixture for older Put tests.
+The receipt endpoint and ephemeral token are required for that CI run; the
+SQLite adapter's separate `--receipt` crash gate proves process-kill recovery
+with a file-backed store.
+
 Snapshots written by the earlier experimental Add implementation remain
 readable for migration only. Those legacy `OfflineAddEdgeIntent` records are
 distinct from the current receipt-backed `OfflineReceiptAddEdgeIntent`.

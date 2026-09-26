@@ -98,6 +98,9 @@ flutter pub get --enforce-lockfile
 flutter analyze --no-pub
 flutter test --no-pub
 dart run tool/crash_probe.dart
+LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6396 \
+LANTERN_DART_RECEIPT_TOKEN="$RECEIPT_TOKEN" \
+  dart run tool/crash_probe.dart --receipt
 dart run tool/performance_probe.dart
 LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6397 \
   flutter test --no-pub ../../../tests/integration/dart_offline_sqlite_test.dart
@@ -115,6 +118,22 @@ SQLite disk-full error, reject unknown/corrupt databases, and replay through a
 real Lantern server after a proxy drops committed responses. The crash probe
 kills a separate process at transaction boundaries; it is distinct from a Dart
 exception or an in-memory snapshot test.
+
+The `--receipt` crash gate requires a live local authenticated receipt-WAL
+server and fails if either the endpoint or token is missing. CI starts a
+separate fixture with `testbed/scripts/dart_receipt_fixture.sh` and passes its
+temporary token to the test; the local command above expects `RECEIPT_TOKEN`
+to be set from that file. The graph-only server remains available for existing
+real-wire tests. A response-dropping proxy consumes four committed receipt
+responses before the writer is SIGKILLed with SQLite open. A fresh process
+reopens the file, checks the original conditional Put, exact Deletes, and
+contribution-keyed Add-after-Delete results from status, and verifies that no
+mutation was resent or the later-deleted Add edge resurrected. The existing
+eight crash scenarios and separate cross-process claim gate still run unchanged.
+The receipt-bearing Delete uses a different edge because an ambiguous
+same-edge Delete would block Add under per-key FIFO. Direct Deletes of the Add
+target must each return `true`; its absence is checked before Add, after the
+committed Add is deleted, and again after SQLite reopens.
 
 The identity test uses a test-only adapter over the typed parent SDK stream,
 real Connect/h2c nodes, and a reopened SQLite FFI database. It exercises
