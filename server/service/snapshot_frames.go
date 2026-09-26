@@ -18,13 +18,14 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 )
 
 const receiptSnapshotMaxFrameBytes = 8 << 20
 
-// replicationSnapshotCut groups data copied under a publication cut. The
-// receipt capture clones mutable Vertex payloads before releasing its cut;
-// the existing graph-only RPC retains its current copy behavior.
+// replicationSnapshotCut groups data copied under a publication cut. Both
+// graph-only and receipt captures clone mutable Vertex payloads before
+// releasing their cuts so off-lock streaming cannot observe later writes.
 type replicationSnapshotCut struct {
 	cutoffPerOrigin map[string]uint64
 	cutoffHLC       hlc.Timestamp
@@ -150,8 +151,28 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
 		}
+		if len(e.Contributions) == 0 {
+			return fmt.Errorf("snapshot: live edge %q->%q has no contributions", e.Tail, e.Head)
+		}
 		contribs := make([]*pb.SnapshotEdgeContribution, 0, len(e.Contributions))
+		var aggregate *pb.SnapshotEdgeDerivedAggregate
 		for _, c := range e.Contributions {
+			if c.DerivedAggregate {
+				if format != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 ||
+					aggregate != nil || !c.ContribID.IsZero() ||
+					c.HLC != (hlc.Timestamp{}) || e.HLC != (hlc.Timestamp{}) ||
+					edgeweight.IsFiniteSource(c.Weight) {
+					return fmt.Errorf("snapshot: invalid derived aggregate on edge %q->%q", e.Tail, e.Head)
+				}
+				aggregate = &pb.SnapshotEdgeDerivedAggregate{Weight: c.Weight}
+				if !c.Expiration.IsZero() {
+					aggregate.Expiration = timestamppb.New(c.Expiration)
+				}
+				continue
+			}
+			if !edgeweight.IsFiniteSource(c.Weight) {
+				return fmt.Errorf("snapshot: non-finite source contribution on edge %q->%q", e.Tail, e.Head)
+			}
 			contribution := &pb.SnapshotEdgeContribution{
 				Weight:    c.Weight,
 				ContribId: contribIDBytes(c.ContribID),
@@ -162,13 +183,23 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 			}
 			contribs = append(contribs, contribution)
 		}
+		if aggregate != nil {
+			for _, add := range contribs {
+				if len(add.GetContribId()) == 0 || add.GetHlc() == nil {
+					return fmt.Errorf("snapshot: derived aggregate on edge %q->%q has an unidentified Add", e.Tail, e.Head)
+				}
+			}
+			aggregate.Adds = contribs
+			contribs = nil
+		}
 		entry := &pb.SnapshotResponse{
 			Entry: &pb.SnapshotResponse_Edge{
 				Edge: &pb.SnapshotEdge{
-					Tail:          e.Tail,
-					Head:          e.Head,
-					Hlc:           hlcToProto(e.HLC),
-					Contributions: contribs,
+					Tail:             e.Tail,
+					Head:             e.Head,
+					Hlc:              hlcToProto(e.HLC),
+					Contributions:    contribs,
+					DerivedAggregate: aggregate,
 				},
 			},
 		}
@@ -683,6 +714,9 @@ func validateReceiptSnapshotEdge(
 	bounds receiptSnapshotCausalBounds,
 	requireCanonical bool,
 ) (hlc.Timestamp, error) {
+	if edge != nil && edge.GetDerivedAggregate() != nil {
+		return hlc.Timestamp{}, fmt.Errorf("receipt Snapshot cannot contain a derived edge aggregate")
+	}
 	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || len(edge.GetContributions()) == 0 {
 		return hlc.Timestamp{}, fmt.Errorf("invalid live edge")
 	}
@@ -700,6 +734,9 @@ func validateReceiptSnapshotEdge(
 	for i, contribution := range edge.GetContributions() {
 		if contribution == nil || !validOptionalReceiptSnapshotTimestamp(contribution.GetExpiration()) {
 			return hlc.Timestamp{}, fmt.Errorf("invalid live edge contribution")
+		}
+		if !edgeweight.IsFiniteSource(contribution.GetWeight()) {
+			return hlc.Timestamp{}, fmt.Errorf("non-finite live edge contribution weight")
 		}
 		idBytes := contribution.GetContribId()
 		if requireCanonical && i != 0 && bytes.Compare(previousID, idBytes) >= 0 {

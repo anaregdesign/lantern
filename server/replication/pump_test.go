@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -516,6 +517,7 @@ func TestSnapshotClientsEnforceTransportLimitsBeforeInstall(t *testing.T) {
 // asserted in isolation.
 type recordingApplier struct {
 	putEdges      []recordedEdge
+	derivedEdges  []recordedEdge
 	addEdges      []recordedEdge
 	vertexBarrier []recordedVertexBarrier
 	edgeBarrier   []recordedEdge
@@ -528,6 +530,7 @@ type recordedVertexBarrier struct {
 
 type recordedEdge struct {
 	tail, head string
+	weight     float32
 	cid        graphcache.ContribID
 	expiration time.Time
 	ts         hlc.Timestamp
@@ -537,13 +540,18 @@ func (r *recordingApplier) PutVertexWithExpirationHLC(string, *pb.Vertex, time.T
 	return true
 }
 
-func (r *recordingApplier) AddEdgeWithExpirationContribHLC(tail, head string, _ float32, _ time.Time, cid graphcache.ContribID, _ hlc.Timestamp) bool {
-	r.addEdges = append(r.addEdges, recordedEdge{tail: tail, head: head, cid: cid})
+func (r *recordingApplier) AddEdgeWithExpirationContribHLC(tail, head string, weight float32, expiration time.Time, cid graphcache.ContribID, ts hlc.Timestamp) bool {
+	r.addEdges = append(r.addEdges, recordedEdge{tail: tail, head: head, weight: weight, expiration: expiration, cid: cid, ts: ts})
 	return true
 }
 
-func (r *recordingApplier) PutEdgeWithExpirationHLC(tail, head string, _ float32, expiration time.Time, ts hlc.Timestamp) bool {
-	r.putEdges = append(r.putEdges, recordedEdge{tail: tail, head: head, expiration: expiration, ts: ts})
+func (r *recordingApplier) PutEdgeWithExpirationHLC(tail, head string, weight float32, expiration time.Time, ts hlc.Timestamp) bool {
+	r.putEdges = append(r.putEdges, recordedEdge{tail: tail, head: head, weight: weight, expiration: expiration, ts: ts})
+	return true
+}
+
+func (r *recordingApplier) PutEdgeDerivedAggregateWithExpirationHLC(tail, head string, weight float32, expiration time.Time, ts hlc.Timestamp) bool {
+	r.derivedEdges = append(r.derivedEdges, recordedEdge{tail: tail, head: head, weight: weight, expiration: expiration, ts: ts})
 	return true
 }
 
@@ -811,6 +819,122 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 	})
 }
 
+func TestGraphOnlySnapshotInstallerRejectsNonFiniteEdgeBeforeApply(t *testing.T) {
+	var events []string
+	apply := &snapshotLifecycleMutationApplier{events: &events}
+	graph := &snapshotLifecycleGraph{events: &events}
+	frames := graphInstallerLifecycleFrames()
+	footer := frames[len(frames)-1]
+	footer.GetFooter().EdgeCount = 1
+	frames = append(frames[:len(frames)-1], &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+			Tail: "installed", Head: "installed",
+			Contributions: []*pb.SnapshotEdgeContribution{
+				{Weight: 1},
+				{
+					Weight: float32(math.Inf(1)), ContribId: append([]byte{1}, make([]byte, 23)...),
+					Hlc: frames[0].GetHeader().GetCutoffHlc(),
+				},
+			},
+		}},
+	}, footer)
+	_, err := installSnapshot(
+		context.Background(),
+		newGraphOnlySnapshotInstaller(apply, graph),
+		&snapshotSliceStream{frames: frames},
+	)
+	if err == nil || !strings.Contains(err.Error(), "non-finite live edge contribution weight") {
+		t.Fatalf("invalid Snapshot install = %v, want source contribution error", err)
+	}
+	if len(graph.putEdges) != 0 || len(graph.addEdges) != 0 ||
+		len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
+		t.Fatalf("invalid Snapshot partially installed edge or watermark: puts=%v adds=%v finishes=%v cutoffs=%v",
+			graph.putEdges, graph.addEdges, apply.finishes, apply.cutoffs)
+	}
+}
+
+func TestGraphOnlySnapshotInstallerDerivedAggregate(t *testing.T) {
+	expiration := time.Now().Add(time.Hour)
+	addExpiration := expiration.Add(-time.Minute)
+	newFrames := func() []*pb.SnapshotResponse {
+		frames := graphInstallerLifecycleFrames()
+		frames[len(frames)-1].GetFooter().EdgeCount = 1
+		edge := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+			Tail: "installed", Head: "installed",
+			DerivedAggregate: &pb.SnapshotEdgeDerivedAggregate{
+				Weight: float32(math.Inf(1)), Expiration: timestamppb.New(expiration),
+				Adds: []*pb.SnapshotEdgeContribution{{
+					Weight: 7, Expiration: timestamppb.New(addExpiration),
+					ContribId: append([]byte{0x52}, make([]byte, 23)...),
+					Hlc:       frames[0].GetHeader().GetCutoffHlc(),
+				}},
+			},
+		}}}
+		return append(frames[:len(frames)-1], edge, frames[len(frames)-1])
+	}
+	t.Run("base and independent Add route to separate replay paths", func(t *testing.T) {
+		var events []string
+		apply := &snapshotLifecycleMutationApplier{events: &events}
+		graph := &snapshotLifecycleGraph{events: &events}
+		result, err := installSnapshot(
+			context.Background(), newGraphOnlySnapshotInstaller(apply, graph),
+			&snapshotSliceStream{frames: newFrames()},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Graph.Edges != 1 || len(graph.derivedEdges) != 1 || len(graph.addEdges) != 1 ||
+			len(graph.putEdges) != 0 || len(apply.finishes) != 1 || !apply.finishes[0] ||
+			!math.IsInf(float64(graph.derivedEdges[0].weight), 1) ||
+			!graph.derivedEdges[0].expiration.Equal(expiration) ||
+			graph.addEdges[0].weight != 7 ||
+			!graph.addEdges[0].expiration.Equal(addExpiration) ||
+			graph.addEdges[0].cid[0] != 0x52 || graph.addEdges[0].ts.WallNs != 30 {
+			t.Fatalf("derived replay changed provenance or Add: graph=%+v, result=%+v, finish=%v",
+				graph, result, apply.finishes)
+		}
+	})
+	t.Run("malformed nested source cannot install even the base", func(t *testing.T) {
+		var events []string
+		apply := &snapshotLifecycleMutationApplier{events: &events}
+		graph := &snapshotLifecycleGraph{events: &events}
+		frames := newFrames()
+		frames[2].GetEdge().GetDerivedAggregate().Adds[0].Weight = float32(math.NaN())
+		_, err := installSnapshot(
+			context.Background(), newGraphOnlySnapshotInstaller(apply, graph),
+			&snapshotSliceStream{frames: frames},
+		)
+		if err == nil || !strings.Contains(err.Error(), "non-finite live edge contribution weight") ||
+			len(graph.derivedEdges) != 0 || len(graph.addEdges) != 0 ||
+			len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
+			t.Fatalf("malformed nested Add installed base or watermark: %v, graph=%+v, finish=%v, cutoffs=%v",
+				err, graph, apply.finishes, apply.cutoffs)
+		}
+	})
+	t.Run("duplicate edge frame cannot reclassify aggregate as source", func(t *testing.T) {
+		var events []string
+		apply := &snapshotLifecycleMutationApplier{events: &events}
+		graph := &snapshotLifecycleGraph{events: &events}
+		frames := newFrames()
+		frames[len(frames)-1].GetFooter().EdgeCount = 2
+		duplicate := &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+			Tail: "installed", Head: "installed",
+			Contributions: []*pb.SnapshotEdgeContribution{{Weight: 1}},
+		}}}
+		frames = append(frames[:len(frames)-1], duplicate, frames[len(frames)-1])
+		_, err := installSnapshot(
+			context.Background(), newGraphOnlySnapshotInstaller(apply, graph),
+			&snapshotSliceStream{frames: frames},
+		)
+		if err == nil || !strings.Contains(err.Error(), "duplicate live edge frame") ||
+			len(graph.derivedEdges) != 1 || len(graph.addEdges) != 1 || len(graph.putEdges) != 0 ||
+			len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
+			t.Fatalf("duplicate frame changed edge/watermark: %v, graph=%+v, finish=%v, cutoffs=%v",
+				err, graph, apply.finishes, apply.cutoffs)
+		}
+	})
+}
+
 func TestApplySnapshotCausalBarriers(t *testing.T) {
 	r := &recordingApplier{}
 	ts := hlc.Timestamp{WallNs: 20, NodeID: hlc.NodeID{0x20}}
@@ -912,6 +1036,96 @@ func TestSnapshotEdgeRows(t *testing.T) {
 	duplicate.Contributions = append(duplicate.Contributions, duplicate.Contributions[1])
 	if _, err := snapshotEdgeRows(duplicate); err == nil {
 		t.Fatal("duplicate Add identity accepted")
+	}
+	for _, weight := range []struct {
+		name  string
+		value float32
+	}{
+		{"NaN", float32(math.NaN())},
+		{"positive infinity", float32(math.Inf(1))},
+		{"negative infinity", float32(math.Inf(-1))},
+	} {
+		for _, row := range []struct {
+			name  string
+			index int
+		}{
+			{"Put", 0},
+			{"Add", 1},
+		} {
+			t.Run(weight.name+"/"+row.name, func(t *testing.T) {
+				invalid := frame(stamp(30))
+				invalid.Contributions[row.index].Weight = weight.value
+				if rows, err := snapshotEdgeRows(invalid); err == nil || len(rows) != 0 {
+					t.Fatalf("invalid source contribution returned rows=%+v, err=%v", rows, err)
+				}
+			})
+		}
+	}
+	overflow := frame(stamp(30))
+	overflow.Hlc = nil
+	overflow.Contributions = []*pb.SnapshotEdgeContribution{
+		{Weight: math.MaxFloat32, ContribId: append([]byte{1}, make([]byte, 23)...), Hlc: stamp(30)},
+		{Weight: math.MaxFloat32, ContribId: append([]byte{2}, make([]byte, 23)...), Hlc: stamp(31)},
+	}
+	rows, err = snapshotEdgeRows(overflow)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("finite overflow sources = %+v, %v", rows, err)
+	}
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	for _, row := range rows {
+		applySnapshotEdge(cache, overflow.GetTail(), overflow.GetHead(), row.weight,
+			row.expiration, row.contribID, row.hlc)
+	}
+	if got, live := cache.GetWeight("tail", "head"); !live || !math.IsInf(float64(got), 1) {
+		t.Fatalf("restored finite contributions yielded %v, live=%t, want +Inf", got, live)
+	}
+
+	derived := &pb.SnapshotEdge{
+		Tail: "tail", Head: "head",
+		DerivedAggregate: &pb.SnapshotEdgeDerivedAggregate{
+			Weight: float32(math.Inf(1)),
+			Adds:   []*pb.SnapshotEdgeContribution{{Weight: 3, ContribId: id, Hlc: stamp(30)}},
+		},
+	}
+	for _, aggregate := range []float32{float32(math.Inf(1)), float32(math.Inf(-1)), float32(math.NaN())} {
+		candidate := proto.Clone(derived).(*pb.SnapshotEdge)
+		candidate.DerivedAggregate.Weight = aggregate
+		rows, err := snapshotEdgeRows(candidate)
+		if err != nil || len(rows) != 2 || !rows[0].derivedAggregate ||
+			math.Float32bits(rows[0].weight) != math.Float32bits(aggregate) ||
+			rows[1].derivedAggregate || rows[1].contribID.IsZero() || rows[1].hlc.WallNs != 30 {
+			t.Fatalf("derived aggregate rows = %+v, %v", rows, err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*pb.SnapshotEdge)
+	}{
+		{"empty edge", func(e *pb.SnapshotEdge) { e.DerivedAggregate = nil }},
+		{"mixed ordinary contributions", func(e *pb.SnapshotEdge) {
+			e.Contributions = []*pb.SnapshotEdgeContribution{{Weight: 1}}
+		}},
+		{"finite forged marker", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Weight = 5 }},
+		{"marker with Put floor", func(e *pb.SnapshotEdge) { e.Hlc = stamp(20) }},
+		{"invalid marker expiration", func(e *pb.SnapshotEdge) {
+			e.DerivedAggregate.Expiration = &timestamppb.Timestamp{Seconds: 253402300800}
+		}},
+		{"nil nested Add", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0] = nil }},
+		{"nonfinite nested Add", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0].Weight = float32(math.Inf(-1)) }},
+		{"zero nested Add ID", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0].ContribId = make([]byte, 24) }},
+		{"nested Put instead of Add", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0].ContribId = nil }},
+		{"missing nested Add HLC", func(e *pb.SnapshotEdge) { e.DerivedAggregate.Adds[0].Hlc = nil }},
+		{"duplicate nested Add ID", func(e *pb.SnapshotEdge) {
+			e.DerivedAggregate.Adds = append(e.DerivedAggregate.Adds, proto.Clone(e.DerivedAggregate.Adds[0]).(*pb.SnapshotEdgeContribution))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := proto.Clone(derived).(*pb.SnapshotEdge)
+			tc.change(candidate)
+			if rows, err := snapshotEdgeRows(candidate); err == nil || len(rows) != 0 {
+				t.Fatalf("malformed derived edge returned rows=%+v, err=%v", rows, err)
+			}
+		})
 	}
 }
 

@@ -153,6 +153,7 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 	if !s.snapshotInstallMu.TryLock() {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("Snapshot install already in progress"))
 	}
+	s.snapshotReadCutMu.Lock()
 	s.replicationCutMu.Lock()
 	if !s.snapshotInstallFaulted {
 		if s.publicationFaultCount == 0 {
@@ -162,8 +163,10 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 		s.snapshotInstallFaulted = true
 	}
 	s.replicationCutMu.Unlock()
+	s.snapshotReadCutMu.Unlock()
 	return func(verified bool) {
 		if verified {
+			s.snapshotReadCutMu.Lock()
 			s.replicationCutMu.Lock()
 			s.snapshotInstallFaulted = false
 			s.publicationFaultCount--
@@ -171,6 +174,7 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 				s.publicationFaultCh = make(chan struct{})
 			}
 			s.replicationCutMu.Unlock()
+			s.snapshotReadCutMu.Unlock()
 		}
 		s.snapshotInstallMu.Unlock()
 	}, nil
@@ -208,13 +212,20 @@ func (s *LanternService) clearPublicationFault(pending *pendingMutation) {
 	}
 }
 
+func (s *LanternService) checkPublicGraphWriteFaultLocked() error {
+	if s.snapshotInstallFaulted || s.receiptCommitFaulted {
+		return publicationGapError()
+	}
+	return nil
+}
+
 // prepareLocalMutationLocked repairs an earlier graph-applied write before a
 // new local write can touch the graph or claim its origin seq. The retained
 // mutation is appended as-is; in particular, a conditional Put or a bounded
 // prefix Delete is never re-evaluated while repairing its publication.
 func (s *LanternService) prepareLocalMutationLocked() error {
-	if s.receiptCommitFaulted {
-		return publicationGapError()
+	if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+		return err
 	}
 	if pending := s.pendingLocalMutation; pending != nil {
 		if err := s.appendPreparedLocalMutationLocked(pending.walOp); err != nil {

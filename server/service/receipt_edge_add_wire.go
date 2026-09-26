@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -84,8 +85,7 @@ func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID) ([32]by
 		len(edge.GetHead()) > receiptVertexWALMaxBytes {
 		return [32]byte{}, fmt.Errorf("Edge Add identity must be nonempty bounded UTF-8")
 	}
-	weight := float64(edge.GetWeight())
-	if math.IsNaN(weight) || math.IsInf(weight, 0) {
+	if !edgeweight.IsFiniteSource(edge.GetWeight()) {
 		return [32]byte{}, fmt.Errorf("Edge Add weight must be finite")
 	}
 	if edge.GetExpiration() != nil && edge.GetExpiration().CheckValid() != nil {

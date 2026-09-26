@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -156,6 +157,43 @@ func TestReceiptWALUnionCodecNonDeleteGraphArms(t *testing.T) {
 				t.Fatalf("relay-local seq must be independent: %v", err)
 			}
 		})
+	}
+}
+
+func TestReceiptWALUnionCodecRejectsNonFiniteSourceEdgeWeights(t *testing.T) {
+	for _, weight := range []float32{float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1))} {
+		for _, tc := range []struct {
+			name string
+			op   *pb.MutationOp
+		}{
+			{"singular Put", &pb.MutationOp{Op: &pb.MutationOp_PutEdge{
+				PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: weight}},
+			}}},
+			{"plural Put", &pb.MutationOp{Op: &pb.MutationOp_PutEdges{
+				PutEdges: &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: weight}}},
+			}}},
+			{"singular Add", &pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+				AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: weight}},
+			}}},
+			{"plural Add", &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+				AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: weight}}},
+			}}},
+		} {
+			t.Run(fmt.Sprintf("%s/%08x", tc.name, math.Float32bits(weight)), func(t *testing.T) {
+				if _, err := encodeReceiptWALUnion(receiptWALUnionGraphFixture(tc.op)); !errors.Is(err, errReceiptWALUnion) {
+					t.Fatalf("non-finite WAL source encoded: %v", err)
+				}
+			})
+		}
+	}
+	finite := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+		AddEdges: &pb.AddEdgesRequest{Edges: []*pb.Edge{
+			{Tail: "a", Head: "b", Weight: math.MaxFloat32},
+			{Tail: "a", Head: "b", Weight: math.MaxFloat32},
+		}},
+	}})
+	if _, err := encodeReceiptWALUnion(finite); err != nil {
+		t.Fatalf("finite contributions whose sum overflows rejected: %v", err)
 	}
 }
 

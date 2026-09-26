@@ -84,9 +84,15 @@ func (b *blockedDeleteSnapshotBackend) SnapshotReplication() graphcache.Replicat
 
 type replicationSnapshotRecorder struct {
 	frames []*pb.SnapshotResponse
+	onSend func(*pb.SnapshotResponse) error
 }
 
 func (s *replicationSnapshotRecorder) Send(frame *pb.SnapshotResponse) error {
+	if s.onSend != nil {
+		if err := s.onSend(frame); err != nil {
+			return err
+		}
+	}
 	s.frames = append(s.frames, frame)
 	return nil
 }
@@ -584,6 +590,37 @@ func TestLanternReplicationService_SnapshotCanonicalizesImplicitVertices(t *test
 	}
 	if edges != 1 {
 		t.Fatalf("Snapshot edge frames = %d, want 1", edges)
+	}
+}
+
+func TestLanternReplicationService_GraphSnapshotDetachesVerticesBeforeSend(t *testing.T) {
+	fb := newFakeBackend()
+	source := &pb.Vertex{Key: "kept", Value: &pb.Vertex_String_{String_: "before"}}
+	fb.vertices["kept"] = source
+	svc := NewLanternService(fb)
+	replication := NewLanternReplicationService(nil, fb, hlc.New(hlc.NodeID{0x02}, hlc.Options{})).WithOriginStates(svc)
+	sender := &replicationSnapshotRecorder{onSend: func(frame *pb.SnapshotResponse) error {
+		if frame.GetHeader() != nil {
+			finish := beginSnapshotInstallDuringSend(t, svc)
+			defer finish(false)
+			source.Value = &pb.Vertex_String_{String_: "during-replay"}
+		}
+		return nil
+	}}
+	if err := replication.Snapshot(context.Background(), &pb.SnapshotRequest{}, sender); err != nil {
+		t.Fatal(err)
+	}
+	var seen int
+	for _, frame := range sender.frames {
+		if vertex := frame.GetVertex(); vertex != nil {
+			seen++
+			if got := vertex.GetVertex().GetString_(); got != "before" {
+				t.Fatalf("off-lock replication frame retained a mutable cache vertex: %q", got)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("replication Snapshot emitted %d vertex frames, want 1", seen)
 	}
 }
 

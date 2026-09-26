@@ -131,6 +131,17 @@ func (c *GraphCache[S, T]) applyVertexCausalBarrierLocked(key S, ts hlc.Timestam
 // exact no-op, including its endpoint vertices; accepted live Puts still
 // auto-create endpoints as PutEdgeWithExpiration does.
 func (c *GraphCache[S, T]) PutEdgeWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) bool {
+	return c.putEdgeWithExpirationHLC(tail, head, w, expiration, ts, false)
+}
+
+// PutEdgeDerivedAggregateWithExpirationHLC replays a trusted graph-only
+// Snapshot base imported from a folded backup. It retains that provenance for
+// subsequent Snapshot relays without treating the aggregate as a new source.
+func (c *GraphCache[S, T]) PutEdgeDerivedAggregateWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) bool {
+	return c.putEdgeWithExpirationHLC(tail, head, w, expiration, ts, true)
+}
+
+func (c *GraphCache[S, T]) putEdgeWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp, derivedAggregate bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	live := cache.IsLiveAt(expiration, c.applicationTime())
@@ -148,7 +159,7 @@ func (c *GraphCache[S, T]) PutEdgeWithExpirationHLC(tail, head S, w float32, exp
 	if !c.edgePutWriteAllowedLocked(tail, head, ts) {
 		return false
 	}
-	applied := c.putEdgeHLCLocked(tail, head, w, expiration, ts)
+	applied := c.putEdgeHLCLocked(tail, head, w, expiration, ts, derivedAggregate)
 	if applied {
 		c.clearEdgeCausalBarrierLocked(tail, head)
 		c.clearEdgeTombstoneLocked(tail, head)

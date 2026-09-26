@@ -30,7 +30,7 @@ const archiveWireMaxDepth = 32
 // because the application was rebuilt with a newer proto. Review any reachable
 // SnapshotResponse schema change against archive semantics before updating this
 // fingerprint or assigning a new archive version.
-const archiveGraphSchemaFingerprintV1 = "b28d729eed24986a1ce041b1d23cd843cc4f00f551640fc1fbaa0d9ba0a3f40d"
+const archiveGraphSchemaFingerprintV1 = "5bb93027bcf117251d14b7a9c1542d6d8e368c2c7ef343d3075276a8319e8900"
 
 var archiveGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.SnapshotResponse{}).ProtoReflect().Descriptor())

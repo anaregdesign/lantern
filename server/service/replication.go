@@ -512,6 +512,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 				Edges:    s.backend.SnapshotEdges(),
 			}
 		}
+		detachSnapshotVertices(graph.Vertices)
 	}
 	if gate, ok := s.origins.(snapshotCutProvider); ok {
 		if err := gate.withReplicationSnapshotCut(capture); err != nil {

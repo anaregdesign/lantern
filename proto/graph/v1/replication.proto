@@ -447,11 +447,10 @@ message SnapshotVertexCausalBarrier {
   HLCTimestamp hlc = 2;
 }
 
-// SnapshotEdgeContribution is one additive (or LWW-imported) entry inside
-// an edge's weight bucket. Snapshot preserves the per-contribution
-// decomposition so that the receiver's ContribID dedup (#182) keeps
-// suppressing duplicates when peer-pump later re-delivers the same
-// contribution from the live tail.
+// SnapshotEdgeContribution is one finite source Add (or LWW Put) inside an
+// edge's weight bucket. Snapshot preserves the per-contribution decomposition
+// so that the receiver's ContribID dedup (#182) keeps suppressing duplicates
+// when peer-pump later re-delivers the same contribution from the live tail.
 //
 //   contrib_id: 24-byte ContribID for a replicated Add. Empty denotes the
 //               single Put row, or a local-only legacy contribution with no
@@ -467,14 +466,33 @@ message SnapshotEdgeContribution {
   HLCTimestamp hlc = 4;
 }
 
+// SnapshotEdgeDerivedAggregate is a folded edge value imported from a
+// graph-only backup. That backup retains the effective weight and its latest
+// expiration, but not the original contributions. A non-finite weight here is
+// an aggregate, never a new Put/Add source; only graph-only Snapshot relays
+// may carry it. RECEIPT Snapshots preserve finite sources instead. Later
+// finite Add contributions keep their own identity, causal position, and TTL
+// inside this variant, rather than being folded into the restored base.
+message SnapshotEdgeDerivedAggregate {
+  float weight = 1;
+  google.protobuf.Timestamp expiration = 2;
+  repeated SnapshotEdgeContribution adds = 3;
+}
+
 // SnapshotEdge is the snapshot-time representation of a single live edge.
 // `hlc` carries the winning Put floor, including a retained causal barrier
-// (zero when no Put has happened). Each Add carries its own original HLC.
+// (zero when no Put has happened). Exactly one representation is present:
+// nonempty finite-source contributions, OR a derived aggregate with zero
+// ordinary contributions. Each Add carries its own original HLC.
 message SnapshotEdge {
   string tail = 1;
   string head = 2;
   HLCTimestamp hlc = 3;
   repeated SnapshotEdgeContribution contributions = 4;
+  // Optional non-finite graph-only backup aggregate occupying the single
+  // zero-ContribID Put/base slot. Ordinary contributions must be empty when
+  // present; only derived_aggregate.adds can accompany this base.
+  SnapshotEdgeDerivedAggregate derived_aggregate = 5;
 }
 
 // SnapshotEdgeCausalBarrier is the edge sibling of

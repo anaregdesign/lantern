@@ -117,10 +117,10 @@ func (c *GraphCache[S, T]) putEdgeLockedAt(tail, head S, w float32, expiration, 
 // the complete causal floor. That preflight must reject losing writes before
 // this helper creates endpoint vertices; the weight-level HLC check remains a
 // defensive guard. Caller must hold c.mu.
-func (c *GraphCache[S, T]) putEdgeHLCLocked(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) bool {
+func (c *GraphCache[S, T]) putEdgeHLCLocked(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp, derivedAggregate bool) bool {
 	c.ensureVertexLocked(tail, expiration)
 	c.ensureVertexLocked(head, expiration)
-	created, tailID, headID, applied := c.edges.putWithExpirationHLC(tail, head, w, expiration, ts)
+	created, tailID, headID, applied := c.edges.putWithExpirationHLCMode(tail, head, w, expiration, ts, derivedAggregate)
 	if created {
 		c.onEdgeAddedLocked(created, tailID, headID, head)
 	}

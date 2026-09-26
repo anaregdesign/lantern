@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -59,6 +60,52 @@ func TestReceiptWholeStateArchiveStageKeepsDetachedReceiptAndCut(t *testing.T) {
 	}
 	if _, ok := stage.graph.GetVertex("tail"); !ok {
 		t.Fatal("staged graph aliased input frame")
+	}
+}
+
+func TestReceiptWholeStateArchiveStageRetainsFiniteSourcesWithInfiniteSum(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	result := []byte{0x7f, 0xc0, 0, 1}
+	archive.Receipts.Receipts[0].Result = append([]byte(nil), result...)
+	contributions := archive.Graph[3].GetEdge().Contributions
+	contributions[0].Weight = math.MaxFloat32
+	next := proto.Clone(contributions[0]).(*pb.SnapshotEdgeContribution)
+	next.ContribId[0]++
+	archive.Graph[3].GetEdge().Contributions = append(contributions, next)
+	raw := encodedWholeStateArchive(t, archive)
+	stage, err := stageReceiptWholeStateArchive(
+		context.Background(), bytes.NewReader(raw), archive.Policy, time.Hour, nil,
+	)
+	if err != nil {
+		t.Fatalf("stage finite source contributions: %v", err)
+	}
+	if got, live := stage.graph.GetWeight("tail", "head"); !live || !math.IsInf(float64(got), 1) {
+		t.Fatalf("staged finite contributions yielded %v, live=%t, want +Inf", got, live)
+	}
+	edges := stage.graph.SnapshotEdges()
+	if len(edges) != 1 || len(edges[0].Contributions) != 2 ||
+		edges[0].Contributions[0].Weight != math.MaxFloat32 ||
+		edges[0].Contributions[1].Weight != math.MaxFloat32 {
+		t.Fatalf("staging changed source contributions: %+v", edges)
+	}
+	receipts, err := stage.receipts.Snapshot()
+	if err != nil || len(receipts.Receipts) != 1 || !bytes.Equal(receipts.Receipts[0].Result, result) {
+		t.Fatalf("staging changed original RESULT bits: %+v, %v", receipts.Receipts, err)
+	}
+}
+
+func TestReceiptWholeStateArchiveStageRejectsDerivedAggregate(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	edge := archive.Graph[3].GetEdge()
+	edge.Contributions = nil
+	edge.DerivedAggregate = &pb.SnapshotEdgeDerivedAggregate{Weight: float32(math.Inf(1))}
+	raw := uncheckedArchiveWithGraph(t, archive)
+	stage, err := stageReceiptWholeStateArchive(
+		context.Background(), bytes.NewReader(raw), archive.Policy, time.Hour, nil,
+	)
+	if stage != nil || !errors.Is(err, errWholeStateArchive) ||
+		!strings.Contains(err.Error(), "receipt Snapshot cannot contain a derived edge aggregate") {
+		t.Fatalf("receipt archive admitted graph-only aggregate: stage=%p, err=%v", stage, err)
 	}
 }
 

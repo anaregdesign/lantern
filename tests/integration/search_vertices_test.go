@@ -1297,8 +1297,13 @@ func TestSearchCLISharedGrammarOverRealH2C(t *testing.T) {
 // visibility contract over the real Connect/h2c path: a search concurrent with
 // PutVertices/DeleteVertices observes the complete pre-batch or post-batch hit
 // set, never the midpoint between the prepared index update and vertex commit.
+// An overlapping publication may instead return a bounded retryable
+// Unavailable; persistent unavailability is not a successful read.
 func TestSearchVertices_PluralWriteVisibilityOverWire(t *testing.T) {
-	const documents = 128
+	const (
+		documents                        = 128
+		maxConsecutivePublicationRetries = 32
+	)
 	c := newSearchRawClient(t, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -1339,20 +1344,32 @@ func TestSearchVertices_PluralWriteVisibilityOverWire(t *testing.T) {
 	var stop atomic.Bool
 	var reads atomic.Int64
 	var partial atomic.Int64
+	var publicationRetries atomic.Int64
 	errCh := make(chan error, 1)
 	var reader sync.WaitGroup
 	reader.Add(1)
 	go func() {
 		defer reader.Done()
+		consecutiveRetries := 0
 		for !stop.Load() {
 			got, err := searchCount()
 			if err != nil {
+				if connect.CodeOf(err) == connect.CodeUnavailable &&
+					strings.Contains(err.Error(), "graph publication changed during read; retry") {
+					consecutiveRetries++
+					publicationRetries.Add(1)
+					if consecutiveRetries <= maxConsecutivePublicationRetries {
+						continue
+					}
+					err = fmt.Errorf("SearchVertices stayed unavailable across %d consecutive publication changes: %w", consecutiveRetries, err)
+				}
 				select {
 				case errCh <- err:
 				default:
 				}
 				return
 			}
+			consecutiveRetries = 0
 			reads.Add(1)
 			if got != 0 && got != documents {
 				partial.Add(1)
@@ -1375,6 +1392,9 @@ func TestSearchVertices_PluralWriteVisibilityOverWire(t *testing.T) {
 	}
 	if reads.Load() == 0 {
 		t.Fatal("wire reader never executed")
+	}
+	if retries, successful := publicationRetries.Load(), reads.Load(); retries >= 10 && retries > 3*successful {
+		t.Fatalf("concurrent Search was unavailable %d times for only %d complete observations", retries, successful)
 	}
 	if got := partial.Load(); got != 0 {
 		t.Fatalf("wire search observed %d partial plural-write snapshots", got)

@@ -38,6 +38,16 @@ func (w *heldPublicationWAL) Write(mutationlog.Entry) error {
 	return nil
 }
 
+type countingCapacityBackend struct {
+	Backend
+	probes atomic.Int32
+}
+
+func (b *countingCapacityBackend) CapacityFootprint() (int, int) {
+	b.probes.Add(1)
+	return b.Backend.CapacityFootprint()
+}
+
 func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T) {
 	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
 	oldGeneration, faulted := svc.publicationStatus()
@@ -73,6 +83,205 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 	case <-newGeneration:
 		t.Fatal("verified Snapshot replay left new CDC generation closed")
 	default:
+	}
+}
+
+func TestSnapshotInstall_FaultBlocksPublicGraphWritesUntilVerifiedRetry(t *testing.T) {
+	for _, replicated := range []bool{false, true} {
+		name := "standalone"
+		if replicated {
+			name = "replicated"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			expiration := time.Now().Add(time.Hour)
+			cache.PutVertexWithExpiration("kept", &pb.Vertex{Key: "kept", Value: &pb.Vertex_String_{String_: "original"}}, expiration)
+			cache.PutEdgeWithExpiration("kept", "edge", 2, expiration)
+			probe := &countingCapacityBackend{Backend: cache}
+			svc := NewLanternService(probe).WithCapacityLimits(CapacityLimits{MaxVertices: 100, MaxEdges: 100})
+			var log *mutationlog.Log
+			var origin hlc.NodeID
+			if replicated {
+				log = mutationlog.New(mutationlog.Options{Capacity: 16})
+				t.Cleanup(func() { _ = log.Close() })
+				origin = hlc.NodeID{0x42}
+				svc.WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+			}
+			baselineProbes := probe.probes.Load()
+			finish, err := svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A replay may already have applied an earlier valid frame.
+			cache.PutEdgeWithExpiration("partial", "edge", 1, expiration)
+			checks := []struct {
+				name string
+				call func() error
+			}{
+				{"PutVertices", func() error {
+					_, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "new"}}})
+					return err
+				}},
+				{"PutVertices if_absent", func() error {
+					_, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{IfAbsent: true, Vertices: []*pb.Vertex{{Key: "new"}}})
+					return err
+				}},
+				{"PutEdges outcomes", func() error {
+					_, err := svc.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "kept", Head: "edge", Weight: 3}}})
+					return err
+				}},
+				{"AddEdges effective weights", func() error {
+					_, err := svc.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "kept", Head: "edge", Weight: 3}}})
+					return err
+				}},
+				{"DeleteVertices outcomes", func() error {
+					_, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{Keys: []string{"kept"}})
+					return err
+				}},
+				{"DeleteEdges outcomes", func() error {
+					_, err := svc.DeleteEdges(ctx, &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "kept", Head: "edge"}}})
+					return err
+				}},
+				{"DeleteVerticesByPrefix", func() error {
+					_, err := svc.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "kept"})
+					return err
+				}},
+				{"DeleteEdgesByPrefix", func() error {
+					_, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "kept"})
+					return err
+				}},
+				{"empty PutVertices", func() error {
+					_, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{})
+					return err
+				}},
+				{"empty PutEdges", func() error {
+					_, err := svc.PutEdges(ctx, &pb.PutEdgesRequest{})
+					return err
+				}},
+				{"empty AddEdges", func() error {
+					_, err := svc.AddEdges(ctx, &pb.AddEdgesRequest{})
+					return err
+				}},
+				{"empty DeleteVertices", func() error {
+					_, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{})
+					return err
+				}},
+				{"empty DeleteEdges", func() error {
+					_, err := svc.DeleteEdges(ctx, &pb.DeleteEdgesRequest{})
+					return err
+				}},
+			}
+			for _, check := range checks {
+				t.Run(check.name, func(t *testing.T) {
+					if err := check.call(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+						t.Fatalf("write during Snapshot fault = %v, want FailedPrecondition", err)
+					}
+					if got, live := cache.GetWeight("kept", "edge"); !live || got != 2 {
+						t.Fatalf("write changed existing edge to (%v, %t)", got, live)
+					}
+					if got, live := cache.GetWeight("partial", "edge"); !live || got != 1 {
+						t.Fatalf("write changed partially installed edge to (%v, %t)", got, live)
+					}
+					if value, live := cache.GetVertex("kept"); !live || value.GetString_() != "original" {
+						t.Fatalf("write changed existing vertex to (%v, %t)", value, live)
+					}
+					if _, live := cache.GetVertex("new"); live {
+						t.Fatal("write installed new vertex")
+					}
+					if got := probe.probes.Load(); got != baselineProbes {
+						t.Fatalf("faulted write reached capacity probe %d times, want %d", got, baselineProbes)
+					}
+					if replicated && (svc.LocalSeq(origin) != 0 || log.Len() != 0) {
+						t.Fatalf("write advanced origin/log to %d/%d", svc.LocalSeq(origin), log.Len())
+					}
+				})
+			}
+			finish(false)
+			if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "kept", Head: "edge", Weight: 4}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("write after failed Snapshot = %v, want FailedPrecondition", err)
+			}
+			if got := probe.probes.Load(); got != baselineProbes {
+				t.Fatalf("write after failed Snapshot reached capacity probe %d times, want %d", got, baselineProbes)
+			}
+			retry, err := svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			retry(true)
+			resp, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "kept", Head: "edge", Weight: 4}})
+			if err != nil || resp.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+				t.Fatalf("write after verified retry = (%v, %v)", resp, err)
+			}
+			if got := probe.probes.Load(); got == baselineProbes {
+				t.Fatal("successful write never exercised a configured capacity probe")
+			}
+		})
+	}
+}
+
+func TestSnapshotInstall_FaultBlocksReceiptWritesBeforeStoreOrGraph(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 16)
+	ctx := context.Background()
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := svc.clock.NodeID()
+	checks := []struct {
+		name string
+		call func() error
+	}{
+		{"PutVertices", func() error {
+			_, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{
+				Vertices:       []*pb.Vertex{{Key: "rejected"}},
+				ReceiptContext: publicReceiptContext(t, runtime, 0x91, 1),
+			})
+			return err
+		}},
+		{"AddEdges", func() error {
+			_, err := svc.AddEdges(ctx, publicReceiptEdgeAddRequest(t, runtime, 0x92,
+				&pb.Edge{Tail: "rejected", Head: "edge", Weight: 1}))
+			return err
+		}},
+		{"DeleteVertices", func() error {
+			_, err := svc.DeleteVertices(ctx, &pb.DeleteVerticesRequest{
+				Keys: []string{"rejected"}, ReceiptContext: publicReceiptContext(t, runtime, 0x93, 1),
+			})
+			return err
+		}},
+		{"DeleteEdges", func() error {
+			_, err := svc.DeleteEdges(ctx, &pb.DeleteEdgesRequest{
+				Edges:          []*pb.EdgeKey{{Tail: "rejected", Head: "edge"}},
+				ReceiptContext: publicReceiptContext(t, runtime, 0x94, 1),
+			})
+			return err
+		}},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.call(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("receipt write during Snapshot fault = %v, want FailedPrecondition", err)
+			}
+			snapshot, err := runtime.receipt.store.Snapshot()
+			if err != nil || len(snapshot.Receipts) != 0 {
+				t.Fatalf("receipt write changed Store: %+v, %v", snapshot.Receipts, err)
+			}
+			if _, live := runtime.graph.GetVertex("rejected"); live {
+				t.Fatal("receipt write changed graph")
+			}
+			if svc.LocalSeq(origin) != 0 || runtime.log.Len() != 0 {
+				t.Fatalf("receipt write changed origin/log to %d/%d",
+					svc.LocalSeq(origin), runtime.log.Len())
+			}
+		})
+	}
+	finish(false)
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{
+		Vertices:       []*pb.Vertex{{Key: "rejected"}},
+		ReceiptContext: publicReceiptContext(t, runtime, 0x95, 1),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("receipt write after failed Snapshot = %v, want FailedPrecondition", err)
 	}
 }
 
@@ -120,6 +329,17 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	}
 	first.Vertices[0] = &pb.Vertex{Key: "caller-mutated", Value: &pb.Vertex_String_{String_: "caller-mutated"}}
 	wal.failed.Store(false)
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "repair-probe"}}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("write repaired pending WAL during Snapshot fault: %v", err)
+	}
+	if svc.pendingLocalMutation == nil || svc.pendingLocalMutation.walOp != pendingEffect || log.Len() != 0 {
+		t.Fatal("Snapshot-faulted write changed pending WAL repair state")
+	}
+	finish(true)
 	if err := svc.ApplyMutation(ctx, cloneQueuedMutation(svc.pendingLocalMutation.mutation)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("remote self-echo crossed local publication fault: %v", err)
 	}
@@ -279,6 +499,151 @@ func TestPublishRemoteMutation_FailedAppendRetriesWithoutDoubleApply(t *testing.
 	}
 	if entry := mustMutationLogEntry(t, log, 1); entry.Op != pendingEffect {
 		t.Fatal("remote retry replaced the exact retained WAL envelope")
+	}
+}
+
+func TestPublishRemoteMutation_SnapshotFaultRetainsPendingEffect(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cutoff    uint64
+		failDrain bool
+		wantLog   int
+	}{
+		{name: "pending above cutoff", cutoff: 0, wantLog: 2},
+		{name: "pending covered by cutoff", cutoff: 1, wantLog: 1},
+		{name: "post-cutoff drain fails then recovers", cutoff: 1, failDrain: true, wantLog: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cache := newFakeBackend()
+			wal := &heldPublicationWAL{}
+			wal.failed.Store(true)
+			log := mutationlog.New(mutationlog.Options{Capacity: 8, WAL: wal})
+			t.Cleanup(func() { _ = log.Close() })
+			local, origin := bytes16("local"), bytes16("remote")
+			svc := NewLanternService(cache).WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+			mutation := func(seq uint64, weight float32) *pb.Mutation {
+				return &pb.Mutation{
+					Seq: seq, Origin: origin[:], Hlc: newHLC(int64(seq), origin),
+					Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+						Edge: &pb.Edge{Tail: "a", Head: "b", Weight: weight, Expiration: futureTs(time.Hour)},
+					}}},
+				}
+			}
+			first, future, later := mutation(1, 2), mutation(2, 3), mutation(3, 4)
+			if err := svc.ApplyMutation(ctx, future); err != nil {
+				t.Fatalf("queue future seq: %v", err)
+			}
+			if code := connect.CodeOf(svc.ApplyMutation(ctx, first)); code != connect.CodeUnavailable {
+				t.Fatalf("first relay append = %v, want Unavailable", code)
+			}
+			pendingFirst := svc.pendingMutations[origin][1]
+			pendingFuture := svc.pendingMutations[origin][2]
+			if pendingFirst == nil || !pendingFirst.applied || !pendingFirst.faulted ||
+				pendingFirst.walOp == nil || pendingFuture == nil || pendingFuture.applied {
+				t.Fatalf("accepted remote effects after WAL failure = %+v / %+v", pendingFirst, pendingFuture)
+			}
+			retainedWAL := pendingFirst.walOp
+			pendingBytes := svc.pendingBytes
+			checkRejected := func(phase string) {
+				t.Helper()
+				for _, m := range []*pb.Mutation{first, future, later} {
+					err := svc.ApplyMutation(ctx, m)
+					if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+						t.Fatalf("%s peer seq %d = %v, want FailedPrecondition", phase, m.GetSeq(), err)
+					}
+					if svc.pendingMutations[origin][1] != pendingFirst ||
+						svc.pendingMutations[origin][2] != pendingFuture ||
+						svc.pendingMutations[origin][3] != nil ||
+						svc.pendingCount != 2 || svc.pendingBytes != pendingBytes ||
+						pendingFirst.walOp != retainedWAL {
+						t.Fatalf("%s changed accepted pending remote effects", phase)
+					}
+					if got := cache.edges["a"]["b"]; got != 2 ||
+						svc.LocalSeq(origin) != 0 || log.Len() != 0 {
+						t.Fatalf("%s peer seq %d changed graph/origin/log to %v/%d/%d",
+							phase, m.GetSeq(), got, svc.LocalSeq(origin), log.Len())
+					}
+				}
+			}
+			finish, err := svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkRejected("active Snapshot")
+			finish(false)
+			checkRejected("failed Snapshot")
+
+			retry, err := svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.failDrain {
+				wal.failed.Store(false)
+			}
+			cutoffs := map[string]uint64{hex.EncodeToString(origin[:]): tc.cutoff}
+			snapshotHLC := hlc.Timestamp{WallNs: 1, NodeID: origin}
+			err = svc.ApplySnapshotWatermarks(cutoffs, snapshotHLC)
+			if tc.failDrain {
+				if connect.CodeOf(err) != connect.CodeUnavailable {
+					t.Fatalf("post-cutoff pending append = %v, want Unavailable", err)
+				}
+				if got := cache.edges["a"]["b"]; got != 5 ||
+					svc.LocalSeq(origin) != 1 || log.Len() != 0 ||
+					svc.pendingMutations[origin][2] != pendingFuture ||
+					!pendingFuture.applied {
+					t.Fatalf("failed installer drain lost pending effect: weight=%v seq/log=%d/%d pending=%+v",
+						got, svc.LocalSeq(origin), log.Len(), pendingFuture)
+				}
+				retry(false)
+				if _, faulted := svc.publicationStatus(); !faulted {
+					t.Fatal("failed installer drain exposed a healthy read cut")
+				}
+				if code := connect.CodeOf(svc.ApplyMutation(ctx, later)); code != connect.CodeFailedPrecondition {
+					t.Fatalf("peer after failed drain = %v, want FailedPrecondition", code)
+				}
+				wal.failed.Store(false)
+				retry, err = svc.BeginSnapshotInstall()
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = svc.ApplySnapshotWatermarks(cutoffs, snapshotHLC)
+			}
+			if err != nil {
+				retry(false)
+				t.Fatalf("verified installer watermark drain: %v", err)
+			}
+			retry(true)
+			if got := cache.edges["a"]["b"]; got != 5 ||
+				svc.LocalSeq(origin) != 2 || log.Len() != tc.wantLog ||
+				svc.pendingCount != 0 || svc.pendingBytes != 0 || svc.publicationFaultCount != 0 {
+				t.Fatalf("verified retry state: weight=%v seq/log=%d/%d pending=%d/%d faults=%d",
+					got, svc.LocalSeq(origin), log.Len(), svc.pendingCount, svc.pendingBytes, svc.publicationFaultCount)
+			}
+			if tc.cutoff == 0 && mustMutationLogEntry(t, log, 1).Op != retainedWAL {
+				t.Fatal("above-cutoff repair replaced the original WAL envelope")
+			}
+			if tc.cutoff == 1 && mustGraphMutation(t, mustMutationLogEntry(t, log, 1).Op).GetSeq() != 2 {
+				t.Fatal("covered pending effect was re-appended after Snapshot cutoff")
+			}
+			if err := svc.ApplyMutation(ctx, first); err != nil {
+				t.Fatalf("covered/retained duplicate seq 1: %v", err)
+			}
+			if err := svc.ApplyMutation(ctx, future); err != nil {
+				t.Fatalf("retained duplicate seq 2: %v", err)
+			}
+			if got := cache.edges["a"]["b"]; got != 5 || log.Len() != tc.wantLog {
+				t.Fatalf("duplicate after verified retry reapplied graph/log to %v/%d", got, log.Len())
+			}
+			if err := svc.ApplyMutation(ctx, later); err != nil {
+				t.Fatalf("new remote mutation after verified retry: %v", err)
+			}
+			if got := cache.edges["a"]["b"]; got != 9 ||
+				svc.LocalSeq(origin) != 3 || log.Len() != tc.wantLog+1 {
+				t.Fatalf("new peer effect after retry = weight=%v seq/log=%d/%d",
+					got, svc.LocalSeq(origin), log.Len())
+			}
+		})
 	}
 }
 

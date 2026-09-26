@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 
 	"connectrpc.com/connect"
 	"golang.org/x/time/rate"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -167,6 +167,8 @@ func (v *ValidationInterceptor) validate(req any) error {
 		return v.validateEdges([]*pb.Edge{r.GetEdge()})
 	case *pb.AddEdgesRequest:
 		return v.validateEdges(r.GetEdges())
+	case *pb.PutEdgeRequest:
+		return v.validateEdges([]*pb.Edge{r.GetEdge()})
 	case *pb.PutEdgesRequest:
 		return v.validateEdges(r.GetEdges())
 	case *pb.GetReceiptStatusesRequest:
@@ -215,8 +217,7 @@ func (v *ValidationInterceptor) validateEdges(edges []*pb.Edge) error {
 		if err := v.checkKey(fmt.Sprintf("edges[%d].head", i), e.GetHead()); err != nil {
 			return err
 		}
-		w := float64(e.GetWeight())
-		if math.IsNaN(w) || math.IsInf(w, 0) {
+		if !edgeweight.IsFiniteSource(e.GetWeight()) {
 			return v.reject("bad_weight", "edges[%d].weight must be finite, got %v", i, e.GetWeight())
 		}
 	}

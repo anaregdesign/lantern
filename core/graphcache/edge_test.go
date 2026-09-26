@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"math"
 	"reflect"
 	"runtime"
 	"testing"
@@ -8,6 +9,28 @@ import (
 
 	"github.com/anaregdesign/lantern/core/hlc"
 )
+
+func TestWeight_DerivedAggregateExpiresWithoutLosingLaterAdd(t *testing.T) {
+	baseExpiration := time.Now().Add(time.Hour)
+	addExpiration := baseExpiration.Add(time.Hour)
+	weight := newWeight()
+	if !weight.putWithExpirationHLCMode(float32(math.Inf(1)), baseExpiration, hlc.Timestamp{}, true) {
+		t.Fatal("derived base was rejected")
+	}
+	addHLC := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: hlc.NodeID{0x23}}
+	id := ContribID{0x23}
+	if accepted, _ := weight.addWithExpirationContribHLCAt(4, addExpiration, id, addHLC, time.Now()); !accepted {
+		t.Fatal("finite Add after derived base was rejected")
+	}
+	live, _, _ := weight.snapshotEntry(baseExpiration.Add(-time.Minute))
+	if len(live) != 2 || !live[0].DerivedAggregate || live[1].DerivedAggregate {
+		t.Fatalf("live aggregate/Add provenance = %+v", live)
+	}
+	afterExpiry, _, _ := weight.snapshotEntry(baseExpiration.Add(time.Minute))
+	if len(afterExpiry) != 1 || afterExpiry[0].DerivedAggregate || afterExpiry[0].Weight != 4 {
+		t.Fatalf("expired base left invalid Add-only state: %+v", afterExpiry)
+	}
+}
 
 func Test_newWeight(t *testing.T) {
 	tests := []struct {

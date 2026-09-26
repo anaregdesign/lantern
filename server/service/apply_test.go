@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"sort"
@@ -157,6 +158,234 @@ func TestApplyMutation_GenericEdgeReceiptContextFailsBeforeQueue(t *testing.T) {
 			}
 			if _, _, live := cache.GetEdgeDetail("target", "edge"); !live {
 				t.Fatal("rejected receipt-bearing future Delete was queued")
+			}
+		})
+	}
+}
+
+func TestApplyMutationRejectsNonFiniteEdgeSourcesBeforeQueue(t *testing.T) {
+	for _, weight := range []struct {
+		name  string
+		value float32
+	}{
+		{"NaN", float32(math.NaN())},
+		{"positive infinity", float32(math.Inf(1))},
+		{"negative infinity", float32(math.Inf(-1))},
+	} {
+		for _, arm := range []struct {
+			name string
+			op   func(float32) *pb.MutationOp
+		}{
+			{"PutEdge", func(w float32) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+					Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: w},
+				}}}
+			}},
+			{"PutEdges", func(w float32) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{
+					Edges: []*pb.Edge{{Tail: "new", Head: "head", Weight: 1}, {Tail: "tail", Head: "head", Weight: w}},
+				}}}
+			}},
+			{"AddEdge", func(w float32) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+					Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: w},
+				}}}
+			}},
+			{"AddEdges", func(w float32) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{
+					Edges: []*pb.Edge{{Tail: "new", Head: "head", Weight: 1}, {Tail: "tail", Head: "head", Weight: w}},
+				}}}
+			}},
+			{"ReplicatedPutEdges", func(w float32) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{
+					ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: []*pb.ReplicatedPutEdge{
+						{Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "new", Head: "head", Weight: 1}}},
+						{Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "tail", Head: "head", Weight: w}}},
+					}},
+				}}
+			}},
+			{"ReplicatedReceiptEdgeAdd", func(w float32) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeAdd{
+					ReplicatedReceiptEdgeAdd: &pb.ReplicatedReceiptEdgeAdd{
+						Items: []*pb.ReplicatedReceiptEdgeAddItem{
+							{Original: &pb.Edge{Tail: "new", Head: "head", Weight: 1}},
+							{Original: &pb.Edge{Tail: "tail", Head: "head", Weight: w}},
+						},
+					},
+				}}
+			}},
+		} {
+			t.Run(arm.name+"/"+weight.name, func(t *testing.T) {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+				cache.AddEdgeWithExpiration("tail", "head", 5, time.Now().Add(time.Hour))
+				log := mutationlog.New(mutationlog.Options{Capacity: 8})
+				t.Cleanup(func() { _ = log.Close() })
+				origin := hlc.NodeID{0x75}
+				svc := NewLanternService(cache).WithReplication(log, hlc.New(hlc.NodeID{0x76}, hlc.Options{}), nil)
+				m := &pb.Mutation{
+					Seq: 2, Origin: origin[:],
+					Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]},
+					Op:  arm.op(weight.value),
+				}
+				err := svc.ApplyMutation(context.Background(), m)
+				if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), "non-finite source weight") {
+					t.Fatalf("invalid future peer mutation = %v, want source-weight InvalidArgument", err)
+				}
+				if got, live := cache.GetWeight("tail", "head"); !live || got != 5 {
+					t.Fatalf("invalid peer mutation changed existing weight to %v, live=%t", got, live)
+				}
+				if _, live := cache.GetWeight("new", "head"); live {
+					t.Fatal("invalid peer mutation partially applied a valid batch prefix")
+				}
+				if got := svc.LocalSeq(origin); got != 0 || log.Len() != 0 ||
+					svc.pendingCount != 0 || svc.pendingBytes != 0 {
+					t.Fatalf("invalid peer mutation advanced origin/log/pending to %d/%d/%d/%d",
+						got, log.Len(), svc.pendingCount, svc.pendingBytes)
+				}
+			})
+		}
+	}
+}
+
+func TestApplyMutationFiniteSourcesMayOverflowEffectiveWeight(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x77}
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(hlc.NodeID{0x78}, hlc.Options{}), nil)
+	m := &pb.Mutation{
+		Seq: 1, Origin: origin[:],
+		Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{
+			Edges: []*pb.Edge{
+				{Tail: "tail", Head: "head", Weight: math.MaxFloat32},
+				{Tail: "tail", Head: "head", Weight: math.MaxFloat32},
+			},
+		}}},
+	}
+	if err := svc.ApplyMutation(context.Background(), m); err != nil {
+		t.Fatalf("finite peer AddEdges: %v", err)
+	}
+	if got, live := cache.GetWeight("tail", "head"); !live || !math.IsInf(float64(got), 1) {
+		t.Fatalf("finite peer contributions yielded %v, live=%t, want +Inf", got, live)
+	}
+	edges := cache.SnapshotEdges()
+	if len(edges) != 1 || len(edges[0].Contributions) != 2 ||
+		edges[0].Contributions[0].Weight != math.MaxFloat32 ||
+		edges[0].Contributions[1].Weight != math.MaxFloat32 ||
+		log.Len() != 1 || svc.LocalSeq(origin) != 1 {
+		t.Fatalf("peer contributions or publication changed: edges=%+v, log=%d, seq=%d",
+			edges, log.Len(), svc.LocalSeq(origin))
+	}
+}
+
+func TestApplyMutationNonFiniteEdgeSourceCannotAdvanceDurableState(t *testing.T) {
+	runtime, svc, _ := newActivatedReceiptService(t, 8)
+	origin := hlc.NodeID{0x79}
+	beforeReceipts := runtime.ReceiptStats()
+	beforeLog, _, beforeEvicted := runtime.MutationLogStats()
+	m := &pb.Mutation{
+		Seq: 2, Origin: origin[:],
+		Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]},
+		Op: &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{
+			Edges: []*pb.Edge{
+				{Tail: "valid", Head: "head", Weight: 1},
+				{Tail: "invalid", Head: "head", Weight: float32(math.NaN())},
+			},
+		}}},
+	}
+	err := svc.ApplyMutation(context.Background(), m)
+	if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), "non-finite source weight") {
+		t.Fatalf("invalid durable peer mutation = %v, want source-weight InvalidArgument", err)
+	}
+	length, _, evicted := runtime.MutationLogStats()
+	if got := runtime.ReceiptStats(); got != beforeReceipts ||
+		length != beforeLog || evicted != beforeEvicted ||
+		svc.LocalSeq(origin) != 0 || svc.pendingCount != 0 || svc.pendingBytes != 0 ||
+		runtime.GraphCache().EdgeCount() != 0 {
+		t.Fatalf("invalid durable peer mutation changed receipt/log/origin/pending/graph: %+v, %d/%d, %d, %d/%d, %d",
+			got, length, evicted, svc.LocalSeq(origin), svc.pendingCount, svc.pendingBytes, runtime.GraphCache().EdgeCount())
+	}
+}
+
+func TestApplyMutation_SnapshotFaultRejectsPeerBeforeQueueOrStore(t *testing.T) {
+	for _, durable := range []bool{false, true} {
+		name := "graph-only"
+		if durable {
+			name = "receipt"
+		}
+		t.Run(name, func(t *testing.T) {
+			var (
+				svc   *LanternService
+				cache *graphcache.GraphCache[string, *pb.Vertex]
+				log   *mutationlog.Log
+			)
+			checkReceipts := func() bool { return true }
+			if durable {
+				runtime, service, _ := newActivatedReceiptService(t, 8)
+				svc = service
+				cache = runtime.GraphCache()
+				log = runtime.log
+				before := runtime.ReceiptStats()
+				checkReceipts = func() bool { return runtime.ReceiptStats() == before }
+			} else {
+				cache = graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+				log = mutationlog.New(mutationlog.Options{Capacity: 8})
+				t.Cleanup(func() { _ = log.Close() })
+				svc = NewLanternService(cache).
+					WithReplication(log, hlc.New(hlc.NodeID{0x7a}, hlc.Options{}), nil)
+			}
+			origin := hlc.NodeID{0x7b}
+			mutation := func(seq uint64) *pb.Mutation {
+				return &pb.Mutation{
+					Seq: seq, Origin: origin[:],
+					Hlc: &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]},
+					Op: &pb.MutationOp{Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{
+						Edge: &pb.Edge{
+							Tail: "not-admitted", Head: "edge", Weight: float32(seq),
+							Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+						},
+					}}},
+				}
+			}
+			finish, err := svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(phase string) {
+				t.Helper()
+				for _, seq := range []uint64{2, 1} {
+					err := svc.ApplyMutation(context.Background(), mutation(seq))
+					if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+						t.Fatalf("%s peer seq %d = %v, want gapped FailedPrecondition", phase, seq, err)
+					}
+					if _, live := cache.GetWeight("not-admitted", "edge"); live {
+						t.Fatalf("%s peer seq %d changed graph", phase, seq)
+					}
+					if svc.LocalSeq(origin) != 0 || log.Len() != 0 || svc.pendingCount != 0 || svc.pendingBytes != 0 {
+						t.Fatalf("%s peer seq %d changed origin/log/pending to %d/%d/%d/%d",
+							phase, seq, svc.LocalSeq(origin), log.Len(), svc.pendingCount, svc.pendingBytes)
+					}
+					if !checkReceipts() {
+						t.Fatalf("%s peer seq %d changed receipt Store", phase, seq)
+					}
+				}
+			}
+			check("active Snapshot")
+			finish(false)
+			check("failed Snapshot")
+			retry, err := svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			retry(true)
+			if err := svc.ApplyMutation(context.Background(), mutation(1)); err != nil {
+				t.Fatalf("peer after verified retry = %v", err)
+			}
+			if got, live := cache.GetWeight("not-admitted", "edge"); !live || got != 1 ||
+				svc.LocalSeq(origin) != 1 || log.Len() != 1 {
+				t.Fatalf("peer after retry = (%v,%t), seq/log=%d/%d, want 1,true,1/1",
+					got, live, svc.LocalSeq(origin), log.Len())
 			}
 		})
 	}

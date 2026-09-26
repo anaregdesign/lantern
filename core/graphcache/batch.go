@@ -28,6 +28,10 @@ type EdgeItem[S comparable] struct {
 	Head       S
 	Weight     float32
 	Expiration time.Time
+	// DerivedAggregate marks a folded graph-only backup value whose source
+	// contributions are no longer available. Only trusted restore and
+	// graph-only Snapshot replay may set it; ordinary Put/Add sources may not.
+	DerivedAggregate bool
 	// ContribID is an optional dedup key for additive AddEdges* writes.
 	// A non-zero id makes the contribution idempotent: re-applying an item
 	// with the same id leaves the stored weight unchanged (see
@@ -1010,7 +1014,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 			}
 			continue
 		}
-		if c.putEdgeHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, ts) {
+		if c.putEdgeHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, ts, it.DerivedAggregate) {
 			c.clearEdgeCausalBarrierLocked(it.Tail, it.Head)
 			c.clearEdgeTombstoneLocked(it.Tail, it.Head)
 			if outcomes != nil {

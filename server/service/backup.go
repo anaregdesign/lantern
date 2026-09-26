@@ -13,14 +13,15 @@ import (
 
 // BackupSnapshot streams a whole-graph, point-in-time backup: every live
 // vertex and a folded live edge as a BackupSnapshotResponse. It is the dump half of
-// the backup/restore pair (#685); the restore half replays the records
-// through PutVertices / PutEdges, so there is no dedicated restore RPC.
+// the backup/restore pair (#685). Server startup restore uses the direct
+// RestoreVertices / RestoreEdges helpers; external restores use public Puts,
+// whose source-weight validation also applies to folded backup edges.
 //
-// BackupSnapshot also works without replication. When a mutation log is
-// configured, its in-memory capture shares the publication cut with graph
-// writes and fails closed during a WAL publication fault. The whole graph is
-// materialised once under the GraphCache lock via SnapshotGraph (#689), so
-// vertices and edges share one instant; records are then sent off-lock.
+// BackupSnapshot also works without replication. Its in-memory capture checks
+// the publication generation around a point-in-time GraphCache copy and fails
+// closed during an incomplete Snapshot install or WAL publication fault. The
+// whole graph is materialised once under the GraphCache lock via SnapshotGraph
+// (#689), so vertices and edges share one instant; records are sent off-lock.
 //
 // vertex_prefix, when non-empty, scopes the backup to the induced subgraph
 // over vertices whose key has the prefix: a vertex is emitted only if it
@@ -31,12 +32,12 @@ func (s *LanternService) BackupSnapshot(ctx context.Context, request *pb.BackupS
 		return ctxToConnect(err)
 	}
 	var snap graphcache.GraphSnapshot[string, *pb.Vertex]
-	if s.log != nil {
-		if err := s.withReplicationSnapshotCut(func() { snap = s.cache.SnapshotGraph() }); err != nil {
-			return err
-		}
-	} else {
+	if err := s.withPublicGraphRead(func() error {
 		snap = s.cache.SnapshotGraph()
+		detachSnapshotVertices(snap.Vertices)
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	var keep map[string]bool

@@ -77,6 +77,8 @@ func (s *LanternService) GetServerStatus(ctx context.Context, _ *pb.GetServerSta
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s.snapshotReadCutMu.RLock()
+	defer s.snapshotReadCutMu.RUnlock()
 	var resp *pb.GetServerStatusResponse
 	err := s.withCommittedView(func() error {
 		resp = s.serverStatusSnapshot()

@@ -11,6 +11,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 
 	"connectrpc.com/connect"
@@ -58,6 +59,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}
 	if err := validateGenericGraphReceiptContext(m); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
+	}
+	if err := validateMutationEdgeSourceWeights(m.GetOp()); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
 	var receiptEnvelope receiptMutationEnvelope
@@ -113,7 +117,54 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if s.receiptCommitFaulted {
 		return publicationGapError()
 	}
+	if s.snapshotInstallFaulted {
+		return publicationGapError()
+	}
 	return s.publishRemoteMutation(ctx, m, receiptEnvelope)
+}
+
+func validateMutationEdgeSourceWeights(op *pb.MutationOp) error {
+	var edges []*pb.Edge
+	switch entry := op.GetOp().(type) {
+	case *pb.MutationOp_PutEdge:
+		if entry != nil {
+			edges = []*pb.Edge{entry.PutEdge.GetEdge()}
+		}
+	case *pb.MutationOp_PutEdges:
+		if entry != nil {
+			edges = entry.PutEdges.GetEdges()
+		}
+	case *pb.MutationOp_AddEdge:
+		if entry != nil {
+			edges = []*pb.Edge{entry.AddEdge.GetEdge()}
+		}
+	case *pb.MutationOp_AddEdges:
+		if entry != nil {
+			edges = entry.AddEdges.GetEdges()
+		}
+	case *pb.MutationOp_ReplicatedPutEdges:
+		if entry != nil {
+			for i, result := range entry.ReplicatedPutEdges.GetEntries() {
+				if live := result.GetLive(); live != nil && !edgeweight.IsFiniteSource(live.GetWeight()) {
+					return fmt.Errorf("ReplicatedPutEdges entry %d has a non-finite source weight", i)
+				}
+			}
+		}
+	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
+		if entry != nil {
+			for i, item := range entry.ReplicatedReceiptEdgeAdd.GetItems() {
+				if original := item.GetOriginal(); original != nil && !edgeweight.IsFiniteSource(original.GetWeight()) {
+					return fmt.Errorf("ReplicatedReceiptEdgeAdd item %d has a non-finite source weight", i)
+				}
+			}
+		}
+	}
+	for i, edge := range edges {
+		if edge != nil && !edgeweight.IsFiniteSource(edge.GetWeight()) {
+			return fmt.Errorf("edge %d has a non-finite source weight", i)
+		}
+	}
+	return nil
 }
 
 // applyMutationGraph runs exactly one sequenced mutation against the graph.

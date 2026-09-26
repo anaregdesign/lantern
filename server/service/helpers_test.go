@@ -68,6 +68,24 @@ func waitReceiptTest[T any](t *testing.T, label string, ch <-chan T) T {
 	}
 }
 
+func beginSnapshotInstallDuringSend(t *testing.T, svc *LanternService) func(bool) {
+	t.Helper()
+	type result struct {
+		finish func(bool)
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		finish, err := svc.BeginSnapshotInstall()
+		done <- result{finish: finish, err: err}
+	}()
+	got := waitReceiptTest(t, "Snapshot admission during off-lock Send", done)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	return got.finish
+}
+
 func validReceiptOperationIDForTest(t *testing.T, seed byte) []byte {
 	t.Helper()
 	id, err := mutationreceipt.NewID(

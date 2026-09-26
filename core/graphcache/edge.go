@@ -13,6 +13,9 @@ import (
 type weightValue struct {
 	value      float32
 	expiration time.Time
+	// True only for an LWW base restored from a folded graph-only backup (or
+	// replayed from its explicit graph-only Snapshot variant).
+	derivedAggregate bool
 	// hlc is the original causal position of a replicated Add. A reset may
 	// arrive after a newer Add, so the bucket must retain this position to
 	// decide which contributions survive independently of delivery order.
@@ -206,6 +209,10 @@ func (w *weight) addWithTTL(value float32, ttl time.Duration) {
 // PutEdge path goes through addWithExpiration / direct mutation instead;
 // this helper is intentionally narrow to the replicated-Put case).
 func (w *weight) putWithExpirationHLC(value float32, expiration time.Time, ts hlc.Timestamp) bool {
+	return w.putWithExpirationHLCMode(value, expiration, ts, false)
+}
+
+func (w *weight) putWithExpirationHLCMode(value float32, expiration time.Time, ts hlc.Timestamp, derivedAggregate bool) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if ts.Less(w.lastHLC) {
@@ -214,7 +221,7 @@ func (w *weight) putWithExpirationHLC(value float32, expiration time.Time, ts hl
 	// A Put is a reset floor, not an erasure of causally newer Adds that
 	// happened to arrive first through another replica.
 	w.retainAddsNewerThanLocked(ts)
-	w.values = append(w.values, weightValue{value: value, expiration: expiration, hlc: ts})
+	w.values = append(w.values, weightValue{value: value, expiration: expiration, hlc: ts, derivedAggregate: derivedAggregate})
 	w.needsSort = true
 	w.flushLockedAt(time.Now())
 	w.lastHLC = ts
@@ -369,10 +376,11 @@ func (w *weight) snapshotEntry(now time.Time) ([]SnapshotContribution, hlc.Times
 			continue
 		}
 		out = append(out, SnapshotContribution{
-			Weight:     v.value,
-			Expiration: v.expiration,
-			ContribID:  v.contribID,
-			HLC:        v.hlc,
+			Weight:           v.value,
+			Expiration:       v.expiration,
+			ContribID:        v.contribID,
+			HLC:              v.hlc,
+			DerivedAggregate: v.derivedAggregate,
 		})
 	}
 	if len(out) == 0 {
@@ -891,13 +899,17 @@ func (c *edgeCache[S]) addExistingContribByIDAt(tailID, headID vertexID, w float
 // honour the bucket-creation return so dict refcounts and side indexes
 // stay consistent.
 func (c *edgeCache[S]) putWithExpirationHLC(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp) (created bool, tailID, headID vertexID, applied bool) {
+	return c.putWithExpirationHLCMode(tail, head, w, expiration, ts, false)
+}
+
+func (c *edgeCache[S]) putWithExpirationHLCMode(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp, derivedAggregate bool) (created bool, tailID, headID vertexID, applied bool) {
 	if c.dict != nil {
 		if tID, hID, okT, okH := c.dict.lookupBoth(tail, head); okT && okH {
 			c.mu.RLock()
 			if heads, ok := c.tf[tID]; ok {
 				if edge, ok := heads[hID]; ok {
 					c.mu.RUnlock()
-					applied = edge.putWithExpirationHLC(w, expiration, ts)
+					applied = edge.putWithExpirationHLCMode(w, expiration, ts, derivedAggregate)
 					return false, tID, hID, applied
 				}
 			}
@@ -926,7 +938,7 @@ func (c *edgeCache[S]) putWithExpirationHLC(tail, head S, w float32, expiration 
 		c.dict.release(tailID)
 		c.dict.release(headID)
 	}
-	applied = edge.putWithExpirationHLC(w, expiration, ts)
+	applied = edge.putWithExpirationHLCMode(w, expiration, ts, derivedAggregate)
 	return created, tailID, headID, applied
 }
 

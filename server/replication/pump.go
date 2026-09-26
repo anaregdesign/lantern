@@ -44,6 +44,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 
 	"connectrpc.com/connect"
@@ -67,6 +68,7 @@ type SnapshotApplier interface {
 	PutVertexWithExpirationHLC(key string, value *pb.Vertex, exp time.Time, ts hlc.Timestamp) bool
 	AddEdgeWithExpirationContribHLC(tail, head string, w float32, exp time.Time, cid graphcache.ContribID, ts hlc.Timestamp) bool
 	PutEdgeWithExpirationHLC(tail, head string, w float32, exp time.Time, ts hlc.Timestamp) bool
+	PutEdgeDerivedAggregateWithExpirationHLC(tail, head string, w float32, exp time.Time, ts hlc.Timestamp) bool
 	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 	ApplySnapshotVertexTombstoneHLC(key string, ts hlc.Timestamp, expiration time.Time)
@@ -519,17 +521,20 @@ func applySnapshotEdge(snap SnapshotApplier, tail, head string, weight float32, 
 }
 
 type snapshotEdgeRow struct {
-	weight     float32
-	expiration time.Time
-	contribID  graphcache.ContribID
-	hlc        hlc.Timestamp
+	weight           float32
+	expiration       time.Time
+	contribID        graphcache.ContribID
+	hlc              hlc.Timestamp
+	derivedAggregate bool
 }
 
 // snapshotEdgeRows validates a complete edge frame before applying any row.
 // Each Add must retain its own causal HLC: the edge-level HLC is only the
 // winning Put floor and cannot replace the Add's position across a reset.
 func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
-	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || len(edge.GetContributions()) == 0 {
+	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" ||
+		(edge.GetDerivedAggregate() == nil && len(edge.GetContributions()) == 0) ||
+		(edge.GetDerivedAggregate() != nil && len(edge.GetContributions()) != 0) {
 		return nil, snapshotProtocolError("nil or empty live edge payload")
 	}
 	var putHLC hlc.Timestamp
@@ -540,12 +545,29 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 			return nil, snapshotProtocolError("invalid live edge Put floor")
 		}
 	}
-	rows := make([]snapshotEdgeRow, 0, len(edge.GetContributions()))
+	contributions := edge.GetContributions()
+	rows := make([]snapshotEdgeRow, 0, len(contributions)+1)
 	seenPut := false
-	seenAdds := make(map[graphcache.ContribID]struct{}, len(edge.GetContributions()))
-	for _, contribution := range edge.GetContributions() {
+	if aggregate := edge.GetDerivedAggregate(); aggregate != nil {
+		if putHLC != (hlc.Timestamp{}) ||
+			edgeweight.IsFiniteSource(aggregate.GetWeight()) ||
+			(aggregate.GetExpiration() != nil && aggregate.GetExpiration().CheckValid() != nil) {
+			return nil, snapshotProtocolError("invalid derived live edge aggregate")
+		}
+		rows = append(rows, snapshotEdgeRow{
+			weight: aggregate.GetWeight(), expiration: prototime.Expiration(aggregate.GetExpiration()),
+			derivedAggregate: true,
+		})
+		contributions = aggregate.GetAdds()
+		seenPut = true
+	}
+	seenAdds := make(map[graphcache.ContribID]struct{}, len(contributions))
+	for _, contribution := range contributions {
 		if contribution == nil {
 			return nil, snapshotProtocolError("nil live edge contribution")
+		}
+		if !edgeweight.IsFiniteSource(contribution.GetWeight()) {
+			return nil, snapshotProtocolError("non-finite live edge contribution weight")
 		}
 		if exp := contribution.GetExpiration(); exp != nil && exp.CheckValid() != nil {
 			return nil, snapshotProtocolError("invalid live edge contribution expiration")
@@ -598,6 +620,7 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 	var recovery searchIndexRecovery
 	var searchIndexErr error
 	var replay snapshotReplayState
+	var seenEdges map[graphcache.EdgeKey[string]]struct{}
 	for stream.Receive() {
 		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
@@ -696,9 +719,23 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if err != nil {
 				return SnapshotInstallResult{}, err
 			}
+			identity := graphcache.EdgeKey[string]{Tail: se.GetTail(), Head: se.GetHead()}
+			if _, duplicate := seenEdges[identity]; duplicate {
+				return SnapshotInstallResult{}, snapshotProtocolError("duplicate live edge frame")
+			}
+			if seenEdges == nil {
+				seenEdges = make(map[graphcache.EdgeKey[string]]struct{})
+			}
+			seenEdges[identity] = struct{}{}
 			for _, row := range rows {
-				applySnapshotEdge(i.snap, se.GetTail(), se.GetHead(), row.weight,
-					row.expiration, row.contribID, row.hlc)
+				if row.derivedAggregate {
+					i.snap.PutEdgeDerivedAggregateWithExpirationHLC(
+						se.GetTail(), se.GetHead(), row.weight, row.expiration, row.hlc,
+					)
+				} else {
+					applySnapshotEdge(i.snap, se.GetTail(), se.GetHead(), row.weight,
+						row.expiration, row.contribID, row.hlc)
+				}
 			}
 			replay.counts.edges++
 		case *pb.SnapshotResponse_Footer:

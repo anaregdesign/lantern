@@ -153,6 +153,79 @@ func TestScanVertices_BasicAndCursor(t *testing.T) {
 	if len(r2.NextCursor) != 0 {
 		t.Errorf("expected empty next_cursor on final page, got %q", r2.NextCursor)
 	}
+	fb.vertices["users/1"].Value = &pb.Vertex_String_{String_: "changed during replay"}
+	if got := r1.Vertices[0].GetString_(); got != "users/1" {
+		t.Fatalf("scan response retained a mutable cache vertex: %q", got)
+	}
+}
+
+func TestPrefixGraphReadsFailClosedUntilVerifiedSnapshot(t *testing.T) {
+	fb := newFakeBackend()
+	fb.vertices["user:1"] = &pb.Vertex{Key: "user:1"}
+	fb.edges["user:1"] = map[string]float32{"post:1": 2}
+	svc := NewLanternService(fb)
+	ctx := context.Background()
+	reads := []struct {
+		name string
+		run  func() error
+	}{
+		{"ScanVertices", func() error {
+			_, err := svc.ScanVertices(ctx, &pb.ScanVerticesRequest{Prefix: "user:"})
+			return err
+		}},
+		{"ScanVertexKeys", func() error {
+			_, err := svc.ScanVertexKeys(ctx, &pb.ScanVertexKeysRequest{Prefix: "user:"})
+			return err
+		}},
+		{"CountVerticesByPrefix", func() error {
+			_, err := svc.CountVerticesByPrefix(ctx, &pb.CountVerticesByPrefixRequest{Prefix: "user:"})
+			return err
+		}},
+		{"ScanEdges", func() error {
+			_, err := svc.ScanEdges(ctx, &pb.ScanEdgesRequest{TailPrefix: "user:"})
+			return err
+		}},
+		{"DeleteVerticesByPrefix dry run", func() error {
+			_, err := svc.DeleteVerticesByPrefix(ctx, &pb.DeleteVerticesByPrefixRequest{Prefix: "user:", DryRun: true})
+			return err
+		}},
+		{"DeleteEdgesByPrefix dry run", func() error {
+			_, err := svc.DeleteEdgesByPrefix(ctx, &pb.DeleteEdgesByPrefixRequest{TailPrefix: "user:", DryRun: true})
+			return err
+		}},
+	}
+	assertFaulted := func(stage string) {
+		t.Helper()
+		for _, read := range reads {
+			t.Run(stage+"/"+read.name, func(t *testing.T) {
+				if err := read.run(); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read during %s = %v, want FailedPrecondition", stage, err)
+				}
+			})
+		}
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFaulted("active install")
+	finish(false)
+	assertFaulted("failed install")
+	retry, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry(true)
+	for _, read := range reads {
+		t.Run("verified retry/"+read.name, func(t *testing.T) {
+			if err := read.run(); err != nil {
+				t.Fatalf("read after verified retry: %v", err)
+			}
+		})
+	}
+	if len(fb.vertices) != 1 || len(fb.edges["user:1"]) != 1 {
+		t.Fatal("dry-run reads mutated the graph")
+	}
 }
 
 func TestScanVertices_ClampsLimit(t *testing.T) {

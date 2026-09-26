@@ -20,6 +20,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 	"golang.org/x/sync/semaphore"
 )
@@ -81,6 +82,10 @@ type LanternService struct {
 	// mutation to this replica's log. Serialize installs so a successful one
 	// cannot clear another install's CDC gap while it is still applying.
 	snapshotInstallMu sync.Mutex
+	// Readers hold the shared side while accessing GraphCache and detaching
+	// results. Snapshot admission and verified fault-clear take the exclusive
+	// side without blocking unrelated WAL publication for a long graph read.
+	snapshotReadCutMu sync.RWMutex
 	// pendingMutations and its accounting are guarded by replicationCutMu.
 	pendingMutations map[hlc.NodeID]map[uint64]*pendingMutation
 	pendingCount     int
@@ -387,9 +392,12 @@ func (s *LanternService) WithReplication(log *mutationlog.Log, clock *hlc.Clock,
 }
 
 // withReplicationSnapshotCut holds the service commit boundary only while
-// Snapshot copies its origin/log cutoffs and graph image, never while it sends
-// frames to a potentially slow client.
+// Snapshot copies its origin/log cutoffs and detached graph image, never while
+// it sends frames to a potentially slow client. Lock order matches public
+// graph reads and Snapshot fault transitions: admission latch, then commit cut.
 func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
+	s.snapshotReadCutMu.RLock()
+	defer s.snapshotReadCutMu.RUnlock()
 	return s.withCommittedView(func() error {
 		capture()
 		return nil
@@ -645,7 +653,9 @@ func (s *LanternService) LocalSeq(origin hlc.NodeID) uint64 {
 // ApplySnapshotWatermarks advances the per-origin dedup table to a completed
 // snapshot's cutoff. This lets the next Subscribe resume at cutoff+1 instead
 // of repeatedly falling back to the same snapshot, and makes PeerStatus
-// truthful immediately after bootstrap.
+// truthful immediately after bootstrap. The installer calls this only after
+// validating all frames; unlike ordinary peer admission, it may resolve
+// already accepted remote WAL-pending effects while the install is faulted.
 func (s *LanternService) ApplySnapshotWatermarks(cutoffs map[string]uint64, ts hlc.Timestamp) error {
 	if s.origins == nil {
 		return nil
@@ -853,7 +863,15 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		alpha, epsilon := resolvePPRParams(ppr.GetRestartProb(), ppr.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
+		if viewErr := s.withPublicGraphRead(func() error {
+			g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
+			if err == nil {
+				detachTraversalVertices(g)
+			}
+			return nil
+		}); viewErr != nil {
+			return nil, viewErr
+		}
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, traversalToConnect(err)
@@ -882,7 +900,15 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
+		if viewErr := s.withPublicGraphRead(func() error {
+			g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
+			if err == nil {
+				detachTraversalVertices(g)
+			}
+			return nil
+		}); viewErr != nil {
+			return nil, viewErr
+		}
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, traversalToConnect(err)
@@ -940,7 +966,15 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
 		phase = "traversal"
 		traversalStart := time.Now()
-		g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(bfs.GetStep()), int(bfs.GetFanOut()), coreWeighting, selectSmallest, keep)
+		if viewErr := s.withPublicGraphRead(func() error {
+			g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(bfs.GetStep()), int(bfs.GetFanOut()), coreWeighting, selectSmallest, keep)
+			if err == nil {
+				detachTraversalVertices(g)
+			}
+			return nil
+		}); viewErr != nil {
+			return nil, viewErr
+		}
 		traversalDur = time.Since(traversalStart)
 		if err != nil {
 			return nil, ctxToConnect(err)
@@ -1024,17 +1058,22 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 	resp := &pb.GetVerticesResponse{
 		Vertices: make([]*pb.Vertex, 0, len(keys)),
 	}
-	for _, k := range keys {
-		v, ok := s.cache.GetVertex(k)
-		if !ok {
-			resp.Missing = append(resp.Missing, k)
-			continue
+	if err := s.withPublicGraphRead(func() error {
+		for _, k := range keys {
+			v, ok := s.cache.GetVertex(k)
+			if !ok {
+				resp.Missing = append(resp.Missing, k)
+				continue
+			}
+			if v == nil {
+				resp.Vertices = append(resp.Vertices, &pb.Vertex{Key: k, Value: &pb.Vertex_Nil{Nil: true}})
+			} else {
+				resp.Vertices = append(resp.Vertices, detachedGraphVertex(v))
+			}
 		}
-		if v == nil {
-			resp.Vertices = append(resp.Vertices, &pb.Vertex{Key: k, Value: &pb.Vertex_Nil{Nil: true}})
-		} else {
-			resp.Vertices = append(resp.Vertices, v)
-		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	s.metrics.OnGetVertices(len(resp.Vertices), len(resp.Missing))
 	return resp, nil
@@ -1101,10 +1140,11 @@ func (s *LanternService) RestoreEdges(ctx context.Context, request *pb.PutEdgesR
 			continue
 		}
 		items = append(items, graphcache.EdgeItem[string]{
-			Tail:       edge.GetTail(),
-			Head:       edge.GetHead(),
-			Weight:     edge.GetWeight(),
-			Expiration: prototime.Expiration(edge.GetExpiration()),
+			Tail:             edge.GetTail(),
+			Head:             edge.GetHead(),
+			Weight:           edge.GetWeight(),
+			Expiration:       prototime.Expiration(edge.GetExpiration()),
+			DerivedAggregate: !edgeweight.IsFiniteSource(edge.GetWeight()),
 		})
 	}
 	outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, hlc.Timestamp{})
@@ -1144,11 +1184,6 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			Expiration: expiration,
 		})
 	}
-	// Aggregate capacity soft cap (#848): fail fast BEFORE any cache or log
-	// mutation so a rejected batch is all-or-nothing.
-	if err := s.checkVertexCapacity(len(items)); err != nil {
-		return nil, err
-	}
 	// Conditional put (#896): write only keys with no live vertex. "Live"
 	// follows the #750 visibility rule, so an expired-but-uncollected vertex
 	// does not block the write. Under replication we stamp accepted live and
@@ -1160,6 +1195,12 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 		if s.clock != nil {
 			s.replicationCutMu.Lock()
 			defer s.replicationCutMu.Unlock()
+			if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+				return nil, err
+			}
+			if err := s.checkVertexCapacity(len(items)); err != nil {
+				return nil, err
+			}
 			if err := s.prepareLocalMutationLocked(); err != nil {
 				return nil, err
 			}
@@ -1184,6 +1225,14 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 				}
 			}
 			return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
+		}
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
+		if err := s.checkVertexCapacity(len(items)); err != nil {
+			return nil, err
 		}
 		outcomes, err := s.cache.PutVerticesWithExpirationIfAbsentOutcomesChecked(items)
 		if err != nil {
@@ -1213,6 +1262,12 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	if s.clock != nil {
 		s.replicationCutMu.Lock()
 		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
+		if err := s.checkVertexCapacity(len(items)); err != nil {
+			return nil, err
+		}
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
@@ -1235,6 +1290,14 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 		}
 		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 	} else {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
+		if err := s.checkVertexCapacity(len(items)); err != nil {
+			return nil, err
+		}
 		outcomes, err := s.cache.PutVerticesWithExpirationOutcomesChecked(items)
 		if err != nil {
 			return nil, searchIndexWriteError(err)
@@ -1468,6 +1531,11 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		}
 		return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil
 	} else {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
 		outcomes = s.cache.DeleteVerticesOutcomes(in.GetKeys())
 	}
 	deleted, err := checkedDeleteOutcomes(outcomes, len(in.GetKeys()))
@@ -1506,24 +1574,37 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 	for i, k := range in {
 		keys[i] = graphcache.EdgeKey[string]{Tail: k.GetTail(), Head: k.GetHead()}
 	}
-	details := s.cache.GetEdgeDetails(keys)
-	if len(details) != len(keys) {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("edge batch read returned %d results for %d keys", len(details), len(keys)))
-	}
-	for i, detail := range details {
-		k := keys[i]
-		if !detail.Found {
-			resp.Missing = append(resp.Missing, &pb.EdgeKey{Tail: k.Tail, Head: k.Head})
-			continue
+	if err := s.withPublicGraphRead(func() error {
+		details := s.cache.GetEdgeDetails(keys)
+		if len(details) != len(keys) {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("edge batch read returned %d results for %d keys", len(details), len(keys)))
 		}
-		edge := &pb.Edge{Tail: k.Tail, Head: k.Head, Weight: detail.Weight}
-		if !detail.Expiration.IsZero() {
-			edge.Expiration = timestamppb.New(detail.Expiration)
+		for i, detail := range details {
+			k := keys[i]
+			if !detail.Found {
+				resp.Missing = append(resp.Missing, &pb.EdgeKey{Tail: k.Tail, Head: k.Head})
+				continue
+			}
+			edge := &pb.Edge{Tail: k.Tail, Head: k.Head, Weight: detail.Weight}
+			if !detail.Expiration.IsZero() {
+				edge.Expiration = timestamppb.New(detail.Expiration)
+			}
+			resp.Edges = append(resp.Edges, edge)
 		}
-		resp.Edges = append(resp.Edges, edge)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	s.metrics.OnGetEdges(len(resp.Edges), len(resp.Missing))
 	return resp, nil
+}
+
+func validatePublicEdgeSourceWeight(edge *pb.Edge, index int) error {
+	if edge != nil && !edgeweight.IsFiniteSource(edge.GetWeight()) {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("edges[%d].weight must be finite", index))
+	}
+	return nil
 }
 
 func (s *LanternService) AddEdge(ctx context.Context, request *pb.AddEdgeRequest) (*pb.AddEdgeResponse, error) {
@@ -1573,6 +1654,11 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	in := request.GetEdges()
 	s.metrics.OnBatch("AddEdges", len(in))
 	if request.GetReceiptContext() != nil {
+		for i, e := range in {
+			if err := validatePublicEdgeSourceWeight(e, i); err != nil {
+				return nil, err
+			}
+		}
 		return s.commitPublicReceiptEdgeAdd(ctx, request)
 	}
 	contribIDs := request.GetContribIds()
@@ -1581,6 +1667,9 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	for i, e := range in {
 		if e == nil {
 			continue
+		}
+		if err := validatePublicEdgeSourceWeight(e, i); err != nil {
+			return nil, err
 		}
 		expiration := prototime.Expiration(e.GetExpiration())
 		if err := s.validateExpiration(expiration); err != nil {
@@ -1603,15 +1692,6 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		items = append(items, item)
 		wireIndexes = append(wireIndexes, i)
 	}
-	// Aggregate capacity soft caps (#848): every edge item writes one bucket
-	// and can auto-create up to two endpoint vertices, so both caps are
-	// consulted with conservative worst-case deltas.
-	if err := s.checkVertexCapacity(2 * len(items)); err != nil {
-		return nil, err
-	}
-	if err := s.checkEdgeCapacity(len(items)); err != nil {
-		return nil, err
-	}
 	// Additive merge converges via ContribID set semantics regardless of
 	// delivery order, but when replication is enabled the contribution must
 	// still be fenced by the edge tombstone at the SAME HLC it is logged
@@ -1623,6 +1703,16 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	if s.clock != nil {
 		s.replicationCutMu.Lock()
 		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
+		// Check both capacity caps before pending WAL repair or graph apply.
+		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+			return nil, err
+		}
+		if err := s.checkEdgeCapacity(len(items)); err != nil {
+			return nil, err
+		}
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
@@ -1662,6 +1752,17 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		}
 		s.metrics.OnEdgeContribDeduped(deduped)
 	} else {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
+		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+			return nil, err
+		}
+		if err := s.checkEdgeCapacity(len(items)); err != nil {
+			return nil, err
+		}
 		compactEffective, count := s.cache.AddEdgesWithExpirationContrib(items)
 		deduped = count
 		for i, wireIndex := range wireIndexes {
@@ -1694,7 +1795,10 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	in := request.GetEdges()
 	s.metrics.OnBatch("PutEdges", len(in))
 	items := make([]graphcache.EdgeItem[string], 0, len(in))
-	for _, e := range in {
+	for i, e := range in {
+		if err := validatePublicEdgeSourceWeight(e, i); err != nil {
+			return nil, err
+		}
 		expiration := prototime.Expiration(e.GetExpiration())
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
@@ -1705,14 +1809,6 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			Weight:     e.GetWeight(),
 			Expiration: expiration,
 		})
-	}
-	// Aggregate capacity soft caps (#848) — same conservative deltas as
-	// AddEdges: one bucket per item, up to two auto-created endpoints.
-	if err := s.checkVertexCapacity(2 * len(items)); err != nil {
-		return nil, err
-	}
-	if err := s.checkEdgeCapacity(len(items)); err != nil {
-		return nil, err
 	}
 	// PutEdges*WithExpiration takes the cache write lock once for the whole
 	// batch, so concurrent GetEdge readers never observe a transient NotFound
@@ -1726,6 +1822,16 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 	if s.clock != nil {
 		s.replicationCutMu.Lock()
 		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
+		// The capacity decision shares the Snapshot-fault gate with apply.
+		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+			return nil, err
+		}
+		if err := s.checkEdgeCapacity(len(items)); err != nil {
+			return nil, err
+		}
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
@@ -1748,6 +1854,17 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 		}
 		return &pb.PutEdgesResponse{Outcomes: wireOutcomes}, nil
 	} else {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
+		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+			return nil, err
+		}
+		if err := s.checkEdgeCapacity(len(items)); err != nil {
+			return nil, err
+		}
 		outcomes := s.cache.PutEdgesWithExpirationOutcomes(items)
 		wireOutcomes, err := putOutcomes(outcomes, len(in))
 		if err != nil {
@@ -1837,6 +1954,11 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		}
 		return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: outcomes}, nil
 	} else {
+		s.replicationCutMu.Lock()
+		defer s.replicationCutMu.Unlock()
+		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
+			return nil, err
+		}
 		outcomes = s.cache.DeleteEdgesOutcomes(keys)
 	}
 	deleted, err := checkedDeleteOutcomes(outcomes, len(keys))

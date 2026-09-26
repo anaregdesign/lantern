@@ -138,7 +138,17 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 			observation.Outcome, observation.Reason = "internal", "internal"
 			return nil, connect.NewError(connect.CodeInternal, hashErr)
 		}
-		hits, next, truncated, limited, pageErr := s.searchSessions.page(in.GetCursor(), requestHash, configFingerprint, int(limit))
+		var hits []*pb.SearchHit
+		var next []byte
+		var truncated, limited bool
+		var pageErr error
+		if viewErr := s.withPublicGraphRead(func() error {
+			hits, next, truncated, limited, pageErr = s.searchSessions.page(in.GetCursor(), requestHash, configFingerprint, int(limit))
+			return nil
+		}); viewErr != nil {
+			observation.Outcome, observation.Reason = "failed_precondition", "publication_gap"
+			return nil, viewErr
+		}
 		if pageErr != nil {
 			switch {
 			case errors.Is(pageErr, errSearchCursorStale):
@@ -183,40 +193,46 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	queryLimit := retainedLimit + 1
 	var hits []*pb.SearchHit
 	var workStats search.Stats
-	if projection == pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX {
-		var snapshotErr error
-		snapshot, stats, snapshotErr := s.cache.SearchVerticesSnapshotContext(ctx, in.GetQuery(), queryLimit, in.GetPrefix(), opts, phrase, s.search.WorkBudget)
-		workStats = stats
-		err = snapshotErr
-		if err == nil {
-			hits = make([]*pb.SearchHit, 0, len(snapshot))
-			for _, ranked := range snapshot {
-				hit := &pb.SearchHit{Key: ranked.Result.ID, Score: ranked.Result.Score}
-				if ranked.Found && ranked.Value != nil {
-					// The hydrated pointer is transient: the response and cursor
-					// session boundaries below each clone the hits they own.
-					hit.Vertex = ranked.Value
-					hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT
-				} else {
-					hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_MISSING
+	if viewErr := s.withPublicGraphRead(func() error {
+		if projection == pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX {
+			var snapshotErr error
+			snapshot, stats, snapshotErr := s.cache.SearchVerticesSnapshotContext(ctx, in.GetQuery(), queryLimit, in.GetPrefix(), opts, phrase, s.search.WorkBudget)
+			workStats = stats
+			err = snapshotErr
+			if err == nil {
+				hits = make([]*pb.SearchHit, 0, len(snapshot))
+				for _, ranked := range snapshot {
+					hit := &pb.SearchHit{Key: ranked.Result.ID, Score: ranked.Result.Score}
+					if ranked.Found && ranked.Value != nil {
+						// Clone while the Snapshot-admission latch is held;
+						// response and cursor sessions clone their own hit sets later.
+						hit.Vertex = detachedGraphVertex(ranked.Value)
+						hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_SNAPSHOT
+					} else {
+						hit.ProjectionStatus = pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_MISSING
+					}
+					hits = append(hits, hit)
 				}
-				hits = append(hits, hit)
+			}
+		} else {
+			ranked, stats, rankedErr := s.cache.SearchVerticesMatchContext(ctx, in.GetQuery(), queryLimit, in.GetPrefix(), opts, phrase, s.search.WorkBudget)
+			workStats = stats
+			err = rankedErr
+			if err == nil {
+				hits = make([]*pb.SearchHit, 0, len(ranked))
+				for _, result := range ranked {
+					hits = append(hits, &pb.SearchHit{
+						Key:              result.ID,
+						Score:            result.Score,
+						ProjectionStatus: pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE,
+					})
+				}
 			}
 		}
-	} else {
-		ranked, stats, rankedErr := s.cache.SearchVerticesMatchContext(ctx, in.GetQuery(), queryLimit, in.GetPrefix(), opts, phrase, s.search.WorkBudget)
-		workStats = stats
-		err = rankedErr
-		if err == nil {
-			hits = make([]*pb.SearchHit, 0, len(ranked))
-			for _, result := range ranked {
-				hits = append(hits, &pb.SearchHit{
-					Key:              result.ID,
-					Score:            result.Score,
-					ProjectionStatus: pb.SearchHitProjectionStatus_SEARCH_HIT_PROJECTION_STATUS_KEY_SCORE,
-				})
-			}
-		}
+		return nil
+	}); viewErr != nil {
+		observation.Outcome, observation.Reason = "failed_precondition", "publication_gap"
+		return nil, viewErr
 	}
 	observation.Stats = workStats
 	if err != nil {
@@ -245,7 +261,9 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		hits = hits[:retainedLimit]
 	}
 	pageEnd := min(int(limit), len(hits))
-	pageHits := cloneSearchHits(hits[:pageEnd])
+	// hits already own their vertex payloads; cursor sessions clone their
+	// retained copy separately.
+	pageHits := hits[:pageEnd]
 	truncated := pageEnd < len(hits) || limited
 	var next []byte
 	continuationLimited := limited

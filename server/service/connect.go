@@ -1,7 +1,8 @@
 // Package service: connect.go adapts *LanternService and
 // *LanternReplicationService to the Connect-Go handler interfaces
 // generated under pb/graph/v1/graphv1connect. The adapters forward writes
-// directly; graph reads share the service's publication cut.
+// directly; graph reads use the service's Snapshot latch and publication
+// generation checks.
 //
 // Why an adapter (rather than implementing the Connect interfaces
 // directly on the service structs):
@@ -61,25 +62,10 @@ func unary[Req, Resp any](ctx context.Context, req *connect.Request[Req], fn fun
 	return connect.NewResponse(out), nil
 }
 
-// unaryGraphRead keeps an externally visible graph read on the same
-// publication cut as local and relayed writes. A graph-first mutation whose
-// WAL append fails must not leak through an ordinary read while Subscribe and
-// Snapshot correctly report a gap. Snapshot install can fault even when this
-// service has no mutation log, so every read must inspect the cut.
-func unaryGraphRead[Req, Resp any](ctx context.Context, req *connect.Request[Req], svc *LanternService, fn func(context.Context, *Req) (*Resp, error)) (*connect.Response[Resp], error) {
-	svc.replicationCutMu.RLock()
-	defer svc.replicationCutMu.RUnlock()
-	if svc.publicationFaultCount != 0 {
-		return nil, publicationGapError()
-	}
-	return unary(ctx, req, fn)
-}
-
-// unaryGraphReadOptimistic protects longer bounded reads without holding the
-// publication gate throughout ranking, traversal, or page construction. Both
-// generation samples are taken under its read lock, which also checks a WAL
-// fault. An overlapping writer invalidates the result before it reaches the
-// wire, even if the writer finishes while the read is computing.
+// unaryGraphReadOptimistic invalidates a graph result if publication changes
+// between the service call and wire boxing. The service orders each GraphCache
+// read against Snapshot admission and checks publication generations; holding
+// an outer publication lock through the call would stall long graph reads.
 func unaryGraphReadOptimistic[Req, Resp any](ctx context.Context, req *connect.Request[Req], svc *LanternService, fn func(context.Context, *Req) (*Resp, error)) (*connect.Response[Resp], error) {
 	before, err := svc.graphReadGeneration()
 	if err != nil {
@@ -96,29 +82,14 @@ func unaryGraphReadOptimistic[Req, Resp any](ctx context.Context, req *connect.R
 	return out, callErr
 }
 
-func (s *LanternService) graphReadGeneration() (uint64, error) {
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
-	if s.publicationFaultCount != 0 {
-		return 0, publicationGapError()
-	}
-	return s.replicationCutMu.generation, nil
-}
-
 func (h *lanternServiceConnect) Illuminate(ctx context.Context, req *connect.Request[pb.IlluminateRequest]) (*connect.Response[pb.IlluminateResponse], error) {
 	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.Illuminate)
 }
 func (h *lanternServiceConnect) GetVertex(ctx context.Context, req *connect.Request[pb.GetVertexRequest]) (*connect.Response[pb.GetVertexResponse], error) {
-	return unaryGraphRead(ctx, req, h.svc, h.svc.GetVertex)
+	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetVertex)
 }
 func (h *lanternServiceConnect) GetVertices(ctx context.Context, req *connect.Request[pb.GetVerticesRequest]) (*connect.Response[pb.GetVerticesResponse], error) {
-	// A plural read can visit the full configured batch. Keep the cheap
-	// single-key path on one cut, but do not hold the write gate for a large
-	// request while its response is assembled.
-	if len(req.Msg.GetKeys()) > 1 {
-		return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetVertices)
-	}
-	return unaryGraphRead(ctx, req, h.svc, h.svc.GetVertices)
+	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetVertices)
 }
 func (h *lanternServiceConnect) PutVertex(ctx context.Context, req *connect.Request[pb.PutVertexRequest]) (*connect.Response[pb.PutVertexResponse], error) {
 	return unary(ctx, req, h.svc.PutVertex)
@@ -154,13 +125,10 @@ func (h *lanternServiceConnect) TopVerticesByDegree(ctx context.Context, req *co
 	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.TopVerticesByDegree)
 }
 func (h *lanternServiceConnect) GetEdge(ctx context.Context, req *connect.Request[pb.GetEdgeRequest]) (*connect.Response[pb.GetEdgeResponse], error) {
-	return unaryGraphRead(ctx, req, h.svc, h.svc.GetEdge)
+	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetEdge)
 }
 func (h *lanternServiceConnect) GetEdges(ctx context.Context, req *connect.Request[pb.GetEdgesRequest]) (*connect.Response[pb.GetEdgesResponse], error) {
-	if len(req.Msg.GetEdges()) > 1 {
-		return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetEdges)
-	}
-	return unaryGraphRead(ctx, req, h.svc, h.svc.GetEdges)
+	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetEdges)
 }
 func (h *lanternServiceConnect) AddEdge(ctx context.Context, req *connect.Request[pb.AddEdgeRequest]) (*connect.Response[pb.AddEdgeResponse], error) {
 	return unary(ctx, req, h.svc.AddEdge)

@@ -32,11 +32,12 @@ import (
 // Cost model (#920): OUT-degree is walked per candidate (O(sum of candidate
 // out-degrees)). IN and BOTH have no reverse (head->tails) index, so they scan
 // every edge bucket in the graph — O(E_total), independent of how narrow the
-// prefix is. To keep that scan from stalling writers, the IN/BOTH path captures
-// the candidate-incident buckets under the read lock and reads their weights
-// after releasing it, so an edge added or deleted mid-scan may be partially
-// reflected: prefer a narrow prefix and treat IN/BOTH totals on a large,
-// actively-written graph as advisory.
+// prefix is. The core ranker releases its own graph read lock after capturing
+// incident buckets. This handler holds the Snapshot-admission latch during
+// ranking and checks the publication generation afterward; unrelated local
+// writes can proceed, but an overlapping publication invalidates the result.
+// Direct GraphCache writes still bypass that check: prefer a narrow prefix
+// and treat IN/BOTH totals on a large, actively-written graph as advisory.
 func (s *LanternService) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesByDegreeRequest) (*pb.TopVerticesByDegreeResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
@@ -51,7 +52,13 @@ func (s *LanternService) TopVerticesByDegree(ctx context.Context, in *pb.TopVert
 	k := clampLimit(in.GetK(), s.scan.ScanDefaultLimit, s.scan.ScanMaxLimit)
 
 	dir := degreeDirection(in.GetDirection())
-	ranked := s.cache.TopVerticesByDegree(in.GetPrefix(), int(k), dir, in.GetWeighted())
+	var ranked []graphcache.DegreeEntry[string]
+	if err := s.withPublicGraphRead(func() error {
+		ranked = s.cache.TopVerticesByDegree(in.GetPrefix(), int(k), dir, in.GetWeighted())
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
 	// The backend orders survivors by the ranking metric descending but breaks
 	// ties arbitrarily (its key type is only comparable). Impose a total order

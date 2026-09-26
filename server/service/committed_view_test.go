@@ -144,6 +144,167 @@ func TestLanternService_CommittedViewFailsClosed(t *testing.T) {
 	}
 }
 
+type heldVertexReadBackend struct {
+	Backend
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (b *heldVertexReadBackend) GetVertex(key string) (*pb.Vertex, bool) {
+	close(b.entered)
+	<-b.release
+	return b.Backend.GetVertex(key)
+}
+
+func TestLanternService_GetVertexBlocksSnapshotAdmissionWhileReading(t *testing.T) {
+	fb := newFakeBackend()
+	source := &pb.Vertex{Key: "kept", Value: &pb.Vertex_String_{String_: "before"}}
+	fb.vertices["kept"] = source
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	held := &heldVertexReadBackend{
+		Backend: fb, entered: make(chan struct{}), release: release,
+	}
+	svc := NewLanternService(held)
+	type readResult struct {
+		vertex *pb.Vertex
+		err    error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		resp, err := svc.GetVertex(context.Background(), &pb.GetVertexRequest{Key: "kept"})
+		readDone <- readResult{vertex: resp.GetVertex(), err: err}
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("public GetVertex did not enter backend")
+	}
+	type installResult struct {
+		finish func(bool)
+		err    error
+	}
+	installStarted := make(chan struct{})
+	installDone := make(chan installResult, 1)
+	go func() {
+		close(installStarted)
+		finish, err := svc.BeginSnapshotInstall()
+		installDone <- installResult{finish, err}
+	}()
+	<-installStarted
+	select {
+	case result := <-installDone:
+		if result.finish != nil {
+			result.finish(false)
+		}
+		t.Fatalf("Snapshot install entered during a public GraphCache read: %v", result.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	var observed *pb.Vertex
+	select {
+	case result := <-readDone:
+		if result.err != nil {
+			t.Fatalf("in-flight public GetVertex: %v", result.err)
+		}
+		observed = result.vertex
+	case <-time.After(2 * time.Second):
+		t.Fatal("public GetVertex did not complete")
+	}
+	select {
+	case result := <-installDone:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		defer result.finish(false)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Snapshot install did not start after the public read")
+	}
+	source.Value = &pb.Vertex_String_{String_: "during-replay"}
+	if observed == source || observed.GetString_() != "before" {
+		t.Fatalf("in-flight read returned a mutable cache alias: %v", observed)
+	}
+	if _, err := svc.GetVertex(context.Background(), &pb.GetVertexRequest{Key: "kept"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("public GetVertex after install admission = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestLanternService_VerifiedSnapshotFinishWaitsForReadLatch(t *testing.T) {
+	fb := newFakeBackend()
+	fb.vertices["kept"] = &pb.Vertex{Key: "kept"}
+	svc := NewLanternService(fb)
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A public read cannot enter while faulted, so hold its admission latch
+	// directly to exercise a verified retry racing the end of a read.
+	svc.snapshotReadCutMu.RLock()
+	held := true
+	t.Cleanup(func() {
+		if held {
+			svc.snapshotReadCutMu.RUnlock()
+		}
+	})
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		finish(true)
+		close(done)
+	}()
+	<-started
+	select {
+	case <-done:
+		t.Fatal("verified finish cleared the fault while a read held the latch")
+	case <-time.After(25 * time.Millisecond):
+	}
+	captured := false
+	if err := svc.withCommittedView(func() error { captured = true; return nil }); connect.CodeOf(err) != connect.CodeFailedPrecondition || captured {
+		t.Fatalf("finish during held read exposed a healthy publication: %v (captured=%t)", err, captured)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := svc.GetVertex(context.Background(), &pb.GetVertexRequest{Key: "kept"})
+		readDone <- err
+	}()
+	earlyRead := false
+	select {
+	case err := <-readDone:
+		earlyRead = true
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("public read before verified finish = %v, want FailedPrecondition", err)
+		}
+	case <-time.After(25 * time.Millisecond):
+	}
+	svc.snapshotReadCutMu.RUnlock()
+	held = false
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("verified finish did not clear the fault after the read released its latch")
+	}
+	if !earlyRead {
+		select {
+		case err := <-readDone:
+			if err != nil && connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("public read crossing verified finish: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("public read remained blocked after verified finish")
+		}
+	}
+	if _, err := svc.GetVertex(context.Background(), &pb.GetVertexRequest{Key: "kept"}); err != nil {
+		t.Fatalf("read after verified finish: %v", err)
+	}
+}
+
 func TestLanternService_ExclusiveCommittedViewBlocksReceiptLookup(t *testing.T) {
 	f := newReceiptEdgeDeleteFixture(t, nil)
 	entered := make(chan struct{})
