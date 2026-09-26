@@ -223,6 +223,41 @@ func TestReceiptVertexPutFrameSizeRejectsMalformedEnvelope(t *testing.T) {
 	}
 }
 
+func TestReceiptVertexPutRelayFrameSizeMatchesMaximalWire(t *testing.T) {
+	envelope := wireReceiptVertexPutFixture(t)
+	envelope.Accepted[0] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+		Index: 0, Outcome: graphcache.PutOutcomeExpired,
+		Item: graphcache.VertexItem[string, *pb.Vertex]{
+			Key: envelope.Original[0].GetKey(), CausalBarrier: true,
+		},
+	}
+	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+	sparseFrame, err := subscribeMutationFrame(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximal, err := maximalReceiptVertexPutEnvelope(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullFrame, err := subscribeMutationFrame(maximal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.Size(fullFrame)
+	if sparse := proto.Size(sparseFrame); sparse >= want {
+		t.Fatalf("receiver-local sparse/maximal frames = %d/%d, want growth", sparse, want)
+	}
+	if got, err := validateReplicationRelayFrameSize(envelope, want); err != nil || got != want {
+		t.Fatalf("exact-fit maximal relay = %d, %v; want %d", got, err, want)
+	}
+	var sizeErr *replicationFrameSizeError
+	if got, err := validateReplicationRelayFrameSize(envelope, want-1); got != want ||
+		!errors.As(err, &sizeErr) || sizeErr.size != want {
+		t.Fatalf("one-byte-under maximal relay = %d, %v; want %d", got, err, want)
+	}
+}
+
 func TestReceiptVertexPutFrameSizeEnforcesWALCapacity(t *testing.T) {
 	envelope := wireReceiptVertexPutFixture(t)
 	payload := make([]byte, receiptVertexWALMaxBytes/2+1024)

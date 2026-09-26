@@ -199,6 +199,11 @@ does not bypass intent, graph-projection, or canonical-WAL validation. Both
 limits remain pre-publication checks, including for a receiver-local relay
 whose accepted effects differ from the origin's.
 
+The active Store also keeps a one-item logical-call reverse index inline,
+without a per-group position map; plural calls retain their position maps
+through partial expiry and snapshot restore. This only changes in-memory
+bookkeeping, not receipt capacity, deadlines, or original result bytes.
+
 Replication Snapshot and the canonical whole-state receipt backup set include the
 active epoch, receipt-policy fingerprint, unexpired receipts (including no-op
 results), expiration and clock high-water metadata, and the matching graph

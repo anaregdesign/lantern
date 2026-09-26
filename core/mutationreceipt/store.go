@@ -163,11 +163,47 @@ type Store struct {
 // groupReceiptRows binds every currently retained item position to one
 // logical call. Expired positions may disappear independently, but a live
 // GroupID cannot be reused for a different call or item at that position.
-// Its lookup keys duplicate receipt fields already charged to the logical
-// byte ledger; MaxEntries bounds this map's overhead, like deadlineIndex.
+// A one-item call stores its only ID inline instead of allocating a map for
+// that group. Multi-item calls retain position-indexed rows, even after some
+// positions expire. MaxEntries bounds this index's overhead separately from
+// the logical byte ledger, like deadlineIndex.
 type groupReceiptRows struct {
-	count uint32
-	items map[uint32]ID
+	count  uint32
+	single ID
+	items  map[uint32]ID
+}
+
+func newGroupReceiptRows(count uint32, capacity int) *groupReceiptRows {
+	rows := &groupReceiptRows{count: count}
+	if count != 1 {
+		rows.items = make(map[uint32]ID, capacity)
+	}
+	return rows
+}
+
+func (rows *groupReceiptRows) get(index uint32) (ID, bool) {
+	if rows.count == 1 {
+		return rows.single, index == 0 && rows.single != (ID{})
+	}
+	id, exists := rows.items[index]
+	return id, exists
+}
+
+func (rows *groupReceiptRows) put(index uint32, id ID) {
+	if rows.count == 1 {
+		rows.single = id
+		return
+	}
+	rows.items[index] = id
+}
+
+func (rows *groupReceiptRows) remove(index uint32) bool {
+	if rows.count == 1 {
+		rows.single = ID{}
+		return true
+	}
+	delete(rows.items, index)
+	return len(rows.items) == 0
 }
 
 func New(config Config) (*Store, error) {
@@ -406,9 +442,8 @@ func (s *Store) expireLocked(nowMS int64) {
 		delete(s.receipts, expired.id)
 		s.bytes -= r.cost()
 		if group := s.groups[r.Group]; group != nil {
-			if boundID, bound := group.items[r.Index]; bound && boundID == r.ID {
-				delete(group.items, r.Index)
-				if len(group.items) == 0 {
+			if boundID, bound := group.get(r.Index); bound && boundID == r.ID {
+				if group.remove(r.Index) {
 					delete(s.groups, r.Group)
 				}
 			}
@@ -515,7 +550,7 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 			return 0, nil, ErrIntentConflict
 		}
 		for i, item := range intents {
-			if priorID, exists := rows.items[uint32(i)]; exists && priorID != item.ID {
+			if priorID, exists := rows.get(uint32(i)); exists && priorID != item.ID {
 				return 0, nil, ErrIntentConflict
 			}
 		}
@@ -596,7 +631,7 @@ func (tx *Tx) PrepareCommitted(receipts []Receipt, acceptedAtMillis int64) error
 			return ErrIntentConflict
 		}
 		for i, receipt := range receipts {
-			if boundID, exists := rows.items[uint32(i)]; exists && boundID != receipt.ID {
+			if boundID, exists := rows.get(uint32(i)); exists && boundID != receipt.ID {
 				return ErrIntentConflict
 			}
 		}
@@ -779,7 +814,8 @@ func (tx *Tx) Stage() error {
 		return nil
 	}
 	group := tx.staged[0].Group
-	s.groups[group] = &groupReceiptRows{count: tx.intents[0].Count, items: make(map[uint32]ID, len(tx.staged))}
+	rows := newGroupReceiptRows(tx.intents[0].Count, len(tx.staged))
+	s.groups[group] = rows
 	tx.groupAdded = true
 	for _, r := range tx.staged {
 		// Ledger updates happen before the potentially allocating index/map
@@ -788,7 +824,7 @@ func (tx *Tx) Stage() error {
 		tx.applied++
 		s.deadlines.insert(deadlineEntry{id: r.ID, deadlineMS: r.DeadlineMillis})
 		s.receipts[r.ID] = r
-		s.groups[group].items[r.Index] = r.ID
+		rows.put(r.Index, r.ID)
 		if r.HasContrib {
 			s.contributions[r.ContribID] = r.ID
 		}
