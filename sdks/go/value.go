@@ -34,8 +34,16 @@ type nativeVertex struct {
 	expiration time.Time
 }
 
+// A zero SDK expiration means the wire field is absent, not explicitly year one.
+func expirationTimestamp(expiration time.Time) *timestamppb.Timestamp {
+	if expiration.IsZero() {
+		return nil
+	}
+	return timestamppb.New(expiration)
+}
+
 func (v nativeVertex) asVertex() (*pb.Vertex, error) {
-	exp := timestamppb.New(v.expiration)
+	exp := expirationTimestamp(v.expiration)
 	switch x := v.value.(type) {
 	case int:
 		return &pb.Vertex{Key: v.key, Expiration: exp, Value: &pb.Vertex_Int64{Int64: int64(x)}}, nil
@@ -313,7 +321,7 @@ func IsNil(v *Vertex) bool {
 //	  "key":        "<key>",                // omitted when empty
 //	  "type":       "string"|"int32"|...,   // VertexKind in lowercase
 //	  "value":      <typed JSON value>,     // null for nil/unset
-//	  "expiration": "<RFC3339Nano>"         // omitted when zero
+//	  "expiration": "<RFC3339Nano>"         // omitted when absent
 //	}
 //
 // Bytes are base64-encoded (Go's default for []byte); timestamps are RFC3339Nano.
@@ -334,8 +342,8 @@ func MarshalVertexJSON(v *Vertex) ([]byte, error) {
 		return json.Marshal(out)
 	}
 	out.Key = v.Key
-	if t := VertexExpiration(v); !t.IsZero() {
-		out.Expiration = t.Format(time.RFC3339Nano)
+	if v.Expiration != nil {
+		out.Expiration = v.Expiration.AsTime().Format(time.RFC3339Nano)
 	}
 	switch x := v.Value.(type) {
 	case *pb.Vertex_Float32:
@@ -490,9 +498,7 @@ func MarshalEdgeJSON(e *Edge) ([]byte, error) {
 		Expiration string  `json:"expiration,omitempty"`
 	}{Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight()}
 	if e.GetExpiration() != nil {
-		if t := e.GetExpiration().AsTime(); !t.IsZero() {
-			out.Expiration = t.Format(time.RFC3339Nano)
-		}
+		out.Expiration = e.GetExpiration().AsTime().Format(time.RFC3339Nano)
 	}
 	return json.Marshal(out)
 }

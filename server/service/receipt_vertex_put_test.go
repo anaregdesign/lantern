@@ -186,6 +186,70 @@ func TestPublicVertexPutReceiptsRouteAndValidate(t *testing.T) {
 	}
 }
 
+func TestPublicVertexPutReceiptEpochExpiration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exp  *timestamppb.Timestamp
+	}{
+		{"epoch", timestamppb.New(time.Unix(0, 0).UTC())},
+		{"pre-epoch", timestamppb.New(time.Unix(-1, 0).UTC())},
+		{"positive fractional epoch", timestamppb.New(time.Unix(0, 500_000_000).UTC())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, svc, _ := newActivatedReceiptService(t, 8)
+			request := &pb.PutVerticesRequest{
+				Vertices:       []*pb.Vertex{{Key: "expired", Expiration: tc.exp}},
+				ReceiptContext: publicReceiptContext(t, runtime, 0x9a, 1),
+			}
+			response, err := svc.PutVertices(t.Context(), request)
+			if err != nil || !slices.Equal(response.GetOutcomes(), []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_EXPIRED}) {
+				t.Fatalf("epoch receipt Put = (%+v, %v), want EXPIRED", response, err)
+			}
+			if _, live := runtime.graph.GetVertex("expired"); live {
+				t.Fatal("receipt-bearing expired Put became live")
+			}
+			replay, err := svc.PutVertices(t.Context(), proto.Clone(request).(*pb.PutVerticesRequest))
+			if err != nil || !proto.Equal(replay, response) {
+				t.Fatalf("receipt retry = (%+v, %v), want %+v", replay, err, response)
+			}
+			status, err := svc.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{
+				OperationId: request.GetReceiptContext().GetOperationIds()[0],
+			})
+			if err != nil ||
+				status.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				status.GetStatus().GetReceipt().GetOriginalResult().GetPutVertexOutcome() != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
+				t.Fatalf("epoch Put receipt status = (%+v, %v), want EXPIRED", status, err)
+			}
+		})
+	}
+}
+
+func TestPublicVertexPutReceiptInvalidTimestampIsAtomic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exp  *timestamppb.Timestamp
+	}{
+		{"explicit Go zero", timestamppb.New(time.Time{})},
+		{"invalid seconds", &timestamppb.Timestamp{Seconds: 253402300800}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, svc, _ := newActivatedReceiptService(t, 8)
+			_, err := svc.PutVertices(t.Context(), &pb.PutVerticesRequest{
+				Vertices:       []*pb.Vertex{{Key: "valid"}, {Key: "invalid", Expiration: tc.exp}},
+				ReceiptContext: publicReceiptContext(t, runtime, 0x9b, 2),
+			})
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("invalid receipt Put = %v, want InvalidArgument", err)
+			}
+			if _, live := runtime.graph.GetVertex("valid"); live ||
+				runtime.log.Len() != 0 || runtime.ReceiptStats().Entries != 0 ||
+				svc.LocalSeq(svc.clock.NodeID()) != 0 {
+				t.Fatal("invalid receipt Put changed graph, Store, log, or origin")
+			}
+		})
+	}
+}
+
 func TestPublicVertexPutReceiptCapacityRejectsBeforePublication(t *testing.T) {
 	runtime, service, _ := newActivatedReceiptService(t, 1)
 	receiptContext := publicReceiptContext(

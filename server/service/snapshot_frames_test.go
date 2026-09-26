@@ -723,6 +723,10 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			frames[2].GetVertex().GetVertex().Expiration = &timestamppb.Timestamp{Seconds: 253402300800}
 			return frames
 		}},
+		{"explicit zero-time live vertex expiration", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[2].GetVertex().GetVertex().Expiration = timestamppb.New(time.Time{})
+			return frames
+		}},
 		{"invalid live vertex HLC", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
 			frames[2].GetVertex().GetHlc().NodeId = make([]byte, 16)
 			return frames
@@ -820,6 +824,12 @@ func TestValidateReceiptSnapshotFramesRejectsMalformedStream(t *testing.T) {
 			edge.GetEdge().Contributions[0].ContribId = []byte{1}
 			edge.GetEdge().Contributions[0].Hlc =
 				proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp)
+			frames[len(frames)-1].GetFooter().EdgeCount++
+			return insertReceiptSnapshotFrames(frames, len(frames)-1, edge)
+		}},
+		{"explicit zero-time live edge expiration", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			edge := receiptSnapshotPutEdgeFrame("live", "live")
+			edge.GetEdge().Contributions[0].Expiration = timestamppb.New(time.Time{})
 			frames[len(frames)-1].GetFooter().EdgeCount++
 			return insertReceiptSnapshotFrames(frames, len(frames)-1, edge)
 		}},

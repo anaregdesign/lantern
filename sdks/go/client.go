@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -494,9 +493,9 @@ func (l *Lantern) GetVertex(ctx context.Context, key string) (*Vertex, error) {
 
 // expirationFromTTL converts a relative TTL into the absolute expiration
 // the wire carries. A non-positive ttl means "no expiration" (permanent):
-// it yields the zero time.Time, which serialises to the wire's permanent
-// sentinel and is stored by the server as never-expiring (see #523 and
-// core/cache.IsLiveAt). Decay is therefore strictly opt-in via a positive
+// it yields the zero time.Time, which omits the wire expiration field
+// and is stored by the server as never-expiring (see #523).
+// Decay is therefore strictly opt-in via a positive
 // ttl. This keeps the relative-TTL convenience methods consistent with the
 // absolute *At variants, which already treat a zero expiration as permanent.
 func expirationFromTTL(ttl time.Duration) time.Time {
@@ -770,7 +769,7 @@ func (l *Lantern) addEdgeAtWithIDs(ctx context.Context, tail string, head string
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	resp, err := unary(ctx, l, &pb.AddEdgesRequest{
-		Edges:      []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
+		Edges:      []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: expirationTimestamp(expiration)}},
 		ContribIds: ids,
 	}, l.client.AddEdges)
 	if err != nil {
@@ -919,7 +918,7 @@ func (l *Lantern) putEdgeAt(ctx context.Context, tail string, head string, weigh
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
 	resp, err := unary(ctx, l, &pb.PutEdgesRequest{
-		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: timestamppb.New(expiration)}},
+		Edges: []*pb.Edge{{Tail: tail, Head: head, Weight: weight, Expiration: expirationTimestamp(expiration)}},
 	}, l.client.PutEdges)
 	if err != nil {
 		return 0, err
@@ -1283,7 +1282,7 @@ func edgesFrom(inputs []EdgeInput) []*pb.Edge {
 			Tail:       in.Tail,
 			Head:       in.Head,
 			Weight:     in.Weight,
-			Expiration: timestamppb.New(in.Expiration),
+			Expiration: expirationTimestamp(in.Expiration),
 		})
 	}
 	return edges

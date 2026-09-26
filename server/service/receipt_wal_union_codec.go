@@ -476,6 +476,9 @@ func validateReceiptWALGraph(m *pb.Mutation) error {
 	if err := validateMutationEdgeSourceWeights(m.GetOp()); err != nil {
 		return receiptWALUnionError("graph edge source: %v", err)
 	}
+	if err := validateGraphMutationTimeFields(m); err != nil {
+		return receiptWALUnionError("graph timestamp: %v", err)
+	}
 	if err := validateSyntheticAddMutationBounds(m); err != nil {
 		return receiptWALUnionError("graph Add identity: %v", err)
 	}

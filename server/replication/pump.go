@@ -496,7 +496,8 @@ func snapshotTombstoneFields(stamp *pb.HLCTimestamp, expiration *timestamppb.Tim
 	if err != nil {
 		return hlc.Timestamp{}, time.Time{}, err
 	}
-	if expiration == nil || expiration.CheckValid() != nil {
+	if expiration == nil || expiration.CheckValid() != nil ||
+		!expiration.AsTime().After(time.Unix(0, 0)) {
 		return hlc.Timestamp{}, time.Time{}, snapshotProtocolError("invalid Delete tombstone expiration")
 	}
 	return ts, expiration.AsTime(), nil
@@ -550,12 +551,15 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 	seenPut := false
 	if aggregate := edge.GetDerivedAggregate(); aggregate != nil {
 		if putHLC != (hlc.Timestamp{}) ||
-			edgeweight.IsFiniteSource(aggregate.GetWeight()) ||
-			(aggregate.GetExpiration() != nil && aggregate.GetExpiration().CheckValid() != nil) {
+			edgeweight.IsFiniteSource(aggregate.GetWeight()) {
 			return nil, snapshotProtocolError("invalid derived live edge aggregate")
 		}
+		expiration, err := prototime.CheckedExpiration(aggregate.GetExpiration())
+		if err != nil {
+			return nil, snapshotProtocolError("invalid derived live edge aggregate expiration: %v", err)
+		}
 		rows = append(rows, snapshotEdgeRow{
-			weight: aggregate.GetWeight(), expiration: prototime.Expiration(aggregate.GetExpiration()),
+			weight: aggregate.GetWeight(), expiration: expiration,
 			derivedAggregate: true,
 		})
 		contributions = aggregate.GetAdds()
@@ -569,8 +573,9 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 		if !edgeweight.IsFiniteSource(contribution.GetWeight()) {
 			return nil, snapshotProtocolError("non-finite live edge contribution weight")
 		}
-		if exp := contribution.GetExpiration(); exp != nil && exp.CheckValid() != nil {
-			return nil, snapshotProtocolError("invalid live edge contribution expiration")
+		expiration, err := prototime.CheckedExpiration(contribution.GetExpiration())
+		if err != nil {
+			return nil, snapshotProtocolError("invalid live edge contribution expiration: %v", err)
 		}
 		var id graphcache.ContribID
 		rawID := contribution.GetContribId()
@@ -579,7 +584,7 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 		}
 		copy(id[:], rawID)
 		row := snapshotEdgeRow{
-			weight: contribution.GetWeight(), expiration: prototime.Expiration(contribution.GetExpiration()),
+			weight: contribution.GetWeight(), expiration: expiration,
 			contribID: id,
 		}
 		if id.IsZero() {
@@ -705,8 +710,16 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 				return SnapshotInstallResult{}, snapshotProtocolError("nil vertex payload")
 			}
 			v := sv.GetVertex()
+			if value, ok := v.GetValue().(*pb.Vertex_Timestamp); ok &&
+				(value == nil || value.Timestamp == nil || value.Timestamp.CheckValid() != nil) {
+				return SnapshotInstallResult{}, snapshotProtocolError("invalid live vertex timestamp value")
+			}
+			expiration, err := prototime.CheckedExpiration(v.GetExpiration())
+			if err != nil {
+				return SnapshotInstallResult{}, snapshotProtocolError("invalid live vertex expiration: %v", err)
+			}
 			i.snap.PutVertexWithExpirationHLC(
-				v.GetKey(), v, prototime.Expiration(v.GetExpiration()),
+				v.GetKey(), v, expiration,
 				snapshotHLC(sv.GetHlc()),
 			)
 			replay.counts.vertices++

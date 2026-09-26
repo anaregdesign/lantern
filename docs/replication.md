@@ -127,6 +127,12 @@ between deadline and HLC sampling fails closed.
 An unconditional Put whose absolute expiration is already past at the
 serving node is still an accepted LWW mutation. It returns `EXPIRED`, removes
 the previous value/edge at that identity, records its HLC, and is replicated.
+This includes explicit epoch, pre-epoch, and positive fractional first-second
+deadlines; only an omitted expiration is permanent. An explicit year-one
+zero-time expiration cannot be distinguished from the no-expiration sentinel
+inside the cache and is rejected before any graph or receipt mutation, as
+are invalid Protobuf timestamps. Pre-epoch timestamps stored as vertex
+**values** remain valid and are unrelated to expiration.
 This delete-like overwrite is distinct from a tombstone (it has no independent
 tombstone retention window). Its HLC is retained as a causal barrier even
 though no live cache entry/bucket is created, and ordinary TTL GC never reaps
