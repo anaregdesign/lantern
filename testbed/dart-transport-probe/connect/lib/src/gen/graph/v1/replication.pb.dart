@@ -3197,11 +3197,10 @@ class SnapshotVertexCausalBarrier extends $pb.GeneratedMessage {
   HLCTimestamp ensureHlc() => $_ensure(1);
 }
 
-/// SnapshotEdgeContribution is one additive (or LWW-imported) entry inside
-/// an edge's weight bucket. Snapshot preserves the per-contribution
-/// decomposition so that the receiver's ContribID dedup (#182) keeps
-/// suppressing duplicates when peer-pump later re-delivers the same
-/// contribution from the live tail.
+/// SnapshotEdgeContribution is one finite source Add (or LWW Put) inside an
+/// edge's weight bucket. Snapshot preserves the per-contribution decomposition
+/// so that the receiver's ContribID dedup (#182) keeps suppressing duplicates
+/// when peer-pump later re-delivers the same contribution from the live tail.
 ///
 ///   contrib_id: 24-byte ContribID for a replicated Add. Empty denotes the
 ///               single Put row, or a local-only legacy contribution with no
@@ -3311,21 +3310,115 @@ class SnapshotEdgeContribution extends $pb.GeneratedMessage {
   HLCTimestamp ensureHlc() => $_ensure(3);
 }
 
+/// SnapshotEdgeDerivedAggregate is a folded edge value imported from a
+/// graph-only backup. That backup retains the effective weight and its latest
+/// expiration, but not the original contributions. A non-finite weight here is
+/// an aggregate, never a new Put/Add source; only graph-only Snapshot relays
+/// may carry it. RECEIPT Snapshots preserve finite sources instead. Later
+/// finite Add contributions keep their own identity, causal position, and TTL
+/// inside this variant, rather than being folded into the restored base.
+class SnapshotEdgeDerivedAggregate extends $pb.GeneratedMessage {
+  factory SnapshotEdgeDerivedAggregate({
+    $core.double? weight,
+    $1.Timestamp? expiration,
+    $core.Iterable<SnapshotEdgeContribution>? adds,
+  }) {
+    final result = create();
+    if (weight != null) result.weight = weight;
+    if (expiration != null) result.expiration = expiration;
+    if (adds != null) result.adds.addAll(adds);
+    return result;
+  }
+
+  SnapshotEdgeDerivedAggregate._();
+
+  factory SnapshotEdgeDerivedAggregate.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotEdgeDerivedAggregate.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotEdgeDerivedAggregate',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.double>(1, _omitFieldNames ? '' : 'weight', $pb.PbFieldType.OF)
+    ..aOM<$1.Timestamp>(2, _omitFieldNames ? '' : 'expiration',
+        subBuilder: $1.Timestamp.create)
+    ..pc<SnapshotEdgeContribution>(
+        3, _omitFieldNames ? '' : 'adds', $pb.PbFieldType.PM,
+        subBuilder: SnapshotEdgeContribution.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeDerivedAggregate clone() =>
+      SnapshotEdgeDerivedAggregate()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeDerivedAggregate copyWith(
+          void Function(SnapshotEdgeDerivedAggregate) updates) =>
+      super.copyWith(
+              (message) => updates(message as SnapshotEdgeDerivedAggregate))
+          as SnapshotEdgeDerivedAggregate;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeDerivedAggregate create() =>
+      SnapshotEdgeDerivedAggregate._();
+  @$core.override
+  SnapshotEdgeDerivedAggregate createEmptyInstance() => create();
+  static $pb.PbList<SnapshotEdgeDerivedAggregate> createRepeated() =>
+      $pb.PbList<SnapshotEdgeDerivedAggregate>();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeDerivedAggregate getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotEdgeDerivedAggregate>(create);
+  static SnapshotEdgeDerivedAggregate? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.double get weight => $_getN(0);
+  @$pb.TagNumber(1)
+  set weight($core.double value) => $_setFloat(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasWeight() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearWeight() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $1.Timestamp get expiration => $_getN(1);
+  @$pb.TagNumber(2)
+  set expiration($1.Timestamp value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpiration() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpiration() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $1.Timestamp ensureExpiration() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $pb.PbList<SnapshotEdgeContribution> get adds => $_getList(2);
+}
+
 /// SnapshotEdge is the snapshot-time representation of a single live edge.
 /// `hlc` carries the winning Put floor, including a retained causal barrier
-/// (zero when no Put has happened). Each Add carries its own original HLC.
+/// (zero when no Put has happened). Exactly one representation is present:
+/// nonempty finite-source contributions, OR a derived aggregate with zero
+/// ordinary contributions. Each Add carries its own original HLC.
 class SnapshotEdge extends $pb.GeneratedMessage {
   factory SnapshotEdge({
     $core.String? tail,
     $core.String? head,
     HLCTimestamp? hlc,
     $core.Iterable<SnapshotEdgeContribution>? contributions,
+    SnapshotEdgeDerivedAggregate? derivedAggregate,
   }) {
     final result = create();
     if (tail != null) result.tail = tail;
     if (head != null) result.head = head;
     if (hlc != null) result.hlc = hlc;
     if (contributions != null) result.contributions.addAll(contributions);
+    if (derivedAggregate != null) result.derivedAggregate = derivedAggregate;
     return result;
   }
 
@@ -3349,6 +3442,9 @@ class SnapshotEdge extends $pb.GeneratedMessage {
     ..pc<SnapshotEdgeContribution>(
         4, _omitFieldNames ? '' : 'contributions', $pb.PbFieldType.PM,
         subBuilder: SnapshotEdgeContribution.create)
+    ..aOM<SnapshotEdgeDerivedAggregate>(
+        5, _omitFieldNames ? '' : 'derivedAggregate',
+        subBuilder: SnapshotEdgeDerivedAggregate.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3403,6 +3499,21 @@ class SnapshotEdge extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(4)
   $pb.PbList<SnapshotEdgeContribution> get contributions => $_getList(3);
+
+  /// Optional non-finite graph-only backup aggregate occupying the single
+  /// zero-ContribID Put/base slot. Ordinary contributions must be empty when
+  /// present; only derived_aggregate.adds can accompany this base.
+  @$pb.TagNumber(5)
+  SnapshotEdgeDerivedAggregate get derivedAggregate => $_getN(4);
+  @$pb.TagNumber(5)
+  set derivedAggregate(SnapshotEdgeDerivedAggregate value) =>
+      $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDerivedAggregate() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDerivedAggregate() => $_clearField(5);
+  @$pb.TagNumber(5)
+  SnapshotEdgeDerivedAggregate ensureDerivedAggregate() => $_ensure(4);
 }
 
 /// SnapshotEdgeCausalBarrier is the edge sibling of
