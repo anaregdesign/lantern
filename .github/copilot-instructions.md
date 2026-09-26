@@ -55,18 +55,20 @@ they must not conflict.
 ## Workflow (hard rules)
 
 - **Search existing Issues; link or file one before any non-trivial change**, including
-  bugs, improvements, and validation repairs discovered mid-PR. Exceptions: doc-only
-  edits, in-flight PR-review follow-ups, and one-line obvious fixes. A cohesive PR
-  may close related Issues with one keyword per Issue (`Closes #1, closes #2`).
+  bugs, improvements, and validation repairs discovered mid-PR. Only pure doc edits
+  and in-flight review fixes to the already-filed Issue are exempt; even one-line
+  newly discovered bugs or improvements need an Issue. A cohesive PR may close
+  related Issues with one keyword per Issue (`Closes #1, closes #2`).
 - **Keep epic progress in independent exit buckets** for merged source/CI,
   final exact-source acceptance, publication, and human/device evidence, each with
   done/total and linked blockers. A branch diagnostic or simulator is not final
   acceptance.
 - **Batch validation, not standards**: targeted checks during edits, full mandatory
   gate before each push. Budget costly whole-host/device runs before execution,
-  preflight once, pin final merged source/image, and retain raw evidence with its
-  SHA-256. Repeat only for a relevant build change, documented invalid run, or
-  predeclared stability check; never select a pass or relax load, GC, or limits.
+  preflight every required run/family boundary while reusing the one immutable
+  image and unchanged setup, pin final merged source, and retain raw evidence
+  with its SHA-256. Repeat only for a relevant build change, documented invalid
+  run, or predeclared stability check; never select a pass or relax load, GC, or limits.
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
 - **Before every push**, run the local quality gate: `gofmt -l` must print nothing,

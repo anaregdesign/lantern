@@ -81,9 +81,10 @@ boundaries, dependencies, and verification before editing, not after a diff exis
   may share a cohesive PR when each outcome remains independently reviewable.
 - Reference every closing Issue in the PR (`Closes #N` per Issue) so the merge
   wires each discussion to the diff.
-- Exceptions (no Issue required): pure doc-only edits; direct follow-ups requested in an
-  in-flight PR review; one-line obvious bug fixes with nothing to discuss. A new
-  user-requested bug or improvement is not an in-flight review follow-up.
+- Exceptions (no new Issue required): pure doc-only edits and direct fixes to
+  the already-filed Issue requested in an in-flight PR review. A distinct
+  discovered bug or improvement needs an Issue even if it is a one-line fix or
+  arises during review.
 - When in doubt, file the Issue — the overhead is tiny next to a reworked PR.
 
 ## Track independent exits and budget expensive validation
@@ -99,12 +100,15 @@ performance, partial CI, or simulator runs as final-source or physical acceptanc
 Before costly whole-host or device validation, record the owner, dependencies,
 acceptance matrix, pinned source/image revision, fresh-state requirements, and
 test budget (including any predeclared stability repetitions) in the driving
-Issue. Preflight once, then run the complete declared matrix on the final exact
-merged source/image, using separate fresh state where required. Preserve raw
-evidence securely and record its exact SHA-256 alongside a content-free public
-verdict. Repeat a costly run only after a relevant build change, a documented
-invalid run, or a predeclared stability check; never cherry-pick a passing
-sample, force GC in a measured steady window, or weaken load or thresholds.
+Issue. Preflight at each required run or family boundary, including host
+contention, image provenance, and fresh state. Reuse the one immutable image
+and unchanged shared setup across the complete declared matrix on final exact
+merged source, without skipping per-family checks or repeating preflight of
+unchanged inputs. Preserve raw evidence securely and record its exact SHA-256
+alongside a content-free public verdict. Repeat a costly run only after a
+relevant build change, a documented invalid run, or a predeclared stability
+check; never cherry-pick a passing sample, force GC in a measured steady
+window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
