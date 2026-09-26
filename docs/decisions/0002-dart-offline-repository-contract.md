@@ -612,9 +612,9 @@ from an earlier scope, but none may add implicit persistence to
    Vertex Delete, and explicit-ContribID Edge Add (#1397). Online Go, Node,
    and Dart receipt APIs are merged. The #1398 offline 0.4.0 source
    implements those receipt-backed families, but its publication and final
-   gates (#1399) remain pending. The online `lantern_client 0.3.1` parent is
+   gates (#1399) remain pending. The online `lantern_client 0.3.2` parent is
    hosted and its published archive passed exact-content verification; merged
-   offline 0.4.0 source declares `lantern_client: ^0.3.1`. The hosted offline
+   offline 0.4.0 source declares `lantern_client: ^0.3.2`. The hosted offline
    0.3.0 release remains Put-only. Receipt-bearing 0.4.0 still needs
    response-loss, restart, and physical-device qualification with isolated
    resolution of its candidate archive against the hosted parent without

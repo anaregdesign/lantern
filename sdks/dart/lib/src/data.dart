@@ -291,8 +291,9 @@ final class EdgeInput {
   /// Creates an edge write.
   ///
   /// [contribId], when present, must be exactly 24 bytes and non-zero. It is
-  /// used only by additive writes; automatic generation belongs to the
-  /// resilience layer.
+  /// used only by additive writes and deduplicates only while the contribution
+  /// is live. It cannot recover the original result of a plain Add after an
+  /// ambiguous response; [LanternClient] can stamp missing IDs for live dedup.
   EdgeInput({
     required this.tail,
     required this.head,
@@ -461,9 +462,9 @@ final class BatchException implements Exception {
   /// This is not an [PutOutcome.appliedAndLive] count: a completed Put chunk
   /// can contain any bounded per-item outcome.
   ///
-  /// For a conditional Put the failed chunk itself is ambiguous: it may have
-  /// committed without a response, and replay cannot recover its original
-  /// per-item outcomes.
+  /// For a conditional Put or plain Add the failed chunk itself is ambiguous:
+  /// it may have committed without a response, and replay cannot recover its
+  /// original per-item outcomes.
   final int committed;
 
   /// Typed failure reported by the failed chunk.

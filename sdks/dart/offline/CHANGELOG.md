@@ -2,7 +2,8 @@
 
 ## 0.4.0
 
-- Require published `lantern_client ^0.3.1` for receipt-capable offline writes.
+- Require published `lantern_client ^0.3.2` for receipt-capable offline writes
+  and single-attempt receipt-less Add.
 - Add storage-neutral, status-first bounded-receipt reconciliation for
   conditional Vertex Put, exact Vertex Delete, exact Edge Delete, and
   contribution-keyed Edge Add. Persist

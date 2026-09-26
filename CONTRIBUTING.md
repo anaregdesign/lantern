@@ -136,7 +136,7 @@ manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
 record required before an offline release. The merged offline 0.4.0 source
-candidate declares a hosted `lantern_client: ^0.3.1` dependency and has an
+candidate declares a hosted `lantern_client: ^0.3.2` dependency and has an
 independent candidate archive gate; the parent `lantern_client` publish
 archive continues to exclude `offline/` and `offline_sqlite/`. The maintained
 Flutter app under `sdks/dart/example/` is a repository integration fixture
@@ -235,7 +235,11 @@ of that surface ships, **in the same PR**:
    contract (NotFound sentinel, batch partial-miss, chunking, TTL expiry,
    idempotent retry, ...). Unit tests in the owning module complement but do not
    replace this: the wire path is where the singular→plural facades, validation
-   interceptors, and codec behaviour actually live.
+   interceptors, and codec behaviour actually live. For the standalone Node
+   SDK, real-wire cases instead live in `sdks/node/test/`: `node-sdk.yml` runs
+   `bun run test:real-wire` on Node 20/22 against Connect/h2c and `bun test`
+   for browser Connect-Web real-wire cases. Both paths must assert a happy
+   path and a failure/edge contract; in-process stubs do not replace them.
 2. **Bench coverage for perf-relevant paths.** A change on a hot path (reads,
    writes, scans, traversals, streams) joins an existing scenario fan-out in
    `testbed/bench/scenarios/` or gets a new scenario. The release-sweep scenarios
@@ -442,7 +446,7 @@ complete, not a procedure for the receipt-bearing 0.4.0 candidate. Never
 repeat manual publication for a later version, reuse a published tag, or put
 a pub token in GitHub Secrets, CI, or the repository.
 
-**Dart publishing status.** The parent `lantern_client` 0.3.1 is published and
+**Dart publishing status.** The parent `lantern_client` 0.3.2 is published and
 its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
@@ -451,7 +455,7 @@ manual `dart pub publish`. Immediately before tagging, check
 already exist. Never force-move a published Dart tag/version—bump patch.
 
 **Offline receipt release preparation (#1398/#1115/#1399).** Merged offline
-0.4.0 source requires hosted `lantern_client ^0.3.1`; it is not yet a
+0.4.0 source requires hosted `lantern_client ^0.3.2`; it is not yet a
 published or qualified receipt release. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without

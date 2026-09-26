@@ -134,9 +134,10 @@ Release workflows publish artifacts only. Project-managed GKE deployment is reti
   [CONTRIBUTING.md](CONTRIBUTING.md) "External-surface testing policy". The always-on
   summary: every PR that adds or changes externally observable behaviour (RPC surface,
   SDKs, CLI grammar, MCP tools, `LANTERN_*` env contract, TTL/decay semantics) ships —
-  in the same PR — an integration test in `tests/integration/` over the real
-  Connect/h2c wire path covering the happy path plus at least one failure/edge
-  contract; perf-relevant hot paths also join a bench scenario in
+  in the same PR — an integration test in `tests/integration/` (standalone Node
+  SDK: `sdks/node/test/` via `node-sdk.yml`) over the real Connect wire path
+  covering the happy path plus at least one failure/edge contract; perf-relevant
+  hot paths also join a bench scenario in
   `testbed/bench/scenarios/` (the release-sweep scenarios carry `perf_gate:`
   throughput/latency floors enforced by the blocking nightly — sizing and
   re-baselining rules in [testbed/bench/README.md](testbed/bench/README.md)). Bench

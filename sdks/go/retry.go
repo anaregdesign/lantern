@@ -1,25 +1,19 @@
 // Package client: retry.go implements the opt-in retry policy (#849).
 //
-// The SDK long had every prerequisite for safe retries — the
-// ErrUnavailable sentinel, WithIdempotentAdds ContribID stamping, failover
-// rotation — and stopped one step short of performing them, so every
-// consumer hand-rolled the same backoff loop (or, in practice, didn't).
-// WithRetry closes that gap: exponential backoff with full jitter,
-// context-aware, bounded attempts, applied ONLY to RPCs that are
-// idempotent under the client's configuration.
+// WithRetry applies context-aware, bounded exponential backoff with full
+// jitter only where an ambiguous response cannot change the result or
+// repeat an unsafe mutation. ErrUnavailable does not prove the server
+// rejected the request.
 //
 // Eligibility is enforced in code, not docs (see requestRetryable):
 //
 //	reads (Get*/Scan*/Count*/Search*/Illuminate/status)  retryable
-//	PutVertex(es)/PutEdge(s)/Delete*                     retryable (idempotent semantics)
-//	PutVertex(es) with if_absent                         never unless the dedicated receipt path owns replay
-//	receipt-less AddEdge/AddEdges                        retryable ONLY when every edge in the
-//	                                                     request carries a ContribID (WithIdempotentAdds
-//	                                                     stamps them; without one a retry double-counts)
+//	unconditional PutVertex(es)/PutEdge(s)                retryable
+//	plain exact/prefix Deletes, conditional Put, Add      never: original results or
+//	                                                     intervening Deletes make replay unsafe
 //	receipt-bearing mutations                            never here; the dedicated path verifies
 //	                                                     endpoint continuity before each attempt
 //	streaming / io (Subscribe/Backup/Restore/…)          never (v1)
-//	receipt-bearing Put/Delete wire requests             never here (the continuity-aware path owns replay)
 //	anything unclassified                                never (fail closed)
 //
 // Never retried regardless of policy: deterministic outcomes
@@ -156,44 +150,24 @@ func ctxSleep(ctx context.Context, d time.Duration) error {
 
 // requestRetryable is the code-enforced eligibility matrix at the wire
 // boundary (#849): it classifies by the REQUEST message that is about to
-// be (re)sent, which uniformly covers both WithIdempotentAdds (ContribIDs
-// are stamped into the request before the first attempt, so every retry
-// re-sends the same keys) and explicitly-supplied ContribIDs. Unknown
-// request types are NOT retryable — fail closed; the paired matrix test
-// forces a classification for every public RPC method.
+// be (re)sent. ContribIDs only deduplicate while the contribution is live:
+// an intervening Delete or expiration makes plain Add unsafe to replay.
+// Unknown request types are NOT retryable — fail closed; the paired matrix
+// test forces a classification for every public RPC method.
 func requestRetryable(req any) bool {
 	switch r := req.(type) {
-	case *pb.AddEdgeRequest:
-		return r.GetReceiptContext() == nil && len(r.GetContribId()) > 0
-	case *pb.AddEdgesRequest:
-		if r.GetReceiptContext() != nil {
-			return false
-		}
-		if len(r.GetContribIds()) != len(r.GetEdges()) {
-			return false
-		}
-		for _, id := range r.GetContribIds() {
-			if len(id) == 0 {
-				return false
-			}
-		}
-		return len(r.GetEdges()) > 0
 	case *pb.PutVertexRequest:
 		return r.GetReceiptContext() == nil && !r.GetIfAbsent()
 	case *pb.PutVerticesRequest:
 		return r.GetReceiptContext() == nil && !r.GetIfAbsent()
-	case *pb.DeleteVertexRequest:
-		return r.GetReceiptContext() == nil
-	case *pb.DeleteVerticesRequest:
-		return r.GetReceiptContext() == nil
-	case *pb.DeleteEdgeRequest:
-		return r.GetReceiptContext() == nil
-	case *pb.DeleteEdgesRequest:
-		return r.GetReceiptContext() == nil
+	case *pb.AddEdgeRequest, *pb.AddEdgesRequest,
+		*pb.DeleteVertexRequest, *pb.DeleteVerticesRequest,
+		*pb.DeleteEdgeRequest, *pb.DeleteEdgesRequest,
+		*pb.DeleteVerticesByPrefixRequest, *pb.DeleteEdgesByPrefixRequest:
+		return false
 	case *pb.GetVertexRequest, *pb.GetVerticesRequest,
 		*pb.GetEdgeRequest, *pb.GetEdgesRequest,
 		*pb.PutEdgeRequest, *pb.PutEdgesRequest,
-		*pb.DeleteVerticesByPrefixRequest, *pb.DeleteEdgesByPrefixRequest,
 		*pb.ScanVerticesRequest, *pb.ScanVertexKeysRequest,
 		*pb.ScanEdgesRequest, *pb.CountVerticesByPrefixRequest,
 		*pb.SearchVerticesRequest, *pb.IlluminateRequest,
@@ -213,13 +187,11 @@ func requestRetryable(req any) bool {
 type methodRetryClass int
 
 const (
-	// retryNever: never retried (streaming, or unclassified).
+	// retryNever: never replayed (unsafe writes, streaming, or unclassified).
 	retryNever methodRetryClass = iota
-	// retryAlways: idempotent by semantics.
+	// retryAlways: eligible for replay, including endpoint-bound receipt
+	// mutations through their dedicated continuity-aware path.
 	retryAlways
-	// retryIfIdempotentAdds: additive writes — retried only when the
-	// request provably carries per-edge ContribIDs.
-	retryIfIdempotentAdds
 )
 
 // methodRetryClasses classifies every public RPC-shaped method on *Lantern
@@ -239,12 +211,12 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"PutEdge":                        retryAlways,
 	"PutEdgeAt":                      retryAlways,
 	"PutEdges":                       retryAlways,
-	"DeleteVertex":                   retryAlways,
-	"DeleteVertices":                 retryAlways,
-	"DeleteEdge":                     retryAlways,
-	"DeleteEdges":                    retryAlways,
-	"DeleteVerticesByPrefix":         retryAlways,
-	"DeleteEdgesByPrefix":            retryAlways,
+	"DeleteVertex":                   retryNever,
+	"DeleteVertices":                 retryNever,
+	"DeleteEdge":                     retryNever,
+	"DeleteEdges":                    retryNever,
+	"DeleteVerticesByPrefix":         retryNever,
+	"DeleteEdgesByPrefix":            retryNever,
 	"ScanVertices":                   retryAlways,
 	"ScanVerticesAll":                retryAlways,
 	"ScanVertexKeys":                 retryAlways,
@@ -274,10 +246,10 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"AddEdgeAtWithReceipt":           retryAlways,
 	"AddEdgesWithReceipt":            retryAlways,
 	"Ping":                           retryAlways,
-	"AddEdge":                        retryIfIdempotentAdds,
-	"AddEdgeAt":                      retryIfIdempotentAdds,
-	"AddEdges":                       retryIfIdempotentAdds,
-	"AddDecayingEdge":                retryIfIdempotentAdds, // fans out into an AddEdges batch
+	"AddEdge":                        retryNever,
+	"AddEdgeAt":                      retryNever,
+	"AddEdges":                       retryNever,
+	"AddDecayingEdge":                retryNever, // fans out into an AddEdges batch
 
 	"Backup":               retryNever, // whole-graph stream dump — excluded in v1
 	"Restore":              retryNever, // stream restore — excluded in v1
@@ -289,19 +261,8 @@ var methodRetryClasses = map[string]methodRetryClass{
 }
 
 // retryableMethod is the method-name counterpart to requestRetryable,
-// consumed by the Failover wrappers — which dispatch per method, not per
-// wire request, so they cannot inspect the ContribIDs the way unary does.
-// It reads the code-enforced methodRetryClasses matrix and folds in the
-// caller's idempotent-adds setting for the additive write surface. Unknown
-// methods fail closed (retryNever is the zero value), so a mis-typed call
-// site silently disables retry rather than risking an unsafe one.
-func retryableMethod(method string, idempotentAdds bool) bool {
-	switch methodRetryClasses[method] {
-	case retryAlways:
-		return true
-	case retryIfIdempotentAdds:
-		return idempotentAdds
-	default:
-		return false
-	}
+// consumed by Failover. Unknown methods fail closed (retryNever is the
+// zero value). Receipt-bearing methods use this only on a pinned endpoint.
+func retryableMethod(method string) bool {
+	return methodRetryClasses[method] == retryAlways
 }

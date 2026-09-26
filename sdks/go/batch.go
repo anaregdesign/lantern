@@ -13,11 +13,11 @@ import (
 // Used by PutVertices / DeleteVertices / AddEdges / PutEdges / DeleteEdges.
 // Put callbacks return len(chunk), so a successfully validated outcome vector
 // advances BatchError.Written by the exact observed prefix; Add callbacks
-// return the server count/effective cardinality they expose, and deletes return
-// the server-side "actually existed and removed" count. A failure while
+// expose effective weights separately, and Delete callbacks return the
+// server-side "actually existed and removed" count. A failure while
 // validating the current response leaves that entire chunk outside Written:
-// its original per-item outcomes are ambiguous and conditional Put must not be
-// blindly replayed to reconstruct them.
+// its original outcomes are ambiguous, so conditional Put, plain Add, and
+// exact Delete must not be blindly replayed to reconstruct them.
 func runBatchWrite[T any](
 	ctx context.Context,
 	l *Lantern,
