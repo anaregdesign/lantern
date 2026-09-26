@@ -757,6 +757,374 @@ void main() {
   );
 
   test(
+    'receipt ambiguity stays status-first across three authenticated replicas',
+    () async {
+      final binary = Platform.environment['LANTERN_DART_RECEIPT_HA_BINARY'];
+      if (binary == null || binary.isEmpty) {
+        markTestSkipped('set LANTERN_DART_RECEIPT_HA_BINARY');
+        return;
+      }
+      final token = Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
+      if (token == null || token.isEmpty) {
+        throw StateError('LANTERN_DART_RECEIPT_TOKEN is required for HA');
+      }
+
+      final cluster = await _ReceiptHaCluster.create(binary, token);
+      addTearDown(cluster.close);
+      await cluster.start();
+      LanternClient connect(Uri endpoint) => LanternClient.connect(
+        endpoint,
+        allowInsecure: true,
+        token: token,
+        retryPolicy: const RetryPolicy(maxAttempts: 1),
+        defaultTimeout: const Duration(seconds: 2),
+      );
+
+      final origin = connect(cluster.a);
+      final follower = connect(cluster.b);
+      final partitioned = connect(cluster.c);
+      addTearDown(origin.close);
+      addTearDown(follower.close);
+      addTearDown(partitioned.close);
+      final originCapability =
+          await origin.getReceiptCapability() as ReceiptCapabilityEnabled;
+      final followerCapability =
+          await follower.getReceiptCapability() as ReceiptCapabilityEnabled;
+      final partitionedCapability =
+          await partitioned.getReceiptCapability() as ReceiptCapabilityEnabled;
+      for (final capability in <ReceiptCapabilityEnabled>[
+        followerCapability,
+        partitionedCapability,
+      ]) {
+        expect(
+          capability.policy.deploymentEpoch,
+          originCapability.policy.deploymentEpoch,
+        );
+        expect(
+          capability.policy.fingerprint,
+          orderedEquals(originCapability.policy.fingerprint),
+        );
+      }
+      expect(partitionedCapability.endpoint, isNot(originCapability.endpoint));
+      expect(
+        originCapability.supportedMutations,
+        containsAll(<ReceiptMutationKind>{
+          ReceiptMutationKind.vertexPut,
+          ReceiptMutationKind.vertexDelete,
+          ReceiptMutationKind.edgeDelete,
+          ReceiptMutationKind.edgeAdd,
+        }),
+      );
+      final anonymous = LanternClient.connect(
+        cluster.c,
+        allowInsecure: true,
+        retryPolicy: const RetryPolicy(maxAttempts: 1),
+      );
+      addTearDown(anonymous.close);
+      await expectLater(
+        anonymous.getReceiptCapability(),
+        throwsA(isA<LanternUnauthenticatedException>()),
+      );
+
+      final prefix =
+          'dart-offline-ha:${DateTime.now().microsecondsSinceEpoch}:';
+      final vertexKey = '${prefix}delete-vertex';
+      final edgeKey = EdgeRef('${prefix}delete-tail', '${prefix}delete-head');
+      final addKey = EdgeRef('${prefix}add-tail', '${prefix}add-head');
+      expect(
+        await origin.putVertex(
+          VertexInput(key: vertexKey, value: VertexValue.string('seed')),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+      expect(
+        await origin.putEdge(
+          EdgeInput(tail: edgeKey.tail, head: edgeKey.head, weight: 1),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+
+      final proxy = await _ResponseDroppingProxy.bind(
+        cluster.a,
+        drops: const <String, int>{
+          'PutVertices': 1,
+          'DeleteVertices': 1,
+          'DeleteEdges': 1,
+          'AddEdges': 1,
+        },
+      );
+      addTearDown(proxy.close);
+      final offlineClient = connect(proxy.endpoint);
+      addTearDown(offlineClient.close);
+      const partitionId = 'receipt-ha-wire';
+      final enqueuedAt = DateTime.now().toUtc();
+      final replayConfig = OfflineConfig(
+        clock: () => enqueuedAt.add(const Duration(seconds: 2)),
+        jitter: (_) => Duration.zero,
+        maxConcurrency: 1,
+        maxConcurrencyPerPartition: 1,
+      );
+      final store = InMemoryOfflineStore();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: LanternClientOfflineRemote(offlineClient),
+        config: OfflineConfig(
+          clock: () => enqueuedAt,
+          jitter: (ceiling) => ceiling,
+          baseRetryDelay: const Duration(seconds: 1),
+          maxConcurrency: 1,
+          maxConcurrencyPerPartition: 1,
+        ),
+      );
+      addTearDown(repository.dispose);
+      final put = await repository.putVertexIfAbsent(
+        partitionId: partitionId,
+        input: VertexInput(
+          key: '${prefix}put',
+          value: VertexValue.string('value'),
+        ),
+      );
+      final vertexDelete = await repository.deleteVertex(
+        partitionId: partitionId,
+        key: vertexKey,
+      );
+      final edgeDelete = await repository.deleteEdge(
+        partitionId: partitionId,
+        edge: edgeKey,
+      );
+      final add = await repository.addEdge(
+        partitionId: partitionId,
+        input: EdgeInput(
+          tail: addKey.tail,
+          head: addKey.head,
+          weight: 4,
+          contribId: Uint8List(24)..[23] = 1,
+        ),
+      );
+      final cases =
+          <
+            ({
+              String rpc,
+              OfflineWriteHandle handle,
+              ReceiptMutationKind mutation,
+              Matcher wireResult,
+              Matcher offlineResult,
+            })
+          >[
+            (
+              rpc: 'PutVertices',
+              handle: put,
+              mutation: ReceiptMutationKind.vertexPut,
+              wireResult: isA<VertexPutReceipt>().having(
+                (receipt) => receipt.outcome,
+                'original outcome',
+                PutOutcome.appliedAndLive,
+              ),
+              offlineResult: isA<OfflineVertexPutReceiptResult>().having(
+                (result) => result.outcome,
+                'original outcome',
+                PutOutcome.appliedAndLive,
+              ),
+            ),
+            (
+              rpc: 'DeleteVertices',
+              handle: vertexDelete,
+              mutation: ReceiptMutationKind.vertexDelete,
+              wireResult: isA<VertexDeleteReceipt>().having(
+                (receipt) => receipt.existed,
+                'original existed',
+                isTrue,
+              ),
+              offlineResult: isA<OfflineVertexDeleteReceiptResult>().having(
+                (result) => result.existed,
+                'original existed',
+                isTrue,
+              ),
+            ),
+            (
+              rpc: 'DeleteEdges',
+              handle: edgeDelete,
+              mutation: ReceiptMutationKind.edgeDelete,
+              wireResult: isA<EdgeDeleteReceipt>().having(
+                (receipt) => receipt.existed,
+                'original existed',
+                isTrue,
+              ),
+              offlineResult: isA<OfflineEdgeDeleteReceiptResult>().having(
+                (result) => result.existed,
+                'original existed',
+                isTrue,
+              ),
+            ),
+            (
+              rpc: 'AddEdges',
+              handle: add,
+              mutation: ReceiptMutationKind.edgeAdd,
+              wireResult: isA<EdgeAddReceipt>().having(
+                (receipt) => receipt.effectiveWeight,
+                'original effective weight',
+                4,
+              ),
+              offlineResult: isA<OfflineEdgeAddReceiptResult>().having(
+                (result) => result.effectiveWeight,
+                'original effective weight',
+                4,
+              ),
+            ),
+          ];
+
+      expect(await repository.drain(partitionId), 0);
+      final pending = await store.transaction(
+        (transaction) => transaction.outbox(partitionId),
+      );
+      expect(pending, hasLength(cases.length));
+      final byRecord = {for (final record in pending) record.recordId: record};
+      final evidence = <OfflineReceiptEvidence>[];
+      for (final scenario in cases) {
+        final record = byRecord[scenario.handle.recordId];
+        expect(record, isNotNull, reason: scenario.rpc);
+        expect(record!.attemptCount, 1, reason: scenario.rpc);
+        expect(record.receipt, isNotNull, reason: scenario.rpc);
+        expect(record.receipt!.mayHaveDispatched, isTrue);
+        expect(record.receipt!.mutation, scenario.mutation);
+        evidence.add(record.receipt!);
+        expect(proxy.forwarded(scenario.rpc), 1, reason: scenario.rpc);
+        expect(proxy.dropped(scenario.rpc), 1, reason: scenario.rpc);
+      }
+      expect(
+        evidence.map((item) => item.operationId).toSet(),
+        hasLength(cases.length),
+      );
+      expect(
+        evidence.map((item) => item.groupId).toSet(),
+        hasLength(cases.length),
+      );
+
+      expect(await origin.deleteEdge(addKey), isTrue);
+      final ids = <ReceiptOperationId>[
+        for (final item in evidence) item.operationId,
+      ];
+      void expectConfirmed(List<ReceiptStatus> statuses) {
+        expect(statuses, hasLength(cases.length));
+        for (var index = 0; index < cases.length; index++) {
+          final receipt = statuses[index].receipt;
+          expect(statuses[index].operationId, evidence[index].operationId);
+          expect(statuses[index].state, ReceiptStatusState.confirmed);
+          expect(receipt, cases[index].wireResult);
+          expect(receipt!.operationId, evidence[index].operationId);
+          expect(receipt.groupId, evidence[index].groupId);
+          expect(receipt.mutation, cases[index].mutation);
+          expect(receipt.itemIndex, 0);
+          expect(receipt.itemCount, 1);
+        }
+      }
+
+      expectConfirmed(await _awaitReceiptConfirmation(follower, ids, 'B'));
+      await _awaitEdgeGone(follower, addKey);
+      final snapshot = await store.exportSnapshot();
+      await repository.dispose();
+      await cluster.stopA();
+
+      final unknownOnC = await partitioned.getReceiptStatuses(ids);
+      expect(unknownOnC, hasLength(cases.length));
+      for (var index = 0; index < cases.length; index++) {
+        expect(unknownOnC[index].operationId, ids[index]);
+        expect(unknownOnC[index].state, ReceiptStatusState.notYetObserved);
+        expect(unknownOnC[index].receipt, isNull);
+      }
+
+      proxy.routeTo(cluster.c);
+      final beforeUnknown = proxy.forwardedRpcs.length;
+      final restartedStore = InMemoryOfflineStore.fromSnapshot(snapshot);
+      final restored = await restartedStore.transaction(
+        (transaction) => transaction.outbox(partitionId),
+      );
+      expect(restored, hasLength(cases.length));
+      for (final record in restored) {
+        final original = byRecord[record.recordId]!.receipt!;
+        expect(record.receipt!.operationId, original.operationId);
+        expect(record.receipt!.groupId, original.groupId);
+        expect(record.receipt!.mayHaveDispatched, isTrue);
+      }
+      final unknownRepository = OfflineLanternRepository(
+        store: restartedStore,
+        remote: LanternClientOfflineRemote(offlineClient),
+        config: replayConfig,
+      );
+      addTearDown(unknownRepository.dispose);
+      expect(await unknownRepository.drain(partitionId), 0);
+      final unknownRequests = proxy.forwardedRpcs.skip(beforeUnknown).toList();
+      expect(unknownRequests, isNotEmpty);
+      expect(unknownRequests.first, 'GetReceiptStatuses');
+      expect(
+        unknownRequests,
+        everyElement(anyOf('GetReceiptStatuses', 'GetReceiptCapability')),
+      );
+      expect(unknownRequests, contains('GetReceiptCapability'));
+      for (final scenario in cases) {
+        final status = await unknownRepository.getWriteStatus(
+          partitionId,
+          scenario.handle.operationId,
+        );
+        expect(status!.items.single.state, OfflineWriteState.outcomeUnknown);
+        expect(
+          status.items.single.diagnosticCode,
+          'receipt_continuity_changed',
+        );
+        expect(status.items.single.receiptResult, isNull);
+        expect(status.items.single.attemptCount, 1);
+        expect(proxy.forwarded(scenario.rpc), 1, reason: scenario.rpc);
+      }
+      expect(
+        await unknownRepository.listDeadLetters(partitionId),
+        hasLength(cases.length),
+      );
+
+      await cluster.relayBtoC();
+      final converged = connect(cluster.c);
+      addTearDown(converged.close);
+      expectConfirmed(await _awaitReceiptConfirmation(converged, ids, 'C'));
+      await expectLater(
+        converged.getEdge(addKey),
+        throwsA(isA<LanternNotFoundException>()),
+      );
+      for (final scenario in cases) {
+        final status = await unknownRepository.getWriteStatus(
+          partitionId,
+          scenario.handle.operationId,
+        );
+        expect(status!.items.single.state, OfflineWriteState.outcomeUnknown);
+      }
+
+      proxy.routeTo(cluster.c);
+      final beforeConfirmed = proxy.forwardedRpcs.length;
+      final preUnknownCopy = OfflineLanternRepository(
+        store: InMemoryOfflineStore.fromSnapshot(snapshot),
+        remote: LanternClientOfflineRemote(offlineClient),
+        config: replayConfig,
+      );
+      addTearDown(preUnknownCopy.dispose);
+      expect(await preUnknownCopy.drain(partitionId), cases.length);
+      final confirmedRequests = proxy.forwardedRpcs
+          .skip(beforeConfirmed)
+          .toList();
+      expect(confirmedRequests, isNotEmpty);
+      expect(confirmedRequests, everyElement('GetReceiptStatuses'));
+      for (final scenario in cases) {
+        final status = await preUnknownCopy.getWriteStatus(
+          partitionId,
+          scenario.handle.operationId,
+        );
+        expect(status!.items.single.state, OfflineWriteState.confirmed);
+        expect(status.items.single.receiptResult, scenario.offlineResult);
+        expect(status.items.single.attemptCount, 1);
+        expect(proxy.forwarded(scenario.rpc), 1, reason: scenario.rpc);
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  test(
     'response-dropping proxy loses committed PutVertex and PutEdge responses',
     () async {
       final endpointValue =
@@ -1334,6 +1702,229 @@ void main() {
   );
 }
 
+Future<List<ReceiptStatus>> _awaitReceiptConfirmation(
+  LanternClient client,
+  List<ReceiptOperationId> ids,
+  String name,
+) async {
+  final elapsed = Stopwatch()..start();
+  while (elapsed.elapsed < const Duration(seconds: 15)) {
+    final statuses = await client.getReceiptStatuses(ids);
+    if (statuses.every(
+      (status) => status.state == ReceiptStatusState.confirmed,
+    )) {
+      return statuses;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+  throw StateError('receipt evidence did not converge on $name');
+}
+
+Future<void> _awaitEdgeGone(LanternClient client, EdgeRef edge) async {
+  final elapsed = Stopwatch()..start();
+  while (elapsed.elapsed < const Duration(seconds: 15)) {
+    try {
+      await client.getEdge(edge);
+    } on LanternNotFoundException {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+  throw StateError('later Edge Delete did not reach B');
+}
+
+final class _ReceiptHaCluster {
+  _ReceiptHaCluster._(this._binary, this._token, this._directory);
+
+  static Future<_ReceiptHaCluster> create(String binary, String token) async =>
+      _ReceiptHaCluster._(
+        binary,
+        token,
+        await Directory.systemTemp.createTemp('lantern-offline-ha-'),
+      );
+
+  final String _binary;
+  final String _token;
+  final Directory _directory;
+  final Set<int> _reservedPorts = <int>{};
+  final Map<String, Process> _running = <String, Process>{};
+  late final Uri a;
+  late final Uri b;
+  late final Uri c;
+  late final int _cMetricsPort;
+
+  Future<void> start() async {
+    final aPort = await _freePort();
+    a = _endpoint(aPort);
+    await _startNode(
+      'a',
+      a,
+      await _freePort(),
+      '000000000000000000000000000000a1',
+      'fresh',
+    );
+    final bPort = await _freePort();
+    b = _endpoint(bPort);
+    await _startNode(
+      'b',
+      b,
+      await _freePort(),
+      '000000000000000000000000000000b2',
+      'fresh',
+      peer: a,
+    );
+    final cPort = await _freePort();
+    c = _endpoint(cPort);
+    _cMetricsPort = await _freePort();
+    await _startNode(
+      'c',
+      c,
+      _cMetricsPort,
+      '000000000000000000000000000000c3',
+      'fresh',
+    );
+  }
+
+  Future<void> stopA() => _stopNode('a');
+
+  Future<void> relayBtoC() async {
+    await _stopNode('c');
+    await _startNode(
+      'c',
+      c,
+      _cMetricsPort,
+      '000000000000000000000000000000c3',
+      'restart',
+      peer: b,
+    );
+  }
+
+  Future<void> close() async {
+    final processes = _running.values.toList(growable: false);
+    _running.clear();
+    for (final process in processes) {
+      process.kill(ProcessSignal.sigkill);
+    }
+    try {
+      await Future.wait(
+        processes.map(
+          (process) => process.exitCode.timeout(const Duration(seconds: 5)),
+        ),
+      );
+    } finally {
+      await _directory.delete(recursive: true);
+    }
+  }
+
+  Future<void> _startNode(
+    String name,
+    Uri endpoint,
+    int metricsPort,
+    String nodeId,
+    String mode, {
+    Uri? peer,
+  }) async {
+    final process = await Process.start(
+      _binary,
+      const <String>[],
+      environment: <String, String>{
+        'LANTERN_PORT': '${endpoint.port}',
+        'LANTERN_METRICS_ADDR': '127.0.0.1:$metricsPort',
+        'LANTERN_LOG_LEVEL': 'warn',
+        'LANTERN_AUTH_TOKENS': _token,
+        'LANTERN_NODE_ID': nodeId,
+        'LANTERN_PEERS': peer == null ? '' : '${peer.host}:${peer.port}',
+        'LANTERN_PUMP_BACKOFF_MIN_MS': '50',
+        'LANTERN_PUMP_BACKOFF_MAX_MS': '200',
+        'LANTERN_ANTI_ENTROPY_INTERVAL_MS': '250',
+        'LANTERN_RECEIPT_WAL_MODE': mode,
+        'LANTERN_RECEIPT_WAL_PATH': '${_directory.path}/$name.wal',
+        'LANTERN_RECEIPT_EPOCH': '42424242424242424242424242424242',
+        'LANTERN_RECEIPT_RETENTION': '1h',
+        'LANTERN_RECEIPT_MAX_ENTRIES': '128',
+        'LANTERN_RECEIPT_MAX_BYTES': '1048576',
+        'LANTERN_BACKUP_ENABLED': 'false',
+        'LANTERN_BACKUP_RESTORE_ON_START': 'false',
+      },
+      includeParentEnvironment: false,
+    );
+    _running[name] = process;
+    process.stdout.listen((_) {});
+    var stderrTail = '';
+    process.stderr.listen((chunk) {
+      stderrTail += String.fromCharCodes(chunk);
+      if (stderrTail.length > 4096) {
+        stderrTail = stderrTail.substring(stderrTail.length - 4096);
+      }
+    });
+    int? exitCode;
+    unawaited(
+      process.exitCode.then((code) {
+        exitCode = code;
+      }),
+    );
+
+    final probe = LanternClient.connect(
+      endpoint,
+      allowInsecure: true,
+      defaultTimeout: const Duration(seconds: 1),
+    );
+    try {
+      final elapsed = Stopwatch()..start();
+      while (elapsed.elapsed < const Duration(seconds: 15)) {
+        if (exitCode != null) break;
+        try {
+          await probe.ping();
+          return;
+        } on LanternUnavailableException {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        } on LanternDeadlineExceededException {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        } on LanternHealthStatusException {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      }
+      final failure = stderrTail.toLowerCase();
+      final category = failure.contains('address already in use')
+          ? 'listener address in use'
+          : failure.contains('permission denied')
+          ? 'filesystem permission denied'
+          : failure.contains('receipt') || failure.contains('wal')
+          ? 'receipt WAL startup failure'
+          : 'unclassified startup failure';
+      throw StateError(
+        'authenticated receipt node $name did not become ready '
+        '(exit: ${exitCode ?? 'still running'}, category: $category)',
+      );
+    } finally {
+      await probe.close();
+    }
+  }
+
+  Future<void> _stopNode(String name) async {
+    final process = _running.remove(name);
+    if (process == null) throw StateError('receipt node $name is not running');
+    process.kill(ProcessSignal.sigkill);
+    await process.exitCode.timeout(const Duration(seconds: 5));
+  }
+
+  Future<int> _freePort() async {
+    for (var attempt = 0; attempt < 16; attempt++) {
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = socket.port;
+      await socket.close();
+      if (_reservedPorts.add(port)) return port;
+    }
+    throw StateError('could not reserve distinct receipt fixture ports');
+  }
+
+  static Uri _endpoint(int port) => Uri(
+    scheme: 'http',
+    host: InternetAddress.loopbackIPv4.address,
+    port: port,
+  );
+}
+
 final class _RecordingRemote implements OfflineRemote {
   _RecordingRemote(this.delegate);
 
@@ -1401,11 +1992,12 @@ final class _ResponseDroppingProxy {
   }
 
   final HttpServer _server;
-  final Uri _upstreamEndpoint;
-  final HttpClient _upstream = HttpClient();
+  Uri _upstreamEndpoint;
+  HttpClient _upstream = HttpClient();
   final Map<String, int> _remainingDrops;
   final Map<String, int> _forwarded = <String, int>{};
   final Map<String, int> _dropped = <String, int>{};
+  final List<String> _forwardedRpcs = <String>[];
 
   Uri get endpoint =>
       Uri(scheme: 'http', host: _server.address.host, port: _server.port);
@@ -1413,6 +2005,14 @@ final class _ResponseDroppingProxy {
   int forwarded(String rpc) => _forwarded[rpc] ?? 0;
 
   int dropped(String rpc) => _dropped[rpc] ?? 0;
+
+  List<String> get forwardedRpcs => List<String>.unmodifiable(_forwardedRpcs);
+
+  void routeTo(Uri endpoint) {
+    _upstream.close(force: true);
+    _upstream = HttpClient()..autoUncompress = false;
+    _upstreamEndpoint = endpoint;
+  }
 
   Future<void> close() async {
     await _server.close(force: true);
@@ -1424,6 +2024,7 @@ final class _ResponseDroppingProxy {
         ? ''
         : downstream.uri.pathSegments.last;
     _forwarded[rpc] = (_forwarded[rpc] ?? 0) + 1;
+    _forwardedRpcs.add(rpc);
     try {
       final target = _upstreamEndpoint.resolveUri(downstream.uri);
       final upstreamRequest = await _upstream.openUrl(
