@@ -393,8 +393,8 @@ final class EdgeAddReceipt extends MutationReceipt {
 
   /// The edge's effective live weight immediately after the original Add.
   ///
-  /// Signed infinity remains an authoritative retained float32 result;
-  /// receipt-bearing Add inputs are still required to be finite.
+  /// Signed infinity and semantic NaN remain authoritative retained float32
+  /// results; receipt-bearing Add inputs are still required to be finite.
   final double effectiveWeight;
 }
 
@@ -450,8 +450,8 @@ final class ReceiptEdgeAddResult {
 
   /// The edge's effective live weight immediately after the original Add.
   ///
-  /// Signed infinity remains an authoritative retained float32 result;
-  /// receipt-bearing Add inputs are still required to be finite.
+  /// Signed infinity and semantic NaN remain authoritative retained float32
+  /// results; receipt-bearing Add inputs are still required to be finite.
   final double effectiveWeight;
 }
 

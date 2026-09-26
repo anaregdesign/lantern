@@ -119,8 +119,9 @@ receipt-less methods. Existing methods retain their established retry and
 ambiguous-result behavior. Receipt-bearing Add requires a distinct explicit,
 nonzero 24-byte contribution ID for every item and returns the exact original
 effective weight. Finite Add inputs can accumulate to signed infinity, which
-remains an authoritative result. The online package does not persist receipt
-state.
+remains an authoritative result. A retained NaN is likewise returned as
+semantic Dart NaN; NaN payload-bit identity is not portable across binary64
+and ProtoJSON. The online package does not persist receipt state.
 
 Fetch capability from the target endpoint, mint one immutable context, persist
 its mutation kind plus exact operation/group/endpoint bytes if recovery must

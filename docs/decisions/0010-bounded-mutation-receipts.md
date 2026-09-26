@@ -951,10 +951,12 @@ ID, and the capability endpoint. The complete group is validated and
 capacity-reserved before mutation. A matching duplicate returns the original
 request-index-aligned result: canonical `PutOutcome` values for Vertex Put,
 exact `existed` booleans for Delete, and the original effective float32 weight
-for Edge Add, including signed infinity from finite accumulation.
-Receipt-bearing Add additionally requires every item to carry an explicit
-nonzero 24-byte contribution ID; IDs are never synthesized. Intent, group,
-operation-ID, or contribution-ID reuse conflicts fail without mutation.
+for Edge Add, including signed infinity or NaN retained as opaque result bits.
+Numeric SDK surfaces preserve semantic NaN classification; NaN payload-bit
+identity cannot be promised across binary64 and ProtoJSON. Receipt-bearing Add
+additionally requires every item to carry an explicit nonzero 24-byte
+contribution ID; IDs are never synthesized. Intent, group, operation-ID, or
+contribution-ID reuse conflicts fail without mutation.
 `PutVertex`, `DeleteVertex`, `DeleteEdge`, and `AddEdge` are one-item facades.
 Omitting the context preserves receipt-less behavior; Put Edge and prefix
 Delete remain excluded.

@@ -682,7 +682,7 @@ void main() {
   });
 
   test(
-    'Edge Add status preserves signed zero and infinity',
+    'Edge Add status preserves signed zero and non-finite results',
     () async {
       final id = _operationId(epoch: 1, random: 1);
       LanternClient clientFor(
@@ -732,6 +732,14 @@ void main() {
             infinity,
           );
         }
+        final nanStatus = await clientFor(
+          double.nan,
+          binaryRoundTrip: binaryRoundTrip,
+        ).getReceiptStatus(id);
+        expect(
+          (nanStatus.receipt! as EdgeAddReceipt).effectiveWeight.isNaN,
+          isTrue,
+        );
       }
       for (final overflow in [double.maxFinite, -double.maxFinite]) {
         await expectLater(
@@ -751,9 +759,9 @@ void main() {
     },
   );
 
-  test('receipt-bearing Edge Add preserves signed infinity results', () async {
+  test('receipt-bearing Edge Add preserves non-finite results', () async {
     final context = _receiptContext(
-      count: 2,
+      count: 3,
       mutation: ReceiptMutationKind.edgeAdd,
     );
     final client = _client(
@@ -761,10 +769,11 @@ void main() {
           .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
             LanternService.addEdges,
             (request, callContext) => graph.AddEdgesResponse(
-              written: 2,
+              written: 3,
               effectiveWeights: [
                 double.infinity,
                 double.negativeInfinity,
+                double.nan,
               ],
             ),
           )
@@ -785,13 +794,18 @@ void main() {
           weight: -1,
           contribId: _bytes(24, 2),
         ),
+        EdgeInput(
+          tail: 'semantic',
+          head: 'nan',
+          weight: 1,
+          contribId: _bytes(24, 3),
+        ),
       ],
       context: context,
     );
-    expect(results.map((result) => result.effectiveWeight), [
-      double.infinity,
-      double.negativeInfinity,
-    ]);
+    expect(results[0].effectiveWeight, double.infinity);
+    expect(results[1].effectiveWeight, double.negativeInfinity);
+    expect(results[2].effectiveWeight.isNaN, isTrue);
   });
 
   test('receipt-bearing Vertex Put is plural canonical and exact', () async {
@@ -1820,10 +1834,6 @@ void main() {
         mutation: ReceiptMutationKind.edgeAdd,
       );
       final malformedResponses = [
-        graph.AddEdgesResponse(
-          written: 1,
-          effectiveWeights: [double.nan],
-        ),
         graph.AddEdgesResponse(
           written: 1,
           effectiveWeights: [double.maxFinite],
