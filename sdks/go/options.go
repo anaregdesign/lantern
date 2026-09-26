@@ -124,11 +124,12 @@ func WithDefaultTimeout(d time.Duration) Option {
 
 // WithBatchChunkSize overrides the auto-chunk size used by
 // PutVertices, AddEdges, PutEdges, DeleteVertices, DeleteEdges,
-// GetVertices, and GetEdges. Must be > 0; otherwise the default
-// (1000) is kept. Values above 65536 are clamped to 65536, because the
-// additive write surface stamps a uint16 per-chunk index onto each
-// contrib-ID idempotency key (#588) — a larger chunk would wrap that index
-// and collide two contributions.
+// GetVertices, GetEdges, and GetReceiptStatuses. Must be > 0; otherwise
+// the default (1000) is kept. Values above 65536 are clamped to 65536,
+// because the additive write surface stamps a uint16 per-chunk index onto
+// each contrib-ID idempotency key (#588) — a larger chunk would wrap that
+// index and collide two contributions. Receipt-status calls apply their
+// stricter wire ceiling after this option.
 func WithBatchChunkSize(n int) Option {
 	return func(o *options) {
 		if n > 0 {

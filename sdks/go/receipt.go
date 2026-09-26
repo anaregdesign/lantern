@@ -9,6 +9,10 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+// maxReceiptStatusBatchSize mirrors the public receipt-status wire ceiling.
+// The SDK cannot import server constants without violating the module DAG.
+const maxReceiptStatusBatchSize = 10_000
+
 // ReceiptState is one exact read-only receipt observation.
 type ReceiptState uint8
 
@@ -215,7 +219,8 @@ func (l *Lantern) GetReceiptStatuses(ctx context.Context, ids []ReceiptOperation
 	}
 	statuses := make([]ReceiptStatus, 0, len(ids))
 	offset := 0
-	err := runBatchRead(ctx, l, rawIDs, func(ctx context.Context, chunk [][]byte) error {
+	chunkSize := min(l.opts.batchChunkSize, maxReceiptStatusBatchSize)
+	err := runBatchReadWithChunkSize(ctx, l, rawIDs, chunkSize, func(ctx context.Context, chunk [][]byte) error {
 		resp, err := unary(ctx, l, &pb.GetReceiptStatusesRequest{OperationIds: chunk}, l.client.GetReceiptStatuses)
 		if err != nil {
 			return err

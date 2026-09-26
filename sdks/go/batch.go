@@ -52,10 +52,20 @@ func runBatchRead[T any](
 	items []T,
 	fn func(ctx context.Context, chunk []T) error,
 ) error {
+	return runBatchReadWithChunkSize(ctx, l, items, l.opts.batchChunkSize, fn)
+}
+
+func runBatchReadWithChunkSize[T any](
+	ctx context.Context,
+	l *Lantern,
+	items []T,
+	chunkSize int,
+	fn func(ctx context.Context, chunk []T) error,
+) error {
 	if len(items) == 0 {
 		return nil
 	}
-	for _, chunk := range chunkSlice(items, l.opts.batchChunkSize) {
+	for _, chunk := range chunkSlice(items, chunkSize) {
 		cctx, cancel := l.applyTimeout(ctx)
 		err := fn(cctx, chunk)
 		cancel()

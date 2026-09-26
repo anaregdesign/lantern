@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -234,6 +235,63 @@ func TestAddEdgesWithReceiptReplaysByteIdenticalRequest(t *testing.T) {
 		!bytes.Equal(got[1], inputs[1].ContribID.Bytes()) ||
 		!bytes.Equal(got[2], inputs[2].ContribID.Bytes()) {
 		t.Fatalf("contribution IDs = %x", got)
+	}
+}
+
+func TestAddEdgesWithReceiptPreservesExactResultBits(t *testing.T) {
+	capability := testReceiptCapability(0xa3)
+	weightBits := []uint32{
+		0,
+		0x80000000,
+		0x7f800000,
+		0xff800000,
+		0x7fc00001,
+	}
+	inputs := make([]EdgeAddReceiptInput, len(weightBits))
+	for i := range inputs {
+		inputs[i] = EdgeAddReceiptInput{
+			Edge: EdgeInput{
+				Tail: fmt.Sprintf("tail-%d", i),
+				Head: fmt.Sprintf("head-%d", i),
+			},
+			ContribID: testContribID(byte(0x41 + i)),
+		}
+	}
+	receiptContext := testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationAddEdge,
+		len(inputs),
+		0xa4,
+	)
+	fake := &edgeAddReceiptClient{
+		capability: testReceiptCapabilityProto(capability),
+		addEdgesFn: func(*pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
+			weights := make([]float32, len(weightBits))
+			for i, bits := range weightBits {
+				weights[i] = math.Float32frombits(bits)
+			}
+			return &pb.AddEdgesResponse{
+				Written:          int32(len(weights)),
+				EffectiveWeights: weights,
+			}, nil
+		},
+	}
+	results, err := (&Lantern{client: fake}).AddEdgesWithReceipt(
+		context.Background(),
+		inputs,
+		receiptContext,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != len(weightBits) {
+		t.Fatalf("result count = %d, want %d", len(results), len(weightBits))
+	}
+	for i, result := range results {
+		if got := math.Float32bits(result.EffectiveWeight); got != weightBits[i] {
+			t.Fatalf("result[%d] effective weight bits = %08x, want %08x", i, got, weightBits[i])
+		}
 	}
 }
 
@@ -468,10 +526,20 @@ func TestAddEdgesWithReceiptRejectsMalformedInputsBeforeTransport(t *testing.T) 
 			context: one,
 		},
 		{
-			name: "infinite weight",
+			name: "positive infinite weight",
 			inputs: []EdgeAddReceiptInput{{
 				Edge: EdgeInput{
 					Tail: "a", Head: "b", Weight: float32(math.Inf(1)),
+				},
+				ContribID: valid.ContribID,
+			}},
+			context: one,
+		},
+		{
+			name: "negative infinite weight",
+			inputs: []EdgeAddReceiptInput{{
+				Edge: EdgeInput{
+					Tail: "a", Head: "b", Weight: float32(math.Inf(-1)),
 				},
 				ContribID: valid.ContribID,
 			}},
@@ -599,8 +667,11 @@ func TestReceiptStatusDecodesExactEdgeAddResult(t *testing.T) {
 		0xac,
 	)
 	for name, weightBits := range map[string]uint32{
-		"zero":        0,
-		"NaN payload": 0x7fc00001,
+		"zero":              0,
+		"negative zero":     0x80000000,
+		"positive infinity": 0x7f800000,
+		"negative infinity": 0xff800000,
+		"NaN payload":       0x7fc00001,
 	} {
 		t.Run(name, func(t *testing.T) {
 			status, err := receiptStatusFromProto(

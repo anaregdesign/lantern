@@ -434,6 +434,46 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("configured chunk size respects status wire ceiling", func(t *testing.T) {
+		const itemCount = maxReceiptStatusBatchSize + 1
+		fake := &receiptReadClient{}
+		fake.statusesFn = func(rawIDs [][]byte) (*pb.GetReceiptStatusesResponse, error) {
+			if len(rawIDs) > maxReceiptStatusBatchSize {
+				t.Fatalf("status chunk size = %d, max %d", len(rawIDs), maxReceiptStatusBatchSize)
+			}
+			statuses := make([]*pb.ReceiptStatus, len(rawIDs))
+			for i, rawID := range rawIDs {
+				statuses[i] = &pb.ReceiptStatus{
+					OperationId: append([]byte(nil), rawID...),
+					State:       pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED,
+				}
+			}
+			return &pb.GetReceiptStatusesResponse{Statuses: statuses}, nil
+		}
+		l := &Lantern{
+			client: fake,
+			opts:   options{batchChunkSize: maxBatchChunkSize},
+		}
+		lookupIDs := make([]ReceiptOperationID, itemCount)
+		for i := range lookupIDs {
+			lookupIDs[i] = ids[0]
+		}
+		statuses, err := l.GetReceiptStatuses(context.Background(), lookupIDs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fake.statusCalls != 2 || len(statuses) != itemCount {
+			t.Fatalf("calls/results = %d/%d, want 2/%d", fake.statusCalls, len(statuses), itemCount)
+		}
+		for i, status := range statuses {
+			if status.OperationID != ids[0] ||
+				status.State != ReceiptNotYetObserved ||
+				status.Receipt != nil {
+				t.Fatalf("status[%d] = %+v", i, status)
+			}
+		}
+	})
+
 	t.Run("malformed input is rejected before transport", func(t *testing.T) {
 		fake := &receiptReadClient{statusesFn: func([][]byte) (*pb.GetReceiptStatusesResponse, error) {
 			return &pb.GetReceiptStatusesResponse{}, nil
