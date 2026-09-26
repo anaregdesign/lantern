@@ -15,7 +15,7 @@ final class SqliteOfflineStore implements OfflineStore {
     this.limits,
   );
 
-  /// Opens an application-owned path, creating schema version three if empty.
+  /// Opens an application-owned path, creating schema version four if empty.
   ///
   /// Unknown schemas and invalid durable records fail closed. [databaseFactory]
   /// defaults to the mobile OS SQLite plugin. Tests may inject an FFI factory;

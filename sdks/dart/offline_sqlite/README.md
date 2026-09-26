@@ -57,10 +57,11 @@ rotating an account's credentials, as required by the offline core contract.
   replay never extends TTL.
 - Unknown schemas, noncanonical records, damaged indexes, and inconsistent
   cache/outbox/operation state fail closed. Schema 2 added a key-only recovery
-  table and a partition change epoch. Schema 3 atomically rewrites schema 1/2
-  outbox and operation payloads/reservations for receipt evidence before
-  validating the full graph and configured capacities. An unsupported version
-  never resets the database.
+  table and a partition change epoch. Schema 3 introduced receipt evidence;
+  schema 4 atomically rewrites schema 1/2/3 outbox payloads and reservations,
+  treating absent dispatch markers as possibly sent before validating the full
+  graph and configured capacities. An unsupported version never resets the
+  database.
 
 Use one store owner per database in the application. Separate connections in
 the same isolate share a transaction lane and post-commit notifications.

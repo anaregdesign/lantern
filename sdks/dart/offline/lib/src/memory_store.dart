@@ -625,7 +625,8 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     _validatePartition(record.partitionId);
     final partition = _state.partition(record.partitionId);
     final previous = partition.outbox[record.recordId];
-    if (previous == null || !_sameOutboxIdentity(previous, record)) {
+    if (previous == null ||
+        !OfflineCodec.sameOutboxIdentity(previous, record)) {
       throw const OfflineArgumentException();
     }
     final replacement = _copyOutboxRecord(record);
@@ -1101,25 +1102,6 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
 bool _recordIdExists(_MemoryPartition partition, String recordId) =>
     partition.outbox.containsKey(recordId) ||
     partition.operationByRecordId.containsKey(recordId);
-
-bool _sameOutboxIdentity(OfflineOutboxRecord left, OfflineOutboxRecord right) {
-  OfflineOutboxRecord normalized(OfflineOutboxRecord record) => record.copyWith(
-    state: OfflineOutboxState.enqueued,
-    attemptCount: 0,
-    receipt: record.receipt?.copyWith(
-      state: OfflineReceiptReconciliationState.statusRequired,
-      reconciliationAttemptCount: 0,
-    ),
-    clearNextAttemptAt: true,
-    clearLeaseOwner: true,
-    clearLeaseUntil: true,
-    clearDeadLetteredAt: true,
-    clearDiagnosticCode: true,
-  );
-
-  return OfflineCodec.encodeOutboxRecord(normalized(left)) ==
-      OfflineCodec.encodeOutboxRecord(normalized(right));
-}
 
 bool _sameOperationTopology(
   OfflineOperationRecord left,

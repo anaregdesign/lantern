@@ -479,7 +479,8 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   @override
   Future<void> updateOutbox(OfflineOutboxRecord record) => _run(() async {
     final previous = await getOutbox(record.partitionId, record.recordId);
-    if (previous == null || !_sameOutboxIdentity(previous, record)) {
+    if (previous == null ||
+        !OfflineCodec.sameOutboxIdentity(previous, record)) {
       throw const OfflineArgumentException();
     }
     _validateOutboxLifecycleCapacity(record, limits);

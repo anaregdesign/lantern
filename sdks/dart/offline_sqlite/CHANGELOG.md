@@ -9,6 +9,9 @@
   and operation payloads/reservations for receipt evidence and exact results,
   then validating the full durable graph and configured capacities before the
   upgrade commits.
+- Migrate schema 1/2/3 payloads and reservations to schema 4, treating absent
+  receipt-dispatch markers as possibly sent. Persist proven-unsent receipt
+  rekeys and monotone pre-send markers across SQLite reopen.
 
 ## 0.1.0
 

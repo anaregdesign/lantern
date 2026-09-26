@@ -385,6 +385,138 @@ void main() {
   });
 
   test(
+    'unsent receipt rekey and dispatch marker survive SQLite reopen',
+    () async {
+      var store = await open();
+      final now = DateTime.utc(2026, 9, 24);
+      final policy = OfflineReceiptPolicy(
+        deploymentEpoch: ReceiptEpoch(_bytes(16, 1)),
+        retention: const Duration(hours: 24),
+        maxEntries: BigInt.from(1024),
+        maxBytes: BigInt.from(1024 * 1024),
+        fingerprint: _bytes(32, 4),
+      );
+      final evidence = OfflineReceiptEvidence(
+        operationId: _receiptOperationId(policy.deploymentEpoch),
+        groupId: ReceiptGroupId(_bytes(16, 5)),
+        endpoint: ReceiptEndpoint(
+          nodeId: _bytes(16, 2),
+          generation: _bytes(16, 3),
+        ),
+        mutation: ReceiptMutationKind.edgeAdd,
+        policy: policy,
+        itemIndex: 0,
+        itemCount: 1,
+        state: OfflineReceiptReconciliationState.statusRequired,
+        mayHaveDispatched: false,
+      );
+      final contributionId = _bytes(24, 7);
+      late OfflineOutboxRecord queued;
+      await store.transaction((transaction) async {
+        queued = await transaction.enqueue(
+          OfflineOutboxRecord(
+            recordId: 'unsent-add',
+            operationId: 'unsent-operation',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflineReceiptAddEdgeIntent(
+              Edge(
+                tail: 'tail',
+                head: 'head',
+                weight: 2,
+                expiration: now.add(const Duration(days: 2)),
+              ),
+              contributionId,
+            ),
+            enqueuedAt: now,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 0,
+            generation: 0,
+            receipt: evidence,
+          ),
+        );
+        await transaction.putOperation(_operation(queued, now: now));
+      });
+
+      store = await reopen(store) as SqliteOfflineStore;
+      final restored = await store.transaction(
+        (transaction) => transaction.getOutbox('p', queued.recordId),
+      );
+      expect(restored!.receipt!.mayHaveDispatched, isFalse);
+      final claimed = await store.transaction(
+        (transaction) async => (await transaction.claim(
+          'p',
+          owner: 'owner',
+          now: now.add(const Duration(seconds: 1)),
+          maxAge: const Duration(days: 7),
+          leaseDuration: const Duration(minutes: 2),
+          limit: 1,
+        )).single,
+      );
+      final idBytes = claimed.receipt!.operationId.bytes;
+      idBytes[48] = 99;
+      final rekeyed = claimed.copyWith(
+        receipt: claimed.receipt!.copyWith(
+          operationId: ReceiptOperationId(idBytes),
+          groupId: ReceiptGroupId(_bytes(16, 99)),
+        ),
+      );
+      await store.transaction(
+        (transaction) => transaction.updateOutbox(rekeyed),
+      );
+      store = await reopen(store) as SqliteOfflineStore;
+      final unsent = await store.transaction(
+        (transaction) => transaction.getOutbox('p', queued.recordId),
+      );
+      expect(unsent!.receipt!.operationId, rekeyed.receipt!.operationId);
+      expect(unsent.receipt!.groupId, rekeyed.receipt!.groupId);
+      expect(unsent.receipt!.mayHaveDispatched, isFalse);
+      expect(unsent.recordId, queued.recordId);
+      expect(unsent.operationId, queued.operationId);
+      expect(unsent.enqueuedAt, queued.enqueuedAt);
+      expect(
+        (unsent.intent as OfflineReceiptAddEdgeIntent).contributionId,
+        contributionId,
+      );
+      expect(unsent.intent.expiration, now.add(const Duration(days: 2)));
+
+      final marked = unsent.copyWith(
+        receipt: unsent.receipt!.copyWith(mayHaveDispatched: true),
+      );
+      await store.transaction(
+        (transaction) => transaction.updateOutbox(marked),
+      );
+      store = await reopen(store) as SqliteOfflineStore;
+      final possiblySent = await store.transaction(
+        (transaction) => transaction.getOutbox('p', queued.recordId),
+      );
+      expect(possiblySent!.receipt!.mayHaveDispatched, isTrue);
+      expect(possiblySent.attemptCount, 0);
+      await expectLater(
+        store.transaction(
+          (transaction) => transaction.updateOutbox(
+            possiblySent.copyWith(
+              receipt: possiblySent.receipt!.copyWith(
+                mayHaveDispatched: false,
+              ),
+            ),
+          ),
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+      await expectLater(
+        store.transaction(
+          (transaction) => transaction.updateOutbox(
+            possiblySent.copyWith(receipt: evidence),
+          ),
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+    },
+  );
+
+  test(
     'independent connections serialize writes and publish committed changes',
     () async {
       final first = await open();
@@ -941,16 +1073,16 @@ void main() {
       'legacy-payload',
     );
     final check = await factory.openDatabase(path);
-    expect(await check.getVersion(), 3);
+    expect(await check.getVersion(), 4);
     expect(
       (await check.query('store_metadata')).single['value'],
-      'lantern-offline-3',
+      'lantern-offline-4',
     );
     expect(
       utf8.decode(
         (await check.query('outbox')).single['payload']! as List<int>,
       ),
-      contains('"schema":3'),
+      contains('"schema":4'),
     );
     expect(
       utf8.decode(
@@ -959,6 +1091,105 @@ void main() {
       contains('"schema":2'),
     );
     await check.close();
+  });
+
+  test('schema 3 missing receipt marker migrates as possibly sent', () async {
+    final store = await open();
+    final now = DateTime.utc(2026, 9, 24);
+    final policy = OfflineReceiptPolicy(
+      deploymentEpoch: ReceiptEpoch(_bytes(16, 1)),
+      retention: const Duration(hours: 24),
+      maxEntries: BigInt.from(1024),
+      maxBytes: BigInt.from(1024 * 1024),
+      fingerprint: _bytes(32, 4),
+    );
+    final receipt = OfflineReceiptEvidence(
+      operationId: _receiptOperationId(policy.deploymentEpoch),
+      groupId: ReceiptGroupId(_bytes(16, 5)),
+      endpoint: ReceiptEndpoint(
+        nodeId: _bytes(16, 2),
+        generation: _bytes(16, 3),
+      ),
+      mutation: ReceiptMutationKind.edgeDelete,
+      policy: policy,
+      itemIndex: 0,
+      itemCount: 1,
+      state: OfflineReceiptReconciliationState.statusRequired,
+    );
+    await store.transaction((transaction) async {
+      final assigned = await transaction.enqueue(
+        OfflineOutboxRecord(
+          recordId: 'old-receipt',
+          operationId: 'old-operation',
+          itemIndex: 0,
+          partitionId: 'p',
+          intent: OfflineDeleteEdgeIntent(const EdgeRef('tail', 'head')),
+          enqueuedAt: now,
+          ordinal: 0,
+          state: OfflineOutboxState.enqueued,
+          attemptCount: 0,
+          generation: 0,
+          receipt: receipt,
+        ),
+      );
+      await transaction.putOperation(_operation(assigned, now: now));
+    });
+    final path = store.path;
+    await store.close();
+    final old = await factory.openDatabase(path);
+    final row = (await old.query('outbox')).single;
+    final payload =
+        jsonDecode(utf8.decode(row['payload']! as List<int>))
+            as Map<String, Object?>;
+    payload['schema'] = 3;
+    (payload['receipt']! as Map<String, Object?>).remove(
+      'mayHaveDispatched',
+    );
+    final priorBytes = utf8.encode(jsonEncode(payload));
+    await old.update('outbox', {
+      'payload': Uint8List.fromList(priorBytes),
+      'reserved_bytes':
+          (row['reserved_bytes']! as int) -
+          (row['payload']! as List<int>).length +
+          priorBytes.length,
+    });
+    await old.update(
+      'store_metadata',
+      {'value': 'lantern-offline-3'},
+      where: 'key=?',
+      whereArgs: ['format'],
+    );
+    await old.setVersion(3);
+    await old.close();
+
+    final migrated = await open(path: path);
+    final restored = await migrated.transaction(
+      (transaction) => transaction.getOutbox('p', 'old-receipt'),
+    );
+    expect(restored!.receipt!.mayHaveDispatched, isTrue);
+    expect(restored.receipt!.operationId, receipt.operationId);
+    expect(restored.attemptCount, 0);
+    final check = await factory.openDatabase(path);
+    expect(await check.getVersion(), 4);
+    expect(
+      (await check.query('store_metadata')).single['value'],
+      'lantern-offline-4',
+    );
+    expect(
+      utf8.decode((await check.query('outbox')).single['payload']! as List<int>),
+      contains('"mayHaveDispatched":true'),
+    );
+    await check.close();
+    await expectLater(
+      migrated.transaction(
+        (transaction) => transaction.updateOutbox(
+          restored.copyWith(
+            receipt: restored.receipt!.copyWith(mayHaveDispatched: false),
+          ),
+        ),
+      ),
+      throwsA(isA<OfflineArgumentException>()),
+    );
   });
 
   test('corrupt record is rejected before it can reach replay', () async {

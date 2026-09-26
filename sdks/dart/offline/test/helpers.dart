@@ -45,9 +45,14 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
       <OfflineReceiptResult>[];
   final Map<ReceiptOperationId, OfflineReceiptStatus> receiptStatuses =
       <ReceiptOperationId, OfflineReceiptStatus>{};
+  final List<ReceiptOperationId> receiptStatusIds = <ReceiptOperationId>[];
   final List<ReceiptContext> receiptSendContexts = <ReceiptContext>[];
   final List<String> receiptCalls = <String>[];
+  Future<void> Function()? beforeReceiptPrepare;
   Future<void> Function()? beforeReceiptCapabilityReturn;
+  Future<void> Function(ReceiptOperationId)? beforeReceiptStatusReturn;
+  Future<void> Function(ReceiptContext)? beforeReceiptSend;
+  Future<void> Function(ReceiptContext)? afterReceiptSend;
   bool commitBeforeReceiptSendFailure = false;
   int receiptPrepareCalls = 0;
   int receiptCapabilityCalls = 0;
@@ -66,6 +71,7 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
     if (receiptPrepareFailures.isNotEmpty) {
       throw receiptPrepareFailures.removeAt(0);
     }
+    await beforeReceiptPrepare?.call();
     final capability = receiptCapability;
     if (capability is OfflineReceiptCapabilityDisabled) {
       throw const OfflineReceiptCapabilityException(
@@ -80,12 +86,14 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
     }
     return OfflineReceiptPreparation(
       mutation: mutation,
+      capability: enabled,
       evidence: List<OfflineReceiptEvidence>.generate(itemCount, (_) {
         final sequence = ++_receiptSequence;
         return OfflineReceiptEvidence(
           operationId: testReceiptOperationId(
             epoch: enabled.policy.deploymentEpoch,
             random: sequence,
+            issuedAtMilliseconds: enabled.serverNow.millisecondsSinceEpoch,
           ),
           groupId: ReceiptGroupId(_testUniqueBytes(16, sequence + 32)),
           endpoint: ReceiptEndpoint(
@@ -97,6 +105,7 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
           itemIndex: 0,
           itemCount: 1,
           state: OfflineReceiptReconciliationState.statusRequired,
+          mayHaveDispatched: false,
         );
       }, growable: false),
     );
@@ -122,9 +131,11 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
   }) async {
     receiptCalls.add('status');
     receiptStatusCalls++;
+    receiptStatusIds.add(operationId);
     if (receiptStatusFailures.isNotEmpty) {
       throw receiptStatusFailures.removeAt(0);
     }
+    await beforeReceiptStatusReturn?.call(operationId);
     return receiptStatuses[operationId] ??
         OfflineReceiptStatus(
           operationId: operationId,
@@ -138,6 +149,7 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
     required ReceiptContext context,
     LanternCancellationToken? cancellation,
   }) async {
+    await beforeReceiptSend?.call(context);
     receiptCalls.add('send');
     receiptSendCalls++;
     receiptSendContexts.add(context);
@@ -151,12 +163,14 @@ class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
           result,
         );
       }
+      await afterReceiptSend?.call(context);
       throw receiptSendFailures.removeAt(0);
     }
     receiptStatuses[context.operationIds.single] = _confirmedReceiptStatus(
       context,
       result,
     );
+    await afterReceiptSend?.call(context);
     return result;
   }
 
@@ -235,6 +249,7 @@ OfflineReceiptCapabilityEnabled offlineReceiptCapability({
   Duration retention = const Duration(hours: 24),
   int maxEntries = 1024,
   int maxBytes = 1024 * 1024,
+  DateTime? serverNow,
   Set<ReceiptMutationKind> supportedMutations = const <ReceiptMutationKind>{
     ReceiptMutationKind.vertexPut,
     ReceiptMutationKind.vertexDelete,
@@ -253,6 +268,8 @@ OfflineReceiptCapabilityEnabled offlineReceiptCapability({
     maxBytes: BigInt.from(maxBytes),
     fingerprint: testBytes(32, fingerprint),
   ),
+  serverNow:
+      serverNow ?? DateTime.fromMillisecondsSinceEpoch(1000, isUtc: true),
   supportedMutations: supportedMutations,
 );
 

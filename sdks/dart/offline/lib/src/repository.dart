@@ -2698,6 +2698,7 @@ final class OfflineLanternRepository {
     required _PartitionRuntime runtime,
     required _ReplayAuthEpoch authEpoch,
     required LanternCancellationToken? cancellation,
+    bool allowPostStatusRefresh = true,
   }) async {
     final currentRemote = remote;
     if (currentRemote is! OfflineReceiptRemote) {
@@ -2710,6 +2711,20 @@ final class OfflineLanternRepository {
       );
     }
     final receiptRemote = currentRemote as OfflineReceiptRemote;
+
+    if (!claimed.receipt!.mayHaveDispatched) {
+      final preflight = await _refreshProvisionalReceiptIfStale(
+        partitionId,
+        claimed,
+        owner: owner,
+        receiptRemote: receiptRemote,
+        runtime: runtime,
+        authEpoch: authEpoch,
+        cancellation: cancellation,
+      );
+      if (preflight.outcome != null) return preflight.outcome!;
+      claimed = preflight.record!;
+    }
 
     late final OfflineReceiptStatus status;
     try {
@@ -2830,28 +2845,7 @@ final class OfflineLanternRepository {
     if (authEpoch.pauseInProgress) {
       return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
     }
-    final dispatchState = await _claimSendState(partitionId, observed, owner);
-    if (dispatchState == _ClaimSendState.pausedForAuth) {
-      if (runtime.beginAuthPause(authEpoch)) {
-        runtime.completeAuthPause(authEpoch);
-      }
-      return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
-    }
-    if (dispatchState == _ClaimSendState.maxAge) {
-      await _expireOrAgeOut(
-        partitionId,
-        recordId: observed.recordId,
-        claimedBy: owner,
-      );
-      return const _ReplayOutcome(deadLetter: true);
-    }
-    if (dispatchState == _ClaimSendState.stale) {
-      await _releaseClaim(partitionId, observed, owner);
-      return const _ReplayOutcome();
-    }
-    if (authEpoch.pauseInProgress) {
-      return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
-    }
+    final capabilityObservedAt = config.clock().toUtc();
     final continuityFailure = _receiptContinuityFailure(
       observed.receipt!,
       capability,
@@ -2865,6 +2859,44 @@ final class OfflineLanternRepository {
         diagnosticCode: continuityFailure,
       );
     }
+    final enabled = capability as OfflineReceiptCapabilityEnabled;
+    if (!_freshForSample(
+      observed.receipt!,
+      enabled.serverNow,
+      capabilityObservedAt,
+    )) {
+      if (observed.receipt!.mayHaveDispatched ||
+          !allowPostStatusRefresh ||
+          observed.receipt!.freshFor(enabled.serverNow)) {
+        return _recordReceiptUnresolved(
+          partitionId,
+          observed,
+          owner,
+          receiptState: OfflineReceiptReconciliationState.notYetObserved,
+          diagnosticCode: 'receipt_id_not_fresh',
+        );
+      }
+      final refreshed = await _refreshProvisionalReceiptIfStale(
+        partitionId,
+        observed,
+        owner: owner,
+        receiptRemote: receiptRemote,
+        runtime: runtime,
+        authEpoch: authEpoch,
+        cancellation: cancellation,
+        capability: capability,
+      );
+      if (refreshed.outcome != null) return refreshed.outcome!;
+      return _replayReceiptOne(
+        partitionId,
+        refreshed.record!,
+        owner: owner,
+        runtime: runtime,
+        authEpoch: authEpoch,
+        cancellation: cancellation,
+        allowPostStatusRefresh: false,
+      );
+    }
     if (observed.attemptCount >= config.maxAttempts ||
         observed.attemptCount >= _maxDurableAttemptCount) {
       return _recordReceiptUnresolved(
@@ -2875,11 +2907,58 @@ final class OfflineLanternRepository {
         diagnosticCode: 'receipt_attempts_exhausted',
       );
     }
+    final dispatch = await _updateReceiptUnderClaim(
+      partitionId,
+      observed,
+      owner,
+      (evidence) => evidence.mayHaveDispatched
+          ? evidence
+          : evidence.copyWith(mayHaveDispatched: true),
+    );
+    final prevented = await _settleReceiptClaimState(
+      partitionId,
+      observed,
+      owner,
+      dispatch.state,
+      runtime,
+      authEpoch,
+    );
+    if (prevented != null) return prevented;
+    final finalClaimState = await _claimSendState(
+      partitionId,
+      dispatch.record!,
+      owner,
+    );
+    final finalPrevention = await _settleReceiptClaimState(
+      partitionId,
+      dispatch.record!,
+      owner,
+      finalClaimState,
+      runtime,
+      authEpoch,
+    );
+    if (finalPrevention != null) return finalPrevention;
+    if (authEpoch.pauseInProgress) {
+      return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
+    }
+    if (!_freshForSample(
+      dispatch.record!.receipt!,
+      enabled.serverNow,
+      capabilityObservedAt,
+    )) {
+      return _recordReceiptUnresolved(
+        partitionId,
+        dispatch.record!,
+        owner,
+        receiptState: OfflineReceiptReconciliationState.notYetObserved,
+        diagnosticCode: 'receipt_id_not_fresh',
+      );
+    }
 
     try {
       final result = await receiptRemote.sendReceiptMutation(
-        observed.intent,
-        context: observed.receipt!.context,
+        dispatch.record!.intent,
+        context: dispatch.record!.receipt!.context,
         cancellation: cancellation,
       );
       _validateReceiptResultForIntent(observed.intent, result);
@@ -2914,6 +2993,324 @@ final class OfflineLanternRepository {
         diagnosticCode: 'receipt_protocol',
         incrementMutationAttempt: true,
       );
+    }
+  }
+
+  Future<({OfflineOutboxRecord? record, _ReplayOutcome? outcome})>
+  _refreshProvisionalReceiptIfStale(
+    String partitionId,
+    OfflineOutboxRecord claimed, {
+    required String owner,
+    required OfflineReceiptRemote receiptRemote,
+    required _PartitionRuntime runtime,
+    required _ReplayAuthEpoch authEpoch,
+    required LanternCancellationToken? cancellation,
+    OfflineReceiptCapability? capability,
+  }) async {
+    if (capability == null) {
+      try {
+        capability = await receiptRemote.getReceiptCapability(
+          cancellation: cancellation,
+        );
+      } on OfflineRemoteFailure catch (failure) {
+        return (
+          record: null,
+          outcome: await _recordReceiptLookupFailure(
+            partitionId,
+            claimed,
+            owner,
+            failure,
+            runtime,
+            authEpoch,
+          ),
+        );
+      } on OfflineCanceledException {
+        if (authEpoch.pauseInProgress) {
+          return (
+            record: null,
+            outcome: await _settleAuthEpochClaim(
+              partitionId,
+              claimed,
+              owner,
+              authEpoch,
+            ),
+          );
+        }
+        await _releaseClaim(partitionId, claimed, owner);
+        rethrow;
+      } on OfflineException {
+        return (
+          record: null,
+          outcome: await _recordReceiptUnresolved(
+            partitionId,
+            claimed,
+            owner,
+            receiptState: claimed.receipt!.state,
+            diagnosticCode: 'receipt_protocol',
+          ),
+        );
+      }
+    }
+    if (authEpoch.pauseInProgress) {
+      return (
+        record: null,
+        outcome: await _settleAuthEpochClaim(
+          partitionId,
+          claimed,
+          owner,
+          authEpoch,
+        ),
+      );
+    }
+    final continuityFailure = _receiptContinuityFailure(
+      claimed.receipt!,
+      capability,
+    );
+    if (continuityFailure != null) {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: continuityFailure,
+        ),
+      );
+    }
+    final enabled = capability as OfflineReceiptCapabilityEnabled;
+    if (claimed.receipt!.freshFor(enabled.serverNow)) {
+      return (record: claimed, outcome: null);
+    }
+
+    late final OfflineReceiptPreparation preparation;
+    try {
+      preparation = await receiptRemote.prepareReceipts(
+        claimed.receipt!.mutation,
+        itemCount: 1,
+        cancellation: cancellation,
+      );
+    } on OfflineRemoteFailure catch (failure) {
+      return (
+        record: null,
+        outcome: await _recordReceiptLookupFailure(
+          partitionId,
+          claimed,
+          owner,
+          failure,
+          runtime,
+          authEpoch,
+        ),
+      );
+    } on OfflineCanceledException {
+      if (authEpoch.pauseInProgress) {
+        return (
+          record: null,
+          outcome: await _settleAuthEpochClaim(
+            partitionId,
+            claimed,
+            owner,
+            authEpoch,
+          ),
+        );
+      }
+      await _releaseClaim(partitionId, claimed, owner);
+      rethrow;
+    } on OfflineReceiptCapabilityException catch (error) {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode:
+              error.failure == OfflineReceiptCapabilityFailure.disabled
+              ? 'receipt_capability_disabled'
+              : 'receipt_mutation_unavailable',
+        ),
+      );
+    } on OfflineException {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: 'receipt_protocol',
+        ),
+      );
+    }
+    if (authEpoch.pauseInProgress) {
+      return (
+        record: null,
+        outcome: await _settleAuthEpochClaim(
+          partitionId,
+          claimed,
+          owner,
+          authEpoch,
+        ),
+      );
+    }
+    final preparedContinuity = _receiptContinuityFailure(
+      claimed.receipt!,
+      preparation.capability,
+    );
+    if (preparedContinuity != null) {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: preparedContinuity,
+        ),
+      );
+    }
+    if (preparation.capability.serverNow.isBefore(enabled.serverNow)) {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: 'receipt_protocol',
+        ),
+      );
+    }
+    if (preparation.mutation != claimed.receipt!.mutation ||
+        preparation.evidence.length != 1) {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: 'receipt_protocol',
+        ),
+      );
+    }
+    final replacement = preparation.evidence.single;
+    if (replacement.operationId == claimed.receipt!.operationId ||
+        replacement.groupId == claimed.receipt!.groupId) {
+      return (
+        record: null,
+        outcome: await _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: claimed.receipt!.state,
+          diagnosticCode: 'receipt_protocol',
+        ),
+      );
+    }
+    final refresh = await _updateReceiptUnderClaim(
+      partitionId,
+      claimed,
+      owner,
+      (evidence) => evidence.copyWith(
+        operationId: replacement.operationId,
+        groupId: replacement.groupId,
+        state: OfflineReceiptReconciliationState.statusRequired,
+      ),
+    );
+    final prevented = await _settleReceiptClaimState(
+      partitionId,
+      claimed,
+      owner,
+      refresh.state,
+      runtime,
+      authEpoch,
+    );
+    if (prevented != null) return (record: null, outcome: prevented);
+    return (record: refresh.record!, outcome: null);
+  }
+
+  bool _freshForSample(
+    OfflineReceiptEvidence evidence,
+    DateTime serverNow,
+    DateTime observedAt,
+  ) {
+    // Project elapsed local time onto the server-issued sample, not the ID.
+    final elapsed = config.clock().toUtc().difference(observedAt);
+    if (elapsed.isNegative) return false;
+    try {
+      return evidence.freshFor(serverNow.add(elapsed));
+    } on ArgumentError {
+      return false;
+    }
+  }
+
+  Future<({OfflineOutboxRecord? record, _ClaimSendState state})>
+  _updateReceiptUnderClaim(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    OfflineReceiptEvidence Function(OfflineReceiptEvidence) update,
+  ) => store.transaction((transaction) async {
+    final current = await transaction.getOutbox(partitionId, claimed.recordId);
+    final generation = await transaction.generation(partitionId);
+    final paused = await transaction.replayPausedForAuth(partitionId);
+    final now = config.clock().toUtc();
+    if (!_ownsLiveClaim(current, claimed, owner, now) ||
+        generation != claimed.generation) {
+      return (record: null, state: _ClaimSendState.stale);
+    }
+    if (paused) {
+      return (record: null, state: _ClaimSendState.pausedForAuth);
+    }
+    if (now.difference(current!.enqueuedAt) >= config.maxAge) {
+      return (record: null, state: _ClaimSendState.maxAge);
+    }
+    final evidence = current.receipt!;
+    final expected = claimed.receipt!;
+    if (evidence.operationId != expected.operationId ||
+        evidence.groupId != expected.groupId ||
+        evidence.state != expected.state ||
+        evidence.reconciliationAttemptCount !=
+            expected.reconciliationAttemptCount ||
+        evidence.mayHaveDispatched != expected.mayHaveDispatched) {
+      return (record: null, state: _ClaimSendState.stale);
+    }
+    final next = update(evidence);
+    if (identical(next, evidence)) {
+      return (record: current, state: _ClaimSendState.sendable);
+    }
+    final updated = current.copyWith(receipt: next);
+    await transaction.updateOutbox(updated);
+    return (record: updated, state: _ClaimSendState.sendable);
+  });
+
+  Future<_ReplayOutcome?> _settleReceiptClaimState(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    _ClaimSendState state,
+    _PartitionRuntime runtime,
+    _ReplayAuthEpoch authEpoch,
+  ) async {
+    switch (state) {
+      case _ClaimSendState.sendable:
+        return null;
+      case _ClaimSendState.pausedForAuth:
+        if (runtime.beginAuthPause(authEpoch)) {
+          runtime.completeAuthPause(authEpoch);
+        }
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      case _ClaimSendState.maxAge:
+        await _expireOrAgeOut(
+          partitionId,
+          recordId: claimed.recordId,
+          claimedBy: owner,
+        );
+        return const _ReplayOutcome(deadLetter: true);
+      case _ClaimSendState.stale:
+        await _releaseClaim(partitionId, claimed, owner);
+        return const _ReplayOutcome();
     }
   }
 

@@ -14,9 +14,12 @@
   success, and reject generic replay of receipt dead letters.
 - Advance strict outbox and operation codecs for receipt evidence/results while
   retaining strict legacy readers. Preserve the new payloads through the
-  storage-neutral reference store and migrate SQLite schema v1/v2 payloads and
-  reservations atomically into schema v3. Keep legacy Add records quarantined
+  storage-neutral reference store and migrate SQLite schema v1/v2/v3 payloads
+  and reservations atomically into schema v4. Keep legacy Add records quarantined
   as `unsupported_add`; only the distinct receipt Add intent is sendable.
+- Persist a monotone pre-dispatch marker before receipt mutations. Refresh an
+  aged provisional ID and group only when durable evidence proves no send
+  could have started; treat missing legacy markers as possibly dispatched.
 - Raise the minimum diagnostic-code capacity to 28 UTF-8 bytes so every
   receipt reconciliation terminal code remains durably representable.
 - Preserve signed zero, infinities, and semantic NaN in retained Edge Add

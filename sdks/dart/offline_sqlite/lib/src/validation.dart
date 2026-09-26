@@ -1,25 +1,6 @@
 part of '../lantern_client_offline_sqlite.dart';
 
 // Canonical lifecycle reservations mirror the storage-neutral reference contract.
-bool _sameOutboxIdentity(OfflineOutboxRecord left, OfflineOutboxRecord right) {
-  OfflineOutboxRecord normalized(OfflineOutboxRecord record) => record.copyWith(
-    state: OfflineOutboxState.enqueued,
-    attemptCount: 0,
-    receipt: record.receipt?.copyWith(
-      state: OfflineReceiptReconciliationState.statusRequired,
-      reconciliationAttemptCount: 0,
-    ),
-    clearNextAttemptAt: true,
-    clearLeaseOwner: true,
-    clearLeaseUntil: true,
-    clearDeadLetteredAt: true,
-    clearDiagnosticCode: true,
-  );
-
-  return OfflineCodec.encodeOutboxRecord(normalized(left)) ==
-      OfflineCodec.encodeOutboxRecord(normalized(right));
-}
-
 bool _sameOperationTopology(
   OfflineOperationRecord left,
   OfflineOperationRecord right,

@@ -20,7 +20,7 @@ final class OfflineCodec {
   static const int schemaVersion = 1;
 
   /// Current outbox record schema version.
-  static const int outboxSchemaVersion = 3;
+  static const int outboxSchemaVersion = 4;
 
   /// Current operation aggregate schema version.
   static const int operationSchemaVersion = 2;
@@ -74,7 +74,7 @@ final class OfflineCodec {
     final schema = _recordSchema(
       value,
       'outbox',
-      supported: const <int>{1, 2, 3},
+      supported: const <int>{1, 2, 3, 4},
     );
     _expectKeys(value, switch (schema) {
       1 => _outboxKeysV1,
@@ -97,7 +97,10 @@ final class OfflineCodec {
         generation: _nonNegativeInt(value['generation']),
         receipt: schema < 3 || value['receipt'] == null
             ? null
-            : _receiptEvidenceFromMap(_object(value['receipt'])),
+            : _receiptEvidenceFromMap(
+                _object(value['receipt']),
+                legacy: schema == 3,
+              ),
         nextAttemptAt: _nullableTime(value['nextAttemptAt']),
         leaseOwner: _nullableString(value['leaseOwner']),
         leaseUntil: _nullableTime(value['leaseUntil']),
@@ -116,6 +119,68 @@ final class OfflineCodec {
   /// Encodes one content-free durable operation aggregate.
   static String encodeOperationRecord(OfflineOperationRecord record) =>
       jsonEncode(_operationToMap(record));
+
+  /// Enforces monotone dispatch evidence and receipt-only unsent rekeying.
+  ///
+  /// Both store adapters use this guard before replacing a durable outbox row.
+  static bool sameOutboxIdentity(
+    OfflineOutboxRecord previous,
+    OfflineOutboxRecord next,
+  ) {
+    final oldReceipt = previous.receipt;
+    final newReceipt = next.receipt;
+    final replaced =
+        oldReceipt != null &&
+        newReceipt != null &&
+        (oldReceipt.operationId != newReceipt.operationId ||
+            oldReceipt.groupId != newReceipt.groupId);
+    if (oldReceipt?.mayHaveDispatched == true &&
+        newReceipt?.mayHaveDispatched == false) {
+      return false;
+    }
+    if (replaced) {
+      final original = oldReceipt!;
+      final replacement = newReceipt!;
+      if (original.mayHaveDispatched ||
+          replacement.mayHaveDispatched ||
+          previous.state != OfflineOutboxState.sending ||
+          next.state != OfflineOutboxState.sending ||
+          previous.leaseOwner != next.leaseOwner ||
+          previous.leaseUntil != next.leaseUntil ||
+          previous.attemptCount != next.attemptCount ||
+          previous.nextAttemptAt != next.nextAttemptAt ||
+          previous.diagnosticCode != next.diagnosticCode ||
+          original.reconciliationAttemptCount !=
+              replacement.reconciliationAttemptCount ||
+          original.state ==
+              OfflineReceiptReconciliationState.noLongerProvable ||
+          replacement.state !=
+              OfflineReceiptReconciliationState.statusRequired) {
+        return false;
+      }
+    }
+
+    OfflineOutboxRecord normalized(OfflineOutboxRecord record) =>
+        record.copyWith(
+          state: OfflineOutboxState.enqueued,
+          attemptCount: 0,
+          receipt: record.receipt?.copyWith(
+            operationId: replaced ? newReceipt!.operationId : null,
+            groupId: replaced ? newReceipt!.groupId : null,
+            state: OfflineReceiptReconciliationState.statusRequired,
+            mayHaveDispatched: true,
+            reconciliationAttemptCount: 0,
+          ),
+          clearNextAttemptAt: true,
+          clearLeaseOwner: true,
+          clearLeaseUntil: true,
+          clearDeadLetteredAt: true,
+          clearDiagnosticCode: true,
+        );
+
+    return encodeOutboxRecord(normalized(previous)) ==
+        encodeOutboxRecord(normalized(next));
+  }
 
   /// Decodes one strict durable operation aggregate.
   static OfflineOperationRecord decodeOperationRecord(String source) {
@@ -543,6 +608,7 @@ Map<String, Object?> _receiptEvidenceToMap(OfflineReceiptEvidence evidence) =>
       'itemIndex': evidence.itemIndex,
       'itemCount': evidence.itemCount,
       'state': evidence.state.name,
+      'mayHaveDispatched': evidence.mayHaveDispatched,
       'reconciliationAttemptCount': evidence.reconciliationAttemptCount,
       'policy': <String, Object?>{
         'deploymentEpoch': _base64UrlNoPadding(
@@ -555,8 +621,11 @@ Map<String, Object?> _receiptEvidenceToMap(OfflineReceiptEvidence evidence) =>
       },
     };
 
-OfflineReceiptEvidence _receiptEvidenceFromMap(Map<String, Object?> value) {
-  _expectKeys(value, const <String>{
+OfflineReceiptEvidence _receiptEvidenceFromMap(
+  Map<String, Object?> value, {
+  required bool legacy,
+}) {
+  _expectKeys(value, <String>{
     'operationId',
     'groupId',
     'nodeId',
@@ -565,6 +634,7 @@ OfflineReceiptEvidence _receiptEvidenceFromMap(Map<String, Object?> value) {
     'itemIndex',
     'itemCount',
     'state',
+    if (!legacy) 'mayHaveDispatched',
     'reconciliationAttemptCount',
     'policy',
   });
@@ -613,6 +683,7 @@ OfflineReceiptEvidence _receiptEvidenceFromMap(Map<String, Object?> value) {
       itemIndex: _nonNegativeInt(value['itemIndex']),
       itemCount: _positiveInt(value['itemCount']),
       state: _receiptReconciliationState(_string(value['state'])),
+      mayHaveDispatched: legacy ? true : _bool(value['mayHaveDispatched']),
       reconciliationAttemptCount: _nonNegativeInt(
         value['reconciliationAttemptCount'],
       ),

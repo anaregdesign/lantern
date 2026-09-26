@@ -902,6 +902,106 @@ void main() {
     },
   );
 
+  test('receipt identity changes only while dispatch is impossible', () async {
+    final store = InMemoryOfflineStore();
+    final evidence = (await FakeOfflineRemote().prepareReceipts(
+      ReceiptMutationKind.vertexDelete,
+      itemCount: 1,
+    )).evidence.single;
+    late OfflineOutboxRecord queued;
+    await store.transaction((transaction) async {
+      queued = await enqueueOperation(
+        transaction,
+        OfflineOutboxRecord(
+          recordId: 'unsent-record',
+          operationId: 'unsent-operation',
+          itemIndex: 0,
+          partitionId: 'p',
+          intent: OfflineDeleteVertexIntent('target'),
+          enqueuedAt: now,
+          ordinal: 0,
+          state: OfflineOutboxState.enqueued,
+          attemptCount: 0,
+          generation: 0,
+          receipt: evidence,
+        ),
+      );
+    });
+    final replacementId = testReceiptOperationId(
+      epoch: evidence.policy.deploymentEpoch,
+      random: 90,
+    );
+    final replacementGroup = ReceiptGroupId(testBytes(16, 91));
+    final replacement = queued.copyWith(
+      receipt: queued.receipt!.copyWith(
+        operationId: replacementId,
+        groupId: replacementGroup,
+      ),
+    );
+    await expectLater(
+      store.transaction((transaction) => transaction.updateOutbox(replacement)),
+      throwsA(isA<OfflineArgumentException>()),
+    );
+    final claimed = await store.transaction(
+      (transaction) async => (await transaction.claim(
+        'p',
+        owner: 'owner',
+        now: now.add(const Duration(seconds: 1)),
+        maxAge: const Duration(days: 1),
+        leaseDuration: const Duration(minutes: 1),
+        limit: 1,
+      )).single,
+    );
+    final rekeyed = claimed.copyWith(
+      receipt: claimed.receipt!.copyWith(
+        operationId: replacementId,
+        groupId: replacementGroup,
+      ),
+    );
+    await store.transaction(
+      (transaction) => transaction.updateOutbox(rekeyed),
+    );
+    expect(
+      (await store.transaction(
+        (transaction) => transaction.getOutbox('p', queued.recordId),
+      ))!.receipt!.operationId,
+      replacementId,
+    );
+    final marked = rekeyed.copyWith(
+      receipt: rekeyed.receipt!.copyWith(mayHaveDispatched: true),
+    );
+    await store.transaction(
+      (transaction) => transaction.updateOutbox(marked),
+    );
+    expect(marked.attemptCount, 0);
+    expect(
+      () => marked.copyWith(
+        receipt: marked.receipt!.copyWith(mayHaveDispatched: false),
+        attemptCount: 1,
+      ),
+      throwsA(isA<OfflineArgumentException>()),
+    );
+    await expectLater(
+      store.transaction(
+        (transaction) => transaction.updateOutbox(rekeyed),
+      ),
+      throwsA(isA<OfflineArgumentException>()),
+    );
+    await expectLater(
+      store.transaction(
+        (transaction) => transaction.updateOutbox(
+          marked.copyWith(
+            receipt: marked.receipt!.copyWith(
+              operationId: queued.receipt!.operationId,
+              groupId: queued.receipt!.groupId,
+            ),
+          ),
+        ),
+      ),
+      throwsA(isA<OfflineArgumentException>()),
+    );
+  });
+
   test(
     'operation byte caps include diagnostics and receipt results exactly',
     () async {

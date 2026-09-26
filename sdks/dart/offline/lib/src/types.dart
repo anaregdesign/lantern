@@ -556,6 +556,10 @@ final class OfflineReceiptPolicy {
 /// the existing independent per-key FIFO and lease model while retaining the
 /// exact original `itemIndex=0` and `itemCount=1` topology.
 final class OfflineReceiptEvidence {
+  /// Leaves a one-minute margin inside the server's five-minute admission
+  /// window.
+  static const Duration preDispatchFreshnessLimit = Duration(minutes: 4);
+
   /// Creates and validates one persisted receipt context.
   OfflineReceiptEvidence({
     required this.operationId,
@@ -566,6 +570,7 @@ final class OfflineReceiptEvidence {
     required this.itemIndex,
     required this.itemCount,
     required this.state,
+    this.mayHaveDispatched = true,
     this.reconciliationAttemptCount = 0,
   }) {
     if (itemIndex != 0 ||
@@ -583,10 +588,10 @@ final class OfflineReceiptEvidence {
     );
   }
 
-  /// Stable globally scoped operation ID.
+  /// Globally scoped ID, provisional only while dispatch is proven impossible.
   final ReceiptOperationId operationId;
 
-  /// Stable one-item logical-call group ID.
+  /// One-item logical-call group, provisional under the same proof.
   final ReceiptGroupId groupId;
 
   /// Exact endpoint continuity marker selected before enqueue.
@@ -607,8 +612,21 @@ final class OfflineReceiptEvidence {
   /// Last durable reconciliation observation.
   final OfflineReceiptReconciliationState state;
 
+  /// False only when the store durably proves no mutation send could have begun.
+  ///
+  /// A missing marker in an older record is conservatively decoded as true.
+  final bool mayHaveDispatched;
+
   /// Completed read-only reconciliation attempts.
   final int reconciliationAttemptCount;
+
+  /// Whether a server-issued clock sample leaves room for a first send.
+  bool freshFor(DateTime serverNow) =>
+      serverNow.isUtc &&
+      serverNow.difference(operationId.issuedAt) <
+          preDispatchFreshnessLimit &&
+      operationId.issuedAt.difference(serverNow) <
+          preDispatchFreshnessLimit;
 
   /// Reconstructs the exact immutable online receipt context.
   ReceiptContext get context => ReceiptContext(
@@ -620,11 +638,16 @@ final class OfflineReceiptEvidence {
 
   /// Returns an immutable modified copy.
   OfflineReceiptEvidence copyWith({
+    ReceiptOperationId? operationId,
+    ReceiptGroupId? groupId,
     OfflineReceiptReconciliationState? state,
+    bool? mayHaveDispatched,
     int? reconciliationAttemptCount,
   }) => OfflineReceiptEvidence(
-    operationId: ReceiptOperationId(operationId.bytes),
-    groupId: ReceiptGroupId(groupId.bytes),
+    operationId: ReceiptOperationId(
+      (operationId ?? this.operationId).bytes,
+    ),
+    groupId: ReceiptGroupId((groupId ?? this.groupId).bytes),
     endpoint: ReceiptEndpoint(
       nodeId: endpoint.nodeId,
       generation: endpoint.generation,
@@ -640,6 +663,7 @@ final class OfflineReceiptEvidence {
     itemIndex: itemIndex,
     itemCount: itemCount,
     state: state ?? this.state,
+    mayHaveDispatched: mayHaveDispatched ?? this.mayHaveDispatched,
     reconciliationAttemptCount:
         reconciliationAttemptCount ?? this.reconciliationAttemptCount,
   );
@@ -749,6 +773,7 @@ final class OfflineOutboxRecord {
         diagnosticCode?.isEmpty == true ||
         (expectedReceiptMutation == null) != (this.receipt == null) ||
         (this.receipt != null && state == OfflineOutboxState.expired) ||
+        (this.receipt?.mayHaveDispatched == false && attemptCount != 0) ||
         (this.receipt?.state ==
                 OfflineReceiptReconciliationState.noLongerProvable &&
             state != OfflineOutboxState.deadLetter) ||

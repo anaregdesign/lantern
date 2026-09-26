@@ -235,7 +235,7 @@ void main() {
             ),
             encoded,
           );
-          expect(encoded, contains('"schema":3'));
+          expect(encoded, contains('"schema":4'));
           expect(encoded, contains('"deadLetteredAt":null'));
           expect(encoded, contains('"receipt":null'));
         }
@@ -249,7 +249,7 @@ void main() {
       final decoded = OfflineCodec.decodeOutboxRecord(fixture);
       final encoded = OfflineCodec.encodeOutboxRecord(decoded);
 
-      expect(encoded, contains('"schema":3'));
+      expect(encoded, contains('"schema":4'));
       expect(encoded, contains('"receipt":null'));
       expect(
         OfflineCodec.encodeOutboxRecord(
@@ -386,6 +386,62 @@ void main() {
                 as OfflineVertexPutReceiptResult)
             .outcome,
         PutOutcome.conditionNotMet,
+      );
+    });
+
+    test('v3 receipt without a dispatch marker is never treated as unsent', () {
+      final capability = offlineReceiptCapability();
+      final record = OfflineOutboxRecord(
+        recordId: 'unmarked',
+        operationId: 'unmarked-operation',
+        itemIndex: 0,
+        partitionId: 'p',
+        intent: OfflineDeleteVertexIntent('target'),
+        enqueuedAt: time,
+        ordinal: 1,
+        state: OfflineOutboxState.enqueued,
+        attemptCount: 0,
+        generation: 0,
+        receipt: OfflineReceiptEvidence(
+          operationId: testReceiptOperationId(
+            epoch: capability.policy.deploymentEpoch,
+            random: 2,
+          ),
+          groupId: ReceiptGroupId(testBytes(16, 21)),
+          endpoint: capability.endpoint,
+          mutation: ReceiptMutationKind.vertexDelete,
+          policy: capability.policy,
+          itemIndex: 0,
+          itemCount: 1,
+          state: OfflineReceiptReconciliationState.statusRequired,
+          mayHaveDispatched: false,
+        ),
+      );
+      final encoded = OfflineCodec.encodeOutboxRecord(record);
+      expect(
+        OfflineCodec.decodeOutboxRecord(encoded).receipt!.mayHaveDispatched,
+        isFalse,
+      );
+      final old = jsonDecode(encoded) as Map<String, Object?>;
+      final evidence = old['receipt']! as Map<String, Object?>;
+      evidence.remove('mayHaveDispatched');
+      expect(
+        () => OfflineCodec.decodeOutboxRecord(jsonEncode(old)),
+        throwsA(isA<OfflineCodecException>()),
+      );
+      old['schema'] = 3;
+      final migrated = OfflineCodec.decodeOutboxRecord(jsonEncode(old));
+      expect(migrated.receipt!.mayHaveDispatched, isTrue);
+      expect(migrated.receipt!.operationId, record.receipt!.operationId);
+      expect(
+        OfflineCodec.encodeOutboxRecord(migrated),
+        contains('"mayHaveDispatched":true'),
+      );
+      old['schema'] = 4;
+      evidence['mayHaveDispatched'] = 'false';
+      expect(
+        () => OfflineCodec.decodeOutboxRecord(jsonEncode(old)),
+        throwsA(isA<OfflineCodecException>()),
       );
     });
 

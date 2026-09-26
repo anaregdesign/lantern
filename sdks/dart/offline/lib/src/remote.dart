@@ -110,6 +110,7 @@ final class OfflineReceiptPreparation {
   /// Creates an immutable preparation aligned to offline operation items.
   OfflineReceiptPreparation({
     required this.mutation,
+    required this.capability,
     required Iterable<OfflineReceiptEvidence> evidence,
   }) : evidence = List<OfflineReceiptEvidence>.unmodifiable(
          evidence.map(copyOfflineReceiptEvidence),
@@ -125,7 +126,17 @@ final class OfflineReceiptPreparation {
       if (!operationIds.add(item.operationId) ||
           !groupIds.add(item.groupId) ||
           item.state != OfflineReceiptReconciliationState.statusRequired ||
+          item.mayHaveDispatched ||
           item.reconciliationAttemptCount != 0 ||
+          !item.freshFor(capability.serverNow) ||
+          item.endpoint != capability.endpoint ||
+          item.policy.deploymentEpoch !=
+              capability.policy.deploymentEpoch ||
+          item.policy.retention != capability.policy.retention ||
+          item.policy.maxEntries != capability.policy.maxEntries ||
+          item.policy.maxBytes != capability.policy.maxBytes ||
+          !_sameBytes(item.policy.fingerprint, capability.policy.fingerprint) ||
+          !capability.supports(mutation) ||
           item.endpoint != first.endpoint ||
           item.policy.deploymentEpoch != first.policy.deploymentEpoch ||
           item.policy.retention != first.policy.retention ||
@@ -139,6 +150,9 @@ final class OfflineReceiptPreparation {
 
   /// Prepared receipt mutation family.
   final ReceiptMutationKind mutation;
+
+  /// Server-clock and continuity proof used to mint these contexts.
+  final OfflineReceiptCapabilityEnabled capability;
 
   /// One independent, one-item server receipt group per offline item.
   final List<OfflineReceiptEvidence> evidence;
@@ -167,16 +181,24 @@ final class OfflineReceiptCapabilityEnabled extends OfflineReceiptCapability {
   OfflineReceiptCapabilityEnabled({
     required this.endpoint,
     required this.policy,
+    required this.serverNow,
     required Set<ReceiptMutationKind> supportedMutations,
   }) : supportedMutations = Set<ReceiptMutationKind>.unmodifiable(
          supportedMutations,
-       );
+       ) {
+    if (!serverNow.isUtc || serverNow.millisecondsSinceEpoch < 0) {
+      throw const OfflineArgumentException();
+    }
+  }
 
   /// Exact endpoint continuity marker.
   final ReceiptEndpoint endpoint;
 
   /// Exact active receipt policy.
   final OfflineReceiptPolicy policy;
+
+  /// Authoritative server time sampled with this capability.
+  final DateTime serverNow;
 
   /// Receipt mutation families enabled at the endpoint.
   final Set<ReceiptMutationKind> supportedMutations;
@@ -361,8 +383,18 @@ final class LanternClientOfflineRemote
     }
     try {
       final policy = OfflineReceiptPolicy.fromCapability(enabled);
+      final preparedCapability = OfflineReceiptCapabilityEnabled(
+        endpoint: ReceiptEndpoint(
+          nodeId: enabled.endpoint.nodeId,
+          generation: enabled.endpoint.generation,
+        ),
+        policy: policy,
+        serverNow: enabled.serverNow,
+        supportedMutations: enabled.supportedMutations,
+      );
       return OfflineReceiptPreparation(
         mutation: mutation,
+        capability: preparedCapability,
         evidence: List<OfflineReceiptEvidence>.generate(itemCount, (_) {
           final context = client.mintReceiptContext(
             capability: enabled,
@@ -378,9 +410,12 @@ final class LanternClientOfflineRemote
             itemIndex: 0,
             itemCount: 1,
             state: OfflineReceiptReconciliationState.statusRequired,
+            mayHaveDispatched: false,
           );
         }, growable: false),
       );
+    } on OfflineArgumentException {
+      throw const OfflineRemoteProtocolException();
     } on OfflineException {
       rethrow;
     } catch (error) {
@@ -404,6 +439,7 @@ final class LanternClientOfflineRemote
             generation: capability.endpoint.generation,
           ),
           policy: OfflineReceiptPolicy.fromCapability(capability),
+          serverNow: capability.serverNow,
           supportedMutations: capability.supportedMutations,
         ),
       };

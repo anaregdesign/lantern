@@ -1,6 +1,6 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 3;
+const _schemaVersion = 4;
 const _applicationId = 0x4c4e544f;
 const _legacyPartitions = '''CREATE TABLE partitions (
     partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
@@ -104,7 +104,7 @@ Future<void> _createSchema(Database db, int version) async {
   }
   await db.insert('store_metadata', {
     'key': 'format',
-    'value': 'lantern-offline-3',
+    'value': 'lantern-offline-$_schemaVersion',
   });
   await db.execute('PRAGMA application_id = $_applicationId');
 }
@@ -115,7 +115,7 @@ Future<void> _upgradeSchema(
   int newVersion,
   OfflineStoreLimits limits,
 ) async {
-  if ((oldVersion != 1 && oldVersion != 2) ||
+  if ((oldVersion != 1 && oldVersion != 2 && oldVersion != 3) ||
       newVersion != _schemaVersion ||
       (await db.rawQuery('PRAGMA application_id')).single.values.single !=
           _applicationId) {
@@ -168,7 +168,7 @@ Future<void> _upgradeSchema(
   await transaction.finish();
   await db.update(
     'store_metadata',
-    {'value': 'lantern-offline-3'},
+    {'value': 'lantern-offline-$_schemaVersion'},
     where: 'key=?',
     whereArgs: ['format'],
   );
@@ -257,7 +257,7 @@ Future<void> _checkSchema(Database db) async {
         version != _schemaVersion ||
         marker.length != 1 ||
         marker.single['key'] != 'format' ||
-        marker.single['value'] != 'lantern-offline-3') {
+        marker.single['value'] != 'lantern-offline-$_schemaVersion') {
       throw const OfflineSchemaException();
     }
     final definitions = <String, String>{

@@ -77,11 +77,18 @@ its operation ID, one-item logical receipt group, endpoint NodeID/generation,
 policy fingerprint, and exact `itemIndex=0`/`itemCount=1` receipt topology
 before its first mutation send.
 
-Receipt replay is status-first after every enqueue, ambiguous response, lease
-recovery, and process restart. A retained `CONFIRMED` receipt completes the
-local aggregate with the exact original result. `NOT_YET_OBSERVED` permits one
-send only after mutation support, endpoint continuity, deployment epoch,
-retention, caps, and policy fingerprint still match the persisted evidence.
+Receipt replay checks status before every mutation send, including after an
+ambiguous response, lease recovery, or process restart. A freshly enqueued
+receipt also retains a never-dispatched marker. If the server clock shows its
+provisional ID nearing the five-minute admission limit, replay may replace
+that ID and group under a live claim *before* status lookup, but only while the
+durable marker proves no send could have begun. The marker becomes
+`mayHaveDispatched` before the first mutation RPC; missing markers in older
+records mean it may already have been sent and can never authorize rekeying.
+A retained `CONFIRMED` receipt completes the local aggregate with the exact
+original result. `NOT_YET_OBSERVED` permits one send only after mutation
+support, endpoint continuity, deployment epoch, retention, caps, and policy
+fingerprint still match the persisted evidence.
 A lookup failure remains retryable and unresolved; `NO_LONGER_PROVABLE`,
 changed continuity, exhausted attempts, or local max age becomes terminal
 `outcomeUnknown`, never `false`, zero, or success. Receipt dead letters cannot
