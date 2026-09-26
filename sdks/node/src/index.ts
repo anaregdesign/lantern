@@ -38,12 +38,19 @@ import { makeNodeTransport } from "./transport-node.js";
  * `https://` for TLS.
  *
  * Defaults:
- *   - HTTP/2 transport (Connect protocol, JSON codec); set
- *     `args.transportOptions.useBinaryFormat = true` to flip to
- *     protobuf.
+ *   - HTTP/2 transport (Connect protocol, protobuf binary codec); set
+ *     `args.transportOptions.useBinaryFormat = false` for JSON.
  *   - Batch chunk size 1000.
  *   - No per-call timeout; pass `args.options.defaultTimeoutMs` to
  *     apply one.
+ *   - One transport attempt per unary call; no automatic retry or failover.
+ *     Custom transports/interceptors own any retry policy and its safety.
+ *
+ * Plain Add, conditional Put, and exact or capped-prefix Delete are not
+ * result-safe to replay after response loss. Contrib IDs deduplicate only
+ * live contributions, not after Delete or expiry. For supported writes,
+ * persist a receipt context and use the receipt methods on the same
+ * endpoint to recover original results.
  */
 export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
   const normalised = normaliseBaseUrl("connect", baseUrl);

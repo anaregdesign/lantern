@@ -14,7 +14,7 @@ import type { Transport, Interceptor } from "@connectrpc/connect";
 
 /**
  * Build a Browser-flavoured Connect transport (HTTP/1.1 fetch by
- * default; binary format opt-in). Used by `Lantern.connectWeb()` from
+ * default; binary format opt-in). Used by `connectWeb()` from
  * the `lantern-sdk/web` subpath export.
  */
 export function makeWebTransport(

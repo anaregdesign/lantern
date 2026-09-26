@@ -205,18 +205,17 @@ export interface ConnectOptions {
    * two contributions.
    */
   batchChunkSize?: number;
-  /** Override the built-in retry + round_robin Connect service config. */
-  serviceConfigJson?: string;
-  /** Optional Connect user-agent string appended to the default. */
-  userAgent?: string;
   /**
    * Opt in to automatic idempotency keys for `addEdge` / `addEdges` (#895).
    * When true, the client mints a 24-byte contrib ID per contribution from a
-   * per-client random nonce and a monotonic per-call sequence, so a transport
-   * retry re-sends the same bytes and the additive contribution is applied
-   * exactly once (while it is live). A caller-supplied `EdgeInput.contribId`
-   * always takes precedence over the automatic id. Default false (the
-   * receipt-less additive path, where a retry double-counts weight).
+   * per-client random nonce and a monotonic per-call sequence. A custom
+   * interceptor resending that same request retains its IDs, so contributions
+   * are deduplicated while live. The SDK does not retry by default; a new SDK
+   * call mints new automatic IDs, and Delete or expiry ends the dedup horizon.
+   * IDs do not recover the original effective-weight result after response
+   * loss. A caller-supplied `EdgeInput.contribId` takes precedence. Default
+   * false: without a caller-supplied ID, Add is purely additive and replay
+   * may double-count.
    */
   idempotentAdds?: boolean;
 }

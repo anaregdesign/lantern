@@ -6,6 +6,7 @@ import test from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
 
 import {
+  BatchError,
   CONTRIB_ID_BYTES,
   InvalidArgumentError,
   LanternError,
@@ -56,6 +57,49 @@ function dropNextAddEdgesResponse() {
     return response;
   };
 }
+
+test("plain Node Delete is single-attempt over h2c, with an ambiguous lost result", async () => {
+  let attempts = 0;
+  const ordinary = connect(endpoint, { token });
+  const lossy = connect(endpoint, {
+    token,
+    interceptors: [
+      (next) => async (request) => {
+        if (request.method.name !== "DeleteVertices") return next(request);
+        attempts++;
+        await next(request);
+        throw new ConnectError("injected post-commit response loss", Code.Unavailable);
+      },
+    ],
+  });
+  const prefix = `node-default-delete-${randomUUID()}`;
+  const observedKey = `${prefix}:observed`;
+  const lostKey = `${prefix}:lost`;
+  try {
+    assert.equal(
+      await ordinary.putVertex({ key: observedKey, value: "observed" }),
+      "appliedAndLive",
+    );
+    assert.equal(await ordinary.putVertex({ key: lostKey, value: "lost" }), "appliedAndLive");
+    assert.equal(await ordinary.deleteVertices([observedKey]), 1);
+
+    await assert.rejects(
+      lossy.deleteVertices([lostKey]),
+      (error) =>
+        error instanceof BatchError &&
+        error.written === 0 &&
+        error.cause instanceof LanternError &&
+        error.cause.cause instanceof ConnectError &&
+        error.cause.cause.code === Code.Unavailable,
+    );
+    assert.equal(attempts, 1);
+    await assert.rejects(ordinary.getVertex(lostKey), { name: "NotFoundError" });
+    assert.equal(await ordinary.deleteVertices([lostKey]), 0);
+  } finally {
+    ordinary.close();
+    lossy.close();
+  }
+});
 
 test("all receipt mutation families reconcile exact results over real Connect/h2c", async () => {
   const client = connect(endpoint, { token });
