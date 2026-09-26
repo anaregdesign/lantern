@@ -380,6 +380,10 @@ func TestFollowerRelayStreamsExactBoundaryAcrossMultipleHops_RealConnectWire(t *
 	if !waitForVertex(t, downstream.cache, "multi-hop-exact-frame", 5*time.Second) {
 		t.Fatal("exact-fit follower could not relay the accepted frame")
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && downstream.svc.LocalSeq(remoteOrigin) < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if seq := downstream.svc.LocalSeq(remoteOrigin); seq != 1 {
 		t.Fatalf("downstream origin cursor = %d, want 1", seq)
 	}
