@@ -978,30 +978,54 @@ func TestReceiptEdgeAddRetiredEpochStatusContinuity(t *testing.T) {
 }
 
 func TestPublicReceiptEdgeAddBornExpiredLiveResultIsStable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exp  *timestamppb.Timestamp
+	}{
+		{"later born-expired", timestamppb.New(time.Now().Add(-time.Minute))},
+		{"epoch", timestamppb.New(time.Unix(0, 0).UTC())},
+		{"pre-epoch", timestamppb.New(time.Unix(-1, 0).UTC())},
+		{"positive fractional epoch", timestamppb.New(time.Unix(0, 500_000_000).UTC())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, svc, _ := newActivatedReceiptService(t, 8)
+			request := publicReceiptEdgeAddRequest(t, runtime, 0x7d, &pb.Edge{
+				Tail: "expired", Head: "edge", Weight: 11, Expiration: tc.exp,
+			})
+			response, err := svc.AddEdges(t.Context(), request)
+			if err != nil || len(response.GetEffectiveWeights()) != 1 || response.GetEffectiveWeights()[0] != 0 {
+				t.Fatalf("born-expired Add result = (%+v, %v), want live effective weight 0", response, err)
+			}
+			if _, live := runtime.graph.GetWeight("expired", "edge"); live {
+				t.Fatal("born-expired Add became graph-visible")
+			}
+			duplicate, err := svc.AddEdges(t.Context(), proto.Clone(request).(*pb.AddEdgesRequest))
+			if err != nil || len(duplicate.GetEffectiveWeights()) != 1 || duplicate.GetEffectiveWeights()[0] != 0 {
+				t.Fatalf("born-expired duplicate = %+v, %v", duplicate, err)
+			}
+			status, err := svc.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{
+				OperationId: request.GetReceiptContext().GetOperationIds()[0],
+			})
+			if err != nil ||
+				status.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != 0 {
+				t.Fatalf("born-expired status = %+v, %v", status, err)
+			}
+		})
+	}
+}
+
+func TestPublicReceiptEdgeAddRejectsUnrepresentableExpiration(t *testing.T) {
 	runtime, svc, _ := newActivatedReceiptService(t, 8)
-	request := publicReceiptEdgeAddRequest(t, runtime, 0x7d, &pb.Edge{
-		Tail: "expired", Head: "edge", Weight: 11,
-		Expiration: timestamppb.New(time.Now().Add(-time.Minute)),
+	request := publicReceiptEdgeAddRequest(t, runtime, 0x7e, &pb.Edge{
+		Tail: "tail", Head: "head", Weight: 1,
+		Expiration: timestamppb.New(time.Time{}),
 	})
-	response, err := svc.AddEdges(t.Context(), request)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := svc.AddEdges(t.Context(), request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("explicit Go-zero receipt Add = %v, want InvalidArgument", err)
 	}
-	if len(response.GetEffectiveWeights()) != 1 || response.GetEffectiveWeights()[0] != 0 {
-		t.Fatalf("born-expired Add result = %+v, want live effective weight 0", response)
-	}
-	if _, live := runtime.graph.GetWeight("expired", "edge"); live {
-		t.Fatal("born-expired Add became graph-visible")
-	}
-	duplicate, err := svc.AddEdges(t.Context(), proto.Clone(request).(*pb.AddEdgesRequest))
-	if err != nil || duplicate.GetEffectiveWeights()[0] != 0 {
-		t.Fatalf("born-expired duplicate = %+v, %v", duplicate, err)
-	}
-	status, err := svc.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{
-		OperationId: request.GetReceiptContext().GetOperationIds()[0],
-	})
-	if err != nil ||
-		status.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != 0 {
-		t.Fatalf("born-expired status = %+v, %v", status, err)
+	if _, live := runtime.graph.GetWeight("tail", "head"); live ||
+		runtime.log.Len() != 0 || runtime.ReceiptStats().Entries != 0 ||
+		svc.LocalSeq(svc.clock.NodeID()) != 0 {
+		t.Fatal("unrepresentable receipt Add changed graph, Store, log, or origin")
 	}
 }

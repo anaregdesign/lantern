@@ -10,6 +10,34 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 )
 
+func TestWeight_EpochRangeExpirationDoesNotRetainContribution(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name string
+		exp  time.Time
+		want float32
+	}{
+		{"omitted", time.Time{}, 5},
+		{"epoch", time.Unix(0, 0).UTC(), 2},
+		{"pre-epoch", time.Unix(-1, 0).UTC(), 2},
+		{"positive fractional epoch", time.Unix(0, 500_000_000).UTC(), 2},
+		{"future", now.Add(time.Hour), 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWeight()
+			if applied, effective := w.addWithExpirationContribAt(2, time.Time{}, ContribID{1}, now); !applied || effective != 2 {
+				t.Fatalf("permanent base = (%v, %v), want (true, 2)", applied, effective)
+			}
+			if applied, effective := w.addWithExpirationContribAt(3, tc.exp, ContribID{2}, now); !applied || effective != tc.want {
+				t.Fatalf("Add at %v = (%v, %v), want (true, %v)", tc.exp, applied, effective, tc.want)
+			}
+			if got := w.value(); got != tc.want {
+				t.Fatalf("live weight = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWeight_DerivedAggregateExpiresWithoutLosingLaterAdd(t *testing.T) {
 	baseExpiration := time.Now().Add(time.Hour)
 	addExpiration := baseExpiration.Add(time.Hour)

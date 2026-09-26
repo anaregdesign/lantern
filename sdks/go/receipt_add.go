@@ -274,13 +274,15 @@ func receiptAddEdgesRequest(
 				i,
 			)
 		}
-		expiration := timestamppb.New(edge.Expiration)
-		if err := expiration.CheckValid(); err != nil {
-			return nil, nil, ReceiptContext{}, invalidReceiptError(
-				"edges[%d] expiration: %v",
-				i,
-				err,
-			)
+		expiration := expirationTimestamp(edge.Expiration)
+		if expiration != nil {
+			if err := expiration.CheckValid(); err != nil {
+				return nil, nil, ReceiptContext{}, invalidReceiptError(
+					"edges[%d] expiration: %v",
+					i,
+					err,
+				)
+			}
 		}
 		if input.ContribID == (ContribID{}) {
 			return nil, nil, ReceiptContext{}, invalidReceiptError(

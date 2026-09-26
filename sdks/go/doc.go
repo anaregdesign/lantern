@@ -36,8 +36,9 @@
 // and the value never decays. Pass a positive ttl to opt into decay,
 // or use the absolute *At variants (PutVertexAt, AddEdgeAt, PutEdgeAt)
 // with a zero time.Time for the same permanent semantics. The SDK never
-// injects a hidden default expiration — an omitted/zero TTL is honoured
-// as permanent end to end (see #523).
+// injects a hidden default expiration: zero time omits the wire field,
+// while explicit epoch/pre-epoch times remain deadlines that have expired.
+// An omitted/zero TTL is honoured as permanent end to end (see #523).
 //
 // # Illuminate family selection
 //

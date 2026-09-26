@@ -407,9 +407,14 @@ for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
 ```
 
 Operational tiers compose in: `client.WithAuthToken` for bearer-token
-servers, `client.WithRetry` for opt-in full-jitter retries (applied only to
-RPCs that are idempotent under your configuration), and
+servers, `client.WithRetry` for opt-in full-jitter retries, and
 `client.NewLanternFailover` for sticky-cursor rotation across HA replicas.
+In published `sdks/go/v0.25.0`, these policies may retry receipt-less Add
+and exact/prefix Delete after an ambiguous commit, changing the original
+result or deleting a later prefix page. Avoid them for those operations;
+use receipt-backed APIs for supported exact mutations with same-endpoint
+continuity. Prefix Delete has no receipt path; the policy fix is pending
+#1468, not yet published.
 Full worked example: [sdks/go/example/main.go](sdks/go/example/main.go).
 
 ### TypeScript / Node
@@ -458,9 +463,13 @@ try {
 
 JS values map to typed proto fields (`string`, `number`, `bigint`,
 `boolean`, `Date`, `Uint8Array`, `null`, plus explicit numeric wrappers);
-batch writes auto-chunk. The browser build (`lantern-sdk/web`) is what
-powers the [admin SPA](admin/). Full API:
+ordinary batch writes auto-chunk, while opt-in receipt batches remain
+unsplit. The browser build (`lantern-sdk/web`) is what powers the
+[admin SPA](admin/). Full API:
 [sdks/node/README.md](sdks/node/README.md).
+The receipt APIs in merged Node 0.12.0 source are not in npm's current
+`lantern-sdk@0.11.0` `latest` package; see the SDK README for source-only
+receipt examples until a new npm archive is published and verified.
 
 ### Dart / Flutter
 
@@ -473,19 +482,29 @@ package. It exports immutable SDK-native values, TTL-preserving Graph results,
 CRUD, cursor scans, full-text/incremental search, typed traversal families,
 cold-start ranking, explicit status snapshots, and the reusable
 `LanternClient` transport foundation (secure endpoint validation, short-lived
-token providers, deadlines, cancellation, bounded retry, typed failures, and
-auth-exempt gRPC Health-v1 probing). See
+token providers, deadlines, cancellation, bounded retry, typed failures,
+and auth-exempt gRPC Health-v1 probing). See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
+Opt-in bounded mutation receipts are available in the hosted
+`lantern_client 0.3.1` package; its published archive passed exact-content
+verification. This online release does not qualify an offline receipt release.
 
 [`lantern_client_offline`](sdks/dart/offline/) is an experimental,
 opt-in pure-Dart Repository layer for Firebase-like cached snapshots, locally
 committed Put overlays, and explicit foreground replay. It injects the
 transactional store, never persists credentials, and never serves past Lantern
-TTL. Its first-release durable mutation surface is Put-only; experimental legacy
-Add records migrate to inspectable terminal `unsupported_add` dead letters and
-are never replayed. Direct-online Add in the online SDK, Go SDK, and CLI is
-unchanged. Durable offline Add is deferred until #1115 provides
-server-authoritative operation receipts.
+TTL. The hosted offline 0.3.0 durable mutation surface is Put-only; experimental
+legacy Add records migrate to inspectable terminal `unsupported_add` dead
+letters and are never replayed. Merged offline 0.4.0 source separately
+implements receipt-backed conditional Vertex Put, exact Vertex/Edge Delete,
+and explicit-ID Edge Add with status-first reconciliation for any possibly
+dispatched ID; these source changes do not qualify an offline release.
+Existing direct-online Add methods and the CLI remain receipt-less; the
+checked-in Go/Node/Dart online SDKs offer separate opt-in receipt APIs. No
+receipt-bearing `lantern_client_offline` 0.4.0 release has been published
+or qualified; final #1399 release gates, including measured performance
+and physical evidence, remain required. #1449's capture preparation is
+merged, but it is not on-device receipt evidence.
 Its reusable Store conformance gate covers atomic graph commits, collision and
 lease CAS behavior, generation/wipe isolation, bounded notifications and
 capacity, same-limit reopen, and canonical state transition in a fresh Dart VM.
@@ -526,10 +545,12 @@ multiplexes Connect (JSON or proto), gRPC, and gRPC-Web over the same
 
 **Not a good fit**
 
-- **Durability out of the box.** Lantern is in-memory: a restart loses the
-  graph (a periodic [snapshot backup](docs/backup.md) with restore-on-boot
-  is built in, but there is no WAL). Replay your event stream on boot, or
-  put a queue in front.
+- **Durability without configuration.** In default `graph-only` mode a
+  restart loses the graph unless a periodic
+  [snapshot backup](docs/backup.md) is enabled; even then, writes since
+  that dump are lost (there is no WAL). Replay your event stream on boot
+  or put a queue in front. Opt-in durable receipt-WAL mode has a
+  separate, certified WAL/backup recovery contract; it is not the default.
 - **Whole-graph analytics** — global PageRank, community detection across
   billions of edges. (Seed-local PPR and community *are* supported online
   queries.)
@@ -630,9 +651,17 @@ whichever reads better at the call site.
 | `SearchVertices` | BM25-ranked full-text over vertex content, with match-mode / phrase / fuzzy / prefix-term options |
 | `Illuminate` | Walk the graph from a seed — the shaped-subgraph query described above |
 
-SDK batch writes auto-chunk; a validation interceptor rejects oversize keys
-and batches (`LANTERN_MAX_KEY_LEN`, `LANTERN_MAX_BATCH_SIZE`) and NaN/Inf
-weights before they touch the cache.
+Ordinary SDK batch writes may auto-chunk; receipt-bearing plural calls do not
+split a logical group. Input validation rejects oversize keys and batches
+(`LANTERN_MAX_KEY_LEN`, `LANTERN_MAX_BATCH_SIZE`). Public singular
+and plural Put/Add reject non-finite **source** edge weights at service
+ingress, including facade calls. Finite contributions may still sum to
+`+Infinity`/`-Infinity`; a confirmed Add receipt preserves that original
+effective `float32` result (or a pre-existing accepted `NaN`), never a
+fabricated zero. A folded non-finite edge from a graph-only `.lbk` can be
+restored internally as a distinct derived aggregate for graph-only
+Snapshots, not accepted as a new public/peer source or receipt Snapshot
+contribution; `lantern-cli restore` does not bypass Put validation.
 
 Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge
 Add can opt into bounded, server-authoritative receipts through the sole
@@ -800,6 +829,12 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 
 One default worth knowing: a write that omits TTL is stored **permanently**
 — decay is opt-in per write.
+An explicit absolute expiration is always a deadline, even at/before the Unix
+epoch or in its first fractional second. A past deadline makes an unconditional
+Put an `EXPIRED` delete-like overwrite; `if_absent` checks for an existing live
+vertex first, and an expired Add contributes no live edge weight. Invalid
+Protobuf timestamps are rejected, as is an explicitly supplied year-one zero
+time (which would otherwise be confused with omitted/permanent expiration).
 
 Receipt context is optional and canonical on `PutVertices`, exact
 `DeleteVertices`, exact `DeleteEdges`, and contribution-keyed `AddEdges`;

@@ -151,7 +151,10 @@ func prepareEdgeAddReceiptCall(
 		if err != nil {
 			return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		expiration := prototime.Expiration(item.Edge.GetExpiration())
+		expiration, err := prototime.CheckedExpiration(item.Edge.GetExpiration())
+		if err != nil {
+			return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, nil, nil, err
 		}
