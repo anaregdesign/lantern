@@ -39,6 +39,9 @@ jobs:
             exit 1
           fi
 
+      - name: Test Go SDK release verifier (no network)
+        run: python3 -m unittest discover -s .github/scripts -p 'test_verify_go_sdk_release.py'
+
       # Per-module loop. Each module is a separate go.mod; the root `./...`
       # does NOT recurse into core/, mcp/, pb/, sdks/go/, server/.
       - name: Vet (all modules)

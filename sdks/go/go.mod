@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	connectrpc.com/connect v1.21.0
-	github.com/anaregdesign/lantern/pb v0.12.0
+	github.com/anaregdesign/lantern/pb v0.13.0
 	google.golang.org/protobuf v1.36.12
 )
 

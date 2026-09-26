@@ -1,9 +1,10 @@
 # Tag-triggered verification + release notes for the Go client SDK.
 # The Go module ecosystem pulls source directly from VCS — there is no
 # artifact to push — but a `sdks/go/vX.Y.Z` tag bypasses the regular
-# Go CI run, so without this workflow we could index a broken tag on
-# pkg.go.dev. This mirrors the verify+release-notes pattern in
-# `mcp-publish.yml` (sans the Docker push).
+# Go CI run. This workflow can withhold the GitHub Release, but a
+# pushed tag may become visible to the Go module proxy independently.
+# This mirrors the verify+release-notes pattern in `mcp-publish.yml`
+# (sans the Docker push).
 #
 # Per AGENTS.md "Release title convention (locked)": title MUST equal
 # the raw tag name verbatim.
@@ -19,15 +20,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Shared verify gate — see _verify.yml and #295. Covers all six Go
-  # modules so a bad `sdks/go/vX.Y.Z` tag can't land on pkg.go.dev even
-  # if the breakage is in an upstream module the SDK depends on.
+  # Shared workspace gate — see _verify.yml and #295. Covers all six Go
+  # modules, but workspace replacements can hide an unpublished/stale pb.
   verify:
     uses: ./.github/workflows/_verify.yml
 
+  standalone:
+    name: Verify tagged SDK against published pb
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sdks/go/go.mod
+          check-latest: true
+      - name: Test release verifier (no network)
+        run: python3 -m unittest discover -s .github/scripts -p 'test_verify_go_sdk_release.py'
+      - name: Verify exact SDK tag outside go.work
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 .github/scripts/verify_go_sdk_release.py --tag "$TAG"
+
   release:
     name: Publish GitHub Release
-    needs: verify
+    needs: [verify, standalone]
     runs-on: ubuntu-latest
     permissions:
       contents: write
