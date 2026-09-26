@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
-func wireReceiptVertexPutFixture(t *testing.T) *vertexPutReceiptEnvelope {
+func wireReceiptVertexPutFixture(t testing.TB) *vertexPutReceiptEnvelope {
 	t.Helper()
 	epoch := mutationreceipt.Epoch{0x42}
 	origin := hlc.NodeID{0x41}
@@ -71,6 +72,256 @@ func wireReceiptVertexPutFixture(t *testing.T) *vertexPutReceiptEnvelope {
 	}
 	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
 	return envelope
+}
+
+func TestReceiptVertexPutFrameSizeMatchesWire(t *testing.T) {
+	tests := []struct {
+		name   string
+		adjust func(*testing.T, *vertexPutReceiptEnvelope)
+	}{
+		{name: "live and condition-not-met"},
+		{name: "expired barrier", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			e.Receipts[0].Result[0] = byte(pb.PutOutcome_PUT_OUTCOME_EXPIRED)
+			e.Accepted[0] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+				Index: 0, Outcome: graphcache.PutOutcomeExpired,
+				Item: graphcache.VertexItem[string, *pb.Vertex]{
+					Key: e.Original[0].GetKey(), CausalBarrier: true,
+				},
+			}
+		}},
+		{name: "receipt-only", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			e.Receipts[0].Result[0] = byte(pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET)
+			e.Accepted = nil
+		}},
+		{name: "sparse second-item live effect", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			e.Receipts[0].Result[0] = byte(pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET)
+			e.Receipts[1].Result[0] = byte(pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE)
+			e.Accepted[0] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+				Index: 1, Outcome: graphcache.PutOutcomeAppliedAndLive,
+				Item: graphcache.VertexItem[string, *pb.Vertex]{
+					Key: e.Original[1].GetKey(), Value: proto.Clone(e.Original[1]).(*pb.Vertex),
+				},
+			}
+		}},
+		{name: "absent value", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			e.Original[0].Value = nil
+			e.Accepted[0].Item.Value = proto.Clone(e.Original[0]).(*pb.Vertex)
+			e.Receipts[0].Digest, _ = vertexPutDigest(e.Original[0], e.IfAbsent)
+		}},
+		{name: "present empty bytes", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			e.Original[0].Value = &pb.Vertex_Bytes{}
+			e.Accepted[0].Item.Value = proto.Clone(e.Original[0]).(*pb.Vertex)
+			e.Receipts[0].Digest, _ = vertexPutDigest(e.Original[0], e.IfAbsent)
+		}},
+		{name: "unconditional one-item call", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			e.Original = e.Original[:1]
+			e.Receipts = e.Receipts[:1]
+			e.Receipts[0].Count = 1
+			e.IfAbsent = false
+			e.Receipts[0].Digest, _ = vertexPutDigest(e.Original[0], e.IfAbsent)
+		}},
+		{name: "large value and HLC varints", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			e.OriginSeq = math.MaxUint64
+			e.HLC.Logical = math.MaxUint32
+			e.Original[0].Value = &pb.Vertex_Bytes{Bytes: bytes.Repeat([]byte{0x5a}, 16<<10)}
+			e.Accepted[0].Item.Value = proto.Clone(e.Original[0]).(*pb.Vertex)
+			e.Receipts[0].Digest, _ = vertexPutDigest(e.Original[0], e.IfAbsent)
+		}},
+		{name: "128 receipt-only items", adjust: func(t *testing.T, e *vertexPutReceiptEnvelope) {
+			const count = 128
+			issued := time.UnixMilli(e.Receipts[0].DeadlineMillis).Add(-time.Hour)
+			group := e.Receipts[0].Group
+			e.Original = make([]*pb.Vertex, count)
+			e.Receipts = make([]mutationreceipt.Receipt, count)
+			e.Accepted = nil
+			for i := range e.Original {
+				vertex := &pb.Vertex{Key: fmt.Sprintf("receipt-%03d", i)}
+				id, err := mutationreceipt.NewID(e.Epoch, issued, [24]byte{byte(i + 1)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				digest, err := vertexPutDigest(vertex, e.IfAbsent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				e.Original[i] = vertex
+				e.Receipts[i] = mutationreceipt.Receipt{
+					Intent: mutationreceipt.Intent{
+						ID: id, Group: group, Index: uint32(i), Count: count,
+						Kind: mutationreceipt.PutVertex, Digest: digest,
+					},
+					Result:         []byte{byte(pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET)},
+					DeadlineMillis: issued.Add(time.Hour).UnixMilli(),
+				}
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			envelope := wireReceiptVertexPutFixture(t)
+			if tc.adjust != nil {
+				tc.adjust(t, envelope)
+				envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+			}
+			frame, err := subscribeMutationFrame(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := proto.Size(frame)
+			got, err := validateReplicationFrameSize(envelope, 0)
+			if err != nil || got != want {
+				t.Fatalf("sized frame = %d, %v; wire frame = %d", got, err, want)
+			}
+			if got, err = validateReplicationFrameSize(envelope, want); err != nil || got != want {
+				t.Fatalf("exact frame cap = %d, %v; want %d", got, err, want)
+			}
+			var sizeErr *replicationFrameSizeError
+			if got, err = validateReplicationFrameSize(envelope, want-1); got != want ||
+				!errors.As(err, &sizeErr) || sizeErr.size != want {
+				t.Fatalf("one-byte-under frame cap = %d, %v; want %d", got, err, want)
+			}
+		})
+	}
+}
+
+func TestReceiptVertexPutFrameSizeRejectsMalformedEnvelope(t *testing.T) {
+	var nilEnvelope *vertexPutReceiptEnvelope
+	if _, err := validateReplicationFrameSize(nilEnvelope, 0); err == nil {
+		t.Fatal("nil receipt envelope bypassed frame-size validation")
+	}
+	unknown := []byte{0xf8, 0x07, 0x01}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*vertexPutReceiptEnvelope)
+	}{
+		{"unknown original field", func(e *vertexPutReceiptEnvelope) {
+			e.Original[0].ProtoReflect().SetUnknown(unknown)
+		}},
+		{"unknown accepted field", func(e *vertexPutReceiptEnvelope) {
+			e.Accepted[0].Item.Value.ProtoReflect().SetUnknown(unknown)
+		}},
+		{"unknown graph projection field", func(e *vertexPutReceiptEnvelope) {
+			e.Mutation.ProtoReflect().SetUnknown(unknown)
+		}},
+		{"typed-nil original value", func(e *vertexPutReceiptEnvelope) {
+			e.Original[0].Value = (*pb.Vertex_String_)(nil)
+		}},
+		{"missing original", func(e *vertexPutReceiptEnvelope) {
+			e.Original[0] = nil
+		}},
+		{"accepted ordering drift", func(e *vertexPutReceiptEnvelope) {
+			e.Accepted = append(e.Accepted, e.Accepted[0])
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envelope := wireReceiptVertexPutFixture(t)
+			tc.mutate(envelope)
+			if _, err := validateReplicationFrameSize(envelope, 0); err == nil {
+				t.Fatal("malformed receipt envelope bypassed frame-size validation")
+			}
+		})
+	}
+}
+
+func TestReceiptVertexPutRelayFrameSizeMatchesMaximalWire(t *testing.T) {
+	envelope := wireReceiptVertexPutFixture(t)
+	envelope.Accepted[0] = graphcache.IndexedVertexPut[string, *pb.Vertex]{
+		Index: 0, Outcome: graphcache.PutOutcomeExpired,
+		Item: graphcache.VertexItem[string, *pb.Vertex]{
+			Key: envelope.Original[0].GetKey(), CausalBarrier: true,
+		},
+	}
+	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+	sparseFrame, err := subscribeMutationFrame(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximal, err := maximalReceiptVertexPutEnvelope(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullFrame, err := subscribeMutationFrame(maximal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.Size(fullFrame)
+	if sparse := proto.Size(sparseFrame); sparse >= want {
+		t.Fatalf("receiver-local sparse/maximal frames = %d/%d, want growth", sparse, want)
+	}
+	if got, err := validateReplicationRelayFrameSize(envelope, want); err != nil || got != want {
+		t.Fatalf("exact-fit maximal relay = %d, %v; want %d", got, err, want)
+	}
+	var sizeErr *replicationFrameSizeError
+	if got, err := validateReplicationRelayFrameSize(envelope, want-1); got != want ||
+		!errors.As(err, &sizeErr) || sizeErr.size != want {
+		t.Fatalf("one-byte-under maximal relay = %d, %v; want %d", got, err, want)
+	}
+}
+
+func TestReceiptVertexPutFrameSizeEnforcesWALCapacity(t *testing.T) {
+	envelope := wireReceiptVertexPutFixture(t)
+	payload := make([]byte, receiptVertexWALMaxBytes/2+1024)
+	envelope.Original[0].Value = &pb.Vertex_Bytes{}
+	envelope.Accepted[0].Item.Value = proto.Clone(envelope.Original[0]).(*pb.Vertex)
+	wire := receiptVertexPutReplicationMutation(envelope)
+	items := wire.GetOp().GetReplicatedReceiptVertexPut().GetItems()
+	low, high := 0, len(payload)-1
+	best := -1
+	for low <= high {
+		mid := low + (high-low)/2
+		items[0].Original.Value = &pb.Vertex_Bytes{Bytes: payload[:mid]}
+		items[0].Accepted.GetLive().Value = &pb.Vertex_Bytes{Bytes: payload[:mid]}
+		if proto.Size(wire) <= receiptVertexWALMaxBytes {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if best < 0 || best+1 >= len(payload) {
+		t.Fatalf("near-cap payload length = %d", best)
+	}
+	envelope.Original[0].Value = &pb.Vertex_Bytes{Bytes: payload[:best]}
+	envelope.Accepted[0].Item.Value = proto.Clone(envelope.Original[0]).(*pb.Vertex)
+	var err error
+	envelope.Receipts[0].Digest, err = vertexPutDigest(envelope.Original[0], envelope.IfAbsent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+	wireSize := proto.Size(receiptVertexPutReplicationMutation(envelope))
+	if wireSize < receiptVertexWALMaxBytes-1 || wireSize > receiptVertexWALMaxBytes {
+		t.Fatalf("near-cap WAL frame size = %d, want at most one byte below limit", wireSize)
+	}
+	got, err := validateReceiptVertexPutWALEnvelope(envelope)
+	if err != nil || got != wireSize {
+		t.Fatalf("near-cap WAL size = %d, %v; wire size = %d", got, err, wireSize)
+	}
+	envelope.Original[0].Value = &pb.Vertex_Bytes{Bytes: payload[:best+1]}
+	envelope.Accepted[0].Item.Value = proto.Clone(envelope.Original[0]).(*pb.Vertex)
+	envelope.Receipts[0].Digest, err = vertexPutDigest(envelope.Original[0], envelope.IfAbsent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+	if _, err := validateReplicationFrameSize(envelope, 0); !errors.Is(err, errReceiptVertexPutWireCapacity) {
+		t.Fatalf("oversized WAL frame = %v, want intrinsic wire-capacity rejection", err)
+	}
+}
+
+func BenchmarkReceiptVertexPutFrameSize(b *testing.B) {
+	envelope := wireReceiptVertexPutFixture(b)
+	envelope.Original = envelope.Original[:1]
+	envelope.Receipts = envelope.Receipts[:1]
+	envelope.Receipts[0].Count = 1
+	envelope.Mutation = receiptVertexPutGraphMutation(envelope)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := validateReplicationFrameSize(envelope, 0); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestReceiptVertexPutWireCarriesOriginalResultsAndProjection(t *testing.T) {

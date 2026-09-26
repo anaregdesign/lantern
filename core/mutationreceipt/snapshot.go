@@ -151,10 +151,10 @@ func NewFromSnapshot(config Config, state Snapshot) (*Store, error) {
 		s.receipts[owned.ID] = owned
 		liveGroup := s.groups[owned.Group]
 		if liveGroup == nil {
-			liveGroup = &groupReceiptRows{count: owned.Count, items: make(map[uint32]ID)}
+			liveGroup = newGroupReceiptRows(owned.Count, 0)
 			s.groups[owned.Group] = liveGroup
 		}
-		liveGroup.items[owned.Index] = owned.ID
+		liveGroup.put(owned.Index, owned.ID)
 		s.deadlines.insert(deadlineEntry{id: owned.ID, deadlineMS: owned.DeadlineMillis})
 		s.bytes += owned.cost()
 	}
@@ -165,6 +165,9 @@ func validateSnapshotRelationships(receipts []Receipt) error {
 	seenContributions := make(map[ContribID]struct{})
 	seenGroups := make(map[GroupID]*groupReceiptRows)
 	for _, receipt := range receipts {
+		if receipt.Count == 0 || receipt.Index >= receipt.Count {
+			return ErrInvalidSnapshot
+		}
 		if receipt.HasContrib {
 			if _, exists := seenContributions[receipt.ContribID]; exists {
 				return ErrInvalidSnapshot
@@ -173,15 +176,15 @@ func validateSnapshotRelationships(receipts []Receipt) error {
 		}
 		group := seenGroups[receipt.Group]
 		if group == nil {
-			group = &groupReceiptRows{count: receipt.Count, items: make(map[uint32]ID)}
+			group = newGroupReceiptRows(receipt.Count, 0)
 			seenGroups[receipt.Group] = group
 		} else if group.count != receipt.Count {
 			return ErrInvalidSnapshot
 		}
-		if _, duplicate := group.items[receipt.Index]; duplicate {
+		if _, duplicate := group.get(receipt.Index); duplicate {
 			return ErrInvalidSnapshot
 		}
-		group.items[receipt.Index] = receipt.ID
+		group.put(receipt.Index, receipt.ID)
 	}
 	return nil
 }

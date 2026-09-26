@@ -51,6 +51,12 @@ func TestSnapshotRoundTripPreservesResultsIndexesAndClock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, item := range []Intent{first, second} {
+		if rows := restored.groups[item.Group]; rows == nil || rows.count != 1 ||
+			rows.single != item.ID || rows.items != nil {
+			t.Fatalf("restored single-item group index = %+v, want inline ID without map", rows)
+		}
+	}
 	got, err := restored.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +244,10 @@ func TestSnapshotAllowsPartiallyExpiredLogicalCall(t *testing.T) {
 	restored, err := NewFromSnapshot(config, state)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if rows := restored.groups[items[1].Group]; rows == nil || rows.count != 2 ||
+		len(rows.items) != 1 || rows.items[1] != items[1].ID {
+		t.Fatalf("partially expired multi-item group index = %+v", rows)
 	}
 	if status, receipt, err := restored.Lookup(items[1].ID, testStart); err != nil || status != Confirmed || string(receipt.Result) != "second" {
 		t.Fatalf("surviving item = %v, %+v, %v", status, receipt, err)

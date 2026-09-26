@@ -2,7 +2,7 @@
 
 - Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Put Edge and prefix Delete remain disabled
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491
 
 ## Context and boundary
 
@@ -189,6 +189,20 @@ retain the expired result. A receipt-only expired envelope still advances the
 cutoff. The operation ID's issuance time prevents a later new execution, and
 status is `NO_LONGER_PROVABLE`. A live receipt may never be discarded to
 resolve capacity pressure or a gap.
+
+Receipt-bearing Vertex Put frame admission sizes the validated original,
+receipt, and accepted effects as shallow protobuf items. It calculates the
+exact mutation and outer `SubscribeResponse` wire sizes without cloning the
+full message solely to check the intrinsic WAL and configured send limits.
+Actual WAL and Subscribe projections still own their copied payloads; sizing
+does not bypass intent, graph-projection, or canonical-WAL validation. Both
+limits remain pre-publication checks, including for a receiver-local relay
+whose accepted effects differ from the origin's.
+
+The active Store also keeps a one-item logical-call reverse index inline,
+without a per-group position map; plural calls retain their position maps
+through partial expiry and snapshot restore. This only changes in-memory
+bookkeeping, not receipt capacity, deadlines, or original result bytes.
 
 Replication Snapshot and the canonical whole-state receipt backup set include the
 active epoch, receipt-policy fingerprint, unexpired receipts (including no-op

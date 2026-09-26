@@ -5910,9 +5910,14 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 						Expiration: timestamppb.New(time.Unix(time.Now().Add(time.Hour).Unix(), 600_000_000)),
 					},
 					{Key: existing.Key, Value: &pb.Vertex_String_{String_: "ignored"}},
+					{
+						Key:        "frame/expired",
+						Value:      &pb.Vertex_String_{String_: "expired"},
+						Expiration: timestamppb.New(time.Now().Add(-time.Minute).Truncate(time.Second)),
+					},
 				},
 				IfAbsent: true,
-				ReceiptContext: publicReceiptWireContext(t, capability, seed, 2,
+				ReceiptContext: publicReceiptWireContext(t, capability, seed, 3,
 					time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)),
 			}
 			if size := proto.Size(request); size >= recvLimit {
@@ -5932,6 +5937,7 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		want := []pb.PutOutcome{
 			pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
 			pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+			pb.PutOutcome_PUT_OUTCOME_EXPIRED,
 		}
 		reference, request := prepare(0, 0x31)
 		if response, err := put(reference, request); err != nil ||
@@ -5940,7 +5946,9 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		}
 		frame := readFrame(t, reference)
 		items := frame.GetMutation().GetOp().GetReplicatedReceiptVertexPut().GetItems()
-		if len(items) != 2 || items[0].GetAccepted() == nil || items[1].GetAccepted() != nil {
+		if len(items) != 3 || items[0].GetAccepted().GetLive() == nil ||
+			items[1].GetAccepted() != nil ||
+			items[2].GetAccepted().GetCausalBarrier().GetKey() != "frame/expired" {
 			t.Fatalf("mixed Vertex Put receipt frame = %+v", frame)
 		}
 		sendLimit := proto.Size(frame)
@@ -5971,6 +5979,16 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		}
 		if size := proto.Size(readFrame(t, exact)); size != sendLimit {
 			t.Fatalf("exact-fit Vertex Put frame = %d, want %d", size, sendLimit)
+		}
+		statuses := receiptWireStatuses(t, context.Background(), exact, token,
+			request.GetReceiptContext().GetOperationIds())
+		for i, status := range statuses {
+			result, ok := status.GetReceipt().GetOriginalResult().GetResult().(*pb.ReceiptResult_PutVertexOutcome)
+			if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				!bytes.Equal(status.GetOperationId(), request.GetReceiptContext().GetOperationIds()[i]) ||
+				!ok || result.PutVertexOutcome != want[i] {
+				t.Fatalf("exact-fit Vertex Put status[%d] = %+v, want %v", i, status, want[i])
+			}
 		}
 	})
 
