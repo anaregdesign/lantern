@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a captured receipt marker against the exact installed build bytes.
-
-This is opt-in preparation. The four-record smoke/CDC release gate does not call
-this validator until the final receipt target and its required scenario set exist.
-"""
+"""Validate captured receipt evidence and the dedicated release-gate pair."""
 
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -21,6 +17,7 @@ import time
 REPOSITORY = "anaregdesign/lantern"
 MARKER_KIND = "physical_receipt_attestation"
 RECORD_KIND = "physical_offline_receipt_evidence"
+RECEIPT_TARGET = "integration_test/physical_receipt_matrix_test.dart"
 PACKAGE_IDS = {
     "android": "com.anaregdesign.lantern_example",
     "ios": "com.anaregdesign.lanternExample",
@@ -54,6 +51,8 @@ RECORD_FIELDS = {
     "testedCommit", "runId", "runStartedAt", "recordedAt", "platform",
     "application", "scenarios", "result",
 }
+RESTART_MARKER_FIELDS = MARKER_FIELDS | {"restart"}
+RECEIPT_RECORD_FIELDS = RECORD_FIELDS | {"network"}
 
 
 def _unique_json_fields(pairs):
@@ -66,7 +65,7 @@ def _unique_json_fields(pairs):
 
 
 def _read_bytes_limited(path, label):
-    if not path.is_file():
+    if path.is_symlink() or not path.is_file():
         raise ValueError(f"missing {label}")
     try:
         with path.open("rb") as evidence:
@@ -89,6 +88,11 @@ def _read_object(path, label):
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a JSON object")
     return value
+
+
+def load_receipt_record(path):
+    """Bound and parse a receipt record before inspecting its commit identity."""
+    return _read_object(Path(path), "receipt evidence record")
 
 
 def _utc(value, label):
@@ -245,6 +249,132 @@ def capture_device_marker(platform, device_id=None):
     return marker
 
 
+def validate_archived_receipt_evidence(
+    marker_path,
+    record_path,
+    *,
+    tested_commit,
+    platform,
+    required_scenarios,
+    run_id=None,
+    run_started_at=None,
+    now=None,
+):
+    """Check a content-free phased marker/record pair in an evidence-only tag.
+
+    Signed installed bytes are compared at capture, not rebuilt in tag CI.
+    """
+    if (
+        not isinstance(tested_commit, str) or not HEX40.fullmatch(tested_commit)
+        or platform not in PACKAGE_IDS
+        or not isinstance(required_scenarios, (set, frozenset))
+        or not required_scenarios
+        or any(not isinstance(item, str) or not SCENARIO.fullmatch(item)
+               for item in required_scenarios)
+    ):
+        raise ValueError("receipt release identity or required matrix is invalid")
+    checked_at = now if now is not None else datetime.now(timezone.utc)
+    if (
+        not isinstance(checked_at, datetime)
+        or checked_at.tzinfo is None
+        or checked_at.utcoffset() != timedelta(0)
+    ):
+        raise ValueError("receipt validation time must be UTC")
+    marker = _read_object(Path(marker_path), "on-device receipt marker")
+    record = _read_object(Path(record_path), "receipt evidence record")
+    if set(marker) != RESTART_MARKER_FIELDS or set(record) != RECEIPT_RECORD_FIELDS:
+        raise ValueError("phased receipt marker or record has invalid fields")
+    if (
+        type(marker["schema"]) is not int
+        or marker["schema"] != 2
+        or marker["kind"] != MARKER_KIND
+        or marker["contentFree"] is not True
+        or marker["status"] != "passed"
+        or marker["phase"] != "complete"
+        or type(record["schema"]) is not int
+        or record["schema"] != 1
+        or record["kind"] != RECORD_KIND
+        or record["repository"] != REPOSITORY
+        or record["contentFree"] is not True
+        or record["physicalDevice"] is not True
+        or record["result"] != "passed"
+    ):
+        raise ValueError("physical receipt completion or evidence identity is invalid")
+    application = record["application"]
+    if not isinstance(application, dict) or set(application) != {
+        "packageId", "target", "binarySha256",
+    }:
+        raise ValueError("receipt application identity is invalid")
+    if (
+        marker["testedCommit"] != tested_commit
+        or record["testedCommit"] != tested_commit
+        or marker["target"] != RECEIPT_TARGET
+        or application["target"] != RECEIPT_TARGET
+        or marker["platform"] != platform
+        or record["platform"] != {"kind": f"physical-{platform}"}
+        or marker["packageId"] != PACKAGE_IDS[platform]
+        or application["packageId"] != PACKAGE_IDS[platform]
+    ):
+        raise ValueError("receipt commit, target, or platform differs")
+    if (
+        not isinstance(record["runId"], str) or not HEX32.fullmatch(record["runId"])
+        or marker["runId"] != record["runId"]
+        or (run_id is not None and record["runId"] != run_id)
+    ):
+        raise ValueError("receipt marker or record is from another run")
+    digest = marker["installedBinarySha256"]
+    if (
+        not isinstance(digest, str)
+        or not HEX64.fullmatch(digest)
+        or application["binarySha256"] != digest
+    ):
+        raise ValueError("installed receipt binary differs from the release record")
+    _scenarios(marker["completedScenarios"], required_scenarios, "on-device marker")
+    _scenarios(record["scenarios"], required_scenarios, "receipt record")
+    if record["scenarios"] != sorted(record["scenarios"]):
+        raise ValueError("receipt record scenarios must be sorted")
+    network = record["network"]
+    if (
+        not isinstance(network, dict)
+        or set(network) != {
+            "transport", "authenticated", "platformTrustedTls", "fault",
+        }
+        or network["transport"] != "Connect/HTTPS"
+        or network["authenticated"] is not True
+        or network["platformTrustedTls"] is not True
+        or network["fault"] != "committed-response-socket-drop"
+    ):
+        raise ValueError("receipt matrix did not prove authenticated trusted HTTPS")
+    if re.search(r"https?://|\b(?:\d{1,3}\.){3}\d{1,3}\b|@", json.dumps((marker, record))):
+        raise ValueError("receipt evidence may contain an endpoint or identifier")
+
+    restart = marker["restart"]
+    if (
+        not isinstance(restart, dict)
+        or set(restart) != {"preparedAt", "resumedAt", "processChanged"}
+        or restart["processChanged"] is not True
+    ):
+        raise ValueError("receipt marker lacks a verified second process")
+    run_start = _utc(record["runStartedAt"], "host run start")
+    started = _utc(marker["startedAt"], "on-device start")
+    prepared = _utc(restart["preparedAt"], "on-device preparation")
+    resumed = _utc(restart["resumedAt"], "on-device relaunch")
+    finished = _utc(marker["finishedAt"], "on-device finish")
+    recorded = _utc(record["recordedAt"], "host capture")
+    if run_started_at is not None and record["runStartedAt"] != run_started_at:
+        raise ValueError("receipt record does not match the host run start")
+    if (
+        run_start > checked_at + CLOCK_SKEW
+        or not run_start - CLOCK_SKEW <= started <= run_start + LAUNCH_LIMIT
+        or not started <= prepared < resumed <= finished <= started + RUN_LIMIT
+        or not finished - CLOCK_SKEW <= recorded <= finished + CAPTURE_LIMIT
+        or recorded < run_start
+        or max(started, prepared, resumed, finished, recorded) > checked_at + CLOCK_SKEW
+    ):
+        raise ValueError("physical receipt restart or capture timing is invalid")
+    return digest
+
+
 def validate_receipt_attestation(
     marker_path,
     record_path,
@@ -294,6 +424,19 @@ def validate_receipt_attestation(
         raise ValueError("host run start is in the future")
 
     built_digest = _built_digest(Path(built_binary_path), platform)
+    if target == RECEIPT_TARGET:
+        archived_digest = validate_archived_receipt_evidence(
+            marker_path, record_path, tested_commit=tested_commit,
+            platform=platform, required_scenarios=required_scenarios,
+            run_id=run_id, run_started_at=run_started_at, now=checked_at,
+        )
+        if archived_digest != built_digest:
+            raise ValueError("receipt installed and host-built binary hashes differ")
+        record = _read_object(Path(record_path), "receipt evidence record")
+        if _utc(record["recordedAt"], "host capture") < checked_at - CAPTURE_LIMIT:
+            raise ValueError("receipt record is stale for capture-time validation")
+        return built_digest
+
     marker = _read_object(Path(marker_path), "on-device receipt marker")
     record = _read_object(Path(record_path), "receipt evidence record")
     if set(marker) != MARKER_FIELDS or set(record) != RECORD_FIELDS:

@@ -8,6 +8,12 @@ from pathlib import Path
 import re
 import subprocess
 
+from physical_receipt_attestation import (
+    RECEIPT_TARGET,
+    load_receipt_record,
+    validate_archived_receipt_evidence,
+)
+
 
 EVIDENCE_DIR = Path("sdks/dart/example/evidence/offline-release")
 REQUIRED_COMMON = {
@@ -42,6 +48,23 @@ REQUIRED_CDC = {
     "identity_runtime_token_refresh",
     "identity_cancellation",
 }
+REQUIRED_RECEIPT_COMMON = {
+    "receipt_authenticated_trusted_tls",
+    "receipt_untrusted_tls_rejected",
+    "receipt_conditional_put_exact",
+    "receipt_vertex_delete_exact",
+    "receipt_edge_delete_exact",
+    "receipt_contribution_add_after_delete",
+    "receipt_nonfinite_derived_float32",
+    "receipt_committed_response_loss",
+    "receipt_real_sigkill_sqlite_reopen",
+    "receipt_relaunch_status_first_no_resend",
+    "receipt_radio_foreground_recovery",
+}
+REQUIRED_RECEIPT_PLATFORM = {
+    "android": "android_doze_like_pause",
+    "ios": "ios_local_network_privacy_denial_retry",
+}
 SUITES = {
     "smoke": {
         "suffix": "",
@@ -52,6 +75,11 @@ SUITES = {
         "suffix": "-cdc",
         "kind": "physical_offline_identity_cdc_evidence",
         "target": "integration_test/physical_identity_cdc_test.dart",
+    },
+    "receipt": {
+        "suffix": "-receipt",
+        "kind": "physical_offline_receipt_evidence",
+        "target": RECEIPT_TARGET,
     },
 }
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -72,11 +100,17 @@ def source_identity(tag_sha, tested_sha):
         str(EVIDENCE_DIR / f"{platform}{suite['suffix']}.json")
         for platform in ("android", "ios") for suite in SUITES.values()
     }
+    required |= {
+        str(EVIDENCE_DIR / f"{platform}-receipt-marker.json")
+        for platform in ("android", "ios")
+    }
     if not required <= changed or not changed <= required | {str(EVIDENCE_DIR / "README.md")}:
         raise ValueError(f"tag changed code or lacks all physical records: {sorted(changed)}")
 
 
 def validate_record(record, ci_record, platform, tested_sha, suite="smoke"):
+    if suite == "receipt":
+        raise ValueError("receipt evidence requires the paired on-device marker")
     contract = SUITES[suite]
     expected_kind = f"physical-{platform}"
     if (
@@ -180,7 +214,10 @@ def validate(tag_sha, evidence_dir, ci_dir, run_id, run_attempt):
             path = evidence_dir / f"{platform}{contract['suffix']}.json"
             if not path.is_file():
                 raise ValueError(f"missing {platform} {suite} physical record")
-            records[platform, suite] = json.loads(path.read_text())
+            records[platform, suite] = (
+                load_receipt_record(path)
+                if suite == "receipt" else json.loads(path.read_text())
+            )
     tested = records["android", "smoke"].get("testedCommit")
     if any(record.get("testedCommit") != tested for record in records.values()):
         raise ValueError("physical records tested different code commits")
@@ -188,7 +225,25 @@ def validate(tag_sha, evidence_dir, ci_dir, run_id, run_attempt):
     for platform in ("android", "ios"):
         ci_record = json.loads((ci_dir / f"{platform}.json").read_text())
         for suite in SUITES:
-            validate_record(records[platform, suite], ci_record, platform, tested, suite)
+            if suite == "receipt":
+                marker = evidence_dir / f"{platform}-receipt-marker.json"
+                validate_archived_receipt_evidence(
+                    marker,
+                    evidence_dir / f"{platform}-receipt.json",
+                    tested_commit=tested,
+                    platform=platform,
+                    required_scenarios=REQUIRED_RECEIPT_COMMON | {
+                        REQUIRED_RECEIPT_PLATFORM[platform],
+                    },
+                )
+                if records[platform, suite]["application"]["packageId"] != (
+                    ci_record.get("application", {}).get("packageId")
+                ):
+                    raise ValueError(f"{platform} receipt package differs from tag CI")
+            else:
+                validate_record(records[platform, suite], ci_record, platform, tested, suite)
+    if records["android", "receipt"]["runId"] == records["ios", "receipt"]["runId"]:
+        raise ValueError("physical receipt platforms reused a run ID")
 
 
 def main():
