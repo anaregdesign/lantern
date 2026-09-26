@@ -629,6 +629,35 @@ void main() {
         ),
       ),
     );
+
+    for (final retention in [
+      const Duration(minutes: 59),
+      const Duration(days: 31),
+    ]) {
+      final invalidDeadline = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptStatusesRequest,
+              graph.GetReceiptStatusesResponse
+            >(
+              LanternService.getReceiptStatuses,
+              (request, context) => graph.GetReceiptStatusesResponse(
+                statuses: [_confirmedStatus(id, retention: retention)],
+              ),
+            )
+            .build(),
+      );
+      await expectLater(
+        invalidDeadline.getReceiptStatus(id),
+        throwsA(
+          isA<LanternInternalException>().having(
+            (error) => error.isSdkProtocolViolation,
+            'isSdkProtocolViolation',
+            isTrue,
+          ),
+        ),
+      );
+    }
   });
 
   test('status decodes all typed receipt results', () async {
@@ -665,11 +694,7 @@ void main() {
           .build(),
     );
 
-    final statuses = await client.getReceiptStatuses([
-      putId,
-      deleteId,
-      addId,
-    ]);
+    final statuses = await client.getReceiptStatuses([putId, deleteId, addId]);
     final put = statuses[0].receipt! as VertexPutReceipt;
     expect(put.mutation, ReceiptMutationKind.vertexPut);
     expect(put.outcome, PutOutcome.conditionNotMet);
@@ -719,18 +744,12 @@ void main() {
         expect(signedZeroReceipt.effectiveWeight, 0);
         expect(signedZeroReceipt.effectiveWeight.isNegative, isTrue);
 
-        for (final infinity in [
-          double.infinity,
-          double.negativeInfinity,
-        ]) {
+        for (final infinity in [double.infinity, double.negativeInfinity]) {
           final status = await clientFor(
             infinity,
             binaryRoundTrip: binaryRoundTrip,
           ).getReceiptStatus(id);
-          expect(
-            (status.receipt! as EdgeAddReceipt).effectiveWeight,
-            infinity,
-          );
+          expect((status.receipt! as EdgeAddReceipt).effectiveWeight, infinity);
         }
         final nanStatus = await clientFor(
           double.nan,
@@ -743,17 +762,8 @@ void main() {
       }
       for (final overflow in [double.maxFinite, -double.maxFinite]) {
         await expectLater(
-          clientFor(
-            overflow,
-            binaryRoundTrip: false,
-          ).getReceiptStatus(id),
-          throwsA(
-            isA<LanternInternalException>().having(
-              (error) => error.isSdkProtocolViolation,
-              'isSdkProtocolViolation',
-              isTrue,
-            ),
-          ),
+          clientFor(overflow, binaryRoundTrip: false).getReceiptStatus(id),
+          throwsA(isA<LanternInternalException>()),
         );
       }
     },
@@ -780,29 +790,26 @@ void main() {
           .build(),
     );
 
-    final results = await client.addEdgesWithReceipt(
-      [
-        EdgeInput(
-          tail: 'positive',
-          head: 'infinity',
-          weight: 1,
-          contribId: _bytes(24, 1),
-        ),
-        EdgeInput(
-          tail: 'negative',
-          head: 'infinity',
-          weight: -1,
-          contribId: _bytes(24, 2),
-        ),
-        EdgeInput(
-          tail: 'semantic',
-          head: 'nan',
-          weight: 1,
-          contribId: _bytes(24, 3),
-        ),
-      ],
-      context: context,
-    );
+    final results = await client.addEdgesWithReceipt([
+      EdgeInput(
+        tail: 'positive',
+        head: 'infinity',
+        weight: 1,
+        contribId: _bytes(24, 1),
+      ),
+      EdgeInput(
+        tail: 'negative',
+        head: 'infinity',
+        weight: -1,
+        contribId: _bytes(24, 2),
+      ),
+      EdgeInput(
+        tail: 'semantic',
+        head: 'nan',
+        weight: 1,
+        contribId: _bytes(24, 3),
+      ),
+    ], context: context);
     expect(results[0].effectiveWeight, double.infinity);
     expect(results[1].effectiveWeight, double.negativeInfinity);
     expect(results[2].effectiveWeight.isNaN, isTrue);
@@ -1137,32 +1144,16 @@ void main() {
                 effectiveWeights: [-0.0],
               );
             }
-            return graph.AddEdgesResponse(
-              written: 2,
-              effectiveWeights: [2, 5],
-            );
+            return graph.AddEdgesResponse(written: 2, effectiveWeights: [2, 5]);
           },
         )
         .build();
     final client = _client(transport);
 
-    final results = await client.addEdgesWithReceipt(
-      [
-        EdgeInput(
-          tail: 'a',
-          head: 'b',
-          weight: 2,
-          contribId: _bytes(24, 5),
-        ),
-        EdgeInput(
-          tail: 'a',
-          head: 'b',
-          weight: 3,
-          contribId: _bytes(24, 6),
-        ),
-      ],
-      context: pluralContext,
-    );
+    final results = await client.addEdgesWithReceipt([
+      EdgeInput(tail: 'a', head: 'b', weight: 2, contribId: _bytes(24, 5)),
+      EdgeInput(tail: 'a', head: 'b', weight: 3, contribId: _bytes(24, 6)),
+    ], context: pluralContext);
     expect(results.map((result) => result.edge), [
       const EdgeRef('a', 'b'),
       const EdgeRef('a', 'b'),
@@ -1173,22 +1164,14 @@ void main() {
     );
     expect(results.map((result) => result.effectiveWeight), [2, 5]);
     expect(() => results.add(results.first), throwsUnsupportedError);
-    expect(requests.first.contribIds, [
-      _bytes(24, 5),
-      _bytes(24, 6),
-    ]);
+    expect(requests.first.contribIds, [_bytes(24, 5), _bytes(24, 6)]);
     expect(
       requests.first.receiptContext.operationIds,
       pluralContext.operationIds.map((value) => value.bytes),
     );
 
     final singular = await client.addEdgeWithReceipt(
-      EdgeInput(
-        tail: 'x',
-        head: 'y',
-        weight: -0.0,
-        contribId: _bytes(24, 7),
-      ),
+      EdgeInput(tail: 'x', head: 'y', weight: -0.0, contribId: _bytes(24, 7)),
       context: singularContext,
     );
     expect(singular.edge, const EdgeRef('x', 'y'));
@@ -1201,97 +1184,95 @@ void main() {
     expect(requests.last.edges.single.weight.isNegative, isTrue);
   });
 
-  test('receipt-bearing Edge Add rejects contribution IDs before RPC', () async {
-    var calls = 0;
-    final client = _client(
-      FakeTransportBuilder()
-          .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
-            LanternService.addEdges,
-            (request, context) {
-              calls++;
-              return graph.AddEdgesResponse();
-            },
-          )
-          .build(),
-    );
-    final context = _receiptContext(
-      count: 1,
-      mutation: ReceiptMutationKind.edgeAdd,
-    );
+  test(
+    'receipt-bearing Edge Add rejects contribution IDs before RPC',
+    () async {
+      var calls = 0;
+      final client = _client(
+        FakeTransportBuilder()
+            .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+              LanternService.addEdges,
+              (request, context) {
+                calls++;
+                return graph.AddEdgesResponse();
+              },
+            )
+            .build(),
+      );
+      final context = _receiptContext(
+        count: 1,
+        mutation: ReceiptMutationKind.edgeAdd,
+      );
 
-    for (final contributionId in <Uint8List?>[
-      null,
-      Uint8List(24),
-      _bytes(23, 1),
-      _bytes(25, 1),
-    ]) {
+      for (final contributionId in <Uint8List?>[
+        null,
+        Uint8List(24),
+        _bytes(23, 1),
+        _bytes(25, 1),
+      ]) {
+        await expectLater(
+          client.addEdgeWithReceipt(
+            EdgeInput(
+              tail: 'a',
+              head: 'b',
+              weight: 1,
+              contribId: contributionId,
+            ),
+            context: context,
+          ),
+          throwsA(isA<LanternInvalidArgumentException>()),
+        );
+      }
+      for (final weight in [
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+        double.maxFinite,
+        -double.maxFinite,
+      ]) {
+        expect(
+          () => EdgeInput(
+            tail: 'a',
+            head: 'b',
+            weight: weight,
+            contribId: _bytes(24, 1),
+          ),
+          throwsA(isA<LanternInvalidArgumentException>()),
+        );
+      }
+      await expectLater(
+        client.addEdgesWithReceipt(
+          [
+            EdgeInput(
+              tail: 'a',
+              head: 'b',
+              weight: 1,
+              contribId: _bytes(24, 1),
+            ),
+            EdgeInput(
+              tail: 'b',
+              head: 'c',
+              weight: 2,
+              contribId: _bytes(24, 1),
+            ),
+          ],
+          context: _receiptContext(
+            count: 2,
+            mutation: ReceiptMutationKind.edgeAdd,
+          ),
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
       await expectLater(
         client.addEdgeWithReceipt(
-          EdgeInput(
-            tail: 'a',
-            head: 'b',
-            weight: 1,
-            contribId: contributionId,
-          ),
-          context: context,
+          EdgeInput(tail: 'a', head: 'b', weight: 1, contribId: _bytes(24, 2)),
+          context: _receiptContext(count: 1),
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
       );
-    }
-    for (final weight in [
-      double.nan,
-      double.infinity,
-      double.negativeInfinity,
-      double.maxFinite,
-      -double.maxFinite,
-    ]) {
-      expect(
-        () => EdgeInput(
-          tail: 'a',
-          head: 'b',
-          weight: weight,
-          contribId: _bytes(24, 1),
-        ),
-        throwsA(isA<LanternInvalidArgumentException>()),
-      );
-    }
-    await expectLater(
-      client.addEdgesWithReceipt(
-        [
-          EdgeInput(
-            tail: 'a',
-            head: 'b',
-            weight: 1,
-            contribId: _bytes(24, 1),
-          ),
-          EdgeInput(
-            tail: 'b',
-            head: 'c',
-            weight: 2,
-            contribId: _bytes(24, 1),
-          ),
-        ],
-        context: _receiptContext(
-          count: 2,
-          mutation: ReceiptMutationKind.edgeAdd,
-        ),
-      ),
-      throwsA(isA<LanternInvalidArgumentException>()),
-    );
-    await expectLater(
-      client.addEdgeWithReceipt(
-        EdgeInput(
-          tail: 'a',
-          head: 'b',
-          weight: 1,
-          contribId: _bytes(24, 2),
-        ),
-        context: _receiptContext(count: 1),
-      ),
-      throwsA(isA<LanternInvalidArgumentException>()),
-    );
-    expect(calls, 0);
-  });
+      expect(calls, 0);
+    },
+  );
 
   test(
     'Edge Add response loss proves continuity and reuses exact request',
@@ -1316,10 +1297,7 @@ void main() {
                   'response lost',
                 );
               }
-              return graph.AddEdgesResponse(
-                written: 1,
-                effectiveWeights: [3],
-              );
+              return graph.AddEdgesResponse(written: 1, effectiveWeights: [3]);
             },
           )
           .unary<
@@ -1337,12 +1315,7 @@ void main() {
       );
 
       final result = await client.addEdgeWithReceipt(
-        EdgeInput(
-          tail: 'a',
-          head: 'b',
-          weight: 3,
-          contribId: _bytes(24, 8),
-        ),
+        EdgeInput(tail: 'a', head: 'b', weight: 3, contribId: _bytes(24, 8)),
         context: receiptContext,
       );
       expect(result.effectiveWeight, 3);
@@ -1833,26 +1806,23 @@ void main() {
         count: 1,
         mutation: ReceiptMutationKind.edgeAdd,
       );
-      final malformedResponses = [
-        graph.AddEdgesResponse(
+      final malformedResponses = <graph.AddEdgesResponse Function()>[
+        () => graph.AddEdgesResponse(
           written: 1,
           effectiveWeights: [double.maxFinite],
         ),
-        graph.AddEdgesResponse(
+        () => graph.AddEdgesResponse(
           written: 1,
           effectiveWeights: [-double.maxFinite],
         ),
-        graph.AddEdgesResponse(
-          written: 0,
-          effectiveWeights: [1],
-        ),
+        () => graph.AddEdgesResponse(written: 0, effectiveWeights: [1]),
       ];
       for (final response in malformedResponses) {
         final client = _client(
           FakeTransportBuilder()
               .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
                 LanternService.addEdges,
-                (request, context) => response,
+                (request, context) => response(),
               )
               .build(),
         );
@@ -1989,6 +1959,7 @@ graph.ReceiptStatus _confirmedStatus(
   bool existed = true,
   graph.ReceiptResult? result,
   bool binaryRoundTrip = true,
+  Duration retention = const Duration(hours: 1),
 }) {
   final status = graph.ReceiptStatus(
     operationId: operationId.bytes,
@@ -2000,9 +1971,7 @@ graph.ReceiptStatus _confirmedStatus(
       itemCount: 3,
       intentSha256: _bytes(32, 7),
       deadlineUnixMs: Int64(
-        operationId.issuedAt
-            .add(const Duration(hours: 1))
-            .millisecondsSinceEpoch,
+        operationId.issuedAt.add(retention).millisecondsSinceEpoch,
       ),
       originalResult: result ?? graph.ReceiptResult(deleteEdgeExisted: existed),
     ),

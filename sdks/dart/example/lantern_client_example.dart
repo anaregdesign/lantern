@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
@@ -49,12 +50,20 @@ Future<void> main() async {
         mutation: ReceiptMutationKind.edgeAdd,
         itemCount: 1,
       );
+      final random = Random.secure();
+      final contributionNonce = Uint8List.fromList(
+        List<int>.generate(16, (_) => random.nextInt(256)),
+      );
       final add = await client.addEdgeWithReceipt(
         EdgeInput(
           tail: 'user:42',
           head: 'group:receipt-example',
           weight: 1,
-          contribId: Uint8List(24)..[23] = 1,
+          contribId: contributionIdFrom(
+            nonce: contributionNonce,
+            sequence: BigInt.one,
+            index: 0,
+          ),
         ),
         context: addContext,
       );

@@ -1486,6 +1486,13 @@ MutationReceipt _mutationReceiptFromProto(
       'confirmed receipt deadline must follow issuance',
     );
   }
+  final retention = deadline.difference(operationId.issuedAt);
+  if (retention < _minimumReceiptRetention ||
+      retention > _maximumReceiptRetention) {
+    throw _internalSdkException(
+      'confirmed receipt deadline is outside the supported retention range',
+    );
+  }
   final result = value.originalResult;
   switch (result.whichResult()) {
     case $graph.ReceiptResult_Result.putVertexOutcome:
