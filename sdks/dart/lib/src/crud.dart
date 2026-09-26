@@ -269,13 +269,18 @@ extension LanternCrud on LanternClient {
 
   /// Additively writes one edge and returns its effective live weight.
   ///
-  /// This operation is non-idempotent without a caller-supplied `contribId`.
+  /// A contribution ID only deduplicates while the contribution is live; a
+  /// lost response is ambiguous and this call is never automatically retried.
   Future<double> addEdge(EdgeInput edge, {LanternCallOptions? options}) async {
     final result = await addEdges([edge], options: options);
     return result.effectiveWeights.single;
   }
 
-  /// Additively writes edges in bounded chunks.
+  /// Additively writes edges in bounded chunks without retrying a failed chunk.
+  ///
+  /// Contribution IDs do not recover the original result after an intervening
+  /// Delete. On [BatchException], only prior chunks with observed responses
+  /// count toward [BatchException.committed]; the failed chunk is ambiguous.
   Future<AddEdgesResult> addEdges(
     Iterable<EdgeInput> edges, {
     int batchSize = defaultBatchSize,
@@ -291,7 +296,6 @@ extension LanternCrud on LanternClient {
     if (_idempotentAdds) {
       validatedContribIds = _contribIds.fillMissing(validatedContribIds);
     }
-    final additiveSafe = validatedContribIds.every((value) => value != null);
     final callOptions = _freezeCallOptions(options);
     final weights = <double>[];
     var written = 0;
@@ -323,7 +327,6 @@ extension LanternCrud on LanternClient {
             onHeader: onHeader,
             onTrailer: onTrailer,
           ),
-          additiveSafe: additiveSafe,
         );
         if (response.effectiveWeights.length != end - offset) {
           throw _internalSdkException(
@@ -473,12 +476,10 @@ extension LanternCrud on LanternClient {
       void Function(connect.Headers) onHeader,
       void Function(connect.Headers) onTrailer,
     )
-    call, {
-    bool additiveSafe = false,
-  }) {
+    call,
+  ) {
     return _runWithRetry(
       method: method,
-      additiveSafe: additiveSafe,
       options: options,
       attempt: () {
         final raw = $client.LanternServiceClient(_invoker.transport);

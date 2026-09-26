@@ -97,7 +97,8 @@ placeholder byte variables shown above.
 ## What the screen demonstrates
 
 - app/signed-in-session ownership of one `LanternClient`;
-- async runtime token refresh, bounded retry, and idempotent additive writes;
+- async runtime token refresh, bounded read/Put retry, and contribution-ID
+  live deduplication without plain Add replay;
 - Vertex/Edge Put, Get, Add, Delete, relative TTL, and exact uint64 values;
 - keys-only and value cursor pages with a 200-row visible-memory ceiling;
 - latest-query-wins incremental search and cold-start degree ranking;

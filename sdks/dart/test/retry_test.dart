@@ -174,63 +174,155 @@ void main() {
     expect(calls, 1);
   });
 
-  test('Add retries only with IDs and reuses bytes across attempts', () async {
-    var unsafeCalls = 0;
-    final unsafeTransport = FakeTransportBuilder()
-        .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
-          LanternService.addEdges,
-          (request, context) {
-            unsafeCalls++;
-            throw connect.ConnectException(connect.Code.unavailable, 'lost');
-          },
-        )
-        .build();
-    final unsafe = _client(unsafeTransport, retryPolicy: _fastRetry);
-    await expectLater(
-      unsafe.addEdge(EdgeInput(tail: 'a', head: 'b', weight: 1)),
-      throwsA(isA<LanternUnavailableException>()),
-    );
-    expect(unsafeCalls, 1);
+  test(
+    'plain singular Add never retries with absent, minted, or caller IDs',
+    () async {
+      final suppliedId = Uint8List(24)..[23] = 1;
+      final scenarios = <({String name, bool idempotentAdds, Uint8List? id})>[
+        (name: 'absent', idempotentAdds: false, id: null),
+        (name: 'minted', idempotentAdds: true, id: null),
+        (name: 'caller', idempotentAdds: false, id: suppliedId),
+      ];
+      for (final scenario in scenarios) {
+        var calls = 0;
+        late graph.AddEdgesRequest captured;
+        final transport = FakeTransportBuilder()
+            .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+              LanternService.addEdges,
+              (request, context) {
+                calls++;
+                captured = request.deepCopy();
+                throw connect.ConnectException(
+                  connect.Code.unavailable,
+                  'response lost',
+                );
+              },
+            )
+            .build();
+        final client = _client(
+          transport,
+          retryPolicy: _fastRetry,
+          idempotentAdds: scenario.idempotentAdds,
+        );
 
-    var safeCalls = 0;
-    final seen = <List<List<int>>>[];
-    final safeTransport = FakeTransportBuilder()
+        await expectLater(
+          client.addEdge(
+            EdgeInput(tail: 'a', head: 'b', weight: 1, contribId: scenario.id),
+          ),
+          throwsA(isA<LanternUnavailableException>()),
+        );
+        expect(calls, 1, reason: scenario.name);
+        if (scenario.id != null) {
+          expect(captured.contribIds.single, suppliedId, reason: scenario.name);
+        } else if (scenario.idempotentAdds) {
+          expect(
+            captured.contribIds.single,
+            hasLength(24),
+            reason: scenario.name,
+          );
+        } else {
+          expect(captured.contribIds, isEmpty, reason: scenario.name);
+        }
+      }
+    },
+  );
+
+  test('plural Add never retries an ambiguous chunk with mixed IDs', () async {
+    var calls = 0;
+    final requests = <graph.AddEdgesRequest>[];
+    final transport = FakeTransportBuilder()
         .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
           LanternService.addEdges,
           (request, context) {
-            safeCalls++;
-            seen.add(
-              request.contribIds.map((value) => List<int>.from(value)).toList(),
-            );
-            if (safeCalls == 1) {
-              throw connect.ConnectException(
-                connect.Code.unavailable,
-                'response lost',
+            calls++;
+            requests.add(request.deepCopy());
+            if (calls == 1) {
+              return graph.AddEdgesResponse(
+                written: 2,
+                effectiveWeights: [1, 2],
               );
             }
-            return graph.AddEdgesResponse(written: 2, effectiveWeights: [1, 2]);
+            throw connect.ConnectException(
+              connect.Code.unavailable,
+              'response lost',
+            );
           },
         )
         .build();
-    final safe = _client(
-      safeTransport,
+    final suppliedId = Uint8List(24)..[23] = 2;
+    final client = _client(
+      transport,
       retryPolicy: _fastRetry,
       idempotentAdds: true,
     );
-    final result = await safe.addEdges([
-      EdgeInput(tail: 'a', head: 'b', weight: 1),
-      EdgeInput(tail: 'b', head: 'c', weight: 2),
-    ]);
-    expect(result.effectiveWeights, [1, 2]);
-    expect(safeCalls, 2);
-    expect(seen[0], seen[1]);
-    expect(seen, hasLength(2));
-    expect(seen[0], hasLength(2));
-    expect(seen[0][0], hasLength(24));
-    expect(seen[0][0].sublist(0, 16), seen[0][1].sublist(0, 16));
-    expect(seen[0][0].sublist(16, 22), seen[0][1].sublist(16, 22));
-    expect(seen[0][0].sublist(22), [0, 0]);
-    expect(seen[0][1].sublist(22), [0, 1]);
+
+    await expectLater(
+      client.addEdges([
+        EdgeInput(tail: 'a', head: 'b', weight: 1, contribId: suppliedId),
+        EdgeInput(tail: 'b', head: 'c', weight: 2),
+        EdgeInput(tail: 'c', head: 'd', weight: 3),
+      ], batchSize: 2),
+      throwsA(
+        isA<BatchException>()
+            .having((error) => error.committed, 'committed', 2)
+            .having(
+              (error) => error.cause,
+              'cause',
+              isA<LanternUnavailableException>(),
+            ),
+      ),
+    );
+    expect(calls, 2);
+    expect(requests.map((request) => request.edges.length), [2, 1]);
+    expect(requests[0].contribIds[0], suppliedId);
+    final firstGenerated = requests[0].contribIds[1];
+    final secondGenerated = requests[1].contribIds.single;
+    expect(firstGenerated, hasLength(24));
+    expect(secondGenerated, hasLength(24));
+    expect(firstGenerated.sublist(0, 22), secondGenerated.sublist(0, 22));
+    expect(firstGenerated.sublist(22), [0, 1]);
+    expect(secondGenerated.sublist(22), [0, 2]);
+  });
+
+  test('decaying Add with minted IDs never retries a lost response', () async {
+    var calls = 0;
+    late graph.AddEdgesRequest captured;
+    final transport = FakeTransportBuilder()
+        .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+          LanternService.addEdges,
+          (request, context) {
+            calls++;
+            captured = request.deepCopy();
+            throw connect.ConnectException(
+              connect.Code.unavailable,
+              'response lost',
+            );
+          },
+        )
+        .build();
+    final client = _client(
+      transport,
+      retryPolicy: _fastRetry,
+      idempotentAdds: true,
+    );
+
+    await expectLater(
+      client.addDecayingEdge(
+        tail: 'a',
+        head: 'b',
+        options: const DecayOptions(
+          initialWeight: 8,
+          ratio: 0.5,
+          steps: 3,
+          interval: Duration(minutes: 1),
+        ),
+      ),
+      throwsA(isA<LanternUnavailableException>()),
+    );
+    expect(calls, 1);
+    expect(captured.edges, hasLength(3));
+    expect(captured.contribIds, hasLength(3));
+    expect(captured.contribIds.every((id) => id.length == 24), isTrue);
   });
 
   test('stable Put replays one request and one absolute expiration', () async {
@@ -403,6 +495,19 @@ void main() {
     expect(RetryRegistry.classifications.keys.toSet(), containsAll(generated));
     expect(RetryRegistry.classify('FutureUnknownMethod'), RpcRetryClass.never);
     expect(RetryRegistry.classify('DeleteVertex'), RpcRetryClass.never);
+    for (final method in ['AddEdge', 'AddEdges', 'AddDecayingEdge']) {
+      expect(
+        RetryRegistry.classify(method),
+        RpcRetryClass.never,
+        reason: method,
+      );
+    }
+    expect(RetryRegistry.classify('GetEdge'), RpcRetryClass.read);
+    expect(RetryRegistry.classify('PutEdges'), RpcRetryClass.stablePut);
+    expect(
+      RetryRegistry.classify('AddEdgesWithReceipt'),
+      RpcRetryClass.receiptMutation,
+    );
     expect(
       RetryRegistry.classify('DeleteEdgesWithReceipt'),
       RpcRetryClass.receiptMutation,

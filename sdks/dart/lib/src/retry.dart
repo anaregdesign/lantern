@@ -1,9 +1,11 @@
 part of 'client.dart';
 
-/// Opt-in bounded retry policy for mobile network failures.
+/// Opt-in bounded retry policy for eligible mobile network failures.
 ///
 /// The zero/default fields normalize to three total attempts, 100 ms base
-/// delay, a 2 second per-delay cap, and retrying `unavailable` only.
+/// delay, a 2 second per-delay cap, and retrying `unavailable` only. Plain
+/// Add and Delete calls are not eligible; receipt-bearing mutations use
+/// separate endpoint-bound reconciliation.
 final class RetryPolicy {
   /// Creates a retry policy. Supplying this object opts the client into retry.
   const RetryPolicy({
@@ -63,9 +65,6 @@ enum RpcRetryClass {
   /// Idempotent state-setting write.
   stablePut,
 
-  /// Additive write requiring stable contribution IDs.
-  additive,
-
   /// Endpoint-bound mutation retried only by its continuity-aware coordinator.
   receiptMutation,
 
@@ -97,8 +96,8 @@ final class RetryRegistry {
     'TopVerticesByDegree': RpcRetryClass.read,
     'GetEdge': RpcRetryClass.read,
     'GetEdges': RpcRetryClass.read,
-    'AddEdge': RpcRetryClass.additive,
-    'AddEdges': RpcRetryClass.additive,
+    'AddEdge': RpcRetryClass.never,
+    'AddEdges': RpcRetryClass.never,
     'PutEdge': RpcRetryClass.stablePut,
     'PutEdges': RpcRetryClass.stablePut,
     'DeleteEdge': RpcRetryClass.never,
@@ -110,6 +109,8 @@ final class RetryRegistry {
     'GetReceiptCapability': RpcRetryClass.read,
     'GetReceiptStatus': RpcRetryClass.read,
     'GetReceiptStatuses': RpcRetryClass.read,
+    'AddEdgeWithReceipt': RpcRetryClass.receiptMutation,
+    'AddEdgesWithReceipt': RpcRetryClass.receiptMutation,
     'PutVertexWithReceipt': RpcRetryClass.receiptMutation,
     'PutVerticesWithReceipt': RpcRetryClass.receiptMutation,
     'DeleteVertexWithReceipt': RpcRetryClass.receiptMutation,
@@ -121,7 +122,7 @@ final class RetryRegistry {
     // request or whose operation expands into AddEdges.
     'PutVertexIfAbsent': RpcRetryClass.never,
     'PutVerticesIfAbsent': RpcRetryClass.never,
-    'AddDecayingEdge': RpcRetryClass.additive,
+    'AddDecayingEdge': RpcRetryClass.never,
     'ScanVerticesAll': RpcRetryClass.read,
     'ScanVertexKeysAll': RpcRetryClass.read,
     'ScanEdgesAll': RpcRetryClass.read,
@@ -132,10 +133,9 @@ final class RetryRegistry {
   static RpcRetryClass classify(String method) =>
       classifications[method] ?? RpcRetryClass.never;
 
-  static bool _allows(String method, {required bool additiveSafe}) {
+  static bool _allows(String method) {
     return switch (classify(method)) {
       RpcRetryClass.read || RpcRetryClass.stablePut => true,
-      RpcRetryClass.additive => additiveSafe,
       RpcRetryClass.receiptMutation ||
       RpcRetryClass.never ||
       RpcRetryClass.stream => false,
@@ -146,8 +146,9 @@ final class RetryRegistry {
 /// Builds Lantern's canonical 24-byte contribution ID.
 ///
 /// The first 16 bytes are [nonce]. The final eight bytes are the big-endian
-/// uint64 `(sequence << 16) | index`. Persist the returned bytes with a durable
-/// outbox intent when replay must survive process death.
+/// uint64 `(sequence << 16) | index`. This ID deduplicates live contributions,
+/// not past operation results. Persist it with a durable receipt-bearing intent
+/// when replay must survive process death.
 Uint8List contributionIdFrom({
   required Uint8List nonce,
   required BigInt sequence,
@@ -269,14 +270,13 @@ extension _RetryClient on LanternClient {
 
   Future<T> _runWithRetry<T>({
     required String method,
-    required bool additiveSafe,
     required LanternCallOptions? options,
     required Future<T> Function() attempt,
   }) async {
     final policy = _retryPolicy;
     if (options?.retry == false ||
         policy == null ||
-        !RetryRegistry._allows(method, additiveSafe: additiveSafe)) {
+        !RetryRegistry._allows(method)) {
       return attempt();
     }
 
