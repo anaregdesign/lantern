@@ -50,7 +50,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Start production search conformance servers
+      - name: Start production conformance servers
         working-directory: .
         run: |
           go build -o "$RUNNER_TEMP/lantern" ./server/cmd
@@ -67,9 +67,29 @@ jobs:
             LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
+          env LANTERN_PORT=6384 LANTERN_METRICS_ADDR=:9094 \
+            LANTERN_AUTH_TOKENS=node-receipt-test-token \
+            LANTERN_RECEIPT_WAL_MODE=fresh \
+            LANTERN_RECEIPT_WAL_PATH="$RUNNER_TEMP/lantern-node-receipt-a.wal" \
+            LANTERN_RECEIPT_EPOCH=42424242424242424242424242424242 \
+            LANTERN_RECEIPT_RETENTION=2h LANTERN_RECEIPT_MAX_ENTRIES=4096 \
+            LANTERN_RECEIPT_MAX_BYTES=16777216 \
+            LANTERN_NODE_ID=31313131313131313131313131313131 \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-receipt-a.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-node.pids"
+          env LANTERN_PORT=6385 LANTERN_METRICS_ADDR=:9095 \
+            LANTERN_AUTH_TOKENS=node-receipt-test-token \
+            LANTERN_RECEIPT_WAL_MODE=fresh \
+            LANTERN_RECEIPT_WAL_PATH="$RUNNER_TEMP/lantern-node-receipt-b.wal" \
+            LANTERN_RECEIPT_EPOCH=42424242424242424242424242424242 \
+            LANTERN_RECEIPT_RETENTION=2h LANTERN_RECEIPT_MAX_ENTRIES=4096 \
+            LANTERN_RECEIPT_MAX_BYTES=16777216 \
+            LANTERN_NODE_ID=32323232323232323232323232323232 \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-receipt-b.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-node.pids"
           for attempt in $(seq 1 60); do
             ready=true
-            for port in 6380 6381 6382 6383; do
+            for port in 6380 6381 6382 6383 6384 6385; do
               curl --fail --silent --show-error --max-time 2 \
                 -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
                 --data '{}' "http://127.0.0.1:$port/grpc.health.v1.Health/Check" >/dev/null || ready=false
@@ -123,6 +143,9 @@ jobs:
           LANTERN_NODE_SEARCH_POSITIONS_DISABLED_ENDPOINT: http://127.0.0.1:6382
           LANTERN_NODE_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
           LANTERN_NODE_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
+          LANTERN_NODE_RECEIPT_ENDPOINT: http://127.0.0.1:6384
+          LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: http://127.0.0.1:6385
+          LANTERN_NODE_RECEIPT_TOKEN: node-receipt-test-token
       - name: Verify npm pack candidate
         run: bun run verify:package
 

@@ -96,10 +96,10 @@ per-item outcomes are unknown; replay evaluates the condition again and can
 return `"conditionNotMet"` for an originally applied item. Reconcile current
 state before explicitly retrying that suffix.
 
-The existing `deleteEdge` / `deleteEdges` methods are also intentionally
-receipt-less online operations. They are idempotent with respect to current
-graph state, but a replay cannot recover the first attempt's exact `existed`
-result. Use the opt-in receipt API below when that original result matters.
+The existing Put and Vertex/Edge Delete methods remain intentionally
+receipt-less online operations. A replay can recover current graph state, but
+not necessarily the first attempt's exact per-item outcome. Use the opt-in
+receipt API below when that original result matters.
 
 ```ts
 import { BatchError } from "lantern-sdk";
@@ -115,12 +115,13 @@ try {
 }
 ```
 
-## Receipt-safe Edge Delete
+## Receipt-safe Vertex Put and Delete
 
-Receipt-bearing Edge Delete lets an application mint and durably retain the
-wire identity of one logical call before sending it. It uses one `GroupID` and
-one index-aligned `OperationID` per edge. The receipt call is not automatically
-chunked because splitting it would change that logical-call boundary.
+Receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete let an
+application mint and durably retain the wire identity of one logical call
+before sending it. Each call uses one `GroupID` and one request-index-aligned
+`OperationID` per item. Receipt calls are not automatically chunked because
+splitting one would change that logical-call boundary.
 
 ```ts
 import {
@@ -132,32 +133,36 @@ import {
 } from "lantern-sdk";
 
 const client = connect("https://lantern.example");
-const edges = [
-  { tail: "session:123", head: "member:a" },
-  { tail: "session:123", head: "member:b" },
+const vertices = [
+  { key: "session:123/member:a", value: "present", ttlSeconds: 3600 },
+  { key: "session:123/member:b", value: "present", ttlSeconds: 3600 },
 ];
 
 const capability = await client.getReceiptCapability();
 if (!capability.enabled) {
   throw new Error("this endpoint cannot accept receipt-bearing mutations");
 }
+if (!capability.supportedMutations.includes("putVertex")) {
+  throw new Error("this endpoint does not support receipt-bearing Vertex Put");
+}
 
-const context = mintReceiptOperationContext(capability, edges.length);
+const context = mintReceiptOperationContext(capability, vertices.length);
 const persisted = JSON.stringify(context);
-// Durably store `persisted` before the first mutation send.
+// Durably store `persisted` and the semantic inputs before the first send.
 
 try {
-  const result = await client.deleteEdgesWithReceipt(edges, context);
+  const result = await client.putVerticesWithReceipt(vertices, context);
   for (const item of result.results) {
-    console.log(item.operationId, item.existed); // exact original result
+    console.log(item.operationId, item.outcome); // exact original result
   }
 } catch (error) {
   if (error instanceof ReceiptMutationUncertainError) {
-    // Lookup is read-only: it never executes or retries the Delete.
+    // Lookup is read-only: it never executes or retries the mutation.
     const statuses = await client.getReceiptStatuses(error.context.operationIds);
     console.log(statuses);
+    // `error.mutation` is the cloned in-memory intent for an exact retry.
   } else if (error instanceof ReceiptReconciliationError) {
-    // The endpoint epoch, policy, NodeID, or generation could not be proven.
+    // Continuity or support for this mutation family could not be proven.
     console.error(error.reason);
   } else {
     throw error;
@@ -168,22 +173,38 @@ try {
 const restored = parseReceiptOperationContext(JSON.parse(persisted));
 ```
 
-`deleteEdgeWithReceipt(tail, head, oneItemContext)` and
-`getReceiptStatus(operationId)` are thin singular facades over the plural
-methods. A receipt status is one of:
+The plural methods are canonical:
 
-- `"confirmed"` — carries the exact original Edge Delete `existed` result.
+- `putVerticesWithReceipt` and `putVerticesIfAbsentWithReceipt`
+- `deleteVerticesWithReceipt`
+- `deleteEdgesWithReceipt`
+
+`putVertexWithReceipt`, `putVertexIfAbsentWithReceipt`,
+`deleteVertexWithReceipt`, `deleteEdgeWithReceipt`, and
+`getReceiptStatus` are thin one-item facades over their plural methods.
+Receipt-bearing Vertex Put resolves a relative `ttlSeconds` against the server
+clock embedded in the persisted operation ID, so replaying the same input and
+context reproduces the same absolute expiration rather than extending the TTL.
+Mutable `Date` and `Uint8Array` inputs are cloned before the capability
+preflight.
+
+A receipt status is one of:
+
+- `"confirmed"` — carries the exact original Vertex Put outcome, Vertex Delete
+  `existed`, or Edge Delete `existed` result.
 - `"notYetObserved"` — no matching receipt is currently observed; if the
-  application retries, it must reuse the exact refs and persisted context.
+  application retries, it must reuse the exact semantic inputs and persisted
+  context.
 - `"noLongerProvable"` — retention no longer permits an authoritative answer;
   do not mint a replacement identity or blindly repeat the destructive action.
 
 Every receipt-bearing retry first probes the same configured endpoint and
 compares the deployment epoch, policy fingerprint, NodeID, and generation from
-the persisted context. A mismatch or unavailable capability raises
-`ReceiptReconciliationError` before the Delete is sent. Rotating the bearer
-token does not change receipt identity. The Node SDK remains single-endpoint
-and does not rotate or fail over receipt calls.
+the persisted context and verifies that the endpoint still advertises the
+mutation family. A mismatch, unsupported family, or unavailable capability
+raises `ReceiptReconciliationError` before the mutation is sent. Rotating the
+bearer token does not change receipt identity. The Node SDK remains
+single-endpoint and does not rotate or fail over receipt calls.
 
 ## Conditional writes (SET NX)
 
@@ -198,6 +219,9 @@ absolute expiration it sent as a local upper bound: `"appliedAndLive"` becomes
 `"expired"` if that instant has already passed locally. Other bounded outcomes
 are never reclassified, so a conservative client clock cannot hide
 `"conditionNotMet"` or `"superseded"`.
+
+Receipt-bearing Vertex Put instead returns the exact original server outcome
+so its mutation response and later confirmed status have the same semantics.
 
 `putVertexIfAbsent` / `putVerticesIfAbsent` apply a write only when **no live
 vertex already exists** at the key — the Redis `SET NX` pattern (#896). They

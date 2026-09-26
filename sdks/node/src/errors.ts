@@ -24,7 +24,8 @@
 import { ConnectError } from "@connectrpc/connect";
 import { SearchErrorDetailSchema, SearchErrorReason } from "./gen/graph/v1/graph_pb.js";
 import type {
-  ReceiptEdgeRef,
+  ReceiptMutationIntent,
+  ReceiptMutationKind,
   ReceiptOperationContext,
   ReceiptReconciliationReason,
 } from "./receipts.js";
@@ -117,10 +118,12 @@ export class OverflowError extends LanternError {
 export class ReceiptReconciliationError extends LanternError {
   readonly reason: ReceiptReconciliationReason;
   readonly context: ReceiptOperationContext;
+  readonly mutationKind: ReceiptMutationKind;
 
   constructor(
     reason: ReceiptReconciliationReason,
     context: ReceiptOperationContext,
+    mutationKind: ReceiptMutationKind,
     message: string,
     options?: { cause?: unknown },
   ) {
@@ -128,26 +131,29 @@ export class ReceiptReconciliationError extends LanternError {
     this.name = "ReceiptReconciliationError";
     this.reason = reason;
     this.context = context;
+    this.mutationKind = mutationKind;
   }
 }
 
 /**
  * The receipt-bearing mutation was sent but its exact response was not
- * observed. Persist `context` and `edges`, reconcile by status, or pass the
- * same values back to the receipt method; never mint replacement IDs.
+ * observed. Persist `context` and `mutation`, reconcile by status, or pass the
+ * exact mutation values back to the matching receipt method; never mint
+ * replacement IDs.
  */
 export class ReceiptMutationUncertainError extends ReceiptReconciliationError {
-  readonly edges: readonly ReceiptEdgeRef[];
+  readonly mutation: ReceiptMutationIntent;
 
-  constructor(context: ReceiptOperationContext, edges: readonly ReceiptEdgeRef[], cause: unknown) {
+  constructor(context: ReceiptOperationContext, mutation: ReceiptMutationIntent, cause: unknown) {
     super(
       "mutationOutcomeUnknown",
       context,
-      "receipt Edge Delete response was not observed; reconcile status before any new operation",
+      mutation.kind,
+      `receipt ${mutation.kind} response was not observed; reconcile status before any new operation`,
       { cause },
     );
     this.name = "ReceiptMutationUncertainError";
-    this.edges = edges;
+    this.mutation = mutation;
   }
 }
 

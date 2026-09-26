@@ -121,7 +121,7 @@ export {
   parseReceiptOperationContext,
 } from "./receipts.js";
 export type {
-  ConfirmedEdgeDeleteReceipt,
+  ConfirmedMutationReceipt,
   DisabledReceiptCapability,
   EdgeDeleteReceiptBatchResult,
   EdgeDeleteReceiptResult,
@@ -134,12 +134,19 @@ export type {
   ReceiptEndpointContinuity,
   ReceiptGeneration,
   ReceiptIntentDigest,
+  ReceiptMutationIntent,
+  ReceiptMutationKind,
   ReceiptNodeID,
   ReceiptOperationContext,
+  ReceiptOriginalResult,
   ReceiptPolicyFingerprint,
   ReceiptRandomSource,
   ReceiptReconciliationReason,
   ReceiptStatus,
+  VertexDeleteReceiptBatchResult,
+  VertexDeleteReceiptResult,
+  VertexPutReceiptBatchResult,
+  VertexPutReceiptResult,
 } from "./receipts.js";
 export type {
   ConnectOptions,

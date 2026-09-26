@@ -105,9 +105,7 @@ describe("toVertexJson dispatch", () => {
   test("string, bytes, Date", () => {
     expect(toVertexJson({ key: "k", value: "hello" }).string).toBe("hello");
     // bytes encode to base64 on the JSON wire.
-    expect(toVertexJson({ key: "k", value: new Uint8Array([1, 2, 3]) }).bytes).toBe(
-      Buffer.from([1, 2, 3]).toString("base64"),
-    );
+    expect(toVertexJson({ key: "k", value: new Uint8Array([1, 2, 3]) }).bytes).toBe("AQID");
     const d = new Date(1700000000000);
     expect(toVertexJson({ key: "k", value: d }).timestamp).toBe(d.toISOString());
   });

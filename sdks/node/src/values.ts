@@ -543,11 +543,20 @@ function resolveExpiration(
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
+  }
+  return globalThis.btoa(chunks.join(""));
 }
 
 function base64ToBytes(b64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(b64, "base64"));
+  const binary = globalThis.atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 /**

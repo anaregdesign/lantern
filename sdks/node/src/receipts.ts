@@ -1,9 +1,12 @@
 import {
   MutationReceiptState as PbMutationReceiptState,
+  ReceiptMutationKind as PbReceiptMutationKind,
   type GetReceiptCapabilityResponse as PbGetReceiptCapabilityResponse,
   type ReceiptStatus as PbReceiptStatus,
 } from "./gen/graph/v1/graph_pb.js";
 import { InvalidArgumentError, LanternError } from "./errors.js";
+import { putOutcomeFromWire, type PutOutcome } from "./put-outcome.js";
+import type { VertexInput } from "./values.js";
 
 export const RECEIPT_OPERATION_ID_BYTES = 49;
 export const RECEIPT_GROUP_ID_BYTES = 16;
@@ -18,6 +21,7 @@ const RECEIPT_OPERATION_RANDOM_BYTES = 24;
 const RECEIPT_INTENT_DIGEST_BYTES = 32;
 const MAX_SIGNED_INT64 = (1n << 63n) - 1n;
 const MAX_UINT32 = 0xffff_ffff;
+const NO_RECEIPT_MUTATIONS = Object.freeze([] as const);
 
 declare const operationIDBrand: unique symbol;
 declare const groupIDBrand: unique symbol;
@@ -48,6 +52,9 @@ export type ReceiptGeneration = string & { readonly [generationBrand]: true };
 /** Canonical lowercase-hex form of one server-authored receipt intent digest. */
 export type ReceiptIntentDigest = string & { readonly [intentDigestBrand]: true };
 
+/** Receipt-bearing mutation families currently supported by the public wire contract. */
+export type ReceiptMutationKind = "putVertex" | "deleteVertex" | "deleteEdge";
+
 export interface ReceiptEndpointContinuity {
   readonly deploymentEpoch: ReceiptDeploymentEpoch;
   readonly policyFingerprint: ReceiptPolicyFingerprint;
@@ -58,6 +65,7 @@ export interface ReceiptEndpointContinuity {
 export interface EnabledReceiptCapability {
   readonly enabled: true;
   readonly continuity: ReceiptEndpointContinuity;
+  readonly supportedMutations: readonly ReceiptMutationKind[];
   readonly retentionMs: bigint;
   readonly maxEntries: bigint;
   readonly maxBytes: bigint;
@@ -66,6 +74,7 @@ export interface EnabledReceiptCapability {
 
 export interface DisabledReceiptCapability {
   readonly enabled: false;
+  readonly supportedMutations: readonly [];
 }
 
 /** Server-advertised receipt support. Disabled capability carries no identity. */
@@ -104,24 +113,60 @@ export interface EdgeDeleteReceiptBatchResult {
   readonly results: readonly EdgeDeleteReceiptResult[];
 }
 
-export interface ConfirmedEdgeDeleteReceipt {
+export interface VertexPutReceiptResult {
+  readonly key: string;
+  readonly operationId: OperationID;
+  /** The original server result at application time. */
+  readonly outcome: PutOutcome;
+}
+
+export interface VertexPutReceiptBatchResult {
+  readonly context: ReceiptOperationContext;
+  readonly results: readonly VertexPutReceiptResult[];
+}
+
+export interface VertexDeleteReceiptResult {
+  readonly key: string;
+  readonly operationId: OperationID;
+  /** The original server result, not the vertex's current state. */
+  readonly existed: boolean;
+}
+
+export interface VertexDeleteReceiptBatchResult {
+  readonly context: ReceiptOperationContext;
+  readonly deleted: number;
+  readonly results: readonly VertexDeleteReceiptResult[];
+}
+
+export type ReceiptOriginalResult =
+  | {
+      readonly kind: "putVertex";
+      readonly outcome: PutOutcome;
+    }
+  | {
+      readonly kind: "deleteVertex";
+      readonly existed: boolean;
+    }
+  | {
+      readonly kind: "deleteEdge";
+      readonly existed: boolean;
+    };
+
+export interface ConfirmedMutationReceipt {
   readonly operationId: OperationID;
   readonly groupId: GroupID;
   readonly itemIndex: number;
   readonly itemCount: number;
   readonly intentSha256: ReceiptIntentDigest;
   readonly deadlineUnixMs: bigint;
-  readonly originalResult: {
-    readonly kind: "deleteEdge";
-    readonly existed: boolean;
-  };
+  readonly originalResult: ReceiptOriginalResult;
 }
 
 export type ReceiptStatus =
   | {
       readonly state: "confirmed";
       readonly operationId: OperationID;
-      readonly receipt: ConfirmedEdgeDeleteReceipt;
+      readonly receipt: ConfirmedMutationReceipt;
     }
   | {
       readonly state: "notYetObserved";
@@ -135,12 +180,34 @@ export type ReceiptStatus =
 export type ReceiptReconciliationReason =
   | "capabilityUnavailable"
   | "capabilityDisabled"
+  | "mutationUnsupported"
   | "deploymentEpochChanged"
   | "policyChanged"
   | "nodeChanged"
   | "generationChanged"
   | "continuityRejected"
   | "mutationOutcomeUnknown";
+
+type ReceiptContinuityMismatchReason =
+  | "deploymentEpochChanged"
+  | "policyChanged"
+  | "nodeChanged"
+  | "generationChanged";
+
+export type ReceiptMutationIntent =
+  | {
+      readonly kind: "putVertex";
+      readonly inputs: readonly Readonly<VertexInput>[];
+      readonly ifAbsent: boolean;
+    }
+  | {
+      readonly kind: "deleteVertex";
+      readonly keys: readonly string[];
+    }
+  | {
+      readonly kind: "deleteEdge";
+      readonly edges: readonly ReceiptEdgeRef[];
+    };
 
 function bytesToHex(bytes: Uint8Array): string {
   let hex = "";
@@ -202,6 +269,12 @@ export function parseOperationID(value: unknown): OperationID {
 export function operationIDToBytes(value: OperationID): Uint8Array {
   const operationId = parseOperationID(value);
   return hexToBytes("operationId", operationId, RECEIPT_OPERATION_ID_BYTES);
+}
+
+/** Read the issuance clock sample embedded in one validated operation ID. */
+export function operationIDIssuedAtUnixMs(value: OperationID): bigint {
+  const bytes = operationIDToBytes(value);
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(17, false);
 }
 
 /** Parse and canonicalize one persisted logical-call group ID. */
@@ -310,6 +383,37 @@ function randomNonzero(
   return bytes;
 }
 
+const RECEIPT_MUTATION_ORDER: Readonly<Record<ReceiptMutationKind, number>> = Object.freeze({
+  putVertex: 1,
+  deleteVertex: 2,
+  deleteEdge: 3,
+});
+
+function normalizeReceiptMutationKinds(value: unknown): readonly ReceiptMutationKind[] {
+  if (!Array.isArray(value)) {
+    throw new InvalidArgumentError("receipt supportedMutations must be an array");
+  }
+  const normalized: ReceiptMutationKind[] = [];
+  let previous = 0;
+  for (let index = 0; index < value.length; index++) {
+    const kind = value[index];
+    if (kind !== "putVertex" && kind !== "deleteVertex" && kind !== "deleteEdge") {
+      throw new InvalidArgumentError(
+        `receipt supportedMutations[${index}] is not a supported mutation kind`,
+      );
+    }
+    const order = RECEIPT_MUTATION_ORDER[kind];
+    if (order <= previous) {
+      throw new InvalidArgumentError(
+        "receipt supportedMutations must be unique and in stable ascending order",
+      );
+    }
+    previous = order;
+    normalized.push(kind);
+  }
+  return Object.freeze(normalized);
+}
+
 function normalizeEnabledCapability(
   capability: EnabledReceiptCapability,
 ): EnabledReceiptCapability {
@@ -338,6 +442,7 @@ function normalizeEnabledCapability(
   return Object.freeze({
     enabled: true,
     continuity: parseContinuity(capability.continuity),
+    supportedMutations: normalizeReceiptMutationKinds(capability.supportedMutations),
     retentionMs: capability.retentionMs,
     maxEntries: capability.maxEntries,
     maxBytes: capability.maxBytes,
@@ -426,6 +531,25 @@ function groupIDFromWire(value: Uint8Array): GroupID {
   return bytesToHex(wireBytes("groupId", value, RECEIPT_GROUP_ID_BYTES)) as GroupID;
 }
 
+function receiptMutationKindFromWire(
+  kind: PbReceiptMutationKind,
+  index: number,
+): ReceiptMutationKind {
+  switch (kind) {
+    case PbReceiptMutationKind.PUT_VERTEX:
+      return "putVertex";
+    case PbReceiptMutationKind.DELETE_VERTEX:
+      return "deleteVertex";
+    case PbReceiptMutationKind.DELETE_EDGE:
+      return "deleteEdge";
+    case PbReceiptMutationKind.UNSPECIFIED:
+    default:
+      throw new LanternError(
+        `server returned invalid receipt mutation kind ${kind} at supportedMutations[${index}]`,
+      );
+  }
+}
+
 /** Decode and strictly validate the capability wire response. */
 export function receiptCapabilityFromWire(
   response: PbGetReceiptCapabilityResponse,
@@ -434,11 +558,12 @@ export function receiptCapabilityFromWire(
     if (
       response.policy !== undefined ||
       response.endpoint !== undefined ||
-      response.serverNowUnixMs !== 0n
+      response.serverNowUnixMs !== 0n ||
+      response.supportedMutations.length !== 0
     ) {
       throw new LanternError("disabled receipt capability carried identity-bearing fields");
     }
-    return Object.freeze({ enabled: false });
+    return Object.freeze({ enabled: false, supportedMutations: NO_RECEIPT_MUTATIONS });
   }
   if (!response.policy || !response.endpoint) {
     throw new LanternError("enabled receipt capability omitted policy or endpoint");
@@ -471,6 +596,9 @@ export function receiptCapabilityFromWire(
         wireBytes("generation", response.endpoint.generation, RECEIPT_GENERATION_BYTES),
       ) as ReceiptGeneration,
     }),
+    supportedMutations: normalizeReceiptMutationKinds(
+      response.supportedMutations.map(receiptMutationKindFromWire),
+    ),
     retentionMs: response.policy.retentionMs,
     maxEntries: response.policy.maxEntries,
     maxBytes: response.policy.maxBytes,
@@ -542,10 +670,7 @@ export function normalizeReceiptEdgeRefs(
 export function receiptContinuityDifference(
   expected: ReceiptEndpointContinuity,
   current: ReceiptEndpointContinuity,
-): Exclude<
-  ReceiptReconciliationReason,
-  "capabilityUnavailable" | "capabilityDisabled" | "mutationOutcomeUnknown"
-> | null {
+): ReceiptContinuityMismatchReason | null {
   if (expected.deploymentEpoch !== current.deploymentEpoch) return "deploymentEpochChanged";
   if (expected.policyFingerprint !== current.policyFingerprint) return "policyChanged";
   if (expected.nodeId !== current.nodeId) return "nodeChanged";
@@ -577,20 +702,39 @@ function receiptStatusFromWire(raw: PbReceiptStatus, expected: OperationID): Rec
       const intentSha256 = bytesToHex(
         wireBytes("intentSha256", receipt.intentSha256, RECEIPT_INTENT_DIGEST_BYTES, false),
       ) as ReceiptIntentDigest;
-      if (receipt.originalResult?.result.case !== "deleteEdgeExisted") {
-        throw new LanternError("confirmed receipt did not carry an Edge Delete original result");
+      const result = receipt.originalResult?.result;
+      let originalResult: ReceiptOriginalResult;
+      switch (result?.case) {
+        case "putVertexOutcome":
+          originalResult = Object.freeze({
+            kind: "putVertex",
+            outcome: putOutcomeFromWire(result.value),
+          });
+          break;
+        case "deleteVertexExisted":
+          originalResult = Object.freeze({
+            kind: "deleteVertex",
+            existed: result.value,
+          });
+          break;
+        case "deleteEdgeExisted":
+          originalResult = Object.freeze({
+            kind: "deleteEdge",
+            existed: result.value,
+          });
+          break;
+        case undefined:
+        default:
+          throw new LanternError("confirmed receipt did not carry a recognized original result");
       }
-      const confirmed: ConfirmedEdgeDeleteReceipt = Object.freeze({
+      const confirmed: ConfirmedMutationReceipt = Object.freeze({
         operationId,
         groupId: groupIDFromWire(receipt.logicalCallId),
         itemIndex: receipt.itemIndex,
         itemCount: receipt.itemCount,
         intentSha256,
         deadlineUnixMs: receipt.deadlineUnixMs,
-        originalResult: Object.freeze({
-          kind: "deleteEdge",
-          existed: receipt.originalResult.result.value,
-        }),
+        originalResult,
       });
       return Object.freeze({ state: "confirmed", operationId, receipt: confirmed });
     }

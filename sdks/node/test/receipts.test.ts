@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { toJson } from "@bufbuild/protobuf";
 import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
 
 import {
@@ -17,7 +18,13 @@ import {
   type ReceiptReconciliationReason,
 } from "../src/index.js";
 import { authTokenInterceptor } from "../src/client.js";
-import { LanternService, MutationReceiptState } from "../src/gen/graph/v1/graph_pb.js";
+import {
+  LanternService,
+  MutationReceiptState,
+  PutOutcome as PbPutOutcome,
+  ReceiptMutationKind as PbReceiptMutationKind,
+  VertexSchema,
+} from "../src/gen/graph/v1/graph_pb.js";
 
 function filled(length: number, value: number): Uint8Array {
   return new Uint8Array(length).fill(value);
@@ -61,16 +68,30 @@ interface FakeCapability {
     generation: Uint8Array;
   };
   serverNowUnixMs: bigint;
+  supportedMutations: PbReceiptMutationKind[];
 }
 
-interface StoredDeleteReceipt {
+type StoredOriginalResult =
+  | {
+      case: "putVertexOutcome";
+      value: PbPutOutcome;
+    }
+  | {
+      case: "deleteVertexExisted";
+      value: boolean;
+    }
+  | {
+      case: "deleteEdgeExisted";
+      value: boolean;
+    };
+
+interface StoredReceipt {
   operationId: Uint8Array;
   logicalCallId: Uint8Array;
   itemIndex: number;
   itemCount: number;
-  tail: string;
-  head: string;
-  existed: boolean;
+  intent: string;
+  originalResult: StoredOriginalResult;
 }
 
 class ReceiptTransportFake {
@@ -88,20 +109,34 @@ class ReceiptTransportFake {
       generation: filled(16, 0x24),
     },
     serverNowUnixMs: 1_800_000_000_123n,
+    supportedMutations: [
+      PbReceiptMutationKind.PUT_VERTEX,
+      PbReceiptMutationKind.DELETE_VERTEX,
+      PbReceiptMutationKind.DELETE_EDGE,
+    ],
   };
   capabilityUnavailable = false;
   rotateGenerationBeforeDelete = false;
   dropNextDeleteResponse = false;
+  dropNextPutResponse = false;
+  dropNextVertexDeleteResponse = false;
   malformedDeleteResponse = false;
+  malformedPutResponse = false;
+  malformedVertexDeleteResponse = false;
   malformedStatusResponse = false;
+  putOutcomesOverride?: PbPutOutcome[];
   capabilityCalls = 0;
+  putCalls = 0;
+  vertexDeleteCalls = 0;
   deleteCalls = 0;
   mutationCount = 0;
   statusCalls = 0;
   readonly authorizationHeaders: Array<string | null> = [];
+  readonly vertices = new Map<string, string>();
   readonly edges = new Set<string>();
-  readonly receipts = new Map<string, StoredDeleteReceipt>();
+  readonly receipts = new Map<string, StoredReceipt>();
   readonly statusOverrides = new Map<string, "notYetObserved" | "noLongerProvable">();
+  lastPutVertexJson: string[] = [];
 
   private edgeKey(tail: string, head: string): string {
     return `${tail}\u0000${head}`;
@@ -113,6 +148,64 @@ class ReceiptTransportFake {
 
   hasEdge(tail: string, head: string): boolean {
     return this.edges.has(this.edgeKey(tail, head));
+  }
+
+  addVertex(key: string, value = "seed"): void {
+    this.vertices.set(key, value);
+  }
+
+  hasVertex(key: string): boolean {
+    return this.vertices.has(key);
+  }
+
+  private validateReceiptIntents(
+    receiptContext: {
+      operationIds: Uint8Array[];
+      logicalCallId: Uint8Array;
+    },
+    intents: readonly string[],
+  ): void {
+    if (receiptContext.operationIds.length !== intents.length) {
+      throw new ConnectError("misaligned receipt context", Code.InvalidArgument);
+    }
+    const group = hex(receiptContext.logicalCallId);
+    for (let index = 0; index < intents.length; index++) {
+      const operationId = receiptContext.operationIds[index]!;
+      const prior = this.receipts.get(hex(operationId));
+      if (
+        prior &&
+        (hex(prior.logicalCallId) !== group ||
+          prior.itemIndex !== index ||
+          prior.itemCount !== intents.length ||
+          prior.intent !== intents[index])
+      ) {
+        throw new ConnectError("receipt intent conflict", Code.InvalidArgument);
+      }
+    }
+  }
+
+  private storeReceipt(
+    receiptContext: {
+      operationIds: Uint8Array[];
+      logicalCallId: Uint8Array;
+    },
+    index: number,
+    itemCount: number,
+    intent: string,
+    originalResult: StoredOriginalResult,
+  ): StoredReceipt {
+    const operationId = receiptContext.operationIds[index]!;
+    const receipt: StoredReceipt = {
+      operationId: new Uint8Array(operationId),
+      logicalCallId: new Uint8Array(receiptContext.logicalCallId),
+      itemIndex: index,
+      itemCount,
+      intent,
+      originalResult,
+    };
+    this.receipts.set(hex(operationId), receipt);
+    this.mutationCount++;
+    return receipt;
   }
 
   transport(token?: string, readMaxBytes?: number) {
@@ -163,16 +256,109 @@ class ReceiptTransportFake {
                   intentSha256: filled(32, receipt.itemIndex + 1),
                   deadlineUnixMs: 1_800_003_600_123n,
                   originalResult: {
-                    result: {
-                      case: "deleteEdgeExisted" as const,
-                      value: receipt.existed,
-                    },
+                    result: receipt.originalResult,
                   },
                 },
               };
             });
             return {
               statuses: this.malformedStatusResponse ? statuses.slice(1) : statuses,
+            };
+          },
+          putVertices: (request, context) => {
+            this.putCalls++;
+            this.authorizationHeaders.push(context.requestHeader.get("Authorization"));
+            const receiptContext = request.receiptContext;
+            if (!receiptContext) {
+              throw new ConnectError("receipt context required by fake", Code.InvalidArgument);
+            }
+            const vertexJson = request.vertices.map((vertex) => {
+              const json = JSON.stringify(toJson(VertexSchema, vertex));
+              if (json === undefined) {
+                throw new ConnectError("failed to serialize fake Vertex", Code.Internal);
+              }
+              return json;
+            });
+            this.lastPutVertexJson = vertexJson;
+            const intents = vertexJson.map(
+              (vertex, index) =>
+                `putVertex:${request.ifAbsent}:${request.vertices[index]!.key}:${vertex}`,
+            );
+            this.validateReceiptIntents(receiptContext, intents);
+            const outcomes = request.vertices.map((vertex, index) => {
+              const operationId = receiptContext.operationIds[index]!;
+              const prior = this.receipts.get(hex(operationId));
+              if (prior) {
+                if (prior.originalResult.case !== "putVertexOutcome") {
+                  throw new ConnectError("receipt result family conflict", Code.InvalidArgument);
+                }
+                return prior.originalResult.value;
+              }
+              const json = JSON.parse(vertexJson[index]!) as Record<string, unknown>;
+              const expiration =
+                typeof json.expiration === "string" ? Date.parse(json.expiration) : undefined;
+              const defaultOutcome =
+                request.ifAbsent && this.vertices.has(vertex.key)
+                  ? PbPutOutcome.CONDITION_NOT_MET
+                  : expiration !== undefined &&
+                      expiration <= Number(this.capability.serverNowUnixMs)
+                    ? PbPutOutcome.EXPIRED
+                    : PbPutOutcome.APPLIED_AND_LIVE;
+              const outcome = this.putOutcomesOverride?.[index] ?? defaultOutcome;
+              if (outcome === PbPutOutcome.APPLIED_AND_LIVE) {
+                this.vertices.set(vertex.key, vertexJson[index]!);
+              } else if (outcome === PbPutOutcome.EXPIRED) {
+                this.vertices.delete(vertex.key);
+              }
+              this.storeReceipt(receiptContext, index, request.vertices.length, intents[index]!, {
+                case: "putVertexOutcome",
+                value: outcome,
+              });
+              return outcome;
+            });
+            if (this.dropNextPutResponse) {
+              this.dropNextPutResponse = false;
+              throw new ConnectError("injected committed response loss", Code.Unavailable);
+            }
+            return {
+              outcomes: this.malformedPutResponse ? outcomes.slice(1) : outcomes,
+            };
+          },
+          deleteVertices: (request, context) => {
+            this.vertexDeleteCalls++;
+            this.authorizationHeaders.push(context.requestHeader.get("Authorization"));
+            const receiptContext = request.receiptContext;
+            if (!receiptContext) {
+              throw new ConnectError("receipt context required by fake", Code.InvalidArgument);
+            }
+            const intents = request.keys.map((key) => `deleteVertex:${key}`);
+            this.validateReceiptIntents(receiptContext, intents);
+            const existed = request.keys.map((key, index) => {
+              const operationId = receiptContext.operationIds[index]!;
+              const prior = this.receipts.get(hex(operationId));
+              if (prior) {
+                if (prior.originalResult.case !== "deleteVertexExisted") {
+                  throw new ConnectError("receipt result family conflict", Code.InvalidArgument);
+                }
+                return prior.originalResult.value;
+              }
+              const original = this.vertices.delete(key);
+              this.storeReceipt(receiptContext, index, request.keys.length, intents[index]!, {
+                case: "deleteVertexExisted",
+                value: original,
+              });
+              return original;
+            });
+            if (this.dropNextVertexDeleteResponse) {
+              this.dropNextVertexDeleteResponse = false;
+              throw new ConnectError("injected committed response loss", Code.Unavailable);
+            }
+            if (this.malformedVertexDeleteResponse) {
+              return { deleted: 0, existed: existed.slice(1) };
+            }
+            return {
+              deleted: existed.filter(Boolean).length,
+              existed,
             };
           },
           deleteEdges: (request, context) => {
@@ -190,40 +376,25 @@ class ReceiptTransportFake {
             if (!receiptContext) {
               throw new ConnectError("receipt context required by fake", Code.InvalidArgument);
             }
-            if (receiptContext.operationIds.length !== request.edges.length) {
-              throw new ConnectError("misaligned receipt context", Code.InvalidArgument);
-            }
-            const group = hex(receiptContext.logicalCallId);
-            for (let index = 0; index < request.edges.length; index++) {
-              const edge = request.edges[index]!;
-              const operationId = receiptContext.operationIds[index]!;
-              const prior = this.receipts.get(hex(operationId));
-              if (
-                prior &&
-                (hex(prior.logicalCallId) !== group ||
-                  prior.tail !== edge.tail ||
-                  prior.head !== edge.head)
-              ) {
-                throw new ConnectError("receipt intent conflict", Code.InvalidArgument);
-              }
-            }
+            const intents = request.edges.map(
+              (edge) => `deleteEdge:${edge.tail}\u0000${edge.head}`,
+            );
+            this.validateReceiptIntents(receiptContext, intents);
             const existed = request.edges.map((edge, index) => {
               const operationId = receiptContext.operationIds[index]!;
-              const key = hex(operationId);
-              const prior = this.receipts.get(key);
-              if (prior) return prior.existed;
+              const prior = this.receipts.get(hex(operationId));
+              if (prior) {
+                if (prior.originalResult.case !== "deleteEdgeExisted") {
+                  throw new ConnectError("receipt result family conflict", Code.InvalidArgument);
+                }
+                return prior.originalResult.value;
+              }
               const edgeKey = this.edgeKey(edge.tail, edge.head);
               const original = this.edges.delete(edgeKey);
-              this.receipts.set(key, {
-                operationId: new Uint8Array(operationId),
-                logicalCallId: new Uint8Array(receiptContext.logicalCallId),
-                itemIndex: index,
-                itemCount: request.edges.length,
-                tail: edge.tail,
-                head: edge.head,
-                existed: original,
+              this.storeReceipt(receiptContext, index, request.edges.length, intents[index]!, {
+                case: "deleteEdgeExisted",
+                value: original,
               });
-              this.mutationCount++;
               return original;
             });
             if (this.dropNextDeleteResponse) {
@@ -349,16 +520,71 @@ describe("receipt identity", () => {
     const client = Lantern.withTransport(fake.transport());
     await expect(client.getReceiptCapability()).rejects.toBeInstanceOf(LanternError);
   });
+
+  test("rejects malformed Vertex receipt inputs and alignment before transport", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0x55);
+    fake.capabilityCalls = 0;
+
+    await expect(
+      client.putVertexWithReceipt({ key: "", value: "invalid" }, context),
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+    await expect(client.deleteVerticesWithReceipt([], context)).rejects.toBeInstanceOf(
+      InvalidArgumentError,
+    );
+    await expect(
+      client.putVerticesWithReceipt(
+        [
+          { key: "one", value: 1 },
+          { key: "two", value: 2 },
+        ],
+        context,
+      ),
+    ).rejects.toThrow(/operation IDs for 2 items/);
+    expect(fake.capabilityCalls).toBe(0);
+    expect(fake.putCalls).toBe(0);
+    expect(fake.vertexDeleteCalls).toBe(0);
+  });
 });
 
 describe("receipt capability and continuity", () => {
+  test("decodes a stable supported-mutation list and rejects malformed capability lists", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    await expect(client.getReceiptCapability()).resolves.toMatchObject({
+      enabled: true,
+      supportedMutations: ["putVertex", "deleteVertex", "deleteEdge"],
+    });
+
+    for (const supportedMutations of [
+      [PbReceiptMutationKind.UNSPECIFIED],
+      [PbReceiptMutationKind.DELETE_VERTEX, PbReceiptMutationKind.PUT_VERTEX],
+      [PbReceiptMutationKind.PUT_VERTEX, PbReceiptMutationKind.PUT_VERTEX],
+      [99 as PbReceiptMutationKind],
+    ]) {
+      fake.capability.supportedMutations = supportedMutations;
+      await expect(client.getReceiptCapability()).rejects.toBeInstanceOf(LanternError);
+    }
+
+    fake.capability = {
+      enabled: false,
+      serverNowUnixMs: 0n,
+      supportedMutations: [PbReceiptMutationKind.DELETE_EDGE],
+    };
+    await expect(client.getReceiptCapability()).rejects.toBeInstanceOf(LanternError);
+  });
+
   test("surfaces disabled and unavailable capability without sending a mutation", async () => {
     const fake = new ReceiptTransportFake();
     const client = Lantern.withTransport(fake.transport());
     const context = await contextFor(client, 1, 0x61);
 
-    fake.capability = { enabled: false, serverNowUnixMs: 0n };
-    await expect(client.getReceiptCapability()).resolves.toEqual({ enabled: false });
+    fake.capability = { enabled: false, serverNowUnixMs: 0n, supportedMutations: [] };
+    await expect(client.getReceiptCapability()).resolves.toEqual({
+      enabled: false,
+      supportedMutations: [],
+    });
     let disabled: unknown;
     try {
       await client.deleteEdgeWithReceipt("a", "b", context);
@@ -378,6 +604,26 @@ describe("receipt capability and continuity", () => {
     expect(unavailable).toBeInstanceOf(ReceiptReconciliationError);
     expect((unavailable as ReceiptReconciliationError).reason).toBe("capabilityUnavailable");
     expect(fake.deleteCalls).toBe(0);
+  });
+
+  test("rejects an unsupported mutation family before sending it", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0x65);
+    fake.capability.supportedMutations = [PbReceiptMutationKind.DELETE_EDGE];
+    fake.capabilityCalls = 0;
+
+    let caught: unknown;
+    try {
+      await client.putVertexWithReceipt({ key: "unsupported", value: "value" }, context);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ReceiptReconciliationError);
+    expect((caught as ReceiptReconciliationError).reason).toBe("mutationUnsupported");
+    expect((caught as ReceiptReconciliationError).mutationKind).toBe("putVertex");
+    expect(fake.capabilityCalls).toBe(1);
+    expect(fake.putCalls).toBe(0);
   });
 
   test.each([
@@ -452,6 +698,221 @@ describe("receipt capability and continuity", () => {
     expect(fake.capabilityCalls).toBe(2);
     expect(fake.mutationCount).toBe(0);
   });
+
+  test("does not replay an uncertain mutation against a different endpoint", async () => {
+    const first = new ReceiptTransportFake();
+    const firstClient = Lantern.withTransport(first.transport());
+    const context = await contextFor(firstClient, 1, 0x97);
+    first.dropNextPutResponse = true;
+
+    let uncertain: ReceiptMutationUncertainError | undefined;
+    try {
+      await firstClient.putVertexWithReceipt({ key: "endpoint-bound", value: "first" }, context);
+    } catch (error) {
+      if (error instanceof ReceiptMutationUncertainError) uncertain = error;
+    }
+    if (!uncertain || uncertain.mutation.kind !== "putVertex") {
+      throw new Error("expected uncertain Vertex Put");
+    }
+
+    const second = new ReceiptTransportFake();
+    second.capability.endpoint!.nodeId = filled(16, 0x98);
+    const secondClient = Lantern.withTransport(second.transport());
+    let rejected: unknown;
+    try {
+      await secondClient.putVerticesWithReceipt(uncertain.mutation.inputs, uncertain.context);
+    } catch (error) {
+      rejected = error;
+    }
+    expect(rejected).toBeInstanceOf(ReceiptReconciliationError);
+    expect((rejected as ReceiptReconciliationError).reason).toBe("nodeChanged");
+    expect(second.putCalls).toBe(0);
+    expect(first.mutationCount).toBe(1);
+  });
+});
+
+describe("receipt Vertex Put", () => {
+  test("maps exact plural outcomes and keeps singular conditional Put as a plural facade", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    fake.putOutcomesOverride = [
+      PbPutOutcome.APPLIED_AND_LIVE,
+      PbPutOutcome.EXPIRED,
+      PbPutOutcome.SUPERSEDED,
+    ];
+    const context = await contextFor(client, 3, 0xa0);
+
+    const result = await client.putVerticesWithReceipt(
+      [
+        { key: "put:live", value: "value" },
+        { key: "put:expired", value: "value" },
+        { key: "put:superseded", value: "value" },
+      ],
+      context,
+    );
+    expect(result.results).toEqual([
+      {
+        key: "put:live",
+        operationId: context.operationIds[0],
+        outcome: "appliedAndLive",
+      },
+      {
+        key: "put:expired",
+        operationId: context.operationIds[1],
+        outcome: "expired",
+      },
+      {
+        key: "put:superseded",
+        operationId: context.operationIds[2],
+        outcome: "superseded",
+      },
+    ]);
+    expect(
+      (await client.getReceiptStatuses(context.operationIds)).map((status) =>
+        status.state === "confirmed" ? status.receipt.originalResult : status.state,
+      ),
+    ).toEqual([
+      { kind: "putVertex", outcome: "appliedAndLive" },
+      { kind: "putVertex", outcome: "expired" },
+      { kind: "putVertex", outcome: "superseded" },
+    ]);
+
+    fake.putOutcomesOverride = undefined;
+    fake.addVertex("put:conditional");
+    const singularContext = await contextFor(client, 1, 0xa4);
+    const singular = await client.putVertexIfAbsentWithReceipt(
+      { key: "put:conditional", value: "replacement" },
+      singularContext,
+    );
+    expect(singular).toEqual({
+      key: "put:conditional",
+      operationId: singularContext.operationIds[0],
+      outcome: "conditionNotMet",
+    });
+    const conditionalStatus = await client.getReceiptStatus(singularContext.operationIds[0]!);
+    expect(
+      conditionalStatus.state === "confirmed"
+        ? conditionalStatus.receipt.originalResult
+        : conditionalStatus.state,
+    ).toEqual({ kind: "putVertex", outcome: "conditionNotMet" });
+    expect(fake.putCalls).toBe(2);
+  });
+
+  test("freezes relative TTL and mutable values for exact response-loss replay", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0xb0);
+    const value = new Uint8Array([1, 2, 3]);
+    const input = { key: "put:lost", value, ttlSeconds: 60 };
+    fake.dropNextPutResponse = true;
+
+    let uncertain: ReceiptMutationUncertainError | undefined;
+    try {
+      await client.putVertexWithReceipt(input, context);
+    } catch (error) {
+      if (error instanceof ReceiptMutationUncertainError) uncertain = error;
+    }
+    if (!uncertain || uncertain.mutation.kind !== "putVertex") {
+      throw new Error("expected uncertain Vertex Put");
+    }
+    const firstWire = fake.lastPutVertexJson[0]!;
+    expect(JSON.parse(firstWire)).toMatchObject({
+      key: "put:lost",
+      bytes: "AQID",
+      expiration: new Date(Number(fake.capability.serverNowUnixMs) + 60_000).toISOString(),
+    });
+    expect(uncertain.mutation).toMatchObject({
+      kind: "putVertex",
+      ifAbsent: false,
+      inputs: [{ key: "put:lost", ttlSeconds: 60 }],
+    });
+    expect([...(uncertain.mutation.inputs[0]!.value as Uint8Array)]).toEqual([1, 2, 3]);
+
+    value[0] = 9;
+    input.ttlSeconds = 90;
+    const replay = await client.putVerticesWithReceipt(
+      uncertain.mutation.inputs,
+      uncertain.context,
+    );
+    expect(replay.results[0]!.outcome).toBe("appliedAndLive");
+    expect(fake.lastPutVertexJson[0]).toBe(firstWire);
+    expect(fake.mutationCount).toBe(1);
+  });
+
+  test("keeps intent conflicts definite and malformed responses uncertain", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0xc0);
+
+    await client.putVertexWithReceipt({ key: "put:conflict", value: "first" }, context);
+    await expect(
+      client.putVertexWithReceipt({ key: "put:conflict", value: "second" }, context),
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+    expect(fake.mutationCount).toBe(1);
+
+    const malformedContext = await contextFor(client, 1, 0xc4);
+    fake.malformedPutResponse = true;
+    await expect(
+      client.putVertexWithReceipt({ key: "put:malformed", value: "value" }, malformedContext),
+    ).rejects.toBeInstanceOf(ReceiptMutationUncertainError);
+  });
+});
+
+describe("receipt Vertex Delete", () => {
+  test("preserves exact plural true/false results and singular response-loss replay", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    fake.addVertex("delete:present");
+    const context = await contextFor(client, 2, 0xd0);
+
+    const result = await client.deleteVerticesWithReceipt(
+      ["delete:present", "delete:absent"],
+      context,
+    );
+    expect(result.deleted).toBe(1);
+    expect(result.results).toEqual([
+      {
+        key: "delete:present",
+        operationId: context.operationIds[0],
+        existed: true,
+      },
+      {
+        key: "delete:absent",
+        operationId: context.operationIds[1],
+        existed: false,
+      },
+    ]);
+
+    fake.addVertex("delete:lost");
+    const lostContext = await contextFor(client, 1, 0xd4);
+    fake.dropNextVertexDeleteResponse = true;
+    let uncertain: ReceiptMutationUncertainError | undefined;
+    try {
+      await client.deleteVertexWithReceipt("delete:lost", lostContext);
+    } catch (error) {
+      if (error instanceof ReceiptMutationUncertainError) uncertain = error;
+    }
+    expect(uncertain?.mutation).toEqual({
+      kind: "deleteVertex",
+      keys: ["delete:lost"],
+    });
+    if (!uncertain || uncertain.mutation.kind !== "deleteVertex") {
+      throw new Error("expected uncertain Vertex Delete");
+    }
+    const replay = await client.deleteVerticesWithReceipt(
+      uncertain.mutation.keys,
+      uncertain.context,
+    );
+    expect(replay.results[0]!.existed).toBe(true);
+    expect(fake.hasVertex("delete:lost")).toBe(false);
+    expect(fake.mutationCount).toBe(3);
+
+    const malformedContext = await contextFor(client, 1, 0xd8);
+    fake.malformedVertexDeleteResponse = true;
+    await expect(
+      client.deleteVertexWithReceipt("delete:malformed", malformedContext),
+    ).rejects.toBeInstanceOf(ReceiptMutationUncertainError);
+  });
 });
 
 describe("receipt Edge Delete", () => {
@@ -511,9 +972,10 @@ describe("receipt Edge Delete", () => {
     }
     expect(caught).toBeInstanceOf(ReceiptMutationUncertainError);
     expect((caught as ReceiptMutationUncertainError).context).toEqual(context);
-    expect((caught as ReceiptMutationUncertainError).edges).toEqual([
-      { tail: "lost", head: "response" },
-    ]);
+    expect((caught as ReceiptMutationUncertainError).mutation).toEqual({
+      kind: "deleteEdge",
+      edges: [{ tail: "lost", head: "response" }],
+    });
     expect(fake.hasEdge("lost", "response")).toBe(false);
 
     const replay = await client.deleteEdgeWithReceipt("lost", "response", context);
@@ -568,6 +1030,35 @@ describe("receipt Edge Delete", () => {
 });
 
 describe("receipt status", () => {
+  test("decodes the exact original result for every supported mutation family", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+
+    const putContext = await contextFor(client, 1, 0xe4);
+    await client.putVertexWithReceipt({ key: "status:put", value: "value" }, putContext);
+    fake.addVertex("status:delete");
+    const vertexDeleteContext = await contextFor(client, 1, 0xe8);
+    await client.deleteVertexWithReceipt("status:delete", vertexDeleteContext);
+    fake.addEdge("status", "edge");
+    const edgeDeleteContext = await contextFor(client, 1, 0xec);
+    await client.deleteEdgeWithReceipt("status", "edge", edgeDeleteContext);
+
+    const statuses = await client.getReceiptStatuses([
+      putContext.operationIds[0]!,
+      vertexDeleteContext.operationIds[0]!,
+      edgeDeleteContext.operationIds[0]!,
+    ]);
+    expect(
+      statuses.map((status) =>
+        status.state === "confirmed" ? status.receipt.originalResult : status.state,
+      ),
+    ).toEqual([
+      { kind: "putVertex", outcome: "appliedAndLive" },
+      { kind: "deleteVertex", existed: true },
+      { kind: "deleteEdge", existed: true },
+    ]);
+  });
+
   test("preserves all three states, original false, duplicates, and singular mapping", async () => {
     const fake = new ReceiptTransportFake();
     const client = Lantern.withTransport(fake.transport());
@@ -583,6 +1074,7 @@ describe("receipt status", () => {
     fake.statusOverrides.set(context.operationIds[1]!, "notYetObserved");
     fake.statusOverrides.set(context.operationIds[2]!, "noLongerProvable");
 
+    const mutationsBeforeLookup = fake.mutationCount;
     const statuses = await client.getReceiptStatuses(context.operationIds);
     expect(statuses.map((status) => status.state)).toEqual([
       "confirmed",
@@ -617,6 +1109,7 @@ describe("receipt status", () => {
     const singular = await client.getReceiptStatus(context.operationIds[0]!);
     expect(singular.state).toBe("confirmed");
     expect(fake.statusCalls).toBe(3);
+    expect(fake.mutationCount).toBe(mutationsBeforeLookup);
   });
 
   test("rejects malformed inputs before transport and misaligned wire output", async () => {
@@ -634,5 +1127,18 @@ describe("receipt status", () => {
     await expect(client.getReceiptStatuses(context.operationIds)).rejects.toBeInstanceOf(
       LanternError,
     );
+
+    fake.malformedStatusResponse = false;
+    fake.putOutcomesOverride = [PbPutOutcome.UNSPECIFIED];
+    const unspecifiedContext = await contextFor(client, 1, 0x15);
+    await expect(
+      client.putVertexWithReceipt(
+        { key: "status:unspecified", value: "value" },
+        unspecifiedContext,
+      ),
+    ).rejects.toBeInstanceOf(ReceiptMutationUncertainError);
+    await expect(
+      client.getReceiptStatus(unspecifiedContext.operationIds[0]!),
+    ).rejects.toBeInstanceOf(LanternError);
   });
 });
