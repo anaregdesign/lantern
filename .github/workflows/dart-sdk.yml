@@ -427,6 +427,20 @@ jobs:
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" dart test
 
+      - name: Test authenticated three-replica receipt ambiguity
+        timeout-minutes: 5
+        run: |
+          token_file="$RUNNER_TEMP/lantern-offline-receipt/token"
+          test -s "$token_file"
+          test -x "$RUNNER_TEMP/lantern-offline"
+          receipt_token="$(cat "$token_file")"
+          echo "::add-mask::$receipt_token"
+          LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
+            LANTERN_DART_RECEIPT_HA_BINARY="$RUNNER_TEMP/lantern-offline" \
+            dart test \
+              --name '^receipt ambiguity stays status-first across three authenticated replicas$' \
+              test/real_wire_test.dart
+
       - name: Check reference-store resource baseline
         run: >-
           dart run tool/performance_probe.dart
