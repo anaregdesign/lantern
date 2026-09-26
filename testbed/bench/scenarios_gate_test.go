@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +43,7 @@ type scenarioCall struct {
 	Name         string `yaml:"name"`
 	Call         string `yaml:"call"`
 	DataTemplate string `yaml:"data_template"`
+	RPS          int    `yaml:"rps"`
 }
 
 // scenarioDoc is the subset of the scenario schema that names RPCs. Keep in
@@ -50,6 +52,7 @@ type scenarioCall struct {
 type scenarioDoc struct {
 	Name   string `yaml:"name"`
 	Target struct {
+		Driver       string         `yaml:"driver"`
 		Call         string         `yaml:"call"`
 		DataTemplate string         `yaml:"data_template"`
 		Calls        []scenarioCall `yaml:"calls"`
@@ -59,6 +62,437 @@ type scenarioDoc struct {
 		DataTemplate string         `yaml:"data_template"`
 		Consumers    []scenarioCall `yaml:"consumers"`
 	} `yaml:"subscribe"`
+}
+
+func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "receipt_admission_lookup.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Target struct {
+			Driver    string         `yaml:"driver"`
+			Endpoints []string       `yaml:"endpoints"`
+			Calls     []scenarioCall `yaml:"calls"`
+		} `yaml:"target"`
+		Cluster struct {
+			ReceiptWAL struct {
+				Enabled    bool   `yaml:"enabled"`
+				Retention  string `yaml:"retention"`
+				MaxEntries int    `yaml:"max_entries"`
+				MaxBytes   int    `yaml:"max_bytes"`
+			} `yaml:"receipt_wal"`
+		} `yaml:"cluster"`
+		Phases struct {
+			Warmup struct {
+				Duration    string `yaml:"duration"`
+				RPS         int    `yaml:"rps"`
+				Concurrency int    `yaml:"concurrency"`
+			} `yaml:"warmup"`
+			Steady struct {
+				Duration    string `yaml:"duration"`
+				RPS         int    `yaml:"rps"`
+				Concurrency int    `yaml:"concurrency"`
+			} `yaml:"steady"`
+			Cooldown string `yaml:"cooldown"`
+		} `yaml:"phases"`
+		PerfGate struct {
+			MinSteadyRPSTotal *float64 `yaml:"min_steady_rps_total"`
+			MaxP99MS          *float64 `yaml:"max_p99_ms"`
+			MaxNonOKRatio     *float64 `yaml:"max_non_ok_ratio"`
+			Producers         map[string]struct {
+				MinSteadyRPS  *float64 `yaml:"min_steady_rps"`
+				MaxP99MS      *float64 `yaml:"max_p99_ms"`
+				MaxNonOKRatio *float64 `yaml:"max_non_ok_ratio"`
+			} `yaml:"producers"`
+		} `yaml:"perf_gate"`
+		LeakGate struct {
+			GoroutineMaxDelta    int    `yaml:"goroutine_max_delta"`
+			HeapAllocMaxDeltaMB  int    `yaml:"heap_alloc_max_delta_mb"`
+			SteadySampleInterval string `yaml:"steady_sample_interval"`
+		} `yaml:"leak_gate"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse receipt scenario: %v", err)
+	}
+	if doc.Target.Driver != "receipt_edge_delete" {
+		t.Fatalf("target.driver = %q, want receipt_edge_delete", doc.Target.Driver)
+	}
+	if len(doc.Target.Endpoints) != 3 {
+		t.Fatalf("target endpoints = %d, want 3", len(doc.Target.Endpoints))
+	}
+	wantCalls := []struct {
+		name         string
+		call         string
+		minSteadyRPS float64
+		maxP99MS     float64
+	}{
+		{name: "receipt_admission", call: "graph.v1.LanternService/DeleteEdge", minSteadyRPS: 75, maxP99MS: 500},
+		{name: "receipt_lookup", call: "graph.v1.LanternService/GetReceiptStatus", minSteadyRPS: 75, maxP99MS: 200},
+	}
+	if len(doc.Target.Calls) != len(wantCalls) {
+		t.Fatalf("target calls = %d, want %d", len(doc.Target.Calls), len(wantCalls))
+	}
+	totalProducerRPS := 0
+	for i, want := range wantCalls {
+		call := doc.Target.Calls[i]
+		if call.Name != want.name || call.Call != want.call {
+			t.Errorf("target.calls[%d] = (%q, %q), want (%q, %q)", i, call.Name, call.Call, want.name, want.call)
+		}
+		if strings.TrimSpace(call.DataTemplate) != "" {
+			t.Errorf("target.calls[%d] must leave data_template to the receipt driver", i)
+		}
+		totalProducerRPS += call.RPS
+	}
+	if totalProducerRPS != doc.Phases.Steady.RPS {
+		t.Errorf("producer RPS total = %d, steady RPS = %d", totalProducerRPS, doc.Phases.Steady.RPS)
+	}
+	assertThreshold := func(name string, got *float64, want float64) {
+		t.Helper()
+		if got == nil {
+			t.Errorf("%s is missing, want %g", name, want)
+		} else if *got != want {
+			t.Errorf("%s = %g, want %g", name, *got, want)
+		}
+	}
+	for _, want := range wantCalls {
+		gate, ok := doc.PerfGate.Producers[want.name]
+		if !ok {
+			t.Errorf("producer %q has no independent perf gate", want.name)
+			continue
+		}
+		prefix := "perf_gate.producers." + want.name
+		assertThreshold(prefix+".min_steady_rps", gate.MinSteadyRPS, want.minSteadyRPS)
+		assertThreshold(prefix+".max_p99_ms", gate.MaxP99MS, want.maxP99MS)
+		assertThreshold(prefix+".max_non_ok_ratio", gate.MaxNonOKRatio, 0)
+	}
+	if len(doc.PerfGate.Producers) != len(wantCalls) {
+		t.Errorf("perf_gate.producers = %d, want %d", len(doc.PerfGate.Producers), len(wantCalls))
+	}
+	assertThreshold("perf_gate.min_steady_rps_total", doc.PerfGate.MinSteadyRPSTotal, 150)
+	assertThreshold("perf_gate.max_p99_ms", doc.PerfGate.MaxP99MS, 500)
+	assertThreshold("perf_gate.max_non_ok_ratio", doc.PerfGate.MaxNonOKRatio, 0)
+	if doc.LeakGate.GoroutineMaxDelta != 15 {
+		t.Errorf("leak_gate.goroutine_max_delta = %d, want 15", doc.LeakGate.GoroutineMaxDelta)
+	}
+	if doc.LeakGate.HeapAllocMaxDeltaMB != 32 {
+		t.Errorf("leak_gate.heap_alloc_max_delta_mb = %d, want 32", doc.LeakGate.HeapAllocMaxDeltaMB)
+	}
+	if doc.LeakGate.SteadySampleInterval != "5s" {
+		t.Errorf("leak_gate.steady_sample_interval = %q, want 5s", doc.LeakGate.SteadySampleInterval)
+	}
+	if !doc.Cluster.ReceiptWAL.Enabled {
+		t.Fatal("receipt WAL is not enabled")
+	}
+	retention, err := time.ParseDuration(doc.Cluster.ReceiptWAL.Retention)
+	if err != nil || retention < time.Hour {
+		t.Fatalf("receipt retention = %q, %v; want at least 1h", doc.Cluster.ReceiptWAL.Retention, err)
+	}
+	warmupDuration, err := time.ParseDuration(doc.Phases.Warmup.Duration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steadyDuration, err := time.ParseDuration(doc.Phases.Steady.Duration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cooldown, err := time.ParseDuration(doc.Phases.Cooldown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warmupDuration > 15*time.Second || steadyDuration > time.Minute || cooldown > 15*time.Second {
+		t.Errorf("receipt scenario phases are not bounded: %s/%s/%s", warmupDuration, steadyDuration, cooldown)
+	}
+	if interval, err := time.ParseDuration(doc.LeakGate.SteadySampleInterval); err != nil ||
+		interval <= 0 || interval > steadyDuration/3 {
+		t.Errorf("receipt steady sampling interval = %q, want bounded coverage of %s",
+			doc.LeakGate.SteadySampleInterval, steadyDuration)
+	}
+	admissionRPS := totalProducerRPS / len(wantCalls)
+	requiredEntries := int(warmupDuration.Seconds())*(doc.Phases.Warmup.RPS/len(wantCalls)) +
+		int(steadyDuration.Seconds())*admissionRPS
+	if doc.Cluster.ReceiptWAL.MaxEntries < requiredEntries*6/5 {
+		t.Errorf("receipt max_entries = %d, want >= 120%% of %d admitted operations", doc.Cluster.ReceiptWAL.MaxEntries, requiredEntries)
+	}
+	if doc.Cluster.ReceiptWAL.MaxBytes < doc.Cluster.ReceiptWAL.MaxEntries*512 {
+		t.Errorf("receipt max_bytes = %d, want >= 512 bytes per retained entry", doc.Cluster.ReceiptWAL.MaxBytes)
+	}
+
+	runScript, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range []string{
+		`target_driver="$(yq -r '.target.driver // "ghz"'`,
+		`go run ./testbed/bench/receiptprobe`,
+		`receipt_edge_delete requires a fresh Compose lifecycle`,
+		`docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`,
+		`ghz_steady_0_receipt_admission.json`,
+		`ghz_steady_1_receipt_lookup.json`,
+		`-metrics-endpoints "$metrics_urls"`,
+		`-metrics-interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")"`,
+		`-metrics-report "$OUTDIR/runtime_steady.json"`,
+		`go run ./testbed/bench/receiptprobe evaluate-leak`,
+		`-steady "$OUTDIR/runtime_steady.json"`,
+		`-duration "$steady_duration"`,
+		`-max-goroutines "$g_thresh"`,
+		`-max-heap-mb "$h_thresh_mb"`,
+	} {
+		if !strings.Contains(string(runScript), contract) {
+			t.Errorf("run.sh missing receipt driver contract %q", contract)
+		}
+	}
+	projectScope := strings.Index(string(runScript), `export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"`)
+	volumeReset := strings.Index(string(runScript), `docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`)
+	if projectScope < 0 || volumeReset < 0 || projectScope >= volumeReset {
+		t.Error("receipt volume reset must use the named bench Compose project")
+	}
+	steadySampling := strings.Index(string(runScript), `-metrics-report "$OUTDIR/runtime_steady.json"`)
+	optionalCapture := strings.LastIndex(string(runScript), `if [[ "${LEAK_GATE_ONLY:-0}" == "1" ]]`)
+	receiptEvaluation := strings.Index(string(runScript), `go run ./testbed/bench/receiptprobe evaluate-leak`)
+	if steadySampling < 0 || optionalCapture < 0 || receiptEvaluation < 0 ||
+		steadySampling >= optionalCapture || receiptEvaluation <= optionalCapture {
+		t.Error("receipt steady sampling and its leak verdict must stay active with LEAK_GATE_ONLY=1")
+	}
+	composeOverride, err := os.ReadFile("compose.override.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variable := range []string{
+		"LANTERN_BENCH_AUTH_TOKEN",
+		"LANTERN_BENCH_BACKUP_RESTORE_ON_START",
+		"LANTERN_BENCH_RECEIPT_EPOCH",
+		"LANTERN_BENCH_RECEIPT_WAL_MODE",
+		"LANTERN_BENCH_RECEIPT_WAL_PATH",
+		"LANTERN_BENCH_RECEIPT_MAX_ENTRIES",
+		"LANTERN_BENCH_RECEIPT_MAX_BYTES",
+		"LANTERN_BENCH_RECEIPT_RETENTION",
+		"LANTERN_BENCH_NODE_ID_0",
+		"LANTERN_BENCH_NODE_ID_1",
+		"LANTERN_BENCH_NODE_ID_2",
+	} {
+		if !strings.Contains(string(composeOverride), variable) {
+			t.Errorf("compose override missing %s", variable)
+		}
+	}
+
+	releaseList, err := os.ReadFile("release-scenarios.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(releaseList), "\n") {
+		if strings.TrimSpace(strings.SplitN(line, "#", 2)[0]) == "receipt_admission_lookup" {
+			t.Fatal("receipt scenario must stay out of the release sweep until thresholds have stable evidence")
+		}
+	}
+	nightlyWorkflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "bench-nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nightly := string(nightlyWorkflow)
+	for _, contract := range []string{
+		"./testbed/bench/run.sh receipt_admission_lookup",
+		"testbed/bench/out/receipt_admission_lookup/",
+	} {
+		if !strings.Contains(nightly, contract) {
+			t.Errorf("nightly workflow missing receipt contract %q", contract)
+		}
+	}
+}
+
+func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "cleanup() {\n")
+	if !found {
+		t.Fatal("run.sh is missing cleanup")
+	}
+	body, _, found := strings.Cut(rest, "\n}\ntrap cleanup EXIT")
+	if !found {
+		t.Fatal("run.sh cleanup is not registered as an EXIT trap")
+	}
+	cleanup := "cleanup() {\n" + body + "\n}\n"
+
+	for _, tc := range []struct {
+		name         string
+		dockerStatus int
+		runStatus    int
+		keepUp       int
+		wantStatus   int
+		wantDown     bool
+	}{
+		{name: "clean teardown", wantDown: true},
+		{name: "teardown failure disqualifies pass", dockerStatus: 19, wantStatus: 1, wantDown: true},
+		{name: "primary failure preserved", dockerStatus: 19, runStatus: 23, wantStatus: 23, wantDown: true},
+		{name: "explicit keep up", dockerStatus: 19, keepUp: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			reportPath := filepath.Join(outDir, "report.md")
+			if err := os.WriteFile(reportPath, []byte("**Perf gate verdict:** `pass`\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixture := fmt.Sprintf(`set -euo pipefail
+export COMPOSE_PROJECT_NAME=lantern-bench-cleanup-fixture
+COMPOSE_STARTED=1
+COMPOSE_FILES=(-f fixture-compose.yml)
+KEEP_UP=%d
+log() { :; }
+docker() {
+  [[ "$COMPOSE_PROJECT_NAME" == "lantern-bench-cleanup-fixture" ]] || return 88
+  [[ "$*" == "compose -f fixture-compose.yml down -v --remove-orphans" ]] || return 89
+  echo "docker down invoked" >&2
+  return %d
+}
+%s
+trap cleanup EXIT
+exit %d
+`, tc.keepUp, tc.dockerStatus, cleanup, tc.runStatus)
+			cmd := exec.Command("bash", "-c", fixture)
+			cmd.Env = append(os.Environ(), "OUTDIR="+outDir)
+			output, err := cmd.CombinedOutput()
+			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != tc.wantStatus {
+				t.Fatalf("cleanup exit = %v, err = %v, output = %s; want %d",
+					cmd.ProcessState, err, output, tc.wantStatus)
+			}
+			if got := strings.Contains(string(output), "docker down invoked"); got != tc.wantDown {
+				t.Errorf("compose down invoked = %v, want %v; output = %s", got, tc.wantDown, output)
+			}
+			if tc.dockerStatus != 0 && tc.wantDown && !strings.Contains(string(output), "run is unqualified") {
+				t.Errorf("teardown failure is not reported: %s", output)
+			}
+			report, err := os.ReadFile(reportPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := strings.Contains(string(report), "unqualified"), tc.dockerStatus != 0 && tc.wantDown; got != want {
+				t.Errorf("report marked unqualified = %v, want %v: %s", got, want, report)
+			}
+		})
+	}
+}
+
+func receiptSnapshotShellFunctions(t *testing.T) string {
+	t.Helper()
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "receipt_runtime_scalar() {\n")
+	if !found {
+		t.Fatal("run.sh is missing receipt_runtime_scalar")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nrun_ghz() {")
+	if !found {
+		t.Fatal("run.sh receipt_runtime_scalar and snapshot_runtime do not precede run_ghz")
+	}
+	return "receipt_runtime_scalar() {\n" + body + "\n}\n"
+}
+
+func TestReceiptBenchSnapshotRejectsFailedGC(t *testing.T) {
+	outDir := t.TempDir()
+	fixture := `set -euo pipefail
+target_driver=receipt_edge_delete
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+curl() {
+  [[ "$*" == *"/debug/pprof/heap?gc=1"* ]] && return 22
+  echo "metrics must not be sampled without GC" >&2
+  return 98
+}
+` + receiptSnapshotShellFunctions(t) + `
+snapshot_runtime "$OUTDIR/runtime.json"
+`
+	cmd := exec.Command("bash", "-c", fixture)
+	cmd.Env = append(os.Environ(), "OUTDIR="+outDir)
+	output, err := cmd.CombinedOutput()
+	if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
+		!strings.Contains(string(output), "forced GC failed for localhost:9390 (round 1)") {
+		t.Fatalf("snapshot exit = %v, err = %v, output = %s; want forced-GC failure", cmd.ProcessState, err, output)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); !os.IsNotExist(err) {
+		t.Fatalf("failed-GC snapshot artifact exists or stat failed: %v", err)
+	}
+}
+
+func TestReceiptBenchSnapshotRejectsInvalidMetrics(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wantErr string
+	}{
+		{name: "failed_scrape", wantErr: "metrics scrape failed for localhost:9390 (round 1)"},
+		{name: "missing_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "nonfinite_goroutines", wantErr: "invalid go_goroutines for localhost:9390 (round 1)"},
+		{name: "negative_heap_objects", wantErr: "invalid go_memstats_heap_objects for localhost:9390 (round 1)"},
+		{name: "duplicate_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "fractional_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "tiny_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+		{name: "rounded_fractional_heap_alloc", wantErr: "invalid go_memstats_heap_alloc_bytes for localhost:9390 (round 1)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			fixture := `set -euo pipefail
+target_driver=receipt_edge_delete
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+SNAPSHOT_ROUNDS=1
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+curl() {
+  if [[ "$*" == *"/debug/pprof/heap?gc=1"* ]]; then return 0; fi
+  if [[ "$*" != *"/metrics"* ]]; then return 98; fi
+  if [[ "$METRICS_CASE" == "failed_scrape" ]]; then return 22; fi
+  case "$METRICS_CASE" in
+    missing_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_objects 10'
+      ;;
+    nonfinite_goroutines)
+      printf '%s\n' 'go_goroutines NaN' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_objects 10'
+      ;;
+    negative_heap_objects)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_objects -1'
+      ;;
+    duplicate_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_alloc_bytes 1' 'go_memstats_heap_objects 10'
+      ;;
+    fractional_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 1.5' 'go_memstats_heap_objects 10'
+      ;;
+    tiny_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 1e-40' 'go_memstats_heap_objects 10'
+      ;;
+    rounded_fractional_heap_alloc)
+      printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 1.0000000000000001' 'go_memstats_heap_objects 10'
+      ;;
+  esac
+}
+` + receiptSnapshotShellFunctions(t) + `
+snapshot_runtime "$OUTDIR/runtime.json"
+`
+			cmd := exec.Command("bash", "-c", fixture)
+			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "METRICS_CASE="+tc.name)
+			output, err := cmd.CombinedOutput()
+			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
+				!strings.Contains(string(output), tc.wantErr) {
+				t.Fatalf("snapshot exit = %v, err = %v, output = %s; want %s",
+					cmd.ProcessState, err, output, tc.wantErr)
+			}
+			if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); !os.IsNotExist(err) {
+				t.Fatalf("invalid-metrics snapshot artifact exists or stat failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestReceiptBenchSnapshotAcceptsIntegralScientificNotation(t *testing.T) {
+	fixture := `set -euo pipefail
+` + receiptSnapshotShellFunctions(t) + `
+receipt_runtime_scalar go_memstats_heap_alloc_bytes 'go_memstats_heap_alloc_bytes 1.949696e+07'
+`
+	output, err := exec.Command("bash", "-c", fixture).CombinedOutput()
+	if err != nil || string(output) != "19496960" {
+		t.Fatalf("integral scientific metric = %q, err = %v; want 19496960", output, err)
+	}
 }
 
 // TestBroadIlluminateScenarioTopologyContract is the #994 semantic guard that
@@ -670,6 +1104,9 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 			if err := yaml.Unmarshal(raw, &doc); err != nil {
 				t.Fatalf("parse yaml: %v", err)
 			}
+			if doc.Target.Driver != "" && doc.Target.Driver != "receipt_edge_delete" {
+				t.Fatalf("unknown target.driver %q", doc.Target.Driver)
+			}
 			calls := doc.calls()
 			if len(calls) == 0 {
 				t.Fatal("scenario declares no target/subscribe calls — run.sh could not drive it")
@@ -679,13 +1116,16 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 					t.Errorf("%s: empty call", site)
 					continue
 				}
-				if strings.TrimSpace(c.DataTemplate) == "" {
-					t.Errorf("%s (%s): empty data_template", site, c.Call)
-					continue
-				}
 				desc, err := requestDescriptor(c.Call)
 				if err != nil {
 					t.Errorf("%s: %v", site, err)
+					continue
+				}
+				if strings.TrimSpace(c.DataTemplate) == "" {
+					if doc.Target.Driver == "receipt_edge_delete" && strings.HasPrefix(site, "target.calls[") {
+						continue
+					}
+					t.Errorf("%s (%s): empty data_template", site, c.Call)
 					continue
 				}
 				tmpl, err := template.New(site).Funcs(ghzFuncs()).Parse(c.DataTemplate)

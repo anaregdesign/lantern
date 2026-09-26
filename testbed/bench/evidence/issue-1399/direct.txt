@@ -1,0 +1,21 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/server/service
+cpu: Apple M3 Max
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16         	      55	   9384362 ns/op	    5954 B/op	     179 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16         	      55	   9381494 ns/op	    5954 B/op	     179 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16         	      61	   9717865 ns/op	    5948 B/op	     179 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16         	      67	   9505160 ns/op	    5947 B/op	     179 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16         	      70	   9494407 ns/op	    5944 B/op	     179 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16   	      44	  14271040 ns/op	   10428 B/op	     111 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16   	      48	  14598467 ns/op	   10369 B/op	     111 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16   	      38	  15142948 ns/op	   10542 B/op	     112 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16   	      45	  13811275 ns/op	   10413 B/op	     111 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16   	      46	  13808349 ns/op	   10397 B/op	     111 allocs/op
+BenchmarkReceiptStatusLookup-16                                 	     122	   5103922 ns/op	    1256 B/op	      25 allocs/op
+BenchmarkReceiptStatusLookup-16                                 	     100	   5065272 ns/op	    1256 B/op	      25 allocs/op
+BenchmarkReceiptStatusLookup-16                                 	     133	   5167865 ns/op	    1256 B/op	      25 allocs/op
+BenchmarkReceiptStatusLookup-16                                 	     124	   4569520 ns/op	    1256 B/op	      25 allocs/op
+BenchmarkReceiptStatusLookup-16                                 	     124	   4576865 ns/op	    1256 B/op	      25 allocs/op
+PASS
+ok  	github.com/anaregdesign/lantern/server/service	12.938s

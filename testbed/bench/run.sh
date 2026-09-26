@@ -24,8 +24,9 @@
 # and perf gates pass; exits 1
 # otherwise. Exits 2 on misuse.
 #
-# Prerequisites: bash 4+, docker, docker compose v2, ghz, yq (v4+), jq, curl,
-#                go (for the report renderer).
+# Prerequisites: bash 4+, docker, docker compose v2, yq (v4+), jq, curl,
+#                go (for the report renderer and custom drivers), plus ghz for
+#                the default driver.
 
 set -euo pipefail
 
@@ -72,17 +73,25 @@ die() { echo "run.sh: $*" >&2; exit 1; }
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
 cleanup() {
+  local status=$?
+  trap - EXIT
   if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then
-    log "compose down -v"
-    docker compose "${COMPOSE_FILES[@]}" down -v >/dev/null 2>&1 || true
-    COMPOSE_STARTED=0
+    log "compose down -v (project=$COMPOSE_PROJECT_NAME)"
+    if ! docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null; then
+      echo "run.sh: compose teardown failed (project=$COMPOSE_PROJECT_NAME); run is unqualified" >&2
+      if [[ -n "${OUTDIR:-}" && -f "$OUTDIR/report.md" ]] &&
+        ! printf '\n**Bench run:** unqualified (named Compose teardown failed).\n' >> "$OUTDIR/report.md"; then
+        echo "run.sh: could not mark report as unqualified" >&2
+      fi
+      if (( status == 0 )); then status=1; fi
+    fi
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 need docker
-need ghz
 need yq
 need jq
 need curl
@@ -114,6 +123,14 @@ steady_conc="$(yq -r '.phases.steady.concurrency' "$SCENARIO_FILE")"
 steady_rps="$(yq -r '.phases.steady.rps' "$SCENARIO_FILE")"
 cooldown="$(yq -r '.phases.cooldown' "$SCENARIO_FILE")"
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
+target_driver="$(yq -r '.target.driver // "ghz"' "$SCENARIO_FILE")"
+case "$target_driver" in
+  ghz | receipt_edge_delete) ;;
+  *) die "unknown target.driver $target_driver in $SCENARIO_FILE" ;;
+esac
+if [[ "$target_driver" == "ghz" ]]; then
+  need ghz
+fi
 # ghz drives load over gRPC wire, which the server's Connect-Go handlers
 # accept natively on the same h2c socket (per #347 — the primary :6380
 # port serves Connect + gRPC + gRPC-Web simultaneously). ghz uses gRPC
@@ -162,8 +179,47 @@ if [[ -n "$cluster_search" && "$cluster_search" != "null" ]]; then
   log "cluster override: LANTERN_SEARCH_ENABLED=${cluster_search}"
 fi
 
+receipt_wal_enabled="$(yq -r '.cluster.receipt_wal.enabled // false' "$SCENARIO_FILE")"
+if [[ "$target_driver" == "receipt_edge_delete" && "$receipt_wal_enabled" != "true" ]]; then
+  die "receipt_edge_delete requires cluster.receipt_wal.enabled=true"
+fi
+if [[ "$receipt_wal_enabled" == "true" ]]; then
+  [[ "$target_driver" == "receipt_edge_delete" ]] ||
+    die "cluster.receipt_wal is reserved for target.driver=receipt_edge_delete"
+  [[ "${SKIP_UP:-0}" != "1" ]] ||
+    die "receipt_edge_delete requires a fresh Compose lifecycle; unset SKIP_UP"
+
+  receipt_retention="$(yq -r '.cluster.receipt_wal.retention // ""' "$SCENARIO_FILE")"
+  receipt_max_entries="$(yq -r '.cluster.receipt_wal.max_entries // 0' "$SCENARIO_FILE")"
+  receipt_max_bytes="$(yq -r '.cluster.receipt_wal.max_bytes // 0' "$SCENARIO_FILE")"
+  [[ -n "$receipt_retention" ]] || die "cluster.receipt_wal.retention is required"
+  [[ "$receipt_max_entries" =~ ^[1-9][0-9]*$ ]] ||
+    die "cluster.receipt_wal.max_entries must be a positive integer"
+  [[ "$receipt_max_bytes" =~ ^[1-9][0-9]*$ ]] ||
+    die "cluster.receipt_wal.max_bytes must be a positive integer"
+
+  export LANTERN_BENCH_AUTH_TOKEN="lantern-bench-receipt-token"
+  export LANTERN_BENCH_BACKUP_RESTORE_ON_START="false"
+  export LANTERN_BENCH_NODE_ID_0="11111111111111111111111111111111"
+  export LANTERN_BENCH_NODE_ID_1="22222222222222222222222222222222"
+  export LANTERN_BENCH_NODE_ID_2="33333333333333333333333333333333"
+  export LANTERN_BENCH_RECEIPT_EPOCH="42424242424242424242424242424242"
+  export LANTERN_BENCH_RECEIPT_MAX_BYTES="$receipt_max_bytes"
+  export LANTERN_BENCH_RECEIPT_MAX_ENTRIES="$receipt_max_entries"
+  export LANTERN_BENCH_RECEIPT_RETENTION="$receipt_retention"
+  export LANTERN_BENCH_RECEIPT_WAL_MODE="fresh"
+  export LANTERN_BENCH_RECEIPT_WAL_PATH="/data/receipt-bench.wal"
+  log "cluster override: fresh durable receipt WAL with bounded capacity"
+elif [[ "$target_driver" != "ghz" ]]; then
+  die "target.driver=$target_driver is not configured"
+fi
+
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
+  if [[ "$receipt_wal_enabled" == "true" ]]; then
+    log "compose reset (fresh receipt WAL volumes)"
+    docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null
+  fi
   log "compose up (project=$COMPOSE_PROJECT_NAME)"
   # Since #435 the canonical compose declares three explicit lantern-{0,1,2}
   # services with pinned host ports, so `--scale lantern=3` is no longer
@@ -305,6 +361,30 @@ prom_scalar() {
   awk -v n="$name" '$1 == n { print $2; exit }' <<<"$text"
 }
 
+receipt_runtime_scalar() {
+  local name="$1" text="$2" raw
+  raw="$(awk -v n="$name" '$1 == n { print $2 }' <<<"$text")"
+  [[ "$raw" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]] || return 1
+  # Check decimal integrality before float parsing so rounding cannot hide a fraction.
+  awk -v raw="$raw" '
+    BEGIN {
+      split(raw, notation, /[eE]/)
+      mantissa = notation[1]
+      dot = index(mantissa, ".")
+      scale = (dot ? length(mantissa) - dot : 0) - (notation[2] + 0)
+      digits = mantissa
+      gsub(/\./, "", digits)
+      if (digits ~ /[1-9]/ && scale > 0 &&
+          (scale > length(digits) || substr(digits, length(digits) - scale + 1) ~ /[1-9]/)) {
+        exit 1
+      }
+      value = raw + 0
+      exit !(value >= 0 && value < 9007199254740992)
+    }
+  ' || return 1
+  printf '%.0f' "$raw" 2>/dev/null
+}
+
 snapshot_runtime() {
   # Force a GC on every replica before sampling so heap_alloc_bytes reflects
   # live (post-GC) memory rather than transient allocation between cycles.
@@ -326,17 +406,37 @@ snapshot_runtime() {
   for port in "${REPLICA_METRICS_PORTS[@]}"; do
     local g="" h_inuse="" h_alloc="" h_objs="" vhe="" vhw=""
     for (( round = 1; round <= rounds; round++ )); do
-      curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
-        -o /dev/null || true
+      if ! curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
+        -o /dev/null; then
+        if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+          die "receipt runtime snapshot: forced GC failed for localhost:${port} (round ${round})"
+        fi
+      fi
       local text
-      text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
+      if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+        text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics")" ||
+          die "receipt runtime snapshot: metrics scrape failed for localhost:${port} (round ${round})"
+      else
+        text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
+      fi
       local rg rhi rha rho rvhe rvhw
       # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
       # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
-      rg="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; rg="${rg:-0}"
-      rhi="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; rhi="${rhi:-0}"
-      rha="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; rha="${rha:-0}"
-      rho="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; rho="${rho:-0}"
+      if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+        rg="$(receipt_runtime_scalar go_goroutines "$text")" ||
+          die "receipt runtime snapshot: invalid go_goroutines for localhost:${port} (round ${round})"
+        rhi="$(receipt_runtime_scalar go_memstats_heap_inuse_bytes "$text")" ||
+          die "receipt runtime snapshot: invalid go_memstats_heap_inuse_bytes for localhost:${port} (round ${round})"
+        rha="$(receipt_runtime_scalar go_memstats_heap_alloc_bytes "$text")" ||
+          die "receipt runtime snapshot: invalid go_memstats_heap_alloc_bytes for localhost:${port} (round ${round})"
+        rho="$(receipt_runtime_scalar go_memstats_heap_objects "$text")" ||
+          die "receipt runtime snapshot: invalid go_memstats_heap_objects for localhost:${port} (round ${round})"
+      else
+        rg="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; rg="${rg:-0}"
+        rhi="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; rhi="${rhi:-0}"
+        rha="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; rha="${rha:-0}"
+        rho="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; rho="${rho:-0}"
+      fi
       # vertexHLC LWW watermark map (#727): the instantaneous entry count
       # (lantern_vertex_hlc_entries — drained low right after a GC sweep) and
       # its sticky per-cycle peak (lantern_vertex_hlc_entries_high_water).
@@ -393,6 +493,55 @@ run_ghz() {
   echo "$jsonout"
 }
 
+run_receipt_probe() {
+  # $1 phase, $2 concurrency, $3 aggregate RPS, $4 duration,
+  # optional $5/$6 admission and lookup report paths.
+  local phase="$1" conc="$2" aggregate_rps="$3" dur="$4"
+  local admission_report="${5:-}" lookup_report="${6:-}"
+  local calls_len pair_rps endpoint_urls="" ep
+  calls_len="$(yq -r '.target.calls | length' "$SCENARIO_FILE")"
+  [[ "$calls_len" == "2" ]] ||
+    die "receipt_edge_delete requires exactly two declared producers"
+  (( aggregate_rps % calls_len == 0 )) ||
+    die "receipt aggregate RPS ($aggregate_rps) must divide evenly across $calls_len producers"
+  pair_rps=$((aggregate_rps / calls_len))
+  for ep in "${endpoints[@]}"; do
+    [[ -z "$endpoint_urls" ]] || endpoint_urls+=","
+    endpoint_urls+="http://${ep}"
+  done
+
+  local args=(
+    -endpoints "$endpoint_urls"
+    -token "$LANTERN_BENCH_AUTH_TOKEN"
+    -phase "$phase"
+    -duration "$dur"
+    -concurrency "$conc"
+    -pair-rps "$pair_rps"
+  )
+  if [[ -n "$admission_report" ]]; then
+    args+=(
+      -admission-report "$admission_report"
+      -lookup-report "$lookup_report"
+    )
+  fi
+  if [[ "$phase" == "steady" ]]; then
+    local metrics_urls="" port
+    for port in "${REPLICA_METRICS_PORTS[@]}"; do
+      [[ -z "$metrics_urls" ]] || metrics_urls+=","
+      metrics_urls+="http://localhost:${port}/metrics"
+    done
+    args+=(
+      -metrics-endpoints "$metrics_urls"
+      -metrics-interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")"
+      -metrics-report "$OUTDIR/runtime_steady.json"
+    )
+  fi
+  (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/receiptprobe "${args[@]}"
+  )
+}
+
 snapshot_search_lifecycle() {
   local out="$1"
   (
@@ -405,9 +554,13 @@ snapshot_search_lifecycle() {
 
 # ----- WARMUP ----------------------------------------------------------------
 log "warmup: ${warmup_duration} @ c=${warmup_conc} rps=${warmup_rps}"
-warm_call="$(yq -r '.target.call // .target.calls[0].call' "$SCENARIO_FILE")"
-warm_data="$(yq -r '.target.data_template // .target.calls[0].data_template' "$SCENARIO_FILE")"
-run_ghz warmup "${endpoints[0]}" "$warm_call" "$warm_data" "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
+if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+  run_receipt_probe warmup "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
+else
+  warm_call="$(yq -r '.target.call // .target.calls[0].call' "$SCENARIO_FILE")"
+  warm_data="$(yq -r '.target.data_template // .target.calls[0].data_template' "$SCENARIO_FILE")"
+  run_ghz warmup "${endpoints[0]}" "$warm_call" "$warm_data" "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
+fi
 
 # ----- PRE snapshot (after warmup) -------------------------------------------
 semantic_verdict="skipped"
@@ -489,12 +642,24 @@ if [[ -n "$chaos_target" ]]; then
   chaos_pid="$!"
 fi
 
-# Steady producer(s). If `.target.calls` is a list, fork one ghz per call
-# at floor(rps / N); otherwise run a single ghz against the primary endpoint.
+# Steady producer(s). The receipt driver owns its coordinated pair. Otherwise,
+# if `.target.calls` is a list, fork one ghz per call at floor(rps / N); a
+# scalar target runs one ghz against the primary endpoint.
 calls_len="$(yq -r '.target.calls | length // 0' "$SCENARIO_FILE")"
 prod_pids=()
 producer_failed=0
-if [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
+if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+  if ! run_receipt_probe \
+    steady \
+    "$steady_conc" \
+    "$steady_rps" \
+    "$steady_duration" \
+    "$OUTDIR/ghz_steady_0_receipt_admission.json" \
+    "$OUTDIR/ghz_steady_1_receipt_lookup.json"; then
+    producer_failed=1
+    log "steady receipt producer exited non-zero"
+  fi
+elif [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
   per_rps=$(( steady_rps / calls_len ))
   for i in $(seq 0 $(( calls_len - 1 ))); do
     call="$(yq -r ".target.calls[$i].call" "$SCENARIO_FILE")"
@@ -604,9 +769,27 @@ g_thresh="$(yq -r '.leak_gate.goroutine_max_delta' "$SCENARIO_FILE")"
 # evaluate. See issue #248 — heap_inuse is span-level and includes free
 # slots, so it is unreliable as a leak signal under sustained churn.
 h_thresh_mb="$(yq -r '.leak_gate.heap_alloc_max_delta_mb // .leak_gate.heap_inuse_max_delta_mb' "$SCENARIO_FILE")"
-h_thresh_bytes=$(( h_thresh_mb * 1024 * 1024 ))
-
-leak_json="$(jq -n \
+if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+  # Receipt sampling runs inside the steady driver, including with
+  # LEAK_GATE_ONLY=1. Require all three unforced /metrics series in addition
+  # to the existing post-warmup/post-cooldown GC live-set snapshots.
+  if ! (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/receiptprobe evaluate-leak \
+      -pre "$OUTDIR/runtime_pre.json" \
+      -post "$OUTDIR/runtime_post.json" \
+      -steady "$OUTDIR/runtime_steady.json" \
+      -duration "$steady_duration" \
+      -interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")" \
+      -max-goroutines "$g_thresh" \
+      -max-heap-mb "$h_thresh_mb" \
+      -out "$OUTDIR/leak_gate.json"
+  ); then
+    log "receipt leak gate reported failure"
+  fi
+else
+  h_thresh_bytes=$(( h_thresh_mb * 1024 * 1024 ))
+  leak_json="$(jq -n \
   --slurpfile pre  "$OUTDIR/runtime_pre.json" \
   --slurpfile post "$OUTDIR/runtime_post.json" \
   --argjson g_thresh "$g_thresh" \
@@ -640,7 +823,8 @@ leak_json="$(jq -n \
     verdict: (if any($r[]; .goroutine_delta > $g_thresh or .heap_alloc_delta_bytes > $h_thresh)
               then "fail" else "pass" end)
   }')"
-printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"
+  printf '%s\n' "$leak_json" > "$OUTDIR/leak_gate.json"
+fi
 verdict="$(jq -r '.verdict' "$OUTDIR/leak_gate.json")"
 log "leak gate verdict: $verdict"
 
@@ -718,8 +902,5 @@ log "perf gate verdict: $perf_verdict"
 
 # ----- Render report ---------------------------------------------------------
 render_report
-
-# ----- Teardown --------------------------------------------------------------
-cleanup
 
 if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$producer_failed" == "0" ]]; then exit 0; else exit 1; fi
