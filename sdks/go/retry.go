@@ -12,11 +12,12 @@
 //
 //	reads (Get*/Scan*/Count*/Search*/Illuminate/status)  retryable
 //	PutVertex(es)/PutEdge(s)/Delete*                     retryable (idempotent semantics)
-//	PutVertex(es) with if_absent                         never (response loss changes the outcome)
+//	PutVertex(es) with if_absent                         never unless the dedicated receipt path owns replay
 //	AddEdge/AddEdges                                     retryable ONLY when every edge in the
 //	                                                     request carries a ContribID (WithIdempotentAdds
 //	                                                     stamps them; without one a retry double-counts)
 //	streaming / io (Subscribe/Backup/Restore/…)          never (v1)
+//	receipt-bearing Put/Delete wire requests             never here (the continuity-aware path owns replay)
 //	anything unclassified                                never (fail closed)
 //
 // Never retried regardless of policy: deterministic outcomes
@@ -173,9 +174,13 @@ func requestRetryable(req any) bool {
 		}
 		return len(r.GetEdges()) > 0
 	case *pb.PutVertexRequest:
-		return !r.GetIfAbsent()
+		return r.GetReceiptContext() == nil && !r.GetIfAbsent()
 	case *pb.PutVerticesRequest:
-		return !r.GetIfAbsent()
+		return r.GetReceiptContext() == nil && !r.GetIfAbsent()
+	case *pb.DeleteVertexRequest:
+		return r.GetReceiptContext() == nil
+	case *pb.DeleteVerticesRequest:
+		return r.GetReceiptContext() == nil
 	case *pb.DeleteEdgeRequest:
 		return r.GetReceiptContext() == nil
 	case *pb.DeleteEdgesRequest:
@@ -183,7 +188,6 @@ func requestRetryable(req any) bool {
 	case *pb.GetVertexRequest, *pb.GetVerticesRequest,
 		*pb.GetEdgeRequest, *pb.GetEdgesRequest,
 		*pb.PutEdgeRequest, *pb.PutEdgesRequest,
-		*pb.DeleteVertexRequest, *pb.DeleteVerticesRequest,
 		*pb.DeleteVerticesByPrefixRequest, *pb.DeleteEdgesByPrefixRequest,
 		*pb.ScanVerticesRequest, *pb.ScanVertexKeysRequest,
 		*pb.ScanEdgesRequest, *pb.CountVerticesByPrefixRequest,
@@ -217,47 +221,55 @@ const (
 // (and therefore every Failover wrapper). Adding an RPC method without a
 // row here fails TestRetryEligibilityMatrix_CoversEveryRPC.
 var methodRetryClasses = map[string]methodRetryClass{
-	"GetVertex":              retryAlways,
-	"GetVertices":            retryAlways,
-	"GetEdge":                retryAlways,
-	"GetEdges":               retryAlways,
-	"PutVertex":              retryAlways,
-	"PutVertexAt":            retryAlways,
-	"PutVertices":            retryAlways,
-	"PutVertexIfAbsent":      retryNever,
-	"PutVertexIfAbsentAt":    retryNever,
-	"PutVerticesIfAbsent":    retryNever,
-	"PutEdge":                retryAlways,
-	"PutEdgeAt":              retryAlways,
-	"PutEdges":               retryAlways,
-	"DeleteVertex":           retryAlways,
-	"DeleteVertices":         retryAlways,
-	"DeleteEdge":             retryAlways,
-	"DeleteEdges":            retryAlways,
-	"DeleteVerticesByPrefix": retryAlways,
-	"DeleteEdgesByPrefix":    retryAlways,
-	"ScanVertices":           retryAlways,
-	"ScanVerticesAll":        retryAlways,
-	"ScanVertexKeys":         retryAlways,
-	"ScanVertexKeysAll":      retryAlways,
-	"ScanEdges":              retryAlways,
-	"ScanEdgesAll":           retryAlways,
-	"CountVerticesByPrefix":  retryAlways,
-	"SearchVertices":         retryAlways,
-	"SearchVerticesPage":     retryAlways,
-	"Illuminate":             retryAlways,
-	"GetServerStatus":        retryAlways,
-	"GetReplicationStatus":   retryAlways,
-	"GetReceiptCapability":   retryAlways,
-	"GetReceiptStatus":       retryAlways,
-	"GetReceiptStatuses":     retryAlways,
-	"DeleteEdgeWithReceipt":  retryAlways,
-	"DeleteEdgesWithReceipt": retryAlways,
-	"Ping":                   retryAlways,
-	"AddEdge":                retryIfIdempotentAdds,
-	"AddEdgeAt":              retryIfIdempotentAdds,
-	"AddEdges":               retryIfIdempotentAdds,
-	"AddDecayingEdge":        retryIfIdempotentAdds, // fans out into an AddEdges batch
+	"GetVertex":                      retryAlways,
+	"GetVertices":                    retryAlways,
+	"GetEdge":                        retryAlways,
+	"GetEdges":                       retryAlways,
+	"PutVertex":                      retryAlways,
+	"PutVertexAt":                    retryAlways,
+	"PutVertices":                    retryAlways,
+	"PutVertexIfAbsent":              retryNever,
+	"PutVertexIfAbsentAt":            retryNever,
+	"PutVerticesIfAbsent":            retryNever,
+	"PutEdge":                        retryAlways,
+	"PutEdgeAt":                      retryAlways,
+	"PutEdges":                       retryAlways,
+	"DeleteVertex":                   retryAlways,
+	"DeleteVertices":                 retryAlways,
+	"DeleteEdge":                     retryAlways,
+	"DeleteEdges":                    retryAlways,
+	"DeleteVerticesByPrefix":         retryAlways,
+	"DeleteEdgesByPrefix":            retryAlways,
+	"ScanVertices":                   retryAlways,
+	"ScanVerticesAll":                retryAlways,
+	"ScanVertexKeys":                 retryAlways,
+	"ScanVertexKeysAll":              retryAlways,
+	"ScanEdges":                      retryAlways,
+	"ScanEdgesAll":                   retryAlways,
+	"CountVerticesByPrefix":          retryAlways,
+	"SearchVertices":                 retryAlways,
+	"SearchVerticesPage":             retryAlways,
+	"Illuminate":                     retryAlways,
+	"GetServerStatus":                retryAlways,
+	"GetReplicationStatus":           retryAlways,
+	"GetReceiptCapability":           retryAlways,
+	"GetReceiptStatus":               retryAlways,
+	"GetReceiptStatuses":             retryAlways,
+	"PutVertexWithReceipt":           retryAlways,
+	"PutVertexAtWithReceipt":         retryAlways,
+	"PutVerticesWithReceipt":         retryAlways,
+	"PutVertexIfAbsentWithReceipt":   retryAlways,
+	"PutVertexIfAbsentAtWithReceipt": retryAlways,
+	"PutVerticesIfAbsentWithReceipt": retryAlways,
+	"DeleteVertexWithReceipt":        retryAlways,
+	"DeleteVerticesWithReceipt":      retryAlways,
+	"DeleteEdgeWithReceipt":          retryAlways,
+	"DeleteEdgesWithReceipt":         retryAlways,
+	"Ping":                           retryAlways,
+	"AddEdge":                        retryIfIdempotentAdds,
+	"AddEdgeAt":                      retryIfIdempotentAdds,
+	"AddEdges":                       retryIfIdempotentAdds,
+	"AddDecayingEdge":                retryIfIdempotentAdds, // fans out into an AddEdges batch
 
 	"Backup":               retryNever, // whole-graph stream dump — excluded in v1
 	"Restore":              retryNever, // stream restore — excluded in v1

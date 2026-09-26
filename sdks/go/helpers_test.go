@@ -29,12 +29,28 @@ func testReceiptCapability(seed byte) ReceiptCapability {
 		MaxEntries:        100,
 		MaxBytes:          1 << 20,
 		ServerTime:        time.UnixMilli(1_700_000_000_000).UTC(),
+		SupportedMutations: []ReceiptMutationKind{
+			ReceiptMutationPutVertex,
+			ReceiptMutationDeleteVertex,
+			ReceiptMutationDeleteEdge,
+		},
 	}
 }
 
 func testReceiptCapabilityProto(capability ReceiptCapability) *pb.GetReceiptCapabilityResponse {
 	if !capability.Enabled {
 		return &pb.GetReceiptCapabilityResponse{}
+	}
+	supported := make([]pb.ReceiptMutationKind, len(capability.SupportedMutations))
+	for i, mutation := range capability.SupportedMutations {
+		switch mutation {
+		case ReceiptMutationPutVertex:
+			supported[i] = pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX
+		case ReceiptMutationDeleteVertex:
+			supported[i] = pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX
+		case ReceiptMutationDeleteEdge:
+			supported[i] = pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE
+		}
 	}
 	return &pb.GetReceiptCapabilityResponse{
 		Enabled: true,
@@ -49,13 +65,30 @@ func testReceiptCapabilityProto(capability ReceiptCapability) *pb.GetReceiptCapa
 			NodeId:     capability.Continuity.NodeID.Bytes(),
 			Generation: capability.Continuity.Generation.Bytes(),
 		},
-		ServerNowUnixMs: uint64(capability.ServerTime.UnixMilli()),
+		ServerNowUnixMs:    uint64(capability.ServerTime.UnixMilli()),
+		SupportedMutations: supported,
 	}
 }
 
 func testReceiptContext(
 	t *testing.T,
 	capability ReceiptCapability,
+	count int,
+	seed byte,
+) ReceiptContext {
+	return testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationDeleteEdge,
+		count,
+		seed,
+	)
+}
+
+func testReceiptContextForMutation(
+	t *testing.T,
+	capability ReceiptCapability,
+	mutation ReceiptMutationKind,
 	count int,
 	seed byte,
 ) ReceiptContext {
@@ -67,7 +100,7 @@ func testReceiptContext(
 			entropy[i] = 1
 		}
 	}
-	context, err := mintReceiptContext(capability, count, receiptIdentitySource{
+	context, err := mintReceiptContext(capability, mutation, count, receiptIdentitySource{
 		random: bytes.NewReader(entropy),
 		now:    func() time.Time { return capability.ServerTime.Add(time.Second) },
 	})

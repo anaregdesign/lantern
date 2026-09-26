@@ -50,15 +50,15 @@
 //
 // # Mutation receipts
 //
-// Exact Edge Delete can opt into durable, status-queryable results. First call
-// GetReceiptCapability, mint a ReceiptContext with NewReceiptContext, persist
-// that context, then pass it to DeleteEdgeWithReceipt or
-// DeleteEdgesWithReceipt. Receipt-bearing calls never rotate to a different
-// failover endpoint after an uncertain response; every retry verifies the
-// same epoch, node ID, and generation. GetReceiptStatus and
-// GetReceiptStatuses are read-only reconciliation calls. Put, Add, prefix
-// Delete, and Vertex Delete are not exposed as receipt-bearing SDK operations
-// until their public wire contracts are finalized.
+// Vertex Put, exact Vertex Delete, and exact Edge Delete can opt into durable,
+// status-queryable results. First call GetReceiptCapability, mint a
+// mutation-family-bound ReceiptContext with NewReceiptContext, persist that
+// context, then pass it to the matching *WithReceipt method. Receipt-bearing
+// calls never rotate to a different failover endpoint after an uncertain
+// response; every retry verifies the same epoch, node ID, generation, and
+// advertised mutation family. GetReceiptStatus and GetReceiptStatuses are
+// read-only reconciliation calls. Add and prefix Delete are not exposed as
+// receipt-bearing SDK operations.
 //
 // # Content search
 //
@@ -82,9 +82,9 @@
 //	-------------------------------------------  ------------------------------
 //	Get*/Scan*/Count*/Search*/Illuminate/status  yes (reads are idempotent)
 //	Put*/legacy Delete*/DeleteVerticesByPrefix   yes (idempotent by semantics)
-//	Delete*WithReceipt                           yes, but only after the same
+//	*WithReceipt                                 yes, but only after the same
 //	                                             endpoint continuity preflight
-//	PutVertexIfAbsent/PutVerticesIfAbsent        no (response loss changes outcome)
+//	PutVertexIfAbsent/PutVerticesIfAbsent        no unless using *WithReceipt
 //	AddEdge/AddEdgeAt/AddEdges                    only under WithIdempotentAdds
 //	                                             (or explicit ContribIDs): the
 //	                                             per-edge keys let a retry record
@@ -102,9 +102,9 @@
 // endpoint is retried against its siblings with backoff and MaxAttempts is
 // the cross-replica budget — there is no second rotation mechanism. The
 // per-endpoint clients' own retry is neutralised so the attempt budget is
-// never squared. Receipt-bearing destructive mutations are the deliberate
-// exception: every attempt remains pinned to one endpoint and verifies the
-// same epoch, node ID, and generation before sending.
+// never squared. Receipt-bearing mutations are the deliberate exception:
+// every attempt remains pinned to one endpoint and verifies the same epoch,
+// node ID, generation, and supported mutation family before sending.
 //
 // # Model definition policy
 //

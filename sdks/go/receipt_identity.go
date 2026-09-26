@@ -43,6 +43,9 @@ var (
 	// ErrReceiptProtocol reports a malformed or internally inconsistent
 	// receipt response from an endpoint.
 	ErrReceiptProtocol = errors.New("invalid mutation receipt response")
+	// ErrReceiptMutationUnsupported reports that an endpoint does not advertise
+	// receipt support for the requested mutation family.
+	ErrReceiptMutationUnsupported = errors.New("receipt mutation kind is not supported")
 	// ErrReceiptReconciliationRequired marks an uncertain mutation that may
 	// only be reconciled through receipt status; it must not be blindly sent
 	// to a different endpoint continuity marker.
@@ -76,6 +79,42 @@ type ReceiptGroupID [ReceiptGroupIDSize]byte
 // UTC issuance milliseconds, and 24 bytes of cryptographic randomness.
 type ReceiptOperationID [ReceiptOperationIDSize]byte
 
+// ReceiptMutationKind identifies a receipt-bearing mutation family.
+type ReceiptMutationKind uint8
+
+const (
+	ReceiptMutationUnspecified ReceiptMutationKind = iota
+	ReceiptMutationPutVertex
+	ReceiptMutationDeleteVertex
+	ReceiptMutationDeleteEdge
+)
+
+// String returns the canonical mutation-family name.
+func (k ReceiptMutationKind) String() string {
+	switch k {
+	case ReceiptMutationUnspecified:
+		return "UNSPECIFIED"
+	case ReceiptMutationPutVertex:
+		return "PUT_VERTEX"
+	case ReceiptMutationDeleteVertex:
+		return "DELETE_VERTEX"
+	case ReceiptMutationDeleteEdge:
+		return "DELETE_EDGE"
+	default:
+		return fmt.Sprintf("ReceiptMutationKind(%d)", k)
+	}
+}
+
+// Validate rejects unspecified and unknown mutation families.
+func (k ReceiptMutationKind) Validate() error {
+	switch k {
+	case ReceiptMutationPutVertex, ReceiptMutationDeleteVertex, ReceiptMutationDeleteEdge:
+		return nil
+	default:
+		return invalidReceiptError("unknown receipt mutation kind %d", k)
+	}
+}
+
 // ReceiptContinuity is the complete marker that authorizes a same-endpoint
 // retry: deployment epoch, node identity, and certified generation.
 type ReceiptContinuity struct {
@@ -87,27 +126,30 @@ type ReceiptContinuity struct {
 // ReceiptCapability is an authenticated endpoint's receipt preflight result.
 // Disabled capabilities intentionally carry only Enabled=false.
 type ReceiptCapability struct {
-	Enabled           bool
-	Continuity        ReceiptContinuity
-	PolicyFingerprint ReceiptPolicyFingerprint
-	Retention         time.Duration
-	MaxEntries        uint64
-	MaxBytes          uint64
-	ServerTime        time.Time
+	Enabled            bool
+	Continuity         ReceiptContinuity
+	PolicyFingerprint  ReceiptPolicyFingerprint
+	Retention          time.Duration
+	MaxEntries         uint64
+	MaxBytes           uint64
+	ServerTime         time.Time
+	SupportedMutations []ReceiptMutationKind
 }
 
 // ReceiptContext is the exact caller-owned identity needed to send or replay
 // one logical receipt-bearing mutation. Persist it before the first send and
 // reuse it byte-for-byte after an ambiguous response.
 type ReceiptContext struct {
+	Mutation     ReceiptMutationKind
 	Continuity   ReceiptContinuity
 	GroupID      ReceiptGroupID
 	OperationIDs []ReceiptOperationID
 }
 
 // ReceiptReconciliationError reports that the endpoint which would receive an
-// uncertain mutation is disabled or no longer has the expected continuity.
-// Call GetReceiptStatus/GetReceiptStatuses; do not retry the mutation on a
+// uncertain mutation is disabled, no longer has the expected continuity, or
+// no longer advertises that mutation family. Call
+// GetReceiptStatus/GetReceiptStatuses; do not retry the mutation on a
 // different endpoint.
 type ReceiptReconciliationError struct {
 	Expected ReceiptContinuity
@@ -425,7 +467,7 @@ func (c ReceiptCapability) Validate() error {
 		if c.Continuity != (ReceiptContinuity{}) ||
 			c.PolicyFingerprint != (ReceiptPolicyFingerprint{}) ||
 			c.Retention != 0 || c.MaxEntries != 0 || c.MaxBytes != 0 ||
-			!c.ServerTime.IsZero() {
+			!c.ServerTime.IsZero() || len(c.SupportedMutations) != 0 {
 			return invalidReceiptError("disabled capability carried receipt identity or policy")
 		}
 		return nil
@@ -439,13 +481,40 @@ func (c ReceiptCapability) Validate() error {
 	if c.Retention <= 0 || c.MaxEntries == 0 || c.MaxBytes == 0 || c.ServerTime.IsZero() || c.ServerTime.UnixMilli() < 0 {
 		return invalidReceiptError("enabled capability has invalid policy limits or server time")
 	}
+	for i, mutation := range c.SupportedMutations {
+		if err := mutation.Validate(); err != nil {
+			return err
+		}
+		if i > 0 && c.SupportedMutations[i-1] >= mutation {
+			return invalidReceiptError("supported mutation kinds must be strictly increasing")
+		}
+	}
 	return nil
+}
+
+// Supports reports whether the endpoint advertises receipt support for kind.
+func (c ReceiptCapability) Supports(kind ReceiptMutationKind) bool {
+	if !c.Enabled || kind.Validate() != nil {
+		return false
+	}
+	for _, supported := range c.SupportedMutations {
+		if supported == kind {
+			return true
+		}
+		if supported > kind {
+			return false
+		}
+	}
+	return false
 }
 
 // Validate checks a persisted context against the intended item count.
 func (c ReceiptContext) Validate(itemCount int) error {
 	if itemCount <= 0 || uint64(itemCount) > math.MaxUint32 {
 		return invalidReceiptError("receipt item count must be between 1 and %d", uint64(math.MaxUint32))
+	}
+	if err := c.Mutation.Validate(); err != nil {
+		return err
 	}
 	if err := c.Continuity.Validate(); err != nil {
 		return err
@@ -501,20 +570,39 @@ func (s receiptIdentitySource) normalized() receiptIdentitySource {
 
 // NewReceiptContext mints one caller-owned logical-call context from a fresh
 // enabled capability. The context is not sent or retained by the client.
-func (l *Lantern) NewReceiptContext(capability ReceiptCapability, itemCount int) (ReceiptContext, error) {
+func (l *Lantern) NewReceiptContext(
+	capability ReceiptCapability,
+	mutation ReceiptMutationKind,
+	itemCount int,
+) (ReceiptContext, error) {
 	source := defaultReceiptIdentitySource()
 	if l != nil {
 		source = l.receiptIDs.normalized()
 	}
-	return mintReceiptContext(capability, itemCount, source)
+	return mintReceiptContext(capability, mutation, itemCount, source)
 }
 
-func mintReceiptContext(capability ReceiptCapability, itemCount int, source receiptIdentitySource) (ReceiptContext, error) {
+func mintReceiptContext(
+	capability ReceiptCapability,
+	mutation ReceiptMutationKind,
+	itemCount int,
+	source receiptIdentitySource,
+) (ReceiptContext, error) {
 	if err := capability.Validate(); err != nil {
 		return ReceiptContext{}, err
 	}
 	if !capability.Enabled {
 		return ReceiptContext{}, errors.Join(ErrFailedPrecondition, ErrReceiptsDisabled)
+	}
+	if err := mutation.Validate(); err != nil {
+		return ReceiptContext{}, err
+	}
+	if !capability.Supports(mutation) {
+		return ReceiptContext{}, errors.Join(
+			ErrFailedPrecondition,
+			ErrReceiptMutationUnsupported,
+			fmt.Errorf("%s receipts are not advertised", mutation),
+		)
 	}
 	if itemCount <= 0 || uint64(itemCount) > math.MaxUint32 {
 		return ReceiptContext{}, invalidReceiptError("receipt item count must be between 1 and %d", uint64(math.MaxUint32))
@@ -543,11 +631,16 @@ func mintReceiptContext(capability ReceiptCapability, itemCount int, source rece
 		}
 		ids[i] = id
 	}
-	return ReceiptContext{
+	context := ReceiptContext{
+		Mutation:     mutation,
 		Continuity:   capability.Continuity,
 		GroupID:      group,
 		OperationIDs: ids,
-	}, nil
+	}
+	if err := context.Validate(itemCount); err != nil {
+		return ReceiptContext{}, fmt.Errorf("client: mint receipt context: %w", err)
+	}
+	return context, nil
 }
 
 func validateReceiptOperationID(id ReceiptOperationID) error {

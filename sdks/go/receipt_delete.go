@@ -29,7 +29,8 @@ func (l *Lantern) DeleteEdgesWithReceipt(
 	refs []EdgeRef,
 	receiptContext ReceiptContext,
 ) ([]EdgeDeleteReceiptResult, error) {
-	request, stableContext, err := receiptDeleteRequest(refs, receiptContext)
+	stableRefs := append([]EdgeRef(nil), refs...)
+	request, stableContext, err := receiptDeleteRequest(stableRefs, receiptContext)
 	if err != nil {
 		return nil, err
 	}
@@ -37,31 +38,17 @@ func (l *Lantern) DeleteEdgesWithReceipt(
 	defer cancel()
 
 	var response *pb.DeleteEdgesResponse
-	attempt := func() error {
-		if err := l.requireReceiptContinuityOnce(ctx, stableContext.Continuity); err != nil {
-			return err
-		}
+	err = l.executeReceiptMutation(ctx, ReceiptMutationDeleteEdge, stableContext.Continuity, func(ctx context.Context) error {
 		resp, err := unaryOnce(ctx, request, l.client.DeleteEdges)
-		if err != nil {
-			if errors.Is(err, ErrFailedPrecondition) {
-				if continuityErr := l.recheckReceiptContinuity(ctx, stableContext.Continuity); continuityErr != nil {
-					return continuityErr
-				}
-			}
-			return err
+		if err == nil {
+			response = resp
 		}
-		response = resp
-		return nil
-	}
-	if l != nil && l.opts.retry != nil {
-		err = l.opts.retry.run(ctx, attempt)
-	} else {
-		err = attempt()
-	}
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	return edgeDeleteReceiptResults(refs, stableContext.OperationIDs, response)
+	return edgeDeleteReceiptResults(stableRefs, stableContext.OperationIDs, response)
 }
 
 // DeleteEdgeWithReceipt is the one-item facade over DeleteEdgesWithReceipt.
@@ -87,6 +74,13 @@ func receiptDeleteRequest(refs []EdgeRef, receiptContext ReceiptContext) (*pb.De
 	if err := receiptContext.Validate(len(refs)); err != nil {
 		return nil, ReceiptContext{}, err
 	}
+	if receiptContext.Mutation != ReceiptMutationDeleteEdge {
+		return nil, ReceiptContext{}, invalidReceiptError(
+			"receipt context mutation is %s, want %s",
+			receiptContext.Mutation,
+			ReceiptMutationDeleteEdge,
+		)
+	}
 	stableContext := receiptContext.Clone()
 	keys := make([]*pb.EdgeKey, len(refs))
 	for i, ref := range refs {
@@ -95,24 +89,41 @@ func receiptDeleteRequest(refs []EdgeRef, receiptContext ReceiptContext) (*pb.De
 		}
 		keys[i] = &pb.EdgeKey{Tail: ref.Tail, Head: ref.Head}
 	}
-	rawIDs := make([][]byte, len(stableContext.OperationIDs))
-	for i, id := range stableContext.OperationIDs {
-		rawIDs[i] = id.Bytes()
-	}
 	return &pb.DeleteEdgesRequest{
-		Edges: keys,
-		ReceiptContext: &pb.MutationReceiptContext{
-			OperationIds:  rawIDs,
-			LogicalCallId: stableContext.GroupID.Bytes(),
-			Endpoint: &pb.ReceiptEndpoint{
-				NodeId:     stableContext.Continuity.NodeID.Bytes(),
-				Generation: stableContext.Continuity.Generation.Bytes(),
-			},
-		},
+		Edges:          keys,
+		ReceiptContext: receiptContextToProto(stableContext),
 	}, stableContext, nil
 }
 
-func (l *Lantern) requireReceiptContinuityOnce(ctx context.Context, expected ReceiptContinuity) error {
+func (l *Lantern) executeReceiptMutation(
+	ctx context.Context,
+	mutation ReceiptMutationKind,
+	expected ReceiptContinuity,
+	send func(context.Context) error,
+) error {
+	attempt := func() error {
+		if err := l.requireReceiptCapabilityOnce(ctx, expected, mutation); err != nil {
+			return err
+		}
+		err := send(ctx)
+		if err != nil && errors.Is(err, ErrFailedPrecondition) {
+			if capabilityErr := l.recheckReceiptCapability(ctx, expected, mutation); capabilityErr != nil {
+				return capabilityErr
+			}
+		}
+		return err
+	}
+	if l != nil && l.opts.retry != nil {
+		return l.opts.retry.run(ctx, attempt)
+	}
+	return attempt()
+}
+
+func (l *Lantern) requireReceiptCapabilityOnce(
+	ctx context.Context,
+	expected ReceiptContinuity,
+	mutation ReceiptMutationKind,
+) error {
 	capability, err := l.getReceiptCapabilityOnce(ctx)
 	if err != nil {
 		return err
@@ -131,11 +142,26 @@ func (l *Lantern) requireReceiptContinuityOnce(ctx context.Context, expected Rec
 			Cause:    ErrFailedPrecondition,
 		}
 	}
+	if !capability.Supports(mutation) {
+		observed := capability.Continuity
+		return &ReceiptReconciliationError{
+			Expected: expected,
+			Observed: &observed,
+			Cause: errors.Join(
+				ErrFailedPrecondition,
+				ErrReceiptMutationUnsupported,
+			),
+		}
+	}
 	return nil
 }
 
-func (l *Lantern) recheckReceiptContinuity(ctx context.Context, expected ReceiptContinuity) error {
-	err := l.requireReceiptContinuityOnce(ctx, expected)
+func (l *Lantern) recheckReceiptCapability(
+	ctx context.Context,
+	expected ReceiptContinuity,
+	mutation ReceiptMutationKind,
+) error {
+	err := l.requireReceiptCapabilityOnce(ctx, expected, mutation)
 	var reconciliation *ReceiptReconciliationError
 	if errors.As(err, &reconciliation) {
 		return reconciliation

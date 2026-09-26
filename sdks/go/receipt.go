@@ -18,16 +18,54 @@ const (
 	ReceiptNoLongerProvable
 )
 
-// EdgeDeleteReceipt is a confirmed exact Edge Delete result. Existed is the
-// original request-time result, not the edge's current state.
-type EdgeDeleteReceipt struct {
-	OperationID  ReceiptOperationID
-	GroupID      ReceiptGroupID
-	ItemIndex    uint32
-	ItemCount    uint32
-	IntentSHA256 ReceiptIntentSHA256
-	Deadline     time.Time
-	Existed      bool
+// ReceiptOriginalResult is the typed original result stored in a confirmed
+// receipt. Its concrete type identifies the mutation family without relying
+// on a zero-valued bool or enum.
+type ReceiptOriginalResult interface {
+	MutationKind() ReceiptMutationKind
+	isReceiptOriginalResult()
+}
+
+// ReceiptPutVertexResult preserves the original Vertex Put outcome.
+type ReceiptPutVertexResult struct {
+	Outcome PutOutcome
+}
+
+func (ReceiptPutVertexResult) MutationKind() ReceiptMutationKind {
+	return ReceiptMutationPutVertex
+}
+func (ReceiptPutVertexResult) isReceiptOriginalResult() {}
+
+// ReceiptDeleteVertexResult preserves the original Vertex Delete existence
+// result.
+type ReceiptDeleteVertexResult struct {
+	Existed bool
+}
+
+func (ReceiptDeleteVertexResult) MutationKind() ReceiptMutationKind {
+	return ReceiptMutationDeleteVertex
+}
+func (ReceiptDeleteVertexResult) isReceiptOriginalResult() {}
+
+// ReceiptDeleteEdgeResult preserves the original Edge Delete existence result.
+type ReceiptDeleteEdgeResult struct {
+	Existed bool
+}
+
+func (ReceiptDeleteEdgeResult) MutationKind() ReceiptMutationKind {
+	return ReceiptMutationDeleteEdge
+}
+func (ReceiptDeleteEdgeResult) isReceiptOriginalResult() {}
+
+// MutationReceipt is one confirmed request-index-aligned mutation result.
+type MutationReceipt struct {
+	OperationID    ReceiptOperationID
+	GroupID        ReceiptGroupID
+	ItemIndex      uint32
+	ItemCount      uint32
+	IntentSHA256   ReceiptIntentSHA256
+	Deadline       time.Time
+	OriginalResult ReceiptOriginalResult
 }
 
 // ReceiptStatus preserves the three-state receipt contract. Receipt is set
@@ -35,7 +73,7 @@ type EdgeDeleteReceipt struct {
 type ReceiptStatus struct {
 	OperationID ReceiptOperationID
 	State       ReceiptState
-	Receipt     *EdgeDeleteReceipt
+	Receipt     *MutationReceipt
 }
 
 // String returns the stable wire-contract name of the state.
@@ -77,7 +115,8 @@ func receiptCapabilityFromProto(resp *pb.GetReceiptCapabilityResponse) (ReceiptC
 		return ReceiptCapability{}, receiptProtocolError("capability response is nil")
 	}
 	if !resp.GetEnabled() {
-		if resp.GetPolicy() != nil || resp.GetEndpoint() != nil || resp.GetServerNowUnixMs() != 0 {
+		if resp.GetPolicy() != nil || resp.GetEndpoint() != nil ||
+			resp.GetServerNowUnixMs() != 0 || len(resp.GetSupportedMutations()) != 0 {
 			return ReceiptCapability{}, receiptProtocolError("disabled capability carried receipt identity or policy")
 		}
 		return ReceiptCapability{}, nil
@@ -109,21 +148,43 @@ func receiptCapabilityFromProto(resp *pb.GetReceiptCapabilityResponse) (ReceiptC
 		resp.GetServerNowUnixMs() == 0 || resp.GetServerNowUnixMs() > math.MaxInt64 {
 		return ReceiptCapability{}, receiptProtocolError("enabled capability has invalid policy limits or server time")
 	}
+	supported := make([]ReceiptMutationKind, len(resp.GetSupportedMutations()))
+	for i, raw := range resp.GetSupportedMutations() {
+		mutation, err := receiptMutationKindFromProto(raw)
+		if err != nil {
+			return ReceiptCapability{}, receiptProtocolError("supported_mutations[%d]: %v", i, err)
+		}
+		supported[i] = mutation
+	}
 	capability := ReceiptCapability{
 		Enabled: true,
 		Continuity: ReceiptContinuity{
 			Epoch: epoch, NodeID: nodeID, Generation: generation,
 		},
-		PolicyFingerprint: fingerprint,
-		Retention:         time.Duration(policy.GetRetentionMs()) * time.Millisecond,
-		MaxEntries:        policy.GetMaxEntries(),
-		MaxBytes:          policy.GetMaxBytes(),
-		ServerTime:        time.UnixMilli(int64(resp.GetServerNowUnixMs())).UTC(),
+		PolicyFingerprint:  fingerprint,
+		Retention:          time.Duration(policy.GetRetentionMs()) * time.Millisecond,
+		MaxEntries:         policy.GetMaxEntries(),
+		MaxBytes:           policy.GetMaxBytes(),
+		ServerTime:         time.UnixMilli(int64(resp.GetServerNowUnixMs())).UTC(),
+		SupportedMutations: supported,
 	}
 	if err := capability.Validate(); err != nil {
 		return ReceiptCapability{}, receiptProtocolError("%v", err)
 	}
 	return capability, nil
+}
+
+func receiptMutationKindFromProto(raw pb.ReceiptMutationKind) (ReceiptMutationKind, error) {
+	switch raw {
+	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX:
+		return ReceiptMutationPutVertex, nil
+	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX:
+		return ReceiptMutationDeleteVertex, nil
+	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE:
+		return ReceiptMutationDeleteEdge, nil
+	default:
+		return ReceiptMutationUnspecified, fmt.Errorf("unknown receipt mutation kind %d", raw)
+	}
 }
 
 // GetReceiptStatuses performs a read-only, plural-canonical lookup and
@@ -191,7 +252,7 @@ func receiptStatusFromProto(expected ReceiptOperationID, status *pb.ReceiptStatu
 	out := ReceiptStatus{OperationID: operationID}
 	switch status.GetState() {
 	case pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED:
-		receipt, err := edgeDeleteReceiptFromProto(operationID, status.GetReceipt())
+		receipt, err := mutationReceiptFromProto(operationID, status.GetReceipt())
 		if err != nil {
 			return ReceiptStatus{}, err
 		}
@@ -213,7 +274,7 @@ func receiptStatusFromProto(expected ReceiptOperationID, status *pb.ReceiptStatu
 	return out, nil
 }
 
-func edgeDeleteReceiptFromProto(expected ReceiptOperationID, receipt *pb.MutationReceipt) (*EdgeDeleteReceipt, error) {
+func mutationReceiptFromProto(expected ReceiptOperationID, receipt *pb.MutationReceipt) (*MutationReceipt, error) {
 	if receipt == nil {
 		return nil, receiptProtocolError("CONFIRMED status omitted its receipt")
 	}
@@ -238,17 +299,47 @@ func edgeDeleteReceiptFromProto(expected ReceiptOperationID, receipt *pb.Mutatio
 	if receipt.GetDeadlineUnixMs() == 0 || receipt.GetDeadlineUnixMs() > math.MaxInt64 {
 		return nil, receiptProtocolError("invalid receipt deadline %d", receipt.GetDeadlineUnixMs())
 	}
-	result, ok := receipt.GetOriginalResult().GetResult().(*pb.ReceiptResult_DeleteEdgeExisted)
-	if !ok {
-		return nil, receiptProtocolError("confirmed receipt does not carry an Edge Delete result")
+	originalResult := receipt.GetOriginalResult()
+	if originalResult == nil {
+		return nil, receiptProtocolError("confirmed receipt omitted its original result")
 	}
-	return &EdgeDeleteReceipt{
-		OperationID:  operationID,
-		GroupID:      groupID,
-		ItemIndex:    receipt.GetItemIndex(),
-		ItemCount:    receipt.GetItemCount(),
-		IntentSHA256: intent,
-		Deadline:     time.UnixMilli(int64(receipt.GetDeadlineUnixMs())).UTC(),
-		Existed:      result.DeleteEdgeExisted,
+	var result ReceiptOriginalResult
+	switch typed := originalResult.GetResult().(type) {
+	case *pb.ReceiptResult_PutVertexOutcome:
+		outcome, err := putOutcomeFromProto(typed.PutVertexOutcome)
+		if err != nil {
+			return nil, receiptProtocolError("Vertex Put result: %v", err)
+		}
+		result = ReceiptPutVertexResult{Outcome: outcome}
+	case *pb.ReceiptResult_DeleteVertexExisted:
+		result = ReceiptDeleteVertexResult{Existed: typed.DeleteVertexExisted}
+	case *pb.ReceiptResult_DeleteEdgeExisted:
+		result = ReceiptDeleteEdgeResult{Existed: typed.DeleteEdgeExisted}
+	default:
+		return nil, receiptProtocolError("confirmed receipt has unknown original result")
+	}
+	return &MutationReceipt{
+		OperationID:    operationID,
+		GroupID:        groupID,
+		ItemIndex:      receipt.GetItemIndex(),
+		ItemCount:      receipt.GetItemCount(),
+		IntentSHA256:   intent,
+		Deadline:       time.UnixMilli(int64(receipt.GetDeadlineUnixMs())).UTC(),
+		OriginalResult: result,
 	}, nil
+}
+
+func receiptContextToProto(context ReceiptContext) *pb.MutationReceiptContext {
+	operationIDs := make([][]byte, len(context.OperationIDs))
+	for i, id := range context.OperationIDs {
+		operationIDs[i] = id.Bytes()
+	}
+	return &pb.MutationReceiptContext{
+		OperationIds:  operationIDs,
+		LogicalCallId: context.GroupID.Bytes(),
+		Endpoint: &pb.ReceiptEndpoint{
+			NodeId:     context.Continuity.NodeID.Bytes(),
+			Generation: context.Continuity.Generation.Bytes(),
+		},
+	}
 }

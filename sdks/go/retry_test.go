@@ -267,8 +267,20 @@ func TestRequestRetryable(t *testing.T) {
 		}
 	})
 
-	t.Run("receipt-bearing Delete uses its continuity-aware retry path", func(t *testing.T) {
+	t.Run("receipt-bearing mutations use their continuity-aware retry path", func(t *testing.T) {
 		context := &pb.MutationReceiptContext{}
+		if requestRetryable(&pb.PutVertexRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing PutVertex must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.PutVerticesRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing PutVertices must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.DeleteVertexRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing DeleteVertex must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.DeleteVerticesRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing DeleteVertices must bypass generic unary retry")
+		}
 		if requestRetryable(&pb.DeleteEdgeRequest{ReceiptContext: context}) {
 			t.Error("receipt-bearing DeleteEdge must bypass generic unary retry")
 		}
@@ -333,6 +345,9 @@ func TestRetryableMethod(t *testing.T) {
 	}{
 		{"GetVertex", false, true},
 		{"PutVertices", false, true},
+		{"PutVerticesWithReceipt", false, true},
+		{"PutVerticesIfAbsentWithReceipt", false, true},
+		{"DeleteVerticesWithReceipt", false, true},
 		{"PutVertexIfAbsent", false, false},
 		{"PutVerticesIfAbsent", false, false},
 		{"DeleteEdges", false, true},

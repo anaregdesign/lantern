@@ -27,13 +27,16 @@ type fakeNode struct {
 	// failover ring actually calls for additive writes (#916); the failover
 	// AddEdge/AddEdgeAt/AddEdges methods route through these, so tests wire
 	// them to observe the contrib ids passed down.
-	addEdgeAtWithIDsFn       func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
-	addEdgesWithIDsFn        func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
-	getReceiptCapabilityFn   func(ctx context.Context) (ReceiptCapability, error)
-	getReceiptStatusesFn     func(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
-	deleteEdgesWithReceiptFn func(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
-	pingErr                  error
-	closed                   int
+	addEdgeAtWithIDsFn               func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
+	addEdgesWithIDsFn                func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
+	getReceiptCapabilityFn           func(ctx context.Context) (ReceiptCapability, error)
+	getReceiptStatusesFn             func(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
+	putVerticesWithReceiptFn         func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
+	putVerticesIfAbsentWithReceiptFn func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
+	deleteVerticesWithReceiptFn      func(ctx context.Context, keys []string, receiptContext ReceiptContext) ([]VertexDeleteReceiptResult, error)
+	deleteEdgesWithReceiptFn         func(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
+	pingErr                          error
+	closed                           int
 }
 
 func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) (PutOutcome, error) {
@@ -152,6 +155,36 @@ func (f *fakeNode) GetReceiptCapability(ctx context.Context) (ReceiptCapability,
 func (f *fakeNode) GetReceiptStatuses(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error) {
 	if f.getReceiptStatusesFn != nil {
 		return f.getReceiptStatusesFn(ctx, ids)
+	}
+	return nil, nil
+}
+func (f *fakeNode) PutVerticesWithReceipt(
+	ctx context.Context,
+	inputs []VertexInput,
+	receiptContext ReceiptContext,
+) ([]VertexPutReceiptResult, error) {
+	if f.putVerticesWithReceiptFn != nil {
+		return f.putVerticesWithReceiptFn(ctx, inputs, receiptContext)
+	}
+	return nil, nil
+}
+func (f *fakeNode) PutVerticesIfAbsentWithReceipt(
+	ctx context.Context,
+	inputs []VertexInput,
+	receiptContext ReceiptContext,
+) ([]VertexPutReceiptResult, error) {
+	if f.putVerticesIfAbsentWithReceiptFn != nil {
+		return f.putVerticesIfAbsentWithReceiptFn(ctx, inputs, receiptContext)
+	}
+	return nil, nil
+}
+func (f *fakeNode) DeleteVerticesWithReceipt(
+	ctx context.Context,
+	keys []string,
+	receiptContext ReceiptContext,
+) ([]VertexDeleteReceiptResult, error) {
+	if f.deleteVerticesWithReceiptFn != nil {
+		return f.deleteVerticesWithReceiptFn(ctx, keys, receiptContext)
 	}
 	return nil, nil
 }
@@ -286,6 +319,116 @@ func TestFailoverReceiptDeleteRejectsMalformedContextBeforeDiscovery(t *testing.
 	}
 	if f.cur.Load() != 0 {
 		t.Fatalf("cursor moved to %d", f.cur.Load())
+	}
+}
+
+func TestFailoverReceiptVertexPutFindsAndPinsPersistedEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x75)
+	other := testReceiptCapability(0x76)
+	receiptContext := testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationPutVertex,
+		1,
+		0x77,
+	)
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return other, nil
+		},
+		putVerticesWithReceiptFn: func(
+			context.Context,
+			[]VertexInput,
+			ReceiptContext,
+		) ([]VertexPutReceiptResult, error) {
+			firstCalls++
+			return nil, errors.New("wrong endpoint received mutation")
+		},
+	}
+	second := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		putVerticesWithReceiptFn: func(
+			_ context.Context,
+			inputs []VertexInput,
+			got ReceiptContext,
+		) ([]VertexPutReceiptResult, error) {
+			secondCalls++
+			if secondCalls == 1 {
+				return nil, wrapConnectErr(connect.NewError(
+					connect.CodeUnavailable,
+					errors.New("response lost"),
+				))
+			}
+			return []VertexPutReceiptResult{{
+				Key:         inputs[0].Key,
+				OperationID: got.OperationIDs[0],
+				Outcome:     PutOutcomeAppliedAndLive,
+			}}, nil
+		},
+	}
+	f := &Failover{
+		nodes: []failoverNode{first, second},
+		retry: testRetryPolicy(2),
+	}
+
+	result, err := f.PutVertexWithReceipt(
+		context.Background(),
+		"vertex",
+		"value",
+		time.Minute,
+		receiptContext,
+	)
+	if err != nil || result.Outcome != PutOutcomeAppliedAndLive {
+		t.Fatalf("result = (%+v, %v)", result, err)
+	}
+	if firstCalls != 0 || secondCalls != 2 {
+		t.Fatalf("put calls first=%d second=%d, want 0/2", firstCalls, secondCalls)
+	}
+}
+
+func TestFailoverReceiptVertexDeleteRejectsUnsupportedEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x78)
+	receiptContext := testReceiptContextForMutation(
+		t,
+		capability,
+		ReceiptMutationDeleteVertex,
+		1,
+		0x79,
+	)
+	capability.SupportedMutations = []ReceiptMutationKind{
+		ReceiptMutationPutVertex,
+		ReceiptMutationDeleteEdge,
+	}
+	mutationCalls := 0
+	node := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) {
+			return capability, nil
+		},
+		deleteVerticesWithReceiptFn: func(
+			context.Context,
+			[]string,
+			ReceiptContext,
+		) ([]VertexDeleteReceiptResult, error) {
+			mutationCalls++
+			return nil, nil
+		},
+	}
+	f := &Failover{nodes: []failoverNode{node}}
+
+	_, err := f.DeleteVertexWithReceipt(
+		context.Background(),
+		"vertex",
+		receiptContext,
+	)
+	if !errors.Is(err, ErrReceiptMutationUnsupported) ||
+		!errors.Is(err, ErrReceiptReconciliationRequired) {
+		t.Fatalf("error = %v", err)
+	}
+	if mutationCalls != 0 {
+		t.Fatalf("mutation calls = %d, want 0", mutationCalls)
 	}
 }
 

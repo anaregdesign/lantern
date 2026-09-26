@@ -20,6 +20,10 @@ import (
 )
 
 func TestReceiptIdentityValidation(t *testing.T) {
+	if got := ReceiptMutationKind(99).String(); got != "ReceiptMutationKind(99)" {
+		t.Fatalf("unknown mutation String = %q", got)
+	}
+
 	epoch := ReceiptEpoch{0x01}
 	issuedAt := time.UnixMilli(1_700_000_000_123).UTC()
 	var random [ReceiptOperationRandomSize]byte
@@ -108,7 +112,7 @@ func TestReceiptContextMintingAndValidation(t *testing.T) {
 		random: bytes.NewReader(entropy),
 		now:    func() time.Time { return now },
 	}}
-	context, err := l.NewReceiptContext(capability, 2)
+	context, err := l.NewReceiptContext(capability, ReceiptMutationDeleteEdge, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,14 +157,32 @@ func TestReceiptContextMintingAndValidation(t *testing.T) {
 	})
 
 	t.Run("disabled capability", func(t *testing.T) {
-		if _, err := l.NewReceiptContext(ReceiptCapability{}, 1); !errors.Is(err, ErrReceiptsDisabled) ||
+		if _, err := l.NewReceiptContext(
+			ReceiptCapability{},
+			ReceiptMutationDeleteEdge,
+			1,
+		); !errors.Is(err, ErrReceiptsDisabled) ||
 			!errors.Is(err, ErrFailedPrecondition) {
 			t.Fatalf("error = %v", err)
 		}
 		malformed := ReceiptCapability{Continuity: capability.Continuity}
-		if _, err := l.NewReceiptContext(malformed, 1); !errors.Is(err, ErrInvalidReceipt) ||
+		if _, err := l.NewReceiptContext(
+			malformed,
+			ReceiptMutationDeleteEdge,
+			1,
+		); !errors.Is(err, ErrInvalidReceipt) ||
 			!errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("malformed disabled capability error = %v", err)
+		}
+		unsupported := capability
+		unsupported.SupportedMutations = []ReceiptMutationKind{ReceiptMutationPutVertex}
+		if _, err := l.NewReceiptContext(
+			unsupported,
+			ReceiptMutationDeleteEdge,
+			1,
+		); !errors.Is(err, ErrReceiptMutationUnsupported) ||
+			!errors.Is(err, ErrFailedPrecondition) {
+			t.Fatalf("unsupported mutation error = %v", err)
 		}
 	})
 
@@ -169,7 +191,11 @@ func TestReceiptContextMintingAndValidation(t *testing.T) {
 			random: io.LimitReader(bytes.NewReader([]byte{1}), 1),
 			now:    func() time.Time { return now },
 		}}
-		if _, err := failing.NewReceiptContext(capability, 1); err == nil {
+		if _, err := failing.NewReceiptContext(
+			capability,
+			ReceiptMutationDeleteEdge,
+			1,
+		); err == nil {
 			t.Fatal("expected entropy failure")
 		}
 	})
@@ -179,7 +205,29 @@ func TestReceiptContextMintingAndValidation(t *testing.T) {
 			random: bytes.NewReader(make([]byte, ReceiptGroupIDSize+ReceiptOperationRandomSize)),
 			now:    func() time.Time { return now },
 		}}
-		if _, err := zero.NewReceiptContext(capability, 1); !errors.Is(err, ErrInvalidReceipt) {
+		if _, err := zero.NewReceiptContext(
+			capability,
+			ReceiptMutationDeleteEdge,
+			1,
+		); !errors.Is(err, ErrInvalidReceipt) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("duplicate operation entropy", func(t *testing.T) {
+		entropy := bytes.Repeat(
+			[]byte{1},
+			ReceiptGroupIDSize+2*ReceiptOperationRandomSize,
+		)
+		duplicate := &Lantern{receiptIDs: receiptIdentitySource{
+			random: bytes.NewReader(entropy),
+			now:    func() time.Time { return now },
+		}}
+		if _, err := duplicate.NewReceiptContext(
+			capability,
+			ReceiptMutationDeleteEdge,
+			2,
+		); !errors.Is(err, ErrInvalidReceipt) {
 			t.Fatalf("error = %v", err)
 		}
 	})
@@ -198,6 +246,11 @@ func TestReceiptContextMintingAndValidation(t *testing.T) {
 		}
 		if err := context.Validate(1); !errors.Is(err, ErrInvalidReceipt) {
 			t.Fatalf("misaligned error = %v", err)
+		}
+		unspecified := context.Clone()
+		unspecified.Mutation = ReceiptMutationUnspecified
+		if err := unspecified.Validate(2); !errors.Is(err, ErrInvalidReceipt) {
+			t.Fatalf("unspecified mutation error = %v", err)
 		}
 	})
 }
@@ -250,12 +303,12 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 		fake := &receiptReadClient{capability: testReceiptCapabilityProto(capability)}
 		l := &Lantern{client: fake}
 		got, err := l.GetReceiptCapability(context.Background())
-		if err != nil || got != capability {
+		if err != nil || !reflect.DeepEqual(got, capability) {
 			t.Fatalf("enabled capability = (%+v, %v), want %+v", got, err, capability)
 		}
 		fake.capability = &pb.GetReceiptCapabilityResponse{}
 		got, err = l.GetReceiptCapability(context.Background())
-		if err != nil || got != (ReceiptCapability{}) {
+		if err != nil || !reflect.DeepEqual(got, ReceiptCapability{}) {
 			t.Fatalf("disabled capability = (%+v, %v)", got, err)
 		}
 	})
@@ -272,11 +325,41 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 		if _, err := l.GetReceiptCapability(context.Background()); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("unavailable error = %v", err)
 		}
+
+		for name, mutate := range map[string]func(*pb.GetReceiptCapabilityResponse){
+			"unknown mutation": func(response *pb.GetReceiptCapabilityResponse) {
+				response.SupportedMutations[0] = pb.ReceiptMutationKind(99)
+			},
+			"out of order": func(response *pb.GetReceiptCapabilityResponse) {
+				response.SupportedMutations[0], response.SupportedMutations[1] =
+					response.SupportedMutations[1], response.SupportedMutations[0]
+			},
+			"duplicate mutation": func(response *pb.GetReceiptCapabilityResponse) {
+				response.SupportedMutations[1] = response.SupportedMutations[0]
+			},
+			"disabled with support": func(response *pb.GetReceiptCapabilityResponse) {
+				*response = pb.GetReceiptCapabilityResponse{
+					SupportedMutations: []pb.ReceiptMutationKind{
+						pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
+					},
+				}
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				response := testReceiptCapabilityProto(capability)
+				mutate(response)
+				fake := &receiptReadClient{capability: response}
+				l := &Lantern{client: fake}
+				if _, err := l.GetReceiptCapability(context.Background()); !errors.Is(err, ErrReceiptProtocol) {
+					t.Fatalf("error = %v", err)
+				}
+			})
+		}
 	})
 
-	contextValue := testReceiptContext(t, capability, 4, 0x30)
+	contextValue := testReceiptContext(t, capability, 5, 0x30)
 	ids := contextValue.OperationIDs
-	t.Run("three states preserve alignment and false result presence", func(t *testing.T) {
+	t.Run("three states and result families preserve alignment and false presence", func(t *testing.T) {
 		fake := &receiptReadClient{}
 		fake.statusesFn = func(rawIDs [][]byte) (*pb.GetReceiptStatusesResponse, error) {
 			statuses := make([]*pb.ReceiptStatus, len(rawIDs))
@@ -290,12 +373,22 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 					statuses[i] = testConfirmedEdgeDeleteStatus(id, contextValue.GroupID, 0, 2, true)
 				case ids[1]:
 					statuses[i] = testConfirmedEdgeDeleteStatus(id, contextValue.GroupID, 1, 2, false)
+					statuses[i].Receipt.OriginalResult = &pb.ReceiptResult{
+						Result: &pb.ReceiptResult_DeleteVertexExisted{DeleteVertexExisted: false},
+					}
 				case ids[2]:
+					statuses[i] = testConfirmedEdgeDeleteStatus(id, contextValue.GroupID, 0, 1, false)
+					statuses[i].Receipt.OriginalResult = &pb.ReceiptResult{
+						Result: &pb.ReceiptResult_PutVertexOutcome{
+							PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+						},
+					}
+				case ids[3]:
 					statuses[i] = &pb.ReceiptStatus{
 						OperationId: id.Bytes(),
 						State:       pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED,
 					}
-				case ids[3]:
+				case ids[4]:
 					statuses[i] = &pb.ReceiptStatus{
 						OperationId: id.Bytes(),
 						State:       pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE,
@@ -306,23 +399,37 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 		}
 		l := &Lantern{client: fake, opts: options{batchChunkSize: 2}}
 		got, err := l.GetReceiptStatuses(context.Background(), []ReceiptOperationID{
-			ids[0], ids[1], ids[2], ids[3], ids[0],
+			ids[0], ids[1], ids[2], ids[3], ids[4], ids[0],
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fake.statusCalls != 3 || len(got) != 5 {
+		if fake.statusCalls != 3 || len(got) != 6 {
 			t.Fatalf("calls/results = %d/%d", fake.statusCalls, len(got))
 		}
-		if got[0].State != ReceiptConfirmed || got[0].Receipt == nil || !got[0].Receipt.Existed ||
-			got[1].State != ReceiptConfirmed || got[1].Receipt == nil || got[1].Receipt.Existed ||
-			got[2].State != ReceiptNotYetObserved || got[2].Receipt != nil ||
-			got[3].State != ReceiptNoLongerProvable || got[3].Receipt != nil ||
-			got[4].OperationID != ids[0] {
+		for i := 0; i < 3; i++ {
+			if got[i].State != ReceiptConfirmed || got[i].Receipt == nil {
+				t.Fatalf("confirmed status[%d] = %+v", i, got[i])
+			}
+		}
+		edgeResult, edgeOK := got[0].Receipt.OriginalResult.(ReceiptDeleteEdgeResult)
+		vertexDeleteResult, vertexDeleteOK := got[1].Receipt.OriginalResult.(ReceiptDeleteVertexResult)
+		vertexPutResult, vertexPutOK := got[2].Receipt.OriginalResult.(ReceiptPutVertexResult)
+		if !edgeOK || !edgeResult.Existed ||
+			!vertexDeleteOK || vertexDeleteResult.Existed ||
+			!vertexPutOK ||
+			vertexPutResult.Outcome != PutOutcomeConditionNotMet ||
+			got[3].State != ReceiptNotYetObserved || got[3].Receipt != nil ||
+			got[4].State != ReceiptNoLongerProvable || got[4].Receipt != nil ||
+			got[5].OperationID != ids[0] {
 			t.Fatalf("statuses = %+v", got)
 		}
 		one, err := l.GetReceiptStatus(context.Background(), ids[1])
-		if err != nil || one.Receipt == nil || one.Receipt.Existed || fake.singularCalls != 0 {
+		if err != nil || one.Receipt == nil {
+			t.Fatalf("singular = (%+v, %v)", one, err)
+		}
+		oneResult, ok := one.Receipt.OriginalResult.(ReceiptDeleteVertexResult)
+		if !ok || oneResult.Existed || fake.singularCalls != 0 {
 			t.Fatalf("singular = (%+v, %v), wire singular calls=%d", one, err, fake.singularCalls)
 		}
 	})
@@ -357,7 +464,9 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 			func(id ReceiptOperationID) *pb.ReceiptStatus {
 				status := testConfirmedEdgeDeleteStatus(id, contextValue.GroupID, 0, 1, true)
 				status.Receipt.OriginalResult = &pb.ReceiptResult{
-					Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE},
+					Result: &pb.ReceiptResult_PutVertexOutcome{
+						PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_UNSPECIFIED,
+					},
 				}
 				return status
 			},
