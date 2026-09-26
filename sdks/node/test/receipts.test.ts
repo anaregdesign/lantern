@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { toJson } from "@bufbuild/protobuf";
+import { create, fromBinary, fromJson, toBinary, toJson, type JsonValue } from "@bufbuild/protobuf";
 import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
 
 import {
@@ -20,6 +20,8 @@ import {
 } from "../src/index.js";
 import { authTokenInterceptor } from "../src/client.js";
 import {
+  AddEdgesResponseSchema,
+  GetReceiptStatusesResponseSchema,
   LanternService,
   EdgeSchema,
   MutationReceiptState,
@@ -133,8 +135,13 @@ class ReceiptTransportFake {
   malformedVertexDeleteResponse = false;
   malformedAddResponse = false;
   malformedStatusResponse = false;
+  omitAddStatusResult = false;
+  responseCodec?: "binary" | "json";
+  lastAddResponseProtoJson?: JsonValue;
+  lastStatusResponseProtoJson?: JsonValue;
   putOutcomesOverride?: PbPutOutcome[];
   addWrittenOverride?: number;
+  addEffectiveWeightOverrides?: readonly (number | undefined)[];
   capabilityCalls = 0;
   putCalls = 0;
   vertexDeleteCalls = 0;
@@ -275,15 +282,30 @@ class ReceiptTransportFake {
                   itemCount: receipt.itemCount,
                   intentSha256: filled(32, receipt.itemIndex + 1),
                   deadlineUnixMs: 1_800_003_600_123n,
-                  originalResult: {
-                    result: receipt.originalResult,
-                  },
+                  originalResult:
+                    this.omitAddStatusResult &&
+                    receipt.originalResult.case === "addEdgeEffectiveWeight"
+                      ? undefined
+                      : { result: receipt.originalResult },
                 },
               };
             });
-            return {
+            const response = {
               statuses: this.malformedStatusResponse ? statuses.slice(1) : statuses,
             };
+            if (this.responseCodec !== undefined) {
+              const message = create(GetReceiptStatusesResponseSchema, response);
+              if (this.responseCodec === "binary") {
+                return fromBinary(
+                  GetReceiptStatusesResponseSchema,
+                  toBinary(GetReceiptStatusesResponseSchema, message),
+                );
+              }
+              const json = toJson(GetReceiptStatusesResponseSchema, message);
+              this.lastStatusResponseProtoJson = json;
+              return fromJson(GetReceiptStatusesResponseSchema, json);
+            }
+            return response;
           },
           putVertices: (request, context) => {
             this.putCalls++;
@@ -418,9 +440,10 @@ class ReceiptTransportFake {
                 typeof json.expiration === "string" ? Date.parse(json.expiration) : undefined;
               const edgeKey = this.edgeKey(edge.tail, edge.head);
               const effective =
-                expiration !== undefined && expiration <= Number(this.capability.serverNowUnixMs)
+                this.addEffectiveWeightOverrides?.[index] ??
+                (expiration !== undefined && expiration <= Number(this.capability.serverNowUnixMs)
                   ? 0
-                  : Math.fround((this.edgeWeights.get(edgeKey) ?? 0) + edge.weight);
+                  : Math.fround((this.edgeWeights.get(edgeKey) ?? 0) + edge.weight));
               if (effective === 0) {
                 this.edges.delete(edgeKey);
                 this.edgeWeights.delete(edgeKey);
@@ -438,12 +461,25 @@ class ReceiptTransportFake {
               this.dropNextAddResponse = false;
               throw new ConnectError("injected committed response loss", Code.Unavailable);
             }
-            return {
+            const response = {
               written: this.addWrittenOverride ?? request.edges.length,
               effectiveWeights: this.malformedAddResponse
                 ? effectiveWeights.slice(1)
                 : effectiveWeights,
             };
+            if (this.responseCodec !== undefined) {
+              const message = create(AddEdgesResponseSchema, response);
+              if (this.responseCodec === "binary") {
+                return fromBinary(
+                  AddEdgesResponseSchema,
+                  toBinary(AddEdgesResponseSchema, message),
+                );
+              }
+              const json = toJson(AddEdgesResponseSchema, message);
+              this.lastAddResponseProtoJson = json;
+              return fromJson(AddEdgesResponseSchema, json);
+            }
+            return response;
           },
           deleteEdges: (request, context) => {
             this.deleteCalls++;
@@ -1101,6 +1137,104 @@ describe("receipt Edge Add", () => {
       { kind: "addEdge", effectiveWeight: Number.POSITIVE_INFINITY },
       { kind: "addEdge", effectiveWeight: Number.NEGATIVE_INFINITY },
     ]);
+  });
+
+  for (const codec of ["binary", "json"] as const) {
+    test(`preserves original NaN, signed infinity, and signed zero over ${codec}`, async () => {
+      const fake = new ReceiptTransportFake();
+      fake.responseCodec = codec;
+      fake.addEdge("nan", "existing", Number.NaN);
+      const maxFloat32 = 3.4028234663852886e38;
+      fake.addEdge("overflow", "positive", maxFloat32);
+      fake.addEdge("overflow", "negative", -maxFloat32);
+      fake.addEdge("zero", "negative", -0);
+      fake.addEffectiveWeightOverrides = [undefined, undefined, undefined, -0];
+      const client = Lantern.withTransport(fake.transport());
+      const context = await contextFor(client, 4, 0xd6);
+      const inputs: EdgeAddReceiptInput[] = [
+        { tail: "nan", head: "existing", weight: 1, contribId: filled(24, 0x36) },
+        {
+          tail: "overflow",
+          head: "positive",
+          weight: maxFloat32,
+          contribId: filled(24, 0x37),
+        },
+        {
+          tail: "overflow",
+          head: "negative",
+          weight: -maxFloat32,
+          contribId: filled(24, 0x38),
+        },
+        { tail: "zero", head: "negative", weight: -0, contribId: filled(24, 0x39) },
+      ];
+
+      const added = await client.addEdgesWithReceipt(inputs, context);
+      expect(added.written).toBe(4);
+      expect(Number.isNaN(added.results[0]!.effectiveWeight)).toBe(true);
+      expect(added.results[1]!.effectiveWeight).toBe(Number.POSITIVE_INFINITY);
+      expect(added.results[2]!.effectiveWeight).toBe(Number.NEGATIVE_INFINITY);
+      expect(Object.is(added.results[3]!.effectiveWeight, -0)).toBe(true);
+
+      const statuses = await client.getReceiptStatuses(context.operationIds);
+      const originalWeights = statuses.map((status) => {
+        if (status.state !== "confirmed" || status.receipt.originalResult.kind !== "addEdge") {
+          throw new Error("expected a confirmed Edge Add result");
+        }
+        return status.receipt.originalResult.effectiveWeight;
+      });
+      expect(Number.isNaN(originalWeights[0]!)).toBe(true);
+      expect(originalWeights[1]).toBe(Number.POSITIVE_INFINITY);
+      expect(originalWeights[2]).toBe(Number.NEGATIVE_INFINITY);
+      expect(Object.is(originalWeights[3], -0)).toBe(true);
+
+      if (codec === "json") {
+        expect(JSON.stringify(fake.lastAddResponseProtoJson)).toContain(
+          '"effectiveWeights":["NaN","Infinity","-Infinity"',
+        );
+        expect(JSON.stringify(fake.lastStatusResponseProtoJson)).toContain(
+          '"addEdgeEffectiveWeight":"NaN"',
+        );
+      }
+
+      fake.omitAddStatusResult = true;
+      await expect(client.getReceiptStatus(context.operationIds[0]!)).rejects.toBeInstanceOf(
+        LanternError,
+      );
+    });
+  }
+
+  test("refuses nonfinite and float32-overflow deltas before capability or transport", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const singularContext = await contextFor(client, 1, 0xd8);
+    const pluralContext = await contextFor(client, 2, 0xd9);
+    fake.capabilityCalls = 0;
+
+    for (const weight of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      Number.MAX_VALUE,
+    ]) {
+      await expect(
+        client.addEdgeWithReceipt(
+          { tail: "invalid", head: "delta", weight, contribId: filled(24, 0x3a) },
+          singularContext,
+        ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+    }
+    await expect(
+      client.addEdgesWithReceipt(
+        [
+          { tail: "valid", head: "delta", weight: 1, contribId: filled(24, 0x3b) },
+          { tail: "invalid", head: "delta", weight: Number.NaN, contribId: filled(24, 0x3c) },
+        ],
+        pluralContext,
+      ),
+    ).rejects.toBeInstanceOf(InvalidArgumentError);
+    expect(fake.capabilityCalls).toBe(0);
+    expect(fake.addCalls).toBe(0);
+    expect(fake.mutationCount).toBe(0);
   });
 
   test("rejects missing, mixed, zero, and wrong-sized contrib IDs before transport", async () => {
