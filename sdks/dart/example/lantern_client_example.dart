@@ -21,24 +21,46 @@ Future<void> main() async {
     stdout.writeln((vertex.value as StringValue).value);
 
     final capability = await client.getReceiptCapability();
-    if (capability case ReceiptCapabilityEnabled()) {
+    if (capability case ReceiptCapabilityEnabled(
+      supportedMutations: final supported,
+    )) {
+      if (!supported.containsAll({
+        ReceiptMutationKind.vertexPut,
+        ReceiptMutationKind.vertexDelete,
+      })) {
+        return;
+      }
+      const receiptKey = 'user:receipt-example';
+      final putContext = client.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.vertexPut,
+        itemCount: 1,
+      );
+      final put = await client.putVertexWithReceipt(
+        VertexInput(key: receiptKey, value: VertexValue.string('receipt')),
+        context: putContext,
+      );
+      stdout.writeln('receipt Put outcome: ${put.outcome}');
+
       final receiptContext = client.mintReceiptContext(
         capability: capability,
+        mutation: ReceiptMutationKind.vertexDelete,
         itemCount: 1,
       );
       try {
-        final result = await client.deleteEdgeWithReceipt(
-          const EdgeRef('user:42', 'group:example'),
+        final result = await client.deleteVertexWithReceipt(
+          receiptKey,
           context: receiptContext,
         );
-        stdout.writeln('edge existed: ${result.existed}');
+        stdout.writeln('vertex existed: ${result.existed}');
       } on ReceiptReconciliationException catch (error) {
         final status = await client.getReceiptStatus(
           error.context.operationIds.single,
         );
         switch (status.state) {
           case ReceiptStatusState.confirmed:
-            stdout.writeln('original edge existed: ${status.receipt!.existed}');
+            final receipt = status.receipt! as VertexDeleteReceipt;
+            stdout.writeln('original vertex existed: ${receipt.existed}');
           case ReceiptStatusState.notYetObserved:
             stdout.writeln('receipt not observed; outcome remains uncertain');
           case ReceiptStatusState.noLongerProvable:

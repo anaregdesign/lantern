@@ -20,6 +20,9 @@ void main() {
   }
 
   final endpoint = Uri.parse(configured);
+  final receiptConfigured =
+      io.Platform.environment['LANTERN_DART_RECEIPT_ENDPOINT'];
+  final receiptToken = io.Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
   late LanternClient client;
   late String prefix;
 
@@ -326,6 +329,114 @@ void main() {
         1,
       );
     },
+  );
+
+  test(
+    'receipt Vertex Put and exact Delete reconcile over real h2c',
+    () async {
+      final receiptEndpoint = Uri.parse(receiptConfigured!);
+      final receiptClient = LanternClient.connect(
+        receiptEndpoint,
+        allowInsecure: receiptEndpoint.scheme == 'http',
+        token: receiptToken,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(receiptClient.close);
+      final capability =
+          await receiptClient.getReceiptCapability()
+              as ReceiptCapabilityEnabled;
+      expect(
+        capability.supportedMutations,
+        containsAll({
+          ReceiptMutationKind.vertexPut,
+          ReceiptMutationKind.vertexDelete,
+        }),
+      );
+
+      final putKey = '$prefix-receipt-put';
+      final putContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.vertexPut,
+        itemCount: 1,
+      );
+      final put = await receiptClient.putVertexWithReceipt(
+        VertexInput(key: putKey, value: VertexValue.string('original')),
+        context: putContext,
+      );
+      expect(put.outcome, PutOutcome.appliedAndLive);
+      final putStatus = await receiptClient.getReceiptStatus(
+        putContext.operationIds.single,
+      );
+      expect(
+        (putStatus.receipt! as VertexPutReceipt).outcome,
+        PutOutcome.appliedAndLive,
+      );
+
+      await expectLater(
+        receiptClient.putVertexWithReceipt(
+          VertexInput(key: putKey, value: VertexValue.string('changed')),
+          context: putContext,
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+
+      final deleteContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.vertexDelete,
+        itemCount: 2,
+      );
+      final deleted = await receiptClient.deleteVerticesWithReceipt([
+        putKey,
+        '$prefix-receipt-absent',
+      ], context: deleteContext);
+      expect(deleted.map((result) => result.existed), [true, false]);
+      final deleteStatuses = await receiptClient.getReceiptStatuses(
+        deleteContext.operationIds,
+      );
+      expect(
+        deleteStatuses.map(
+          (status) => (status.receipt! as VertexDeleteReceipt).existed,
+        ),
+        [true, false],
+      );
+
+      final fault = _CommittedResponseLossTransport(
+        receiptEndpoint,
+        loseProcedure: '/graph.v1.LanternService/PutVertices',
+      );
+      final retrying = LanternClient.connect(
+        receiptEndpoint,
+        allowInsecure: receiptEndpoint.scheme == 'http',
+        transport: fault,
+        onClose: fault.close,
+        token: receiptToken,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(retrying.close);
+      final retryCapability =
+          await retrying.getReceiptCapability() as ReceiptCapabilityEnabled;
+      final retryContext = retrying.mintReceiptContext(
+        capability: retryCapability,
+        mutation: ReceiptMutationKind.vertexPut,
+        itemCount: 1,
+      );
+      final retried = await retrying.putVertexWithReceipt(
+        VertexInput(
+          key: '$prefix-receipt-response-loss',
+          value: VertexValue.string('once'),
+        ),
+        context: retryContext,
+      );
+      expect(retried.outcome, PutOutcome.appliedAndLive);
+      expect(fault.requestsFor('/graph.v1.LanternService/PutVertices'), 2);
+    },
+    skip:
+        receiptConfigured == null ||
+            receiptConfigured.isEmpty ||
+            receiptToken == null ||
+            receiptToken.isEmpty
+        ? 'receipt real-wire endpoint and token are not configured'
+        : false,
   );
 
   test('decaying Add response loss does not double the curve', () async {

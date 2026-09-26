@@ -143,6 +143,17 @@ void main() {
       expect(capability.endpoint.nodeId, everyElement(2));
       expect(capability.endpoint.generation, everyElement(3));
       expect(capability.observedAt, DateTime.parse('2026-07-12T00:00:10Z'));
+      expect(capability.supportedMutations, {
+        ReceiptMutationKind.vertexPut,
+        ReceiptMutationKind.vertexDelete,
+        ReceiptMutationKind.edgeDelete,
+      });
+      expect(
+        () => capability.supportedMutations.remove(
+          ReceiptMutationKind.edgeDelete,
+        ),
+        throwsUnsupportedError,
+      );
 
       final fingerprint = capability.policy.fingerprint..[0] = 99;
       expect(fingerprint.first, 99);
@@ -150,6 +161,7 @@ void main() {
 
       final receiptContext = client.mintReceiptContext(
         capability: capability,
+        mutation: ReceiptMutationKind.edgeDelete,
         itemCount: 2,
       );
       expect(receiptContext.groupId.bytes, everyElement(1));
@@ -177,6 +189,8 @@ void main() {
     'invalid minting and mixed contexts fail before mutation transport',
     () async {
       var deleteCalls = 0;
+      var putCalls = 0;
+      var vertexDeleteCalls = 0;
       final transport = FakeTransportBuilder()
           .unary<
             graph.GetReceiptCapabilityRequest,
@@ -192,6 +206,20 @@ void main() {
               return graph.DeleteEdgesResponse();
             },
           )
+          .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+            LanternService.putVertices,
+            (request, context) {
+              putCalls++;
+              return graph.PutVerticesResponse();
+            },
+          )
+          .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+            LanternService.deleteVertices,
+            (request, context) {
+              vertexDeleteCalls++;
+              return graph.DeleteVerticesResponse();
+            },
+          )
           .build();
       final zeroEntropy = _client(
         transport,
@@ -202,6 +230,7 @@ void main() {
       expect(
         () => zeroEntropy.mintReceiptContext(
           capability: capability,
+          mutation: ReceiptMutationKind.edgeDelete,
           itemCount: 1,
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
@@ -214,6 +243,7 @@ void main() {
       expect(
         () => shortEntropy.mintReceiptContext(
           capability: capability,
+          mutation: ReceiptMutationKind.edgeDelete,
           itemCount: 1,
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
@@ -229,6 +259,7 @@ void main() {
       expect(
         () => duplicateEntropy.mintReceiptContext(
           capability: capability,
+          mutation: ReceiptMutationKind.edgeDelete,
           itemCount: 2,
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
@@ -241,6 +272,7 @@ void main() {
           ],
           groupId: _group(),
           endpoint: _endpoint(),
+          mutation: ReceiptMutationKind.edgeDelete,
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
       );
@@ -250,6 +282,7 @@ void main() {
           operationIds: [duplicate, duplicate],
           groupId: _group(),
           endpoint: _endpoint(),
+          mutation: ReceiptMutationKind.edgeDelete,
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
       );
@@ -258,6 +291,7 @@ void main() {
         operationIds: sourceIds,
         groupId: _group(),
         endpoint: _endpoint(),
+        mutation: ReceiptMutationKind.edgeDelete,
       );
       sourceIds.clear();
       expect(copiedContext.operationIds, hasLength(1));
@@ -277,7 +311,29 @@ void main() {
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
       );
+      await expectLater(
+        zeroEntropy.putVertexWithReceipt(
+          VertexInput(key: '', value: VertexValue.nil()),
+          context: _receiptContext(
+            count: 1,
+            mutation: ReceiptMutationKind.vertexPut,
+          ),
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+      await expectLater(
+        zeroEntropy.deleteVertexWithReceipt(
+          '',
+          context: _receiptContext(
+            count: 1,
+            mutation: ReceiptMutationKind.vertexDelete,
+          ),
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
       expect(deleteCalls, 0);
+      expect(putCalls, 0);
+      expect(vertexDeleteCalls, 0);
     },
   );
 
@@ -344,6 +400,55 @@ void main() {
         malformed.getReceiptCapability(),
         throwsA(isA<LanternInternalException>()),
       );
+
+      final outOfOrder = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptCapabilityRequest,
+              graph.GetReceiptCapabilityResponse
+            >(
+              LanternService.getReceiptCapability,
+              (request, context) => _capabilityResponse(
+                supportedMutations: const [
+                  graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_VERTEX,
+                  graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_PUT_VERTEX,
+                ],
+              ),
+            )
+            .build(),
+      );
+      await expectLater(
+        outOfOrder.getReceiptCapability(),
+        throwsA(isA<LanternInternalException>()),
+      );
+
+      final limited = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptCapabilityRequest,
+              graph.GetReceiptCapabilityResponse
+            >(
+              LanternService.getReceiptCapability,
+              (request, context) => _capabilityResponse(
+                supportedMutations: const [
+                  graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE,
+                ],
+              ),
+            )
+            .build(),
+      );
+      final capability =
+          await limited.getReceiptCapability() as ReceiptCapabilityEnabled;
+      expect(capability.supports(ReceiptMutationKind.edgeDelete), isTrue);
+      expect(capability.supports(ReceiptMutationKind.vertexPut), isFalse);
+      expect(
+        () => limited.mintReceiptContext(
+          capability: capability,
+          mutation: ReceiptMutationKind.vertexPut,
+          itemCount: 1,
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
     },
   );
 
@@ -406,7 +511,8 @@ void main() {
         ReceiptStatusState.notYetObserved,
         ReceiptStatusState.noLongerProvable,
       ]);
-      final receipt = statuses.first.receipt!;
+      final receipt = statuses.first.receipt! as EdgeDeleteReceipt;
+      expect(receipt.mutation, ReceiptMutationKind.edgeDelete);
       expect(receipt.operationId, ids.first);
       expect(receipt.groupId, _group());
       expect(receipt.itemIndex, 0);
@@ -429,60 +535,331 @@ void main() {
     },
   );
 
-  test(
-    'status decoding rejects misalignment and future result families',
-    () async {
-      final id = _operationId(epoch: 1, random: 1);
-      final misaligned = _client(
-        FakeTransportBuilder()
-            .unary<
-              graph.GetReceiptStatusesRequest,
-              graph.GetReceiptStatusesResponse
-            >(
-              LanternService.getReceiptStatuses,
-              (request, context) => graph.GetReceiptStatusesResponse(
-                statuses: [
-                  graph.ReceiptStatus(
-                    operationId: _operationId(epoch: 1, random: 9).bytes,
-                    state: graph
-                        .MutationReceiptState
-                        .MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED,
+  test('status decoding rejects misalignment and missing results', () async {
+    final id = _operationId(epoch: 1, random: 1);
+    final misaligned = _client(
+      FakeTransportBuilder()
+          .unary<
+            graph.GetReceiptStatusesRequest,
+            graph.GetReceiptStatusesResponse
+          >(
+            LanternService.getReceiptStatuses,
+            (request, context) => graph.GetReceiptStatusesResponse(
+              statuses: [
+                graph.ReceiptStatus(
+                  operationId: _operationId(epoch: 1, random: 9).bytes,
+                  state: graph
+                      .MutationReceiptState
+                      .MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED,
+                ),
+              ],
+            ),
+          )
+          .build(),
+    );
+    await expectLater(
+      misaligned.getReceiptStatus(id),
+      throwsA(isA<LanternInternalException>()),
+    );
+
+    final missingResult = _client(
+      FakeTransportBuilder()
+          .unary<
+            graph.GetReceiptStatusesRequest,
+            graph.GetReceiptStatusesResponse
+          >(
+            LanternService.getReceiptStatuses,
+            (request, context) => graph.GetReceiptStatusesResponse(
+              statuses: [_confirmedStatus(id, result: graph.ReceiptResult())],
+            ),
+          )
+          .build(),
+    );
+    await expectLater(
+      missingResult.getReceiptStatus(id),
+      throwsA(isA<LanternInternalException>()),
+    );
+  });
+
+  test('status decodes typed Vertex Put and Delete receipts', () async {
+    final putId = _operationId(epoch: 1, random: 1);
+    final deleteId = _operationId(epoch: 1, random: 2);
+    final client = _client(
+      FakeTransportBuilder()
+          .unary<
+            graph.GetReceiptStatusesRequest,
+            graph.GetReceiptStatusesResponse
+          >(
+            LanternService.getReceiptStatuses,
+            (request, context) => graph.GetReceiptStatusesResponse(
+              statuses: [
+                _confirmedStatus(
+                  putId,
+                  result: graph.ReceiptResult(
+                    putVertexOutcome:
+                        graph.PutOutcome.PUT_OUTCOME_CONDITION_NOT_MET,
                   ),
-                ],
-              ),
-            )
-            .build(),
+                ),
+                _confirmedStatus(
+                  deleteId,
+                  result: graph.ReceiptResult(deleteVertexExisted: false),
+                ),
+              ],
+            ),
+          )
+          .build(),
+    );
+
+    final statuses = await client.getReceiptStatuses([putId, deleteId]);
+    final put = statuses[0].receipt! as VertexPutReceipt;
+    expect(put.mutation, ReceiptMutationKind.vertexPut);
+    expect(put.outcome, PutOutcome.conditionNotMet);
+    final delete = statuses[1].receipt! as VertexDeleteReceipt;
+    expect(delete.mutation, ReceiptMutationKind.vertexDelete);
+    expect(delete.existed, isFalse);
+  });
+
+  test('receipt-bearing Vertex Put is plural canonical and exact', () async {
+    final pluralContext = _receiptContext(
+      count: 2,
+      mutation: ReceiptMutationKind.vertexPut,
+    );
+    final singularContext = _receiptContext(
+      count: 1,
+      randomStart: 9,
+      mutation: ReceiptMutationKind.vertexPut,
+    );
+    final requests = <graph.PutVerticesRequest>[];
+    final transport = FakeTransportBuilder()
+        .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+          LanternService.putVertices,
+          (request, context) {
+            requests.add(request.deepCopy());
+            if (request.vertices.length == 1) {
+              return graph.PutVerticesResponse(
+                outcomes: [graph.PutOutcome.PUT_OUTCOME_EXPIRED],
+              );
+            }
+            return graph.PutVerticesResponse(
+              outcomes: [
+                graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
+                graph.PutOutcome.PUT_OUTCOME_CONDITION_NOT_MET,
+              ],
+            );
+          },
+        )
+        .build();
+    final client = _client(transport);
+
+    final results = await client.putVerticesWithReceipt(
+      [
+        VertexInput(key: 'a', value: VertexValue.string('one')),
+        VertexInput(key: 'b', value: VertexValue.string('two')),
+      ],
+      context: pluralContext,
+      ifAbsent: true,
+    );
+    expect(results.map((result) => result.key), ['a', 'b']);
+    expect(
+      results.map((result) => result.operationId),
+      pluralContext.operationIds,
+    );
+    expect(results.map((result) => result.outcome), [
+      PutOutcome.appliedAndLive,
+      PutOutcome.conditionNotMet,
+    ]);
+    expect(() => results.add(results.first), throwsUnsupportedError);
+    expect(requests.first.ifAbsent, isTrue);
+    expect(
+      requests.first.receiptContext.operationIds,
+      pluralContext.operationIds.map((value) => value.bytes),
+    );
+
+    final singular = await client.putVertexWithReceipt(
+      VertexInput(key: 'c', value: VertexValue.nil()),
+      context: singularContext,
+    );
+    expect(singular.key, 'c');
+    expect(singular.operationId, singularContext.operationIds.single);
+    expect(singular.outcome, PutOutcome.expired);
+    expect(requests, hasLength(2));
+    expect(requests.last.vertices, hasLength(1));
+  });
+
+  test('receipt-bearing Vertex Delete preserves exact false results', () async {
+    final pluralContext = _receiptContext(
+      count: 2,
+      mutation: ReceiptMutationKind.vertexDelete,
+    );
+    final singularContext = _receiptContext(
+      count: 1,
+      randomStart: 9,
+      mutation: ReceiptMutationKind.vertexDelete,
+    );
+    final requests = <graph.DeleteVerticesRequest>[];
+    final transport = FakeTransportBuilder()
+        .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+          LanternService.deleteVertices,
+          (request, context) {
+            requests.add(request.deepCopy());
+            if (request.keys.length == 1) {
+              return graph.DeleteVerticesResponse(deleted: 0, existed: [false]);
+            }
+            return graph.DeleteVerticesResponse(
+              deleted: 1,
+              existed: [true, false],
+            );
+          },
+        )
+        .build();
+    final client = _client(transport);
+
+    final results = await client.deleteVerticesWithReceipt([
+      'present',
+      'absent',
+    ], context: pluralContext);
+    expect(results.map((result) => result.key), ['present', 'absent']);
+    expect(
+      results.map((result) => result.operationId),
+      pluralContext.operationIds,
+    );
+    expect(results.map((result) => result.existed), [true, false]);
+    expect(() => results.add(results.first), throwsUnsupportedError);
+
+    final singular = await client.deleteVertexWithReceipt(
+      'still-absent',
+      context: singularContext,
+    );
+    expect(singular.key, 'still-absent');
+    expect(singular.operationId, singularContext.operationIds.single);
+    expect(singular.existed, isFalse);
+    expect(requests, hasLength(2));
+    expect(requests.last.keys, ['still-absent']);
+  });
+
+  test(
+    'Vertex Put response loss proves capability and reuses exact request',
+    () async {
+      final receiptContext = _receiptContext(
+        count: 1,
+        mutation: ReceiptMutationKind.vertexPut,
       );
-      await expectLater(
-        misaligned.getReceiptStatus(id),
-        throwsA(isA<LanternInternalException>()),
+      final requests = <graph.PutVerticesRequest>[];
+      var putCalls = 0;
+      var capabilityCalls = 0;
+      var tokenCalls = 0;
+      final transport = FakeTransportBuilder()
+          .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+            LanternService.putVertices,
+            (request, context) {
+              putCalls++;
+              requests.add(request.deepCopy());
+              if (putCalls == 1) {
+                throw connect.ConnectException(
+                  connect.Code.unavailable,
+                  'response lost',
+                );
+              }
+              return graph.PutVerticesResponse(
+                outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+              );
+            },
+          )
+          .unary<
+            graph.GetReceiptCapabilityRequest,
+            graph.GetReceiptCapabilityResponse
+          >(LanternService.getReceiptCapability, (request, context) {
+            capabilityCalls++;
+            return _capabilityResponse();
+          })
+          .build();
+      final client = _client(
+        transport,
+        retryPolicy: _fastRetry,
+        tokenProvider: () => 'token-${++tokenCalls}',
       );
 
-      final futureResult = _client(
-        FakeTransportBuilder()
-            .unary<
-              graph.GetReceiptStatusesRequest,
-              graph.GetReceiptStatusesResponse
-            >(
-              LanternService.getReceiptStatuses,
-              (request, context) => graph.GetReceiptStatusesResponse(
-                statuses: [
-                  _confirmedStatus(
-                    id,
-                    result: graph.ReceiptResult(
-                      putVertexOutcome:
-                          graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE,
-                    ),
-                  ),
-                ],
-              ),
-            )
-            .build(),
+      final result = await client.putVertexWithReceipt(
+        VertexInput(
+          key: 'retry',
+          value: VertexValue.string('stable'),
+          expiresIn: const Duration(minutes: 5),
+        ),
+        context: receiptContext,
       );
+      expect(result.outcome, PutOutcome.appliedAndLive);
+      expect(putCalls, 2);
+      expect(capabilityCalls, 1);
+      expect(tokenCalls, 3);
+      expect(requests[0].writeToBuffer(), requests[1].writeToBuffer());
+    },
+  );
+
+  test(
+    'family mismatch and removed capability fail before unsafe replay',
+    () async {
+      var putCalls = 0;
+      var deleteCalls = 0;
+      var capabilityCalls = 0;
+      final transport = FakeTransportBuilder()
+          .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+            LanternService.putVertices,
+            (request, context) {
+              putCalls++;
+              throw connect.ConnectException(
+                connect.Code.unavailable,
+                'response lost',
+              );
+            },
+          )
+          .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+            LanternService.deleteVertices,
+            (request, context) {
+              deleteCalls++;
+              return graph.DeleteVerticesResponse();
+            },
+          )
+          .unary<
+            graph.GetReceiptCapabilityRequest,
+            graph.GetReceiptCapabilityResponse
+          >(LanternService.getReceiptCapability, (request, context) {
+            capabilityCalls++;
+            return _capabilityResponse(
+              supportedMutations: const [
+                graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE,
+              ],
+            );
+          })
+          .build();
+      final client = _client(transport, retryPolicy: _fastRetry);
+      final putContext = _receiptContext(
+        count: 1,
+        mutation: ReceiptMutationKind.vertexPut,
+      );
+
       await expectLater(
-        futureResult.getReceiptStatus(id),
-        throwsA(isA<LanternInternalException>()),
+        client.deleteVertexWithReceipt('key', context: putContext),
+        throwsA(isA<LanternInvalidArgumentException>()),
       );
+      expect(deleteCalls, 0);
+
+      await expectLater(
+        client.putVertexWithReceipt(
+          VertexInput(key: 'key', value: VertexValue.nil()),
+          context: putContext,
+        ),
+        throwsA(
+          isA<ReceiptReconciliationException>()
+              .having(
+                (error) => error.reason,
+                'reason',
+                ReceiptReconciliationReason.mutationUnavailable,
+              )
+              .having((error) => error.context, 'context', same(putContext)),
+        ),
+      );
+      expect(putCalls, 1);
+      expect(capabilityCalls, 1);
     },
   );
 
@@ -965,6 +1342,62 @@ void main() {
       );
     },
   );
+
+  test(
+    'malformed successful Vertex responses require reconciliation',
+    () async {
+      final putContext = _receiptContext(
+        count: 2,
+        mutation: ReceiptMutationKind.vertexPut,
+      );
+      final deleteContext = _receiptContext(
+        count: 2,
+        randomStart: 9,
+        mutation: ReceiptMutationKind.vertexDelete,
+      );
+      final client = _client(
+        FakeTransportBuilder()
+            .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+              LanternService.putVertices,
+              (request, context) => graph.PutVerticesResponse(
+                outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+              ),
+            )
+            .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+              LanternService.deleteVertices,
+              (request, context) => graph.DeleteVerticesResponse(
+                deleted: 2,
+                existed: [true, false],
+              ),
+            )
+            .build(),
+      );
+
+      await expectLater(
+        client.putVerticesWithReceipt([
+          VertexInput(key: 'a', value: VertexValue.nil()),
+          VertexInput(key: 'b', value: VertexValue.nil()),
+        ], context: putContext),
+        throwsA(
+          isA<ReceiptReconciliationException>().having(
+            (error) => error.context,
+            'context',
+            same(putContext),
+          ),
+        ),
+      );
+      await expectLater(
+        client.deleteVerticesWithReceipt(['a', 'b'], context: deleteContext),
+        throwsA(
+          isA<ReceiptReconciliationException>().having(
+            (error) => error.context,
+            'context',
+            same(deleteContext),
+          ),
+        ),
+      );
+    },
+  );
 }
 
 const RetryPolicy _fastRetry = RetryPolicy(
@@ -995,6 +1428,7 @@ graph.GetReceiptCapabilityResponse _capabilityResponse({
   int node = 2,
   int generation = 3,
   int serverNowMilliseconds = 1000,
+  List<graph.ReceiptMutationKind>? supportedMutations,
 }) => graph.GetReceiptCapabilityResponse(
   enabled: true,
   policy: graph.ReceiptPolicy(
@@ -1009,17 +1443,28 @@ graph.GetReceiptCapabilityResponse _capabilityResponse({
     generation: _bytes(16, generation),
   ),
   serverNowUnixMs: Int64(serverNowMilliseconds),
+  supportedMutations:
+      supportedMutations ??
+      const [
+        graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_PUT_VERTEX,
+        graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_VERTEX,
+        graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE,
+      ],
 );
 
-ReceiptContext _receiptContext({required int count, int randomStart = 1}) =>
-    ReceiptContext(
-      operationIds: List<ReceiptOperationId>.generate(
-        count,
-        (index) => _operationId(epoch: 1, random: randomStart + index),
-      ),
-      groupId: _group(),
-      endpoint: _endpoint(),
-    );
+ReceiptContext _receiptContext({
+  required int count,
+  int randomStart = 1,
+  ReceiptMutationKind mutation = ReceiptMutationKind.edgeDelete,
+}) => ReceiptContext(
+  operationIds: List<ReceiptOperationId>.generate(
+    count,
+    (index) => _operationId(epoch: 1, random: randomStart + index),
+  ),
+  groupId: _group(),
+  endpoint: _endpoint(),
+  mutation: mutation,
+);
 
 ReceiptEndpoint _endpoint() =>
     ReceiptEndpoint(nodeId: _bytes(16, 2), generation: _bytes(16, 3));

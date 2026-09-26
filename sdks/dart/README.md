@@ -111,29 +111,48 @@ receipts and matching TTL/response-loss evidence.
 contributions whose initial live sum is exact. With `idempotentAdds` enabled,
 the entire expanded call is also safe against an ambiguous response loss.
 
-## Bounded Edge Delete receipts
+## Bounded online mutation receipts
 
-Receipt-bearing Edge Delete is an explicit API alongside the existing
-receipt-less `deleteEdge(s)` methods. The existing methods retain their
-one-attempt ambiguous-result behavior. No receipt-bearing Vertex Put/Delete or
-Edge Add API is exposed yet, and the online package does not persist receipt
-state or enable offline receipt mutations.
+Receipt-bearing Vertex Put, exact Vertex Delete, and Edge Delete are explicit
+APIs alongside the existing receipt-less methods. Existing methods retain
+their established retry and ambiguous-result behavior. Edge Add remains
+unavailable until its canonical receipt schema lands, and the online package
+does not persist receipt state or enable offline receipt mutations.
 
 Fetch capability from the target endpoint, mint one immutable context, persist
-its exact operation/group/endpoint bytes if recovery must survive process
-death, and use that same context for the mutation:
+its mutation kind plus exact operation/group/endpoint bytes if recovery must
+survive process death, and use that same context for the mutation:
 
 ```dart
 final capability = await client.getReceiptCapability();
-if (capability case ReceiptCapabilityEnabled()) {
-  final receiptContext = client.mintReceiptContext(
+if (capability case ReceiptCapabilityEnabled(
+  supportedMutations: final supported,
+)) {
+  if (!supported.contains(ReceiptMutationKind.vertexPut) ||
+      !supported.contains(ReceiptMutationKind.vertexDelete)) {
+    throw StateError('endpoint does not support Vertex receipts');
+  }
+  final putContext = client.mintReceiptContext(
     capability: capability,
+    mutation: ReceiptMutationKind.vertexPut,
+    itemCount: 1,
+  );
+  final put = await client.putVertexWithReceipt(
+    VertexInput(key: 'user:42', value: VertexValue.string('alice')),
+    context: putContext,
+    ifAbsent: true,
+  );
+  print('put outcome: ${put.outcome}');
+
+  final deleteContext = client.mintReceiptContext(
+    capability: capability,
+    mutation: ReceiptMutationKind.vertexDelete,
     itemCount: 1,
   );
   try {
-    final result = await client.deleteEdgeWithReceipt(
-      const EdgeRef('user:42', 'group:example'),
-      context: receiptContext,
+    final result = await client.deleteVertexWithReceipt(
+      'user:42',
+      context: deleteContext,
     );
     print('existed: ${result.existed}');
   } on ReceiptReconciliationException catch (error) {
@@ -142,7 +161,8 @@ if (capability case ReceiptCapabilityEnabled()) {
     );
     switch (status.state) {
       case ReceiptStatusState.confirmed:
-        print('original existed: ${status.receipt!.existed}');
+        final receipt = status.receipt! as VertexDeleteReceipt;
+        print('original existed: ${receipt.existed}');
       case ReceiptStatusState.notYetObserved:
         print('not observed; execution remains uncertain');
       case ReceiptStatusState.noLongerProvable:
@@ -157,16 +177,22 @@ issuance timestamp; operation and logical-call entropy comes from
 cryptographically secure platform randomness by default. The clock and random
 source are injectable for deterministic tests. Constructors validate exact
 byte lengths, nonzero identity components, one shared epoch, unique operation
-IDs, and request-index alignment before network I/O.
+IDs, mutation-family capability, and request-index alignment before network
+I/O. Vertex Put supports the same `ifAbsent` intent as its receipt-less
+counterpart and returns immutable per-item `PutOutcome` values; receipt-bearing
+Vertex Delete preserves an explicit result for every request index, including
+`false`.
 
 With `RetryPolicy` configured, a response-loss retry reuses the exact context
 only after a read-only capability check confirms the same deployment epoch,
-node ID, and endpoint generation. The retry request echoes that marker, so a
-load balancer cannot silently move the destructive replay to another endpoint.
-Bearer-token rotation is independent of continuity. Disabled capability,
-changed continuity, an exhausted ambiguous attempt, or an untrusted response
-throws `ReceiptReconciliationException` with the exact context for status
-lookup. `notYetObserved` is not proof of non-execution, and
+node ID, endpoint generation, and mutation-family support. The retry request
+echoes that marker, so a load balancer cannot silently move the replay to
+another endpoint. Bearer-token rotation is independent of continuity. Disabled
+capability, removed family support, changed continuity, an exhausted ambiguous
+attempt, or an untrusted response throws `ReceiptReconciliationException` with
+the exact context for status lookup. Confirmed status exposes a sealed
+`MutationReceipt` as `VertexPutReceipt`, `VertexDeleteReceipt`, or
+`EdgeDeleteReceipt`. `notYetObserved` is not proof of non-execution, and
 `noLongerProvable` forbids automatic mutation replay.
 
 ## Cursor-paged mobile lists

@@ -407,6 +407,14 @@ void main() {
       RetryRegistry.classify('DeleteEdgesWithReceipt'),
       RpcRetryClass.receiptMutation,
     );
+    expect(
+      RetryRegistry.classify('PutVerticesWithReceipt'),
+      RpcRetryClass.receiptMutation,
+    );
+    expect(
+      RetryRegistry.classify('DeleteVerticesWithReceipt'),
+      RpcRetryClass.receiptMutation,
+    );
     expect(RetryRegistry.classify('BackupSnapshot'), RpcRetryClass.stream);
     expect(RetryRegistry.classify('SearchVerticesPage'), RpcRetryClass.read);
   });

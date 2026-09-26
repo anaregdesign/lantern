@@ -9,6 +9,7 @@ const int _receiptFingerprintLength = 32;
 const int _receiptIntentDigestLength = 32;
 const int _receiptOperationIdVersion = 1;
 const int _receiptStatusBatchSize = 10000;
+const int _receiptVertexMutationBatchSize = 10000;
 const Duration _minimumReceiptRetention = Duration(hours: 1);
 const Duration _maximumReceiptRetention = Duration(days: 30);
 final BigInt _receiptMaxSignedInt64 = BigInt.from(_maxInt64);
@@ -157,6 +158,18 @@ final class ReceiptPolicy {
   Uint8List get fingerprint => Uint8List.fromList(_fingerprint);
 }
 
+/// A public mutation family supported by bounded receipts.
+enum ReceiptMutationKind {
+  /// Vertex Put, including conditional `ifAbsent` calls.
+  vertexPut,
+
+  /// Exact-result Vertex Delete.
+  vertexDelete,
+
+  /// Exact-result Edge Delete.
+  edgeDelete,
+}
+
 /// Capability information returned by [LanternReceipts.getReceiptCapability].
 sealed class ReceiptCapability {
   const ReceiptCapability();
@@ -176,12 +189,15 @@ final class ReceiptCapabilityDisabled extends ReceiptCapability {
 
 /// Receipt capability is enabled with an active policy and endpoint marker.
 final class ReceiptCapabilityEnabled extends ReceiptCapability {
-  const ReceiptCapabilityEnabled._({
+  ReceiptCapabilityEnabled._({
     required this.policy,
     required this.endpoint,
     required this.serverNow,
     required this.observedAt,
-  });
+    required Set<ReceiptMutationKind> supportedMutations,
+  }) : supportedMutations = Set<ReceiptMutationKind>.unmodifiable(
+         supportedMutations,
+       );
 
   /// The active receipt policy.
   final ReceiptPolicy policy;
@@ -194,6 +210,13 @@ final class ReceiptCapabilityEnabled extends ReceiptCapability {
 
   /// The local injected-clock time when the response was observed.
   final DateTime observedAt;
+
+  /// Mutation families currently enabled at this endpoint.
+  final Set<ReceiptMutationKind> supportedMutations;
+
+  /// Whether [mutation] is currently enabled at this endpoint.
+  bool supports(ReceiptMutationKind mutation) =>
+      supportedMutations.contains(mutation);
 
   @override
   bool get enabled => true;
@@ -210,15 +233,18 @@ final class ReceiptContext {
     required Iterable<ReceiptOperationId> operationIds,
     required this.groupId,
     required this.endpoint,
+    required this.mutation,
   }) : operationIds = List<ReceiptOperationId>.unmodifiable(operationIds) {
     if (this.operationIds.isEmpty) {
       throw _invalidArgumentException(
         'receipt operation IDs must not be empty',
       );
     }
-    if (this.operationIds.length > LanternCrud.maxBatchSize) {
+    final itemLimit = _receiptMutationItemLimit(mutation);
+    if (this.operationIds.length > itemLimit) {
       throw _invalidArgumentException(
-        'receipt context exceeds ${LanternCrud.maxBatchSize} operation IDs',
+        'receipt context exceeds the $itemLimit-item '
+        '${mutation.name} limit',
       );
     }
     final epoch = this.operationIds.first.epoch;
@@ -247,6 +273,9 @@ final class ReceiptContext {
   /// The endpoint continuity marker captured before the mutation.
   final ReceiptEndpoint endpoint;
 
+  /// The mutation family these identities were minted for.
+  final ReceiptMutationKind mutation;
+
   /// The deployment epoch shared by all [operationIds].
   ReceiptEpoch get epoch => operationIds.first.epoch;
 }
@@ -263,17 +292,20 @@ enum ReceiptStatusState {
   noLongerProvable,
 }
 
-/// An exact retained Edge Delete receipt.
-final class EdgeDeleteReceipt {
-  EdgeDeleteReceipt._({
+/// An exact retained receipt and its original operation result.
+sealed class MutationReceipt {
+  MutationReceipt._({
+    required this.mutation,
     required this.operationId,
     required this.groupId,
     required this.itemIndex,
     required this.itemCount,
     required Uint8List intentSha256,
     required this.deadline,
-    required this.existed,
   }) : _intentSha256 = Uint8List.fromList(intentSha256);
+
+  /// The mutation family whose result this receipt records.
+  final ReceiptMutationKind mutation;
 
   /// The operation ID whose result this receipt records.
   final ReceiptOperationId operationId;
@@ -292,11 +324,56 @@ final class EdgeDeleteReceipt {
   /// The receipt retention deadline.
   final DateTime deadline;
 
-  /// Whether the requested edge existed when it was deleted.
-  final bool existed;
-
   /// Returns a defensive copy of the canonical intent SHA-256 digest.
   Uint8List get intentSha256 => Uint8List.fromList(_intentSha256);
+}
+
+/// An exact retained Vertex Put receipt.
+final class VertexPutReceipt extends MutationReceipt {
+  VertexPutReceipt._({
+    required super.operationId,
+    required super.groupId,
+    required super.itemIndex,
+    required super.itemCount,
+    required super.intentSha256,
+    required super.deadline,
+    required this.outcome,
+  }) : super._(mutation: ReceiptMutationKind.vertexPut);
+
+  /// The original server-authoritative Put outcome.
+  final PutOutcome outcome;
+}
+
+/// An exact retained Vertex Delete receipt.
+final class VertexDeleteReceipt extends MutationReceipt {
+  VertexDeleteReceipt._({
+    required super.operationId,
+    required super.groupId,
+    required super.itemIndex,
+    required super.itemCount,
+    required super.intentSha256,
+    required super.deadline,
+    required this.existed,
+  }) : super._(mutation: ReceiptMutationKind.vertexDelete);
+
+  /// Whether the requested vertex existed when it was deleted.
+  final bool existed;
+}
+
+/// An exact retained Edge Delete receipt.
+final class EdgeDeleteReceipt extends MutationReceipt {
+  EdgeDeleteReceipt._({
+    required super.operationId,
+    required super.groupId,
+    required super.itemIndex,
+    required super.itemCount,
+    required super.intentSha256,
+    required super.deadline,
+    required this.existed,
+  }) : super._(mutation: ReceiptMutationKind.edgeDelete);
+
+  /// Whether the requested edge existed when it was deleted.
+  final bool existed;
 }
 
 /// A read-only receipt status aligned to one requested operation ID.
@@ -313,9 +390,44 @@ final class ReceiptStatus {
   /// The current evidence state.
   final ReceiptStatusState state;
 
-  /// The exact Edge Delete receipt when [state] is
-  /// [ReceiptStatusState.confirmed].
-  final EdgeDeleteReceipt? receipt;
+  /// The exact typed receipt when [state] is [ReceiptStatusState.confirmed].
+  final MutationReceipt? receipt;
+}
+
+/// An exact, request-index-aligned result from receipt-bearing Vertex Put.
+final class ReceiptVertexPutResult {
+  const ReceiptVertexPutResult._({
+    required this.key,
+    required this.operationId,
+    required this.outcome,
+  });
+
+  /// The requested vertex key.
+  final String key;
+
+  /// The stable operation ID used for this request item.
+  final ReceiptOperationId operationId;
+
+  /// The original server-authoritative Put outcome.
+  final PutOutcome outcome;
+}
+
+/// An exact, request-index-aligned result from receipt-bearing Vertex Delete.
+final class ReceiptVertexDeleteResult {
+  const ReceiptVertexDeleteResult._({
+    required this.key,
+    required this.operationId,
+    required this.existed,
+  });
+
+  /// The requested vertex key.
+  final String key;
+
+  /// The stable operation ID used for this request item.
+  final ReceiptOperationId operationId;
+
+  /// Whether the vertex existed when the server deleted it.
+  final bool existed;
 }
 
 /// An exact, request-index-aligned result from receipt-bearing Edge Delete.
@@ -343,6 +455,9 @@ enum ReceiptReconciliationReason {
 
   /// Receipt capability was disabled before a safe replay could occur.
   capabilityDisabled,
+
+  /// The endpoint no longer advertises this mutation family.
+  mutationUnavailable,
 
   /// The active deployment epoch changed.
   deploymentEpochChanged,
@@ -413,7 +528,8 @@ extension LanternReceipts on LanternClient {
     if (!response.enabled) {
       if (response.hasPolicy() ||
           response.hasEndpoint() ||
-          response.hasServerNowUnixMs()) {
+          response.hasServerNowUnixMs() ||
+          response.supportedMutations.isNotEmpty) {
         throw _internalSdkException(
           'disabled receipt capability returned identity-bearing fields',
         );
@@ -435,6 +551,9 @@ extension LanternReceipts on LanternClient {
         field: 'receipt capability server time',
       ),
       observedAt: observedAt,
+      supportedMutations: _receiptMutationKindsFromProto(
+        response.supportedMutations,
+      ),
     );
   }
 
@@ -444,11 +563,18 @@ extension LanternReceipts on LanternClient {
   /// fetched from the endpoint that will receive the mutation.
   ReceiptContext mintReceiptContext({
     required ReceiptCapabilityEnabled capability,
+    required ReceiptMutationKind mutation,
     required int itemCount,
   }) {
-    if (itemCount <= 0 || itemCount > LanternCrud.maxBatchSize) {
+    final itemLimit = _receiptMutationItemLimit(mutation);
+    if (itemCount <= 0 || itemCount > itemLimit) {
       throw _invalidArgumentException(
-        'receipt itemCount must be in [1, ${LanternCrud.maxBatchSize}]',
+        'receipt itemCount for ${mutation.name} must be in [1, $itemLimit]',
+      );
+    }
+    if (!capability.supports(mutation)) {
+      throw _invalidArgumentException(
+        'receipt capability does not support ${mutation.name}',
       );
     }
     final now = _clock().toUtc();
@@ -495,6 +621,7 @@ extension LanternReceipts on LanternClient {
       operationIds: operationIds,
       groupId: groupId,
       endpoint: capability.endpoint,
+      mutation: mutation,
     );
   }
 
@@ -562,6 +689,185 @@ extension LanternReceipts on LanternClient {
     return statuses.single;
   }
 
+  /// Writes vertices with stable receipt identities and exact original results.
+  ///
+  /// Set [ifAbsent] to preserve an existing live vertex and receive
+  /// [PutOutcome.conditionNotMet] at that request index. Relative expirations
+  /// are resolved once before the first attempt, and every safe replay reuses
+  /// the exact same wire request and [context].
+  Future<List<ReceiptVertexPutResult>> putVerticesWithReceipt(
+    Iterable<VertexInput> vertices, {
+    required ReceiptContext context,
+    bool ifAbsent = false,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    final input = List<VertexInput>.unmodifiable(vertices);
+    _validateReceiptMutationCall(
+      context: context,
+      expectedMutation: ReceiptMutationKind.vertexPut,
+      itemCount: input.length,
+      label: 'Vertex Put',
+    );
+    for (var index = 0; index < input.length; index++) {
+      if (input[index].key.isEmpty) {
+        throw _invalidArgumentException(
+          'receipt Vertex Put item $index has an empty key',
+        );
+      }
+    }
+    final expirations = _resolveExpirations(input, _clock().toUtc());
+    final request = $graph.PutVerticesRequest(
+      vertices: List<$graph.Vertex>.generate(
+        input.length,
+        (index) => _vertexInputToProto(input[index], expirations[index]),
+        growable: false,
+      ),
+      ifAbsent: ifAbsent,
+      receiptContext: _receiptContextToProto(context),
+    );
+    final callOptions = _freezeCallOptions(options);
+    final response = await _invokeReceiptMutation(
+      method: 'PutVerticesWithReceipt',
+      context: context,
+      options: callOptions,
+      call: (raw, headers, signal, onHeader, onTrailer) => raw.putVertices(
+        request,
+        headers: headers,
+        signal: signal,
+        onHeader: onHeader,
+        onTrailer: onTrailer,
+      ),
+    );
+    if (response.outcomes.length != input.length) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Vertex Put',
+        detail: 'outcome count does not match the request',
+      );
+    }
+    final results = <ReceiptVertexPutResult>[];
+    try {
+      for (var index = 0; index < input.length; index++) {
+        results.add(
+          ReceiptVertexPutResult._(
+            key: input[index].key,
+            operationId: context.operationIds[index],
+            outcome: _putOutcomeFromProto(response.outcomes[index]),
+          ),
+        );
+      }
+    } on LanternException catch (error) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Vertex Put',
+        detail: 'returned an invalid outcome',
+        cause: error,
+      );
+    }
+    return List<ReceiptVertexPutResult>.unmodifiable(results);
+  }
+
+  /// Writes one vertex by forwarding to plural [putVerticesWithReceipt].
+  Future<ReceiptVertexPutResult> putVertexWithReceipt(
+    VertexInput vertex, {
+    required ReceiptContext context,
+    bool ifAbsent = false,
+    LanternCallOptions? options,
+  }) async {
+    final results = await putVerticesWithReceipt(
+      <VertexInput>[vertex],
+      context: context,
+      ifAbsent: ifAbsent,
+      options: options,
+    );
+    return results.single;
+  }
+
+  /// Deletes vertices with stable receipt identities and exact original results.
+  ///
+  /// Unlike receipt-less [LanternCrud.deleteVertices], the plural response is
+  /// request-index aligned and preserves an explicit `false` for every absent,
+  /// duplicate-after-delete, or causally rejected item.
+  Future<List<ReceiptVertexDeleteResult>> deleteVerticesWithReceipt(
+    Iterable<String> keys, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    final input = List<String>.unmodifiable(keys);
+    _validateReceiptMutationCall(
+      context: context,
+      expectedMutation: ReceiptMutationKind.vertexDelete,
+      itemCount: input.length,
+      label: 'Vertex Delete',
+    );
+    for (var index = 0; index < input.length; index++) {
+      if (input[index].isEmpty) {
+        throw _invalidArgumentException(
+          'receipt Vertex Delete item $index has an empty key',
+        );
+      }
+    }
+    final request = $graph.DeleteVerticesRequest(
+      keys: input,
+      receiptContext: _receiptContextToProto(context),
+    );
+    final callOptions = _freezeCallOptions(options);
+    final response = await _invokeReceiptMutation(
+      method: 'DeleteVerticesWithReceipt',
+      context: context,
+      options: callOptions,
+      call: (raw, headers, signal, onHeader, onTrailer) => raw.deleteVertices(
+        request,
+        headers: headers,
+        signal: signal,
+        onHeader: onHeader,
+        onTrailer: onTrailer,
+      ),
+    );
+    if (response.existed.length != input.length) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Vertex Delete',
+        detail: 'existed count does not match the request',
+      );
+    }
+    final existedCount = response.existed.where((value) => value).length;
+    if (response.deleted != existedCount) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Vertex Delete',
+        detail: 'deleted count does not match existed values',
+      );
+    }
+    return List<ReceiptVertexDeleteResult>.unmodifiable(
+      List<ReceiptVertexDeleteResult>.generate(
+        input.length,
+        (index) => ReceiptVertexDeleteResult._(
+          key: input[index],
+          operationId: context.operationIds[index],
+          existed: response.existed[index],
+        ),
+        growable: false,
+      ),
+    );
+  }
+
+  /// Deletes one vertex by forwarding to plural [deleteVerticesWithReceipt].
+  Future<ReceiptVertexDeleteResult> deleteVertexWithReceipt(
+    String key, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async {
+    final results = await deleteVerticesWithReceipt(
+      <String>[key],
+      context: context,
+      options: options,
+    );
+    return results.single;
+  }
+
   /// Deletes edges with stable receipt identities and exact original results.
   ///
   /// Existing receipt-less [LanternCrud.deleteEdges] behavior is unchanged.
@@ -574,21 +880,12 @@ extension LanternReceipts on LanternClient {
   }) async {
     _ensureOpen();
     final input = List<EdgeRef>.unmodifiable(edges);
-    if (input.isEmpty) {
-      throw _invalidArgumentException(
-        'receipt-bearing Edge Delete must not be empty',
-      );
-    }
-    if (input.length > LanternCrud.maxBatchSize) {
-      throw _invalidArgumentException(
-        'receipt-bearing Edge Delete exceeds ${LanternCrud.maxBatchSize} items',
-      );
-    }
-    if (context.operationIds.length != input.length) {
-      throw _invalidArgumentException(
-        'receipt operation IDs must align exactly with Edge Delete items',
-      );
-    }
+    _validateReceiptMutationCall(
+      context: context,
+      expectedMutation: ReceiptMutationKind.edgeDelete,
+      itemCount: input.length,
+      label: 'Edge Delete',
+    );
     for (var index = 0; index < input.length; index++) {
       if (input[index].tail.isEmpty || input[index].head.isEmpty) {
         throw _invalidArgumentException(
@@ -601,16 +898,7 @@ extension LanternReceipts on LanternClient {
       edges: input.map(
         (edge) => $graph.EdgeKey(tail: edge.tail, head: edge.head),
       ),
-      receiptContext: $graph.MutationReceiptContext(
-        operationIds: context.operationIds.map(
-          (operationId) => operationId.bytes,
-        ),
-        logicalCallId: context.groupId.bytes,
-        endpoint: $graph.ReceiptEndpoint(
-          nodeId: context.endpoint.nodeId,
-          generation: context.endpoint.generation,
-        ),
-      ),
+      receiptContext: _receiptContextToProto(context),
     );
     final response = await _invokeReceiptMutation(
       method: 'DeleteEdgesWithReceipt',
@@ -625,24 +913,18 @@ extension LanternReceipts on LanternClient {
       ),
     );
     if (response.existed.length != input.length) {
-      throw ReceiptReconciliationException(
-        reason: ReceiptReconciliationReason.outcomeUnknown,
-        context: context,
-        message: 'Edge Delete returned misaligned receipt results',
-        cause: _internalSdkException(
-          'DeleteEdges existed count does not match the request',
-        ),
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Edge Delete',
+        detail: 'existed count does not match the request',
       );
     }
     final existedCount = response.existed.where((value) => value).length;
     if (response.deleted != existedCount) {
-      throw ReceiptReconciliationException(
-        reason: ReceiptReconciliationReason.outcomeUnknown,
-        context: context,
-        message: 'Edge Delete returned inconsistent receipt results',
-        cause: _internalSdkException(
-          'DeleteEdges deleted count does not match existed values',
-        ),
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Edge Delete',
+        detail: 'deleted count does not match existed values',
       );
     }
     return List<ReceiptEdgeDeleteResult>.unmodifiable(
@@ -677,6 +959,54 @@ extension LanternReceipts on LanternClient {
     return results.single;
   }
 }
+
+$graph.MutationReceiptContext _receiptContextToProto(ReceiptContext context) =>
+    $graph.MutationReceiptContext(
+      operationIds: context.operationIds.map(
+        (operationId) => operationId.bytes,
+      ),
+      logicalCallId: context.groupId.bytes,
+      endpoint: $graph.ReceiptEndpoint(
+        nodeId: context.endpoint.nodeId,
+        generation: context.endpoint.generation,
+      ),
+    );
+
+void _validateReceiptMutationCall({
+  required ReceiptContext context,
+  required ReceiptMutationKind expectedMutation,
+  required int itemCount,
+  required String label,
+}) {
+  final itemLimit = _receiptMutationItemLimit(expectedMutation);
+  if (itemCount <= 0 || itemCount > itemLimit) {
+    throw _invalidArgumentException(
+      'receipt-bearing $label item count must be in [1, $itemLimit]',
+    );
+  }
+  if (context.mutation != expectedMutation) {
+    throw _invalidArgumentException(
+      'receipt context for ${context.mutation.name} cannot be used for $label',
+    );
+  }
+  if (context.operationIds.length != itemCount) {
+    throw _invalidArgumentException(
+      'receipt operation IDs must align exactly with $label items',
+    );
+  }
+}
+
+ReceiptReconciliationException _malformedReceiptResponse(
+  ReceiptContext context, {
+  required String mutation,
+  required String detail,
+  Object? cause,
+}) => ReceiptReconciliationException(
+  reason: ReceiptReconciliationReason.outcomeUnknown,
+  context: context,
+  message: '$mutation returned malformed receipt results',
+  cause: cause ?? _internalSdkException('$mutation $detail'),
+);
 
 extension on LanternClient {
   Uint8List _readReceiptRandomBytes(int length, {required String field}) {
@@ -762,7 +1092,7 @@ extension on LanternClient {
           );
         }
         try {
-          await _waitForRetry(policy.delay(completedAttempts), options);
+          await _waitForRetry(policy!.delay(completedAttempts), options);
           final capability = await getReceiptCapability(
             options: _receiptPreflightOptions(options),
           );
@@ -806,6 +1136,40 @@ ReceiptRandomSource _secureReceiptRandomSource() {
     } while (bytes.every((byte) => byte == 0));
     return bytes;
   };
+}
+
+int _receiptMutationItemLimit(ReceiptMutationKind mutation) =>
+    switch (mutation) {
+      ReceiptMutationKind.vertexPut ||
+      ReceiptMutationKind.vertexDelete => _receiptVertexMutationBatchSize,
+      ReceiptMutationKind.edgeDelete => LanternCrud.maxBatchSize,
+    };
+
+Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
+  Iterable<$graph.ReceiptMutationKind> values,
+) {
+  final mutations = <ReceiptMutationKind>{};
+  var previousValue = 0;
+  for (final value in values) {
+    final mutation = switch (value) {
+      $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_PUT_VERTEX =>
+        ReceiptMutationKind.vertexPut,
+      $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_VERTEX =>
+        ReceiptMutationKind.vertexDelete,
+      $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE =>
+        ReceiptMutationKind.edgeDelete,
+      _ => throw _internalSdkException(
+        'receipt capability advertised an unknown mutation family',
+      ),
+    };
+    if (value.value <= previousValue || !mutations.add(mutation)) {
+      throw _internalSdkException(
+        'receipt capability mutation families are not strictly ascending',
+      );
+    }
+    previousValue = value.value;
+  }
+  return Set<ReceiptMutationKind>.unmodifiable(mutations);
 }
 
 ReceiptPolicy _receiptPolicyFromProto($graph.ReceiptPolicy value) {
@@ -893,7 +1257,7 @@ ReceiptStatus _receiptStatusFromProto(
       return ReceiptStatus._(
         operationId: operationId,
         state: ReceiptStatusState.confirmed,
-        receipt: _edgeDeleteReceiptFromProto(operationId, value.receipt),
+        receipt: _mutationReceiptFromProto(operationId, value.receipt),
       );
     case $graph.MutationReceiptState.MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED:
       if (value.hasReceipt()) {
@@ -921,7 +1285,7 @@ ReceiptStatus _receiptStatusFromProto(
   }
 }
 
-EdgeDeleteReceipt _edgeDeleteReceiptFromProto(
+MutationReceipt _mutationReceiptFromProto(
   ReceiptOperationId expectedOperationId,
   $graph.MutationReceipt value,
 ) {
@@ -966,21 +1330,69 @@ EdgeDeleteReceipt _edgeDeleteReceiptFromProto(
       'confirmed receipt deadline must follow issuance',
     );
   }
-  if (value.originalResult.whichResult() !=
-      $graph.ReceiptResult_Result.deleteEdgeExisted) {
+  final result = value.originalResult;
+  switch (result.whichResult()) {
+    case $graph.ReceiptResult_Result.putVertexOutcome:
+      _validateReceiptItemLimit(value.itemCount, ReceiptMutationKind.vertexPut);
+      late final PutOutcome outcome;
+      try {
+        outcome = _putOutcomeFromProto(result.putVertexOutcome);
+      } on LanternException catch (error) {
+        throw _internalSdkException(
+          'confirmed Vertex Put receipt has an invalid outcome: $error',
+        );
+      }
+      return VertexPutReceipt._(
+        operationId: operationId,
+        groupId: groupId,
+        itemIndex: value.itemIndex,
+        itemCount: value.itemCount,
+        intentSha256: intentSha256,
+        deadline: deadline,
+        outcome: outcome,
+      );
+    case $graph.ReceiptResult_Result.deleteVertexExisted:
+      _validateReceiptItemLimit(
+        value.itemCount,
+        ReceiptMutationKind.vertexDelete,
+      );
+      return VertexDeleteReceipt._(
+        operationId: operationId,
+        groupId: groupId,
+        itemIndex: value.itemIndex,
+        itemCount: value.itemCount,
+        intentSha256: intentSha256,
+        deadline: deadline,
+        existed: result.deleteVertexExisted,
+      );
+    case $graph.ReceiptResult_Result.deleteEdgeExisted:
+      _validateReceiptItemLimit(
+        value.itemCount,
+        ReceiptMutationKind.edgeDelete,
+      );
+      return EdgeDeleteReceipt._(
+        operationId: operationId,
+        groupId: groupId,
+        itemIndex: value.itemIndex,
+        itemCount: value.itemCount,
+        intentSha256: intentSha256,
+        deadline: deadline,
+        existed: result.deleteEdgeExisted,
+      );
+    case $graph.ReceiptResult_Result.notSet:
+      throw _internalSdkException(
+        'confirmed receipt omitted its original result',
+      );
+  }
+}
+
+void _validateReceiptItemLimit(int itemCount, ReceiptMutationKind mutation) {
+  final itemLimit = _receiptMutationItemLimit(mutation);
+  if (itemCount > itemLimit) {
     throw _internalSdkException(
-      'confirmed receipt result is not a public Edge Delete result',
+      'confirmed ${mutation.name} receipt exceeds its $itemLimit-item limit',
     );
   }
-  return EdgeDeleteReceipt._(
-    operationId: operationId,
-    groupId: groupId,
-    itemIndex: value.itemIndex,
-    itemCount: value.itemCount,
-    intentSha256: intentSha256,
-    deadline: deadline,
-    existed: value.originalResult.deleteEdgeExisted,
-  );
 }
 
 void _validateReceiptContinuity(
@@ -1017,6 +1429,13 @@ void _validateReceiptContinuity(
       reason: ReceiptReconciliationReason.generationChanged,
       context: context,
       message: 'receipt endpoint generation changed',
+    );
+  }
+  if (!enabled.supports(context.mutation)) {
+    throw ReceiptReconciliationException(
+      reason: ReceiptReconciliationReason.mutationUnavailable,
+      context: context,
+      message: 'receipt endpoint no longer supports ${context.mutation.name}',
     );
   }
 }
