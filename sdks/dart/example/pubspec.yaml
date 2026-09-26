@@ -31,7 +31,7 @@ dependencies:
   crypto: 3.0.7
   flutter:
     sdk: flutter
-  lantern_client: ^0.3.1
+  lantern_client: ^0.3.2
   lantern_client_offline: ^0.4.0
   lantern_client_offline_sqlite:
     path: ../offline_sqlite
