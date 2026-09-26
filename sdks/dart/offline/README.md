@@ -3,7 +3,8 @@
 Experimental, storage-neutral offline Repository support for
 [`lantern_client`](https://pub.dev/packages/lantern_client). It provides a strict
 versioned cache/outbox codec, a deterministic non-production in-memory reference
-store, latency-compensated Put writes, and explicit foreground replay.
+store, latency-compensated Put writes, receipt-reconciled mutations, and
+explicit foreground replay.
 
 The initial independent `0.2.0` release under
 [#1162](https://github.com/anaregdesign/lantern/issues/1162) used an exact-code
@@ -11,7 +12,9 @@ physical Android/iOS matrix and a one-time interactive OAuth publication.
 The `0.3.0` bridge release is tracked under
 [#1314](https://github.com/anaregdesign/lantern/issues/1314). It depends on
 hosted `lantern_client 0.3.0`; the maintained Flutter example uses local
-overrides for development.
+overrides for development. The unreleased receipt foundation requires a
+receipt-capable hosted parent before publication; its hosted dependency
+constraint intentionally remains unchanged until that parent exists.
 
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
@@ -48,9 +51,16 @@ final operation = repository.watchWrite(
 ```
 
 An offline write Future means the local transaction has committed. Watch its
-handle for remote confirmation, retry, expiry, or dead-letter status. Only
-unconditional `PutVertex` and `PutEdge` are admitted. Add, conditional puts,
-and Deletes intentionally have no durable API in the first release.
+handle for remote confirmation, retry, expiry, dead-letter, or
+`outcomeUnknown` status. Unconditional `PutVertex` and `PutEdge` retain their
+idempotent replay path. `putVertexIfAbsent`/`putVerticesIfAbsent`,
+`deleteVertex`/`deleteVertices`, and `deleteEdge`/`deleteEdges` use bounded
+server receipts and retain each exact original Put/Delete result.
+`addEdge`/`addEdges` require explicit, distinct nonzero 24-byte contribution
+IDs, persist them with receipt evidence, and retain each exact original
+effective weight, including signed infinity and semantic NaN if returned by
+Lantern. Add inputs remain finite. Capped prefix Delete remains outside the
+durable API.
 
 Per-item handle streams are process-local conveniences. `getWriteStatus` and
 `watchWrite` read a content-free durable operation aggregate, preserve mixed
@@ -60,12 +70,29 @@ Caller-supplied operation IDs and generated record IDs are collision checked
 inside the enqueue transaction. Collisions fail with a typed error and never
 replace retained work; generated IDs use a bounded retry budget.
 
-`putVertices` and `putEdges` atomically enqueue every item in one logical
-operation with stable item indexes. Relative TTL is resolved to one absolute
-instant at enqueue and is never rebased during replay.
+Plural writes atomically enqueue every item in one logical local operation
+with stable item indexes. Relative TTL is resolved to one absolute instant at
+enqueue and is never rebased during replay. Each receipt-bearing item persists
+its operation ID, one-item logical receipt group, endpoint NodeID/generation,
+policy fingerprint, and exact `itemIndex=0`/`itemCount=1` receipt topology
+before its first mutation send.
+
+Receipt replay is status-first after every enqueue, ambiguous response, lease
+recovery, and process restart. A retained `CONFIRMED` receipt completes the
+local aggregate with the exact original result. `NOT_YET_OBSERVED` permits one
+send only after mutation support, endpoint continuity, deployment epoch,
+retention, caps, and policy fingerprint still match the persisted evidence.
+A lookup failure remains retryable and unresolved; `NO_LONGER_PROVABLE`,
+changed continuity, exhausted attempts, or local max age becomes terminal
+`outcomeUnknown`, never `false`, zero, or success. Receipt dead letters cannot
+be generically retried. Token rotation alone does not change endpoint
+continuity: rotate credentials, then call `resume` to perform status-first
+reconciliation.
 
 Snapshots written by the earlier experimental Add implementation remain
-readable for migration only. Opening snapshot schema v1, v2, or v3 converts
+readable for migration only. Those legacy `OfflineAddEdgeIntent` records are
+distinct from the current receipt-backed `OfflineReceiptAddEdgeIntent`.
+Opening snapshot schema v1, v2, or v3 converts
 every legacy Add item to an inspectable terminal dead letter with diagnostic
 `unsupported_add`, without incrementing its attempt count, overlaying it on
 reads, or invoking the remote. Schema v4 fails closed on Add. Schema v5 accepts
@@ -73,10 +100,9 @@ only the exact terminal `unsupported_add` shape produced by that migration;
 every live or noncanonical Add still fails closed. `retryDeadLetter`
 rejects a migrated item with
 `OfflineUnsupportedOperationException`; applications may inspect it through
-their authorization callback and then retain or delete it. Durable Add can be
-considered again only after #1115 supplies server-authoritative operation
-receipts and the offline package has conformance and response-loss evidence for
-that receipt contract.
+their authorization callback and then retain or delete it. Current Add is
+admitted only through its separate receipt-bearing API and never upgrades,
+replays, or aliases a legacy persisted Add record.
 
 `readVertex`/`readEdge` expose cache-only, cache-first, and server-only policies.
 After a checkpoint reset, a bounded resident identity stays Unknown until the
@@ -116,14 +142,19 @@ client's nested retry policy is suppressed. Each `attemptCount` increment is one
 completed durable adapter attempt that permits at most one singular RPC; a
 credential-provider or cancellation failure can finish before any wire send.
 There are no hidden nested transport attempts.
-Replay consumes the online SDK's server-authoritative `PutOutcome` without
-changing the record codec. `appliedAndLive` confirms only while the resolved
-expiration is live before send, at response observation, and at the local
-commit; a clock rollback cannot revive an already expired sample. `expired`
-terminalizes and invalidates older confirmed cache state. `conditionNotMet`
-and `superseded` become inspectable dead letters because the attempted value is
-not the authoritative server value. An observed outcome consumes one attempt;
-local pre-send expiration consumes none.
+Receipt-less Put replay consumes the online SDK's server-authoritative
+`PutOutcome`. `appliedAndLive` confirms only while the resolved expiration is
+live before send, at response observation, and at the local commit; a clock
+rollback cannot revive an already expired sample. `expired` terminalizes and
+invalidates older confirmed cache state. `conditionNotMet` and `superseded`
+become inspectable dead letters because the attempted value is not the
+authoritative server value. An observed outcome consumes one attempt; local
+pre-send expiration consumes none.
+Receipt-bearing operations instead retain their original typed result in the
+durable operation aggregate. Their outbox codec includes immutable receipt
+identity and continuity evidence; confirmed receipt replay invalidates any
+possibly stale cache entry rather than claiming the receipt describes current
+graph state after later mutations.
 `Unauthenticated` sets a durable partition pause without burning an attempt;
 the partition auth epoch also cancels same-batch sibling token acquisition
 before another send can start.
@@ -141,9 +172,11 @@ released, while concurrent unique partitions fail with
 `OfflineCapacityException` before the process-local map can exceed that cap.
 `OfflineStoreLimits` bounds global and per-partition cache, outbox, and
 operation-metadata bytes and record counts, plus per-record lease-owner and
-diagnostic-code bytes. Outbox admission charges each immutable payload for its
-full bounded lifecycle envelope, so claim, retry, and dead-letter metadata
-cannot make an accepted snapshot exceed the same configured byte limits.
+diagnostic-code bytes. Receipt reconciliation requires at least 28 diagnostic
+UTF-8 bytes; smaller custom limits fail closed at configuration time. Outbox
+admission charges each immutable payload for its full bounded lifecycle
+envelope, so claim, retry, and dead-letter metadata cannot make an accepted
+snapshot exceed the same configured byte limits.
 Confirmed cache and retained terminal operation entries may be evicted under
 pressure; live outbox and non-terminal operation records are never discarded
 to admit a new write.

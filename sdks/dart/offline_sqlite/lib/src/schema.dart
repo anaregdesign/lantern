@@ -1,6 +1,6 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 2;
+const _schemaVersion = 3;
 const _applicationId = 0x4c4e544f;
 const _legacyPartitions = '''CREATE TABLE partitions (
     partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
@@ -91,6 +91,7 @@ final _indexes = <String, String>{
 };
 
 Future<void> _createSchema(Database db, int version) async {
+  if (version != _schemaVersion) throw const OfflineSchemaException();
   final existing = await db.rawQuery(
     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata'",
   );
@@ -103,47 +104,125 @@ Future<void> _createSchema(Database db, int version) async {
   }
   await db.insert('store_metadata', {
     'key': 'format',
-    'value': 'lantern-offline-2',
+    'value': 'lantern-offline-3',
   });
   await db.execute('PRAGMA application_id = $_applicationId');
 }
 
-Future<void> _upgradeSchema(Database db, int oldVersion, int newVersion) async {
-  if (oldVersion != 1 ||
+Future<void> _upgradeSchema(
+  Database db,
+  int oldVersion,
+  int newVersion,
+  OfflineStoreLimits limits,
+) async {
+  if ((oldVersion != 1 && oldVersion != 2) ||
       newVersion != _schemaVersion ||
       (await db.rawQuery('PRAGMA application_id')).single.values.single !=
           _applicationId) {
     throw const OfflineSchemaException();
   }
   final marker = await db.query('store_metadata');
+  final expectedMarker = 'lantern-offline-$oldVersion';
   if (marker.length != 1 ||
       marker.single['key'] != 'format' ||
-      marker.single['value'] != 'lantern-offline-1') {
+      marker.single['value'] != expectedMarker) {
     throw const OfflineSchemaException();
   }
-  await _checkDefinitions(db, <String, String>{
-    for (final statement in _tables)
-      if (!statement.startsWith('CREATE TABLE recovery'))
-        RegExp(r'CREATE TABLE (\w+)')
-            .firstMatch(statement)!
-            .group(1)!: statement.startsWith('CREATE TABLE partitions')
-            ? _legacyPartitions
-            : statement,
-    for (final entry in _indexes.entries)
-      entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
+  if (oldVersion == 1) {
+    await _checkDefinitions(db, <String, String>{
+      for (final statement in _tables)
+        if (!statement.startsWith('CREATE TABLE recovery'))
+          RegExp(r'CREATE TABLE (\w+)')
+              .firstMatch(statement)!
+              .group(1)!: statement.startsWith('CREATE TABLE partitions')
+              ? _legacyPartitions
+              : statement,
+      for (final entry in _indexes.entries)
+        entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
+    });
+    await db.execute(
+      'ALTER TABLE partitions ADD COLUMN change_epoch INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      _tables.firstWhere((table) => table.startsWith('CREATE TABLE recovery')),
+    );
+  } else {
+    await _checkDefinitions(db, <String, String>{
+      for (final statement in _tables)
+        RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
+            statement,
+      for (final entry in _indexes.entries)
+        entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
+    });
+  }
+  await _rewritePayloads(db, 'outbox', 'record_id', (row) {
+    final record = _outbox(row);
+    return _outboxColumns(record, limits);
   });
-  await db.execute(
-    'ALTER TABLE partitions ADD COLUMN change_epoch INTEGER NOT NULL DEFAULT 0',
-  );
-  await db.execute(
-    _tables.firstWhere((table) => table.startsWith('CREATE TABLE recovery')),
-  );
+  await _rewritePayloads(db, 'operations', 'operation_id', (row) {
+    final record = _operation(row);
+    return _operationColumns(record, limits);
+  });
+  final transaction = _SqlTransaction(db, limits);
+  await transaction.validateAll();
+  await transaction.finish();
   await db.update(
     'store_metadata',
-    {'value': 'lantern-offline-2'},
+    {'value': 'lantern-offline-3'},
     where: 'key=?',
     whereArgs: ['format'],
   );
+}
+
+Future<void> _rewritePayloads(
+  Database db,
+  String table,
+  String key,
+  Map<String, Object?> Function(Map<String, Object?> row) columns,
+) async {
+  String? partitionCursor;
+  while (true) {
+    final partitions = await db.query(
+      'partitions',
+      columns: <String>['partition_id'],
+      where: partitionCursor == null ? null : 'partition_id>?',
+      whereArgs: partitionCursor == null ? null : <Object?>[partitionCursor],
+      orderBy: 'partition_id',
+      limit: 128,
+    );
+    if (partitions.isEmpty) return;
+    for (final partition in partitions) {
+      final partitionId = partition['partition_id'];
+      if (partitionId is! String || partitionId.isEmpty) {
+        throw const OfflineSchemaException();
+      }
+      String? cursor;
+      while (true) {
+        final rows = await db.query(
+          table,
+          where: 'partition_id=?${cursor == null ? '' : ' AND $key>?'}',
+          whereArgs: <Object?>[partitionId, ?cursor],
+          orderBy: key,
+          limit: 128,
+        );
+        if (rows.isEmpty) break;
+        for (final row in rows) {
+          final identity = row[key];
+          if (identity is! String || identity.isEmpty) {
+            throw const OfflineSchemaException();
+          }
+          await db.update(
+            table,
+            columns(row),
+            where: 'partition_id=? AND $key=?',
+            whereArgs: <Object?>[partitionId, identity],
+          );
+        }
+        cursor = rows.last[key]! as String;
+      }
+    }
+    partitionCursor = partitions.last['partition_id']! as String;
+  }
 }
 
 Future<void> _checkSchema(Database db) async {
@@ -178,7 +257,7 @@ Future<void> _checkSchema(Database db) async {
         version != _schemaVersion ||
         marker.length != 1 ||
         marker.single['key'] != 'format' ||
-        marker.single['value'] != 'lantern-offline-2') {
+        marker.single['value'] != 'lantern-offline-3') {
       throw const OfflineSchemaException();
     }
     final definitions = <String, String>{

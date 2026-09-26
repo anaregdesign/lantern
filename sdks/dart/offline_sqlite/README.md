@@ -48,12 +48,18 @@ rotating an account's credentials, as required by the offline core contract.
   durability setting, not a claim to survive arbitrary storage hardware faults.
 - Cache capacity may evict least-recently-used confirmed records. Pending
   outbox work is never evicted to admit another write.
-- The initial offline write surface remains unconditional Put only. Reopening
-  preserves absolute expiration and retry deadlines; replay never extends TTL.
+- Unconditional Put retains its idempotent path. Receipt-bearing Vertex
+  PutIfAbsent and exact Vertex/Edge Delete preserve identity, endpoint/policy
+  evidence, reconciliation state, and exact original results across reopen.
+  Receipt-backed Edge Add also retains its explicit contribution ID and
+  original effective weight, including non-finite results. Legacy Add stays
+  quarantined. Reopening preserves absolute expiration and retry deadlines;
+  replay never extends TTL.
 - Unknown schemas, noncanonical records, damaged indexes, and inconsistent
-  cache/outbox/operation state fail closed. Schema 2 adds a key-only recovery
-  table and a partition change epoch. Schema 1 migrates transactionally to 2
-  without dropping cache, cursor, or pending writes. An unsupported version
+  cache/outbox/operation state fail closed. Schema 2 added a key-only recovery
+  table and a partition change epoch. Schema 3 atomically rewrites schema 1/2
+  outbox and operation payloads/reservations for receipt evidence before
+  validating the full graph and configured capacities. An unsupported version
   never resets the database.
 
 Use one store owner per database in the application. Separate connections in

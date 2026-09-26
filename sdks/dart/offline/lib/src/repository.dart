@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
@@ -503,6 +504,197 @@ final class OfflineLanternRepository {
     return await _enqueueOperation(
       partitionId,
       intents,
+      now: now,
+      operationId: operationId,
+    );
+  }
+
+  /// Durably enqueues one receipt-bearing conditional vertex insertion.
+  ///
+  /// The endpoint capability, operation ID, logical group, endpoint marker,
+  /// and policy are committed locally before any mutation attempt.
+  Future<OfflineWriteHandle> putVertexIfAbsent({
+    required String partitionId,
+    required VertexInput input,
+    String? operationId,
+  }) async => (await putVerticesIfAbsent(
+    partitionId: partitionId,
+    inputs: <VertexInput>[input],
+    operationId: operationId,
+  )).items.single;
+
+  /// Atomically enqueues conditional vertex insertions for receipt replay.
+  Future<OfflineWriteOperation> putVerticesIfAbsent({
+    required String partitionId,
+    required Iterable<VertexInput> inputs,
+    String? operationId,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    final items = inputs.toList(growable: false);
+    if (items.isEmpty || items.length > LanternCrud.maxBatchSize) {
+      throw const OfflineArgumentException();
+    }
+    final now = config.clock().toUtc();
+    final intents = items
+        .map((input) {
+          _validatePartitionAndKey(partitionId, input.key);
+          final vertex = Vertex(
+            key: input.key,
+            value: copyOfflineValue(input.value),
+            expiration: _resolveExpiration(
+              input.expiresIn,
+              input.expiresAt,
+              now,
+            ),
+          );
+          return () => OfflinePutVertexIfAbsentIntent(vertex);
+        })
+        .toList(growable: false);
+    return _enqueueReceiptOperation(
+      partitionId,
+      intents,
+      mutation: ReceiptMutationKind.vertexPut,
+      now: now,
+      operationId: operationId,
+    );
+  }
+
+  /// Durably enqueues one receipt-bearing exact vertex deletion.
+  Future<OfflineWriteHandle> deleteVertex({
+    required String partitionId,
+    required String key,
+    String? operationId,
+  }) async => (await deleteVertices(
+    partitionId: partitionId,
+    keys: <String>[key],
+    operationId: operationId,
+  )).items.single;
+
+  /// Atomically enqueues exact vertex deletions for receipt replay.
+  Future<OfflineWriteOperation> deleteVertices({
+    required String partitionId,
+    required Iterable<String> keys,
+    String? operationId,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    final items = keys.toList(growable: false);
+    if (items.isEmpty || items.length > LanternCrud.maxBatchSize) {
+      throw const OfflineArgumentException();
+    }
+    final intents = items
+        .map((key) {
+          _validatePartitionAndKey(partitionId, key);
+          return () => OfflineDeleteVertexIntent(key);
+        })
+        .toList(growable: false);
+    return _enqueueReceiptOperation(
+      partitionId,
+      intents,
+      mutation: ReceiptMutationKind.vertexDelete,
+      now: config.clock().toUtc(),
+      operationId: operationId,
+    );
+  }
+
+  /// Durably enqueues one receipt-bearing exact edge deletion.
+  Future<OfflineWriteHandle> deleteEdge({
+    required String partitionId,
+    required EdgeRef edge,
+    String? operationId,
+  }) async => (await deleteEdges(
+    partitionId: partitionId,
+    edges: <EdgeRef>[edge],
+    operationId: operationId,
+  )).items.single;
+
+  /// Atomically enqueues exact edge deletions for receipt replay.
+  Future<OfflineWriteOperation> deleteEdges({
+    required String partitionId,
+    required Iterable<EdgeRef> edges,
+    String? operationId,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    final items = edges.toList(growable: false);
+    if (items.isEmpty || items.length > LanternCrud.maxBatchSize) {
+      throw const OfflineArgumentException();
+    }
+    final intents = items
+        .map((edge) {
+          _validatePartitionAndKey(partitionId, edge.tail);
+          if (edge.head.isEmpty) throw const OfflineArgumentException();
+          return () => OfflineDeleteEdgeIntent(edge);
+        })
+        .toList(growable: false);
+    return _enqueueReceiptOperation(
+      partitionId,
+      intents,
+      mutation: ReceiptMutationKind.edgeDelete,
+      now: config.clock().toUtc(),
+      operationId: operationId,
+    );
+  }
+
+  /// Durably enqueues one receipt-bearing contribution-keyed edge addition.
+  Future<OfflineWriteHandle> addEdge({
+    required String partitionId,
+    required EdgeInput input,
+    String? operationId,
+  }) async => (await addEdges(
+    partitionId: partitionId,
+    inputs: <EdgeInput>[input],
+    operationId: operationId,
+  )).items.single;
+
+  /// Atomically enqueues contribution-keyed edge additions for receipt replay.
+  ///
+  /// Every input must carry a distinct explicit, nonzero 24-byte
+  /// [EdgeInput.contribId]. The IDs and receipt evidence are persisted before
+  /// any mutation send.
+  Future<OfflineWriteOperation> addEdges({
+    required String partitionId,
+    required Iterable<EdgeInput> inputs,
+    String? operationId,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    final items = inputs.toList(growable: false);
+    if (items.isEmpty || items.length > LanternCrud.maxBatchSize) {
+      throw const OfflineArgumentException();
+    }
+    final now = config.clock().toUtc();
+    final seenContributionIds = <String>{};
+    final intents = items
+        .map((input) {
+          _validatePartitionAndKey(partitionId, input.tail);
+          if (input.head.isEmpty) throw const OfflineArgumentException();
+          final rawContributionId = input.contribId;
+          if (rawContributionId == null) {
+            throw const OfflineArgumentException();
+          }
+          final contributionId = _copyOfflineContributionId(rawContributionId);
+          if (!seenContributionIds.add(base64UrlEncode(contributionId))) {
+            throw const OfflineArgumentException();
+          }
+          final edge = Edge(
+            tail: input.tail,
+            head: input.head,
+            weight: normalizeOfflineFloat32(input.weight),
+            expiration: _resolveExpiration(
+              input.expiresIn,
+              input.expiresAt,
+              now,
+            ),
+          );
+          return () => OfflineReceiptAddEdgeIntent(edge, contributionId);
+        })
+        .toList(growable: false);
+    return _enqueueReceiptOperation(
+      partitionId,
+      intents,
+      mutation: ReceiptMutationKind.edgeAdd,
       now: now,
       operationId: operationId,
     );
@@ -1019,7 +1211,7 @@ final class OfflineLanternRepository {
         if (record == null || record.state != OfflineOutboxState.deadLetter) {
           throw const OfflineArgumentException();
         }
-        if (record.intent is OfflineAddEdgeIntent) {
+        if (record.intent is OfflineAddEdgeIntent || record.receipt != null) {
           throw const OfflineUnsupportedOperationException();
         }
         final now = config.clock().toUtc();
@@ -1809,7 +2001,14 @@ final class OfflineLanternRepository {
           case OfflineAddEdgeIntent():
             // Migration-only Add records are filtered out by [_livePending].
             break;
-          case OfflinePutVertexIntent():
+          case OfflineReceiptAddEdgeIntent():
+            // The original effective weight is unknown until confirmation.
+            break;
+          case OfflineDeleteEdgeIntent():
+            break;
+          case OfflinePutVertexIntent() ||
+              OfflinePutVertexIfAbsentIntent() ||
+              OfflineDeleteVertexIntent():
             throw StateError('vertex intent has edge ordering key');
         }
       }
@@ -1933,20 +2132,81 @@ final class OfflineLanternRepository {
     return operation;
   }
 
+  Future<OfflineWriteOperation> _enqueueReceiptOperation(
+    String partitionId,
+    List<OfflineIntent Function()> intentBuilders, {
+    required ReceiptMutationKind mutation,
+    required DateTime now,
+    required String? operationId,
+  }) {
+    if (operationId != null) _validateId(operationId);
+    final currentRemote = remote;
+    if (currentRemote is! OfflineReceiptRemote) {
+      return Future<OfflineWriteOperation>.error(
+        const OfflineUnsupportedOperationException(),
+      );
+    }
+    final receiptRemote = currentRemote as OfflineReceiptRemote;
+    final operation = _runPartitionWork(partitionId, null, (
+      cancellation,
+    ) async {
+      final preparation = await receiptRemote.prepareReceipts(
+        mutation,
+        itemCount: intentBuilders.length,
+        cancellation: cancellation,
+      );
+      if (preparation.mutation != mutation ||
+          preparation.evidence.length != intentBuilders.length) {
+        throw const OfflineRemoteProtocolException();
+      }
+      return _enqueueOperationOwned(
+        partitionId,
+        intentBuilders,
+        now: now,
+        operationId: operationId,
+        receipts: preparation.evidence,
+      );
+    });
+    late final Future<void> settled;
+    settled = operation
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+        .whenComplete(() => _inFlightEnqueues.remove(settled));
+    _inFlightEnqueues.add(settled);
+    return operation;
+  }
+
   Future<OfflineWriteOperation> _enqueueOperationOwned(
     String partitionId,
     List<OfflineIntent Function()> intentBuilders, {
     required DateTime now,
     required String? operationId,
+    List<OfflineReceiptEvidence>? receipts,
   }) async {
     if (intentBuilders.isEmpty) throw const OfflineArgumentException();
+    if (receipts != null && receipts.length != intentBuilders.length) {
+      throw const OfflineRemoteProtocolException();
+    }
     await _expireOrAgeOut(partitionId);
     _ensureActive();
     final intents = intentBuilders
         .map((builder) => builder())
         .toList(growable: false);
+    if (receipts != null) {
+      for (var index = 0; index < intents.length; index++) {
+        final expected = switch (intents[index]) {
+          OfflinePutVertexIfAbsentIntent() => ReceiptMutationKind.vertexPut,
+          OfflineDeleteVertexIntent() => ReceiptMutationKind.vertexDelete,
+          OfflineDeleteEdgeIntent() => ReceiptMutationKind.edgeDelete,
+          OfflineReceiptAddEdgeIntent() => ReceiptMutationKind.edgeAdd,
+          _ => null,
+        };
+        if (expected == null || receipts[index].mutation != expected) {
+          throw const OfflineRemoteProtocolException();
+        }
+      }
+    }
     final liveControllerCount = intents
-        .where((intent) => _live(intent.expiration, now))
+        .where((intent) => receipts != null || _live(intent.expiration, now))
         .length;
     if (_writeStatuses.length +
             _reservedWriteStatusControllers +
@@ -1984,8 +2244,9 @@ final class OfflineLanternRepository {
             ) {
               final intent = intents[index];
               final state =
-                  !_live(intent.expiration, now) ||
-                      !_live(intent.expiration, committedAt)
+                  receipts == null &&
+                      (!_live(intent.expiration, now) ||
+                          !_live(intent.expiration, committedAt))
                   ? OfflineOutboxState.expired
                   : OfflineOutboxState.enqueued;
               return OfflineOutboxRecord(
@@ -1999,6 +2260,7 @@ final class OfflineLanternRepository {
                 state: state,
                 attemptCount: 0,
                 generation: generation,
+                receipt: receipts?[index],
                 diagnosticCode: state == OfflineOutboxState.expired
                     ? 'expired'
                     : null,
@@ -2106,6 +2368,14 @@ final class OfflineLanternRepository {
         }
         return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
       }
+      if (claimState == _ClaimSendState.maxAge) {
+        await _expireOrAgeOut(
+          partitionId,
+          recordId: claimed.recordId,
+          claimedBy: owner,
+        );
+        return const _ReplayOutcome(deadLetter: true);
+      }
       if (claimState == _ClaimSendState.stale) {
         await _releaseClaim(partitionId, claimed, owner);
         return const _ReplayOutcome();
@@ -2172,8 +2442,11 @@ final class OfflineLanternRepository {
         now.isBefore(current.leaseUntil!) &&
         (await transaction.generation(partitionId)) == claimed.generation;
     if (!valid) return _ClaimSendState.stale;
-    return await transaction.replayPausedForAuth(partitionId)
-        ? _ClaimSendState.pausedForAuth
+    if (await transaction.replayPausedForAuth(partitionId)) {
+      return _ClaimSendState.pausedForAuth;
+    }
+    return now.difference(current.enqueuedAt) >= config.maxAge
+        ? _ClaimSendState.maxAge
         : _ClaimSendState.sendable;
   });
 
@@ -2234,6 +2507,16 @@ final class OfflineLanternRepository {
     if (claimed.intent is OfflineAddEdgeIntent) {
       return _deadLetterUnsupportedAdd(partitionId, claimed, owner);
     }
+    if (claimed.receipt != null) {
+      return _replayReceiptOne(
+        partitionId,
+        claimed,
+        owner: owner,
+        runtime: runtime,
+        authEpoch: authEpoch,
+        cancellation: cancellation,
+      );
+    }
     if (claimed.attemptCount >= config.maxAttempts ||
         claimed.attemptCount >= _maxDurableAttemptCount) {
       return _deadLetterAttemptsExhausted(partitionId, claimed, owner);
@@ -2244,7 +2527,11 @@ final class OfflineLanternRepository {
       return const _ReplayOutcome();
     }
     if (initialObservedAt.difference(claimed.enqueuedAt) >= config.maxAge) {
-      await _expireOrAgeOut(partitionId, recordId: claimed.recordId);
+      await _expireOrAgeOut(
+        partitionId,
+        recordId: claimed.recordId,
+        claimedBy: owner,
+      );
       return const _ReplayOutcome(deadLetter: true);
     }
     try {
@@ -2259,6 +2546,12 @@ final class OfflineLanternRepository {
         ),
         OfflineAddEdgeIntent() => throw StateError(
           'legacy Add reached the remote replay switch',
+        ),
+        OfflinePutVertexIfAbsentIntent() ||
+        OfflineDeleteVertexIntent() ||
+        OfflineDeleteEdgeIntent() ||
+        OfflineReceiptAddEdgeIntent() => throw StateError(
+          'receipt intent reached the receipt-less replay switch',
         ),
       };
       final responseObservedAt = config.clock().toUtc();
@@ -2396,6 +2689,597 @@ final class OfflineLanternRepository {
       await _releaseClaim(partitionId, claimed, owner);
       rethrow;
     }
+  }
+
+  Future<_ReplayOutcome> _replayReceiptOne(
+    String partitionId,
+    OfflineOutboxRecord claimed, {
+    required String owner,
+    required _PartitionRuntime runtime,
+    required _ReplayAuthEpoch authEpoch,
+    required LanternCancellationToken? cancellation,
+  }) async {
+    final currentRemote = remote;
+    if (currentRemote is! OfflineReceiptRemote) {
+      return _recordReceiptUnresolved(
+        partitionId,
+        claimed,
+        owner,
+        receiptState: claimed.receipt!.state,
+        diagnosticCode: 'receipt_remote_unavailable',
+      );
+    }
+    final receiptRemote = currentRemote as OfflineReceiptRemote;
+
+    late final OfflineReceiptStatus status;
+    try {
+      status = await receiptRemote.getReceiptStatus(
+        claimed.receipt!.operationId,
+        cancellation: cancellation,
+      );
+    } on OfflineRemoteFailure catch (failure) {
+      return _recordReceiptLookupFailure(
+        partitionId,
+        claimed,
+        owner,
+        failure,
+        runtime,
+        authEpoch,
+      );
+    } on OfflineCanceledException {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      await _releaseClaim(partitionId, claimed, owner);
+      rethrow;
+    } on OfflineException {
+      return _recordReceiptUnresolved(
+        partitionId,
+        claimed,
+        owner,
+        receiptState: claimed.receipt!.state,
+        diagnosticCode: 'receipt_protocol',
+      );
+    }
+    if (authEpoch.pauseInProgress) {
+      return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+    }
+    if (status.operationId != claimed.receipt!.operationId) {
+      return _recordReceiptUnresolved(
+        partitionId,
+        claimed,
+        owner,
+        receiptState: claimed.receipt!.state,
+        diagnosticCode: 'receipt_protocol',
+      );
+    }
+
+    switch (status.state) {
+      case ReceiptStatusState.confirmed:
+        late final OfflineReceiptResult result;
+        try {
+          result = _validatedReceiptResult(claimed, status);
+        } on OfflineException {
+          return _recordReceiptUnresolved(
+            partitionId,
+            claimed,
+            owner,
+            receiptState: claimed.receipt!.state,
+            diagnosticCode: 'receipt_protocol',
+          );
+        }
+        return _confirmReceiptResult(
+          partitionId,
+          claimed,
+          owner,
+          result,
+          mutationAttempted: false,
+        );
+      case ReceiptStatusState.noLongerProvable:
+        return _recordReceiptUnresolved(
+          partitionId,
+          claimed,
+          owner,
+          receiptState: OfflineReceiptReconciliationState.noLongerProvable,
+          diagnosticCode: 'receipt_no_longer_provable',
+          incrementReconciliationAttempt: true,
+        );
+      case ReceiptStatusState.notYetObserved:
+        break;
+    }
+
+    final observed = await _recordReceiptObservation(
+      partitionId,
+      claimed,
+      owner,
+      OfflineReceiptReconciliationState.notYetObserved,
+    );
+    if (observed == null) {
+      return const _ReplayOutcome();
+    }
+
+    late final OfflineReceiptCapability capability;
+    try {
+      capability = await receiptRemote.getReceiptCapability(
+        cancellation: cancellation,
+      );
+    } on OfflineRemoteFailure catch (failure) {
+      return _recordReceiptLookupFailure(
+        partitionId,
+        observed,
+        owner,
+        failure,
+        runtime,
+        authEpoch,
+      );
+    } on OfflineCanceledException {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
+      }
+      await _releaseClaim(partitionId, observed, owner);
+      rethrow;
+    } on OfflineException {
+      return _recordReceiptUnresolved(
+        partitionId,
+        observed,
+        owner,
+        receiptState: OfflineReceiptReconciliationState.notYetObserved,
+        diagnosticCode: 'receipt_protocol',
+      );
+    }
+    if (authEpoch.pauseInProgress) {
+      return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
+    }
+    final dispatchState = await _claimSendState(partitionId, observed, owner);
+    if (dispatchState == _ClaimSendState.pausedForAuth) {
+      if (runtime.beginAuthPause(authEpoch)) {
+        runtime.completeAuthPause(authEpoch);
+      }
+      return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
+    }
+    if (dispatchState == _ClaimSendState.maxAge) {
+      await _expireOrAgeOut(
+        partitionId,
+        recordId: observed.recordId,
+        claimedBy: owner,
+      );
+      return const _ReplayOutcome(deadLetter: true);
+    }
+    if (dispatchState == _ClaimSendState.stale) {
+      await _releaseClaim(partitionId, observed, owner);
+      return const _ReplayOutcome();
+    }
+    if (authEpoch.pauseInProgress) {
+      return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
+    }
+    final continuityFailure = _receiptContinuityFailure(
+      observed.receipt!,
+      capability,
+    );
+    if (continuityFailure != null) {
+      return _recordReceiptUnresolved(
+        partitionId,
+        observed,
+        owner,
+        receiptState: OfflineReceiptReconciliationState.notYetObserved,
+        diagnosticCode: continuityFailure,
+      );
+    }
+    if (observed.attemptCount >= config.maxAttempts ||
+        observed.attemptCount >= _maxDurableAttemptCount) {
+      return _recordReceiptUnresolved(
+        partitionId,
+        observed,
+        owner,
+        receiptState: OfflineReceiptReconciliationState.notYetObserved,
+        diagnosticCode: 'receipt_attempts_exhausted',
+      );
+    }
+
+    try {
+      final result = await receiptRemote.sendReceiptMutation(
+        observed.intent,
+        context: observed.receipt!.context,
+        cancellation: cancellation,
+      );
+      _validateReceiptResultForIntent(observed.intent, result);
+      return _confirmReceiptResult(
+        partitionId,
+        observed,
+        owner,
+        result,
+        mutationAttempted: true,
+      );
+    } on OfflineRemoteFailure catch (failure) {
+      return _recordReceiptSendFailure(
+        partitionId,
+        observed,
+        owner,
+        failure,
+        runtime,
+        authEpoch,
+      );
+    } on OfflineCanceledException {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
+      }
+      await _releaseClaim(partitionId, observed, owner);
+      rethrow;
+    } on OfflineException {
+      return _recordReceiptUnresolved(
+        partitionId,
+        observed,
+        owner,
+        receiptState: OfflineReceiptReconciliationState.notYetObserved,
+        diagnosticCode: 'receipt_protocol',
+        incrementMutationAttempt: true,
+      );
+    }
+  }
+
+  OfflineReceiptResult _validatedReceiptResult(
+    OfflineOutboxRecord record,
+    OfflineReceiptStatus status,
+  ) {
+    final evidence = record.receipt!;
+    if (status.operationId != evidence.operationId ||
+        status.groupId != evidence.groupId ||
+        status.itemIndex != evidence.itemIndex ||
+        status.itemCount != evidence.itemCount ||
+        status.mutation != evidence.mutation ||
+        status.result == null) {
+      throw const OfflineRemoteProtocolException();
+    }
+    final result = status.result!;
+    _validateReceiptResultForIntent(record.intent, result);
+    return result;
+  }
+
+  void _validateReceiptResultForIntent(
+    OfflineIntent intent,
+    OfflineReceiptResult result,
+  ) {
+    final valid = switch ((intent, result)) {
+      (OfflinePutVertexIfAbsentIntent(), OfflineVertexPutReceiptResult()) =>
+        true,
+      (OfflineDeleteVertexIntent(), OfflineVertexDeleteReceiptResult()) => true,
+      (OfflineDeleteEdgeIntent(), OfflineEdgeDeleteReceiptResult()) => true,
+      (OfflineReceiptAddEdgeIntent(), OfflineEdgeAddReceiptResult()) => true,
+      _ => false,
+    };
+    if (!valid) throw const OfflineRemoteProtocolException();
+  }
+
+  Future<OfflineOutboxRecord?> _recordReceiptObservation(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    OfflineReceiptReconciliationState state,
+  ) => store.transaction((transaction) async {
+    final current = await transaction.getOutbox(partitionId, claimed.recordId);
+    final now = config.clock().toUtc();
+    if (!_ownsLiveClaim(current, claimed, owner, now) ||
+        (await transaction.generation(partitionId)) != claimed.generation) {
+      return null;
+    }
+    final evidence = current!.receipt!;
+    if (evidence.reconciliationAttemptCount >= _maxDurableAttemptCount) {
+      throw const OfflineCapacityException();
+    }
+    final updated = current.copyWith(
+      receipt: evidence.copyWith(
+        state: state,
+        reconciliationAttemptCount: evidence.reconciliationAttemptCount + 1,
+      ),
+    );
+    await transaction.updateOutbox(updated);
+    return updated;
+  });
+
+  Future<_ReplayOutcome> _confirmReceiptResult(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    OfflineReceiptResult result, {
+    required bool mutationAttempted,
+  }) async {
+    final confirmed = await store.transaction((transaction) async {
+      final current = await transaction.getOutbox(
+        partitionId,
+        claimed.recordId,
+      );
+      final now = config.clock().toUtc();
+      if (!_ownsLiveClaim(current, claimed, owner, now) ||
+          (await transaction.generation(partitionId)) != claimed.generation ||
+          (await transaction.replayPausedForAuth(partitionId))) {
+        return null;
+      }
+      final attempts = current!.attemptCount + (mutationAttempted ? 1 : 0);
+      final transitionAt = await _transitionTime(transaction, current, now);
+      await transaction.deleteCache(partitionId, current.intent.key);
+      await _updateOperationStatus(
+        transaction,
+        current,
+        OfflineWriteState.confirmed,
+        attemptCount: attempts,
+        receiptResult: result,
+        now: transitionAt,
+      );
+      await transaction.deleteOutbox(partitionId, current.recordId);
+      return attempts;
+    });
+    if (confirmed == null) {
+      _recordDiagnostic(
+        OfflineDiagnosticEvent(
+          kind: OfflineDiagnosticKind.staleOutcomeRejected,
+          category: claimed.intent.category,
+          attempt: claimed.attemptCount + (mutationAttempted ? 1 : 0),
+        ),
+      );
+      return const _ReplayOutcome();
+    }
+    _emit(
+      claimed,
+      OfflineWriteState.confirmed,
+      attemptCount: confirmed,
+      receiptResult: result,
+    );
+    return const _ReplayOutcome(confirmed: true);
+  }
+
+  Future<_ReplayOutcome> _recordReceiptLookupFailure(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    OfflineRemoteFailure failure,
+    _PartitionRuntime runtime,
+    _ReplayAuthEpoch authEpoch,
+  ) async {
+    if (failure.kind == OfflineRemoteErrorKind.canceled) {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      await _releaseClaim(partitionId, claimed, owner);
+      throw const OfflineCanceledException();
+    }
+    if (failure.kind == OfflineRemoteErrorKind.unauthenticated) {
+      return _recordAuthFailure(
+        partitionId,
+        claimed,
+        owner,
+        runtime,
+        authEpoch,
+      );
+    }
+    final retry = await store.transaction((transaction) async {
+      final current = await transaction.getOutbox(
+        partitionId,
+        claimed.recordId,
+      );
+      final now = config.clock().toUtc();
+      if (!_ownsLiveClaim(current, claimed, owner, now) ||
+          (await transaction.generation(partitionId)) != claimed.generation) {
+        return null;
+      }
+      final evidence = current!.receipt!;
+      if (evidence.reconciliationAttemptCount >= _maxDurableAttemptCount) {
+        throw const OfflineCapacityException();
+      }
+      final reconciliationAttempts = evidence.reconciliationAttemptCount + 1;
+      final delayAttempt = reconciliationAttempts > config.maxAttempts
+          ? config.maxAttempts
+          : reconciliationAttempts;
+      final transitionAt = await _transitionTime(transaction, current, now);
+      final updated = current.copyWith(
+        state: OfflineOutboxState.enqueued,
+        nextAttemptAt: _durableDeadline(
+          transitionAt,
+          _retryDelay(delayAttempt),
+        ),
+        clearLeaseOwner: true,
+        clearLeaseUntil: true,
+        receipt: evidence.copyWith(
+          state: OfflineReceiptReconciliationState.lookupUnknown,
+          reconciliationAttemptCount: reconciliationAttempts,
+        ),
+        diagnosticCode: 'receipt_status_unknown',
+      );
+      await transaction.updateOutbox(updated);
+      await _updateOperationStatus(
+        transaction,
+        current,
+        OfflineWriteState.retryScheduled,
+        attemptCount: current.attemptCount,
+        diagnosticCode: 'receipt_status_unknown',
+        now: transitionAt,
+      );
+      return updated;
+    });
+    if (retry == null) return const _ReplayOutcome();
+    _emit(
+      retry,
+      OfflineWriteState.retryScheduled,
+      attemptCount: retry.attemptCount,
+      diagnosticCode: 'receipt_status_unknown',
+    );
+    return const _ReplayOutcome(retryScheduled: true);
+  }
+
+  Future<_ReplayOutcome> _recordReceiptSendFailure(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner,
+    OfflineRemoteFailure failure,
+    _PartitionRuntime runtime,
+    _ReplayAuthEpoch authEpoch,
+  ) async {
+    if (failure.kind == OfflineRemoteErrorKind.canceled) {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      await _releaseClaim(partitionId, claimed, owner);
+      throw const OfflineCanceledException();
+    }
+    if (failure.kind == OfflineRemoteErrorKind.unauthenticated) {
+      return _recordAuthFailure(
+        partitionId,
+        claimed,
+        owner,
+        runtime,
+        authEpoch,
+      );
+    }
+    final retry = await store.transaction((transaction) async {
+      final current = await transaction.getOutbox(
+        partitionId,
+        claimed.recordId,
+      );
+      final now = config.clock().toUtc();
+      if (!_ownsLiveClaim(current, claimed, owner, now) ||
+          (await transaction.generation(partitionId)) != claimed.generation) {
+        return null;
+      }
+      final attempts = current!.attemptCount + 1;
+      final transitionAt = await _transitionTime(transaction, current, now);
+      final updated = current.copyWith(
+        state: OfflineOutboxState.enqueued,
+        attemptCount: attempts,
+        nextAttemptAt: _durableDeadline(
+          transitionAt,
+          _retryDelay(
+            attempts > config.maxAttempts ? config.maxAttempts : attempts,
+          ),
+        ),
+        clearLeaseOwner: true,
+        clearLeaseUntil: true,
+        receipt: current.receipt!.copyWith(
+          state: OfflineReceiptReconciliationState.statusRequired,
+        ),
+        diagnosticCode: 'receipt_response_unknown',
+      );
+      await transaction.updateOutbox(updated);
+      await _updateOperationStatus(
+        transaction,
+        current,
+        OfflineWriteState.retryScheduled,
+        attemptCount: attempts,
+        diagnosticCode: 'receipt_response_unknown',
+        now: transitionAt,
+      );
+      return updated;
+    });
+    if (retry == null) return const _ReplayOutcome();
+    _emit(
+      retry,
+      OfflineWriteState.retryScheduled,
+      attemptCount: retry.attemptCount,
+      diagnosticCode: 'receipt_response_unknown',
+    );
+    return const _ReplayOutcome(retryScheduled: true);
+  }
+
+  Future<_ReplayOutcome> _recordReceiptUnresolved(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner, {
+    required OfflineReceiptReconciliationState receiptState,
+    required String diagnosticCode,
+    bool incrementReconciliationAttempt = false,
+    bool incrementMutationAttempt = false,
+  }) async {
+    final applied = await store.transaction((transaction) async {
+      final current = await transaction.getOutbox(
+        partitionId,
+        claimed.recordId,
+      );
+      final now = config.clock().toUtc();
+      if (!_ownsLiveClaim(current, claimed, owner, now) ||
+          (await transaction.generation(partitionId)) != claimed.generation) {
+        return null;
+      }
+      final evidence = current!.receipt!;
+      final reconciliationAttempts =
+          evidence.reconciliationAttemptCount +
+          (incrementReconciliationAttempt ? 1 : 0);
+      if (reconciliationAttempts > _maxDurableAttemptCount) {
+        throw const OfflineCapacityException();
+      }
+      final mutationAttempts =
+          current.attemptCount + (incrementMutationAttempt ? 1 : 0);
+      if (mutationAttempts > _maxDurableAttemptCount) {
+        throw const OfflineCapacityException();
+      }
+      final transitionAt = await _transitionTime(transaction, current, now);
+      await transaction.deleteCache(partitionId, current.intent.key);
+      await transaction.updateOutbox(
+        current.copyWith(
+          state: OfflineOutboxState.deadLetter,
+          attemptCount: mutationAttempts,
+          clearNextAttemptAt: true,
+          clearLeaseOwner: true,
+          clearLeaseUntil: true,
+          deadLetteredAt: transitionAt,
+          receipt: evidence.copyWith(
+            state: receiptState,
+            reconciliationAttemptCount: reconciliationAttempts,
+          ),
+          diagnosticCode: diagnosticCode,
+        ),
+      );
+      await _updateOperationStatus(
+        transaction,
+        current,
+        OfflineWriteState.outcomeUnknown,
+        attemptCount: mutationAttempts,
+        diagnosticCode: diagnosticCode,
+        now: transitionAt,
+      );
+      return mutationAttempts;
+    });
+    if (applied != null) {
+      _emit(
+        claimed,
+        OfflineWriteState.outcomeUnknown,
+        attemptCount: applied,
+        diagnosticCode: diagnosticCode,
+      );
+    }
+    return _ReplayOutcome(deadLetter: applied != null);
+  }
+
+  bool _ownsLiveClaim(
+    OfflineOutboxRecord? current,
+    OfflineOutboxRecord claimed,
+    String owner,
+    DateTime now,
+  ) =>
+      current != null &&
+      current.generation == claimed.generation &&
+      current.state == OfflineOutboxState.sending &&
+      current.leaseOwner == owner &&
+      current.leaseUntil != null &&
+      now.isBefore(current.leaseUntil!);
+
+  String? _receiptContinuityFailure(
+    OfflineReceiptEvidence evidence,
+    OfflineReceiptCapability capability,
+  ) {
+    if (capability is OfflineReceiptCapabilityDisabled) {
+      return 'receipt_capability_disabled';
+    }
+    final enabled = capability as OfflineReceiptCapabilityEnabled;
+    if (!enabled.supports(evidence.mutation)) {
+      return 'receipt_mutation_unavailable';
+    }
+    if (enabled.policy.deploymentEpoch != evidence.policy.deploymentEpoch ||
+        enabled.endpoint != evidence.endpoint ||
+        enabled.policy.retention != evidence.policy.retention ||
+        enabled.policy.maxEntries != evidence.policy.maxEntries ||
+        enabled.policy.maxBytes != evidence.policy.maxBytes ||
+        !_bytesEqual(enabled.policy.fingerprint, evidence.policy.fingerprint)) {
+      return 'receipt_continuity_changed';
+    }
+    return null;
   }
 
   Future<_ReplayOutcome> _deadLetterUnsupportedAdd(
@@ -2794,6 +3678,7 @@ final class OfflineLanternRepository {
     String? operationId,
     String? recordId,
     OfflineEntityKey? entityKey,
+    String? claimedBy,
   }) async {
     final terminal = await store.transaction((transaction) async {
       final now = config.clock().toUtc();
@@ -2826,6 +3711,12 @@ final class OfflineLanternRepository {
             record.state != OfflineOutboxState.sending) {
           continue;
         }
+        if (record.state == OfflineOutboxState.sending &&
+            record.leaseUntil != null &&
+            now.isBefore(record.leaseUntil!) &&
+            record.leaseOwner != claimedBy) {
+          continue;
+        }
         if (!_live(record.absoluteExpiration, now)) {
           await _updateOperationStatus(
             transaction,
@@ -2839,6 +3730,13 @@ final class OfflineLanternRepository {
           statuses.add((record, OfflineWriteState.expired));
         } else if (now.difference(record.enqueuedAt) >= config.maxAge) {
           final transitionAt = await _transitionTime(transaction, record, now);
+          final receiptRequired = record.receipt != null;
+          final diagnosticCode = receiptRequired
+              ? 'receipt_max_age'
+              : 'max_age';
+          if (receiptRequired) {
+            await transaction.deleteCache(partitionId, record.intent.key);
+          }
           await transaction.updateOutbox(
             record.copyWith(
               state: OfflineOutboxState.deadLetter,
@@ -2846,18 +3744,25 @@ final class OfflineLanternRepository {
               clearLeaseOwner: true,
               clearLeaseUntil: true,
               deadLetteredAt: transitionAt,
-              diagnosticCode: 'max_age',
+              diagnosticCode: diagnosticCode,
             ),
           );
           await _updateOperationStatus(
             transaction,
             record,
-            OfflineWriteState.deadLetter,
+            receiptRequired
+                ? OfflineWriteState.outcomeUnknown
+                : OfflineWriteState.deadLetter,
             attemptCount: record.attemptCount,
-            diagnosticCode: 'max_age',
+            diagnosticCode: diagnosticCode,
             now: transitionAt,
           );
-          statuses.add((record, OfflineWriteState.deadLetter));
+          statuses.add((
+            record,
+            receiptRequired
+                ? OfflineWriteState.outcomeUnknown
+                : OfflineWriteState.deadLetter,
+          ));
         }
       }
       final operationRecords = <OfflineOperationRecord>[];
@@ -2895,9 +3800,11 @@ final class OfflineLanternRepository {
         record,
         state,
         attemptCount: record.attemptCount,
-        diagnosticCode: state == OfflineWriteState.deadLetter
-            ? 'max_age'
-            : 'expired',
+        diagnosticCode: switch (state) {
+          OfflineWriteState.deadLetter => 'max_age',
+          OfflineWriteState.outcomeUnknown => 'receipt_max_age',
+          _ => 'expired',
+        },
       );
     }
   }
@@ -3060,6 +3967,7 @@ final class OfflineLanternRepository {
     OfflineWriteState state, {
     required int attemptCount,
     required DateTime now,
+    OfflineReceiptResult? receiptResult,
     String? diagnosticCode,
   }) async {
     final operation = await transaction.getOperation(
@@ -3079,6 +3987,7 @@ final class OfflineLanternRepository {
       itemIndex: outbox.itemIndex,
       state: state,
       attemptCount: attemptCount,
+      receiptResult: receiptResult,
       diagnosticCode: diagnosticCode,
     );
     final status = OfflineOperationStatus(
@@ -3174,6 +4083,7 @@ final class OfflineLanternRepository {
     OfflineOutboxRecord record,
     OfflineWriteState state, {
     required int attemptCount,
+    OfflineReceiptResult? receiptResult,
     String? diagnosticCode,
   }) {
     final id = _WriteStatusKey(record.partitionId, record.recordId);
@@ -3183,6 +4093,7 @@ final class OfflineLanternRepository {
       itemIndex: record.itemIndex,
       state: state,
       attemptCount: attemptCount,
+      receiptResult: receiptResult,
       diagnosticCode: diagnosticCode,
     );
     final channel = _writeStatuses[id];
@@ -3197,7 +4108,8 @@ final class OfflineLanternRepository {
     );
     if (state == OfflineWriteState.confirmed ||
         state == OfflineWriteState.deadLetter ||
-        state == OfflineWriteState.expired) {
+        state == OfflineWriteState.expired ||
+        state == OfflineWriteState.outcomeUnknown) {
       if (channel != null) {
         if (identical(_writeStatuses[id], channel)) {
           _writeStatuses.remove(id);
@@ -3339,12 +4251,45 @@ final class OfflineLanternRepository {
           leftItem.itemIndex != rightItem.itemIndex ||
           leftItem.state != rightItem.state ||
           leftItem.attemptCount != rightItem.attemptCount ||
+          !_receiptResultsEqual(
+            leftItem.receiptResult,
+            rightItem.receiptResult,
+          ) ||
           leftItem.diagnosticCode != rightItem.diagnosticCode) {
         return false;
       }
     }
     return true;
   }
+
+  bool _receiptResultsEqual(
+    OfflineReceiptResult? left,
+    OfflineReceiptResult? right,
+  ) => switch ((left, right)) {
+    (null, null) => true,
+    (
+      OfflineVertexPutReceiptResult(:final outcome),
+      OfflineVertexPutReceiptResult(outcome: final other),
+    ) =>
+      outcome == other,
+    (
+      OfflineVertexDeleteReceiptResult(:final existed),
+      OfflineVertexDeleteReceiptResult(existed: final other),
+    ) =>
+      existed == other,
+    (
+      OfflineEdgeDeleteReceiptResult(:final existed),
+      OfflineEdgeDeleteReceiptResult(existed: final other),
+    ) =>
+      existed == other,
+    (
+      OfflineEdgeAddReceiptResult(:final effectiveWeight),
+      OfflineEdgeAddReceiptResult(effectiveWeight: final other),
+    ) =>
+      (effectiveWeight.isNaN && other.isNaN) ||
+          _floatBitsEqual(effectiveWeight, other, 4),
+    _ => false,
+  };
 
   OfflineSnapshot<T> _withoutIneligible<T>(OfflineSnapshot<T> snapshot) {
     if (_eligible(snapshot, allowStale: false)) return snapshot;
@@ -4148,7 +5093,7 @@ final class _ReadStamp {
   final bool unknownResident;
 }
 
-enum _ClaimSendState { sendable, pausedForAuth, stale }
+enum _ClaimSendState { sendable, pausedForAuth, maxAge, stale }
 
 const _authPauseDiagnostic = 'unauthenticated';
 
@@ -4230,6 +5175,7 @@ String _diagnosticCode(OfflineRemoteErrorKind kind) => switch (kind) {
   OfflineRemoteErrorKind.canceled => 'canceled',
   OfflineRemoteErrorKind.resourceExhausted => 'resource_exhausted',
   OfflineRemoteErrorKind.permanent => 'permanent',
+  OfflineRemoteErrorKind.outcomeUnknown => 'outcome_unknown',
   OfflineRemoteErrorKind.unknown => 'unknown',
 };
 

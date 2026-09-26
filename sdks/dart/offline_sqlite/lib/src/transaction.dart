@@ -431,6 +431,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
             state: record.state,
             attemptCount: record.attemptCount,
             generation: record.generation,
+            receipt: record.receipt,
             nextAttemptAt: record.nextAttemptAt,
             leaseOwner: record.leaseOwner,
             leaseUntil: record.leaseUntil,

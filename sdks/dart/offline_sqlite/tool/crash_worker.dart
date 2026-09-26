@@ -95,7 +95,7 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       _require(
         boundary == 'before'
             ? tables.isEmpty && version == 0
-            : tables.isNotEmpty && version == 2,
+            : tables.isNotEmpty && version == 3,
       );
     } finally {
       await raw.close();

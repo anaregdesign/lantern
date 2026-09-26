@@ -5,6 +5,10 @@
 - Migrate schema 1 to 2 transactionally, adding indexed key-only resident
   recovery and a partition change epoch while retaining cache, cursor, and
   pending Put state. Host tests use the OS SQLite library.
+- Migrate schema 1 or 2 to schema 3 transactionally by rewriting legacy outbox
+  and operation payloads/reservations for receipt evidence and exact results,
+  then validating the full durable graph and configured capacities before the
+  upgrade commits.
 
 ## 0.1.0
 

@@ -5,6 +5,10 @@ bool _sameOutboxIdentity(OfflineOutboxRecord left, OfflineOutboxRecord right) {
   OfflineOutboxRecord normalized(OfflineOutboxRecord record) => record.copyWith(
     state: OfflineOutboxState.enqueued,
     attemptCount: 0,
+    receipt: record.receipt?.copyWith(
+      state: OfflineReceiptReconciliationState.statusRequired,
+      reconciliationAttemptCount: 0,
+    ),
     clearNextAttemptAt: true,
     clearLeaseOwner: true,
     clearLeaseUntil: true,
@@ -66,8 +70,31 @@ int _outboxAdmissionBytesFor(
     state: OfflineOutboxState.enqueued,
     attemptCount: 0,
     generation: record.generation,
+    receipt: record.receipt?.copyWith(
+      state: OfflineReceiptReconciliationState.statusRequired,
+      reconciliationAttemptCount: 0,
+    ),
   );
-  return _outboxBytesFor(base) + _outboxLifecycleReservationBytes(limits);
+  var receiptGrowth = 0;
+  if (base.receipt != null) {
+    final receiptGrowthBase = base.copyWith(
+      state: OfflineOutboxState.deadLetter,
+      deadLetteredAt: base.enqueuedAt,
+    );
+    receiptGrowth =
+        _outboxBytesFor(
+          receiptGrowthBase.copyWith(
+            receipt: base.receipt!.copyWith(
+              state: OfflineReceiptReconciliationState.noLongerProvable,
+              reconciliationAttemptCount: _maxDurableInt,
+            ),
+          ),
+        ) -
+        _outboxBytesFor(receiptGrowthBase);
+  }
+  return _outboxBytesFor(base) +
+      _outboxLifecycleReservationBytes(limits) +
+      receiptGrowth;
 }
 
 // This is a mechanical upper bound over every mutable field in the canonical
@@ -84,6 +111,14 @@ const int _maxQuotedUtcTimestampJsonBytes = 20;
 const int _quotedUnixEpochJsonBytes = 3;
 const int _nullJsonBytes = 4;
 const int _mutableTimestampCount = 3;
+final int _receiptResultReservationBytes =
+    utf8
+        .encode(
+          '{"kind":"vertexPut","outcome":"conditionNotMet",'
+          '"existed":null,"effectiveWeight":null}',
+        )
+        .length -
+    _nullJsonBytes;
 const int _outboxFixedLifecycleGrowthBytes =
     (_maxSignedInt64JsonBytes - _zeroJsonBytes) +
     (_longestStateJsonBytes - _baseStateJsonBytes) +
@@ -143,7 +178,8 @@ int _operationAdmissionBytesFor(
   );
   final perItemGrowth =
       (_maxSignedInt64JsonBytes - _zeroJsonBytes) +
-      _optionalJsonStringGrowth(limits.maxDiagnosticCodeBytes);
+      _optionalJsonStringGrowth(limits.maxDiagnosticCodeBytes) +
+      _receiptResultReservationBytes;
   final timestampGrowth =
       (_maxQuotedUtcTimestampJsonBytes - _quotedUnixEpochJsonBytes) +
       (_maxQuotedUtcTimestampJsonBytes - _nullJsonBytes);
@@ -229,7 +265,10 @@ bool _outboxStatusMatches(
                   record.diagnosticCode == 'unauthenticated')),
     OfflineOutboxState.sending => status.state == OfflineWriteState.sending,
     OfflineOutboxState.deadLetter =>
-      status.state == OfflineWriteState.deadLetter,
+      status.state ==
+          (record.receipt == null
+              ? OfflineWriteState.deadLetter
+              : OfflineWriteState.outcomeUnknown),
     OfflineOutboxState.expired => status.state == OfflineWriteState.expired,
   };
 }
@@ -248,7 +287,7 @@ void _validateLimits(OfflineStoreLimits limits) {
       limits.maxOperationRecordsPerPartition < 0 ||
       limits.maxOperationBytesPerPartition < 0 ||
       limits.maxLeaseOwnerBytes < 1 ||
-      limits.maxDiagnosticCodeBytes < 19 ||
+      limits.maxDiagnosticCodeBytes < offlineMinimumDiagnosticCodeBytes ||
       limits.maxChangeControllers < 1) {
     throw const OfflineArgumentException();
   }

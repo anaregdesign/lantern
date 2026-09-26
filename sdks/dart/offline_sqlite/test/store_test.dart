@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
@@ -121,6 +123,266 @@ void main() {
       expect(await store.transaction((t) => t.generation('account')), 1);
     },
   );
+
+  test(
+    'receipt evidence and exact terminal results survive SQLite reopen',
+    () async {
+      var store = await open();
+      final now = DateTime.utc(2026, 9, 24);
+      final policy = OfflineReceiptPolicy(
+        deploymentEpoch: ReceiptEpoch(_bytes(16, 1)),
+        retention: const Duration(hours: 24),
+        maxEntries: BigInt.from(1024),
+        maxBytes: BigInt.from(1024 * 1024),
+        fingerprint: _bytes(32, 4),
+      );
+      final receipt = OfflineReceiptEvidence(
+        operationId: _receiptOperationId(policy.deploymentEpoch),
+        groupId: ReceiptGroupId(_bytes(16, 5)),
+        endpoint: ReceiptEndpoint(
+          nodeId: _bytes(16, 2),
+          generation: _bytes(16, 3),
+        ),
+        mutation: ReceiptMutationKind.edgeDelete,
+        policy: policy,
+        itemIndex: 0,
+        itemCount: 1,
+        state: OfflineReceiptReconciliationState.lookupUnknown,
+        reconciliationAttemptCount: 1,
+      );
+      late OfflineOutboxRecord assigned;
+      await store.transaction((transaction) async {
+        assigned = await transaction.enqueue(
+          OfflineOutboxRecord(
+            recordId: 'receipt-record',
+            operationId: 'receipt-operation',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflineDeleteEdgeIntent(const EdgeRef('tail', 'head')),
+            enqueuedAt: now,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 1,
+            generation: 0,
+            receipt: receipt,
+            nextAttemptAt: now.add(const Duration(seconds: 1)),
+            diagnosticCode: 'receipt_status_unavailable',
+          ),
+        );
+        await transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: 'receipt-operation',
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: assigned.recordId,
+                operationId: assigned.operationId,
+                itemIndex: 0,
+                state: OfflineWriteState.retryScheduled,
+                attemptCount: 1,
+                diagnosticCode: 'receipt_status_unavailable',
+              ),
+            ],
+            updatedAt: now,
+          ),
+        );
+      });
+
+      store = await reopen(store) as SqliteOfflineStore;
+      final restored = await store.transaction(
+        (transaction) => transaction.getOutbox('p', 'receipt-record'),
+      );
+      expect(restored!.receipt!.operationId, receipt.operationId);
+      expect(restored.receipt!.groupId, receipt.groupId);
+      expect(restored.receipt!.endpoint, receipt.endpoint);
+      expect(restored.receipt!.policy.fingerprint, receipt.policy.fingerprint);
+      expect(
+        restored.receipt!.state,
+        OfflineReceiptReconciliationState.lookupUnknown,
+      );
+
+      final terminalAt = now.add(const Duration(seconds: 2));
+      await store.transaction((transaction) async {
+        await transaction.updateOutbox(
+          restored.copyWith(
+            state: OfflineOutboxState.deadLetter,
+            clearNextAttemptAt: true,
+            deadLetteredAt: terminalAt,
+            receipt: restored.receipt!.copyWith(
+              state: OfflineReceiptReconciliationState.noLongerProvable,
+              reconciliationAttemptCount: 2,
+            ),
+            diagnosticCode: 'receipt_no_longer_provable',
+          ),
+        );
+        await transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: 'receipt-operation',
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: restored.recordId,
+                operationId: restored.operationId,
+                itemIndex: 0,
+                state: OfflineWriteState.outcomeUnknown,
+                attemptCount: 1,
+                diagnosticCode: 'receipt_no_longer_provable',
+              ),
+            ],
+            updatedAt: terminalAt,
+            terminalAt: terminalAt,
+          ),
+        );
+        await transaction.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: 0,
+            operationId: 'confirmed-receipt-operation',
+            items: <OfflineWriteStatus>[
+              OfflineWriteStatus(
+                recordId: 'confirmed-receipt-record',
+                operationId: 'confirmed-receipt-operation',
+                itemIndex: 0,
+                state: OfflineWriteState.confirmed,
+                attemptCount: 1,
+                receiptResult: const OfflineEdgeDeleteReceiptResult(false),
+              ),
+            ],
+            updatedAt: terminalAt,
+            terminalAt: terminalAt,
+          ),
+        );
+      });
+      store = await reopen(store) as SqliteOfflineStore;
+      expect(
+        (await store.transaction(
+          (transaction) => transaction.getOperation('p', 'receipt-operation'),
+        ))!.items.single.state,
+        OfflineWriteState.outcomeUnknown,
+      );
+      expect(
+        ((await store.transaction(
+                  (transaction) => transaction.getOperation(
+                    'p',
+                    'confirmed-receipt-operation',
+                  ),
+                ))!.items.single.receiptResult
+                as OfflineEdgeDeleteReceiptResult)
+            .existed,
+        isFalse,
+      );
+    },
+  );
+
+  test('receipt Add intent and exact weight survive SQLite reopen', () async {
+    var store = await open();
+    final now = DateTime.utc(2026, 9, 24);
+    final policy = OfflineReceiptPolicy(
+      deploymentEpoch: ReceiptEpoch(_bytes(16, 1)),
+      retention: const Duration(hours: 24),
+      maxEntries: BigInt.from(1024),
+      maxBytes: BigInt.from(1024 * 1024),
+      fingerprint: _bytes(32, 4),
+    );
+    final evidence = OfflineReceiptEvidence(
+      operationId: _receiptOperationId(policy.deploymentEpoch),
+      groupId: ReceiptGroupId(_bytes(16, 6)),
+      endpoint: ReceiptEndpoint(
+        nodeId: _bytes(16, 2),
+        generation: _bytes(16, 3),
+      ),
+      mutation: ReceiptMutationKind.edgeAdd,
+      policy: policy,
+      itemIndex: 0,
+      itemCount: 1,
+      state: OfflineReceiptReconciliationState.statusRequired,
+    );
+    late OfflineOutboxRecord assigned;
+    await store.transaction((transaction) async {
+      assigned = await transaction.enqueue(
+        OfflineOutboxRecord(
+          recordId: 'add-record',
+          operationId: 'add-operation',
+          itemIndex: 0,
+          partitionId: 'p',
+          intent: OfflineReceiptAddEdgeIntent(
+            const Edge(tail: 'tail', head: 'head', weight: 3),
+            _bytes(24, 7),
+          ),
+          enqueuedAt: now,
+          ordinal: 0,
+          state: OfflineOutboxState.enqueued,
+          attemptCount: 0,
+          generation: 0,
+          receipt: evidence,
+        ),
+      );
+      await transaction.putOperation(
+        OfflineOperationRecord(
+          partitionId: 'p',
+          generation: 0,
+          operationId: assigned.operationId,
+          items: <OfflineWriteStatus>[
+            OfflineWriteStatus(
+              recordId: assigned.recordId,
+              operationId: assigned.operationId,
+              itemIndex: 0,
+              state: OfflineWriteState.locallyCommitted,
+              attemptCount: 0,
+            ),
+          ],
+          updatedAt: now,
+        ),
+      );
+    });
+
+    store = await reopen(store) as SqliteOfflineStore;
+    final restored = await store.transaction(
+      (transaction) => transaction.getOutbox('p', 'add-record'),
+    );
+    expect(restored!.receipt!.mutation, ReceiptMutationKind.edgeAdd);
+    expect(
+      (restored.intent as OfflineReceiptAddEdgeIntent).contributionId,
+      _bytes(24, 7),
+    );
+    final confirmedAt = now.add(const Duration(seconds: 1));
+    await store.transaction((transaction) async {
+      await transaction.deleteOutbox('p', restored.recordId);
+      await transaction.putOperation(
+        OfflineOperationRecord(
+          partitionId: 'p',
+          generation: 0,
+          operationId: restored.operationId,
+          items: <OfflineWriteStatus>[
+            OfflineWriteStatus(
+              recordId: restored.recordId,
+              operationId: restored.operationId,
+              itemIndex: 0,
+              state: OfflineWriteState.confirmed,
+              attemptCount: 1,
+              receiptResult: OfflineEdgeAddReceiptResult(
+                double.negativeInfinity,
+              ),
+            ),
+          ],
+          updatedAt: confirmedAt,
+          terminalAt: confirmedAt,
+        ),
+      );
+    });
+
+    store = await reopen(store) as SqliteOfflineStore;
+    final operation = await store.transaction(
+      (transaction) => transaction.getOperation('p', 'add-operation'),
+    );
+    expect(
+      (operation!.items.single.receiptResult as OfflineEdgeAddReceiptResult)
+          .effectiveWeight,
+      double.negativeInfinity,
+    );
+  });
 
   test(
     'independent connections serialize writes and publish committed changes',
@@ -601,6 +863,104 @@ void main() {
     );
   });
 
+  test('schema 2 rewrites legacy outbox and operation payloads', () async {
+    final store = await open();
+    final now = DateTime.utc(2026, 9, 24);
+    await store.transaction((transaction) async {
+      final assigned = await transaction.enqueue(
+        _outboxRecord(
+          'legacy-payload',
+          now: now,
+          expiration: now.add(const Duration(hours: 1)),
+        ),
+      );
+      await transaction.putOperation(_operation(assigned, now: now));
+    });
+    final path = store.path;
+    await store.close();
+    final old = await factory.openDatabase(path);
+    final outboxRow = (await old.query('outbox')).single;
+    final outbox =
+        jsonDecode(utf8.decode(outboxRow['payload']! as List<int>))
+            as Map<String, Object?>;
+    outbox['schema'] = 2;
+    outbox.remove('receipt');
+    final operationRow = (await old.query('operations')).single;
+    final operation =
+        jsonDecode(utf8.decode(operationRow['payload']! as List<int>))
+            as Map<String, Object?>;
+    operation['schema'] = 1;
+    for (final item in operation['items']! as List<Object?>) {
+      (item! as Map<String, Object?>).remove('receiptResult');
+    }
+    await old.update('outbox', {
+      'payload': Uint8List.fromList(utf8.encode(jsonEncode(outbox))),
+    });
+    await old.update('operations', {
+      'payload': Uint8List.fromList(utf8.encode(jsonEncode(operation))),
+    });
+    await old.update(
+      'store_metadata',
+      {'value': 'lantern-offline-2'},
+      where: 'key=?',
+      whereArgs: ['format'],
+    );
+    await old.setVersion(2);
+    await old.close();
+
+    await expectLater(
+      SqliteOfflineStore.open(
+        path: path,
+        databaseFactory: factory,
+        limits: const OfflineStoreLimits(
+          maxOutboxBytes: 0,
+          maxOutboxBytesPerPartition: 0,
+        ),
+      ),
+      throwsA(isA<OfflineCapacityException>()),
+    );
+    final rolledBack = await factory.openDatabase(path);
+    expect(await rolledBack.getVersion(), 2);
+    expect(
+      (await rolledBack.query('store_metadata')).single['value'],
+      'lantern-offline-2',
+    );
+    expect(
+      utf8.decode(
+        (await rolledBack.query('outbox')).single['payload']! as List<int>,
+      ),
+      contains('"schema":2'),
+    );
+    await rolledBack.close();
+
+    final migrated = await open(path: path);
+    expect(
+      (await migrated.transaction(
+        (transaction) => transaction.outbox('p'),
+      )).single.recordId,
+      'legacy-payload',
+    );
+    final check = await factory.openDatabase(path);
+    expect(await check.getVersion(), 3);
+    expect(
+      (await check.query('store_metadata')).single['value'],
+      'lantern-offline-3',
+    );
+    expect(
+      utf8.decode(
+        (await check.query('outbox')).single['payload']! as List<int>,
+      ),
+      contains('"schema":3'),
+    );
+    expect(
+      utf8.decode(
+        (await check.query('operations')).single['payload']! as List<int>,
+      ),
+      contains('"schema":2'),
+    );
+    await check.close();
+  });
+
   test('corrupt record is rejected before it can reach replay', () async {
     final store = await open();
     await _cache(store, 'retained', 'value');
@@ -798,4 +1158,20 @@ OfflineOperationRecord _operation(
     updatedAt: now,
     terminalAt: dead ? now : null,
   );
+}
+
+Uint8List _bytes(int length, int value) =>
+    Uint8List.fromList(List<int>.filled(length, value));
+
+ReceiptOperationId _receiptOperationId(ReceiptEpoch epoch) {
+  final bytes = Uint8List(49);
+  bytes[0] = 1;
+  bytes.setRange(1, 17, epoch.bytes);
+  var timestamp = DateTime.utc(2026, 9, 24).millisecondsSinceEpoch;
+  for (var index = 24; index >= 17; index--) {
+    bytes[index] = timestamp & 0xff;
+    timestamp >>= 8;
+  }
+  bytes.fillRange(25, 49, 6);
+  return ReceiptOperationId(bytes);
 }

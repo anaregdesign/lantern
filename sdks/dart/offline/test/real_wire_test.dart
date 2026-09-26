@@ -532,6 +532,233 @@ void main() {
   );
 
   test(
+    'receipt reconciliation matrix confirms original results without resend',
+    () async {
+      final endpointValue =
+          Platform.environment['LANTERN_DART_RECEIPT_ENDPOINT'];
+      final token = Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
+      if (endpointValue == null ||
+          endpointValue.isEmpty ||
+          token == null ||
+          token.isEmpty) {
+        markTestSkipped('set receipt endpoint and token');
+        return;
+      }
+      final endpoint = Uri.parse(endpointValue);
+      final serverClient = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+        token: token,
+      );
+      addTearDown(serverClient.close);
+      final capability =
+          await serverClient.getReceiptCapability()
+              as ReceiptCapabilityEnabled;
+      expect(
+        capability.supportedMutations,
+        containsAll(<ReceiptMutationKind>{
+          ReceiptMutationKind.vertexPut,
+          ReceiptMutationKind.vertexDelete,
+          ReceiptMutationKind.edgeDelete,
+          ReceiptMutationKind.edgeAdd,
+        }),
+      );
+
+      final prefix =
+          'dart-offline-receipt:${DateTime.now().microsecondsSinceEpoch}:';
+      final deleteVertexKey = '${prefix}delete-vertex';
+      final deleteEdge = EdgeRef('${prefix}delete-tail', '${prefix}delete-head');
+      final addEdge = EdgeRef('${prefix}add-tail', '${prefix}add-head');
+      expect(
+        await serverClient.putVertex(
+          VertexInput(
+            key: deleteVertexKey,
+            value: VertexValue.string('delete'),
+          ),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+      expect(
+        await serverClient.putEdge(
+          EdgeInput(tail: deleteEdge.tail, head: deleteEdge.head, weight: 1),
+        ),
+        PutOutcome.appliedAndLive,
+      );
+
+      final proxy = await _ResponseDroppingProxy.bind(
+        endpoint,
+        drops: const <String, int>{
+          'PutVertices': 1,
+          'DeleteVertices': 1,
+          'DeleteEdges': 1,
+          'AddEdges': 1,
+        },
+      );
+      addTearDown(proxy.close);
+      final client = LanternClient.connect(
+        proxy.endpoint,
+        allowInsecure: true,
+        token: token,
+      );
+      addTearDown(client.close);
+      final online = LanternClientOfflineRemote(client);
+      final store = InMemoryOfflineStore();
+      final enqueueNow = DateTime.now().toUtc();
+      final config = OfflineConfig(
+        clock: () => enqueueNow,
+        jitter: (ceiling) => ceiling,
+        baseRetryDelay: const Duration(seconds: 1),
+        maxConcurrency: 1,
+        maxConcurrencyPerPartition: 1,
+      );
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: online,
+        config: config,
+      );
+      final put = await repository.putVertexIfAbsent(
+        partitionId: 'receipt-wire',
+        input: VertexInput(
+          key: '${prefix}put',
+          value: VertexValue.string('value'),
+        ),
+      );
+      final vertexDelete = await repository.deleteVertex(
+        partitionId: 'receipt-wire',
+        key: deleteVertexKey,
+      );
+      final edgeDelete = await repository.deleteEdge(
+        partitionId: 'receipt-wire',
+        edge: deleteEdge,
+      );
+      final add = await repository.addEdge(
+        partitionId: 'receipt-wire',
+        input: EdgeInput(
+          tail: addEdge.tail,
+          head: addEdge.head,
+          weight: 4,
+          contribId: Uint8List(24)..[23] = 1,
+        ),
+      );
+
+      expect(await repository.drain('receipt-wire'), 0);
+      for (final rpc in <String>[
+        'PutVertices',
+        'DeleteVertices',
+        'DeleteEdges',
+        'AddEdges',
+      ]) {
+        expect(proxy.forwarded(rpc), 1, reason: rpc);
+        expect(proxy.dropped(rpc), 1, reason: rpc);
+      }
+      final pending = await store.transaction(
+        (transaction) => transaction.outbox('receipt-wire'),
+      );
+      expect(pending, hasLength(4));
+      expect(pending.map((record) => record.attemptCount), everyElement(1));
+      expect(
+        pending
+            .where(
+              (record) => record.intent is OfflineReceiptAddEdgeIntent,
+            )
+            .single
+            .receipt!
+            .mutation,
+        ReceiptMutationKind.edgeAdd,
+      );
+      expect((await serverClient.getEdge(addEdge)).weight, 4);
+
+      final snapshot = await store.exportSnapshot();
+      await repository.dispose();
+      final restarted = OfflineLanternRepository(
+        store: InMemoryOfflineStore.fromSnapshot(snapshot),
+        remote: online,
+        config: OfflineConfig(
+          clock: () => enqueueNow.add(const Duration(seconds: 2)),
+          jitter: (_) => Duration.zero,
+          maxConcurrency: 1,
+          maxConcurrencyPerPartition: 1,
+        ),
+      );
+      addTearDown(restarted.dispose);
+      expect(await restarted.drain('receipt-wire'), 4);
+      for (final rpc in <String>[
+        'PutVertices',
+        'DeleteVertices',
+        'DeleteEdges',
+        'AddEdges',
+      ]) {
+        expect(proxy.forwarded(rpc), 1, reason: '$rpc was not resent');
+      }
+
+      final putStatus = await restarted.getWriteStatus(
+        'receipt-wire',
+        put.operationId,
+      );
+      expect(
+        (putStatus!.items.single.receiptResult
+                as OfflineVertexPutReceiptResult)
+            .outcome,
+        PutOutcome.appliedAndLive,
+      );
+      final vertexDeleteStatus = await restarted.getWriteStatus(
+        'receipt-wire',
+        vertexDelete.operationId,
+      );
+      expect(
+        (vertexDeleteStatus!.items.single.receiptResult
+                as OfflineVertexDeleteReceiptResult)
+            .existed,
+        isTrue,
+      );
+      final edgeDeleteStatus = await restarted.getWriteStatus(
+        'receipt-wire',
+        edgeDelete.operationId,
+      );
+      expect(
+        (edgeDeleteStatus!.items.single.receiptResult
+                as OfflineEdgeDeleteReceiptResult)
+            .existed,
+        isTrue,
+      );
+      final addStatus = await restarted.getWriteStatus(
+        'receipt-wire',
+        add.operationId,
+      );
+      expect(
+        (addStatus!.items.single.receiptResult
+                as OfflineEdgeAddReceiptResult)
+            .effectiveWeight,
+        4,
+      );
+
+      final expiredAdd = await restarted.addEdge(
+        partitionId: 'receipt-wire',
+        input: EdgeInput(
+          tail: '${prefix}expired-tail',
+          head: '${prefix}expired-head',
+          weight: 9,
+          expiresAt: DateTime.now().toUtc().subtract(
+            const Duration(seconds: 1),
+          ),
+          contribId: Uint8List(24)..[23] = 2,
+        ),
+      );
+      expect(await restarted.drain('receipt-wire'), 1);
+      final expiredStatus = await restarted.getWriteStatus(
+        'receipt-wire',
+        expiredAdd.operationId,
+      );
+      expect(
+        (expiredStatus!.items.single.receiptResult
+                as OfflineEdgeAddReceiptResult)
+            .effectiveWeight,
+        0,
+      );
+    },
+  );
+
+  test(
     'response-dropping proxy loses committed PutVertex and PutEdge responses',
     () async {
       final endpointValue =

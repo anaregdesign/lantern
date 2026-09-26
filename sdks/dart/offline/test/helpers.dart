@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
@@ -16,7 +17,9 @@ final class MutableClock {
   }
 }
 
-class FakeOfflineRemote implements OfflineRemote {
+class FakeOfflineRemote implements OfflineRemote, OfflineReceiptRemote {
+  FakeOfflineRemote() : receiptCapability = offlineReceiptCapability();
+
   final Map<String, Vertex> vertices = <String, Vertex>{};
   final Map<EdgeRef, Edge> edges = <EdgeRef, Edge>{};
   final List<OfflineRemoteFailure> vertexPutFailures = <OfflineRemoteFailure>[];
@@ -29,6 +32,133 @@ class FakeOfflineRemote implements OfflineRemote {
   int edgePutCalls = 0;
   final List<OfflineRemoteFailure> probeFailures = <OfflineRemoteFailure>[];
   int probeCalls = 0;
+  OfflineReceiptCapability receiptCapability;
+  final List<OfflineRemoteFailure> receiptPrepareFailures =
+      <OfflineRemoteFailure>[];
+  final List<OfflineRemoteFailure> receiptCapabilityFailures =
+      <OfflineRemoteFailure>[];
+  final List<OfflineRemoteFailure> receiptStatusFailures =
+      <OfflineRemoteFailure>[];
+  final List<OfflineRemoteFailure> receiptSendFailures =
+      <OfflineRemoteFailure>[];
+  final List<OfflineReceiptResult> receiptSendResults =
+      <OfflineReceiptResult>[];
+  final Map<ReceiptOperationId, OfflineReceiptStatus> receiptStatuses =
+      <ReceiptOperationId, OfflineReceiptStatus>{};
+  final List<ReceiptContext> receiptSendContexts = <ReceiptContext>[];
+  final List<String> receiptCalls = <String>[];
+  Future<void> Function()? beforeReceiptCapabilityReturn;
+  bool commitBeforeReceiptSendFailure = false;
+  int receiptPrepareCalls = 0;
+  int receiptCapabilityCalls = 0;
+  int receiptStatusCalls = 0;
+  int receiptSendCalls = 0;
+  int _receiptSequence = 0;
+
+  @override
+  Future<OfflineReceiptPreparation> prepareReceipts(
+    ReceiptMutationKind mutation, {
+    required int itemCount,
+    LanternCancellationToken? cancellation,
+  }) async {
+    receiptCalls.add('prepare');
+    receiptPrepareCalls++;
+    if (receiptPrepareFailures.isNotEmpty) {
+      throw receiptPrepareFailures.removeAt(0);
+    }
+    final capability = receiptCapability;
+    if (capability is OfflineReceiptCapabilityDisabled) {
+      throw const OfflineReceiptCapabilityException(
+        OfflineReceiptCapabilityFailure.disabled,
+      );
+    }
+    final enabled = capability as OfflineReceiptCapabilityEnabled;
+    if (!enabled.supports(mutation)) {
+      throw const OfflineReceiptCapabilityException(
+        OfflineReceiptCapabilityFailure.mutationUnavailable,
+      );
+    }
+    return OfflineReceiptPreparation(
+      mutation: mutation,
+      evidence: List<OfflineReceiptEvidence>.generate(itemCount, (_) {
+        final sequence = ++_receiptSequence;
+        return OfflineReceiptEvidence(
+          operationId: testReceiptOperationId(
+            epoch: enabled.policy.deploymentEpoch,
+            random: sequence,
+          ),
+          groupId: ReceiptGroupId(_testUniqueBytes(16, sequence + 32)),
+          endpoint: ReceiptEndpoint(
+            nodeId: enabled.endpoint.nodeId,
+            generation: enabled.endpoint.generation,
+          ),
+          mutation: mutation,
+          policy: enabled.policy,
+          itemIndex: 0,
+          itemCount: 1,
+          state: OfflineReceiptReconciliationState.statusRequired,
+        );
+      }, growable: false),
+    );
+  }
+
+  @override
+  Future<OfflineReceiptCapability> getReceiptCapability({
+    LanternCancellationToken? cancellation,
+  }) async {
+    receiptCalls.add('capability');
+    receiptCapabilityCalls++;
+    if (receiptCapabilityFailures.isNotEmpty) {
+      throw receiptCapabilityFailures.removeAt(0);
+    }
+    await beforeReceiptCapabilityReturn?.call();
+    return receiptCapability;
+  }
+
+  @override
+  Future<OfflineReceiptStatus> getReceiptStatus(
+    ReceiptOperationId operationId, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    receiptCalls.add('status');
+    receiptStatusCalls++;
+    if (receiptStatusFailures.isNotEmpty) {
+      throw receiptStatusFailures.removeAt(0);
+    }
+    return receiptStatuses[operationId] ??
+        OfflineReceiptStatus(
+          operationId: operationId,
+          state: ReceiptStatusState.notYetObserved,
+        );
+  }
+
+  @override
+  Future<OfflineReceiptResult> sendReceiptMutation(
+    OfflineIntent intent, {
+    required ReceiptContext context,
+    LanternCancellationToken? cancellation,
+  }) async {
+    receiptCalls.add('send');
+    receiptSendCalls++;
+    receiptSendContexts.add(context);
+    final result = receiptSendResults.isEmpty
+        ? _defaultReceiptResult(intent)
+        : receiptSendResults.removeAt(0);
+    if (receiptSendFailures.isNotEmpty) {
+      if (commitBeforeReceiptSendFailure) {
+        receiptStatuses[context.operationIds.single] = _confirmedReceiptStatus(
+          context,
+          result,
+        );
+      }
+      throw receiptSendFailures.removeAt(0);
+    }
+    receiptStatuses[context.operationIds.single] = _confirmedReceiptStatus(
+      context,
+      result,
+    );
+    return result;
+  }
 
   @override
   Future<void> probe({LanternCancellationToken? cancellation}) async {
@@ -96,6 +226,97 @@ class FakeOfflineRemote implements OfflineRemote {
     return outcome;
   }
 }
+
+OfflineReceiptCapabilityEnabled offlineReceiptCapability({
+  int node = 12,
+  int generation = 13,
+  int epoch = 11,
+  int fingerprint = 14,
+  Duration retention = const Duration(hours: 24),
+  int maxEntries = 1024,
+  int maxBytes = 1024 * 1024,
+  Set<ReceiptMutationKind> supportedMutations = const <ReceiptMutationKind>{
+    ReceiptMutationKind.vertexPut,
+    ReceiptMutationKind.vertexDelete,
+    ReceiptMutationKind.edgeDelete,
+    ReceiptMutationKind.edgeAdd,
+  },
+}) => OfflineReceiptCapabilityEnabled(
+  endpoint: ReceiptEndpoint(
+    nodeId: testBytes(16, node),
+    generation: testBytes(16, generation),
+  ),
+  policy: OfflineReceiptPolicy(
+    deploymentEpoch: ReceiptEpoch(testBytes(16, epoch)),
+    retention: retention,
+    maxEntries: BigInt.from(maxEntries),
+    maxBytes: BigInt.from(maxBytes),
+    fingerprint: testBytes(32, fingerprint),
+  ),
+  supportedMutations: supportedMutations,
+);
+
+ReceiptOperationId testReceiptOperationId({
+  required ReceiptEpoch epoch,
+  required int random,
+  int issuedAtMilliseconds = 1000,
+}) {
+  final bytes = Uint8List(49);
+  bytes[0] = 1;
+  bytes.setRange(1, 17, epoch.bytes);
+  var timestamp = issuedAtMilliseconds;
+  for (var index = 24; index >= 17; index--) {
+    bytes[index] = timestamp & 0xff;
+    timestamp >>= 8;
+  }
+  bytes.fillRange(25, 49, 1);
+  var suffix = random;
+  for (var index = 48; index >= 41; index--) {
+    bytes[index] = suffix & 0xff;
+    suffix >>= 8;
+  }
+  return ReceiptOperationId(bytes);
+}
+
+Uint8List testBytes(int length, int value) =>
+    Uint8List.fromList(List<int>.filled(length, value));
+
+Uint8List _testUniqueBytes(int length, int value) {
+  final bytes = Uint8List.fromList(List<int>.filled(length, 1));
+  var suffix = value;
+  for (var index = length - 1; index >= length - 8; index--) {
+    bytes[index] = suffix & 0xff;
+    suffix >>= 8;
+  }
+  return bytes;
+}
+
+OfflineReceiptResult _defaultReceiptResult(OfflineIntent intent) =>
+    switch (intent) {
+      OfflinePutVertexIfAbsentIntent() => const OfflineVertexPutReceiptResult(
+        PutOutcome.appliedAndLive,
+      ),
+      OfflineDeleteVertexIntent() => const OfflineVertexDeleteReceiptResult(
+        true,
+      ),
+      OfflineDeleteEdgeIntent() => const OfflineEdgeDeleteReceiptResult(true),
+      OfflineReceiptAddEdgeIntent(:final edge) =>
+        OfflineEdgeAddReceiptResult(edge.weight),
+      _ => throw StateError('receipt send received unsupported intent'),
+    };
+
+OfflineReceiptStatus _confirmedReceiptStatus(
+  ReceiptContext context,
+  OfflineReceiptResult result,
+) => OfflineReceiptStatus(
+  operationId: context.operationIds.single,
+  state: ReceiptStatusState.confirmed,
+  groupId: context.groupId,
+  mutation: context.mutation,
+  itemIndex: 0,
+  itemCount: 1,
+  result: result,
+);
 
 OfflineConfig testConfig(MutableClock clock) => OfflineConfig(
   clock: clock.call,

@@ -20,7 +20,10 @@ final class OfflineCodec {
   static const int schemaVersion = 1;
 
   /// Current outbox record schema version.
-  static const int outboxSchemaVersion = 2;
+  static const int outboxSchemaVersion = 3;
+
+  /// Current operation aggregate schema version.
+  static const int operationSchemaVersion = 2;
 
   /// Encodes one exact confirmed cache record to canonical JSON.
   static String encodeCacheRecord(OfflineCacheRecord record) =>
@@ -68,8 +71,16 @@ final class OfflineCodec {
   /// Decodes one strict outbox record, including the v1 retention migration.
   static OfflineOutboxRecord decodeOutboxRecord(String source) {
     final value = _decodeObject(source);
-    final schema = _recordSchema(value, 'outbox', supported: const <int>{1, 2});
-    _expectKeys(value, schema == 1 ? _outboxKeysV1 : _outboxKeys);
+    final schema = _recordSchema(
+      value,
+      'outbox',
+      supported: const <int>{1, 2, 3},
+    );
+    _expectKeys(value, switch (schema) {
+      1 => _outboxKeysV1,
+      2 => _outboxKeysV2,
+      _ => _outboxKeys,
+    });
     final state = _outboxState(_string(value['state']));
     final enqueuedAt = _timeFromString(value['enqueuedAt']);
     try {
@@ -84,6 +95,9 @@ final class OfflineCodec {
         state: state,
         attemptCount: _nonNegativeInt(value['attemptCount']),
         generation: _nonNegativeInt(value['generation']),
+        receipt: schema < 3 || value['receipt'] == null
+            ? null
+            : _receiptEvidenceFromMap(_object(value['receipt'])),
         nextAttemptAt: _nullableTime(value['nextAttemptAt']),
         leaseOwner: _nullableString(value['leaseOwner']),
         leaseUntil: _nullableTime(value['leaseUntil']),
@@ -103,11 +117,15 @@ final class OfflineCodec {
   static String encodeOperationRecord(OfflineOperationRecord record) =>
       jsonEncode(_operationToMap(record));
 
-  /// Decodes one strict v1 durable operation aggregate.
+  /// Decodes one strict durable operation aggregate.
   static OfflineOperationRecord decodeOperationRecord(String source) {
     final value = _decodeObject(source);
-    _expectKeys(value, _operationKeys);
-    _expectSchema(value, 'operation');
+    final schema = _recordSchema(
+      value,
+      'operation',
+      supported: const <int>{1, 2},
+    );
+    _expectKeys(value, schema == 1 ? _operationKeysV1 : _operationKeys);
     final operationId = _nonEmpty(value['operationId']);
     final rawItems = value['items'];
     if (rawItems is! List<Object?> || rawItems.isEmpty) {
@@ -117,7 +135,10 @@ final class OfflineCodec {
       final items = <OfflineWriteStatus>[];
       for (final rawItem in rawItems) {
         final item = _object(rawItem);
-        _expectKeys(item, _operationItemKeys);
+        _expectKeys(
+          item,
+          schema == 1 ? _operationItemKeysV1 : _operationItemKeys,
+        );
         items.add(
           OfflineWriteStatus(
             recordId: _nonEmpty(item['recordId']),
@@ -125,6 +146,9 @@ final class OfflineCodec {
             itemIndex: _nonNegativeInt(item['itemIndex']),
             state: _writeState(_string(item['state'])),
             attemptCount: _nonNegativeInt(item['attemptCount']),
+            receiptResult: schema == 1 || item['receiptResult'] == null
+                ? null
+                : _receiptResultFromMap(_object(item['receiptResult'])),
             diagnosticCode: _nullableString(item['diagnosticCode']),
           ),
         );
@@ -176,9 +200,11 @@ const Set<String> _outboxKeysV1 = <String>{
   'diagnosticCode',
 };
 
-const Set<String> _outboxKeys = <String>{..._outboxKeysV1, 'deadLetteredAt'};
+const Set<String> _outboxKeysV2 = <String>{..._outboxKeysV1, 'deadLetteredAt'};
 
-const Set<String> _operationKeys = <String>{
+const Set<String> _outboxKeys = <String>{..._outboxKeysV2, 'receipt'};
+
+const Set<String> _operationKeysV1 = <String>{
   'schema',
   'type',
   'partitionId',
@@ -189,12 +215,19 @@ const Set<String> _operationKeys = <String>{
   'terminalAt',
 };
 
-const Set<String> _operationItemKeys = <String>{
+const Set<String> _operationKeys = _operationKeysV1;
+
+const Set<String> _operationItemKeysV1 = <String>{
   'recordId',
   'itemIndex',
   'state',
   'attemptCount',
   'diagnosticCode',
+};
+
+const Set<String> _operationItemKeys = <String>{
+  ..._operationItemKeysV1,
+  'receiptResult',
 };
 
 Map<String, Object?> _cacheToMap(OfflineCacheRecord record) =>
@@ -228,6 +261,9 @@ Map<String, Object?> _outboxToMap(OfflineOutboxRecord record) =>
       'state': record.state.name,
       'attemptCount': record.attemptCount,
       'generation': record.generation,
+      'receipt': record.receipt == null
+          ? null
+          : _receiptEvidenceToMap(record.receipt!),
       'nextAttemptAt': record.nextAttemptAt == null
           ? null
           : _timeToString(record.nextAttemptAt!),
@@ -243,7 +279,7 @@ Map<String, Object?> _outboxToMap(OfflineOutboxRecord record) =>
 
 Map<String, Object?> _operationToMap(OfflineOperationRecord record) =>
     <String, Object?>{
-      'schema': OfflineCodec.schemaVersion,
+      'schema': OfflineCodec.operationSchemaVersion,
       'type': 'operation',
       'partitionId': record.partitionId,
       'generation': record.generation,
@@ -255,6 +291,9 @@ Map<String, Object?> _operationToMap(OfflineOperationRecord record) =>
               'itemIndex': item.itemIndex,
               'state': item.state.name,
               'attemptCount': item.attemptCount,
+              'receiptResult': item.receiptResult == null
+                  ? null
+                  : _receiptResultToMap(item.receiptResult!),
               'diagnosticCode': item.diagnosticCode,
             },
           )
@@ -367,11 +406,48 @@ Map<String, Object?> _intentToMap(OfflineIntent intent) => switch (intent) {
     'entity': _entityToMap(vertex),
     'contributionId': null,
   },
+  OfflinePutVertexIfAbsentIntent(:final vertex) => <String, Object?>{
+    'kind': 'putVertexIfAbsent',
+    'entity': _entityToMap(vertex),
+    'contributionId': null,
+  },
+  OfflineDeleteVertexIntent(:final vertexKey) => <String, Object?>{
+    'kind': 'deleteVertex',
+    'entity': <String, Object?>{
+      'kind': 'vertex',
+      'key': vertexKey,
+      'value': null,
+      'expiration': null,
+      'tail': null,
+      'head': null,
+      'weight': null,
+    },
+    'contributionId': null,
+  },
+  OfflineDeleteEdgeIntent(:final edge) => <String, Object?>{
+    'kind': 'deleteEdge',
+    'entity': <String, Object?>{
+      'kind': 'edge',
+      'key': null,
+      'value': null,
+      'expiration': null,
+      'tail': edge.tail,
+      'head': edge.head,
+      'weight': null,
+    },
+    'contributionId': null,
+  },
   OfflinePutEdgeIntent(:final edge) => <String, Object?>{
     'kind': 'putEdge',
     'entity': _entityToMap(edge),
     'contributionId': null,
   },
+  OfflineReceiptAddEdgeIntent(:final edge, :final contributionId) =>
+    <String, Object?>{
+      'kind': 'receiptAddEdge',
+      'entity': _entityToMap(edge),
+      'contributionId': _base64UrlNoPadding(contributionId),
+    },
   OfflineAddEdgeIntent(:final edge, :final contributionId) => <String, Object?>{
     'kind': 'addEdge',
     'entity': _entityToMap(edge),
@@ -383,20 +459,64 @@ OfflineIntent _intentFromMap(Map<String, Object?> value) {
   _expectKeys(value, const <String>{'kind', 'entity', 'contributionId'});
   final kind = _string(value['kind']);
   final entityMap = _object(value['entity']);
+  _expectKeys(entityMap, const <String>{
+    'kind',
+    'key',
+    'value',
+    'expiration',
+    'tail',
+    'head',
+    'weight',
+  });
   return switch (kind) {
-    'putVertex' => () {
+    'putVertex' when value['contributionId'] == null => () {
       final key = OfflineEntityKey.vertex(_string(entityMap['key']));
       return OfflinePutVertexIntent(
         _entityFromMap(entityMap, expectedKey: key) as Vertex,
       );
     }(),
-    'putEdge' => () {
+    'putVertexIfAbsent' when value['contributionId'] == null => () {
+      final key = OfflineEntityKey.vertex(_string(entityMap['key']));
+      return OfflinePutVertexIfAbsentIntent(
+        _entityFromMap(entityMap, expectedKey: key) as Vertex,
+      );
+    }(),
+    'deleteVertex'
+        when value['contributionId'] == null &&
+            entityMap['kind'] == 'vertex' &&
+            entityMap['value'] == null &&
+            entityMap['expiration'] == null &&
+            entityMap['tail'] == null &&
+            entityMap['head'] == null &&
+            entityMap['weight'] == null =>
+      OfflineDeleteVertexIntent(_nonEmpty(entityMap['key'])),
+    'deleteEdge'
+        when value['contributionId'] == null &&
+            entityMap['kind'] == 'edge' &&
+            entityMap['key'] == null &&
+            entityMap['value'] == null &&
+            entityMap['expiration'] == null &&
+            entityMap['weight'] == null =>
+      OfflineDeleteEdgeIntent(
+        EdgeRef(_nonEmpty(entityMap['tail']), _nonEmpty(entityMap['head'])),
+      ),
+    'putEdge' when value['contributionId'] == null => () {
       final key = OfflineEntityKey.edge(
         _string(entityMap['tail']),
         _string(entityMap['head']),
       );
       return OfflinePutEdgeIntent(
         _entityFromMap(entityMap, expectedKey: key) as Edge,
+      );
+    }(),
+    'receiptAddEdge' => () {
+      final key = OfflineEntityKey.edge(
+        _string(entityMap['tail']),
+        _string(entityMap['head']),
+      );
+      return OfflineReceiptAddEdgeIntent(
+        _entityFromMap(entityMap, expectedKey: key) as Edge,
+        _base64(value['contributionId'], length: 24),
       );
     }(),
     'addEdge' => () {
@@ -409,6 +529,161 @@ OfflineIntent _intentFromMap(Map<String, Object?> value) {
         _base64(value['contributionId'], length: 24),
       );
     }(),
+    _ => throw const OfflineCodecException(),
+  };
+}
+
+Map<String, Object?> _receiptEvidenceToMap(OfflineReceiptEvidence evidence) =>
+    <String, Object?>{
+      'operationId': _base64UrlNoPadding(evidence.operationId.bytes),
+      'groupId': _base64UrlNoPadding(evidence.groupId.bytes),
+      'nodeId': _base64UrlNoPadding(evidence.endpoint.nodeId),
+      'generation': _base64UrlNoPadding(evidence.endpoint.generation),
+      'mutation': evidence.mutation.name,
+      'itemIndex': evidence.itemIndex,
+      'itemCount': evidence.itemCount,
+      'state': evidence.state.name,
+      'reconciliationAttemptCount': evidence.reconciliationAttemptCount,
+      'policy': <String, Object?>{
+        'deploymentEpoch': _base64UrlNoPadding(
+          evidence.policy.deploymentEpoch.bytes,
+        ),
+        'retentionMicros': evidence.policy.retention.inMicroseconds.toString(),
+        'maxEntries': evidence.policy.maxEntries.toString(),
+        'maxBytes': evidence.policy.maxBytes.toString(),
+        'fingerprint': _base64UrlNoPadding(evidence.policy.fingerprint),
+      },
+    };
+
+OfflineReceiptEvidence _receiptEvidenceFromMap(Map<String, Object?> value) {
+  _expectKeys(value, const <String>{
+    'operationId',
+    'groupId',
+    'nodeId',
+    'generation',
+    'mutation',
+    'itemIndex',
+    'itemCount',
+    'state',
+    'reconciliationAttemptCount',
+    'policy',
+  });
+  final policy = _object(value['policy']);
+  _expectKeys(policy, const <String>{
+    'deploymentEpoch',
+    'retentionMicros',
+    'maxEntries',
+    'maxBytes',
+    'fingerprint',
+  });
+  try {
+    return OfflineReceiptEvidence(
+      operationId: ReceiptOperationId(
+        _base64(value['operationId'], length: 49),
+      ),
+      groupId: ReceiptGroupId(_base64(value['groupId'], length: 16)),
+      endpoint: ReceiptEndpoint(
+        nodeId: _base64(value['nodeId'], length: 16),
+        generation: _base64(value['generation'], length: 16),
+      ),
+      mutation: _receiptMutation(_string(value['mutation'])),
+      policy: OfflineReceiptPolicy(
+        deploymentEpoch: ReceiptEpoch(
+          _base64(policy['deploymentEpoch'], length: 16),
+        ),
+        retention: Duration(
+          microseconds: _decimalInt(
+            policy['retentionMicros'],
+            1,
+            0x7fffffffffffffff,
+          ),
+        ),
+        maxEntries: _decimalBigInt(
+          policy['maxEntries'],
+          BigInt.one,
+          (BigInt.one << 64) - BigInt.one,
+        ),
+        maxBytes: _decimalBigInt(
+          policy['maxBytes'],
+          BigInt.one,
+          (BigInt.one << 64) - BigInt.one,
+        ),
+        fingerprint: _base64(policy['fingerprint'], length: 32),
+      ),
+      itemIndex: _nonNegativeInt(value['itemIndex']),
+      itemCount: _positiveInt(value['itemCount']),
+      state: _receiptReconciliationState(_string(value['state'])),
+      reconciliationAttemptCount: _nonNegativeInt(
+        value['reconciliationAttemptCount'],
+      ),
+    );
+  } on OfflineArgumentException {
+    throw const OfflineCodecException();
+  } on LanternException {
+    throw const OfflineCodecException();
+  }
+}
+
+Map<String, Object?> _receiptResultToMap(OfflineReceiptResult result) =>
+    switch (result) {
+      OfflineVertexPutReceiptResult(:final outcome) => <String, Object?>{
+        'kind': 'vertexPut',
+        'outcome': outcome.name,
+        'existed': null,
+        'effectiveWeight': null,
+      },
+      OfflineVertexDeleteReceiptResult(:final existed) => <String, Object?>{
+        'kind': 'vertexDelete',
+        'outcome': null,
+        'existed': existed,
+        'effectiveWeight': null,
+      },
+      OfflineEdgeDeleteReceiptResult(:final existed) => <String, Object?>{
+        'kind': 'edgeDelete',
+        'outcome': null,
+        'existed': existed,
+        'effectiveWeight': null,
+      },
+      OfflineEdgeAddReceiptResult(:final effectiveWeight) => <String, Object?>{
+        'kind': 'edgeAdd',
+        'outcome': null,
+        'existed': null,
+        'effectiveWeight': _floatBits(
+          effectiveWeight,
+          4,
+          allowNonFinite: true,
+        ),
+      },
+    };
+
+OfflineReceiptResult _receiptResultFromMap(Map<String, Object?> value) {
+  _expectKeys(value, const <String>{
+    'kind',
+    'outcome',
+    'existed',
+    'effectiveWeight',
+  });
+  return switch (_string(value['kind'])) {
+    'vertexPut'
+        when value['existed'] == null &&
+            value['effectiveWeight'] == null =>
+      OfflineVertexPutReceiptResult(_putOutcome(_string(value['outcome']))),
+    'vertexDelete'
+        when value['outcome'] == null &&
+            value['effectiveWeight'] == null =>
+      OfflineVertexDeleteReceiptResult(_bool(value['existed'])),
+    'edgeDelete'
+        when value['outcome'] == null &&
+            value['effectiveWeight'] == null =>
+      OfflineEdgeDeleteReceiptResult(_bool(value['existed'])),
+    'edgeAdd' when value['outcome'] == null && value['existed'] == null =>
+      OfflineEdgeAddReceiptResult(
+        _floatFromBits(
+          _string(value['effectiveWeight']),
+          4,
+          allowNonFinite: true,
+        ),
+      ),
     _ => throw const OfflineCodecException(),
   };
 }
@@ -494,11 +769,17 @@ VertexValue _valueFromMap(Map<String, Object?> value) {
   };
 }
 
-String _floatBits(double value, int length) {
-  if (!value.isFinite) throw const OfflineArgumentException();
+String _floatBits(double value, int length, {bool allowNonFinite = false}) {
+  if (!allowNonFinite && !value.isFinite) {
+    throw const OfflineArgumentException();
+  }
   final data = ByteData(length);
   if (length == 4) {
-    data.setFloat32(0, normalizeOfflineFloat32(value), Endian.big);
+    data.setFloat32(
+      0,
+      allowNonFinite ? value : normalizeOfflineFloat32(value),
+      Endian.big,
+    );
   } else {
     data.setFloat64(0, value, Endian.big);
   }
@@ -508,7 +789,11 @@ String _floatBits(double value, int length) {
   ).join();
 }
 
-double _floatFromBits(String value, int length) {
+double _floatFromBits(
+  String value,
+  int length, {
+  bool allowNonFinite = false,
+}) {
   if (value.length != length * 2 || !RegExp(r'^[0-9a-f]+$').hasMatch(value)) {
     throw const OfflineCodecException();
   }
@@ -522,7 +807,9 @@ double _floatFromBits(String value, int length) {
   final result = length == 4
       ? data.getFloat32(0, Endian.big)
       : data.getFloat64(0, Endian.big);
-  if (!result.isFinite) throw const OfflineCodecException();
+  if (!allowNonFinite && !result.isFinite) {
+    throw const OfflineCodecException();
+  }
   return result;
 }
 
@@ -639,7 +926,8 @@ BigInt _decimalBigInt(Object? value, BigInt minimum, BigInt maximum) {
 
 Uint8List _base64(Object? value, {int? length}) {
   final text = _string(value);
-  if (!RegExp(r'^[A-Za-z0-9_-]*$').hasMatch(text)) {
+  if ((length != null && text.length != _unpaddedBase64Length(length)) ||
+      !RegExp(r'^[A-Za-z0-9_-]*$').hasMatch(text)) {
     throw const OfflineCodecException();
   }
   Uint8List bytes;
@@ -654,6 +942,8 @@ Uint8List _base64(Object? value, {int? length}) {
   }
   return bytes;
 }
+
+int _unpaddedBase64Length(int byteLength) => ((byteLength * 4) + 2) ~/ 3;
 
 String _base64UrlNoPadding(List<int> bytes) =>
     base64Url.encode(bytes).replaceAll('=', '');
@@ -675,5 +965,30 @@ OfflineWriteState _writeState(String value) => switch (value) {
   'deadLetter' => OfflineWriteState.deadLetter,
   'expired' => OfflineWriteState.expired,
   'outcomeUnknown' => OfflineWriteState.outcomeUnknown,
+  _ => throw const OfflineCodecException(),
+};
+
+ReceiptMutationKind _receiptMutation(String value) => switch (value) {
+  'vertexPut' => ReceiptMutationKind.vertexPut,
+  'vertexDelete' => ReceiptMutationKind.vertexDelete,
+  'edgeDelete' => ReceiptMutationKind.edgeDelete,
+  'edgeAdd' => ReceiptMutationKind.edgeAdd,
+  _ => throw const OfflineCodecException(),
+};
+
+OfflineReceiptReconciliationState _receiptReconciliationState(String value) =>
+    switch (value) {
+      'statusRequired' => OfflineReceiptReconciliationState.statusRequired,
+      'notYetObserved' => OfflineReceiptReconciliationState.notYetObserved,
+      'lookupUnknown' => OfflineReceiptReconciliationState.lookupUnknown,
+      'noLongerProvable' => OfflineReceiptReconciliationState.noLongerProvable,
+      _ => throw const OfflineCodecException(),
+    };
+
+PutOutcome _putOutcome(String value) => switch (value) {
+  'appliedAndLive' => PutOutcome.appliedAndLive,
+  'expired' => PutOutcome.expired,
+  'conditionNotMet' => PutOutcome.conditionNotMet,
+  'superseded' => PutOutcome.superseded,
   _ => throw const OfflineCodecException(),
 };

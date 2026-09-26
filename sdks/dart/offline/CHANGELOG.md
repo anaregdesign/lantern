@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Add storage-neutral, status-first bounded-receipt reconciliation for
+  conditional Vertex Put, exact Vertex Delete, exact Edge Delete, and
+  contribution-keyed Edge Add. Persist
+  each operation ID, one-item logical group, endpoint NodeID/generation, policy
+  evidence, explicit Add contribution ID, and exact original result; retry a mutation only after
+  `NOT_YET_OBSERVED` plus exact same-endpoint continuity proof.
+- Preserve lookup failures as unresolved retry state and terminalize
+  `NO_LONGER_PROVABLE`, changed continuity, exhausted mutation attempts, and
+  max age as explicit `outcomeUnknown` work. Never infer `false`, zero, or
+  success, and reject generic replay of receipt dead letters.
+- Advance strict outbox and operation codecs for receipt evidence/results while
+  retaining strict legacy readers. Preserve the new payloads through the
+  storage-neutral reference store and migrate SQLite schema v1/v2 payloads and
+  reservations atomically into schema v3. Keep legacy Add records quarantined
+  as `unsupported_add`; only the distinct receipt Add intent is sendable.
+- Raise the minimum diagnostic-code capacity to 28 UTF-8 bytes so every
+  receipt reconciliation terminal code remains durably representable.
+- Preserve signed zero, infinities, and semantic NaN in retained Edge Add
+  receipt results without admitting non-finite mutation inputs.
+
 ## 0.3.0
 
 - Add a production `LanternClientIdentitySource` for the typed identity-only
