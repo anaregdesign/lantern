@@ -87,9 +87,16 @@ func connectHandlerOptions(
 	if slow.Enabled() {
 		ints = append(ints, slow.ConnectInterceptor())
 	}
+	compressMinBytes := 1024
+	if maxSendBytes := netCfg.MaxSendMsgBytes; maxSendBytes > 0 && maxSendBytes < compressMinBytes {
+		// Connect checks the send cap on compressed bytes when gzip is used.
+		// Keep responses at or above the cap eligible for compression.
+		compressMinBytes = maxSendBytes
+	}
 	opts := []connect.HandlerOption{
 		connect.WithReadMaxBytes(netCfg.MaxRecvMsgBytes),
 		connect.WithSendMaxBytes(netCfg.MaxSendMsgBytes),
+		connect.WithCompressMinBytes(compressMinBytes),
 		connect.WithRecover(func(ctx context.Context, _ connect.Spec, _ http.Header, p any) error {
 			logger.ErrorContext(ctx, "connect handler panic", slog.Any("panic", p))
 			return connect.NewError(connect.CodeInternal, errors.New("internal server error"))
