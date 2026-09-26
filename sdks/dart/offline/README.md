@@ -14,7 +14,7 @@ The published `0.3.0` identity CDC bridge is tracked under
 hosted `lantern_client 0.3.0`. The `0.4.0` receipt release candidate under
 [#1398](https://github.com/anaregdesign/lantern/issues/1398) and
 [#1115](https://github.com/anaregdesign/lantern/issues/1115) requires hosted
-`lantern_client ^0.3.1`. The maintained Flutter example and unpublished SQLite
+`lantern_client ^0.3.2`. The maintained Flutter example and unpublished SQLite
 adapter use local path overrides for development. `0.4.0` remains release
 preparation, not a published or physically qualified package; the private
 pub.dev offline OIDC binding also requires package-admin verification.
@@ -324,5 +324,6 @@ acquires its configured credentials at each RPC call.
 
 The `0.3.0` CDC bridge requires hosted `lantern_client 0.3.0` with
 `subscribeIdentity`; the `0.4.0` receipt candidate requires hosted
-`lantern_client ^0.3.1` for receipt APIs. The initial offline `0.2.0`
-package stays on its published parent constraint.
+`lantern_client ^0.3.2` for receipt APIs and single-attempt receipt-less
+Add. The initial offline `0.2.0` package stays on its published parent
+constraint.

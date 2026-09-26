@@ -1006,12 +1006,12 @@ gate, including real Connect/h2c response-loss, lag, capacity, retention,
 intent-conflict, transport-bound, token-rotation, and fail-closed tests.
 Put Edge and prefix Delete remain outside this receipt context. Online Go,
 Node, and Dart receipt APIs are merged in source; the hosted
-`lantern_client 0.3.1` online archive passed exact-content verification.
+`lantern_client 0.3.2` online archive passed exact-content verification.
 Published `sdks/go/v0.25.0` pins published `pb/v0.13.0`. Node receipt APIs
 are in merged 0.12.0 source, not npm's current 0.11.0 `latest` package.
 Merged offline 0.4.0 source implements the four receipt families, but no
 receipt-bearing offline release has been published or qualified. Its
-`lantern_client: ^0.3.1` constraint selects the hosted parent; verify
+`lantern_client: ^0.3.2` constraint selects the hosted parent; verify
 isolated resolution of the offline candidate archive against that published
 parent without path overrides before publishing. Final #1399 release
 evidence remains open, including performance and physical qualification.
