@@ -44,6 +44,26 @@ func TestParseRuntimeMetricsRejectsMissingAndInvalidReadings(t *testing.T) {
 		{"scientific", "# HELP go_goroutines Go\n" +
 			"go_goroutines 40\n" +
 			"go_memstats_heap_alloc_bytes 1.048576e+08\n", true},
+		{"scientific-integer-goroutines", "go_goroutines 4e+01\n" +
+			"go_memstats_heap_alloc_bytes 104857600\n", true},
+		{"rounded-fractional-heap", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 104857600.000000001\n", false},
+		{"rounded-fractional-scientific", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 1.04857600000000001e+08\n", false},
+		{"rounded-fractional-goroutines", "go_goroutines 40.0000000000000001\n" +
+			"go_memstats_heap_alloc_bytes 104857600\n", false},
+		{"subunit-fraction", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 0.1\n", false},
+		{"subunit-scientific", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 1e-40\n", false},
+		{"tiny-exponent-underflow", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 1e-9999\n", false},
+		{"huge-exponent-overflow", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 1e+9999\n", false},
+		{"int64-overflow", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 9223372036854775808\n", false},
+		{"malformed-exponent", "go_goroutines 40\n" +
+			"go_memstats_heap_alloc_bytes 1e-\n", false},
 		{"missing", "go_goroutines 40\n", false},
 		{"labeled-not-scalar", "go_goroutines{replica=\"0\"} 40\n" +
 			"go_memstats_heap_alloc_bytes 104857600\n", false},
@@ -64,6 +84,15 @@ func TestParseRuntimeMetricsRejectsMissingAndInvalidReadings(t *testing.T) {
 				t.Fatalf("parseRuntimeMetrics() accepted %q", test.body)
 			}
 		})
+	}
+}
+
+func TestParseMetricValuePreservesExactIntegerAboveFloatPrecision(t *testing.T) {
+	t.Parallel()
+	const raw = "9007199254740993"
+	value, err := parseMetricValue(raw)
+	if err != nil || value != 9007199254740993 {
+		t.Fatalf("parseMetricValue(%q) = %d, %v; want exact integer", raw, value, err)
 	}
 }
 

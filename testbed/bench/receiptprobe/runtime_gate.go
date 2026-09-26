@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -202,10 +203,15 @@ func parseRuntimeMetrics(body io.Reader) (runtimeMetrics, error) {
 func parseMetricValue(raw string) (int64, error) {
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) ||
-		value <= 0 || value >= float64(math.MaxInt64) || math.Trunc(value) != value {
+		value <= 0 {
 		return 0, fmt.Errorf("expected a finite positive integer, got %q", raw)
 	}
-	return int64(value), nil
+	// Float parsing can round away a fractional suffix before the integer check.
+	exact, ok := new(big.Rat).SetString(raw)
+	if !ok || !exact.IsInt() || !exact.Num().IsInt64() {
+		return 0, fmt.Errorf("expected a finite positive integer, got %q", raw)
+	}
+	return exact.Num().Int64(), nil
 }
 
 func validateSteadyMetrics(report steadyMetricsReport, cfg steadyMetricsConfig, duration time.Duration) error {

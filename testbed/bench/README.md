@@ -199,8 +199,8 @@ Existing scenarios retain graph-only defaults.
 The receipt leak gate samples `go_goroutines` and
 `go_memstats_heap_alloc_bytes` on **all three replicas** every 5s while the
 steady producer runs, without forcing GC during load. It requires complete,
-finite readings throughout the measured window (at least nine rounds over
-45s, with no interval gap above 7.5s); a failed or incomplete scrape fails
+finite, integral readings throughout the measured window (at least nine rounds
+over 45s, with no interval gap above 7.5s); a failed or incomplete scrape fails
 the run. Each replica's observed peak must remain within +15 goroutines and
 +32 MiB `heap_alloc` of its post-warmup GC baseline. The existing
 post-cooldown/post-warmup GC live-set delta must **also** stay within those
