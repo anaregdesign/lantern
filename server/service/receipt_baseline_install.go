@@ -172,15 +172,33 @@ func (s *LanternService) installReceiptBaseline(
 }
 
 type receiptBaselineInstallObservation struct {
-	active   mutationreceipt.Snapshot
-	retired  mutationreceipt.RetiredCatalogSnapshot
-	revision uint64
-	origins  []OriginState
+	active              mutationreceipt.Snapshot
+	retired             mutationreceipt.RetiredCatalogSnapshot
+	revision            uint64
+	origins             []OriginState
+	pristineClockRebase bool
 }
 
 type preparedReceiptBaselineAttempt struct {
 	capture   ReceiptWholeStateCapture
 	candidate *ReceiptBaselineCandidate
+}
+
+func (s *LanternService) pristineReceiptBaselineReceiver(
+	receiptRuntime *receiptServingRuntime,
+	observed receiptBaselineInstallObservation,
+) bool {
+	if receiptRuntime.committedBaseline != (receiptBaselineReference{}) ||
+		len(observed.active.Receipts) != 0 ||
+		len(observed.retired.Epochs) != 0 ||
+		len(observed.origins) != 0 {
+		return false
+	}
+	if _, committed := s.log.LastSeq(); committed {
+		return false
+	}
+	length, _, evicted := s.runtime.MutationLogStats()
+	return length == 0 && evicted == 0 && emptyReceiptWALRecoveryGraph(s.runtime.graph)
 }
 
 func (s *LanternService) prepareReceiptBaselineAttempt(
@@ -210,15 +228,25 @@ func (s *LanternService) prepareReceiptBaselineAttempt(
 			return fmt.Errorf("service: snapshot current retired receipt catalog: %w", err)
 		}
 		observed.origins = s.origins.States()
-		return validateOriginStateDominance(incoming.Origins, observed.origins)
+		if err := validateOriginStateDominance(incoming.Origins, observed.origins); err != nil {
+			return err
+		}
+		if incomingReceipts.ClockHighWaterMillis < observed.active.ClockHighWaterMillis {
+			observed.pristineClockRebase = s.pristineReceiptBaselineReceiver(receiptRuntime, observed)
+		}
+		return nil
 	})
 	if err != nil {
 		return receiptBaselineInstallObservation{}, preparedReceiptBaselineAttempt{}, err
 	}
 	effectiveHighWater := incomingReceipts.ClockHighWaterMillis
 	if effectiveHighWater < observed.active.ClockHighWaterMillis {
-		return receiptBaselineInstallObservation{}, preparedReceiptBaselineAttempt{},
-			fmt.Errorf("%w: active receipt high-water would move backward", mutationreceipt.ErrRetiredCatalogClockRollback)
+		if !observed.pristineClockRebase {
+			return receiptBaselineInstallObservation{}, preparedReceiptBaselineAttempt{},
+				fmt.Errorf("%w: active receipt high-water would move backward", mutationreceipt.ErrRetiredCatalogClockRollback)
+		}
+		// Only the receiver-local receipt clock moves; the sender's graph and origin cutoffs still bound WAL replay.
+		effectiveHighWater = observed.active.ClockHighWaterMillis
 	}
 	activeConfig := receiptRuntime.policy
 	activeConfig.ClockHighWater = time.UnixMilli(effectiveHighWater)
@@ -355,6 +383,9 @@ func (s *LanternService) commitReceiptBaselineAttempt(
 			!reflect.DeepEqual(currentActive, observed.active) ||
 			!reflect.DeepEqual(currentRetired, observed.retired) ||
 			!reflect.DeepEqual(currentOrigins, observed.origins) {
+			return errReceiptBaselineInstallDrift
+		}
+		if observed.pristineClockRebase && !s.pristineReceiptBaselineReceiver(receiptRuntime, observed) {
 			return errReceiptBaselineInstallDrift
 		}
 		if err := validateOriginStateDominance(candidate.Origins, currentOrigins); err != nil {

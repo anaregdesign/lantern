@@ -922,6 +922,17 @@ Implementation notes:
   or publication panic retains the candidate and fail-stops serving. A
   post-commit cleanup error is logged without turning a committed install into
   an apparent rejection.
+- A fresh receiver can start with a Store clock ahead of a quiescent source's
+  valid `RECEIPT` Snapshot high-water. The private baseline installer may use
+  `max(source high-water, receiver high-water)` only after proving the receiver
+  pristine (no committed WAL/baseline, origin, active/retired receipt, or
+  graph/causal evidence) at both preparation and final publication cuts. It
+  prunes expired receipt rows and persists the receiver-local clock in the
+  Store, retired catalog, private sidecar/marker, and HLC `RestoreFloor`; it
+  never rewrites the sender's Snapshot cutoff, per-origin frontiers, or marker
+  `SnapshotHLC`. The source-header high-water/cutoff rule above is unchanged,
+  and post-cutoff mutations still replay. A non-pristine receiver continues
+  to reject clock rollback.
 - A final pre-listener provider barrier activates public receipts only after
   the exact runtime, primary service, replication service, backup source, and
   recovery evidence are certified and bearer authentication is configured.
