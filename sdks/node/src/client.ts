@@ -22,14 +22,21 @@
  * `ConnectOptions.batchChunkSize` (default 1000) and throw
  * `BatchError` with a resumable `written` offset on partial failure.
  *
- * Wire: Connect protocol (Connect/JSON by default; flip to binary via
- * `transportOptions.useBinaryFormat`). Built on
- * @connectrpc/connect v2 + codegen via @bufbuild/protoc-gen-es
- * (single plugin emits both message classes and the service schema
- * descriptor `LanternService`).
+ * Wire: Connect protocol. The Node transport uses binary by default; the
+ * browser entrypoint intentionally keeps Connect-Web JSON unless callers opt
+ * into binary. Built on @connectrpc/connect v2 + codegen via
+ * @bufbuild/protoc-gen-es (single plugin emits both message classes and the
+ * service schema descriptor `LanternService`).
  */
 
-import { type Client, type Interceptor, type Transport, createClient } from "@connectrpc/connect";
+import {
+  Code,
+  ConnectError,
+  type Client,
+  type Interceptor,
+  type Transport,
+  createClient,
+} from "@connectrpc/connect";
 import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 
 import {
@@ -37,7 +44,6 @@ import {
   LanternService,
   MatchMode as PbMatchMode,
   Objective as PbObjective,
-  PutOutcome as PbPutOutcome,
   Reduction as PbReduction,
   ScanOrder as PbScanOrder,
   SearchHitProjectionStatus as PbSearchHitProjectionStatus,
@@ -57,12 +63,19 @@ import {
   InvalidArgumentError,
   LanternError,
   NotFoundError,
+  ReceiptMutationUncertainError,
+  ReceiptReconciliationError,
   SearchContinuationLimitedError,
   wrapConnectError,
 } from "./errors.js";
 import {
+  Duration,
+  Float32,
+  Int32,
   Reduction,
   Objective,
+  Uint32,
+  Uint64,
   Weighting,
   fromEdgeJson,
   fromVertexJson,
@@ -79,9 +92,8 @@ import {
   type Vertex,
   type VertexInput,
 } from "./values.js";
-
-/** Server-authoritative result for one idempotent Put. */
-export type PutOutcome = "appliedAndLive" | "expired" | "conditionNotMet" | "superseded";
+import { putOutcomeFromWire, type PutOutcome } from "./put-outcome.js";
+export type { PutOutcome } from "./put-outcome.js";
 
 /** Index-aligned result of one vertex Put. */
 export interface VertexPutResult {
@@ -94,21 +106,6 @@ export interface EdgePutResult {
   tail: string;
   head: string;
   outcome: PutOutcome;
-}
-
-function putOutcomeFromWire(outcome: PbPutOutcome): PutOutcome {
-  switch (outcome) {
-    case PbPutOutcome.APPLIED_AND_LIVE:
-      return "appliedAndLive";
-    case PbPutOutcome.EXPIRED:
-      return "expired";
-    case PbPutOutcome.CONDITION_NOT_MET:
-      return "conditionNotMet";
-    case PbPutOutcome.SUPERSEDED:
-      return "superseded";
-    default:
-      throw new LanternError(`server returned unknown Put outcome ${outcome}`);
-  }
 }
 
 function expirationFromJson(json: Record<string, unknown>): Date | null {
@@ -161,6 +158,33 @@ import {
   type IdentityFrame,
   type IdentitySubscribeOptions,
 } from "./changes.js";
+import {
+  normalizeReceiptEdgeRefs,
+  operationIDIssuedAtUnixMs,
+  operationIDToBytes,
+  parseOperationID,
+  receiptCapabilityFromWire,
+  receiptContextForItemCount,
+  receiptContextToWire,
+  receiptContinuityDifference,
+  receiptStatusesFromWire,
+  RECEIPT_STATUS_MAX_ITEMS,
+  type EdgeAddReceiptBatchResult,
+  type EdgeAddReceiptInput,
+  type EdgeAddReceiptResult,
+  type EdgeDeleteReceiptBatchResult,
+  type EdgeDeleteReceiptResult,
+  type OperationID,
+  type ReceiptCapability,
+  type ReceiptMutationIntent,
+  type ReceiptMutationKind,
+  type ReceiptOperationContext,
+  type ReceiptStatus,
+  type VertexDeleteReceiptBatchResult,
+  type VertexDeleteReceiptResult,
+  type VertexPutReceiptBatchResult,
+  type VertexPutReceiptResult,
+} from "./receipts.js";
 
 /**
  * Upper bound for the auto-chunk size. Contrib-ID idempotency keys (#895)
@@ -170,6 +194,203 @@ import {
  * (mirrors the Go SDK's maxBatchChunkSize).
  */
 const MAX_BATCH_CHUNK_SIZE = 1 << 16;
+const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000n;
+
+function isDefiniteReceiptMutationRejection(error: unknown): boolean {
+  if (!(error instanceof ConnectError)) return false;
+  switch (error.code) {
+    case Code.InvalidArgument:
+    case Code.Unauthenticated:
+    case Code.PermissionDenied:
+      return true;
+    default:
+      return false;
+  }
+}
+
+function cloneReceiptVertexValue(value: VertexInput["value"]): VertexInput["value"] {
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof Duration) return new Duration(value.seconds, value.nanos);
+  if (value instanceof Int32) return new Int32(value.value);
+  if (value instanceof Uint32) return new Uint32(value.value);
+  if (value instanceof Uint64) return new Uint64(value.value);
+  if (value instanceof Float32) return new Float32(value.value);
+  return value;
+}
+
+function cloneReceiptVertexInput(input: VertexInput, index: number): Readonly<VertexInput> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    typeof input.key !== "string" ||
+    input.key.length === 0
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Vertex Put input[${index}] requires a nonempty string key`,
+    );
+  }
+  if (input.ttlSeconds !== undefined && !Number.isFinite(input.ttlSeconds)) {
+    throw new InvalidArgumentError(`receipt Vertex Put input[${index}] ttlSeconds must be finite`);
+  }
+  if (
+    input.expiration !== undefined &&
+    (!(input.expiration instanceof Date) || !Number.isFinite(input.expiration.getTime()))
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Vertex Put input[${index}] expiration must be a valid Date`,
+    );
+  }
+  if (input.ttlSeconds !== undefined && input.expiration !== undefined) {
+    throw new InvalidArgumentError(
+      `receipt Vertex Put input[${index}] cannot specify both ttlSeconds and expiration`,
+    );
+  }
+  const snapshot: VertexInput = {
+    key: input.key,
+    value: cloneReceiptVertexValue(input.value),
+  };
+  if (input.ttlSeconds !== undefined) snapshot.ttlSeconds = input.ttlSeconds;
+  if (input.expiration !== undefined) {
+    snapshot.expiration = new Date(input.expiration.getTime());
+  }
+  return Object.freeze(snapshot);
+}
+
+function prepareReceiptVertexInputs(
+  inputs: readonly VertexInput[],
+  context: ReceiptOperationContext,
+): {
+  snapshots: readonly Readonly<VertexInput>[];
+  vertices: readonly PbVertex[];
+} {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw new InvalidArgumentError("receipt Vertex Put requires at least one vertex");
+  }
+  const snapshots = Object.freeze(inputs.map(cloneReceiptVertexInput));
+  const vertices = Object.freeze(
+    snapshots.map((input, index) => {
+      const issuedAt = operationIDIssuedAtUnixMs(context.operationIds[index]!);
+      if (issuedAt > MAX_JAVASCRIPT_DATE_MS) {
+        throw new InvalidArgumentError(
+          `receipt operationIds[${index}] issuance time exceeds the JavaScript Date range`,
+        );
+      }
+      return fromJson(VertexSchema, vertexInputToJsonAt(input, Number(issuedAt)) as JsonValue);
+    }),
+  );
+  return { snapshots, vertices };
+}
+
+function cloneReceiptEdgeAddInput(
+  input: EdgeAddReceiptInput,
+  index: number,
+): Readonly<EdgeAddReceiptInput> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    typeof input.tail !== "string" ||
+    input.tail.length === 0 ||
+    typeof input.head !== "string" ||
+    input.head.length === 0
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] requires nonempty tail and head`,
+    );
+  }
+  const weight = Math.fround(input.weight);
+  if (
+    typeof input.weight !== "number" ||
+    !Number.isFinite(input.weight) ||
+    !Number.isFinite(weight)
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] weight must be finite float32`,
+    );
+  }
+  if (input.ttlSeconds !== undefined && !Number.isFinite(input.ttlSeconds)) {
+    throw new InvalidArgumentError(`receipt Edge Add input[${index}] ttlSeconds must be finite`);
+  }
+  if (
+    input.expiration !== undefined &&
+    (!(input.expiration instanceof Date) || !Number.isFinite(input.expiration.getTime()))
+  ) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] expiration must be a valid Date`,
+    );
+  }
+  if (input.ttlSeconds !== undefined && input.expiration !== undefined) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] cannot specify both ttlSeconds and expiration`,
+    );
+  }
+  if (!(input.contribId instanceof Uint8Array)) {
+    throw new InvalidArgumentError(
+      `receipt Edge Add input[${index}] contribId must be a Uint8Array`,
+    );
+  }
+  const contribId = new Uint8Array(validateContribId(input.contribId));
+  if (!contribId.some((value) => value !== 0)) {
+    throw new InvalidArgumentError(`receipt Edge Add input[${index}] contribId must be nonzero`);
+  }
+  const snapshot: EdgeAddReceiptInput = {
+    tail: input.tail,
+    head: input.head,
+    weight,
+    contribId,
+  };
+  if (input.ttlSeconds !== undefined) snapshot.ttlSeconds = input.ttlSeconds;
+  if (input.expiration !== undefined) {
+    snapshot.expiration = new Date(input.expiration.getTime());
+  }
+  return Object.freeze(snapshot);
+}
+
+function prepareReceiptEdgeAddInputs(
+  inputs: readonly EdgeAddReceiptInput[],
+  context: ReceiptOperationContext,
+): {
+  snapshots: readonly Readonly<EdgeAddReceiptInput>[];
+  edges: readonly PbEdge[];
+  contribIds: readonly Uint8Array[];
+} {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw new InvalidArgumentError("receipt Edge Add requires at least one edge");
+  }
+  const snapshots = Object.freeze(inputs.map(cloneReceiptEdgeAddInput));
+  const edges = Object.freeze(
+    snapshots.map((input, index) => {
+      const issuedAt = operationIDIssuedAtUnixMs(context.operationIds[index]!);
+      if (issuedAt > MAX_JAVASCRIPT_DATE_MS) {
+        throw new InvalidArgumentError(
+          `receipt operationIds[${index}] issuance time exceeds the JavaScript Date range`,
+        );
+      }
+      return fromJson(EdgeSchema, edgeInputToJsonAt(input, Number(issuedAt)) as JsonValue);
+    }),
+  );
+  return {
+    snapshots,
+    edges,
+    contribIds: Object.freeze(snapshots.map((input) => new Uint8Array(input.contribId))),
+  };
+}
+
+function normalizeReceiptVertexKeys(keys: readonly string[]): readonly string[] {
+  if (!Array.isArray(keys) || keys.length === 0) {
+    throw new InvalidArgumentError("receipt Vertex Delete requires at least one key");
+  }
+  return Object.freeze(
+    keys.map((key, index) => {
+      if (typeof key !== "string" || key.length === 0) {
+        throw new InvalidArgumentError(
+          `receipt Vertex Delete key[${index}] must be a nonempty string`,
+        );
+      }
+      return key;
+    }),
+  );
+}
 
 /** Maps the SDK's string match mode onto the wire enum. */
 function toPbMatchMode(m: MatchMode | undefined): PbMatchMode {
@@ -499,11 +720,38 @@ export class Lantern {
     return (await this.putVerticesIfAbsent([input], signal))[0]!.outcome;
   }
 
+  /** Thin singular facade over {@link putVerticesWithReceipt}. */
+  async putVertexWithReceipt(
+    input: VertexInput,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<VertexPutReceiptResult> {
+    return (await this.putVerticesWithReceipt([input], context, signal)).results[0]!;
+  }
+
+  /** Thin singular facade over {@link putVerticesIfAbsentWithReceipt}. */
+  async putVertexIfAbsentWithReceipt(
+    input: VertexInput,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<VertexPutReceiptResult> {
+    return (await this.putVerticesIfAbsentWithReceipt([input], context, signal)).results[0]!;
+  }
+
   async deleteVertex(key: string, signal?: AbortSignal): Promise<boolean> {
     return this.invoke(async () => {
       const resp = await this.client.deleteVertex({ key }, this.callOpts(signal));
       return resp.existed;
     });
+  }
+
+  /** Thin singular facade over {@link deleteVerticesWithReceipt}. */
+  async deleteVertexWithReceipt(
+    key: string,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<VertexDeleteReceiptResult> {
+    return (await this.deleteVerticesWithReceipt([key], context, signal)).results[0]!;
   }
 
   async getVertices(
@@ -625,6 +873,78 @@ export class Lantern {
     }));
   }
 
+  /**
+   * Atomically writes one receipt-bearing logical Vertex Put call without
+   * chunking. Relative TTLs are resolved from each persisted operation ID's
+   * issuance clock, so replaying the same inputs and context reproduces the
+   * same absolute expiration after response loss.
+   */
+  async putVerticesWithReceipt(
+    inputs: readonly VertexInput[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<VertexPutReceiptBatchResult> {
+    return this.putVerticesWithReceiptMode(inputs, context, false, signal);
+  }
+
+  /**
+   * Conditional receipt-bearing Vertex Put. Replay with the exact same inputs
+   * and context returns the first attempt's original outcomes.
+   */
+  async putVerticesIfAbsentWithReceipt(
+    inputs: readonly VertexInput[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<VertexPutReceiptBatchResult> {
+    return this.putVerticesWithReceiptMode(inputs, context, true, signal);
+  }
+
+  private async putVerticesWithReceiptMode(
+    inputs: readonly VertexInput[],
+    context: ReceiptOperationContext,
+    ifAbsent: boolean,
+    signal?: AbortSignal,
+  ): Promise<VertexPutReceiptBatchResult> {
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      throw new InvalidArgumentError("receipt Vertex Put requires at least one vertex");
+    }
+    const normalizedContext = receiptContextForItemCount(context, inputs.length);
+    const prepared = prepareReceiptVertexInputs(inputs, normalizedContext);
+    const mutation = Object.freeze({
+      kind: "putVertex",
+      inputs: prepared.snapshots,
+      ifAbsent,
+    }) satisfies ReceiptMutationIntent;
+    await this.requireReceiptContinuity(normalizedContext, "putVertex", signal);
+    try {
+      const response = await this.client.putVertices(
+        {
+          vertices: [...prepared.vertices],
+          ifAbsent,
+          receiptContext: receiptContextToWire(normalizedContext),
+        },
+        this.callOpts(signal),
+      );
+      if (response.outcomes.length !== prepared.vertices.length) {
+        throw new LanternError(
+          `server returned ${response.outcomes.length} receipt Put outcomes for ${prepared.vertices.length} vertices`,
+        );
+      }
+      const results = Object.freeze(
+        response.outcomes.map((outcome, index) =>
+          Object.freeze({
+            key: prepared.snapshots[index]!.key,
+            operationId: normalizedContext.operationIds[index]!,
+            outcome: putOutcomeFromWire(outcome),
+          }),
+        ),
+      );
+      return Object.freeze({ context: normalizedContext, results });
+    } catch (error) {
+      throw await this.receiptMutationError(normalizedContext, mutation, error, signal);
+    }
+  }
+
   async deleteVertices(keys: readonly string[], signal?: AbortSignal): Promise<number> {
     if (keys.length === 0) return 0;
     let total = 0;
@@ -633,6 +953,56 @@ export class Lantern {
       total += resp.deleted;
     });
     return total;
+  }
+
+  /**
+   * Atomically deletes one receipt-bearing logical Vertex Delete call without
+   * chunking and preserves the exact request-index-aligned `existed` results.
+   */
+  async deleteVerticesWithReceipt(
+    keys: readonly string[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<VertexDeleteReceiptBatchResult> {
+    const normalizedKeys = normalizeReceiptVertexKeys(keys);
+    const normalizedContext = receiptContextForItemCount(context, normalizedKeys.length);
+    const mutation = Object.freeze({
+      kind: "deleteVertex",
+      keys: normalizedKeys,
+    }) satisfies ReceiptMutationIntent;
+    await this.requireReceiptContinuity(normalizedContext, "deleteVertex", signal);
+    try {
+      const response = await this.client.deleteVertices(
+        {
+          keys: [...normalizedKeys],
+          receiptContext: receiptContextToWire(normalizedContext),
+        },
+        this.callOpts(signal),
+      );
+      if (response.existed.length !== normalizedKeys.length) {
+        throw new LanternError(
+          `server returned ${response.existed.length} receipt Delete results for ${normalizedKeys.length} vertices`,
+        );
+      }
+      const deleted = response.existed.filter(Boolean).length;
+      if (response.deleted !== deleted) {
+        throw new LanternError(
+          `server returned receipt Vertex Delete count ${response.deleted}; want ${deleted}`,
+        );
+      }
+      const results = Object.freeze(
+        normalizedKeys.map((key, index) =>
+          Object.freeze({
+            key,
+            operationId: normalizedContext.operationIds[index]!,
+            existed: response.existed[index]!,
+          }),
+        ),
+      );
+      return Object.freeze({ context: normalizedContext, deleted, results });
+    } catch (error) {
+      throw await this.receiptMutationError(normalizedContext, mutation, error, signal);
+    }
   }
 
   async scanVertices(
@@ -905,6 +1275,15 @@ export class Lantern {
     });
   }
 
+  /** Thin singular facade over {@link addEdgesWithReceipt}. */
+  async addEdgeWithReceipt(
+    input: EdgeAddReceiptInput,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeAddReceiptResult> {
+    return (await this.addEdgesWithReceipt([input], context, signal)).results[0]!;
+  }
+
   async putEdge(input: EdgeInput, signal?: AbortSignal): Promise<PutOutcome> {
     return (await this.putEdges([input], signal))[0]!.outcome;
   }
@@ -914,6 +1293,21 @@ export class Lantern {
       const resp = await this.client.deleteEdge({ tail, head }, this.callOpts(signal));
       return resp.existed;
     });
+  }
+
+  /**
+   * Receipt-bearing singular Edge Delete. The caller must mint and persist a
+   * one-item context before the first send. This is a thin facade over
+   * {@link deleteEdgesWithReceipt}; the plural RPC is the canonical path.
+   */
+  async deleteEdgeWithReceipt(
+    tail: string,
+    head: string,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeDeleteReceiptResult> {
+    const response = await this.deleteEdgesWithReceipt([{ tail, head }], context, signal);
+    return response.results[0]!;
   }
 
   async getEdges(
@@ -953,6 +1347,70 @@ export class Lantern {
       }
     });
     return effective;
+  }
+
+  /**
+   * Atomically applies one receipt-bearing logical Edge Add call without
+   * chunking. Every item must carry an explicit nonzero 24-byte contrib ID;
+   * the SDK never synthesizes contribution identity for receipt mode.
+   */
+  async addEdgesWithReceipt(
+    inputs: readonly EdgeAddReceiptInput[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeAddReceiptBatchResult> {
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      throw new InvalidArgumentError("receipt Edge Add requires at least one edge");
+    }
+    const normalizedContext = receiptContextForItemCount(context, inputs.length);
+    const prepared = prepareReceiptEdgeAddInputs(inputs, normalizedContext);
+    const mutation = Object.freeze({
+      kind: "addEdge",
+      inputs: prepared.snapshots,
+    }) satisfies ReceiptMutationIntent;
+    await this.requireReceiptContinuity(normalizedContext, "addEdge", signal);
+
+    try {
+      const response = await this.client.addEdges(
+        {
+          edges: [...prepared.edges],
+          contribIds: prepared.contribIds.map((contribId) => new Uint8Array(contribId)),
+          receiptContext: receiptContextToWire(normalizedContext),
+        },
+        this.callOpts(signal),
+      );
+      if (response.written !== prepared.edges.length) {
+        throw new LanternError(
+          `server returned written=${response.written} for ${prepared.edges.length} receipt Edge Add items`,
+        );
+      }
+      if (response.effectiveWeights.length !== prepared.edges.length) {
+        throw new LanternError(
+          `server returned ${response.effectiveWeights.length} receipt Edge Add outcomes for ${prepared.edges.length} items`,
+        );
+      }
+      if (response.effectiveWeights.some((weight) => Number.isNaN(weight))) {
+        throw new LanternError("server returned a NaN receipt Edge Add outcome");
+      }
+      const results = Object.freeze(
+        prepared.snapshots.map((input, index) =>
+          Object.freeze({
+            tail: input.tail,
+            head: input.head,
+            operationId: normalizedContext.operationIds[index]!,
+            contribId: new Uint8Array(input.contribId),
+            effectiveWeight: response.effectiveWeights[index]!,
+          }),
+        ),
+      );
+      return Object.freeze({
+        context: normalizedContext,
+        written: response.written,
+        results,
+      });
+    } catch (error) {
+      throw await this.receiptMutationError(normalizedContext, mutation, error, signal);
+    }
   }
 
   /**
@@ -1047,6 +1505,67 @@ export class Lantern {
       total += resp.deleted;
     });
     return total;
+  }
+
+  /**
+   * Delete an index-aligned Edge batch with durable original-result receipts.
+   *
+   * The context is explicit so callers can persist it before the first send
+   * and reuse exactly the same bytes after response loss. Every attempt first
+   * verifies the current deployment epoch, policy, NodeID, and generation.
+   * Changed or unavailable continuity throws {@link ReceiptReconciliationError}
+   * without sending the mutation.
+   */
+  async deleteEdgesWithReceipt(
+    refs: readonly { tail: string; head: string }[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeDeleteReceiptBatchResult> {
+    const edges = normalizeReceiptEdgeRefs(refs);
+    const normalizedContext = receiptContextForItemCount(context, edges.length);
+    const mutation = Object.freeze({
+      kind: "deleteEdge",
+      edges,
+    }) satisfies ReceiptMutationIntent;
+    await this.requireReceiptContinuity(normalizedContext, "deleteEdge", signal);
+    const receiptContext = receiptContextToWire(normalizedContext);
+
+    try {
+      const response = await this.client.deleteEdges(
+        {
+          edges: edges.map((edge) => ({ tail: edge.tail, head: edge.head })),
+          receiptContext,
+        },
+        this.callOpts(signal),
+      );
+      if (response.existed.length !== edges.length) {
+        throw new LanternError(
+          `server returned ${response.existed.length} Edge Delete outcomes for ${edges.length} items`,
+        );
+      }
+      const deleted = response.existed.filter(Boolean).length;
+      if (response.deleted !== deleted) {
+        throw new LanternError(
+          `server returned deleted=${response.deleted} for ${deleted} true Edge Delete outcomes`,
+        );
+      }
+      return Object.freeze({
+        context: normalizedContext,
+        deleted,
+        results: Object.freeze(
+          edges.map((edge, index) =>
+            Object.freeze({
+              tail: edge.tail,
+              head: edge.head,
+              operationId: normalizedContext.operationIds[index]!,
+              existed: response.existed[index]!,
+            }),
+          ),
+        ),
+      });
+    } catch (error) {
+      throw await this.receiptMutationError(normalizedContext, mutation, error, signal);
+    }
   }
 
   async scanEdges(
@@ -1234,6 +1753,50 @@ export class Lantern {
    */
   async getReplicationStatus(signal?: AbortSignal): Promise<GetReplicationStatusResponse> {
     return this.invoke(() => this.client.getReplicationStatus({}, this.callOpts(signal)));
+  }
+
+  /**
+   * Discover whether the current authenticated endpoint can accept
+   * receipt-bearing mutations and, when enabled, its exact continuity marker.
+   */
+  async getReceiptCapability(signal?: AbortSignal): Promise<ReceiptCapability> {
+    return this.invoke(async () => {
+      const response = await this.client.getReceiptCapability({}, this.callOpts(signal));
+      return receiptCapabilityFromWire(response);
+    });
+  }
+
+  /**
+   * Read original receipt results without executing or retrying a mutation.
+   * Results are request-index-aligned, including duplicate operation IDs.
+   */
+  async getReceiptStatuses(
+    operationIds: readonly OperationID[],
+    signal?: AbortSignal,
+  ): Promise<readonly ReceiptStatus[]> {
+    if (!Array.isArray(operationIds) || operationIds.length === 0) {
+      throw new InvalidArgumentError("receipt status requires at least one operationId");
+    }
+    if (operationIds.length > RECEIPT_STATUS_MAX_ITEMS) {
+      throw new InvalidArgumentError(
+        `receipt status supports at most ${RECEIPT_STATUS_MAX_ITEMS} operation IDs`,
+      );
+    }
+    const normalized = Object.freeze(operationIds.map(parseOperationID));
+    return this.invoke(async () => {
+      const response = await this.client.getReceiptStatuses(
+        {
+          operationIds: normalized.map((operationId) => operationIDToBytes(operationId)),
+        },
+        this.callOpts(signal),
+      );
+      return receiptStatusesFromWire(response.statuses, normalized);
+    });
+  }
+
+  /** Thin one-item facade over {@link getReceiptStatuses}. */
+  async getReceiptStatus(operationId: OperationID, signal?: AbortSignal): Promise<ReceiptStatus> {
+    return (await this.getReceiptStatuses([operationId], signal))[0]!;
   }
 
   /**
@@ -1466,6 +2029,120 @@ export class Lantern {
     } catch (err) {
       throw wrapConnectError(err);
     }
+  }
+
+  private async requireReceiptContinuity(
+    context: ReceiptOperationContext,
+    mutationKind: ReceiptMutationKind,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let capability: ReceiptCapability;
+    try {
+      capability = await this.getReceiptCapability(signal);
+    } catch (error) {
+      throw new ReceiptReconciliationError(
+        "capabilityUnavailable",
+        context,
+        mutationKind,
+        "receipt capability is unavailable; status reconciliation is safe but mutation replay is not",
+        { cause: error },
+      );
+    }
+    if (!capability.enabled) {
+      throw new ReceiptReconciliationError(
+        "capabilityDisabled",
+        context,
+        mutationKind,
+        "receipt capability is disabled; status reconciliation is safe but mutation replay is not",
+      );
+    }
+    const difference = receiptContinuityDifference(context.continuity, capability.continuity);
+    if (difference !== null) {
+      throw new ReceiptReconciliationError(
+        difference,
+        context,
+        mutationKind,
+        `receipt continuity changed (${difference}); status reconciliation is required`,
+      );
+    }
+    if (!capability.supportedMutations.includes(mutationKind)) {
+      throw new ReceiptReconciliationError(
+        "mutationUnsupported",
+        context,
+        mutationKind,
+        `receipt mutation family ${mutationKind} is not supported by this endpoint`,
+      );
+    }
+  }
+
+  private async receiptPreconditionError(
+    context: ReceiptOperationContext,
+    mutationKind: ReceiptMutationKind,
+    rejection: ConnectError,
+    signal?: AbortSignal,
+  ): Promise<ReceiptReconciliationError> {
+    let capability: ReceiptCapability;
+    try {
+      capability = await this.getReceiptCapability(signal);
+    } catch {
+      return new ReceiptReconciliationError(
+        "capabilityUnavailable",
+        context,
+        mutationKind,
+        "receipt mutation was rejected and endpoint capability is now unavailable",
+        { cause: rejection },
+      );
+    }
+    if (!capability.enabled) {
+      return new ReceiptReconciliationError(
+        "capabilityDisabled",
+        context,
+        mutationKind,
+        "receipt mutation was rejected and endpoint capability is now disabled",
+        { cause: rejection },
+      );
+    }
+    const difference = receiptContinuityDifference(context.continuity, capability.continuity);
+    if (difference !== null) {
+      return new ReceiptReconciliationError(
+        difference,
+        context,
+        mutationKind,
+        `receipt mutation was rejected after continuity changed (${difference})`,
+        { cause: rejection },
+      );
+    }
+    if (!capability.supportedMutations.includes(mutationKind)) {
+      return new ReceiptReconciliationError(
+        "mutationUnsupported",
+        context,
+        mutationKind,
+        `receipt mutation was rejected after endpoint support for ${mutationKind} changed`,
+        { cause: rejection },
+      );
+    }
+    return new ReceiptReconciliationError(
+      "continuityRejected",
+      context,
+      mutationKind,
+      "receipt mutation was rejected because endpoint continuity could not be certified",
+      { cause: rejection },
+    );
+  }
+
+  private async receiptMutationError(
+    context: ReceiptOperationContext,
+    mutation: ReceiptMutationIntent,
+    error: unknown,
+    signal?: AbortSignal,
+  ): Promise<LanternError> {
+    if (error instanceof ConnectError && error.code === Code.FailedPrecondition) {
+      return this.receiptPreconditionError(context, mutation.kind, error, signal);
+    }
+    if (isDefiniteReceiptMutationRejection(error)) {
+      return wrapConnectError(error);
+    }
+    return new ReceiptMutationUncertainError(context, mutation, wrapConnectError(error));
   }
 
   private chunkSize(): number {

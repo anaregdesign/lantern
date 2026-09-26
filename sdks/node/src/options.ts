@@ -215,8 +215,8 @@ export interface ConnectOptions {
    * per-client random nonce and a monotonic per-call sequence, so a transport
    * retry re-sends the same bytes and the additive contribution is applied
    * exactly once (while it is live). A caller-supplied `EdgeInput.contribId`
-   * always takes precedence over the automatic id. Default false (the legacy
-   * additive path, where a retry double-counts weight).
+   * always takes precedence over the automatic id. Default false (the
+   * receipt-less additive path, where a retry double-counts weight).
    */
   idempotentAdds?: boolean;
 }

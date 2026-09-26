@@ -23,6 +23,12 @@
 
 import { ConnectError } from "@connectrpc/connect";
 import { SearchErrorDetailSchema, SearchErrorReason } from "./gen/graph/v1/graph_pb.js";
+import type {
+  ReceiptMutationIntent,
+  ReceiptMutationKind,
+  ReceiptOperationContext,
+  ReceiptReconciliationReason,
+} from "./receipts.js";
 
 export class LanternError extends Error {
   override readonly cause?: unknown;
@@ -101,6 +107,53 @@ export class OverflowError extends LanternError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "OverflowError";
+  }
+}
+
+/**
+ * A receipt-bearing mutation may not be sent because endpoint continuity
+ * cannot be proven. Status lookup remains safe; automatic mutation replay
+ * does not.
+ */
+export class ReceiptReconciliationError extends LanternError {
+  readonly reason: ReceiptReconciliationReason;
+  readonly context: ReceiptOperationContext;
+  readonly mutationKind: ReceiptMutationKind;
+
+  constructor(
+    reason: ReceiptReconciliationReason,
+    context: ReceiptOperationContext,
+    mutationKind: ReceiptMutationKind,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "ReceiptReconciliationError";
+    this.reason = reason;
+    this.context = context;
+    this.mutationKind = mutationKind;
+  }
+}
+
+/**
+ * The receipt-bearing mutation was sent but its exact response was not
+ * observed. Persist `context` and `mutation`, reconcile by status, or pass the
+ * exact mutation values back to the matching receipt method; never mint
+ * replacement IDs.
+ */
+export class ReceiptMutationUncertainError extends ReceiptReconciliationError {
+  readonly mutation: ReceiptMutationIntent;
+
+  constructor(context: ReceiptOperationContext, mutation: ReceiptMutationIntent, cause: unknown) {
+    super(
+      "mutationOutcomeUnknown",
+      context,
+      mutation.kind,
+      `receipt ${mutation.kind} response was not observed; reconcile status before any new operation`,
+      { cause },
+    );
+    this.name = "ReceiptMutationUncertainError";
+    this.mutation = mutation;
   }
 }
 

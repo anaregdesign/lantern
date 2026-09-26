@@ -96,6 +96,11 @@ per-item outcomes are unknown; replay evaluates the condition again and can
 return `"conditionNotMet"` for an originally applied item. Reconcile current
 state before explicitly retrying that suffix.
 
+The existing Put, Add, and Vertex/Edge Delete methods remain intentionally
+receipt-less online operations. A replay can recover current graph state, but
+not necessarily the first attempt's exact per-item outcome. Use the opt-in
+receipt API below when that original result matters.
+
 ```ts
 import { BatchError } from "lantern-sdk";
 
@@ -110,6 +115,130 @@ try {
 }
 ```
 
+## Receipt-safe online mutations
+
+Receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and
+contribution-keyed Edge Add let an application mint and durably retain the
+wire identity of one logical call before sending it. Each call uses one
+`GroupID` and one request-index-aligned `OperationID` per item. Receipt calls
+are not automatically chunked because splitting one would change that
+logical-call boundary.
+
+```ts
+import {
+  ReceiptMutationUncertainError,
+  ReceiptReconciliationError,
+  connect,
+  mintReceiptOperationContext,
+  parseReceiptOperationContext,
+} from "lantern-sdk";
+
+const client = connect("https://lantern.example");
+const vertices = [
+  { key: "session:123/member:a", value: "present", ttlSeconds: 3600 },
+  { key: "session:123/member:b", value: "present", ttlSeconds: 3600 },
+];
+
+const capability = await client.getReceiptCapability();
+if (!capability.enabled) {
+  throw new Error("this endpoint cannot accept receipt-bearing mutations");
+}
+if (!capability.supportedMutations.includes("putVertex")) {
+  throw new Error("this endpoint does not support receipt-bearing Vertex Put");
+}
+
+const context = mintReceiptOperationContext(capability, vertices.length);
+const persisted = JSON.stringify(context);
+// Durably store `persisted` and the semantic inputs before the first send.
+
+try {
+  const result = await client.putVerticesWithReceipt(vertices, context);
+  for (const item of result.results) {
+    console.log(item.operationId, item.outcome); // exact original result
+  }
+} catch (error) {
+  if (error instanceof ReceiptMutationUncertainError) {
+    // Lookup is read-only: it never executes or retries the mutation.
+    const statuses = await client.getReceiptStatuses(error.context.operationIds);
+    console.log(statuses);
+    // `error.mutation` is the cloned in-memory intent for an exact retry.
+  } else if (error instanceof ReceiptReconciliationError) {
+    // Continuity or support for this mutation family could not be proven.
+    console.error(error.reason);
+  } else {
+    throw error;
+  }
+}
+
+// After process restart, validate and canonicalize the persisted identity.
+const restored = parseReceiptOperationContext(JSON.parse(persisted));
+```
+
+Receipt-bearing Edge Add additionally requires every input to carry an
+explicit, nonzero, exactly 24-byte `contribId`. The SDK never synthesizes one
+from `idempotentAdds`, and it rejects missing, mixed keyed/unkeyed, zero, or
+wrong-sized identities before transport. Persist each contribution ID with
+the input and reuse the exact bytes with the original operation context:
+
+```ts
+import { CONTRIB_ID_BYTES } from "lantern-sdk";
+
+const contribId = crypto.getRandomValues(new Uint8Array(CONTRIB_ID_BYTES));
+if (contribId.every((byte) => byte === 0)) {
+  throw new Error("contribution identity must be nonzero");
+}
+const addContext = mintReceiptOperationContext(capability, 1);
+const added = await client.addEdgeWithReceipt(
+  {
+    tail: "session:123",
+    head: "member:a",
+    weight: 1,
+    ttlSeconds: 3600,
+    contribId,
+  },
+  addContext,
+);
+console.log(added.effectiveWeight); // exact original application result
+```
+
+The plural methods are canonical:
+
+- `putVerticesWithReceipt` and `putVerticesIfAbsentWithReceipt`
+- `deleteVerticesWithReceipt`
+- `deleteEdgesWithReceipt`
+- `addEdgesWithReceipt`
+
+`putVertexWithReceipt`, `putVertexIfAbsentWithReceipt`,
+`deleteVertexWithReceipt`, `deleteEdgeWithReceipt`, and
+`addEdgeWithReceipt` are thin one-item facades over their plural methods;
+`getReceiptStatus` similarly forwards one operation ID to the plural status
+lookup.
+Receipt-bearing Vertex Put resolves a relative `ttlSeconds` against the server
+clock embedded in the persisted operation ID, so replaying the same input and
+context reproduces the same absolute expiration rather than extending the TTL.
+Receipt-bearing Edge Add applies the same rule and preserves the server's
+exact float32 effective weight, including zero and signed infinity when finite
+additions overflow float32. Mutable `Date` and `Uint8Array` inputs are cloned
+before the capability preflight.
+
+A receipt status is one of:
+
+- `"confirmed"` — carries the exact original Vertex Put outcome, Vertex Delete
+  `existed`, Edge Delete `existed`, or Edge Add effective-weight result.
+- `"notYetObserved"` — no matching receipt is currently observed; if the
+  application retries, it must reuse the exact semantic inputs and persisted
+  context.
+- `"noLongerProvable"` — retention no longer permits an authoritative answer;
+  do not mint a replacement identity or blindly repeat the destructive action.
+
+Every receipt-bearing retry first probes the same configured endpoint and
+compares the deployment epoch, policy fingerprint, NodeID, and generation from
+the persisted context and verifies that the endpoint still advertises the
+mutation family. A mismatch, unsupported family, or unavailable capability
+raises `ReceiptReconciliationError` before the mutation is sent. Rotating the
+bearer token does not change receipt identity. The Node SDK remains
+single-endpoint and does not rotate or fail over receipt calls.
+
 ## Conditional writes (SET NX)
 
 All idempotent Put calls return a bounded server-authoritative outcome:
@@ -123,6 +252,9 @@ absolute expiration it sent as a local upper bound: `"appliedAndLive"` becomes
 `"expired"` if that instant has already passed locally. Other bounded outcomes
 are never reclassified, so a conservative client clock cannot hide
 `"conditionNotMet"` or `"superseded"`.
+
+Receipt-bearing Vertex Put instead returns the exact original server outcome
+so its mutation response and later confirmed status have the same semantics.
 
 `putVertexIfAbsent` / `putVerticesIfAbsent` apply a write only when **no live
 vertex already exists** at the key — the Redis `SET NX` pattern (#896). They
@@ -531,6 +663,13 @@ bun run build
 bun test
 bun run verify:package
 ```
+
+CI also runs `bun run test:real-wire` after the build against two authenticated
+Lantern h2c endpoints. That command imports the package through its published
+Node entrypoint and requires `LANTERN_NODE_RECEIPT_ENDPOINT`,
+`LANTERN_NODE_RECEIPT_OTHER_ENDPOINT`, and `LANTERN_NODE_RECEIPT_TOKEN`.
+The regular Bun suite retains the browser Connect-Web JSON and
+identity-only CDC coverage.
 
 `verify:package` creates a temporary `npm pack` tarball and checks its
 packaged manifest and contents: both entrypoints must include every declared
