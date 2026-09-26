@@ -226,7 +226,7 @@ func TestVertexDeleteReceiptCoordinatorReceiptOnlyPublication(t *testing.T) {
 
 func TestVertexDeleteReceiptCoordinatorRejectsOversizedReceiverLocalRelay(t *testing.T) {
 	node := hlc.NodeID{0x83}
-	const itemCount = 8
+	const itemCount = 16
 	keys := make([]string, itemCount)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("relay-vertex-%02d", i)
@@ -259,14 +259,25 @@ func TestVertexDeleteReceiptCoordinatorRejectsOversizedReceiverLocalRelay(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	maximalSize, err := validateReplicationFrameSize(maximalReceiptVertexDeleteEnvelope(envelope), 0)
-	if err != nil || maximalSize <= sparseSize+1 {
+	maximalSize, err := validateReplicationRelayFrameSize(envelope, 0)
+	// A fresh fixture's Timestamp.Nanos can change the wire size by up to six bytes.
+	const maxNanosSizeDrift = 6
+	if err != nil || maximalSize <= sparseSize+2*maxNanosSizeDrift {
 		t.Fatalf("sparse/maximal Vertex Delete sizes = %d/%d, %v", sparseSize, maximalSize, err)
+	}
+	var oneByteUnder *replicationFrameSizeError
+	if size, err := validateReplicationRelayFrameSize(envelope, maximalSize-1); size != maximalSize ||
+		!errors.As(err, &oneByteUnder) || oneByteUnder.limit != maximalSize-1 {
+		t.Fatalf("one-byte-under maximal Vertex Delete relay = %d, %v, want size %d", size, err, maximalSize)
+	}
+	if size, err := validateReplicationRelayFrameSize(envelope, maximalSize); err != nil || size != maximalSize {
+		t.Fatalf("exact-fit maximal Vertex Delete relay = %d, %v, want %d", size, err, maximalSize)
 	}
 
 	rejected := prepare(t)
 	rejected.service.replicationFrameCertified = true
-	rejected.service.replicationSendMaxBytes = maximalSize - 1
+	originLimit := sparseSize + maxNanosSizeDrift
+	rejected.service.replicationSendMaxBytes = originLimit
 	rejections := 0
 	rejected.service.onValidationReject = func(reason string) {
 		if reason != "replication_frame" {
@@ -278,10 +289,14 @@ func TestVertexDeleteReceiptCoordinatorRejectsOversizedReceiverLocalRelay(t *tes
 		context.Background(),
 		receiptVertexDeleteTestCall(t, rejected.epoch, 0x67, keys...),
 	)
+	var frameErr *replicationFrameSizeError
 	if connect.CodeOf(err) != connect.CodeResourceExhausted ||
-		!strings.Contains(err.Error(), fmt.Sprintf("LANTERN_MAX_SEND_MSG_BYTES=%d", maximalSize-1)) ||
+		!errors.As(err, &frameErr) || frameErr.limit != originLimit ||
+		frameErr.size < maximalSize-maxNanosSizeDrift ||
+		frameErr.size > maximalSize+maxNanosSizeDrift ||
 		rejections != 1 {
-		t.Fatalf("one-byte-under receiver-local relay = %v, rejections=%d", err, rejections)
+		t.Fatalf("receiver-local relay at %d = %v, frame error=%+v, rejections=%d",
+			originLimit, err, frameErr, rejections)
 	}
 	for i, key := range keys {
 		if i%2 == 1 {
