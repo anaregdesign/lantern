@@ -147,9 +147,26 @@ jobs:
             LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
+          receipt_dir="$RUNNER_TEMP/lantern-dart-receipt"
+          receipt_token="$(openssl rand -hex 32)"
+          umask 077
+          mkdir -p "$receipt_dir"
+          printf '%s' "$receipt_token" > "$receipt_dir/token"
+          echo "::add-mask::$receipt_token"
+          env LANTERN_PORT=6384 LANTERN_METRICS_ADDR=:9094 \
+            LANTERN_AUTH_TOKENS="$receipt_token" \
+            LANTERN_NODE_ID=31313131313131313131313131313131 \
+            LANTERN_RECEIPT_WAL_MODE=fresh \
+            LANTERN_RECEIPT_WAL_PATH="$receipt_dir/receipts.wal" \
+            LANTERN_RECEIPT_EPOCH=42424242424242424242424242424242 \
+            LANTERN_RECEIPT_RETENTION=1h LANTERN_RECEIPT_MAX_ENTRIES=128 \
+            LANTERN_RECEIPT_MAX_BYTES=1048576 LANTERN_BACKUP_ENABLED=false \
+            LANTERN_BACKUP_RESTORE_ON_START=false \
+            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-receipt.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
           for attempt in $(seq 1 60); do
             ready=true
-            for port in 6380 6381 6382 6383; do
+            for port in 6380 6381 6382 6383 6384; do
               curl --fail --silent --show-error --max-time 2 \
                 -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
                 --data '{}' "http://127.0.0.1:$port/grpc.health.v1.Health/Check" >/dev/null || ready=false
@@ -196,6 +213,20 @@ jobs:
           LANTERN_DART_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
           LANTERN_DART_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
         run: dart test test/real_wire_test.dart
+
+      - name: Receipt real-wire test
+        timeout-minutes: 5
+        run: |
+          token_file="$RUNNER_TEMP/lantern-dart-receipt/token"
+          test -s "$token_file"
+          receipt_token="$(cat "$token_file")"
+          echo "::add-mask::$receipt_token"
+          env LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6384 \
+            LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6384 \
+            LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
+            dart test \
+              --name '^receipt Vertex Put and exact Delete reconcile over real h2c$' \
+              test/real_wire_test.dart
 
       - name: Build API documentation
         if: needs.changes.outputs.full == 'true'
@@ -284,8 +315,27 @@ jobs:
         working-directory: .
         run: |
           if [ -f "$RUNNER_TEMP/lantern-dart.pids" ]; then
-            xargs kill < "$RUNNER_TEMP/lantern-dart.pids" || true
+            while read -r pid; do
+              kill "$pid" 2>/dev/null || true
+            done < "$RUNNER_TEMP/lantern-dart.pids"
+            for attempt in $(seq 1 20); do
+              alive=0
+              while read -r pid; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  alive=1
+                fi
+              done < "$RUNNER_TEMP/lantern-dart.pids"
+              [ "$alive" -eq 0 ] && break
+              sleep 0.1
+            done
+            while read -r pid; do
+              if kill -0 "$pid" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null || true
+              fi
+            done < "$RUNNER_TEMP/lantern-dart.pids"
+            rm -f "$RUNNER_TEMP/lantern-dart.pids"
           fi
+          rm -rf "$RUNNER_TEMP/lantern-dart-receipt"
 
   minimum-dart:
     name: Minimum Dart 3.11
