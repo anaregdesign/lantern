@@ -53,6 +53,17 @@ void main() {
     output: marker,
   );
 
+  ReceiptAttestation restartAttestation(int Function() processId) =>
+      ReceiptAttestation(
+        testedCommit: _commit,
+        target: _target,
+        runId: _runId,
+        requiredScenarios: const {'receipt_prepared', 'receipt_recovered'},
+        requiredRestartCleanups: const {'fixtures', 'journal'},
+        output: marker,
+        processId: processId,
+      );
+
   Future<Map<String, dynamic>> savedMarker() async =>
       jsonDecode(await marker.readAsString()) as Map<String, dynamic>;
 
@@ -298,5 +309,252 @@ void main() {
       },
     );
     await expectLater(readInstalledReceiptBinary(), throwsA(isA<StateError>()));
+  });
+
+  test('only a second process can finish a prepared run after cleanup', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    var processId = 100;
+    final cleaned = <String>[];
+    await restartAttestation(
+      () => processId,
+    ).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {
+        expect(await journal.exists(), isFalse);
+      });
+    });
+    final prepared = await savedMarker();
+    expect(prepared['status'], 'running');
+    expect(prepared['phase'], 'awaiting_sigkill');
+    expect(prepared['completedScenarios'], ['receipt_prepared']);
+    expect(await journal.exists(), isTrue);
+
+    processId = 101;
+    await restartAttestation(
+      () => processId,
+    ).resumeAfterRestart(journal, (run) async {
+      run.registerCleanup(() async {
+        cleaned.add('journal');
+        await journal.delete();
+      }, restartObligation: 'journal');
+      run.registerCleanup(
+        () => cleaned.add('fixtures'),
+        restartObligation: 'fixtures',
+      );
+      await run.verifyScenario('receipt_recovered', () async {
+        expect(await journal.exists(), isTrue);
+      });
+    });
+
+    final saved = await savedMarker();
+    expect(cleaned, ['fixtures', 'journal']);
+    expect(await journal.exists(), isFalse);
+    expect(nativeLookups, 3);
+    expect(saved['schema'], 2);
+    expect(saved['status'], 'passed');
+    expect(saved['phase'], 'complete');
+    expect(saved['completedScenarios'], [
+      'receipt_prepared',
+      'receipt_recovered',
+    ]);
+    final restart = saved['restart'] as Map<String, dynamic>;
+    expect(restart['processChanged'], isTrue);
+    expect(
+      DateTime.parse(restart['preparedAt'] as String).isBefore(
+        DateTime.parse(restart['resumedAt'] as String),
+      ),
+      isTrue,
+    );
+  });
+
+  test('a same-process resume cannot claim a SIGKILL', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(
+      () => 100,
+    ).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+    });
+    await expectLater(
+      restartAttestation(
+        () => 100,
+      ).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    expect(await marker.exists(), isFalse);
+  });
+
+  test('missing or malformed handoff cannot reuse a running marker', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(
+      () => 100,
+    ).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+    });
+    final originalMarker = await marker.readAsString();
+    final originalJournal = await journal.readAsString();
+    await journal.delete();
+    await expectLater(
+      restartAttestation(
+        () => 101,
+      ).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(await marker.exists(), isFalse);
+
+    await marker.writeAsString(originalMarker);
+    await journal.writeAsString(
+      originalJournal.replaceFirst('"schema":2', '"schema":2,"schema":2'),
+    );
+    await expectLater(
+      restartAttestation(
+        () => 101,
+      ).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    expect(await marker.exists(), isFalse);
+  });
+
+  test('foreign run and changed installed bytes reject continuation', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(
+      () => 100,
+    ).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+    });
+    final firstMarker = await marker.readAsString();
+    await expectLater(
+      ReceiptAttestation(
+        testedCommit: _commit,
+        target: _target,
+        runId: List.filled(32, 'c').join(),
+        requiredScenarios: const {'receipt_prepared', 'receipt_recovered'},
+        requiredRestartCleanups: const {'fixtures', 'journal'},
+        output: marker,
+        processId: () => 101,
+      ).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    await marker.writeAsString(firstMarker);
+    await installedApk.writeAsString('another signed build');
+    await expectLater(
+      restartAttestation(
+        () => 101,
+      ).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    expect(await marker.exists(), isFalse);
+  });
+
+  test('relaunch rejects marker or journal identity and scenario drift', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    for (final change in <void Function(Map<String, dynamic>)>[
+      (value) => value['testedCommit'] = List.filled(40, 'c').join(),
+      (value) => value['target'] = 'integration_test/foreign_test.dart',
+      (value) => value['platform'] = 'ios',
+      (value) => value['packageId'] = 'com.anaregdesign.lanternExample',
+      (value) => value['completedScenarios'] = ['receipt_recovered'],
+      (value) =>
+          value['installedBinarySha256'] = List.filled(64, 'f').join(),
+    ]) {
+      if (await journal.exists()) await journal.delete();
+      await restartAttestation(
+        () => 100,
+      ).prepareForRestart(journal, (run) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+      });
+      final saved = await savedMarker();
+      change(saved);
+      await marker.writeAsString(jsonEncode(saved));
+      await expectLater(
+        restartAttestation(
+          () => 101,
+        ).resumeAfterRestart(journal, (run) async {}),
+        throwsA(isA<StateError>()),
+      );
+      expect(await marker.exists(), isFalse);
+    }
+    await journal.delete();
+    await restartAttestation(
+      () => 100,
+    ).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+    });
+    final saved = jsonDecode(await journal.readAsString()) as Map<String, dynamic>;
+    saved['requiredScenarios'] = ['receipt_prepared', 'receipt_spoofed'];
+    await journal.writeAsString(jsonEncode(saved));
+    await expectLater(
+      restartAttestation(
+        () => 101,
+      ).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    expect(await marker.exists(), isFalse);
+  });
+
+  test('missing or failed restart cleanup never produces a pass', () async {
+    for (final failCleanup in [false, true]) {
+      final journal = File('${sandbox.path}/handoff.json');
+      if (await journal.exists()) await journal.delete();
+      await restartAttestation(
+        () => 100,
+      ).prepareForRestart(journal, (run) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+      });
+      await expectLater(
+        restartAttestation(
+          () => 101,
+        ).resumeAfterRestart(journal, (run) async {
+          run.registerCleanup(() async {}, restartObligation: 'journal');
+          if (failCleanup) {
+            run.registerCleanup(
+              () => throw StateError('fixture cleanup failed'),
+              restartObligation: 'fixtures',
+            );
+          }
+          await run.verifyScenario('receipt_recovered', () async {});
+        }),
+        throwsA(isA<StateError>()),
+      );
+      final saved = await savedMarker();
+      expect(saved['status'], 'failed');
+      expect(saved['failureType'], failCleanup ? 'cleanup' : 'incomplete');
+    }
+  });
+
+  test('a restart missing post-relaunch assertions cannot pass', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(
+      () => 100,
+    ).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+    });
+    await expectLater(
+      restartAttestation(
+        () => 101,
+      ).resumeAfterRestart(journal, (run) async {
+        run.registerCleanup(() async {}, restartObligation: 'journal');
+        run.registerCleanup(() async {}, restartObligation: 'fixtures');
+      }),
+      throwsA(isA<StateError>()),
+    );
+    final saved = await savedMarker();
+    expect(saved['schema'], 2);
+    expect(saved['status'], 'failed');
+    expect(saved['failureType'], 'incomplete');
+    expect(saved['completedScenarios'], ['receipt_prepared']);
+  });
+
+  test('the prepare phase never passes without a restart', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await expectLater(
+      restartAttestation(
+        () => 100,
+      ).prepareForRestart(journal, (run) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+        await run.verifyScenario('receipt_recovered', () async {});
+      }),
+      throwsA(isA<StateError>()),
+    );
+    expect((await savedMarker())['status'], 'failed');
+    expect(await journal.exists(), isFalse);
   });
 }
