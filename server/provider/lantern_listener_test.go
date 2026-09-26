@@ -209,7 +209,11 @@ func readGzip(t *testing.T, data []byte) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("close gzip reader: %v", err)
+		}
+	}()
 	decoded, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +246,11 @@ func rawGetVertex(
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close GetVertex response: %v", err)
+		}
+	}()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +278,7 @@ func TestLanternListenerCompressionThresholdAndSendCaps(t *testing.T) {
 		{cap: 0, sizes: []int{1023, 1024, 1025}},
 		{cap: 128, sizes: []int{127, 128, 129}},
 		{cap: 1024, sizes: []int{1023, 1024, 1025}},
-		{cap: 2048, sizes: []int{1023, 1024, 1025}},
+		{cap: 2048, sizes: []int{1023, 1024, 1025, 2000, 2048, 2049}},
 	} {
 		t.Run(fmt.Sprintf("send cap %d", tc.cap), func(t *testing.T) {
 			cache, primary, replication := newMessageLimitServices(t)
@@ -323,7 +331,8 @@ func TestLanternListenerCompressionThresholdAndSendCaps(t *testing.T) {
 				if encoding != "" || proto.Size(raw) != 1025 {
 					t.Fatalf("unnegotiated GetVertex = %q, %d bytes, want raw 1025 bytes", encoding, proto.Size(raw))
 				}
-			} else {
+			}
+			if tc.cap > 0 {
 				noGzip := graphv1connect.NewLanternServiceClient(httpClient, baseURL,
 					connect.WithAcceptCompression("gzip", nil, nil))
 				key := fmt.Sprintf("compression/%d/%d/false", tc.cap, tc.cap+1)
@@ -388,7 +397,11 @@ func TestLanternListenerSubscribeCompressionPerFrame(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer response.Body.Close()
+			defer func() {
+				if err := response.Body.Close(); err != nil {
+					t.Errorf("close Subscribe response: %v", err)
+				}
+			}()
 			if response.StatusCode != http.StatusOK {
 				t.Fatalf("Subscribe HTTP %d", response.StatusCode)
 			}
@@ -429,7 +442,11 @@ func TestLanternListenerSubscribeCompressionPerFrame(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer stream.Close()
+			defer func() {
+				if err := stream.Close(); err != nil {
+					t.Errorf("close typed Subscribe stream: %v", err)
+				}
+			}()
 			for _, wantKey := range []string{"small", "large"} {
 				if !stream.Receive() {
 					t.Fatalf("typed Subscribe(%q): %v", wantKey, stream.Err())
@@ -514,7 +531,11 @@ func TestLanternListenerRejectsNegativeConnectMessageLimits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer listener.Close()
+			defer func() {
+				if err := listener.Close(); err != nil {
+					t.Errorf("close rejected listener: %v", err)
+				}
+			}()
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			if server, err := NewLanternListener(
 				listener,

@@ -53,7 +53,9 @@ func newProviderReceiptWireServer(
 		logger,
 	)
 	if err != nil {
-		_ = socket.Close()
+		if closeErr := socket.Close(); closeErr != nil {
+			t.Errorf("close failed receipt socket: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -135,7 +137,11 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close receipt status response: %v", err)
+		}
+	}()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +165,10 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 	if err == nil {
 		_ = unauthenticated.Receive()
 		err = unauthenticated.Err()
-		_ = unauthenticated.Close()
+		if closeErr := unauthenticated.Close(); closeErr != nil &&
+			connect.CodeOf(closeErr) != connect.CodeUnauthenticated {
+			t.Errorf("close unauthenticated Subscribe stream: %v", closeErr)
+		}
 	}
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("tokenless Subscribe = %v, want Unauthenticated", err)
@@ -168,7 +177,11 @@ func TestCompressionPreservesAuthenticatedReceiptsAndPeerRelay_RealWire(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			t.Errorf("close receipt Subscribe stream: %v", err)
+		}
+	}()
 	for i, wantKey := range []string{small.GetKey(), large.GetKey()} {
 		if !stream.Receive() {
 			t.Fatalf("Subscribe[%d]: %v", i, stream.Err())
