@@ -132,6 +132,13 @@ func TestVertexPutWithReceiptReplaysByteIdenticalRequest(t *testing.T) {
 	if len(requests) != 2 || !bytes.Equal(requests[0], requests[1]) {
 		t.Fatalf("replayed requests differ:\n%x\n%x", requests[0], requests[1])
 	}
+	var sent pb.PutVerticesRequest
+	if err := proto.Unmarshal(requests[0], &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.GetVertices()[1].GetExpiration() != nil {
+		t.Fatalf("permanent receipt Put expiration = %v, want omitted", sent.GetVertices()[1].GetExpiration())
+	}
 	wantOutcomes := []PutOutcome{
 		PutOutcomeAppliedAndLive,
 		PutOutcomeConditionNotMet,

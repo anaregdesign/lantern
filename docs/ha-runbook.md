@@ -37,9 +37,10 @@ fast in-memory KVS with CDC via `Subscribe`. See RFC
 
 ---
 
-## 2. The two operating modes
+## 2. Replication topology and durability
 
-Lantern has exactly two modes; everything else is a knob.
+Replication has two topologies. Default graph-only versus opt-in durable
+receipt-WAL storage is an independent runtime choice in either topology.
 
 ### 2.1 Single-instance mode (no HA)
 
@@ -52,10 +53,10 @@ is unset (or `static`). In this mode:
   gRPC listener is up.
 - `Subscribe` still works — external CDC consumers see every mutation
   in real time.
-- Cold start = empty cache **unless snapshot backups are configured**
-  (`LANTERN_BACKUP_*`, see [backup.md](backup.md)): the replication layer
-  itself has no persistence ([RFC D1](replication.md#3-binding-decisions-d1d7)),
-  but the backup engine restores the newest dump on boot.
+- In default graph-only mode, cold start = empty cache **unless snapshot
+  backups are configured** (`LANTERN_BACKUP_*`, see [backup.md](backup.md)).
+  A durable receipt-WAL `restart` instead validates its complete current
+  WAL and serving state before opening listeners.
 
 This is the supported mode for every "❌ HA not supported" row in §1.
 
@@ -75,6 +76,23 @@ Triggered when `LANTERN_PEER_DISCOVERY=dns` **or** when
   See RFC §[9](replication.md#9-bootstrap-flow).
 
 Use one of the §3 topologies to deliver this mode.
+
+### 2.3 Opt-in durable receipt-WAL runtime
+
+`LANTERN_RECEIPT_WAL_MODE=graph-only` is the default; it offers no durable
+receipt proof. `fresh` and `restart` require an absolute WAL path, explicit
+stable nonzero NodeID and deployment epoch, and immutable positive receipt
+retention/entry/byte policy (see [env.md](env.md)). Only a fully certified
+runtime with bearer authentication advertises `GetReceiptCapability` and
+three-state status. Its supported server mutation families are optional
+receipt-bearing Vertex Put (including `if_absent`), exact Vertex Delete,
+exact Edge Delete, and Edge Add with one explicit nonzero 24-byte
+`ContribID` per item. Put Edge and prefix Delete are excluded. Online
+Go/Node/Dart opt-in receipt APIs are merged in source. Merged offline
+0.4.0 source implements receipt reconciliation, but its publication and
+final #1399 release gates remain pending.
+Graph-only backups, zero/graph-only peer Snapshot formats, and
+obsolete receipt artifacts never certify this mode.
 
 ---
 
@@ -553,9 +571,19 @@ order of preference:
 3. After a long partition heals, [force re-snapshot](#9-recovery-procedures)
    from the side you trust.
 
+For a durable receipt peer, do not wipe its WAL to force that reset; the
+repair must preserve the exact `RECEIPT` cut or fail closed.
+
 If mixed edge weights differ after lag reaches zero, inspect whether a Delete
 floor expired during a long partition. Quiesce that identity and force a
 snapshot from the authoritative replica if it did.
+
+For receipt-bearing writes, a matching same-endpoint retry within the
+admission horizon returns the original result even after the graph changes.
+`NOT_YET_OBSERVED` on a lagging peer is not proof of non-execution; poll
+status rather than retrying a mutation on that peer. A changed endpoint or
+generation permits status lookup only. `NO_LONGER_PROVABLE` is an unknown
+outcome, never false, zero, or success.
 
 There is no "split-brain detector"; the RFC is explicit that
 partitions are healed by anti-entropy ([RFC §§6, 10](replication.md)).
@@ -580,6 +608,11 @@ homogeneous upgraded cohort, or prepare and verify a separate migration of an
 existing cluster before changing its peer set. No mixed-version migration is
 qualified by this release.
 
+That graph-only Delete-field exception is **not** a receipt-format migration
+path. Private receipt WAL, Snapshot, baseline, and backup formats have one
+current shape each; old versions and mixed receipt peers fail closed, with no
+V1 downgrade, dual reader, or conversion during a rolling update.
+
 The chart uses `RollingUpdate` with `podManagementPolicy: Parallel`
 for boot, but one-at-a-time for upgrades. Manual steps for non-Helm
 deploys:
@@ -588,11 +621,14 @@ deploys:
    `max(lantern_replication_lag_seq) == 0` across the cluster.
 2. **Drain one pod:** stop or evict it. The PDB (`minAvailable: 2`)
    prevents draining a majority simultaneously.
-3. **Restart with the new image.** It will `Snapshot` from a remaining
-   peer, then tail `Subscribe`.
+3. **Restart with the new image.** Graph-only mode bootstraps from a
+   remaining peer's Snapshot and tails `Subscribe`. A compatible durable
+   `restart` first verifies its own WAL; a peer gap requires a `RECEIPT`
+   Snapshot and tail, never a graph-only downgrade. Do not use this
+   rolling procedure across incompatible private receipt formats.
 4. **Wait for `/readyz` = 200** on the new pod. It should land within
    `LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS` + a few seconds. If
-   not, see [§9.3](#93-pod-stuck-not-serving-after-restart).
+   not, see [§9.3](#93-pod-stuck-not_serving-after-restart).
 5. **Confirm convergence:** `lantern_replication_lag_seq{peer=*} == 0`
    for the new pod. `lantern_build_info{version=…}` reflects the new
    tag.
@@ -640,16 +676,15 @@ of termination** before the listener stops accepting.
 
 **Single-instance** deploys (`replicaCount: 1`) have no peer to fail over
 to, so the drain still flips `/readyz` (the platform shifts traffic to the
-new instance) but durability across the rotation comes from the snapshot
-backup/restore feature
-(`LANTERN_BACKUP_*`, #770) — see [docs/backup.md](backup.md) — not
-replication.
+new instance). Graph-only durability across the rotation depends on
+snapshot backup/restore (`LANTERN_BACKUP_*`, #770); an opt-in durable
+`restart` instead proves its current WAL and uses receipt backup only for
+eligible committed-baseline sidecar repair. See [backup.md](backup.md).
 
-**Backwards compatibility.** v1's Subscribe/Snapshot wire format is
-versioned at the proto level, but a parseable new field can still change
-replication semantics. Follow the compatibility exception above for the
-absolute Delete deadline. Cross-major upgrades (v1 → v2) are out of scope
-for this runbook.
+**Wire compatibility.** The graph-only Delete deadline exception above
+applies to its own wire transition, not to receipt formats. A parseable new
+field can still change replication semantics; test a homogeneous cohort
+before any rollout. No obsolete receipt compatibility path is supported.
 
 ---
 
@@ -681,10 +716,10 @@ Helm chart when you need to scale past three.
   committed to the receiving pod and other peers.
 
 PDB still applies: on k8s, `kubectl scale` will block if going below
-`minAvailable`. Lower the PDB before scaling down hard. Going to
-zero = total-cluster loss = accepted data loss
-([RFC D1](replication.md#3-binding-decisions-d1d7)) unless snapshot
-backups are configured ([§9.4](#94-total-cluster-loss)).
+`minAvailable`. Lower the PDB before scaling down hard. Going to zero
+loses any unbacked writes; graph-only data needs a backup or re-ingestion,
+while durable receipt state needs a certified current WAL or strict receipt
+backup set with a new active epoch ([§9.4](#94-total-cluster-loss)).
 
 ---
 
@@ -693,16 +728,20 @@ backups are configured ([§9.4](#94-total-cluster-loss)).
 ### 9.1 Force a re-snapshot
 
 Symptom: anti-entropy keeps incrementing `gaps_found` on the same
-peer, or you suspect divergence after a long partition.
+peer, or you suspect divergence after a long partition. In graph-only
+mode, verify another peer has the trusted complete graph before replacing
+the suspect pod:
 
 ```sh
-# Restart the suspect pod. On startup it will Snapshot from a peer
-# and discard its local state.
-kubectl rollout restart statefulset/lantern -n <ns>      # all pods
-kubectl delete pod lantern-2 -n <ns>                     # one pod
+# Graph-only: restart only the suspect pod to bootstrap from a healthy peer.
+kubectl delete pod lantern-2 -n <ns>
 ```
 
-The new pod starts in `NOT_SERVING` until snapshot+tail completes.
+The new pod starts in `NOT_SERVING` until snapshot+tail completes. In durable
+receipt-WAL mode, the pump automatically requests `RECEIPT` on a gap and a
+restart first proves its current WAL. Do not delete that WAL, force `fresh`
+under the old epoch, or substitute a graph-only Snapshot to bypass a failed
+receipt install; diagnose the proof failure before serving.
 
 ### 9.2 Subscribe ring buffer overflow
 
@@ -741,8 +780,10 @@ The peer pump normally reconnects and retries the same origin seq without
 reapplying the graph. If the fault persists, inspect the WAL error and the
 source peer, repair storage, or restart the affected in-memory replica and
 bootstrap it from a healthy peer. A new subscriber must take a fresh Snapshot
-after recovery; a pre-fault stream never resumes. Local Put/Delete log-append
-failure is a separate #1116 Phase 2 blocker for complete external CDC.
+after recovery; a pre-fault stream never resumes. Local graph-only Put/Delete
+append faults similarly keep CDC gapped until append-only repair; an
+indeterminate receipt WAL commit instead fails the certified runtime closed
+until exact recovery proves its frontier.
 
 ### 9.3 Pod stuck `NOT_SERVING` after restart
 
@@ -768,19 +809,24 @@ Walk the bootstrap flow:
 
 ### 9.4 Total-cluster loss
 
-Accepted ([RFC D1](replication.md#3-binding-decisions-d1d7)) by the
-**replication** layer — it has no persistence. Re-deploy from your image
-and rehydrate from upstream sources via a fresh ingestion pass.
+The **replication** layer alone does not persist data. In default graph-only
+mode, re-ingest from an upstream source, or restore the newest `.lbk` from
+mounted snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) and
+reconcile peers. Writes after that dump are lost.
 
-**Unless you run snapshot backups** (`LANTERN_BACKUP_*`, see
-[backup.md](backup.md)): with a mounted dump volume each node restores its
-newest dump on boot, so the cluster comes back at roughly its last
-`LANTERN_BACKUP_INTERVAL` instead of empty. Peer bootstrap then reconciles
-any per-node differences via HLC.
-
-If you need finer-grained crash-survival than the snapshot interval, the
-WAL hook exists in the apply path but is not wired to a writer in v1;
-that's a v2 conversation.
+An opt-in durable deployment first attempts `restart` from its complete
+current, lease-owned WAL; backup fallback is limited to eligible damage to
+the newest committed baseline sidecar, not an ambiguous WAL or generation.
+If no complete current frontier survives total-cluster loss, explicitly
+configure `fresh` with a **new active epoch** and restore only the strict
+newest canonical three-member receipt backup set. The archived active
+receipts become bounded read-only retired evidence; the new epoch has no
+permission to execute an old unknown ID. Backups prove only their captured
+cut, not unbacked later commits. A graph-only `.lbk`, obsolete receipt set,
+or older set chosen after a newest-set failure cannot certify continuity.
+The pristine-joiner clock repair (#1448) is merged, but #1399's final
+all-family real-wire recovery gate, physical-device qualification, and other
+release gates remain outstanding.
 
 ---
 
@@ -812,6 +858,16 @@ A short checklist to walk before opening an incident:
       single-instance mode, not "no readiness gating please". If you
       want HA, set discovery to `dns` (or put hosts in
       `LANTERN_PEERS`).
+- [ ] **Durable mode assumed from backups alone.** `graph-only` remains the
+      default. `fresh`/`restart` require stable explicit NodeID, WAL path,
+      epoch, positive immutable receipt limits/retention, and full startup
+      certification. Without bearer auth, public capability remains disabled
+      even when the private durable runtime starts.
+- [ ] **Graph-only Snapshot or obsolete receipt artifact used as repair.**
+      A receipt-required peer must negotiate `RECEIPT`; unknown/zero and
+      graph-only formats and unsupported WAL/baseline/backup shapes fail
+      closed. Do not remove artifacts or select an older backup to bypass
+      the refusal.
 - [ ] **Scaling a single-instance deploy to > 1 replica expecting HA.**
       On a platform that hides per-instance addresses it won't form a
       cluster, and there's no warning. See [§2.1](#21-single-instance-mode-no-ha).
@@ -841,10 +897,11 @@ operator actions.
 
 | Failure | Signal | What to do |
 |---|---|---|
-| Single pod crash | k8s probe / Compose healthcheck flips | Auto-restarts. Pod bootstraps from peers. No action unless it crashloops. |
-| Pod falls behind buffer | `subscribe_dropped_total{reason="gapped"}` increments | Pump auto re-snapshots. Chronic = bump capacity. |
+| Single pod crash | k8s probe / Compose healthcheck flips | Graph-only pod bootstraps from peers; durable `restart` first proves current WAL, then requires receipt-preserving peer recovery if gapped. Diagnose crashloops; never silently change epoch. |
+| Pod falls behind buffer | `subscribe_dropped_total{reason="gapped"}` increments | Pump auto re-snapshots; durable mode requires `RECEIPT`. Chronic = bump capacity. |
 | All peers unreachable on boot | Pod `NOT_SERVING`, no `replication_applied` increments | Check discovery env (§9.3). |
-| Total-cluster loss | Every pod down | Accepted data loss; rehydrate — or restore from snapshot backups if configured ([§9.4](#94-total-cluster-loss)). |
+| Total-cluster loss | Every pod down | Unbacked writes are lost. Graph-only re-ingests or restores `.lbk`; durable mode proves complete current WAL or restores the strict newest receipt set with a new epoch ([§9.4](#94-total-cluster-loss)). |
+| Receipt WAL ambiguity / runtime uncertified | Startup refuses the listener, or committed graph/status reads fail after an indeterminate WAL commit | Repair storage or restore a verifiable exact cut. Do not infer non-execution from `NOT_YET_OBSERVED`, restart in `fresh` under the old epoch, or retry on a different endpoint. Disabled capability alone may instead mean graph-only mode or missing auth. |
 | NTP skew > 500 ms | `lantern_hlc_skew_clamped_total` (planned — #180/#182; until then watch NTP) | Fix NTP. Convergence preserved, but the drifted peer's stamps land behind real wall time. |
 | Network partition < tombstone TTL | `replication_lag_seq` spike; `anti_entropy_gaps_found_total` non-zero after heal | Auto-converges. No action. |
 | Network partition > tombstone TTL | Same signals + possible resurrection | Force re-snapshot from the side you trust ([§9.1](#91-force-a-re-snapshot)). Consider extending tombstone TTL. |
@@ -883,7 +940,7 @@ done
 
 If the counts agree, replication is working. If they don't agree
 within a few seconds, check `lantern_replication_lag_seq` and walk
-[§9.3](#93-pod-stuck-not-serving-after-restart).
+[§9.3](#93-pod-stuck-not_serving-after-restart).
 
 ---
 
@@ -901,4 +958,4 @@ Cross-references:
 [RFC](replication.md) ·
 [Helm chart](../deploy/helm/lantern/) ·
 [Compose example](../deploy/compose/) ·
-[README HA sections](../README.md#run-on-kubernetes-ha-mode).
+[README HA sections](../README.md#kubernetes-ha).

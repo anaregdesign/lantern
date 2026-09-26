@@ -42,8 +42,8 @@ func TestNewLantern_BaseURLValidation(t *testing.T) {
 }
 
 // TestExpirationFromTTL pins the opt-in decay contract (#523): a
-// non-positive ttl yields the zero time.Time (the wire's permanent
-// sentinel), while a positive ttl materialises an absolute expiration
+// non-positive ttl yields the zero time.Time (encoded as an absent wire
+// expiration), while a positive ttl materialises an absolute expiration
 // at now+ttl. The relative-TTL convenience methods (PutVertex, AddEdge,
 // PutEdge) route through this helper, so an omitted/zero TTL stores a
 // vertex/edge permanently rather than injecting a hidden default.
@@ -76,6 +76,24 @@ func TestExpirationFromTTL(t *testing.T) {
 			t.Fatalf("expirationFromTTLAt = %v, want %v", got, want)
 		}
 	})
+}
+
+func TestEdgesFromExpirationEncoding(t *testing.T) {
+	inputs := []EdgeInput{
+		{Tail: "a", Head: "b"},
+		{Tail: "a", Head: "c", Expiration: time.Unix(-1, 0).UTC()},
+		{Tail: "a", Head: "d", Expiration: time.Unix(0, 0).UTC()},
+		{Tail: "a", Head: "e", Expiration: time.Unix(0, 500_000_000).UTC()},
+	}
+	edges := edgesFrom(inputs)
+	if len(edges) != len(inputs) || edges[0].Expiration != nil {
+		t.Fatalf("omitted edge expiration encoded as %+v", edges)
+	}
+	for i := 1; i < len(inputs); i++ {
+		if edges[i].Expiration == nil || !edges[i].Expiration.AsTime().Equal(inputs[i].Expiration) {
+			t.Errorf("edge[%d] expiration = %v, want %v", i, edges[i].Expiration, inputs[i].Expiration)
+		}
+	}
 }
 
 func TestPutOutcomeMappingFailsClosed(t *testing.T) {
@@ -492,6 +510,9 @@ func TestAddContribIDWiring(t *testing.T) {
 		}
 		if got := capt.reqs[0].GetContribIds(); got != nil {
 			t.Fatalf("default must send no contrib_ids, got %d", len(got))
+		}
+		if got := capt.reqs[0].GetEdges()[0].GetExpiration(); got != nil {
+			t.Fatalf("zero-TTL AddEdge expiration = %v, want omitted", got)
 		}
 	})
 

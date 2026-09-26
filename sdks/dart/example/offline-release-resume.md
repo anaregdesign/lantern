@@ -3,8 +3,12 @@
 This is the repeatable device procedure for `lantern_client_offline` releases.
 The first `0.2.0` publication in
 [#1162](https://github.com/anaregdesign/lantern/issues/1162) is complete. The
-`0.3.0` identity CDC release also requires the dedicated CDC test and its own
-evidence record on each physical platform.
+published `0.3.0` identity CDC release added a dedicated CDC test and
+evidence record on each physical platform; it remains legacy Put-only. The
+receipt-bearing `0.4.0` source candidate additionally requires a distinct
+two-launch receipt target and paired on-device markers. Source version
+`0.4.0` is not a hosted release or physical qualification.
+
 The existing [physical-device smoke guide](physical-device-smoke.md) defines the
 evidence schema and historical observations. Earlier h2c or simulator results
 do not qualify the release. Do not tag or publish until
@@ -132,16 +136,31 @@ observations for every required scenario, not expected outcomes.
 
 ## Record and release
 
-Use the Android APK and iOS Runner executable hashes for each target, and state
-which files were hashed. Add four content-free records under
-`evidence/offline-release/`: `android.json`, `ios.json`, `android-cdc.json`, and
-`ios-cdc.json`. All four must name the same `testedCommit`, exact
-toolchain/package identity, observed scenarios, and no limitations. Commit
-**only** those records (and an optional adjacent README) as the immediate
-child of the tested code commit. The `sdks/dart/offline/v0.3.0` tag points to
-that evidence-only child. Its preflight compares all four records with
-same-attempt Android/iOS CI manifests and rejects changed code. Once the
-hosted parent `lantern_client 0.3.0` resolves and every gate passes, the
-offline tag uses pub.dev OIDC publishing as described in
-[CONTRIBUTING.md](../../../CONTRIBUTING.md). Do not create a tag or publish
-while any physical observation is missing.
+Use the Android APK and iOS installed `App.framework/App` executable hashes
+for each target, and state which files were hashed. Preserve the four
+smoke/CDC records under `evidence/offline-release/`: `android.json`,
+`ios.json`, `android-cdc.json`, and `ios-cdc.json`. All four must name the
+same `testedCommit`, exact toolchain/package identity, observed scenarios,
+and no limitations. The receipt-bearing release **also** requires
+`android-receipt.json`, `ios-receipt.json`, `android-receipt-marker.json`,
+and `ios-receipt-marker.json` from separate signed profile builds. Follow
+the [receipt physical runbook](receipt-attestation.md) for the private
+HTTPS proxy, real response loss, first-launch SIGKILL, on-device second-launch
+assertions, capture-time installed-byte comparison, and approved immutable
+private custody of signed originals. Neither older smoke/CDC evidence nor
+host or simulator probes qualify these receipt paths.
+
+Commit **only** those eight content-free records/markers (and an optional
+adjacent README) as the immediate child of the exact tested code commit.
+The offline tag points to this evidence-only child; preflight checks all
+eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
+manifests, and absence of changed code. The parent `lantern_client 0.3.1`
+is hosted on pub.dev. Offline `0.3.0` is already published and cannot be
+reused for the receipt-bearing source;
+the example's offline `^0.4.0` dependency and lock describe the candidate,
+not a published package. Do not retarget that dependency to the hosted
+Put-only `0.3.0`, tag, or publish until both actual physical receipt runs,
+approved private immutable custody, and every release gate are complete.
+An offline package administrator must also confirm the offline pub.dev OIDC
+binding; it is not verified by this source change. The pub.dev OIDC process
+is described in [CONTRIBUTING.md](../../../CONTRIBUTING.md).

@@ -39,7 +39,7 @@ func (h *expiryHeap) Pop() any {
 }
 
 func expirationFinite(expiration time.Time) bool {
-	return !expiration.IsZero() && expiration.Unix() > 0
+	return !expiration.IsZero()
 }
 
 func expirationLiveAt(expiration, now time.Time) bool {

@@ -6,19 +6,22 @@
 
 ## Context and boundary
 
-The first `lantern_client_offline` release admits unconditional Put only.
-Durable Add, conditional Put, and Delete remain unsupported by its outbox.
+The hosted `lantern_client_offline` 0.3.0 outbox admits unconditional Put
+only. Merged 0.4.0 source separately implements receipt-backed conditional
+Vertex Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add, but
+is not a published or qualified receipt release. Final #1399 gates remain
+open; online Go, Node, and Dart receipt APIs are merged in source.
 A stable Add contribution ID does not recover the original result after a
 response is lost and a later Delete removes the contribution. A receipt must
 record the server's **original per-item result**, including a no-op, before a
 client can reconcile those operations. It cannot manufacture a global
 exactly-once guarantee in Lantern's leaderless, asynchronous cluster.
 
-Today's write paths are not an atomic receipt seam. Graph-only Add/Put/Delete
-publication applies `GraphCache` first, captures an effect-complete private WAL
-envelope, and fails the shared publication cut closed if append needs repair.
-That makes strict graph recovery reproducible but does not atomically commit a
-receipt Store or original receipt result. Before #1282, remote `ApplyMutation`
+Receipt-less graph writes are not an atomic receipt seam. They publish
+graph effects and capture effect-complete private WAL envelopes under
+their ordinary repair rules. A durable FileWAL can replay those effects,
+but that does not commit a receipt Store or recover an original result;
+default graph-only mode uses a no-op WAL. Before #1282, remote `ApplyMutation`
 could advance an origin watermark before graph apply or local relay
 publication; its contiguous-publication fix alone still does not provide an
 atomic receipt seam. A condition-not-met Put has no graph mutation to
@@ -29,6 +32,19 @@ Edge Delete, and #1396 extends the same envelope to conditional Vertex Put and
 exact Vertex Delete. #1397 extends it to contribution-keyed Edge Add when the
 optional receipt context is present. All context-free writes retain their
 existing behavior.
+
+New public and peer Put/Add edge **source** weights and ordinary Snapshot
+contributions must be finite. Graph-only `.lbk` can instead fold finite
+contributions into a non-finite effective edge; server-internal graph-only
+restore relays that value as a separate `SnapshotEdge.derived_aggregate`, not
+as a new source, and receipt Snapshots/archives cannot use that variant.
+The public CLI restore path still validates `PutEdges` and cannot import a
+non-finite folded `.lbk`. A finite-source receipt-bearing Add can nevertheless
+return signed infinity, or preserve pre-existing accepted NaN, as its
+**original effective result**; response, duplicate, WAL, and status must
+retain the authoritative `float32` result bytes rather than reject, zero, or
+recompute them. Numeric SDKs preserve semantic NaN, not portable payload
+bits across binary64 and ProtoJSON.
 
 ## Decision
 
@@ -130,11 +146,13 @@ and log entry is one infallible cut under the same gate;
 reads, status, Snapshot, and Subscribe see all of it or none of it. The public
 response is sent only after
 publication. A crash between a durable WAL commit and in-memory publication
-replays the envelope before serving. With the current no-op WAL, this is an
-in-memory single-node commit, **not** crash durability; loss of the only copy
-changes the epoch and makes an uncertain old result no longer provable. The
-existing `Log.Append` and `logMutationAt` APIs cannot by themselves provide
-this boundary and must not be reused as an after-the-fact receipt write.
+replays the envelope before serving. The certified `fresh`/`restart` runtime
+uses a synced FileWAL for this continuity; default graph-only mode uses a
+no-op WAL and does not expose public receipts. Loss of the only provable
+receipt copy changes the epoch and makes an uncertain old result no longer
+provable. The existing `Log.Append` and `logMutationAt` APIs cannot by
+themselves provide this boundary and must not be reused as an after-the-fact
+receipt write.
 
 A plural envelope preserves request order and exact per-item outcomes. It may
 contain graph transitions and no-op receipts together; it cannot partially
@@ -152,19 +170,18 @@ only through the contiguous graph-applied, receipt-installed, relay-published
 prefix defined by #1282. An out-of-order future entry waits in that Issue's
 bounded pending queue; an append failure leaves the frontier retryable. A
 Snapshot cutoff must never include graph state without the matching receipt,
-or a receipt without its graph state. #1116's later CDC projection cannot
-weaken this internal envelope/cutoff contract.
+or a receipt without its graph state. The identity-only CDC projection (#1116)
+does not weaken this internal envelope/cutoff contract.
 
 A receipt-only envelope still advances the origin seq. Identity-only Subscribe
-must emit a final zero-key chunk with an explicit receipt-only operation so a
-CDC consumer advances its cursor without invalidating graph data; maintained
-SDK decoders must accept that bounded marker. The existing
-[`projectMutationIdentities`](../../server/service/identity.go) has no such
-operation yet. During peer Snapshot installation, new receipt-capable
+emits a final zero-key `RECEIPT_ONLY` chunk when no graph identity was
+accepted, advancing the CDC cursor without invalidating graph data.
+[`projectMutationIdentities`](../../server/service/identity.go) implements
+that bounded marker for all four receipt families; maintained SDK identity
+decoders accept it. During peer Snapshot installation, new receipt-capable
 admission and receipt status fail closed until graph, receipts, epoch, and
-cutoffs are verified together. The existing
-[`BeginSnapshotInstall`](../../server/service/publication.go) read fault is
-not, by itself, an admission interlock.
+cutoffs are verified together; a read fault alone is not an admission
+interlock.
 
 Once an envelope's receipt deadline has passed, a lagging replica still
 applies and publishes its graph transition in contiguous order; it need not
@@ -267,6 +284,20 @@ the SDK must not perform a blind mutation retry. The origin serializes
 duplicate lookup and new admission under its commit gate, so an original
 in-flight call and same-endpoint retry cannot both execute.
 
+The merged offline 0.4.0 source treats an operation ID and its one-item
+group as provisional only while an outbox-v4 `mayHaveDispatched=false` marker
+durably proves no mutation send could have begun. Under a live claim it may
+refresh that pair before status lookup when the ID is too old for first
+admission; the server-time freshness check counts elapsed time from the
+capability request's start, including response latency, and keeps a
+four-minute margin inside the server's five-minute window. The marker becomes
+`mayHaveDispatched=true` before the first mutation RPC. Older outbox-v3
+records without the marker are conservatively treated as possibly sent;
+their IDs, and any other possibly sent IDs, remain immutable and status-first.
+`NOT_YET_OBSERVED` on a different replica never authorizes rekeying or a
+mutation retry. This strictly pre-dispatch exception does not weaken the
+same-ID, same-endpoint response-loss rule above.
+
 Two independent replicas can accept the same ID concurrently during a
 partition if a client violates endpoint stickiness. Without consensus this
 cannot be prevented globally; later receipt convergence may detect and alert
@@ -278,8 +309,9 @@ partitioned status, and total-cluster loss remain explicit unknown outcomes.
 ### Internal implementation boundary
 
 The [Edge Delete coordinator](../../server/service/receipt_edge_delete.go),
-[Vertex Put coordinator](../../server/service/receipt_vertex_put.go), and
-[Vertex Delete coordinator](../../server/service/receipt_vertex_delete.go)
+[Vertex Put coordinator](../../server/service/receipt_vertex_put.go),
+[Vertex Delete coordinator](../../server/service/receipt_vertex_delete.go),
+and [Edge Add coordinator](../../server/service/receipt_edge_add.go)
 stage graph, per-item receipts, and one origin row before a WAL call. Public
 plural calls invoke their coordinator only when the sole optional
 `MutationReceiptContext` is present; each singular call forwards a one-item
@@ -302,11 +334,11 @@ The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.g
 adds a versioned kind discriminator for graph-only `Mutation`, private
 [graph Delete effect](../../server/service/graph_delete_effect_wal.go) and
 [graph Put effect](../../server/service/graph_put_effect_wal.go) and
-[graph Add effect](../../server/service/graph_add_effect_wal.go) envelopes,
-the receipt Edge Delete envelope, or the private receipt Vertex Put and exact
-Vertex Delete envelopes. Each Vertex receipt envelope carries the complete
-ordered original intent and immutable request-index-aligned result separately
-from the receiver-local accepted graph projection. A relaying Vertex Put
+[graph Add effect](../../server/service/graph_add_effect_wal.go) envelopes
+(also used with receipt evidence), or the receipt Edge Delete, Vertex Put,
+and exact Vertex Delete envelopes. Each Vertex receipt envelope carries the
+complete ordered original intent and immutable request-index-aligned result
+separately from the receiver-local accepted graph projection. A relaying Vertex Put
 reconstructs the origin-authoritative effect from that original result rather
 than forwarding the relay's local projection. Live accepted values must match
 the original canonical intent bit-for-bit (including floating-point NaN
@@ -400,9 +432,9 @@ accepted. A contradictory accepted decision fails the candidate. Every
 enabled local and remote Put path emits this private kind. Serving use of this
 graph-only evidence enables neither Store admission nor an absent-ID answer.
 The stricter effect-complete staging path rejects even pre-receipt raw Put/Add
-rows before replay. It is a prerequisite for future serving recovery, not a
-serving certificate: Store clock high-water, epoch continuity, and atomic
-publication remain unproven. Its caller must hold the FileWAL path lease
+rows before replay. It is a prerequisite within serving recovery, not a
+serving certificate by itself: Store clock high-water, epoch continuity, and
+atomic publication remain unproven. Its caller must hold the FileWAL path lease
 through both audit and replay passes and configure an empty staged graph with
 the intended indexes and limits before replay; a bounded search-index rebuild
 must succeed before a candidate is returned. An original Delete receipt result
@@ -475,17 +507,18 @@ restart validates and reconstructs the full genesis WAL cut first, then calls
 Store clock high-water before exposing the runtime to Wire. The clock floor
 itself does not recover graph state, Store clock high-water, receipt epoch
 continuity, or an absent-ID status.
-The guarded full Subscribe projection carries receipt-bearing entries as one
-`ReplicatedReceiptEdgeDelete` mutation arm. A full-stream consumer without
-`accept_receipt_envelopes` receives `INVALID_ARGUMENT` before that frame;
-a receiver that did not opt in rejects the unknown oneof before
-advancing its origin watermark. Identity-only Subscribe emits DeleteEdge
-keys only for causally accepted items, and an all-rejected call emits a final
-zero-key `RECEIPT_ONLY` marker to advance its cursor without invalidation.
-Generic `MutationOp_DeleteEdge` and `MutationOp_DeleteEdges` arms reject any
-nested receipt context in serving apply and graph-effect WAL validation; the
-dedicated outer arm is the only receipt-bearing replication representation.
-Graph-only Pump does not opt in, and graph-only remote apply rejects the arm.
+The guarded full Subscribe projection carries receipt-bearing entries in
+dedicated `ReplicatedReceiptEdgeDelete`, `ReplicatedReceiptVertexPut`,
+`ReplicatedReceiptVertexDelete`, and `ReplicatedReceiptEdgeAdd` mutation arms.
+A full-stream consumer without `accept_receipt_envelopes` receives
+`INVALID_ARGUMENT` before such a frame; a receiver that did not opt in
+rejects the unknown oneof before advancing its origin watermark.
+Identity-only Subscribe emits only causally accepted identities for these
+families, or a final zero-key `RECEIPT_ONLY` marker for a call with no graph
+effect. Generic graph mutation arms with nested receipt context fail closed
+in the durable WAL path; the dedicated outer arms alone preserve receipt
+evidence. Graph-only Pump does not opt in, and graph-only remote apply rejects
+all four receipt arms.
 This remains an internal wire prerequisite, not a supported receipt CDC
 contract. In durable receipt-WAL mode, Pump and anti-entropy now opt in only
 after the runtime is certified; they require `RECEIPT`, so an evicted
@@ -543,7 +576,8 @@ from both `.lbk` and the RECEIPT transport. Its graph section carries the
 current receipt-format tag but no transport receipt metadata; separate archive
 records carry the active Store snapshot/policy, clock high-water, and origin
 HLC cutoffs. It does not carry retired evidence; the backup-set member
-replacement is separate work.
+is the separate canonical `LANTRET1` member of the production three-member
+receipt set, alongside the active archive and exact FileWAL cut witness.
 Bounded records and a counted SHA-256 footer reject incomplete or damaged
 containers. The digest detects corruption, not malicious tampering or an
 inconsistent source cut. The codec checks graph frame wire fields, order,
@@ -790,9 +824,9 @@ the live WAL path. Those three immutable members are persisted by the production
 scheduler as the receipt backup set. Production requires exact active and
 retired clock high-water equality and does not normalize, lift, or discard a
 zero-value or lower-cut retired snapshot.
-Startup selection/install of those scheduler sets remains unwired; the
-runtime-local bounded retired catalog and same-epoch baseline continuity are
-implemented separately below.
+Startup selects the strict newest set for explicit `fresh` restore or narrowly
+eligible `restart` baseline repair as described above. Neither selection nor
+the runtime-local retired catalog turns a graph-only dump into receipt proof.
 The private production runtime adds a
 fixed-size checksummed `.generation` sidecar bound to the canonical WAL path,
 epoch, policy fingerprint, and stable replication NodeID. Fresh mode creates
@@ -951,27 +985,50 @@ ID, and the capability endpoint. The complete group is validated and
 capacity-reserved before mutation. A matching duplicate returns the original
 request-index-aligned result: canonical `PutOutcome` values for Vertex Put,
 exact `existed` booleans for Delete, and the original effective float32 weight
-for Edge Add, including signed infinity or NaN retained as opaque result bits.
-Numeric SDK surfaces preserve semantic NaN classification; NaN payload-bit
-identity cannot be promised across binary64 and ProtoJSON. Receipt-bearing Add
+for Edge Add, including signed infinity derived from finite inputs or
+previously accepted NaN, retained as opaque result bits. Numeric SDK
+surfaces preserve semantic NaN classification; NaN payload-bit identity
+cannot be promised across binary64 and ProtoJSON. Receipt-bearing Add
 additionally requires every item to carry an explicit nonzero 24-byte
-contribution ID; IDs are never synthesized. Intent, group, operation-ID, or
-contribution-ID reuse conflicts fail without mutation.
+contribution ID; IDs are never synthesized. Intent, group, operation-ID,
+or contribution-ID reuse conflicts fail without mutation.
 `PutVertex`, `DeleteVertex`, `DeleteEdge`, and `AddEdge` are one-item facades.
 Omitting the context preserves receipt-less behavior; Put Edge and prefix
 Delete remain excluded.
 
-#1282 must establish contiguous relay publication and Snapshot cutoffs before
-receipt envelopes can claim replica-safe status. #1203 must establish mixed
-Add/Put/Delete convergence before Slice A can re-enable durable Add; receipts
-alone do not fix the graph history. #1282's graph-before-relay retry rule is
-not itself sufficient for receipts: the receipt implementation must strengthen
-that seam to an atomic graph/receipt/relay publication. #1393 and #1394 supply
-the replication, Snapshot, backup, and startup continuity prerequisites used
-by #1395, #1396, and #1397. Edge Add, Edge Delete, conditional Vertex Put, and exact
-Vertex Delete now satisfy the public vertical-slice gate, including real Connect/h2c
-response-loss, lag, capacity, retention, intent-conflict, transport-bound,
-token-rotation, and fail-closed tests. Put Edge and prefix Delete remain
-outside this public receipt context. The offline package continues to
-reject durable Add, conditional Put, and Delete until its client layer adopts
-the corresponding certified receipt families.
+The server receipt families rely on contiguous relay publication and Snapshot
+cutoffs (#1282), mixed Add/Put/Delete convergence (#1203), and the
+replication/Snapshot/backup/startup continuity work (#1393, #1394) used by
+#1395, #1396, and #1397. A graph-before-relay retry rule or contribution ID
+alone never supplied original-result proof. Edge Add, Edge Delete, conditional
+Vertex Put, and exact Vertex Delete now satisfy the public server vertical-slice
+gate, including real Connect/h2c response-loss, lag, capacity, retention,
+intent-conflict, transport-bound, token-rotation, and fail-closed tests.
+Put Edge and prefix Delete remain outside this receipt context. Online Go,
+Node, and Dart receipt APIs are merged in source; the hosted
+`lantern_client 0.3.1` online archive passed exact-content verification.
+Published `sdks/go/v0.25.0` pins published `pb/v0.13.0`. Node receipt APIs
+are in merged 0.12.0 source, not npm's current 0.11.0 `latest` package.
+Merged offline 0.4.0 source implements the four receipt families, but no
+receipt-bearing offline release has been published or qualified. Its
+`lantern_client: ^0.3.1` constraint selects the hosted parent; verify
+isolated resolution of the offline candidate archive against that published
+parent without path overrides before publishing. Final #1399 release
+evidence remains open, including performance and physical qualification.
+#1449's generic capture preparation is merged, not physical receipt proof;
+legacy `unsupported_add` records remain terminal.
+
+The #1399 performance gate is prospective, not satisfied by the #1467
+preparatory driver: run four separate, sequential, fresh-WAL three-node
+real Connect/h2c scenarios on the **same immutable final image digest**,
+one each for conditional Vertex Put, exact Vertex Delete, exact Edge Delete,
+and contribution-keyed Edge Add. Per family require admission at least
+75 RPC/s and exact same-operation receipt lookup at least 75 RPC/s
+(aggregate at least 150 RPC/s), admission p99 at most 500 ms, lookup p99
+at most 200 ms, zero non-OK admission or lookup responses, and the exact
+original typed results, receipt IDs, and digest. Every replica must stay within
++15 goroutines and +32 MiB `heap_alloc` of the post-warmup baseline both
+during the steady 5s-sampled window and after cooldown GC. Exclude family
+setup from timed throughput; reset only the named Compose project and WAL
+volumes between families. A simultaneous four-family mixed load is not
+additionally required.

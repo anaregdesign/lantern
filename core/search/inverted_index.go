@@ -242,9 +242,9 @@ func (idx *InvertedIndex[S, D]) Index(id S, doc D) error {
 	return idx.IndexWithExpiration(id, doc, time.Time{})
 }
 
-// IndexWithExpiration is Index with an absolute TTL deadline. Zero time and
-// Unix epoch-or-earlier mean no expiration. A born-expired document behaves as
-// a delete and never enters postings or the expiration heap.
+// IndexWithExpiration is Index with an absolute TTL deadline. Only Go zero
+// time means no expiration. A born-expired document behaves as a delete and
+// never enters postings or the expiration heap.
 func (idx *InvertedIndex[S, D]) IndexWithExpiration(id S, doc D, expiration time.Time) error {
 	prepared, _, err := idx.Prepare(doc)
 	if err != nil {

@@ -11,6 +11,46 @@ import (
 	"time"
 )
 
+func TestEpochRangeExpirationNeverEntersSearch(t *testing.T) {
+	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	idx := NewInvertedIndex[string, Text](fakeAnalyzer{}, nil, compareStringID, WithIndexClock(func() time.Time { return now }))
+	for _, tc := range []struct {
+		name string
+		exp  time.Time
+		live bool
+	}{
+		{"permanent", time.Time{}, true},
+		{"epoch", time.Unix(0, 0).UTC(), false},
+		{"pre-epoch", time.Unix(-1, 0).UTC(), false},
+		{"positive fractional epoch", time.Unix(0, 500_000_000).UTC(), false},
+		{"future", now.Add(time.Hour), true},
+	} {
+		if finite := expirationFinite(tc.exp); finite != !tc.exp.IsZero() ||
+			expirationLiveAt(tc.exp, now) != tc.live {
+			t.Fatalf("%s: finite=%v live=%v, want live=%v", tc.name, finite, expirationLiveAt(tc.exp, now), tc.live)
+		}
+		if err := idx.IndexWithExpiration(tc.name, Text("common"), tc.exp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, _, err := idx.SearchMatchTopKContext(context.Background(), "common", 10, nil, MatchOptions{}, Budget{
+		MaxQueryTerms: 10, MaxDictionaryVisits: 10, MaxPostingVisits: 10, MaxExpirationVisits: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool, len(results))
+	for _, result := range results {
+		seen[result.ID] = true
+	}
+	if len(seen) != 2 || !seen["permanent"] || !seen["future"] {
+		t.Fatalf("search results = %v, want permanent and future only", seen)
+	}
+	if stats := idx.MemoryStats(); stats.Documents != 2 || stats.ExpirationQueueEntries != 1 {
+		t.Fatalf("search expiry stats = %+v, want two live documents and one finite deadline", stats)
+	}
+}
+
 func TestExpiryPurge(t *testing.T) {
 	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 	now := base

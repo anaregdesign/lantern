@@ -5,10 +5,14 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../integration_test/support/receipt_attestation.dart';
+import '../integration_test/support/receipt_restart_journal.dart';
 
 const _commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _runId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const _target = 'integration_test/example_receipt_test.dart';
+final _identityDigest = sha256
+    .convert(utf8.encode('four receipt identities'))
+    .toString();
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -53,8 +57,79 @@ void main() {
     output: marker,
   );
 
+  ReceiptAttestation restartAttestation(int Function() processId) =>
+      ReceiptAttestation(
+        testedCommit: _commit,
+        target: _target,
+        runId: _runId,
+        requiredScenarios: const {'receipt_prepared', 'receipt_recovered'},
+        requiredRestartCleanups: const {'fixtures', 'journal'},
+        output: marker,
+        processId: processId,
+      );
+
   Future<Map<String, dynamic>> savedMarker() async =>
       jsonDecode(await marker.readAsString()) as Map<String, dynamic>;
+
+  test('private identity digest is canonical and binds every receipt', () {
+    const mutations = ['vertexPut', 'vertexDelete', 'edgeDelete', 'edgeAdd'];
+    final identities = <ReceiptHandoffIdentity>[
+      for (var index = 0; index < 4; index++)
+        (
+          logicalOperationId: 'logical-$index',
+          recordId: 'record-$index',
+          mutation: mutations[index],
+          receiptOperationId: List<int>.filled(49, index + 1),
+          receiptGroupId: List<int>.filled(16, index + 11),
+        ),
+    ];
+    final digest = receiptIdentitySha256(identities);
+    expect(digest, matches(RegExp(r'^[0-9a-f]{64}$')));
+    expect(receiptIdentitySha256(identities.reversed), digest);
+
+    final changed = List<ReceiptHandoffIdentity>.of(identities);
+    changed[0] = (
+      logicalOperationId: identities[0].logicalOperationId,
+      recordId: identities[0].recordId,
+      mutation: identities[0].mutation,
+      receiptOperationId: identities[0].receiptOperationId,
+      receiptGroupId: identities[1].receiptGroupId,
+    );
+    changed[1] = (
+      logicalOperationId: identities[1].logicalOperationId,
+      recordId: identities[1].recordId,
+      mutation: identities[1].mutation,
+      receiptOperationId: identities[1].receiptOperationId,
+      receiptGroupId: identities[0].receiptGroupId,
+    );
+    expect(receiptIdentitySha256(changed), isNot(digest));
+    final changedOperation = List<ReceiptHandoffIdentity>.of(identities);
+    changedOperation[0] = (
+      logicalOperationId: identities[0].logicalOperationId,
+      recordId: identities[0].recordId,
+      mutation: identities[0].mutation,
+      receiptOperationId: identities[1].receiptOperationId,
+      receiptGroupId: identities[0].receiptGroupId,
+    );
+    changedOperation[1] = (
+      logicalOperationId: identities[1].logicalOperationId,
+      recordId: identities[1].recordId,
+      mutation: identities[1].mutation,
+      receiptOperationId: identities[0].receiptOperationId,
+      receiptGroupId: identities[1].receiptGroupId,
+    );
+    expect(receiptIdentitySha256(changedOperation), isNot(digest));
+    expect(() => receiptIdentitySha256(identities.take(3)), throwsStateError);
+    expect(
+      () => receiptIdentitySha256([
+        identities[0],
+        identities[0],
+        identities[2],
+        identities[3],
+      ]),
+      throwsStateError,
+    );
+  });
 
   test('hashes installed target bytes and passes only after cleanup', () async {
     final cleanupObserved = <String>[];
@@ -298,5 +373,326 @@ void main() {
       },
     );
     await expectLater(readInstalledReceiptBinary(), throwsA(isA<StateError>()));
+  });
+
+  test(
+    'only a second process can finish a prepared run after cleanup',
+    () async {
+      final journal = File('${sandbox.path}/handoff.json');
+      var processId = 100;
+      final cleaned = <String>[];
+      await restartAttestation(() => processId).prepareForRestart(journal, (
+        run,
+      ) async {
+        await run.verifyScenario('receipt_prepared', () async {
+          expect(await journal.exists(), isFalse);
+        });
+        return _identityDigest;
+      });
+      final prepared = await savedMarker();
+      expect(prepared['status'], 'running');
+      expect(prepared['phase'], 'awaiting_sigkill');
+      expect(prepared['completedScenarios'], ['receipt_prepared']);
+      expect(prepared.containsKey('receiptIdentitySha256'), isFalse);
+      expect(await journal.exists(), isTrue);
+      expect(
+        (jsonDecode(await journal.readAsString())
+            as Map<String, dynamic>)['receiptIdentitySha256'],
+        _identityDigest,
+      );
+
+      processId = 101;
+      await restartAttestation(() => processId).resumeAfterRestart(journal, (
+        run,
+      ) async {
+        run.registerCleanup(() async {
+          cleaned.add('journal');
+          await journal.delete();
+        }, restartObligation: 'journal');
+        run.registerCleanup(
+          () => cleaned.add('fixtures'),
+          restartObligation: 'fixtures',
+        );
+        await run.verifyScenario('receipt_recovered', () async {
+          expect(await journal.exists(), isTrue);
+          expect(run.restartReceiptIdentitySha256, _identityDigest);
+        });
+      });
+
+      final saved = await savedMarker();
+      expect(cleaned, ['fixtures', 'journal']);
+      expect(await journal.exists(), isFalse);
+      expect(nativeLookups, 3);
+      expect(saved['schema'], 2);
+      expect(saved['status'], 'passed');
+      expect(saved['phase'], 'complete');
+      expect(saved.containsKey('receiptIdentitySha256'), isFalse);
+      expect(saved['completedScenarios'], [
+        'receipt_prepared',
+        'receipt_recovered',
+      ]);
+      final restart = saved['restart'] as Map<String, dynamic>;
+      expect(restart['processChanged'], isTrue);
+      expect(
+        DateTime.parse(
+          restart['preparedAt'] as String,
+        ).isBefore(DateTime.parse(restart['resumedAt'] as String)),
+        isTrue,
+      );
+    },
+  );
+
+  test('a same-process resume cannot claim a SIGKILL', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(() => 100).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+      return _identityDigest;
+    });
+    await expectLater(
+      restartAttestation(() => 100).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    expect(await marker.exists(), isFalse);
+  });
+
+  test('preparation rejects an invalid private identity digest', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await expectLater(
+      restartAttestation(() => 100).prepareForRestart(journal, (run) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+        return 'invalid';
+      }),
+      throwsA(isA<StateError>()),
+    );
+    expect(await journal.exists(), isFalse);
+    expect((await savedMarker())['status'], 'failed');
+  });
+
+  test('missing or malformed handoff cannot reuse a running marker', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(() => 100).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+      return _identityDigest;
+    });
+    final originalMarker = await marker.readAsString();
+    final originalJournal = await journal.readAsString();
+    await journal.delete();
+    await expectLater(
+      restartAttestation(() => 101).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(await marker.exists(), isFalse);
+
+    await marker.writeAsString(originalMarker);
+    await journal.writeAsString(
+      originalJournal.replaceFirst('"schema":3', '"schema":3,"schema":3'),
+    );
+    await expectLater(
+      restartAttestation(() => 101).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    expect(await marker.exists(), isFalse);
+  });
+
+  test(
+    'missing or malformed private identity digest rejects relaunch',
+    () async {
+      final journal = File('${sandbox.path}/handoff.json');
+      await restartAttestation(() => 100).prepareForRestart(journal, (
+        run,
+      ) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+        return _identityDigest;
+      });
+      final preparedMarker = await marker.readAsString();
+      final saved =
+          jsonDecode(await journal.readAsString()) as Map<String, dynamic>;
+      final missing = Map<String, dynamic>.of(saved)
+        ..remove('receiptIdentitySha256');
+      final malformed = {...saved, 'receiptIdentitySha256': 'invalid'};
+      for (final altered in [missing, malformed]) {
+        await journal.writeAsString(jsonEncode(altered));
+        await expectLater(
+          restartAttestation(
+            () => 101,
+          ).resumeAfterRestart(journal, (run) async {}),
+          throwsA(isA<StateError>()),
+        );
+        expect(await marker.exists(), isFalse);
+        await marker.writeAsString(preparedMarker);
+      }
+    },
+  );
+
+  test(
+    'changed private receipt identity fails post-relaunch assertions',
+    () async {
+      final journal = File('${sandbox.path}/handoff.json');
+      await restartAttestation(() => 100).prepareForRestart(journal, (
+        run,
+      ) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+        return _identityDigest;
+      });
+      final saved =
+          jsonDecode(await journal.readAsString()) as Map<String, dynamic>;
+      saved['receiptIdentitySha256'] = sha256
+          .convert(utf8.encode('changed receipt association'))
+          .toString();
+      await journal.writeAsString(jsonEncode(saved));
+      await expectLater(
+        restartAttestation(() => 101).resumeAfterRestart(journal, (run) async {
+          run.registerCleanup(() async {}, restartObligation: 'journal');
+          run.registerCleanup(() async {}, restartObligation: 'fixtures');
+          await run.verifyScenario('receipt_recovered', () async {
+            expect(run.restartReceiptIdentitySha256, _identityDigest);
+          });
+        }),
+        throwsA(isA<TestFailure>()),
+      );
+      expect((await savedMarker())['status'], 'failed');
+    },
+  );
+
+  test('foreign run and changed installed bytes reject continuation', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(() => 100).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+      return _identityDigest;
+    });
+    final firstMarker = await marker.readAsString();
+    await expectLater(
+      ReceiptAttestation(
+        testedCommit: _commit,
+        target: _target,
+        runId: List.filled(32, 'c').join(),
+        requiredScenarios: const {'receipt_prepared', 'receipt_recovered'},
+        requiredRestartCleanups: const {'fixtures', 'journal'},
+        output: marker,
+        processId: () => 101,
+      ).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    await marker.writeAsString(firstMarker);
+    await installedApk.writeAsString('another signed build');
+    await expectLater(
+      restartAttestation(() => 101).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+    expect(await marker.exists(), isFalse);
+  });
+
+  test(
+    'relaunch rejects marker or journal identity and scenario drift',
+    () async {
+      final journal = File('${sandbox.path}/handoff.json');
+      for (final change in <void Function(Map<String, dynamic>)>[
+        (value) => value['testedCommit'] = List.filled(40, 'c').join(),
+        (value) => value['target'] = 'integration_test/foreign_test.dart',
+        (value) => value['platform'] = 'ios',
+        (value) => value['packageId'] = 'com.anaregdesign.lanternExample',
+        (value) => value['completedScenarios'] = ['receipt_recovered'],
+        (value) => value['installedBinarySha256'] = List.filled(64, 'f').join(),
+      ]) {
+        if (await journal.exists()) await journal.delete();
+        await restartAttestation(() => 100).prepareForRestart(journal, (
+          run,
+        ) async {
+          await run.verifyScenario('receipt_prepared', () async {});
+          return _identityDigest;
+        });
+        final saved = await savedMarker();
+        change(saved);
+        await marker.writeAsString(jsonEncode(saved));
+        await expectLater(
+          restartAttestation(
+            () => 101,
+          ).resumeAfterRestart(journal, (run) async {}),
+          throwsA(isA<StateError>()),
+        );
+        expect(await marker.exists(), isFalse);
+      }
+      await journal.delete();
+      await restartAttestation(() => 100).prepareForRestart(journal, (
+        run,
+      ) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+        return _identityDigest;
+      });
+      final saved =
+          jsonDecode(await journal.readAsString()) as Map<String, dynamic>;
+      saved['requiredScenarios'] = ['receipt_prepared', 'receipt_spoofed'];
+      await journal.writeAsString(jsonEncode(saved));
+      await expectLater(
+        restartAttestation(
+          () => 101,
+        ).resumeAfterRestart(journal, (run) async {}),
+        throwsA(isA<StateError>()),
+      );
+      expect(await marker.exists(), isFalse);
+    },
+  );
+
+  test('missing or failed restart cleanup never produces a pass', () async {
+    for (final failCleanup in [false, true]) {
+      final journal = File('${sandbox.path}/handoff.json');
+      if (await journal.exists()) await journal.delete();
+      await restartAttestation(() => 100).prepareForRestart(journal, (
+        run,
+      ) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+        return _identityDigest;
+      });
+      await expectLater(
+        restartAttestation(() => 101).resumeAfterRestart(journal, (run) async {
+          run.registerCleanup(() async {}, restartObligation: 'journal');
+          if (failCleanup) {
+            run.registerCleanup(
+              () => throw StateError('fixture cleanup failed'),
+              restartObligation: 'fixtures',
+            );
+          }
+          await run.verifyScenario('receipt_recovered', () async {});
+        }),
+        throwsA(isA<StateError>()),
+      );
+      final saved = await savedMarker();
+      expect(saved['status'], 'failed');
+      expect(saved['failureType'], failCleanup ? 'cleanup' : 'incomplete');
+    }
+  });
+
+  test('a restart missing post-relaunch assertions cannot pass', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await restartAttestation(() => 100).prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+      return _identityDigest;
+    });
+    await expectLater(
+      restartAttestation(() => 101).resumeAfterRestart(journal, (run) async {
+        run.registerCleanup(() async {}, restartObligation: 'journal');
+        run.registerCleanup(() async {}, restartObligation: 'fixtures');
+      }),
+      throwsA(isA<StateError>()),
+    );
+    final saved = await savedMarker();
+    expect(saved['schema'], 2);
+    expect(saved['status'], 'failed');
+    expect(saved['failureType'], 'incomplete');
+    expect(saved['completedScenarios'], ['receipt_prepared']);
+  });
+
+  test('the prepare phase never passes without a restart', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    await expectLater(
+      restartAttestation(() => 100).prepareForRestart(journal, (run) async {
+        await run.verifyScenario('receipt_prepared', () async {});
+        await run.verifyScenario('receipt_recovered', () async {});
+        return _identityDigest;
+      }),
+      throwsA(isA<StateError>()),
+    );
+    expect((await savedMarker())['status'], 'failed');
+    expect(await journal.exists(), isFalse);
   });
 }

@@ -42,9 +42,8 @@ type weight struct {
 	// touches between GC ticks, while keeping the amortized add cost O(1).
 	lastFlushLen int
 	// minExp is the earliest expiration among the *expiring* contributions
-	// currently in values (permanent contributions — zero or ≤epoch
-	// expiration, which cache.IsLiveAt treats as never-expiring — are
-	// excluded). The zero value means "nothing here can expire". It gates
+	// currently in values (permanent zero-time contributions are excluded).
+	// The zero value means "nothing here can expire". It gates
 	// the reconcile-at-read in addWithExpirationContribAt (#917): the moment
 	// now reaches minExp at least one contribution has decayed, so the
 	// cached sum must be flushed before it is returned as effective. When
@@ -64,12 +63,10 @@ type weight struct {
 	lastHLC hlc.Timestamp
 }
 
-// expires reports whether an expiration can actually decay (i.e. it is a real
-// positive deadline). It mirrors the "no expiration" sentinels honored by
-// cache.IsLiveAt — Go zero time and any instant at or before the Unix epoch
-// are permanent and never contribute to minExp.
+// expires mirrors cache.IsLiveAt: only Go zero time is permanent. Even
+// epoch-range deadlines must trigger weight reconciliation.
 func expires(expiration time.Time) bool {
-	return !expiration.IsZero() && expiration.Unix() > 0
+	return !expiration.IsZero()
 }
 
 // weightCompactMin is the floor under the 2× growth trigger. Below this we

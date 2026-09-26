@@ -88,8 +88,8 @@ func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID) ([32]by
 	if !edgeweight.IsFiniteSource(edge.GetWeight()) {
 		return [32]byte{}, fmt.Errorf("Edge Add weight must be finite")
 	}
-	if edge.GetExpiration() != nil && edge.GetExpiration().CheckValid() != nil {
-		return [32]byte{}, fmt.Errorf("Edge Add expiration is invalid")
+	if err := validateDurableGraphExpiration("Edge Add", edge.GetExpiration()); err != nil {
+		return [32]byte{}, err
 	}
 	if err := rejectProtoUnknownFields(edge.ProtoReflect()); err != nil {
 		return [32]byte{}, fmt.Errorf("Edge Add %w", err)

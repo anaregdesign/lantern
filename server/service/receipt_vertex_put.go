@@ -228,8 +228,8 @@ func validateReceiptVertex(vertex *pb.Vertex) error {
 			return errors.New("Vertex Put nil marker must be true")
 		}
 	}
-	if expiration := vertex.GetExpiration(); expiration != nil && expiration.CheckValid() != nil {
-		return errors.New("Vertex Put expiration is invalid")
+	if _, err := prototime.CheckedExpiration(vertex.GetExpiration()); err != nil {
+		return fmt.Errorf("Vertex Put %w", err)
 	}
 	return nil
 }
@@ -250,7 +250,10 @@ func prepareVertexPutReceiptCall(
 		if err != nil {
 			return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		expiration := prototime.Expiration(item.Vertex.GetExpiration())
+		expiration, err := prototime.CheckedExpiration(item.Vertex.GetExpiration())
+		if err != nil {
+			return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, nil, nil, err
 		}

@@ -1728,24 +1728,25 @@ export type AddEdgeRequest = Message<"graph.v1.AddEdgeRequest"> & {
   edge?: Edge | undefined;
 
   /**
-   * contrib_id is an optional 24-byte idempotency key for the contribution.
-   * When set (non-empty and not all-zero), the server records the weight at
-   * most once per distinct id: re-sending the same request (e.g. a
-   * transport-level retry) is an exact no-op instead of double-counting the
-   * additive weight. An empty value preserves the legacy non-idempotent
-   * additive behavior. The id is opaque to the server; the Go SDK derives it
-   * from a per-client random nonce plus a monotonic call sequence when
-   * idempotent adds are enabled. Forwarded into contrib_ids[0] of the
-   * one-element AddEdges batch this wraps.
+   * contrib_id is an optional 24-byte contribution identity. While a
+   * non-empty, nonzero ID remains in the live graph for this edge, applying
+   * it again does not double-count its weight. Delete or expiration can
+   * remove that ID: retrying a receipt-less Add after an uncertain response
+   * can then apply a new contribution and cannot recover the original result.
+   * An empty or all-zero value leaves the Add non-idempotent. The ID is opaque
+   * to the server; the Go SDK derives it from a per-client random nonce plus
+   * a monotonic call sequence when idempotent adds are enabled. Forwarded
+   * into contrib_ids[0] of the one-element AddEdges batch this wraps.
    *
    * @generated from field: bytes contrib_id = 2;
    */
   contribId: Uint8Array;
 
   /**
-   * receipt_context enables durable exactly-once proof for this Add. It is
-   * valid only when contrib_id is an explicit non-zero 24-byte identifier.
-   * Receipt-less Add remains the separate direct-online mode above.
+   * receipt_context enables bounded durable original-result proof for this
+   * Add. It requires an explicit nonzero 24-byte contrib_id. A matching
+   * mutation retry requires the same certified endpoint and generation;
+   * another replica may only be queried for status.
    *
    * @generated from field: graph.v1.MutationReceiptContext receipt_context = 3;
    */
@@ -1765,12 +1766,14 @@ export const AddEdgeRequestSchema: GenMessage<AddEdgeRequest> = /*@__PURE__*/
 export type AddEdgeResponse = Message<"graph.v1.AddEdgeResponse"> & {
   /**
    * effective_weight is the sum of live contributions on (tail, head)
-   * immediately after applying (or, when contrib_id dedupes a replay, after
-   * observing) this request, as seen by the serving node. This turns AddEdge
+   * immediately after applying (or observing a retained duplicate of) a
+   * receipt-less request, as seen by the serving node. This turns AddEdge
    * into a race-free increment-then-check counter: a caller writing
    * weight=1 with a TTL reads back the rolling-window count in one round trip
-   * and can enforce a cap without a separate GetEdge. When contrib_id makes
-   * the add a no-op, this is the current live sum (the value a retry wants).
+   * and can enforce a cap without a separate GetEdge. A deduplicated
+   * receipt-less Add returns the current sum, not necessarily its original
+   * result. A matching receipt-bearing retry returns the stored original
+   * result while that operation receipt remains provable.
    * Note: with replication enabled the value is the serving node's local view
    * at apply time — the same async-replica caveat as a Redis INCR read.
    *
@@ -1788,8 +1791,9 @@ export const AddEdgeResponseSchema: GenMessage<AddEdgeResponse> = /*@__PURE__*/
 
 /**
  * AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
- * calls with the same endpoints sum their weights. Additive writes are
- * non-idempotent unless an index-aligned contrib_ids entry is supplied.
+ * calls with the same endpoints sum their weights. An index-aligned
+ * contrib_ids entry deduplicates a retained contribution but does not make an
+ * uncertain receipt-less call safe to replay after Delete or expiration.
  *
  * @generated from message graph.v1.AddEdgesRequest
  */
@@ -1800,12 +1804,13 @@ export type AddEdgesRequest = Message<"graph.v1.AddEdgesRequest"> & {
   edges: Edge[];
 
   /**
-   * contrib_ids is an optional index-aligned list of 24-byte idempotency
-   * keys, one per entry in edges. When contrib_ids[i] is set (non-empty and
-   * not all-zero) the server records edges[i] at most once per distinct id,
-   * making a retried batch safe to replay without double-counting weight. A
-   * shorter list, a missing entry, or an empty/zero value leaves the
-   * corresponding edge on the legacy non-idempotent additive path. Each id is
+   * contrib_ids is an optional index-aligned list of 24-byte contribution
+   * identities, one per entry in edges. A non-empty, nonzero contrib_ids[i]
+   * deduplicates edges[i] only while that contribution remains in the live
+   * graph. After Delete or expiration removes it, the same ID may apply a
+   * new Add; replaying a receipt-less batch cannot recover its original
+   * index-aligned results. A shorter list, missing entry, or empty/all-zero
+   * value leaves that edge on the non-idempotent additive path. Each ID is
    * opaque to the server.
    *
    * Canonical 24-byte layout (the one spec; drift breaks cross-SDK dedup):
@@ -1824,9 +1829,11 @@ export type AddEdgesRequest = Message<"graph.v1.AddEdgesRequest"> & {
   contribIds: Uint8Array[];
 
   /**
-   * receipt_context enables durable exactly-once proof for the whole logical
-   * call. Every edge must have an index-aligned explicit non-zero contrib_id;
-   * mixed keyed/unkeyed batches are rejected rather than upgraded.
+   * receipt_context enables bounded durable original-result proof for the
+   * whole logical call. Every edge needs an index-aligned explicit nonzero
+   * contrib_id; mixed keyed/unkeyed batches are rejected rather than
+   * upgraded. A matching retry requires the same certified endpoint and
+   * generation; another replica is status-only.
    *
    * @generated from field: graph.v1.MutationReceiptContext receipt_context = 3;
    */
@@ -1854,9 +1861,10 @@ export type AddEdgesResponse = Message<"graph.v1.AddEdgesResponse"> & {
   /**
    * effective_weights is index-aligned with the request edges: entry i is the
    * sum of live contributions on edges[i]'s (tail, head) immediately after
-   * applying (or deduping) it, as seen by the serving node. Empty only for an
-   * empty request. See AddEdgeResponse.effective_weight for the counter
-   * semantics and the replication caveat.
+   * applying (or observing a retained duplicate of) a receipt-less request.
+   * A matching receipt-bearing retry returns the stored original aligned
+   * results instead. Empty only for an empty request. See
+   * AddEdgeResponse.effective_weight for the counter and replication caveats.
    *
    * @generated from field: repeated float effective_weights = 2;
    */

@@ -1354,6 +1354,186 @@ func TestExpirationClamp_ZeroAlwaysAllowed(t *testing.T) {
 	}
 }
 
+func TestLanternService_ExplicitEpochExpirations(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exp  *timestamppb.Timestamp
+	}{
+		{"epoch", timestamppb.New(time.Unix(0, 0).UTC())},
+		{"pre-epoch", timestamppb.New(time.Unix(-1, 0).UTC())},
+		{"positive fractional epoch", timestamppb.New(time.Unix(0, 500_000_000).UTC())},
+		{"later born-expired", timestamppb.New(time.Unix(1, 0).UTC())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+			svc := NewLanternService(cache)
+			ctx := t.Context()
+			for _, key := range []string{"v", "tail", "head"} {
+				if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			overwrite, err := svc.PutVertex(ctx, &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: "v", Expiration: tc.exp},
+			})
+			if err != nil || overwrite.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
+				t.Fatalf("expired vertex overwrite = (%+v, %v)", overwrite, err)
+			}
+			if _, live := cache.GetVertex("v"); live {
+				t.Fatal("expired overwrite kept the vertex live")
+			}
+			absent, err := svc.PutVertex(ctx, &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: "v", Expiration: tc.exp}, IfAbsent: true,
+			})
+			if err != nil || absent.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
+				t.Fatalf("absent conditional Put = (%+v, %v), want EXPIRED", absent, err)
+			}
+			if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "v"}}); err != nil {
+				t.Fatal(err)
+			}
+			blocked, err := svc.PutVertex(ctx, &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: "v", Expiration: tc.exp}, IfAbsent: true,
+			})
+			if err != nil || blocked.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET {
+				t.Fatalf("live conditional Put = (%+v, %v), want CONDITION_NOT_MET", blocked, err)
+			}
+			if _, live := cache.GetVertex("v"); !live {
+				t.Fatal("conditional Put erased the existing permanent vertex")
+			}
+			if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 2}}); err != nil {
+				t.Fatal(err)
+			}
+			edge, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{
+				Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 3, Expiration: tc.exp},
+			})
+			if err != nil || edge.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_EXPIRED {
+				t.Fatalf("expired edge overwrite = (%+v, %v)", edge, err)
+			}
+			if _, live := cache.GetWeight("tail", "head"); live {
+				t.Fatal("expired edge overwrite kept weight live")
+			}
+			add, err := svc.AddEdge(ctx, &pb.AddEdgeRequest{
+				Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 4, Expiration: tc.exp},
+			})
+			if err != nil || add.GetEffectiveWeight() != 0 {
+				t.Fatalf("expired Add = (%+v, %v), want effective weight 0", add, err)
+			}
+			if _, live := cache.GetWeight("tail", "head"); live {
+				t.Fatal("expired Add created a live edge")
+			}
+		})
+	}
+
+	svc := newTestService(t)
+	value := time.Unix(-1, 500_000_000).UTC()
+	if _, err := svc.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "pre-epoch-value", Value: &pb.Vertex_Timestamp{Timestamp: timestamppb.New(value)},
+	}}); err != nil {
+		t.Fatalf("valid pre-epoch value timestamp: %v", err)
+	}
+	got, err := svc.GetVertex(t.Context(), &pb.GetVertexRequest{Key: "pre-epoch-value"})
+	if err != nil || !got.GetVertex().GetTimestamp().AsTime().Equal(value) {
+		t.Fatalf("pre-epoch value = (%+v, %v), want %v", got, err, value)
+	}
+}
+
+func TestLanternService_InvalidTimestampBatchesAreAtomic(t *testing.T) {
+	ctx := t.Context()
+	for _, tc := range []struct {
+		name  string
+		stamp *timestamppb.Timestamp
+	}{
+		{"explicit Go zero", timestamppb.New(time.Time{})},
+		{"invalid seconds", &timestamppb.Timestamp{Seconds: 253402300800}},
+		{"invalid nanos", &timestamppb.Timestamp{Nanos: 1_000_000_000}},
+	} {
+		for _, call := range []struct {
+			name string
+			run  func(*LanternService, *timestamppb.Timestamp) error
+		}{
+			{"PutVertices", func(s *LanternService, bad *timestamppb.Timestamp) error {
+				_, err := s.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+					{Key: "new"}, {Key: "kept", Expiration: bad},
+				}})
+				return err
+			}},
+			{"PutVertices if_absent", func(s *LanternService, bad *timestamppb.Timestamp) error {
+				_, err := s.PutVertices(ctx, &pb.PutVerticesRequest{IfAbsent: true, Vertices: []*pb.Vertex{
+					{Key: "new"}, {Key: "kept", Expiration: bad},
+				}})
+				return err
+			}},
+			{"PutEdges", func(s *LanternService, bad *timestamppb.Timestamp) error {
+				_, err := s.PutEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
+					{Tail: "tail", Head: "head", Weight: 2},
+					{Tail: "tail", Head: "head", Weight: 3, Expiration: bad},
+				}})
+				return err
+			}},
+			{"AddEdges", func(s *LanternService, bad *timestamppb.Timestamp) error {
+				_, err := s.AddEdges(ctx, &pb.AddEdgesRequest{Edges: []*pb.Edge{
+					{Tail: "tail", Head: "head", Weight: 2},
+					{Tail: "tail", Head: "head", Weight: 3, Expiration: bad},
+				}})
+				return err
+			}},
+			{"RestoreVertices", func(s *LanternService, bad *timestamppb.Timestamp) error {
+				_, err := s.RestoreVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+					{Key: "new"}, {Key: "kept", Expiration: bad},
+				}})
+				return err
+			}},
+			{"RestoreEdges", func(s *LanternService, bad *timestamppb.Timestamp) error {
+				_, err := s.RestoreEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{
+					{Tail: "tail", Head: "head", Weight: 2},
+					{Tail: "tail", Head: "head", Weight: 3, Expiration: bad},
+				}})
+				return err
+			}},
+		} {
+			t.Run(tc.name+"/"+call.name, func(t *testing.T) {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+				svc := NewLanternService(cache)
+				if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+					Key: "kept", Value: &pb.Vertex_String_{String_: "old"},
+				}}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+					Tail: "tail", Head: "head", Weight: 1,
+				}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := call.run(svc, tc.stamp); connect.CodeOf(err) != connect.CodeInvalidArgument {
+					t.Fatalf("invalid timestamp = %v, want InvalidArgument", err)
+				}
+				if _, live := cache.GetVertex("new"); live {
+					t.Fatal("invalid batch partially wrote a vertex")
+				}
+				if kept, live := cache.GetVertex("kept"); !live || kept.GetString_() != "old" {
+					t.Fatalf("invalid batch changed kept vertex: (%+v, %v)", kept, live)
+				}
+				if weight, live := cache.GetWeight("tail", "head"); !live || weight != 1 {
+					t.Fatalf("invalid batch changed edge: (%v, %v)", weight, live)
+				}
+			})
+		}
+	}
+
+	svc := newTestService(t)
+	_, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "new"}, {Key: "invalid-value", Value: &pb.Vertex_Timestamp{
+			Timestamp: &timestamppb.Timestamp{Seconds: 253402300800},
+		}},
+	}})
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("invalid value timestamp = %v, want InvalidArgument", err)
+	}
+	if _, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "new"}); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("invalid value timestamp partially wrote batch: %v", err)
+	}
+}
+
 func TestLanternService_FakeBackend_PutGetDelete(t *testing.T) {
 	fb := newFakeBackend()
 	svc := NewLanternService(fb)

@@ -135,15 +135,16 @@ committed-response-loss replay. Android and iOS jobs upload content-free JSON
 manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
-record required before an offline release. The offline core has a hosted
-`lantern_client: ^0.3.1` dependency and an independent candidate archive gate;
-the parent `lantern_client` publish archive continues to exclude `offline/` and
-`offline_sqlite/`. The maintained Flutter app under `sdks/dart/example/` is a
-repository integration fixture with local development overrides, so only its
-standalone online example is included in the parent archive. CI uses Dart Pub's
-own archive builder, unpacks the resulting tarball
-outside the checkout, resolves every included `pubspec.yaml` with an isolated
-cache, then runs analysis, tests, and `pana` against the unpacked artifact.
+record required before an offline release. The merged offline 0.4.0 source
+candidate declares a hosted `lantern_client: ^0.3.1` dependency and has an
+independent candidate archive gate; the parent `lantern_client` publish
+archive continues to exclude `offline/` and `offline_sqlite/`. The maintained
+Flutter app under `sdks/dart/example/` is a repository integration fixture
+with local development overrides, so only its standalone online example is
+included in the parent archive. CI uses Dart Pub's own archive builder,
+unpacks the resulting tarball outside the checkout, resolves every included
+`pubspec.yaml` with an isolated cache, then runs analysis, tests, and `pana`
+against the unpacked artifact.
 
 The opt-in `sdks/dart/offline_sqlite/` adapter has a mandatory Flutter host gate:
 format/analyze/test, real SQLite close/reopen conformance and disk-full checks,
@@ -266,16 +267,27 @@ test.
 - **Multi-issue `Closes` syntax:** GitHub only auto-links the *first* issue on a
   comma-separated line. Use one keyword per issue (`Closes #1, closes #2, closes #3`)
   or one keyword per line; otherwise the later issues are left open after merge.
+- **Non-closing references:** A negated or hyphenated closing keyword next to an
+  issue reference can still register in GitHub's `closingIssuesReferences` and
+  auto-close that Issue. For non-closing references use `Tracks #N`, then check
+  the PR's live `closingIssuesReferences` before merging.
 
 ## After editing `.proto`
 
 ```bash
-go generate ./...   # runs buf generate (NO --clean) + wire
+go generate ./...                                # buf generate (NO --clean) + wire
+sdks/dart/scripts/codegen.sh
+(cd sdks/node && bun run codegen)
+testbed/dart-transport-probe/scripts/codegen.sh
 ```
 
-Commit the regenerated stubs under `pb/`. Never pass `--clean` to buf — its output root
-is `pb/`, so `--clean` would delete `pb/go.mod` and `pb/doc.go` alongside the stubs.
-The same schema change triggers `dart-sdk.yml`; regenerate the private Dart stubs too.
+Commit regenerated stubs under `pb/`, `sdks/dart/lib/src/gen/`,
+`sdks/node/src/gen/`, and both `testbed/dart-transport-probe/{connect,grpc}/lib/src/gen/`
+when they change. Never hand-edit generated files. CI reruns these generators and
+checks for drift in `go.yml`, `dart-sdk.yml`, `node-sdk.yml`, and
+`dart-transport-probe.yml`; even a comment-only proto edit can change generated docs.
+Never pass `--clean` to buf — its output root is `pb/`, so `--clean` would delete
+`pb/go.mod` and `pb/doc.go` alongside the stubs.
 If the wire shape consumed or shipped by `lantern_client` changes, cut an independent
 `sdks/dart/vX.Y.Z` release after the compatible server/proto change lands.
 
@@ -383,7 +395,7 @@ The `server/` module is never tagged independently — it ships under the root t
 buildx under QEMU is slow; if a root tag already pushed the amd64 image, bump the patch
 number rather than force-moving the tag.
 
-`mcp/`, `admin/`, `sdks/dart/`, and the future offline core are cut
+`mcp/`, `admin/`, `sdks/dart/`, and the offline core are cut
 **independently** of the root cadence:
 
 - `mcp/vX.Y.Z` triggers `mcp-publish.yml` → `ghcr.io/anaregdesign/lantern-mcp` (multi-arch
@@ -417,62 +429,18 @@ number rather than force-moving the tag.
   minimum/current Dart, real-wire, archive, Android emulator, and iOS simulator
   Gate in `dart-sdk.yml`. A separate offline preflight builds an isolated
   archive from the exact tag, checks its hosted parent dependency and contents,
-  resolves it outside the checkout, and checks pub.dev state. Once the package
-  exists on pub.dev, later versions use the separate offline OIDC publish job;
-  read-only archive equality gates the exact-title GitHub Release. The parent
-  tag's release jobs never run for an offline tag.
+  resolves it outside the checkout, and checks pub.dev state. The package
+  already exists on pub.dev; later versions use the separate offline OIDC
+  publish job only after a package admin verifies its private automated
+  publishing binding. Read-only archive equality gates the exact-title
+  GitHub Release. The parent tag's release jobs never run for an offline tag.
 
-**Offline first-publication runbook (#1162).** The initial candidate is
-`sdks/dart/offline/v0.2.0`; its parent `lantern_client` 0.2.0 is already on
-pub.dev. First test a clean code commit on physical Android **and** iOS and
-record the full tested SHA in the sanitized evidence: platform-trusted TLS
-acceptance and rejection,
-token rotation, radio loss/offline/foreground recovery, Android Doze-like pause,
-and iOS local-network privacy. Include revision, OS/app version, scenarios, and
-pass/fail only; never publish tokens, addresses, device IDs, or user data.
-Emulator/simulator CI and the historical #1114 record do not replace this
-matrix. Commit only `sdks/dart/example/evidence/offline-release/android.json`
-and `ios.json` (and optionally its README) as the **immediate child** of the
-tested code commit. Tag that evidence-only commit; the release preflight checks
-its parent SHA and rejects any code difference, then compares both physical
-records with the Android/iOS simulator manifests from the tag's full Gate.
-This two-commit sequence avoids the impossible self-reference of a checked-in
-manifest naming its own commit. Simulator artifacts include the run attempt so
-a rerun after manual publication cannot reuse stale or conflicting artifacts.
-Verify the clean checkout, then create and push
-the immutable `sdks/dart/offline/v0.2.0` tag.
-The first tag run must fail closed at read-only preflight because pub.dev has
-no `lantern_client_offline` package; it must create no GitHub Release.
-
-For the one-time bootstrap, extract `sdks/dart/offline` from **that exact tag**
-into a fresh directory so the parent package's `.pubignore` cannot hide the
-nested package. Run `dart pub get --enforce-lockfile`, `dart pub publish --dry-run`,
-and the first `dart pub publish` there using interactive OAuth. Do not put a pub
-token in GitHub Secrets, CI, or the repository. On the new package's pub.dev
-Admin page, enable GitHub Actions automated publishing for
-`anaregdesign/lantern` with tag pattern `sdks/dart/offline/v{{version}}` and
-require the existing `pub.dev` GitHub environment. That environment currently
-selects both parent `sdks/dart/v*.*.*` and offline
-`sdks/dart/offline/v*.*.*` tags with required reviewers. This GitHub-side
-protection does not verify the separate pub.dev package-admin binding. Use
-**Re-run all jobs** on the same tag push workflow, so the physical gate can
-compare against Android/iOS simulator artifacts from the current attempt:
-preflight must compare the published archive with the exact candidate,
-skip OIDC publication, and only then create the Release titled exactly
-`sdks/dart/offline/v0.2.0`. Later versions publish by tag-triggered OIDC only.
-
-```bash
-offline_tag=sdks/dart/offline/v0.2.0
-offline_source=$(mktemp -d)
-git archive "$offline_tag:sdks/dart/offline" | tar -x -C "$offline_source"
-(cd "$offline_source" && dart pub get --enforce-lockfile && \
-  dart pub publish --dry-run && dart pub publish)
-```
-
-If manual publication or OIDC fails, leave the tag and Issue open and create no
-Release. Never replace or move a published tag/version; prepare a corrected new
-version if a published archive is wrong. The release operator should inspect
-the pub.dev audit log and GitHub Release after each successful run.
+**Offline first-publication history (#1162).** `lantern_client_offline 0.2.0`
+was first published from its exact tagged revision with one-time interactive
+OAuth; the identity CDC 0.3.0 release is also hosted. That bootstrap is
+complete, not a procedure for the receipt-bearing 0.4.0 candidate. Never
+repeat manual publication for a later version, reuse a published tag, or put
+a pub token in GitHub Secrets, CI, or the repository.
 
 **Dart publishing status.** The parent `lantern_client` 0.3.1 is published and
 its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
@@ -482,20 +450,38 @@ manual `dart pub publish`. Immediately before tagging, check
 `https://pub.dev/api/packages/lantern_client` and confirm the target version does not
 already exist. Never force-move a published Dart tag/version—bump patch.
 
-**Offline receipt release preparation (#1398/#1115).** Offline `0.2.0` and
-`0.3.0` are published; the `0.4.0` candidate requires hosted
-`lantern_client ^0.3.1`. The maintained Flutter example and unpublished SQLite
-adapter use local path overrides. Before tagging, recheck the target version
-and tag are unused, and have a pub.dev package admin verify that
-`lantern_client_offline` automated publishing is bound to
-`anaregdesign/lantern` with `sdks/dart/offline/v{{version}}` and the `pub.dev`
-environment. The GitHub environment's tag rules alone cannot prove this
-private setting. Receipt-specific physical assertions and release evidence
-must qualify one frozen code SHA on Android and iOS before its evidence-only
-child can be tagged; the existing simulator/CDC matrix is not a substitute.
-Do not manually publish a later version, move a published tag, or create a
-GitHub Release before the offline tag's full gate, OIDC publication, and
-published-archive equality pass.
+**Offline receipt release preparation (#1398/#1115/#1399).** Merged offline
+0.4.0 source requires hosted `lantern_client ^0.3.1`; it is not yet a
+published or qualified receipt release. The maintained Flutter example and
+unpublished SQLite adapter use local path overrides; resolve the offline
+candidate archive against the hosted parent outside the checkout without
+a path override. Before tagging, confirm the target version and tag are
+unused. Have an authorized pub.dev package admin inspect, without changing
+settings, that `lantern_client_offline` has GitHub Actions publishing enabled
+for repository `anaregdesign/lantern`, tag pattern
+`sdks/dart/offline/v{{version}}`, the push event enabled, and **Require GitHub
+Actions environment** checked for exact `pub.dev`. Record dated, redacted
+confirmation and custody sign-off without credentials or emails. The
+protected GitHub `pub.dev` environment already selects both parent
+`sdks/dart/v*.*.*` and offline `sdks/dart/offline/v*.*.*` tag patterns and
+requires human reviewers; its rules do not prove that separate private
+pub.dev binding or successful OIDC publication. Never bypass the approval.
+
+Merge all required source and release-contract docs before freezing one clean
+tested source commit. The
+[physical release runbook](sdks/dart/example/offline-release-resume.md)
+owns the receipt-specific Android/iOS evidence and exact-commit procedure;
+prior Put-only, CDC, or simulator records do not qualify 0.4.0. After both
+physical platforms and all pre-tag gates pass, tag only the immediate
+evidence-only child of that frozen commit. Do not change code or release docs
+between the tested source commit and its tagged evidence child. The #1399
+[performance gate](docs/decisions/0010-bounded-mutation-receipts.md#dependencies-and-rollout)
+requires four separate, sequential, fresh-WAL family scenarios on the same
+immutable final image, not a simultaneous mixed-load run; a preparatory
+driver does not supply final measured acceptance. The offline tag's full
+Gate, OIDC publication, and published-archive equality must pass before
+the exact-title GitHub Release. If publication fails, leave the tag and
+Issue open and create no Release; never move a published tag or version.
 
 **Release title convention (locked).** Every GitHub Release title MUST equal its tag name
 verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `sdks/dart/v0.1.0`,

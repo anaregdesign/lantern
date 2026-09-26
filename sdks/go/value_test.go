@@ -340,6 +340,24 @@ func Test_nativeVertex_asVertex(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name:   "omitted expiration",
+			fields: fields{key: "permanent", value: 1},
+			want:   &pb.Vertex{Key: "permanent", Value: &pb.Vertex_Int64{Int64: 1}},
+		},
+		{
+			name: "fractional epoch expiration",
+			fields: fields{
+				key:        "expired",
+				value:      1,
+				expiration: time.Unix(0, 500_000_000).UTC(),
+			},
+			want: &pb.Vertex{
+				Key:        "expired",
+				Value:      &pb.Vertex_Int64{Int64: 1},
+				Expiration: timestamppb.New(time.Unix(0, 500_000_000).UTC()),
+			},
+		},
 	}
 	for i := range tests {
 		tt := &tests[i]
@@ -382,6 +400,14 @@ func TestMarshalVertexJSON(t *testing.T) {
 			name: "int64 without expiration",
 			v:    &Vertex{Value: &pb.Vertex_Int64{Int64: 42}},
 			want: `{"type":"int64","value":42}`,
+		},
+		{
+			name: "explicit year-one expiration retained",
+			v: &Vertex{
+				Expiration: timestamppb.New(time.Time{}),
+				Value:      &pb.Vertex_Int64{Int64: 42},
+			},
+			want: `{"type":"int64","value":42,"expiration":"0001-01-01T00:00:00Z"}`,
 		},
 		{
 			name: "bool true",
@@ -537,6 +563,8 @@ func TestVertexJSON_RoundTrip(t *testing.T) {
 		{Key: "nilval", Value: &pb.Vertex_Nil{Nil: true}},
 		{Key: "noval"},
 		{Key: "withexp", Expiration: timestamppb.New(exp), Value: &pb.Vertex_String_{String_: "x"}},
+		{Key: "yearone", Expiration: timestamppb.New(time.Time{})},
+		{Key: "fractional", Expiration: timestamppb.New(time.Unix(0, 500_000_000).UTC())},
 	}
 	for _, want := range cases {
 		b, err := MarshalVertexJSON(want)
@@ -559,6 +587,8 @@ func TestEdgeJSON_RoundTrip(t *testing.T) {
 		{Tail: "a", Head: "b", Weight: 1.5},
 		{Tail: "a", Head: "b", Weight: -2.25, Expiration: timestamppb.New(exp)},
 		{Tail: "x:1", Head: "x:2", Weight: 0},
+		{Tail: "year", Head: "one", Expiration: timestamppb.New(time.Time{})},
+		{Tail: "fraction", Head: "second", Expiration: timestamppb.New(time.Unix(0, 500_000_000).UTC())},
 	}
 	for i, want := range cases {
 		b, err := MarshalEdgeJSON(want)

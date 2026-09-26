@@ -13,21 +13,12 @@ type volatile[T any] struct {
 }
 
 // IsLiveAt reports whether an expiration deadline is still in the future
-// relative to now. It centralises the "no expiration" sentinel handling
-// shared across the vertex cache, the edge cache, and any future expiring
-// store. Two values are treated as "never expires":
-//
-//   - Go zero time (`time.Time{}`, year 1) — the documented sentinel for
-//     "no expiration" used by service.validateExpiration and the proto
-//     contract (`Vertex.expiration` / `Edge.expiration` are optional).
-//   - Unix epoch or earlier (`expiration.Unix() <= 0`) — `(*timestamppb.
-//     Timestamp)(nil).AsTime()` returns `time.Unix(0,0).UTC()`, NOT Go zero,
-//     so the cache used to silently treat every PutVertex without an
-//     expiration as already-expired (issue #250).
-//
-// Any positive future deadline behaves as before: live until now passes it.
+// relative to now. Only Go zero time means "no expiration"; the server maps
+// an omitted protobuf expiration to that sentinel before storing it. Every
+// other instant, including the Unix epoch and its first fractional second,
+// is an actual deadline.
 func IsLiveAt(expiration, now time.Time) bool {
-	if expiration.IsZero() || expiration.Unix() <= 0 {
+	if expiration.IsZero() {
 		return true
 	}
 	return expiration.After(now)

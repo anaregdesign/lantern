@@ -17,6 +17,20 @@ COMMIT = "a" * 40
 RUN_ID = "b" * 32
 TARGET = "integration_test/future_receipt_test.dart"
 SCENARIOS = frozenset({"receipt_applied", "receipt_replayed"})
+FINAL_SCENARIOS = frozenset({
+    "receipt_authenticated_trusted_tls",
+    "receipt_untrusted_tls_rejected",
+    "receipt_conditional_put_exact",
+    "receipt_vertex_delete_exact",
+    "receipt_edge_delete_exact",
+    "receipt_contribution_add_after_delete",
+    "receipt_nonfinite_derived_float32",
+    "receipt_committed_response_loss",
+    "receipt_real_sigkill_sqlite_reopen",
+    "receipt_relaunch_status_first_no_resend",
+    "receipt_radio_foreground_recovery",
+    "android_doze_like_pause",
+})
 
 
 def utc(when):
@@ -65,6 +79,29 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
             "scenarios": sorted(SCENARIOS), "result": "passed",
         }
         return marker, record
+
+    def final_fixture(self, platform="android"):
+        marker, record = self.fixture(platform)
+        scenarios = (FINAL_SCENARIOS - {"android_doze_like_pause"}) | {
+            "ios_local_network_privacy_denial_retry"
+        } if platform == "ios" else FINAL_SCENARIOS
+        marker["schema"] = 2
+        marker["target"] = attestation.RECEIPT_TARGET
+        marker["completedScenarios"] = sorted(scenarios)
+        marker["restart"] = {
+            "preparedAt": utc(self.started + timedelta(seconds=30)),
+            "resumedAt": utc(self.started + timedelta(seconds=60)),
+            "processChanged": True,
+        }
+        record["application"]["target"] = attestation.RECEIPT_TARGET
+        record["scenarios"] = sorted(scenarios)
+        record["network"] = {
+            "transport": "Connect/HTTPS",
+            "authenticated": True,
+            "platformTrustedTls": True,
+            "fault": "committed-response-socket-drop",
+        }
+        return marker, record, scenarios
 
     def validate(self, marker, record, **overrides):
         self.marker_path.write_text(json.dumps(marker))
@@ -411,6 +448,105 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
                 attestation.main()
             capture.assert_not_called()
         self.assertEqual(rejected.exception.code, 2)
+
+    def test_physical_restart_pair_requires_exact_installed_bytes_on_both_phones(self):
+        for platform in ("android", "ios"):
+            with self.subTest(platform=platform):
+                marker, record, scenarios = self.final_fixture(platform)
+                digest = self.validate(
+                    marker, record,
+                    target=attestation.RECEIPT_TARGET,
+                    required_scenarios=scenarios,
+                    platform=platform,
+                )
+                self.assertEqual(digest, marker["installedBinarySha256"])
+                self.assertEqual(
+                    attestation.validate_archived_receipt_evidence(
+                        self.marker_path, self.record_path, tested_commit=COMMIT,
+                        platform=platform, required_scenarios=scenarios, now=self.now,
+                    ),
+                    digest,
+                )
+
+    def test_physical_release_rejects_decorative_or_foreign_restart(self):
+        for change in (
+            lambda m, r: m.update(schema=1),
+            lambda m, r: m.pop("restart"),
+            lambda m, r: m["restart"].update(processChanged=False),
+            lambda m, r: m["restart"].update(resumedAt=m["restart"]["preparedAt"]),
+            lambda m, r: m.update(status="running", phase="awaiting_sigkill"),
+            lambda m, r: m["completedScenarios"].remove("receipt_real_sigkill_sqlite_reopen"),
+            lambda m, r: r["scenarios"].remove("receipt_untrusted_tls_rejected"),
+            lambda m, r: r["network"].update(platformTrustedTls=False),
+            lambda m, r: r["network"].update(fault="synthetic-response"),
+            lambda m, r: m.update(testedCommit="f" * 40),
+            lambda m, r: r.update(testedCommit="f" * 40),
+            lambda m, r: m.update(platform="ios"),
+            lambda m, r: r.update(platform={"kind": "physical-ios"}),
+            lambda m, r: m.update(target=TARGET),
+            lambda m, r: r["application"].update(binarySha256="f" * 64),
+            lambda m, r: m.update(runId="c" * 32),
+            lambda m, r: r["application"].update(target=TARGET),
+        ):
+            with self.subTest(change=change):
+                marker, record, scenarios = self.final_fixture()
+                change(marker, record)
+                with self.assertRaises(ValueError):
+                    self.validate(
+                        marker, record,
+                        target=attestation.RECEIPT_TARGET,
+                        required_scenarios=scenarios,
+                    )
+
+    def test_archive_rejects_marker_replay_or_duplicate_json_fields(self):
+        marker, record, scenarios = self.final_fixture()
+        self.validate(
+            marker, record, target=attestation.RECEIPT_TARGET,
+            required_scenarios=scenarios,
+        )
+        self.marker_path.write_text(
+            self.marker_path.read_text().replace(
+                '"processChanged": true',
+                '"processChanged": false, "processChanged": true', 1,
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate receipt JSON field"):
+            attestation.validate_archived_receipt_evidence(
+                self.marker_path, self.record_path, tested_commit=COMMIT,
+                platform="android", required_scenarios=scenarios, now=self.now,
+            )
+        self.marker_path.write_text(json.dumps(marker))
+        record["network"]["topology"] = "https://private.example"
+        with self.assertRaises(ValueError):
+            self.validate(
+                marker, record, target=attestation.RECEIPT_TARGET,
+                required_scenarios=scenarios,
+            )
+
+    def test_archived_receipt_is_not_a_capture_time_bypass(self):
+        marker, record, scenarios = self.final_fixture()
+        age = timedelta(days=5)
+        marker["startedAt"] = utc(self.started - age)
+        marker["finishedAt"] = utc(self.finished - age)
+        marker["restart"]["preparedAt"] = utc(self.started + timedelta(seconds=30) - age)
+        marker["restart"]["resumedAt"] = utc(self.started + timedelta(seconds=60) - age)
+        record["runStartedAt"] = utc(self.run_start - age)
+        record["recordedAt"] = utc(self.recorded - age)
+        self.marker_path.write_text(json.dumps(marker))
+        self.record_path.write_text(json.dumps(record))
+        self.assertEqual(
+            attestation.validate_archived_receipt_evidence(
+                self.marker_path, self.record_path, tested_commit=COMMIT,
+                platform="android", required_scenarios=scenarios, now=self.now,
+            ),
+            marker["installedBinarySha256"],
+        )
+        with self.assertRaisesRegex(ValueError, "stale for capture-time"):
+            self.validate_files(
+                target=attestation.RECEIPT_TARGET,
+                required_scenarios=scenarios,
+                run_started_at=record["runStartedAt"],
+            )
 
 
 if __name__ == "__main__":

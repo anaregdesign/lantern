@@ -432,21 +432,23 @@ the example above, plus `platform_trusted_tls`, `untrusted_tls_rejection`,
 not planned work. Keep endpoints, IP addresses, certificates, tokens, device
 identifiers, and raw traces out of the files.
 
-Commit **only** these evidence files (and an optional README in the same
-directory) as the immediate child of the tested code commit. Tag that child.
-The release gate requires its parent to equal all four `testedCommit` fields and
-rejects every other changed path. It also compares toolchain/package identity
-to the tag's Android/iOS simulator manifests from the current workflow attempt.
-This proves the tagged code is
-the exact code tested on devices while allowing the evidence to be checked in
-without a self-referential Git SHA.
+The release gate now also requires a **separate physical receipt target** on
+each platform: `integration_test/physical_receipt_matrix_test.dart`. Its
+`android-receipt.json` and `ios-receipt.json` records must each pair with
+`android-receipt-marker.json` and `ios-receipt-marker.json`, respectively.
+The signed binary and two-process marker have their own run ID/hash and cannot
+be inferred from the smoke or CDC runs. Follow the
+[receipt attestation runbook](receipt-attestation.md) for the exact per-platform
+12-scenario matrix, trusted HTTPS response-drop fixture, actual SIGKILL/relaunch
+protocol, capture-time installed-byte check, and private signed-original
+custody. Those operations have **not** been performed by the source change.
 
-## Receipt attestation preparation (not release-enabled)
-
-The separate [receipt attestation runbook](receipt-attestation.md) describes
-the reusable on-device receipt marker, installed Android APK / iOS
-`App.framework/App` digest, nonqualifying native probe, and opt-in validator
-prepared for #1449. The four smoke/CDC records and the release gate above
-remain unchanged. No receipt scenario target or physical receipt qualification
-exists yet; #1398 must add and run the actual assertions before #1399 may
-require receipt evidence at release time.
+Commit **only** these eight content-free evidence files (and an optional
+README in the same directory) as the immediate child of the tested code
+commit. Tag that child only after independent validation of both physical
+receipt runs and approved private custody. The release gate requires its
+parent to equal all eight `testedCommit` fields and rejects every other
+changed path. It also compares smoke/CDC toolchain/package identity to the
+tag's same-attempt Android/iOS simulator manifests. This binds the tag to
+the tested code without a self-referential Git SHA; archived public
+marker/record pairs alone cannot prove possession of signed originals.

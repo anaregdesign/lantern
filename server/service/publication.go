@@ -14,6 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/prototime"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -340,6 +341,106 @@ func validateGraphEffectPublicationShape(m *pb.Mutation) error {
 	return err
 }
 
+func checkedVertexExpiration(vertex *pb.Vertex) (time.Time, error) {
+	expiration, err := prototime.CheckedExpiration(vertex.GetExpiration())
+	if err != nil {
+		return time.Time{}, err
+	}
+	if value, ok := vertex.GetValue().(*pb.Vertex_Timestamp); ok {
+		if value == nil || value.Timestamp == nil {
+			return time.Time{}, errors.New("vertex timestamp value is nil")
+		}
+		if err := value.Timestamp.CheckValid(); err != nil {
+			return time.Time{}, fmt.Errorf("invalid vertex timestamp value: %w", err)
+		}
+	}
+	return expiration, nil
+}
+
+// validateGraphMutationTimeFields runs before any graph, origin, or WAL
+// mutation. Receipt envelopes validate their own original items and effects.
+func validateGraphMutationTimeFields(m *pb.Mutation) error {
+	if m == nil || m.GetOp() == nil {
+		return nil
+	}
+	var vertices []*pb.Vertex
+	var edges []*pb.Edge
+	var name string
+	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_PutVertex:
+		name = "PutVertex"
+		if op != nil {
+			vertices = []*pb.Vertex{op.PutVertex.GetVertex()}
+		}
+	case *pb.MutationOp_PutVertices:
+		name = "PutVertices"
+		if op != nil {
+			vertices = op.PutVertices.GetVertices()
+		}
+	case *pb.MutationOp_ReplicatedPutVertices:
+		if op != nil && op.ReplicatedPutVertices != nil {
+			for i, entry := range op.ReplicatedPutVertices.GetEntries() {
+				if entry == nil || entry.GetLive() == nil {
+					continue
+				}
+				if _, err := checkedVertexExpiration(entry.GetLive()); err != nil {
+					return fmt.Errorf("ReplicatedPutVertices entry %d: %w", i, err)
+				}
+			}
+		}
+		return nil
+	case *pb.MutationOp_PutEdge:
+		name = "PutEdge"
+		if op != nil {
+			edges = []*pb.Edge{op.PutEdge.GetEdge()}
+		}
+	case *pb.MutationOp_PutEdges:
+		name = "PutEdges"
+		if op != nil {
+			edges = op.PutEdges.GetEdges()
+		}
+	case *pb.MutationOp_ReplicatedPutEdges:
+		if op != nil && op.ReplicatedPutEdges != nil {
+			for i, entry := range op.ReplicatedPutEdges.GetEntries() {
+				if entry == nil || entry.GetLive() == nil {
+					continue
+				}
+				if _, err := prototime.CheckedExpiration(entry.GetLive().GetExpiration()); err != nil {
+					return fmt.Errorf("ReplicatedPutEdges entry %d: %w", i, err)
+				}
+			}
+		}
+		return nil
+	case *pb.MutationOp_AddEdge:
+		name = "AddEdge"
+		if op != nil {
+			edges = []*pb.Edge{op.AddEdge.GetEdge()}
+		}
+	case *pb.MutationOp_AddEdges:
+		name = "AddEdges"
+		if op != nil {
+			edges = op.AddEdges.GetEdges()
+		}
+	}
+	for i, vertex := range vertices {
+		if vertex == nil {
+			continue
+		}
+		if _, err := checkedVertexExpiration(vertex); err != nil {
+			return fmt.Errorf("%s vertex %d: %w", name, i, err)
+		}
+	}
+	for i, edge := range edges {
+		if edge == nil {
+			continue
+		}
+		if _, err := prototime.CheckedExpiration(edge.GetExpiration()); err != nil {
+			return fmt.Errorf("%s edge %d: %w", name, i, err)
+		}
+	}
+	return nil
+}
+
 func maximalGraphEffectPublication(m *pb.Mutation) (mutationlog.MutationOp, error) {
 	var effect mutationlog.MutationOp
 	switch {
@@ -617,11 +718,8 @@ func validateDurableEdgeBatch(name string, edges []*pb.Edge) error {
 }
 
 func validateDurableGraphExpiration(name string, expiration *timestamppb.Timestamp) error {
-	if expiration == nil {
-		return nil
-	}
-	if err := expiration.CheckValid(); err != nil {
-		return fmt.Errorf("%s has invalid expiration: %w", name, err)
+	if _, err := prototime.CheckedExpiration(expiration); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }

@@ -103,13 +103,31 @@ A chunked plural logical call may still issue multiple RPCs.
 Automatic IDs do not turn two application calls into one operation and do not
 survive process restart. This package does not implement an offline queue. A
 contribution ID deduplicates only while the server retains that contribution.
-The published `lantern_client_offline` 0.3.0 package admits Put only; the
-unpublished 0.4.0 candidate adds receipt-backed conditional Put, exact Delete,
-and contribution-keyed Add with status-first reconciliation.
+
+**Hosted 0.3.1 retry caveat (#1471):** With `retryPolicy` configured, a
+receipt-less Add carrying IDs (including `idempotentAdds` IDs) is eligible for
+automatic retry. An intervening Delete or expiry can erase dedup evidence, so
+the retried Add may execute again with a different result. Do not rely on
+`idempotentAdds` plus automatic retry to recover the original Add result;
+use receipt-backed Add/status on a certified endpoint. The retry-policy fix
+is pending #1471 and is not in the published parent.
+
+The hosted `lantern_client_offline` 0.3.0 outbox admits Put only. Merged
+offline 0.4.0 source separately implements receipt-backed conditional Vertex
+Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add; it is not a
+published or qualified receipt release. Final #1399 performance, archive,
+and physical evidence remain open (#1449's generic capture is not device
+evidence). The opt-in online APIs described below are hosted in
+`lantern_client 0.3.1` on pub.dev; its published archive passed exact-content
+verification. Offline 0.4.0 source declares `lantern_client: ^0.3.1`;
+before its publication, resolve the offline candidate archive against
+that hosted parent outside the checkout and without a path override.
 
 `addDecayingEdge` expands a geometric curve into at most 16 staggered-TTL
 contributions whose initial live sum is exact. With `idempotentAdds` enabled,
-the entire expanded call is also safe against an ambiguous response loss.
+its contribution IDs stay stable across retries within that logical call
+while the contributions remain retained; it cannot recover an original
+result after Delete or expiry.
 
 ## Bounded online mutation receipts
 
@@ -419,7 +437,7 @@ secure endpoint configuration, app/screen lifecycle ownership, bounded paging,
 incremental search, traversal, typed failure states, and the physical-device
 smoke checklist. The full app is a repository integration fixture rather than
 part of the `lantern_client` publish archive because it also exercises the
-unpublished offline child by path. The archive retains a standalone online
+separate offline child by path. The archive retains a standalone online
 example while remaining dependency-closed. The core SDK has no implicit offline
 cache or background-delivery promise. The accepted
 [offline Repository and package contract](https://github.com/anaregdesign/lantern/blob/main/docs/decisions/0002-dart-offline-repository-contract.md)

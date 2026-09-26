@@ -19,6 +19,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/edgeweight"
+	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
 const receiptSnapshotMaxFrameBytes = 8 << 20
@@ -541,7 +542,7 @@ func validateReceiptSnapshotGraphBody(
 			marker := entry.VertexTombstone
 			_, ok := bounds.parse(marker.GetHlc())
 			if marker == nil || marker.GetKey() == "" || !ok ||
-				!validReceiptSnapshotTimestamp(marker.GetExpiration()) {
+				!validReceiptSnapshotTombstoneExpiration(marker.GetExpiration()) {
 				return fmt.Errorf("invalid vertex tombstone")
 			}
 			if _, exists := vertexTombstones[marker.GetKey()]; exists {
@@ -556,7 +557,7 @@ func validateReceiptSnapshotGraphBody(
 			stamp, ok := bounds.parse(marker.GetHlc())
 			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" ||
 				!ok ||
-				!validReceiptSnapshotTimestamp(marker.GetExpiration()) {
+				!validReceiptSnapshotTombstoneExpiration(marker.GetExpiration()) {
 				return fmt.Errorf("invalid edge tombstone")
 			}
 			key := receiptSnapshotEdgeKey{marker.GetTail(), marker.GetHead()}
@@ -650,8 +651,13 @@ func validReceiptSnapshotTimestamp(stamp *timestamppb.Timestamp) bool {
 	return stamp != nil && stamp.CheckValid() == nil
 }
 
+func validReceiptSnapshotTombstoneExpiration(stamp *timestamppb.Timestamp) bool {
+	return validReceiptSnapshotTimestamp(stamp) && stamp.AsTime().After(time.Unix(0, 0))
+}
+
 func validOptionalReceiptSnapshotTimestamp(stamp *timestamppb.Timestamp) bool {
-	return stamp == nil || stamp.CheckValid() == nil
+	_, err := prototime.CheckedExpiration(stamp)
+	return err == nil
 }
 
 func validReceiptSnapshotVertexValue(vertex *pb.Vertex) bool {

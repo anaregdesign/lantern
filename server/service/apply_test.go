@@ -2040,6 +2040,130 @@ func TestApplyMutation_BatchBornExpiredAlignment(t *testing.T) {
 	}
 }
 
+func TestApplyMutation_EpochRangeAndInvalidTimestamps(t *testing.T) {
+	origin := bytes16("epoch-ttl")
+	mutation := func(op *pb.MutationOp) *pb.Mutation {
+		return &pb.Mutation{
+			Seq: 1, Origin: origin[:], Hlc: newHLC(time.Now().UnixNano(), origin), Op: op,
+		}
+	}
+	operations := []struct {
+		name string
+		make func(*timestamppb.Timestamp) *pb.MutationOp
+	}{
+		{"PutVertices", func(exp *timestamppb.Timestamp) *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{
+				Vertices: []*pb.Vertex{{Key: "valid"}, {Key: "target", Expiration: exp}},
+			}}}
+		}},
+		{"ReplicatedPutVertices", func(exp *timestamppb.Timestamp) *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{
+				Entries: []*pb.ReplicatedPutVertex{
+					{Outcome: &pb.ReplicatedPutVertex_Live{Live: &pb.Vertex{Key: "valid"}}},
+					{Outcome: &pb.ReplicatedPutVertex_Live{Live: &pb.Vertex{Key: "target", Expiration: exp}}},
+				},
+			}}}
+		}},
+		{"PutEdges", func(exp *timestamppb.Timestamp) *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_PutEdges{PutEdges: &pb.PutEdgesRequest{
+				Edges: []*pb.Edge{
+					{Tail: "valid", Head: "edge", Weight: 1},
+					{Tail: "tail", Head: "head", Weight: 1, Expiration: exp},
+				},
+			}}}
+		}},
+		{"ReplicatedPutEdges", func(exp *timestamppb.Timestamp) *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{
+				Entries: []*pb.ReplicatedPutEdge{
+					{Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "valid", Head: "edge", Weight: 1}}},
+					{Outcome: &pb.ReplicatedPutEdge_Live{Live: &pb.Edge{Tail: "tail", Head: "head", Weight: 1, Expiration: exp}}},
+				},
+			}}}
+		}},
+		{"AddEdges", func(exp *timestamppb.Timestamp) *pb.MutationOp {
+			return &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{
+				Edges: []*pb.Edge{
+					{Tail: "valid", Head: "edge", Weight: 1},
+					{Tail: "tail", Head: "head", Weight: 1, Expiration: exp},
+				},
+			}}}
+		}},
+	}
+	for _, expiration := range []struct {
+		name  string
+		stamp *timestamppb.Timestamp
+	}{
+		{"epoch", timestamppb.New(time.Unix(0, 0).UTC())},
+		{"pre-epoch", timestamppb.New(time.Unix(-1, 0).UTC())},
+		{"positive fractional epoch", timestamppb.New(time.Unix(0, 500_000_000).UTC())},
+	} {
+		for _, operation := range operations {
+			t.Run(expiration.name+"/"+operation.name, func(t *testing.T) {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+				svc := NewLanternService(cache)
+				if err := svc.ApplyMutation(t.Context(), mutation(operation.make(expiration.stamp))); err != nil {
+					t.Fatal(err)
+				}
+				if _, live := cache.GetVertex("target"); live {
+					t.Fatal("remote epoch-range vertex became live")
+				}
+				if _, live := cache.GetWeight("tail", "head"); live {
+					t.Fatal("remote epoch-range edge became live")
+				}
+				if _, live := cache.GetVertex("valid"); !live {
+					t.Fatal("remote batch lost the valid entry")
+				}
+			})
+		}
+	}
+
+	for _, bad := range []struct {
+		name  string
+		stamp *timestamppb.Timestamp
+	}{
+		{"explicit Go zero", timestamppb.New(time.Time{})},
+		{"invalid seconds", &timestamppb.Timestamp{Seconds: 253402300800}},
+		{"invalid nanos", &timestamppb.Timestamp{Nanos: -1}},
+	} {
+		for _, operation := range operations {
+			t.Run(bad.name+"/"+operation.name, func(t *testing.T) {
+				cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+				log := mutationlog.New(mutationlog.Options{Capacity: 8})
+				t.Cleanup(func() { _ = log.Close() })
+				svc := NewLanternService(cache).
+					WithReplication(log, hlc.New(hlc.NodeID{0x81}, hlc.Options{}), nil)
+				err := svc.ApplyMutation(t.Context(), mutation(operation.make(bad.stamp)))
+				if connect.CodeOf(err) != connect.CodeInvalidArgument {
+					t.Fatalf("invalid remote timestamp = %v, want InvalidArgument", err)
+				}
+				if _, live := cache.GetVertex("valid"); live {
+					t.Fatal("invalid remote batch partially applied a vertex")
+				}
+				if _, live := cache.GetWeight("valid", "edge"); live {
+					t.Fatal("invalid remote batch partially applied an edge")
+				}
+				if svc.LocalSeq(origin) != 0 || log.Len() != 0 {
+					t.Fatal("invalid remote batch advanced origin cursor or relay log")
+				}
+			})
+		}
+	}
+
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	svc := NewLanternService(cache)
+	err := svc.ApplyMutation(t.Context(), mutation(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{
+		PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "value", Value: &pb.Vertex_Timestamp{
+			Timestamp: &timestamppb.Timestamp{Seconds: 253402300800},
+		}}},
+	}}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("invalid remote value timestamp = %v, want InvalidArgument", err)
+	}
+	if _, live := cache.GetVertex("value"); live {
+		t.Fatal("invalid remote value timestamp entered graph")
+	}
+}
+
 func TestApplyMutation_TombstoneClampRejectHook(t *testing.T) {
 	exp := timestamppb.New(time.Now().Add(time.Hour))
 	origin := bytes16("origin-A")
