@@ -104,8 +104,8 @@ Automatic IDs do not turn two application calls into one operation and do not
 survive process restart. This package does not implement an offline queue. A
 contribution ID deduplicates only while the server retains that contribution.
 The experimental `lantern_client_offline` package therefore admits Put only;
-durable Add remains disabled until #1115 provides server-authoritative operation
-receipts and matching TTL/response-loss evidence.
+durable Add remains disabled until its client layer adopts the certified
+receipt family.
 
 `addDecayingEdge` expands a geometric curve into at most 16 staggered-TTL
 contributions whose initial live sum is exact. With `idempotentAdds` enabled,
@@ -113,11 +113,12 @@ the entire expanded call is also safe against an ambiguous response loss.
 
 ## Bounded online mutation receipts
 
-Receipt-bearing Vertex Put, exact Vertex Delete, and Edge Delete are explicit
-APIs alongside the existing receipt-less methods. Existing methods retain
-their established retry and ambiguous-result behavior. Edge Add remains
-unavailable until its canonical receipt schema lands, and the online package
-does not persist receipt state or enable offline receipt mutations.
+Receipt-bearing Vertex Put, exact Vertex Delete, Edge Delete, and
+contribution-keyed Edge Add are explicit APIs alongside the existing
+receipt-less methods. Existing methods retain their established retry and
+ambiguous-result behavior. Receipt-bearing Add requires a distinct explicit,
+nonzero 24-byte contribution ID for every item and returns the exact original
+effective weight. The online package does not persist receipt state.
 
 Fetch capability from the target endpoint, mint one immutable context, persist
 its mutation kind plus exact operation/group/endpoint bytes if recovery must
@@ -181,7 +182,9 @@ IDs, mutation-family capability, and request-index alignment before network
 I/O. Vertex Put supports the same `ifAbsent` intent as its receipt-less
 counterpart and returns immutable per-item `PutOutcome` values; receipt-bearing
 Vertex Delete preserves an explicit result for every request index, including
-`false`.
+`false`. Receipt-bearing Edge Add preserves every request-index-aligned
+effective weight, including a born-expired `0`, and rejects missing, duplicate,
+zero, or wrong-sized contribution IDs before network I/O.
 
 With `RetryPolicy` configured, a response-loss retry reuses the exact context
 only after a read-only capability check confirms the same deployment epoch,
@@ -192,7 +195,8 @@ capability, removed family support, changed continuity, an exhausted ambiguous
 attempt, or an untrusted response throws `ReceiptReconciliationException` with
 the exact context for status lookup. Confirmed status exposes a sealed
 `MutationReceipt` as `VertexPutReceipt`, `VertexDeleteReceipt`, or
-`EdgeDeleteReceipt`. `notYetObserved` is not proof of non-execution, and
+`EdgeDeleteReceipt`, or `EdgeAddReceipt`. `notYetObserved` is not proof of
+non-execution, and
 `noLongerProvable` forbids automatic mutation replay.
 
 ## Cursor-paged mobile lists

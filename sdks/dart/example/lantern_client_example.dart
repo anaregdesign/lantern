@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 
@@ -27,6 +28,7 @@ Future<void> main() async {
       if (!supported.containsAll({
         ReceiptMutationKind.vertexPut,
         ReceiptMutationKind.vertexDelete,
+        ReceiptMutationKind.edgeAdd,
       })) {
         return;
       }
@@ -41,6 +43,22 @@ Future<void> main() async {
         context: putContext,
       );
       stdout.writeln('receipt Put outcome: ${put.outcome}');
+
+      final addContext = client.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeAdd,
+        itemCount: 1,
+      );
+      final add = await client.addEdgeWithReceipt(
+        EdgeInput(
+          tail: 'user:42',
+          head: 'group:receipt-example',
+          weight: 1,
+          contribId: Uint8List(24)..[23] = 1,
+        ),
+        context: addContext,
+      );
+      stdout.writeln('receipt Add effective weight: ${add.effectiveWeight}');
 
       final receiptContext = client.mintReceiptContext(
         capability: capability,

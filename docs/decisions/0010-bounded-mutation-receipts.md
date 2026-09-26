@@ -965,7 +965,7 @@ alone do not fix the graph history. #1282's graph-before-relay retry rule is
 not itself sufficient for receipts: the receipt implementation must strengthen
 that seam to an atomic graph/receipt/relay publication. #1393 and #1394 supply
 the replication, Snapshot, backup, and startup continuity prerequisites used
-by #1395 and #1396. Edge Add, Edge Delete, conditional Vertex Put, and exact
+by #1395, #1396, and #1397. Edge Add, Edge Delete, conditional Vertex Put, and exact
 Vertex Delete now satisfy the public vertical-slice gate, including real Connect/h2c
 response-loss, lag, capacity, retention, intent-conflict, transport-bound,
 token-rotation, and fail-closed tests. Put Edge and prefix Delete remain

@@ -147,6 +147,7 @@ void main() {
         ReceiptMutationKind.vertexPut,
         ReceiptMutationKind.vertexDelete,
         ReceiptMutationKind.edgeDelete,
+        ReceiptMutationKind.edgeAdd,
       });
       expect(
         () => capability.supportedMutations.remove(
@@ -398,7 +399,13 @@ void main() {
       );
       await expectLater(
         malformed.getReceiptCapability(),
-        throwsA(isA<LanternInternalException>()),
+        throwsA(
+          isA<LanternInternalException>().having(
+            (error) => error.isSdkProtocolViolation,
+            'isSdkProtocolViolation',
+            isTrue,
+          ),
+        ),
       );
 
       final outOfOrder = _client(
@@ -419,7 +426,38 @@ void main() {
       );
       await expectLater(
         outOfOrder.getReceiptCapability(),
-        throwsA(isA<LanternInternalException>()),
+        throwsA(
+          isA<LanternInternalException>().having(
+            (error) => error.isSdkProtocolViolation,
+            'isSdkProtocolViolation',
+            isTrue,
+          ),
+        ),
+      );
+
+      final serverInternal = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptCapabilityRequest,
+              graph.GetReceiptCapabilityResponse
+            >(
+              LanternService.getReceiptCapability,
+              (request, context) => throw connect.ConnectException(
+                connect.Code.internal,
+                'server internal',
+              ),
+            )
+            .build(),
+      );
+      await expectLater(
+        serverInternal.getReceiptCapability(),
+        throwsA(
+          isA<LanternInternalException>().having(
+            (error) => error.isSdkProtocolViolation,
+            'isSdkProtocolViolation',
+            isFalse,
+          ),
+        ),
       );
 
       final limited = _client(
@@ -559,7 +597,13 @@ void main() {
     );
     await expectLater(
       misaligned.getReceiptStatus(id),
-      throwsA(isA<LanternInternalException>()),
+      throwsA(
+        isA<LanternInternalException>().having(
+          (error) => error.isSdkProtocolViolation,
+          'isSdkProtocolViolation',
+          isTrue,
+        ),
+      ),
     );
 
     final missingResult = _client(
@@ -577,13 +621,20 @@ void main() {
     );
     await expectLater(
       missingResult.getReceiptStatus(id),
-      throwsA(isA<LanternInternalException>()),
+      throwsA(
+        isA<LanternInternalException>().having(
+          (error) => error.isSdkProtocolViolation,
+          'isSdkProtocolViolation',
+          isTrue,
+        ),
+      ),
     );
   });
 
-  test('status decodes typed Vertex Put and Delete receipts', () async {
+  test('status decodes all typed receipt results', () async {
     final putId = _operationId(epoch: 1, random: 1);
     final deleteId = _operationId(epoch: 1, random: 2);
+    final addId = _operationId(epoch: 1, random: 3);
     final client = _client(
       FakeTransportBuilder()
           .unary<
@@ -604,19 +655,30 @@ void main() {
                   deleteId,
                   result: graph.ReceiptResult(deleteVertexExisted: false),
                 ),
+                _confirmedStatus(
+                  addId,
+                  result: graph.ReceiptResult(addEdgeEffectiveWeight: 5),
+                ),
               ],
             ),
           )
           .build(),
     );
 
-    final statuses = await client.getReceiptStatuses([putId, deleteId]);
+    final statuses = await client.getReceiptStatuses([
+      putId,
+      deleteId,
+      addId,
+    ]);
     final put = statuses[0].receipt! as VertexPutReceipt;
     expect(put.mutation, ReceiptMutationKind.vertexPut);
     expect(put.outcome, PutOutcome.conditionNotMet);
     final delete = statuses[1].receipt! as VertexDeleteReceipt;
     expect(delete.mutation, ReceiptMutationKind.vertexDelete);
     expect(delete.existed, isFalse);
+    final add = statuses[2].receipt! as EdgeAddReceipt;
+    expect(add.mutation, ReceiptMutationKind.edgeAdd);
+    expect(add.effectiveWeight, 5);
   });
 
   test('receipt-bearing Vertex Put is plural canonical and exact', () async {
@@ -925,6 +987,224 @@ void main() {
     expect(requests, hasLength(2));
     expect(requests.last.edges, hasLength(1));
   });
+
+  test('receipt-bearing Edge Add is plural canonical and exact', () async {
+    final pluralContext = _receiptContext(
+      count: 2,
+      mutation: ReceiptMutationKind.edgeAdd,
+    );
+    final singularContext = _receiptContext(
+      count: 1,
+      randomStart: 9,
+      mutation: ReceiptMutationKind.edgeAdd,
+    );
+    final requests = <graph.AddEdgesRequest>[];
+    final transport = FakeTransportBuilder()
+        .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+          LanternService.addEdges,
+          (request, context) {
+            requests.add(request.deepCopy());
+            if (request.edges.length == 1) {
+              return graph.AddEdgesResponse(
+                written: 1,
+                effectiveWeights: [0],
+              );
+            }
+            return graph.AddEdgesResponse(
+              written: 2,
+              effectiveWeights: [2, 5],
+            );
+          },
+        )
+        .build();
+    final client = _client(transport);
+
+    final results = await client.addEdgesWithReceipt(
+      [
+        EdgeInput(
+          tail: 'a',
+          head: 'b',
+          weight: 2,
+          contribId: _bytes(24, 5),
+        ),
+        EdgeInput(
+          tail: 'a',
+          head: 'b',
+          weight: 3,
+          contribId: _bytes(24, 6),
+        ),
+      ],
+      context: pluralContext,
+    );
+    expect(results.map((result) => result.edge), [
+      const EdgeRef('a', 'b'),
+      const EdgeRef('a', 'b'),
+    ]);
+    expect(
+      results.map((result) => result.operationId),
+      pluralContext.operationIds,
+    );
+    expect(results.map((result) => result.effectiveWeight), [2, 5]);
+    expect(() => results.add(results.first), throwsUnsupportedError);
+    expect(requests.first.contribIds, [
+      _bytes(24, 5),
+      _bytes(24, 6),
+    ]);
+    expect(
+      requests.first.receiptContext.operationIds,
+      pluralContext.operationIds.map((value) => value.bytes),
+    );
+
+    final singular = await client.addEdgeWithReceipt(
+      EdgeInput(
+        tail: 'x',
+        head: 'y',
+        weight: 1,
+        contribId: _bytes(24, 7),
+      ),
+      context: singularContext,
+    );
+    expect(singular.edge, const EdgeRef('x', 'y'));
+    expect(singular.operationId, singularContext.operationIds.single);
+    expect(singular.effectiveWeight, 0);
+    expect(requests, hasLength(2));
+    expect(requests.last.contribIds.single, _bytes(24, 7));
+  });
+
+  test('receipt-bearing Edge Add rejects contribution IDs before RPC', () async {
+    var calls = 0;
+    final client = _client(
+      FakeTransportBuilder()
+          .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+            LanternService.addEdges,
+            (request, context) {
+              calls++;
+              return graph.AddEdgesResponse();
+            },
+          )
+          .build(),
+    );
+    final context = _receiptContext(
+      count: 1,
+      mutation: ReceiptMutationKind.edgeAdd,
+    );
+
+    for (final contributionId in <Uint8List?>[
+      null,
+      Uint8List(24),
+      _bytes(23, 1),
+      _bytes(25, 1),
+    ]) {
+      await expectLater(
+        client.addEdgeWithReceipt(
+          EdgeInput(
+            tail: 'a',
+            head: 'b',
+            weight: 1,
+            contribId: contributionId,
+          ),
+          context: context,
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+    }
+    await expectLater(
+      client.addEdgesWithReceipt(
+        [
+          EdgeInput(
+            tail: 'a',
+            head: 'b',
+            weight: 1,
+            contribId: _bytes(24, 1),
+          ),
+          EdgeInput(
+            tail: 'b',
+            head: 'c',
+            weight: 2,
+            contribId: _bytes(24, 1),
+          ),
+        ],
+        context: _receiptContext(
+          count: 2,
+          mutation: ReceiptMutationKind.edgeAdd,
+        ),
+      ),
+      throwsA(isA<LanternInvalidArgumentException>()),
+    );
+    await expectLater(
+      client.addEdgeWithReceipt(
+        EdgeInput(
+          tail: 'a',
+          head: 'b',
+          weight: 1,
+          contribId: _bytes(24, 2),
+        ),
+        context: _receiptContext(count: 1),
+      ),
+      throwsA(isA<LanternInvalidArgumentException>()),
+    );
+    expect(calls, 0);
+  });
+
+  test(
+    'Edge Add response loss proves continuity and reuses exact request',
+    () async {
+      final receiptContext = _receiptContext(
+        count: 1,
+        mutation: ReceiptMutationKind.edgeAdd,
+      );
+      final requests = <graph.AddEdgesRequest>[];
+      var addCalls = 0;
+      var capabilityCalls = 0;
+      var tokenCalls = 0;
+      final transport = FakeTransportBuilder()
+          .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+            LanternService.addEdges,
+            (request, context) {
+              addCalls++;
+              requests.add(request.deepCopy());
+              if (addCalls == 1) {
+                throw connect.ConnectException(
+                  connect.Code.unavailable,
+                  'response lost',
+                );
+              }
+              return graph.AddEdgesResponse(
+                written: 1,
+                effectiveWeights: [3],
+              );
+            },
+          )
+          .unary<
+            graph.GetReceiptCapabilityRequest,
+            graph.GetReceiptCapabilityResponse
+          >(LanternService.getReceiptCapability, (request, context) {
+            capabilityCalls++;
+            return _capabilityResponse();
+          })
+          .build();
+      final client = _client(
+        transport,
+        retryPolicy: _fastRetry,
+        tokenProvider: () => 'token-${++tokenCalls}',
+      );
+
+      final result = await client.addEdgeWithReceipt(
+        EdgeInput(
+          tail: 'a',
+          head: 'b',
+          weight: 3,
+          contribId: _bytes(24, 8),
+        ),
+        context: receiptContext,
+      );
+      expect(result.effectiveWeight, 3);
+      expect(addCalls, 2);
+      expect(capabilityCalls, 1);
+      expect(tokenCalls, 3);
+      expect(requests[0].writeToBuffer(), requests[1].writeToBuffer());
+    },
+  );
 
   test(
     'response loss retries only after continuity and reuses context',
@@ -1398,6 +1678,55 @@ void main() {
       );
     },
   );
+
+  test(
+    'malformed successful Edge Add response requires reconciliation',
+    () async {
+      final addContext = _receiptContext(
+        count: 1,
+        mutation: ReceiptMutationKind.edgeAdd,
+      );
+      final malformedResponses = [
+        graph.AddEdgesResponse(
+          written: 1,
+          effectiveWeights: [double.nan],
+        ),
+        graph.AddEdgesResponse(
+          written: 0,
+          effectiveWeights: [1],
+        ),
+      ];
+      for (final response in malformedResponses) {
+        final client = _client(
+          FakeTransportBuilder()
+              .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+                LanternService.addEdges,
+                (request, context) => response,
+              )
+              .build(),
+        );
+
+        await expectLater(
+          client.addEdgeWithReceipt(
+            EdgeInput(
+              tail: 'a',
+              head: 'b',
+              weight: 1,
+              contribId: _bytes(24, 9),
+            ),
+            context: addContext,
+          ),
+          throwsA(
+            isA<ReceiptReconciliationException>().having(
+              (error) => error.context,
+              'context',
+              same(addContext),
+            ),
+          ),
+        );
+      }
+    },
+  );
 }
 
 const RetryPolicy _fastRetry = RetryPolicy(
@@ -1449,6 +1778,7 @@ graph.GetReceiptCapabilityResponse _capabilityResponse({
         graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_PUT_VERTEX,
         graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_VERTEX,
         graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE,
+        graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_ADD_EDGE,
       ],
 );
 

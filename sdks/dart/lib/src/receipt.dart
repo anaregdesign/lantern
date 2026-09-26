@@ -9,7 +9,7 @@ const int _receiptFingerprintLength = 32;
 const int _receiptIntentDigestLength = 32;
 const int _receiptOperationIdVersion = 1;
 const int _receiptStatusBatchSize = 10000;
-const int _receiptVertexMutationBatchSize = 10000;
+const int _receiptMutationBatchSize = 10000;
 const Duration _minimumReceiptRetention = Duration(hours: 1);
 const Duration _maximumReceiptRetention = Duration(days: 30);
 final BigInt _receiptMaxSignedInt64 = BigInt.from(_maxInt64);
@@ -168,6 +168,9 @@ enum ReceiptMutationKind {
 
   /// Exact-result Edge Delete.
   edgeDelete,
+
+  /// Contribution-keyed Edge Add with exact effective-weight results.
+  edgeAdd,
 }
 
 /// Capability information returned by [LanternReceipts.getReceiptCapability].
@@ -376,6 +379,22 @@ final class EdgeDeleteReceipt extends MutationReceipt {
   final bool existed;
 }
 
+/// An exact retained contribution-keyed Edge Add receipt.
+final class EdgeAddReceipt extends MutationReceipt {
+  EdgeAddReceipt._({
+    required super.operationId,
+    required super.groupId,
+    required super.itemIndex,
+    required super.itemCount,
+    required super.intentSha256,
+    required super.deadline,
+    required this.effectiveWeight,
+  }) : super._(mutation: ReceiptMutationKind.edgeAdd);
+
+  /// The edge's effective live weight immediately after the original Add.
+  final double effectiveWeight;
+}
+
 /// A read-only receipt status aligned to one requested operation ID.
 final class ReceiptStatus {
   const ReceiptStatus._({
@@ -410,6 +429,24 @@ final class ReceiptVertexPutResult {
 
   /// The original server-authoritative Put outcome.
   final PutOutcome outcome;
+}
+
+/// An exact, request-index-aligned result from receipt-bearing Edge Add.
+final class ReceiptEdgeAddResult {
+  const ReceiptEdgeAddResult._({
+    required this.edge,
+    required this.operationId,
+    required this.effectiveWeight,
+  });
+
+  /// The requested edge identity.
+  final EdgeRef edge;
+
+  /// The stable operation ID used for this request item.
+  final ReceiptOperationId operationId;
+
+  /// The edge's effective live weight immediately after the original Add.
+  final double effectiveWeight;
 }
 
 /// An exact, request-index-aligned result from receipt-bearing Vertex Delete.
@@ -784,6 +821,116 @@ extension LanternReceipts on LanternClient {
     return results.single;
   }
 
+  /// Additively writes edges with stable receipt and contribution identities.
+  ///
+  /// Every item must carry an explicit, nonzero 24-byte
+  /// [EdgeInput.contribId]. Existing receipt-less [LanternCrud.addEdges]
+  /// behavior, including optional generated contribution IDs, is unchanged.
+  Future<List<ReceiptEdgeAddResult>> addEdgesWithReceipt(
+    Iterable<EdgeInput> edges, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    final input = List<EdgeInput>.unmodifiable(edges);
+    _validateReceiptMutationCall(
+      context: context,
+      expectedMutation: ReceiptMutationKind.edgeAdd,
+      itemCount: input.length,
+      label: 'Edge Add',
+    );
+    final contributionIds = <List<int>>[];
+    final seenContributionIds = <String>{};
+    for (var index = 0; index < input.length; index++) {
+      final edge = input[index];
+      if (edge.tail.isEmpty || edge.head.isEmpty) {
+        throw _invalidArgumentException(
+          'receipt Edge Add item $index has an empty endpoint key',
+        );
+      }
+      final contributionId = _validatedContribId(edge);
+      if (contributionId == null) {
+        throw _invalidArgumentException(
+          'receipt Edge Add item $index requires an explicit contribId',
+        );
+      }
+      if (!seenContributionIds.add(base64UrlEncode(contributionId))) {
+        throw _invalidArgumentException(
+          'receipt Edge Add item $index duplicates a contribId',
+        );
+      }
+      contributionIds.add(contributionId);
+    }
+    final expirations = _resolveExpirations(input, _clock().toUtc());
+    final request = $graph.AddEdgesRequest(
+      edges: List<$graph.Edge>.generate(
+        input.length,
+        (index) => _edgeInputToProto(input[index], expirations[index]),
+        growable: false,
+      ),
+      contribIds: contributionIds,
+      receiptContext: _receiptContextToProto(context),
+    );
+    final callOptions = _freezeCallOptions(options);
+    final response = await _invokeReceiptMutation(
+      method: 'AddEdgesWithReceipt',
+      context: context,
+      options: callOptions,
+      call: (raw, headers, signal, onHeader, onTrailer) => raw.addEdges(
+        request,
+        headers: headers,
+        signal: signal,
+        onHeader: onHeader,
+        onTrailer: onTrailer,
+      ),
+    );
+    if (response.effectiveWeights.length != input.length ||
+        response.written != input.length) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Edge Add',
+        detail: 'result alignment does not match the request',
+      );
+    }
+    final results = <ReceiptEdgeAddResult>[];
+    try {
+      for (var index = 0; index < input.length; index++) {
+        results.add(
+          ReceiptEdgeAddResult._(
+            edge: EdgeRef(input[index].tail, input[index].head),
+            operationId: context.operationIds[index],
+            effectiveWeight: _finiteFloatFromProto(
+              response.effectiveWeights[index],
+              'receipt Edge Add effective weight',
+            ),
+          ),
+        );
+      }
+    } on LanternException catch (error) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Edge Add',
+        detail: 'returned an invalid effective weight',
+        cause: error,
+      );
+    }
+    return List<ReceiptEdgeAddResult>.unmodifiable(results);
+  }
+
+  /// Adds one edge by forwarding to plural [addEdgesWithReceipt].
+  Future<ReceiptEdgeAddResult> addEdgeWithReceipt(
+    EdgeInput edge, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async {
+    final results = await addEdgesWithReceipt(
+      <EdgeInput>[edge],
+      context: context,
+      options: options,
+    );
+    return results.single;
+  }
+
   /// Deletes vertices with stable receipt identities and exact original results.
   ///
   /// Unlike receipt-less [LanternCrud.deleteVertices], the plural response is
@@ -1141,7 +1288,8 @@ ReceiptRandomSource _secureReceiptRandomSource() {
 int _receiptMutationItemLimit(ReceiptMutationKind mutation) =>
     switch (mutation) {
       ReceiptMutationKind.vertexPut ||
-      ReceiptMutationKind.vertexDelete => _receiptVertexMutationBatchSize,
+      ReceiptMutationKind.vertexDelete ||
+      ReceiptMutationKind.edgeAdd => _receiptMutationBatchSize,
       ReceiptMutationKind.edgeDelete => LanternCrud.maxBatchSize,
     };
 
@@ -1158,6 +1306,8 @@ Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
         ReceiptMutationKind.vertexDelete,
       $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE =>
         ReceiptMutationKind.edgeDelete,
+      $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_ADD_EDGE =>
+        ReceiptMutationKind.edgeAdd,
       _ => throw _internalSdkException(
         'receipt capability advertised an unknown mutation family',
       ),
@@ -1378,6 +1528,20 @@ MutationReceipt _mutationReceiptFromProto(
         intentSha256: intentSha256,
         deadline: deadline,
         existed: result.deleteEdgeExisted,
+      );
+    case $graph.ReceiptResult_Result.addEdgeEffectiveWeight:
+      _validateReceiptItemLimit(value.itemCount, ReceiptMutationKind.edgeAdd);
+      return EdgeAddReceipt._(
+        operationId: operationId,
+        groupId: groupId,
+        itemIndex: value.itemIndex,
+        itemCount: value.itemCount,
+        intentSha256: intentSha256,
+        deadline: deadline,
+        effectiveWeight: _finiteFloatFromProto(
+          result.addEdgeEffectiveWeight,
+          'receipt Edge Add effective weight',
+        ),
       );
     case $graph.ReceiptResult_Result.notSet:
       throw _internalSdkException(

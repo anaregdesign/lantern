@@ -351,6 +351,7 @@ void main() {
           ReceiptMutationKind.vertexPut,
           ReceiptMutationKind.vertexDelete,
           ReceiptMutationKind.edgeDelete,
+          ReceiptMutationKind.edgeAdd,
         }),
       );
 
@@ -440,6 +441,109 @@ void main() {
           EdgeRef(absentEdge.tail, '$prefix-receipt-edge-changed-head'),
         ], context: edgeDeleteContext),
         throwsA(isA<LanternInvalidArgumentException>()),
+      );
+
+      final addEdge = EdgeRef(
+        '$prefix-receipt-add-tail',
+        '$prefix-receipt-add-head',
+      );
+      final firstContribution = Uint8List(24)..[23] = 1;
+      final secondContribution = Uint8List(24)..[23] = 2;
+      final edgeAddContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeAdd,
+        itemCount: 2,
+      );
+      final added = await receiptClient.addEdgesWithReceipt(
+        [
+          EdgeInput(
+            tail: addEdge.tail,
+            head: addEdge.head,
+            weight: 2,
+            contribId: firstContribution,
+          ),
+          EdgeInput(
+            tail: addEdge.tail,
+            head: addEdge.head,
+            weight: 3,
+            contribId: secondContribution,
+          ),
+        ],
+        context: edgeAddContext,
+      );
+      expect(added.map((result) => result.effectiveWeight), [2, 5]);
+      final edgeAddStatuses = await receiptClient.getReceiptStatuses(
+        edgeAddContext.operationIds,
+      );
+      expect(
+        edgeAddStatuses.map(
+          (status) => (status.receipt! as EdgeAddReceipt).effectiveWeight,
+        ),
+        [2, 5],
+      );
+      final replayedAdd = await receiptClient.addEdgesWithReceipt(
+        [
+          EdgeInput(
+            tail: addEdge.tail,
+            head: addEdge.head,
+            weight: 2,
+            contribId: firstContribution,
+          ),
+          EdgeInput(
+            tail: addEdge.tail,
+            head: addEdge.head,
+            weight: 3,
+            contribId: secondContribution,
+          ),
+        ],
+        context: edgeAddContext,
+      );
+      expect(replayedAdd.map((result) => result.effectiveWeight), [2, 5]);
+      await expectLater(
+        receiptClient.addEdgesWithReceipt(
+          [
+            EdgeInput(
+              tail: addEdge.tail,
+              head: addEdge.head,
+              weight: 2,
+              contribId: firstContribution,
+            ),
+            EdgeInput(
+              tail: addEdge.tail,
+              head: addEdge.head,
+              weight: 4,
+              contribId: secondContribution,
+            ),
+          ],
+          context: edgeAddContext,
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+
+      final expiredAddContext = receiptClient.mintReceiptContext(
+        capability: capability,
+        mutation: ReceiptMutationKind.edgeAdd,
+        itemCount: 1,
+      );
+      final expiredAdd = await receiptClient.addEdgeWithReceipt(
+        EdgeInput(
+          tail: '$prefix-receipt-expired-add-tail',
+          head: '$prefix-receipt-expired-add-head',
+          weight: 9,
+          expiresAt: DateTime.now().toUtc().subtract(
+            const Duration(seconds: 1),
+          ),
+          contribId: Uint8List(24)..[23] = 3,
+        ),
+        context: expiredAddContext,
+      );
+      expect(expiredAdd.effectiveWeight, 0);
+      final expiredAddStatus = await receiptClient.getReceiptStatus(
+        expiredAddContext.operationIds.single,
+      );
+      expect(
+        (expiredAddStatus.receipt! as EdgeAddReceipt).effectiveWeight,
+        0,
       );
 
       final fault = _CommittedResponseLossTransport(
