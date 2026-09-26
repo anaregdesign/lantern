@@ -117,17 +117,20 @@ the full protobuf well-known ranges and duration sign rules, including
 negative durations and pre-epoch **value** timestamps. `Nil(false)` is
 invalid, not a synonym for unset. There is no lossy int/float coercion.
 
-`Never` omits the expiration field; the status-reported default TTL
+`Never` omits the expiration field, mapping to permanent Go zero-time;
+the status-reported default TTL
 does **not** apply to writes ([env.md](env.md)). `After` requires a positive
 duration and is converted **once** to a checked absolute timestamp before
 chunking or any retry. `At` accepts valid protobuf timestamps, including
 pre-epoch, epoch, and positive fractional first-epoch-second deadlines,
 except the exact year-one Go zero-time sentinel
 (`seconds = -62135596800, nanos = 0`). Explicit past deadlines yield a
-born-expired Put rather than permanence. Current server behavior treating
-`Unix() <= 0` as permanent is the **#1469 bug to fix and qualify on the
-real wire before this SDK ships**, not a local `At` guard
-([ADR dependency](decisions/0011-native-rust-sdk.md#exact-values-and-expiration)).
+born-expired Put rather than permanence. The former server behavior treating
+`Unix() <= 0` as permanent was fixed in #1469 (merged as PR #1475).
+Real-wire tests qualify omitted/Go-zero permanence, explicit
+pre-epoch/epoch/fractional first-second born-expired Puts, and explicit
+year-one rejection; do not reintroduce the old local `At` guard
+([ADR rationale](decisions/0011-native-rust-sdk.md#exact-values-and-expiration)).
 After an accepted Put, only `APPLIED_AND_LIVE` can be conservatively
 downgraded to `EXPIRED` when the exact sent deadline has passed. Do not
 replace a server `CONDITION_NOT_MET` or `SUPERSEDED` result with a guess.

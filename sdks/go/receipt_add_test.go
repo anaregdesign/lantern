@@ -211,6 +211,9 @@ func TestAddEdgesWithReceiptReplaysByteIdenticalRequest(t *testing.T) {
 			secondRequest,
 		)
 	}
+	if got := fake.requests[0].GetEdges()[1].GetExpiration(); got != nil {
+		t.Fatalf("permanent receipt Add expiration = %v, want omitted", got)
+	}
 	want := []EdgeAddReceiptResult{
 		{
 			Edge:      EdgeRef{Tail: "a", Head: "b"},

@@ -548,8 +548,8 @@ func (s *LanternService) effectiveTraversalResultLimit(requested int, field stri
 }
 
 // validateExpiration enforces the LANTERN_TOMBSTONE_TTL clamp on
-// caller-supplied per-entry expirations. A zero expiration (the proto
-// default — "no expiration") is always accepted; otherwise the
+// caller-supplied per-entry expirations. An omitted wire expiration maps to
+// Go zero time ("no expiration"); otherwise the
 // expiration must not exceed now + tombstoneTTL, which is the longest
 // window any tombstone could shadow a late replay. The error message
 // names the env var so operators see the knob they need to adjust.
@@ -1111,11 +1111,14 @@ func (s *LanternService) RestoreVertices(ctx context.Context, request *pb.PutVer
 		return nil, ctxToConnect(err)
 	}
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(request.GetVertices()))
-	for _, vertex := range request.GetVertices() {
+	for i, vertex := range request.GetVertices() {
 		if vertex == nil {
 			continue
 		}
-		expiration := prototime.Expiration(vertex.GetExpiration())
+		expiration, err := checkedVertexExpiration(vertex)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("vertices[%d]: %w", i, err))
+		}
 		items = append(items, graphcache.VertexItem[string, *pb.Vertex]{Key: vertex.GetKey(), Value: vertex, Expiration: expiration})
 	}
 	outcomes := s.cache.PutVerticesWithExpirationHLCOutcomes(items, hlc.Timestamp{})
@@ -1135,15 +1138,19 @@ func (s *LanternService) RestoreEdges(ctx context.Context, request *pb.PutEdgesR
 		return nil, ctxToConnect(err)
 	}
 	items := make([]graphcache.EdgeItem[string], 0, len(request.GetEdges()))
-	for _, edge := range request.GetEdges() {
+	for i, edge := range request.GetEdges() {
 		if edge == nil {
 			continue
+		}
+		expiration, err := prototime.CheckedExpiration(edge.GetExpiration())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("edges[%d]: %w", i, err))
 		}
 		items = append(items, graphcache.EdgeItem[string]{
 			Tail:             edge.GetTail(),
 			Head:             edge.GetHead(),
 			Weight:           edge.GetWeight(),
-			Expiration:       prototime.Expiration(edge.GetExpiration()),
+			Expiration:       expiration,
 			DerivedAggregate: !edgeweight.IsFiniteSource(edge.GetWeight()),
 		})
 	}
@@ -1173,8 +1180,11 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 		return s.commitPublicReceiptVertexPut(ctx, request)
 	}
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], 0, len(in))
-	for _, v := range in {
-		expiration := prototime.Expiration(v.GetExpiration())
+	for i, v := range in {
+		expiration, err := checkedVertexExpiration(v)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("vertices[%d]: %w", i, err))
+		}
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
 		}
@@ -1671,7 +1681,10 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		if err := validatePublicEdgeSourceWeight(e, i); err != nil {
 			return nil, err
 		}
-		expiration := prototime.Expiration(e.GetExpiration())
+		expiration, err := prototime.CheckedExpiration(e.GetExpiration())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("edges[%d]: %w", i, err))
+		}
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
 		}
@@ -1799,7 +1812,10 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 		if err := validatePublicEdgeSourceWeight(e, i); err != nil {
 			return nil, err
 		}
-		expiration := prototime.Expiration(e.GetExpiration())
+		expiration, err := prototime.CheckedExpiration(e.GetExpiration())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("edges[%d]: %w", i, err))
+		}
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, err
 		}

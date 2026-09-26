@@ -162,7 +162,8 @@ and [duration](https://protobuf.dev/reference/protobuf/google.protobuf/#duration
 ranges/sign rules. `SystemTime` and nonnegative Rust `Duration` are checked
 convenience conversions only, never the sole stored representation.
 
-`Expiration::Never` emits an absent protobuf expiration. The server's
+`Expiration::Never` emits an absent protobuf expiration, which maps to
+Go's zero-time sentinel and remains permanent. The server's
 reported `LANTERN_DEFAULT_TTL_SECONDS` is **status-only**: it does not create
 an expiration for an RPC write ([env contract](../env.md)); the comment on
 `GetServerStatusResponse.default_ttl` in `graph.proto` is stale. A positive
@@ -174,16 +175,15 @@ before the Unix epoch**: a past deadline, including pre-epoch, epoch, or
 epoch plus fractional nanoseconds, is a valid born-expired Put. The only
 explicit timestamp that must fail locally is the exact protobuf equivalent
 of Go's year-one zero time (`seconds = -62135596800, nanos = 0`), while
-the server still uses that value as its internal omitted-expiration sentinel.
+the server reserves that value for omitted expiration and rejects its
+explicit use.
 This exclusion concerns expiration only, not vertex timestamp **values**.
-The current server's broader `expiration.Unix() <= 0` permanence rule is
-an **existing bug**, not part of the Rust contract
-([current liveness](../../core/cache/cache.go),
-[wire conversion](../../server/internal/prototime/time.go)); #1469 must
-merge and prove the narrower omission/explicit-expiration behavior over the
-real wire before Rust v0.1 ships. If its certified behavior differs, reconcile
-this ADR and the API sketch before #1375 PR/full gate; never compensate by
-silently treating an explicit deadline as `Never`.
+The former `expiration.Unix() <= 0` permanence bug was fixed in #1469
+(merged as PR #1475), with real-wire tests covering omitted/Go-zero
+permanence, explicit pre-epoch/epoch/fractional first-second born-expired
+Puts, and explicit year-one rejection. The SDK must follow that certified
+contract, not restore the old guard or silently treat an explicit deadline
+as `Never`.
 
 Put returns only known, index-aligned server-authoritative outcomes:
 `APPLIED_AND_LIVE`, `EXPIRED`, `CONDITION_NOT_MET`, `SUPERSEDED`. Length drift,
@@ -324,9 +324,9 @@ a replication gate. Static client-side failover, discovery, browser/WASM,
 offline storage, credential persistence, framework adapters, and peer
 administration are separate future decisions.
 
-#1469 must first certify explicit epoch/pre-epoch expiration as born-expired
-and the exact year-one sentinel as rejected. #1379 proves generated-code
-drift, package independence, MSRV, native
+#1469 is merged and real-wire-qualified; its expiration behavior is the
+baseline for the Rust SDK, not a remaining implementation prerequisite.
+#1379 proves generated-code drift, package independence, MSRV, native
 transport features, and a real h2c gRPC smoke. #1376 proves TLS/Health/auth,
 large-message boundaries and typed gRPC search details on the real server.
 #1377 and #1378 add real-wire happy **and** failure/edge coverage for values,

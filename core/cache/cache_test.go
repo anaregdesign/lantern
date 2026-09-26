@@ -499,12 +499,9 @@ func TestCache_OnEvict_Clearing(t *testing.T) {
 	}
 }
 
-// TestIsLiveAt covers the "never expires" sentinels documented in the
-// IsLiveAt godoc. Regression for issue #250: PutVertex without an
-// Expiration was silently stored as already-expired because the volatile
-// entry was constructed from `(*timestamppb.Timestamp)(nil).AsTime()`,
-// which yields Unix(0,0) — not Go zero — so the original Before(now)
-// check evicted it on the next read.
+// TestIsLiveAt distinguishes the omitted-expiration sentinel from explicit
+// epoch-range deadlines, including a positive fractional instant with Unix()
+// equal to zero.
 func TestIsLiveAt(t *testing.T) {
 	now := time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -513,10 +510,12 @@ func TestIsLiveAt(t *testing.T) {
 		want bool
 	}{
 		{"go zero is never-expires", time.Time{}, true},
-		{"unix epoch UTC is never-expires", time.Unix(0, 0).UTC(), true},
-		{"unix epoch local is never-expires", time.Unix(0, 0), true},
-		{"negative unix is never-expires", time.Unix(-1, 0), true},
+		{"unix epoch UTC expires", time.Unix(0, 0).UTC(), false},
+		{"unix epoch local expires", time.Unix(0, 0), false},
+		{"negative unix expires", time.Unix(-1, 0), false},
+		{"positive fractional epoch expires", time.Unix(0, 500_000_000).UTC(), false},
 		{"future is live", now.Add(time.Hour), true},
+		{"deadline at now expires", now, false},
 		{"past is expired", now.Add(-time.Hour), false},
 	}
 	for _, tt := range tests {
@@ -526,24 +525,32 @@ func TestIsLiveAt(t *testing.T) {
 	}
 }
 
-// TestCache_PutWithExpiration_ZeroNeverExpires is the end-to-end regression
-// for #250: a value stored with a zero or unix-epoch expiration must remain
-// retrievable indefinitely, and must survive a Flush pass.
+// The Go zero sentinel survives a sweep; explicit expired deadlines do not.
 func TestCache_PutWithExpiration_ZeroNeverExpires(t *testing.T) {
-	cases := map[string]time.Time{
-		"go-zero":    {},
-		"unix-epoch": time.Unix(0, 0).UTC(),
+	cases := []struct {
+		name string
+		exp  time.Time
+		live bool
+	}{
+		{"go-zero", time.Time{}, true},
+		{"unix-epoch", time.Unix(0, 0).UTC(), false},
+		{"pre-epoch", time.Unix(-1, 0).UTC(), false},
+		{"positive-fractional-epoch", time.Unix(0, 500_000_000).UTC(), false},
+		{"future", time.Now().Add(time.Hour), true},
 	}
-	for name, exp := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			c := NewCache[string, int](time.Minute)
-			c.PutWithExpiration("k", 42, exp)
-			if got, ok := c.Get("k"); !ok || got != 42 {
-				t.Fatalf("Get after put: got=%v ok=%v want=42 true", got, ok)
+			c.PutWithExpiration("k", 42, tc.exp)
+			if got, ok := c.Get("k"); ok != tc.live || (ok && got != 42) {
+				t.Fatalf("Get after put: got=%v ok=%v want live=%v", got, ok, tc.live)
 			}
 			c.Flush()
-			if got, ok := c.Get("k"); !ok || got != 42 {
-				t.Fatalf("Get after flush: got=%v ok=%v want=42 true", got, ok)
+			if got, ok := c.Get("k"); ok != tc.live || (ok && got != 42) {
+				t.Fatalf("Get after flush: got=%v ok=%v want live=%v", got, ok, tc.live)
+			}
+			if _, _, present := c.PeekWithExpiration("k"); present != tc.live {
+				t.Fatalf("physical entry after flush = %v, want %v", present, tc.live)
 			}
 		})
 	}
