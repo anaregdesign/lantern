@@ -109,8 +109,8 @@ placeholder byte variables shown above.
 - an opt-in `lantern_client_offline` screen with immediate cached snapshots,
   locally committed Put pending state, explicit probe/replay, and authorized
   dead-letter inspect/retry/delete controls, plus an independently opt-in
-  foreground identity CDC session. Durable Add remains intentionally absent
-  until the offline package adopts the certified receipt family.
+  foreground identity CDC session. The 0.4.0 offline core candidate adds
+  receipt-backed mutations, but this example screen still exercises Put only.
 
 The app deliberately does not close its app-scoped client on `inactive`, which
 can be caused by a phone call or system dialog. It cancels screen work on

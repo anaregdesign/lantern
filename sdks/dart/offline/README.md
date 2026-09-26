@@ -9,12 +9,15 @@ explicit foreground replay.
 The initial independent `0.2.0` release under
 [#1162](https://github.com/anaregdesign/lantern/issues/1162) used an exact-code
 physical Android/iOS matrix and a one-time interactive OAuth publication.
-The `0.3.0` bridge release is tracked under
-[#1314](https://github.com/anaregdesign/lantern/issues/1314). It depends on
-hosted `lantern_client 0.3.0`; the maintained Flutter example uses local
-overrides for development. The unreleased receipt candidate depends on hosted
-`lantern_client 0.3.1` for its receipt APIs. This does not qualify the offline
-package for publication.
+The published `0.3.0` identity CDC bridge is tracked under
+[#1314](https://github.com/anaregdesign/lantern/issues/1314) and depends on
+hosted `lantern_client 0.3.0`. The `0.4.0` receipt release candidate under
+[#1398](https://github.com/anaregdesign/lantern/issues/1398) and
+[#1115](https://github.com/anaregdesign/lantern/issues/1115) requires hosted
+`lantern_client ^0.3.1`. The maintained Flutter example and unpublished SQLite
+adapter use local path overrides for development. `0.4.0` remains release
+preparation, not a published or physically qualified package; the private
+pub.dev offline OIDC binding also requires package-admin verification.
 
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
@@ -319,5 +322,7 @@ load-balancing endpoint cannot be validated as pinned by this adapter.
 Application configuration must guarantee that routing property. The client
 acquires its configured credentials at each RPC call.
 
-This bridge requires hosted `lantern_client 0.3.0` with `subscribeIdentity`.
-The initial offline `0.2.0` package stays on its published parent constraint.
+The `0.3.0` CDC bridge requires hosted `lantern_client 0.3.0` with
+`subscribeIdentity`; the `0.4.0` receipt candidate requires hosted
+`lantern_client ^0.3.1` for receipt APIs. The initial offline `0.2.0`
+package stays on its published parent constraint.

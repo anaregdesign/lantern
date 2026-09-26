@@ -8,7 +8,7 @@ import release_contract
 
 
 PUBSPEC = b"""name: lantern_client_offline
-version: 0.3.0
+version: 0.4.0
 dependencies:
   lantern_client: ^0.3.1
 dev_dependencies:
@@ -36,7 +36,7 @@ class ReleaseContractTest(unittest.TestCase):
 
     def check(self, files=None):
         archive_file(self.archive, files or self.files)
-        release_contract.validate(self.archive, "0.3.0", "0.3.1")
+        release_contract.validate(self.archive, "0.4.0", "0.3.1")
 
     def test_storage_neutral_archive_passes(self):
         self.check()
@@ -57,7 +57,7 @@ class ReleaseContractTest(unittest.TestCase):
 
     def test_wrong_version_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "version"):
-            self.check(self.files | {"pubspec.yaml": PUBSPEC.replace(b"0.3.0", b"0.1.0", 1)})
+            self.check(self.files | {"pubspec.yaml": PUBSPEC.replace(b"0.4.0", b"0.1.0", 1)})
 
     def test_old_hosted_parent_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "storage-neutral"):
