@@ -471,7 +471,7 @@ jobs:
           dart pub publish -C "$source_dir" --to-archive="$archive"
           version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.3.0
+            --archive "$archive" --version "$version" --parent-version 0.3.1
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)
@@ -1406,7 +1406,7 @@ jobs:
           (cd "$source_dir" && dart pub get --enforce-lockfile)
           dart pub publish -C "$source_dir" --to-archive="$archive"
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.3.0
+            --archive "$archive" --version "$version" --parent-version 0.3.1
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)

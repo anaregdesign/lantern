@@ -12,9 +12,9 @@ physical Android/iOS matrix and a one-time interactive OAuth publication.
 The `0.3.0` bridge release is tracked under
 [#1314](https://github.com/anaregdesign/lantern/issues/1314). It depends on
 hosted `lantern_client 0.3.0`; the maintained Flutter example uses local
-overrides for development. The unreleased receipt foundation requires a
-receipt-capable hosted parent before publication; its hosted dependency
-constraint intentionally remains unchanged until that parent exists.
+overrides for development. The unreleased receipt candidate depends on hosted
+`lantern_client 0.3.1` for its receipt APIs. This does not qualify the offline
+package for publication.
 
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
