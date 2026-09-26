@@ -245,9 +245,29 @@ perf_gate:
 			wantErr: `duplicate JSON key "latency"`,
 		},
 		{
+			name:    "case-variant percentile latency hides slow p99",
+			summary: `{"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500},"latencyDistribution":[{"percentage":99,"latency":600000000,"Latency":1000000}]}`,
+			wantErr: `duplicate JSON key "Latency"`,
+		},
+		{
+			name:    "case-variant percentile percentage hides slow p99",
+			summary: `{"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500},"latencyDistribution":[{"percentage":99,"Percentage":95,"latency":600000000},{"percentage":99,"latency":1000000}]}`,
+			wantErr: `duplicate JSON key "Percentage"`,
+		},
+		{
 			name:    "duplicate top-level count",
 			summary: `{"count":0,"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500},"latencyDistribution":[{"percentage":99,"latency":1000000}]}`,
 			wantErr: `duplicate JSON key "count"`,
+		},
+		{
+			name:    "case-variant top-level count",
+			summary: `{"count":0,"Count":4500,"rps":150,"statusCodeDistribution":{"OK":4500},"latencyDistribution":[{"percentage":99,"latency":1000000}]}`,
+			wantErr: `duplicate JSON key "Count"`,
+		},
+		{
+			name:    "case-variant status distribution hides non-OK",
+			summary: `{"count":4500,"rps":150,"statusCodeDistribution":{"OK":4499,"Unavailable":1},"StatusCodeDistribution":{"OK":4500},"latencyDistribution":[{"percentage":99,"latency":1000000}]}`,
+			wantErr: `duplicate JSON key "StatusCodeDistribution"`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -258,6 +278,13 @@ perf_gate:
 			}
 		})
 	}
+
+	t.Run("distinct status names remain case-sensitive", func(t *testing.T) {
+		writeText(t, filepath.Join(dir, "ghz_steady_0_localhost_6380.json"), `{"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500,"ok":0},"latencyDistribution":[{"percentage":99,"latency":1000000}]}`)
+		if _, err := loadProducerSummary(dir, 0, true); err != nil {
+			t.Fatalf("loadProducerSummary with distinct status keys: %v", err)
+		}
+	})
 }
 
 func TestLoadProducerSummaryRejectsMalformedLatencyDistribution(t *testing.T) {

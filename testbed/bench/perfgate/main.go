@@ -473,7 +473,7 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := rejectDuplicateJSONKeys(decoder); err != nil {
+	if err := rejectDuplicateJSONKeys(decoder, true); err != nil {
 		return ghzSummary{}, fmt.Errorf("invalid producer summary: %w", err)
 	}
 	var raw struct {
@@ -530,7 +530,7 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 	return summary, nil
 }
 
-func rejectDuplicateJSONKeys(decoder *json.Decoder) error {
+func rejectDuplicateJSONKeys(decoder *json.Decoder, structKeys bool) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -554,14 +554,22 @@ func rejectDuplicateJSONKeys(decoder *json.Decoder) error {
 			if _, exists := keys[key]; exists {
 				return fmt.Errorf("duplicate JSON key %q", key)
 			}
+			if structKeys {
+				for seen := range keys {
+					if strings.EqualFold(key, seen) {
+						return fmt.Errorf("duplicate JSON key %q (case-insensitive match for %q)", key, seen)
+					}
+				}
+			}
 			keys[key] = struct{}{}
-			if err := rejectDuplicateJSONKeys(decoder); err != nil {
+			// Only the summary and percentile entries unmarshal into structs; map keys stay case-sensitive.
+			if err := rejectDuplicateJSONKeys(decoder, structKeys && strings.EqualFold(key, "latencyDistribution")); err != nil {
 				return err
 			}
 		}
 	case '[':
 		for decoder.More() {
-			if err := rejectDuplicateJSONKeys(decoder); err != nil {
+			if err := rejectDuplicateJSONKeys(decoder, structKeys); err != nil {
 				return err
 			}
 		}
