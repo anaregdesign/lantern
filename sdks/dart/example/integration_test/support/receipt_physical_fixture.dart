@@ -75,13 +75,11 @@ final class PhysicalReceiptFixture {
   Future<String> token() async {
     final cached = _cachedToken;
     if (cached != null) return cached;
-    final request = await _tokenHttp.getUrl(tokenEndpoint).timeout(
-      const Duration(seconds: 8),
-    );
+    final request = await _tokenHttp
+        .getUrl(tokenEndpoint)
+        .timeout(const Duration(seconds: 8));
     request.persistentConnection = false;
-    final response = await request.close().timeout(
-      const Duration(seconds: 8),
-    );
+    final response = await request.close().timeout(const Duration(seconds: 8));
     if (response.statusCode != HttpStatus.ok) {
       throw StateError('Receipt token fixture rejected authentication');
     }
@@ -105,7 +103,10 @@ final class PhysicalReceiptFixture {
     final request = await _controlHttp.getUrl(
       proxyEndpoint.resolve(_proxyControlPath),
     );
-    request.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${await token()}');
+    request.headers.set(
+      HttpHeaders.authorizationHeader,
+      'Bearer ${await token()}',
+    );
     final response = await request.close();
     if (response.statusCode != HttpStatus.ok) {
       throw StateError('Receipt proxy control is unavailable');
@@ -118,7 +119,10 @@ final class PhysicalReceiptFixture {
     final request = await _controlHttp.postUrl(
       proxyEndpoint.resolve(_proxyControlPath),
     );
-    request.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${await token()}');
+    request.headers.set(
+      HttpHeaders.authorizationHeader,
+      'Bearer ${await token()}',
+    );
     final response = await request.close();
     await response.drain<void>();
     if (response.statusCode != HttpStatus.noContent) {
@@ -145,12 +149,7 @@ final class PhysicalReceiptFixture {
 
 /// Sanitized private proxy counts and ordering, never an operator pass label.
 final class ReceiptProxyTrace {
-  ReceiptProxyTrace._(
-    this.forwarded,
-    this.dropped,
-    this.trace,
-    this.failures,
-  );
+  ReceiptProxyTrace._(this.forwarded, this.dropped, this.trace, this.failures);
 
   final Map<String, int> forwarded;
   final Map<String, int> dropped;
@@ -160,7 +159,11 @@ final class ReceiptProxyTrace {
   static ReceiptProxyTrace parse(Object? decoded) {
     if (decoded is! Map<String, dynamic> ||
         decoded.keys.toSet().difference({
-          'schema', 'forwarded', 'dropped', 'trace', 'failures',
+          'schema',
+          'forwarded',
+          'dropped',
+          'trace',
+          'failures',
         }).isNotEmpty ||
         decoded.length != 5 ||
         decoded['schema'] != 1 ||
@@ -198,8 +201,11 @@ final class ReceiptProxyTrace {
   static Map<String, int> _counts(Map<String, dynamic> value) {
     final result = <String, int>{};
     for (final entry in value.entries) {
-      if (!{'GetReceiptCapability', 'GetReceiptStatuses', ..._receiptMutations}
-              .contains(entry.key) ||
+      if (!{
+            'GetReceiptCapability',
+            'GetReceiptStatuses',
+            ..._receiptMutations,
+          }.contains(entry.key) ||
           entry.value is! int ||
           (entry.value as int) < 0) {
         throw StateError('Receipt proxy counts are invalid');
@@ -243,9 +249,10 @@ final class ReceiptProxyTrace {
     final boundary = trace.indexOf('AwaitingSigkill');
     if (boundary < 0 ||
         trace.lastIndexOf('AwaitingSigkill') != boundary ||
-        trace.sublist(boundary + 1).where(
-          (event) => event == 'GetReceiptStatuses',
-        ).length <
+        trace
+                .sublist(boundary + 1)
+                .where((event) => event == 'GetReceiptStatuses')
+                .length <
             _receiptMutations.length ||
         trace.sublist(boundary + 1).any(_receiptMutations.contains)) {
       throw StateError('Receipt relaunch did not reconcile status first');

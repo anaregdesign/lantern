@@ -52,9 +52,10 @@ final class ReceiptRestartJournal {
         this.requiredCleanups.isEmpty ||
         this.completedScenarios.isEmpty ||
         this.completedScenarios.length >= this.requiredScenarios.length ||
-        !this.completedScenarios.toSet().difference(
-          this.requiredScenarios.toSet(),
-        ).isEmpty) {
+        this.completedScenarios
+            .toSet()
+            .difference(this.requiredScenarios.toSet())
+            .isNotEmpty) {
       throw StateError('Invalid receipt restart handoff');
     }
   }

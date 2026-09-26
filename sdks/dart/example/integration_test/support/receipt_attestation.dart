@@ -291,9 +291,19 @@ class ReceiptAttestation {
     if (decodedMarker is! Map<String, dynamic> ||
         jsonEncode(decodedMarker) != markerText ||
         decodedMarker.keys.toSet().difference({
-          'schema', 'kind', 'contentFree', 'testedCommit', 'target', 'runId',
-          'platform', 'packageId', 'installedBinarySha256', 'startedAt',
-          'completedScenarios', 'status', 'phase',
+          'schema',
+          'kind',
+          'contentFree',
+          'testedCommit',
+          'target',
+          'runId',
+          'platform',
+          'packageId',
+          'installedBinarySha256',
+          'startedAt',
+          'completedScenarios',
+          'status',
+          'phase',
         }).isNotEmpty ||
         decodedMarker.length != 13 ||
         decodedMarker['schema'] != 1 ||
@@ -307,20 +317,28 @@ class ReceiptAttestation {
         decodedMarker['runId'] != runId ||
         decodedMarker['platform'] != handoff.platform ||
         decodedMarker['packageId'] != handoff.packageId ||
-        decodedMarker['installedBinarySha256'] != handoff.installedBinarySha256 ||
+        decodedMarker['installedBinarySha256'] !=
+            handoff.installedBinarySha256 ||
         decodedMarker['startedAt'] != handoff.startedAt.toIso8601String() ||
         decodedMarker['completedScenarios'] is! List<dynamic> ||
         (decodedMarker['completedScenarios'] as List<dynamic>).length !=
             handoff.completedScenarios.length ||
-        (decodedMarker['completedScenarios'] as List<dynamic>).toSet()
-                .difference(handoff.completedScenarios.toSet())
-                .isNotEmpty ||
+        (decodedMarker['completedScenarios'] as List<dynamic>)
+            .toSet()
+            .difference(handoff.completedScenarios.toSet())
+            .isNotEmpty ||
         handoff.testedCommit != testedCommit ||
         handoff.target != target ||
         handoff.runId != runId ||
-        handoff.requiredScenarios.toSet().difference(_requiredScenarios).isNotEmpty ||
+        handoff.requiredScenarios
+            .toSet()
+            .difference(_requiredScenarios)
+            .isNotEmpty ||
         handoff.requiredScenarios.length != _requiredScenarios.length ||
-        handoff.requiredCleanups.toSet().difference(_requiredRestartCleanups).isNotEmpty ||
+        handoff.requiredCleanups
+            .toSet()
+            .difference(_requiredRestartCleanups)
+            .isNotEmpty ||
         handoff.requiredCleanups.length != _requiredRestartCleanups.length ||
         handoff.firstPid == _processId()) {
       throw StateError('Receipt restart identity or phase is invalid');
@@ -357,8 +375,7 @@ class ReceiptAttestation {
     }
     _running = false;
     if (_resumedAt != null &&
-        _registeredRestartCleanups.length !=
-            _requiredRestartCleanups.length) {
+        _registeredRestartCleanups.length != _requiredRestartCleanups.length) {
       failures.add((
         phase: 'incomplete',
         error: StateError('Required restart cleanups were not registered'),

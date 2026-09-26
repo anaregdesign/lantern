@@ -21,5 +21,9 @@ const receiptIosScenario = 'ios_local_network_privacy_denial_retry';
 Set<String> requiredReceiptScenarios(String platform) => switch (platform) {
   'android' => {...receiptCommonScenarios, receiptAndroidScenario},
   'ios' => {...receiptCommonScenarios, receiptIosScenario},
-  _ => throw ArgumentError.value(platform, 'platform', 'Physical device required'),
+  _ => throw ArgumentError.value(
+    platform,
+    'platform',
+    'Physical device required',
+  ),
 };

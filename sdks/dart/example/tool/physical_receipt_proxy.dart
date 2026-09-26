@@ -43,7 +43,11 @@ Future<void> main() async {
       config.listenPort,
       context,
     );
-    final proxy = ReceiptResponseDropProxy(server, config.upstream, config.token);
+    final proxy = ReceiptResponseDropProxy(
+      server,
+      config.upstream,
+      config.token,
+    );
     ProcessSignal.sigint.watch().listen((_) => unawaited(proxy.close()));
     ProcessSignal.sigterm.watch().listen((_) => unawaited(proxy.close()));
     stdout.writeln('RECEIPT_PROXY_READY');
@@ -74,8 +78,12 @@ final class ReceiptProxyConfig {
   static ReceiptProxyConfig parse(String text) {
     final Object? decoded = jsonDecode(text);
     const fields = {
-      'listenHost', 'listenPort', 'certificateChain', 'privateKey',
-      'upstream', 'controlToken',
+      'listenHost',
+      'listenPort',
+      'certificateChain',
+      'privateKey',
+      'upstream',
+      'controlToken',
     };
     if (decoded is! Map<String, dynamic> ||
         decoded.keys.toSet().difference(fields).isNotEmpty ||
@@ -194,9 +202,7 @@ final class ReceiptResponseDropProxy {
           (_dropped[rpc] ?? 0) == 0 &&
           upstreamResponse.statusCode == HttpStatus.ok) {
         _dropped[rpc] = 1;
-        final socket = await request.response.detachSocket(
-          writeHeaders: false,
-        );
+        final socket = await request.response.detachSocket(writeHeaders: false);
         socket.destroy();
         return;
       }
@@ -273,9 +279,16 @@ final class ReceiptResponseDropProxy {
 
   static void _copyHeaders(HttpHeaders source, HttpHeaders target) {
     const ignored = {
-      'connection', 'content-length', 'host', 'keep-alive',
-      'proxy-authenticate', 'proxy-authorization', 'te', 'trailer',
-      'transfer-encoding', 'upgrade',
+      'connection',
+      'content-length',
+      'host',
+      'keep-alive',
+      'proxy-authenticate',
+      'proxy-authorization',
+      'te',
+      'trailer',
+      'transfer-encoding',
+      'upgrade',
     };
     source.forEach((name, values) {
       if (!ignored.contains(name.toLowerCase())) target.set(name, values);

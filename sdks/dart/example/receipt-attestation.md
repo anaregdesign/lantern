@@ -91,6 +91,13 @@ its token at runtime from the BFF. Put all addresses, credentials, device IDs,
 certificates, and private configuration outside this checkout; never publish
 raw commands, logs, or transcripts containing them.
 
+Before requesting physical devices, run the example's
+`test/receipt_attestation_test.dart` and `test/physical_receipt_proxy_test.dart`
+with `flutter test --no-pub`. The proxy unit test uses OpenSSL to generate
+throwaway test-only CA/leaf files in a temporary directory and listens only
+on loopback. It tests TLS trust and committed-response drops but does not
+qualify a physical device or the real signed proxy certificate.
+
 Supply these **private** compile-time defines in `--dart-define-from-file`:
 `LANTERN_RECEIPT_ENDPOINT`, `LANTERN_RECEIPT_PROXY_ENDPOINT`,
 `LANTERN_RECEIPT_UNTRUSTED_ENDPOINT`, `LANTERN_RECEIPT_LAN_ENDPOINT`, and

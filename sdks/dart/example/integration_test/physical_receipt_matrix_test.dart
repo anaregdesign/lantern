@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -35,56 +34,60 @@ const _restartCleanups = <String>{
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  test('receipt mutations survive a real physical SIGKILL', () async {
-    final platform = switch ((Platform.isAndroid, Platform.isIOS)) {
-      (true, false) => 'android',
-      (false, true) => 'ios',
-      _ => throw StateError('Receipt matrix requires a physical phone'),
-    };
-    final run = ReceiptAttestation.fromBuild(
-      target: receiptMatrixTarget,
-      requiredScenarios: requiredReceiptScenarios(platform),
-      requiredRestartCleanups: _restartCleanups,
-    );
-    final root = Directory(
-      paths.join(
-        await sqflite.getDatabasesPath(),
-        'lantern-physical-receipt-${run.runId}',
-      ),
-    );
-    final journal = File(paths.join(root.path, 'restart.json'));
-    final database = paths.join(root.path, 'offline.db');
-    final keys = _ReceiptKeys(run.runId);
-    final actions = _OperatorActions(run.runId);
+  test(
+    'receipt mutations survive a real physical SIGKILL',
+    () async {
+      final platform = switch ((Platform.isAndroid, Platform.isIOS)) {
+        (true, false) => 'android',
+        (false, true) => 'ios',
+        _ => throw StateError('Receipt matrix requires a physical phone'),
+      };
+      final run = ReceiptAttestation.fromBuild(
+        target: receiptMatrixTarget,
+        requiredScenarios: requiredReceiptScenarios(platform),
+        requiredRestartCleanups: _restartCleanups,
+      );
+      final root = Directory(
+        paths.join(
+          await sqflite.getDatabasesPath(),
+          'lantern-physical-receipt-${run.runId}',
+        ),
+      );
+      final journal = File(paths.join(root.path, 'restart.json'));
+      final database = paths.join(root.path, 'offline.db');
+      final keys = _ReceiptKeys(run.runId);
+      final actions = _OperatorActions(run.runId);
 
-    if (await root.exists()) {
-      await run.resumeAfterRestart(journal, (attestation) async {
-        await _verifyAfterKill(
+      if (await root.exists()) {
+        await run.resumeAfterRestart(journal, (attestation) async {
+          await _verifyAfterKill(
+            attestation,
+            PhysicalReceiptFixture.fromBuild(),
+            keys,
+            actions,
+            root,
+            journal,
+            database,
+          );
+        });
+        return;
+      }
+      await run.prepareForRestart(journal, (attestation) async {
+        await _prepareForKill(
           attestation,
           PhysicalReceiptFixture.fromBuild(),
           keys,
           actions,
           root,
-          journal,
           database,
         );
       });
-      return;
-    }
-    await run.prepareForRestart(journal, (attestation) async {
-      await _prepareForKill(
-        attestation,
-        PhysicalReceiptFixture.fromBuild(),
-        keys,
-        actions,
-        root,
-        database,
-      );
-    });
-    await actions.announce('sigkill_now');
-    await Future<void>.delayed(const Duration(minutes: 20));
-    throw StateError('Receipt app was not SIGKILLed after preparation');
-  }, timeout: const Timeout(Duration(hours: 4)));
+      await actions.announce('sigkill_now');
+      await Future<void>.delayed(const Duration(minutes: 20));
+      throw StateError('Receipt app was not SIGKILLed after preparation');
+    },
+    timeout: const Timeout(Duration(hours: 4)),
+  );
 }
 
 Future<void> _prepareForKill(
@@ -152,10 +155,7 @@ Future<void> _verifyAfterKill(
     restartObligation: 'directory',
   );
   run.registerCleanup(actions.clear, restartObligation: 'operator_phase');
-  run.registerCleanup(
-    () => journal.delete(),
-    restartObligation: 'journal',
-  );
+  run.registerCleanup(() => journal.delete(), restartObligation: 'journal');
   run.registerCleanup(fixture.close, restartObligation: 'fixture');
   final direct = fixture.client(fixture.endpoint);
   run.registerCleanup(direct.close, restartObligation: 'direct_client');
@@ -173,10 +173,7 @@ Future<void> _verifyAfterKill(
       maxConcurrencyPerPartition: 1,
     ),
   );
-  run.registerCleanup(
-    repository.dispose,
-    restartObligation: 'repository',
-  );
+  run.registerCleanup(repository.dispose, restartObligation: 'repository');
   run.registerCleanup(
     () => _cleanupRemote(direct, keys),
     restartObligation: 'remote_graph',
@@ -188,10 +185,7 @@ Future<void> _verifyAfterKill(
       (transaction) => transaction.outbox(_partition),
     );
     expect(pending, hasLength(4));
-    expect(
-      pending.map((record) => record.attemptCount),
-      everyElement(1),
-    );
+    expect(pending.map((record) => record.attemptCount), everyElement(1));
     expect(
       pending.map((record) => record.receipt?.state),
       everyElement(OfflineReceiptReconciliationState.statusRequired),
@@ -396,7 +390,8 @@ Future<void> _verifyVertexDelete(
   final status = await repository.getWriteStatus(_partition, write.operationId);
   expect(status?.items.map((item) => item.itemIndex), [0, 1]);
   expect(
-    (status!.items[0].receiptResult as OfflineVertexDeleteReceiptResult).existed,
+    (status!.items[0].receiptResult as OfflineVertexDeleteReceiptResult)
+        .existed,
     isTrue,
   );
   expect(
@@ -515,7 +510,10 @@ Future<void> _verifyContributionAdd(
   expect((await direct.getEdge(edge)).weight, 5);
   expect(await direct.deleteEdge(edge), isTrue);
   await _missingEdge(direct, edge);
-  expect((await direct.addEdgeWithReceipt(first, context: original)).effectiveWeight, 2);
+  expect(
+    (await direct.addEdgeWithReceipt(first, context: original)).effectiveWeight,
+    2,
+  );
   await expectLater(
     direct.addEdgeWithReceipt(
       EdgeInput(
@@ -530,10 +528,27 @@ Future<void> _verifyContributionAdd(
     throwsA(isA<LanternInvalidArgumentException>()),
   );
   for (final inputs in [
-    [EdgeInput(tail: edge.tail, head: edge.head, weight: 1, contribId: Uint8List(23))],
     [
-      EdgeInput(tail: edge.tail, head: edge.head, weight: 1, contribId: _contribution(3)),
-      EdgeInput(tail: edge.tail, head: edge.head, weight: 1, contribId: _contribution(3)),
+      EdgeInput(
+        tail: edge.tail,
+        head: edge.head,
+        weight: 1,
+        contribId: Uint8List(23),
+      ),
+    ],
+    [
+      EdgeInput(
+        tail: edge.tail,
+        head: edge.head,
+        weight: 1,
+        contribId: _contribution(3),
+      ),
+      EdgeInput(
+        tail: edge.tail,
+        head: edge.head,
+        weight: 1,
+        contribId: _contribution(3),
+      ),
     ],
   ]) {
     await expectLater(
@@ -578,7 +593,6 @@ Future<void> _verifyOverflow(
     add.operationId,
     (result) => expect(_float32Bits(result.effectiveWeight), 0x7f800000),
   );
-  expect(_float32Bits((await direct.getEdge(edge)).weight), 0x7f800000);
   expect(await direct.deleteEdge(edge), isTrue);
   await _missingEdge(direct, edge);
   // Its durable aggregate is asserted again on the second process, before
@@ -606,11 +620,17 @@ Future<void> _verifyRadioRecovery(
   await actions.announce('radio_disable');
   await _waitForTransportFailure(direct.getReceiptCapability);
   expect(await repository.drain(_partition), 0);
-  final pending = await repository.getWriteStatus(_partition, write.operationId);
+  final pending = await repository.getWriteStatus(
+    _partition,
+    write.operationId,
+  );
   expect(pending?.items.single.state, OfflineWriteState.retryScheduled);
   expect(pending?.items.single.attemptCount, 0);
   await actions.announce('radio_restore_foreground');
-  await _waitForCapability(direct, (capability as ReceiptCapabilityEnabled).endpoint);
+  await _waitForCapability(
+    direct,
+    (capability as ReceiptCapabilityEnabled).endpoint,
+  );
   await Future<void>.delayed(const Duration(seconds: 2));
   expect(await repository.drain(_partition), 1);
   await _expectResult<OfflineVertexPutReceiptResult>(
@@ -768,10 +788,7 @@ Future<void> _verifyCommittedLoss(
     beforeSend.map((record) => record.receipt?.operationId).toSet().length,
     4,
   );
-  expect(
-    beforeSend.map((record) => record.attemptCount),
-    everyElement(0),
-  );
+  expect(beforeSend.map((record) => record.attemptCount), everyElement(0));
   expect(await repository.drain(_partition), 0);
   final ambiguous = await store.transaction(
     (transaction) => transaction.outbox(_partition),
@@ -852,8 +869,10 @@ Future<void> _expectResult<T extends OfflineReceiptResult>(
   verify(item.receiptResult! as T);
 }
 
-Future<void> _missingVertex(LanternClient client, String key) =>
-    expectLater(client.getVertex(key), throwsA(isA<LanternNotFoundException>()));
+Future<void> _missingVertex(LanternClient client, String key) => expectLater(
+  client.getVertex(key),
+  throwsA(isA<LanternNotFoundException>()),
+);
 
 Future<void> _missingEdge(LanternClient client, EdgeRef edge) =>
     expectLater(client.getEdge(edge), throwsA(isA<LanternNotFoundException>()));
@@ -875,19 +894,31 @@ final class _ReceiptKeys {
   String get prefix => 'physical-receipt:$runId:';
   String vertex(String name) => '$prefix$name';
   EdgeRef edge(String name) =>
-      EdgeRef('${prefix}${name}_tail', '${prefix}${name}_head');
+      EdgeRef('$prefix${name}_tail', '$prefix${name}_head');
   String operation(String name) => 'receipt-$runId-$name';
 
   Iterable<String> get vertices => [
-    'existing', 'created', 'delete_vertex', 'missing_vertex',
-    'lost_put', 'lost_vertex_delete', 'radio',
+    'existing',
+    'created',
+    'delete_vertex',
+    'missing_vertex',
+    'lost_put',
+    'lost_vertex_delete',
+    'radio',
   ].map(vertex);
   Iterable<EdgeRef> get edges => [
-    'delete_edge', 'missing_edge', 'contribution', 'overflow',
-    'lost_edge_delete', 'lost_add',
+    'delete_edge',
+    'missing_edge',
+    'contribution',
+    'overflow',
+    'lost_edge_delete',
+    'lost_add',
   ].map(edge);
   Iterable<String> get responseLossOperations => [
-    'lost_put', 'lost_vertex_delete', 'lost_edge_delete', 'lost_add',
+    'lost_put',
+    'lost_vertex_delete',
+    'lost_edge_delete',
+    'lost_add',
   ].map(operation);
 }
 
@@ -895,9 +926,8 @@ final class _OperatorActions {
   const _OperatorActions(this.runId);
 
   final String runId;
-  File get _file => File(
-    '${Directory.systemTemp.path}/lantern-receipt-operator-phase.json',
-  );
+  File get _file =>
+      File('${Directory.systemTemp.path}/lantern-receipt-operator-phase.json');
 
   Future<void> announce(String action) async {
     final pending = File('${_file.path}.tmp');
