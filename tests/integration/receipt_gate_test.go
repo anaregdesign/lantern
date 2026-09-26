@@ -4624,7 +4624,7 @@ func TestPublicVertexReceipts_RealConnectWire(t *testing.T) {
 }
 
 func TestGoSDKPublicVertexReceipts_RealConnectWire(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	wire := newPublicReceiptWireServer(t, hlc.NodeID{0xc1}, 32, testToken)
@@ -4915,6 +4915,147 @@ func TestGoSDKPublicVertexReceipts_RealConnectWire(t *testing.T) {
 		t.Fatalf("SDK singular Edge Delete status = %+v", singularEdgeStatus)
 	}
 
+	addContext, err := sdk.NewReceiptContext(
+		capability,
+		client.ReceiptMutationAddEdge,
+		2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addContribA, err := sdk.NewContribID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addContribB, err := sdk.NewContribID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addInputs := []client.EdgeAddReceiptInput{
+		{
+			Edge: client.EdgeInput{
+				Tail: "sdk-edge-add", Head: "sdk-edge-add-head", Weight: 2,
+				Expiration: time.Now().Add(time.Hour),
+			},
+			ContribID: addContribA,
+		},
+		{
+			Edge: client.EdgeInput{
+				Tail: "sdk-edge-add", Head: "sdk-edge-add-head", Weight: 3,
+				Expiration: time.Now().Add(time.Hour),
+			},
+			ContribID: addContribB,
+		},
+	}
+	addDropTransport := &dropFirstReceiptResponseTransport{
+		inner:      h2cClient().Transport,
+		pathSuffix: "/AddEdges",
+	}
+	addSDK, err := client.NewLantern(
+		wire.server.url,
+		client.WithHTTPClient(&http.Client{Transport: addDropTransport}),
+		client.WithAuthToken(testToken),
+		client.WithRetry(client.RetryPolicy{
+			MaxAttempts: 2,
+			BaseDelay:   time.Nanosecond,
+			MaxDelay:    time.Nanosecond,
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = addSDK.Close() })
+	addResults, err := addSDK.AddEdgesWithReceipt(ctx, addInputs, addContext)
+	wantAddWeights := []float32{2, 5}
+	if err != nil || !addDropTransport.dropped.Load() ||
+		len(addResults) != len(wantAddWeights) {
+		t.Fatalf(
+			"SDK Add replay = (%+v, %v), dropped=%t",
+			addResults,
+			err,
+			addDropTransport.dropped.Load(),
+		)
+	}
+	for i, result := range addResults {
+		if result.Edge != (client.EdgeRef{
+			Tail: addInputs[i].Edge.Tail,
+			Head: addInputs[i].Edge.Head,
+		}) ||
+			result.ContribID != addInputs[i].ContribID ||
+			result.OperationID != addContext.OperationIDs[i] ||
+			result.EffectiveWeight != wantAddWeights[i] {
+			t.Fatalf("SDK Add result[%d] = %+v", i, result)
+		}
+	}
+	addStatuses, err := sdk.GetReceiptStatuses(ctx, addContext.OperationIDs)
+	if err != nil || len(addStatuses) != len(wantAddWeights) {
+		t.Fatalf("SDK Add statuses = (%+v, %v)", addStatuses, err)
+	}
+	for i, status := range addStatuses {
+		if status.State != client.ReceiptConfirmed || status.Receipt == nil ||
+			status.OperationID != addContext.OperationIDs[i] ||
+			status.Receipt.ItemIndex != uint32(i) ||
+			status.Receipt.ItemCount != uint32(len(wantAddWeights)) {
+			t.Fatalf("SDK Add status[%d] = %+v", i, status)
+		}
+		result, ok := status.Receipt.OriginalResult.(client.ReceiptAddEdgeResult)
+		if !ok || result.EffectiveWeight != wantAddWeights[i] {
+			t.Fatalf("SDK Add status[%d] = %+v", i, status)
+		}
+	}
+
+	singularAddContext, err := sdk.NewReceiptContext(
+		capability,
+		client.ReceiptMutationAddEdge,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	singularAddContrib, err := sdk.NewContribID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	singularAdd, err := sdk.AddEdgeWithReceipt(
+		ctx,
+		"sdk-edge-add",
+		"sdk-edge-add-head",
+		4,
+		time.Hour,
+		singularAddContrib,
+		singularAddContext,
+	)
+	if err != nil ||
+		singularAdd.ContribID != singularAddContrib ||
+		singularAdd.OperationID != singularAddContext.OperationIDs[0] ||
+		singularAdd.EffectiveWeight != 9 {
+		t.Fatalf("SDK singular Add = (%+v, %v)", singularAdd, err)
+	}
+
+	invalidAddContext, err := sdk.NewReceiptContext(
+		capability,
+		client.ReceiptMutationAddEdge,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdk.AddEdgeWithReceipt(
+		ctx,
+		"sdk-edge-add",
+		"sdk-edge-add-head",
+		100,
+		time.Hour,
+		client.ContribID{},
+		invalidAddContext,
+	); !errors.Is(err, client.ErrInvalidReceipt) {
+		t.Fatalf("SDK malformed Add error = %v", err)
+	}
+	addedEdge, err := sdk.GetEdge(ctx, "sdk-edge-add", "sdk-edge-add-head")
+	if err != nil || addedEdge.GetWeight() != 9 {
+		t.Fatalf("SDK malformed Add changed edge = (%+v, %v)", addedEdge, err)
+	}
+
 	other := newPublicReceiptWireServer(t, hlc.NodeID{0xc2}, 32, testToken)
 	otherSDK, err := client.NewLantern(
 		other.server.url,
@@ -4956,6 +5097,39 @@ func TestGoSDKPublicVertexReceipts_RealConnectWire(t *testing.T) {
 		"sdk-wrong-endpoint-protected",
 	); err != nil {
 		t.Fatalf("wrong-endpoint preflight executed mutation: %v", err)
+	}
+	wrongAddContext, err := sdk.NewReceiptContext(
+		capability,
+		client.ReceiptMutationAddEdge,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongAddContrib, err := sdk.NewContribID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongAddResult, err := otherSDK.AddEdgeWithReceipt(
+		ctx,
+		"sdk-wrong-endpoint-add",
+		"sdk-wrong-endpoint-add-head",
+		1,
+		time.Hour,
+		wrongAddContrib,
+		wrongAddContext,
+	)
+	if !errors.As(err, &reconciliation) ||
+		!errors.Is(err, client.ErrReceiptReconciliationRequired) ||
+		wrongAddResult != (client.EdgeAddReceiptResult{}) {
+		t.Fatalf("wrong-endpoint SDK Add = (%+v, %v)", wrongAddResult, err)
+	}
+	if _, err := otherSDK.GetEdge(
+		ctx,
+		"sdk-wrong-endpoint-add",
+		"sdk-wrong-endpoint-add-head",
+	); !errors.Is(err, client.ErrNotFound) {
+		t.Fatalf("wrong-endpoint preflight executed Add: %v", err)
 	}
 
 	t.Run("static failover preserves cross-endpoint ambiguity", func(t *testing.T) {
@@ -5096,6 +5270,148 @@ func TestGoSDKPublicVertexReceipts_RealConnectWire(t *testing.T) {
 		}
 		if edge, err := secondarySDK.GetEdge(ctx, ref.Tail, ref.Head); err != nil || edge == nil {
 			t.Fatalf("cross-endpoint replay mutated secondary = (%+v, %v)", edge, err)
+		}
+	})
+
+	t.Run("static failover preserves Add ambiguity", func(t *testing.T) {
+		origin := newPublicReceiptWireServer(t, hlc.NodeID{0xc5}, 32, testToken)
+		secondary := newPublicReceiptWireServer(t, hlc.NodeID{0xc6}, 32, testToken)
+		originSDK, err := client.NewLantern(
+			origin.server.url,
+			client.WithHTTPClient(h2cClient()),
+			client.WithAuthToken(testToken),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = originSDK.Close() })
+		secondarySDK, err := client.NewLantern(
+			secondary.server.url,
+			client.WithHTTPClient(h2cClient()),
+			client.WithAuthToken(testToken),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = secondarySDK.Close() })
+
+		originCapability, err := originSDK.GetReceiptCapability(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receiptContext, err := originSDK.NewReceiptContext(
+			originCapability,
+			client.ReceiptMutationAddEdge,
+			1,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		isolatingTransport := &isolateReceiptOriginTransport{
+			inner:      h2cClient().Transport,
+			originHost: strings.TrimPrefix(origin.server.url, "http://"),
+			pathSuffix: "/AddEdges",
+		}
+		failover, err := client.NewLanternFailover(
+			[]string{origin.server.url, secondary.server.url},
+			client.WithHTTPClient(&http.Client{Transport: isolatingTransport}),
+			client.WithAuthToken(testToken),
+			client.WithRetry(client.RetryPolicy{
+				MaxAttempts: 2,
+				BaseDelay:   time.Nanosecond,
+				MaxDelay:    time.Nanosecond,
+			}),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = failover.Close() })
+		contribID, err := failover.NewContribID()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := failover.AddEdgeWithReceipt(
+			ctx,
+			"sdk-failover-add-ambiguous",
+			"sdk-failover-add-head",
+			2,
+			time.Hour,
+			contribID,
+			receiptContext,
+		)
+		if !errors.Is(err, client.ErrUnavailable) ||
+			result != (client.EdgeAddReceiptResult{}) ||
+			!isolatingTransport.dropped.Load() ||
+			!isolatingTransport.isolated.Load() {
+			t.Fatalf(
+				"ambiguous failover Add = (%+v, %v), dropped=%t isolated=%t",
+				result,
+				err,
+				isolatingTransport.dropped.Load(),
+				isolatingTransport.isolated.Load(),
+			)
+		}
+
+		originStatus, err := originSDK.GetReceiptStatus(
+			ctx,
+			receiptContext.OperationIDs[0],
+		)
+		if err != nil ||
+			originStatus.State != client.ReceiptConfirmed ||
+			originStatus.Receipt == nil {
+			t.Fatalf("origin Add receipt status = (%+v, %v)", originStatus, err)
+		}
+		originResult, ok := originStatus.Receipt.OriginalResult.(client.ReceiptAddEdgeResult)
+		if !ok || originResult.EffectiveWeight != 2 {
+			t.Fatalf("origin Add receipt status = %+v", originStatus)
+		}
+		originEdge, err := originSDK.GetEdge(
+			ctx,
+			"sdk-failover-add-ambiguous",
+			"sdk-failover-add-head",
+		)
+		if err != nil || originEdge.GetWeight() != 2 {
+			t.Fatalf("origin Edge after committed Add = (%+v, %v)", originEdge, err)
+		}
+
+		secondaryStatus, err := failover.GetReceiptStatus(
+			ctx,
+			receiptContext.OperationIDs[0],
+		)
+		if err != nil ||
+			secondaryStatus.State != client.ReceiptNotYetObserved ||
+			secondaryStatus.Receipt != nil ||
+			secondaryStatus.OperationID != receiptContext.OperationIDs[0] {
+			t.Fatalf("secondary Add receipt status = (%+v, %v)", secondaryStatus, err)
+		}
+		if _, err := secondarySDK.GetEdge(
+			ctx,
+			"sdk-failover-add-ambiguous",
+			"sdk-failover-add-head",
+		); !errors.Is(err, client.ErrNotFound) {
+			t.Fatalf("secondary Edge after ambiguous Add = %v, want ErrNotFound", err)
+		}
+
+		replayed, err := failover.AddEdgeWithReceipt(
+			ctx,
+			"sdk-failover-add-ambiguous",
+			"sdk-failover-add-head",
+			2,
+			time.Hour,
+			contribID,
+			receiptContext,
+		)
+		if !errors.Is(err, client.ErrUnavailable) ||
+			replayed != (client.EdgeAddReceiptResult{}) {
+			t.Fatalf("cross-endpoint Add replay = (%+v, %v)", replayed, err)
+		}
+		if _, err := secondarySDK.GetEdge(
+			ctx,
+			"sdk-failover-add-ambiguous",
+			"sdk-failover-add-head",
+		); !errors.Is(err, client.ErrNotFound) {
+			t.Fatalf("cross-endpoint Add replay mutated secondary: %v", err)
 		}
 	})
 }

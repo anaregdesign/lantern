@@ -287,6 +287,19 @@ func TestRequestRetryable(t *testing.T) {
 		if requestRetryable(&pb.DeleteEdgesRequest{ReceiptContext: context}) {
 			t.Error("receipt-bearing DeleteEdges must bypass generic unary retry")
 		}
+		if requestRetryable(&pb.AddEdgeRequest{
+			ContribId:      contrib,
+			ReceiptContext: context,
+		}) {
+			t.Error("receipt-bearing AddEdge must bypass generic unary retry")
+		}
+		if requestRetryable(&pb.AddEdgesRequest{
+			Edges:          []*pb.Edge{{Tail: "a", Head: "b"}},
+			ContribIds:     [][]byte{contrib},
+			ReceiptContext: context,
+		}) {
+			t.Error("receipt-bearing AddEdges must bypass generic unary retry")
+		}
 	})
 
 	t.Run("unknown request type fails closed", func(t *testing.T) {
@@ -352,6 +365,7 @@ func TestRetryableMethod(t *testing.T) {
 		{"PutVerticesIfAbsent", false, false},
 		{"DeleteEdges", false, true},
 		{"DeleteEdgesWithReceipt", false, true},
+		{"AddEdgesWithReceipt", false, true},
 		{"GetReceiptStatuses", false, true},
 		{"AddEdges", false, false},         // additive write, no idempotency
 		{"AddEdges", true, true},           // idempotency armed

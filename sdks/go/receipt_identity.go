@@ -87,6 +87,7 @@ const (
 	ReceiptMutationPutVertex
 	ReceiptMutationDeleteVertex
 	ReceiptMutationDeleteEdge
+	ReceiptMutationAddEdge
 )
 
 // String returns the canonical mutation-family name.
@@ -100,6 +101,8 @@ func (k ReceiptMutationKind) String() string {
 		return "DELETE_VERTEX"
 	case ReceiptMutationDeleteEdge:
 		return "DELETE_EDGE"
+	case ReceiptMutationAddEdge:
+		return "ADD_EDGE"
 	default:
 		return fmt.Sprintf("ReceiptMutationKind(%d)", k)
 	}
@@ -108,7 +111,10 @@ func (k ReceiptMutationKind) String() string {
 // Validate rejects unspecified and unknown mutation families.
 func (k ReceiptMutationKind) Validate() error {
 	switch k {
-	case ReceiptMutationPutVertex, ReceiptMutationDeleteVertex, ReceiptMutationDeleteEdge:
+	case ReceiptMutationPutVertex,
+		ReceiptMutationDeleteVertex,
+		ReceiptMutationDeleteEdge,
+		ReceiptMutationAddEdge:
 		return nil
 	default:
 		return invalidReceiptError("unknown receipt mutation kind %d", k)

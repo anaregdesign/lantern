@@ -50,15 +50,19 @@
 //
 // # Mutation receipts
 //
-// Vertex Put, exact Vertex Delete, and exact Edge Delete can opt into durable,
-// status-queryable results. First call GetReceiptCapability, mint a
+// Vertex Put, exact Vertex Delete, exact Edge Delete, and Edge Add can opt into
+// durable, status-queryable results. First call GetReceiptCapability, mint a
 // mutation-family-bound ReceiptContext with NewReceiptContext, persist that
-// context, then pass it to the matching *WithReceipt method. Receipt-bearing
-// calls never rotate to a different failover endpoint after an uncertain
-// response; every retry verifies the same epoch, node ID, generation, and
-// advertised mutation family. GetReceiptStatus and GetReceiptStatuses are
-// read-only reconciliation calls. Add and prefix Delete are not exposed as
-// receipt-bearing SDK operations.
+// context, then pass it to the matching *WithReceipt method. Edge Add also
+// requires one explicit caller-owned ContribID per item; mint each with
+// NewContribID and persist it with the exact input and receipt context before
+// the first send. Receipt-bearing calls never rotate to a different failover
+// endpoint after an uncertain response; every retry verifies the same epoch,
+// node ID, generation, and advertised mutation family. GetReceiptStatus and
+// GetReceiptStatuses are read-only reconciliation calls. Prefix Delete is not
+// exposed as a receipt-bearing SDK operation. The existing receipt-less Add
+// methods remain a separate direct-online mode; WithIdempotentAdds deduplicates
+// transport retries but does not create durable, queryable receipts.
 //
 // # Content search
 //

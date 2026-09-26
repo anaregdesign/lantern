@@ -13,9 +13,11 @@
 //	reads (Get*/Scan*/Count*/Search*/Illuminate/status)  retryable
 //	PutVertex(es)/PutEdge(s)/Delete*                     retryable (idempotent semantics)
 //	PutVertex(es) with if_absent                         never unless the dedicated receipt path owns replay
-//	AddEdge/AddEdges                                     retryable ONLY when every edge in the
+//	receipt-less AddEdge/AddEdges                        retryable ONLY when every edge in the
 //	                                                     request carries a ContribID (WithIdempotentAdds
 //	                                                     stamps them; without one a retry double-counts)
+//	receipt-bearing mutations                            never here; the dedicated path verifies
+//	                                                     endpoint continuity before each attempt
 //	streaming / io (Subscribe/Backup/Restore/…)          never (v1)
 //	receipt-bearing Put/Delete wire requests             never here (the continuity-aware path owns replay)
 //	anything unclassified                                never (fail closed)
@@ -162,8 +164,11 @@ func ctxSleep(ctx context.Context, d time.Duration) error {
 func requestRetryable(req any) bool {
 	switch r := req.(type) {
 	case *pb.AddEdgeRequest:
-		return len(r.GetContribId()) > 0
+		return r.GetReceiptContext() == nil && len(r.GetContribId()) > 0
 	case *pb.AddEdgesRequest:
+		if r.GetReceiptContext() != nil {
+			return false
+		}
 		if len(r.GetContribIds()) != len(r.GetEdges()) {
 			return false
 		}
@@ -265,6 +270,9 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"DeleteVerticesWithReceipt":      retryAlways,
 	"DeleteEdgeWithReceipt":          retryAlways,
 	"DeleteEdgesWithReceipt":         retryAlways,
+	"AddEdgeWithReceipt":             retryAlways,
+	"AddEdgeAtWithReceipt":           retryAlways,
+	"AddEdgesWithReceipt":            retryAlways,
 	"Ping":                           retryAlways,
 	"AddEdge":                        retryIfIdempotentAdds,
 	"AddEdgeAt":                      retryIfIdempotentAdds,

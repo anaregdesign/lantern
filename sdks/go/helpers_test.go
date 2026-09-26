@@ -33,6 +33,7 @@ func testReceiptCapability(seed byte) ReceiptCapability {
 			ReceiptMutationPutVertex,
 			ReceiptMutationDeleteVertex,
 			ReceiptMutationDeleteEdge,
+			ReceiptMutationAddEdge,
 		},
 	}
 }
@@ -50,6 +51,8 @@ func testReceiptCapabilityProto(capability ReceiptCapability) *pb.GetReceiptCapa
 			supported[i] = pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX
 		case ReceiptMutationDeleteEdge:
 			supported[i] = pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE
+		case ReceiptMutationAddEdge:
+			supported[i] = pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE
 		}
 	}
 	return &pb.GetReceiptCapabilityResponse{
@@ -108,6 +111,17 @@ func testReceiptContextForMutation(
 		t.Fatal(err)
 	}
 	return context
+}
+
+func testContribID(seed byte) ContribID {
+	var id ContribID
+	for i := range id {
+		id[i] = seed + byte(i)
+		if id[i] == 0 {
+			id[i] = 1
+		}
+	}
+	return id
 }
 
 func testConfirmedEdgeDeleteStatus(

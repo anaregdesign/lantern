@@ -57,6 +57,17 @@ func (ReceiptDeleteEdgeResult) MutationKind() ReceiptMutationKind {
 }
 func (ReceiptDeleteEdgeResult) isReceiptOriginalResult() {}
 
+// ReceiptAddEdgeResult preserves the exact effective weight returned by the
+// original Edge Add.
+type ReceiptAddEdgeResult struct {
+	EffectiveWeight float32
+}
+
+func (ReceiptAddEdgeResult) MutationKind() ReceiptMutationKind {
+	return ReceiptMutationAddEdge
+}
+func (ReceiptAddEdgeResult) isReceiptOriginalResult() {}
+
 // MutationReceipt is one confirmed request-index-aligned mutation result.
 type MutationReceipt struct {
 	OperationID    ReceiptOperationID
@@ -182,6 +193,8 @@ func receiptMutationKindFromProto(raw pb.ReceiptMutationKind) (ReceiptMutationKi
 		return ReceiptMutationDeleteVertex, nil
 	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE:
 		return ReceiptMutationDeleteEdge, nil
+	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE:
+		return ReceiptMutationAddEdge, nil
 	default:
 		return ReceiptMutationUnspecified, fmt.Errorf("unknown receipt mutation kind %d", raw)
 	}
@@ -315,6 +328,8 @@ func mutationReceiptFromProto(expected ReceiptOperationID, receipt *pb.MutationR
 		result = ReceiptDeleteVertexResult{Existed: typed.DeleteVertexExisted}
 	case *pb.ReceiptResult_DeleteEdgeExisted:
 		result = ReceiptDeleteEdgeResult{Existed: typed.DeleteEdgeExisted}
+	case *pb.ReceiptResult_AddEdgeEffectiveWeight:
+		result = ReceiptAddEdgeResult{EffectiveWeight: typed.AddEdgeEffectiveWeight}
 	default:
 		return nil, receiptProtocolError("confirmed receipt has unknown original result")
 	}

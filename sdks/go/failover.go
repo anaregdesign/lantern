@@ -130,6 +130,7 @@ type failoverNode interface {
 	PutVerticesIfAbsentWithReceipt(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
 	DeleteVerticesWithReceipt(ctx context.Context, keys []string, receiptContext ReceiptContext) ([]VertexDeleteReceiptResult, error)
 	DeleteEdgesWithReceipt(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
+	AddEdgesWithReceipt(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error)
 	Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error)
 	Ping(ctx context.Context) error
 	Close() error
@@ -609,6 +610,16 @@ func (f *Failover) NewReceiptContext(
 	return mintReceiptContext(capability, mutation, itemCount, source)
 }
 
+// NewContribID mints one caller-owned Edge Add contribution ID. The failover
+// client does not retain or automatically apply it.
+func (f *Failover) NewContribID() (ContribID, error) {
+	source := defaultReceiptIdentitySource()
+	if f != nil {
+		source = f.receiptIDs.normalized()
+	}
+	return mintContribID(source)
+}
+
 // PutEdge resolves ttl once, then forwards the same absolute expiration to
 // each endpoint's PutEdgeAt while failing over on ErrUnavailable.
 func (f *Failover) PutEdge(ctx context.Context, tail, head string, weight float32, ttl time.Duration) (PutOutcome, error) {
@@ -1037,6 +1048,93 @@ func (f *Failover) DeleteEdgeWithReceipt(
 	}
 	if len(results) != 1 {
 		return EdgeDeleteReceiptResult{}, receiptProtocolError("singular Edge Delete returned %d items", len(results))
+	}
+	return results[0], nil
+}
+
+// AddEdgesWithReceipt locates the endpoint matching the persisted continuity
+// marker with read-only capability probes, then pins every attempt to that
+// endpoint. It never rotates an uncertain additive mutation to a sibling.
+func (f *Failover) AddEdgesWithReceipt(
+	ctx context.Context,
+	inputs []EdgeAddReceiptInput,
+	receiptContext ReceiptContext,
+) ([]EdgeAddReceiptResult, error) {
+	_, stableInputs, stableContext, err := receiptAddEdgesRequest(inputs, receiptContext)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := f.findReceiptNode(ctx, stableContext.Continuity, ReceiptMutationAddEdge)
+	if err != nil {
+		return nil, err
+	}
+	f.cur.Store(uint64(idx))
+
+	var results []EdgeAddReceiptResult
+	err = f.callNode(ctx, idx, "AddEdgesWithReceipt", func(node failoverNode) error {
+		var callErr error
+		results, callErr = node.AddEdgesWithReceipt(ctx, stableInputs, stableContext)
+		return callErr
+	})
+	return results, err
+}
+
+// AddEdgeWithReceipt is the one-item, relative-TTL facade over
+// AddEdgesWithReceipt.
+func (f *Failover) AddEdgeWithReceipt(
+	ctx context.Context,
+	tail, head string,
+	weight float32,
+	ttl time.Duration,
+	contribID ContribID,
+	receiptContext ReceiptContext,
+) (EdgeAddReceiptResult, error) {
+	expiration, err := receiptAddExpirationFromTTL(receiptContext, ttl)
+	if err != nil {
+		return EdgeAddReceiptResult{}, err
+	}
+	return f.AddEdgeAtWithReceipt(
+		ctx,
+		tail,
+		head,
+		weight,
+		expiration,
+		contribID,
+		receiptContext,
+	)
+}
+
+// AddEdgeAtWithReceipt is the one-item, absolute-expiration facade over
+// AddEdgesWithReceipt.
+func (f *Failover) AddEdgeAtWithReceipt(
+	ctx context.Context,
+	tail, head string,
+	weight float32,
+	expiration time.Time,
+	contribID ContribID,
+	receiptContext ReceiptContext,
+) (EdgeAddReceiptResult, error) {
+	results, err := f.AddEdgesWithReceipt(
+		ctx,
+		[]EdgeAddReceiptInput{{
+			Edge: EdgeInput{
+				Tail:       tail,
+				Head:       head,
+				Weight:     weight,
+				Expiration: expiration,
+			},
+			ContribID: contribID,
+		}},
+		receiptContext,
+	)
+	if err != nil {
+		return EdgeAddReceiptResult{}, err
+	}
+	if len(results) != 1 {
+		return EdgeAddReceiptResult{}, receiptProtocolError(
+			"singular Edge Add returned %d items",
+			len(results),
+		)
 	}
 	return results[0], nil
 }
