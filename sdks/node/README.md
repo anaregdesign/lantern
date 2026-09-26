@@ -351,7 +351,7 @@ id is forgotten, so a later add with the same id contributes weight again.
 Contrib IDs guard receipt-less retries within a contribution's lifetime, not
 for all time. The existing `addEdge`/`addEdges` methods remain receipt-less;
 the separate opt-in `addEdgeWithReceipt`/`addEdgesWithReceipt` APIs require
-an explicit nonzero ID *and* a persisted operation context on a certified
+an explicit nonzero ID _and_ a persisted operation context on a certified
 endpoint. Retained receipt proof can recover the original effective result
 after Delete: read-only status may converge across replicas, but mutation
 retries require the same endpoint/generation, never blind failover.
