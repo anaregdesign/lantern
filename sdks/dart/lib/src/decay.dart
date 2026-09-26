@@ -100,6 +100,9 @@ List<EdgeInput> decayContributions({
 /// Decaying-edge conveniences for [LanternClient].
 extension LanternDecay on LanternClient {
   /// Adds one geometrically decaying edge and returns its effective live sum.
+  ///
+  /// Uses plain Add and never replays an ambiguous response, even with
+  /// generated contribution IDs.
   Future<double> addDecayingEdge({
     required String tail,
     required String head,

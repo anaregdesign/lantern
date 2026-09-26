@@ -175,41 +175,42 @@ void main() {
     expect((await client.getVertex(committedKey)).key, committedKey);
   });
 
-  test(
-    'committed Add response loss retries exactly one contribution',
-    () async {
-      final fault = _CommittedResponseLossTransport(
-        endpoint,
-        '/graph.v1.LanternService/AddEdges',
-      );
-      final retrying = LanternClient.connect(
-        endpoint,
-        token: newToken,
-        allowInsecure: allowInsecure,
-        transport: fault,
-        onClose: fault.close,
-        idempotentAdds: true,
-        retryPolicy: const RetryPolicy(
-          maxAttempts: 3,
-          baseDelay: Duration(milliseconds: 1),
-          maxDelay: Duration(milliseconds: 2),
-        ),
-      );
-      addTearDown(retrying.close);
-      final ref = EdgeRef('${prefix}retry-tail', '${prefix}retry-head');
+  test('committed Add response loss after Delete is not replayed', () async {
+    final ref = EdgeRef('${prefix}retry-tail', '${prefix}retry-head');
+    final fault = _CommittedResponseLossTransport(
+      endpoint,
+      '/graph.v1.LanternService/AddEdges',
+      onCommittedResponse: () async {
+        expect(await client.deleteEdge(ref), isTrue);
+      },
+    );
+    final retrying = LanternClient.connect(
+      endpoint,
+      token: newToken,
+      allowInsecure: allowInsecure,
+      transport: fault,
+      onClose: fault.close,
+      idempotentAdds: true,
+      retryPolicy: const RetryPolicy(
+        maxAttempts: 3,
+        baseDelay: Duration(milliseconds: 1),
+        maxDelay: Duration(milliseconds: 2),
+      ),
+    );
+    addTearDown(retrying.close);
 
-      expect(
-        await _withTransportDiagnostics(
-          retrying.addEdge(
-            EdgeInput(tail: ref.tail, head: ref.head, weight: 2),
-          ),
-        ),
-        2,
-      );
-      expect((await client.getEdge(ref)).weight, 2);
-      expect(fault.requestsFor('/graph.v1.LanternService/AddEdges'), 2);
-    },
-  );
+    await expectLater(
+      _withTransportDiagnostics(
+        retrying.addEdge(EdgeInput(tail: ref.tail, head: ref.head, weight: 2)),
+      ),
+      throwsA(isA<LanternUnavailableException>()),
+    );
+    await expectLater(
+      client.getEdge(ref),
+      throwsA(isA<LanternNotFoundException>()),
+    );
+    expect(fault.requestsFor('/graph.v1.LanternService/AddEdges'), 1);
+  });
 }
 
 Future<T> _withTransportDiagnostics<T>(Future<T> operation) async {
@@ -238,7 +239,11 @@ List<Object> _causeChain(Object error) {
 }
 
 final class _CommittedResponseLossTransport implements connect.Transport {
-  _CommittedResponseLossTransport(Uri endpoint, this._loseProcedure) {
+  _CommittedResponseLossTransport(
+    Uri endpoint,
+    this._loseProcedure, {
+    this.onCommittedResponse,
+  }) {
     _httpClient = io.HttpClient();
     _inner = connect_protocol.Transport(
       baseUrl: endpoint.toString(),
@@ -250,6 +255,7 @@ final class _CommittedResponseLossTransport implements connect.Transport {
   late final io.HttpClient _httpClient;
   late final connect.Transport _inner;
   final String _loseProcedure;
+  final Future<void> Function()? onCommittedResponse;
   final Map<String, int> _requests = {};
   var _lossPending = true;
 
@@ -267,6 +273,7 @@ final class _CommittedResponseLossTransport implements connect.Transport {
     final response = await _inner.unary(spec, input, options);
     if (_lossPending && spec.procedure == _loseProcedure) {
       _lossPending = false;
+      await onCommittedResponse?.call();
       throw connect.ConnectException(
         connect.Code.unavailable,
         'simulated committed response loss',

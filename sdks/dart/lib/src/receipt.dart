@@ -830,8 +830,10 @@ extension LanternReceipts on LanternClient {
   /// Additively writes edges with stable receipt and contribution identities.
   ///
   /// Every item must carry an explicit, nonzero 24-byte
-  /// [EdgeInput.contribId]. Existing receipt-less [LanternCrud.addEdges]
-  /// behavior, including optional generated contribution IDs, is unchanged.
+  /// [EdgeInput.contribId]. Unlike receipt-less [LanternCrud.addEdges], this
+  /// endpoint-bound path can reconcile a lost response and recover the original
+  /// result while receipt continuity holds. Generated IDs for plain Adds still
+  /// support live deduplication, not automatic replay.
   Future<List<ReceiptEdgeAddResult>> addEdgesWithReceipt(
     Iterable<EdgeInput> edges, {
     required ReceiptContext context,

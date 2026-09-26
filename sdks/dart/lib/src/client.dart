@@ -157,7 +157,8 @@ final class LanternCallOptions {
   ///
   /// Set this to false when a higher-level durable coordinator owns the retry
   /// budget. Every RPC is then attempted at most once; a chunked plural call
-  /// may still issue multiple RPCs.
+  /// may still issue multiple RPCs. Plain Add, Delete, and conditional Put
+  /// remain ineligible even when this is true.
   final bool retry;
 
   /// Suppresses the client's default timeout when this call has no explicit
@@ -527,10 +528,11 @@ final class LanternClient {
   /// logical Put call completes so an item that expired while any chunk was in
   /// flight cannot be reported locally as live.
   /// Supplying [retryPolicy] opts into bounded retry for explicitly classified
-  /// operations. [idempotentAdds] stamps missing contribution IDs once per
-  /// in-memory logical Add call, making only that call safe to replay. Automatic
-  /// IDs are not persisted across process death; durable outboxes must persist
-  /// caller-supplied 24-byte IDs with their intents.
+  /// reads and unconditional Puts. [idempotentAdds] stamps missing contribution
+  /// IDs once per in-memory Add call for live deduplication; neither generated
+  /// nor caller-supplied IDs make a plain Add safe to retry after a lost response.
+  /// Receipt-bearing Adds have separate endpoint-bound recovery with persisted
+  /// operation identity.
   /// [receiptRandomSource] defaults to cryptographically secure platform
   /// entropy and exists for deterministic receipt identity tests.
   factory LanternClient.connect(

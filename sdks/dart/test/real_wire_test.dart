@@ -229,55 +229,116 @@ void main() {
     },
   );
 
-  test('committed response loss retries only dedup-safe Add', () async {
-    final safeFault = _CommittedResponseLossTransport(
-      endpoint,
-      loseProcedure: '/graph.v1.LanternService/AddEdges',
-    );
-    final safeClient = LanternClient.connect(
-      endpoint,
-      allowInsecure: true,
-      transport: safeFault,
-      onClose: safeFault.close,
-      idempotentAdds: true,
-      retryPolicy: _realWireRetry,
-    );
-    addTearDown(safeClient.close);
-    final safeRef = EdgeRef('$prefix-retry-safe-a', '$prefix-retry-safe-b');
-    expect(
-      await safeClient.addEdge(
-        EdgeInput(tail: safeRef.tail, head: safeRef.head, weight: 2),
-      ),
-      2,
-    );
-    expect((await client.getEdge(safeRef)).weight, 2);
-    expect(safeFault.requestsFor('/graph.v1.LanternService/AddEdges'), 2);
+  test(
+    'plain Add response loss after Delete is ambiguous, not replayed',
+    () async {
+      const addProcedure = '/graph.v1.LanternService/AddEdges';
+      final suppliedId = Uint8List(24)..[23] = 1;
+      final scenarios = <({String name, bool idempotentAdds, Uint8List? id})>[
+        (name: 'absent', idempotentAdds: false, id: null),
+        (name: 'minted', idempotentAdds: true, id: null),
+        (name: 'caller', idempotentAdds: false, id: suppliedId),
+      ];
+      for (final scenario in scenarios) {
+        final ref = EdgeRef(
+          '$prefix-retry-${scenario.name}-a',
+          '$prefix-retry-${scenario.name}-b',
+        );
+        final fault = _CommittedResponseLossTransport(
+          endpoint,
+          loseProcedure: addProcedure,
+          onCommittedResponse: () async {
+            expect(await client.deleteEdge(ref), isTrue);
+          },
+        );
+        final retrying = LanternClient.connect(
+          endpoint,
+          allowInsecure: true,
+          transport: fault,
+          onClose: fault.close,
+          idempotentAdds: scenario.idempotentAdds,
+          retryPolicy: _realWireRetry,
+        );
+        addTearDown(retrying.close);
+        await expectLater(
+          retrying.addEdge(
+            EdgeInput(
+              tail: ref.tail,
+              head: ref.head,
+              weight: 2,
+              contribId: scenario.id,
+            ),
+          ),
+          throwsA(isA<LanternUnavailableException>()),
+        );
+        expect(fault.requestsFor(addProcedure), 1, reason: scenario.name);
+        await expectLater(
+          client.getEdge(ref),
+          throwsA(isA<LanternNotFoundException>()),
+        );
+      }
 
-    final unsafeFault = _CommittedResponseLossTransport(
-      endpoint,
-      loseProcedure: '/graph.v1.LanternService/AddEdges',
-    );
-    final unsafeClient = LanternClient.connect(
-      endpoint,
-      allowInsecure: true,
-      transport: unsafeFault,
-      onClose: unsafeFault.close,
-      retryPolicy: _realWireRetry,
-    );
-    addTearDown(unsafeClient.close);
-    final unsafeRef = EdgeRef(
-      '$prefix-retry-unsafe-a',
-      '$prefix-retry-unsafe-b',
-    );
-    await expectLater(
-      unsafeClient.addEdge(
-        EdgeInput(tail: unsafeRef.tail, head: unsafeRef.head, weight: 3),
-      ),
-      throwsA(isA<LanternUnavailableException>()),
-    );
-    expect((await client.getEdge(unsafeRef)).weight, 3);
-    expect(unsafeFault.requestsFor('/graph.v1.LanternService/AddEdges'), 1);
-  });
+      final refs = [
+        EdgeRef('$prefix-retry-plural-a', '$prefix-retry-plural-b'),
+        EdgeRef('$prefix-retry-plural-c', '$prefix-retry-plural-d'),
+      ];
+      final pluralFault = _CommittedResponseLossTransport(
+        endpoint,
+        loseProcedure: addProcedure,
+        onCommittedResponse: () async {
+          expect(await client.deleteEdges(refs), refs.length);
+        },
+      );
+      final pluralClient = LanternClient.connect(
+        endpoint,
+        allowInsecure: true,
+        transport: pluralFault,
+        onClose: pluralFault.close,
+        idempotentAdds: true,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(pluralClient.close);
+      await expectLater(
+        pluralClient.addEdges([
+          EdgeInput(
+            tail: refs[0].tail,
+            head: refs[0].head,
+            weight: 1,
+            contribId: Uint8List(24)..[23] = 2,
+          ),
+          EdgeInput(tail: refs[1].tail, head: refs[1].head, weight: 3),
+        ]),
+        throwsA(isA<LanternUnavailableException>()),
+      );
+      expect(pluralFault.requestsFor(addProcedure), 1);
+      for (final ref in refs) {
+        await expectLater(
+          client.getEdge(ref),
+          throwsA(isA<LanternNotFoundException>()),
+        );
+      }
+
+      final readKey = '$prefix-retry-read';
+      await client.putVertex(
+        VertexInput(key: readKey, value: VertexValue.string('still present')),
+      );
+      const readProcedure = '/graph.v1.LanternService/GetVertices';
+      final readFault = _CommittedResponseLossTransport(
+        endpoint,
+        loseProcedure: readProcedure,
+      );
+      final readClient = LanternClient.connect(
+        endpoint,
+        allowInsecure: true,
+        transport: readFault,
+        onClose: readFault.close,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(readClient.close);
+      expect((await readClient.getVertex(readKey)).key, readKey);
+      expect(readFault.requestsFor(readProcedure), 2);
+    },
+  );
 
   test(
     'ambiguous PutIfAbsent and Delete response loss is never replayed',
@@ -626,9 +687,16 @@ void main() {
       expect(retried.outcome, PutOutcome.appliedAndLive);
       expect(fault.requestsFor('/graph.v1.LanternService/PutVertices'), 2);
 
+      final retryAddRef = EdgeRef(
+        '$prefix-receipt-add-response-loss-tail',
+        '$prefix-receipt-add-response-loss-head',
+      );
       final addFault = _CommittedResponseLossTransport(
         receiptEndpoint,
         loseProcedure: '/graph.v1.LanternService/AddEdges',
+        onCommittedResponse: () async {
+          expect(await receiptClient.deleteEdge(retryAddRef), isTrue);
+        },
       );
       final retryingAdd = LanternClient.connect(
         receiptEndpoint,
@@ -648,19 +716,25 @@ void main() {
       );
       final retriedAdd = await retryingAdd.addEdgeWithReceipt(
         EdgeInput(
-          tail: '$prefix-receipt-add-response-loss-tail',
-          head: '$prefix-receipt-add-response-loss-head',
+          tail: retryAddRef.tail,
+          head: retryAddRef.head,
           weight: 4,
           contribId: Uint8List(24)..[23] = 6,
         ),
         context: retryAddContext,
       );
+      expect(retriedAdd, isA<ReceiptEdgeAddResult>());
       expect(retriedAdd.effectiveWeight, 4);
+      expect(retriedAdd.operationId, retryAddContext.operationIds.single);
       expect(addFault.requestsFor('/graph.v1.LanternService/AddEdges'), 2);
       final retriedAddStatus = await retryingAdd.getReceiptStatus(
         retryAddContext.operationIds.single,
       );
       expect((retriedAddStatus.receipt! as EdgeAddReceipt).effectiveWeight, 4);
+      await expectLater(
+        receiptClient.getEdge(retryAddRef),
+        throwsA(isA<LanternNotFoundException>()),
+      );
     },
     skip:
         receiptConfigured == null ||
@@ -671,37 +745,46 @@ void main() {
         : false,
   );
 
-  test('decaying Add response loss does not double the curve', () async {
-    final fault = _CommittedResponseLossTransport(
-      endpoint,
-      loseProcedure: '/graph.v1.LanternService/AddEdges',
-    );
-    final retrying = LanternClient.connect(
-      endpoint,
-      allowInsecure: true,
-      transport: fault,
-      onClose: fault.close,
-      idempotentAdds: true,
-      retryPolicy: _realWireRetry,
-    );
-    addTearDown(retrying.close);
-    final ref = EdgeRef('$prefix-decay-a', '$prefix-decay-b');
-    expect(
-      await retrying.addDecayingEdge(
-        tail: ref.tail,
-        head: ref.head,
-        options: const DecayOptions(
-          initialWeight: 16,
-          ratio: 0.5,
-          steps: 5,
-          interval: Duration(minutes: 1),
+  test(
+    'decaying Add response loss after Delete never recreates the edge',
+    () async {
+      final ref = EdgeRef('$prefix-decay-a', '$prefix-decay-b');
+      final fault = _CommittedResponseLossTransport(
+        endpoint,
+        loseProcedure: '/graph.v1.LanternService/AddEdges',
+        onCommittedResponse: () async {
+          expect(await client.deleteEdge(ref), isTrue);
+        },
+      );
+      final retrying = LanternClient.connect(
+        endpoint,
+        allowInsecure: true,
+        transport: fault,
+        onClose: fault.close,
+        idempotentAdds: true,
+        retryPolicy: _realWireRetry,
+      );
+      addTearDown(retrying.close);
+      await expectLater(
+        retrying.addDecayingEdge(
+          tail: ref.tail,
+          head: ref.head,
+          options: const DecayOptions(
+            initialWeight: 16,
+            ratio: 0.5,
+            steps: 5,
+            interval: Duration(minutes: 1),
+          ),
         ),
-      ),
-      closeTo(16, 1e-5),
-    );
-    expect((await client.getEdge(ref)).weight, closeTo(16, 1e-5));
-    expect(fault.requestsFor('/graph.v1.LanternService/AddEdges'), 2);
-  });
+        throwsA(isA<LanternUnavailableException>()),
+      );
+      await expectLater(
+        client.getEdge(ref),
+        throwsA(isA<LanternNotFoundException>()),
+      );
+      expect(fault.requestsFor('/graph.v1.LanternService/AddEdges'), 1);
+    },
+  );
 
   test('cursor pages resume without gaps in both vertex orders', () async {
     final scanPrefix = '$prefix-scan:';
@@ -1382,8 +1465,12 @@ const _realWireRetry = RetryPolicy(
 );
 
 final class _CommittedResponseLossTransport implements connect.Transport {
-  _CommittedResponseLossTransport(Uri endpoint, {required String loseProcedure})
-    : _loseProcedure = loseProcedure {
+  _CommittedResponseLossTransport(
+    Uri endpoint, {
+    required String loseProcedure,
+    Future<void> Function()? onCommittedResponse,
+  }) : _loseProcedure = loseProcedure,
+       _onCommittedResponse = onCommittedResponse {
     _httpClient = io.HttpClient();
     _inner = connect_protocol.Transport(
       baseUrl: endpoint.toString(),
@@ -1395,6 +1482,7 @@ final class _CommittedResponseLossTransport implements connect.Transport {
   late final io.HttpClient _httpClient;
   late final connect.Transport _inner;
   final String _loseProcedure;
+  final Future<void> Function()? _onCommittedResponse;
   final Map<String, int> _requests = {};
   var _lossPending = true;
 
@@ -1414,6 +1502,7 @@ final class _CommittedResponseLossTransport implements connect.Transport {
     final response = await _inner.unary(spec, input, options);
     if (_lossPending && spec.procedure == _loseProcedure) {
       _lossPending = false;
+      await _onCommittedResponse?.call();
       throw connect.ConnectException(
         connect.Code.unavailable,
         'simulated committed response loss',

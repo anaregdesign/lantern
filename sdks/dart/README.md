@@ -54,9 +54,10 @@ Plural CRUD calls use 1,000-item chunks by default and reject logical batches
 above 65,536 items. A later chunk failure throws `BatchException` with the
 input-prefix length whose responses were fully observed and validated; despite
 the existing `committed` field name, this is not an `appliedAndLive` count.
-`addEdge(s)` accumulates weight and is
-non-idempotent unless the caller supplies an exact 24-byte `contribId`;
-`putEdge(s)` overwrites weight and expiration idempotently.
+`addEdge(s)` accumulates weight. An optional exact 24-byte `contribId`
+deduplicates a contribution only while it remains live; it cannot recover
+the original effective weight after a Delete or expiry. `putEdge(s)`
+overwrites weight and expiration idempotently.
 
 For `putVerticesIfAbsent`, that count covers only prior chunks whose responses
 were observed. The failed chunk may already have committed; its original
@@ -72,7 +73,7 @@ first and reports `conditionNotMet` without overwriting it. Unknown,
 unspecified, or length-misaligned wire outcomes fail closed as
 `LanternInternalException`.
 
-## Mobile retries and additive safety
+## Mobile retries and additive safety (current source)
 
 Retries are opt-in and bounded. The default `RetryPolicy()` makes three total
 attempts, uses full-jitter exponential backoff from 100 ms with a 2 second
@@ -88,12 +89,14 @@ final client = LanternClient.connect(
 );
 ```
 
-Reads and stable Put calls may retry. Add calls retry only when every
-contribution has a stable ID. `idempotentAdds: true` fills missing IDs with the
-canonical 24-byte format once per in-memory logical call; caller-supplied IDs
-always win. Put-if-absent, Delete, capped prefix Delete, streams, and unknown
-operations are never replayed because a committed response loss would change
-their observable result.
+Reads and unconditional Put calls may retry. Plain Add (singular, plural,
+or decaying), Put-if-absent, Delete, capped prefix Delete, streams, and unknown
+operations are never automatically replayed; a lost Add response leaves its
+original result ambiguous even if it committed. `idempotentAdds: true` fills
+missing IDs with the canonical 24-byte format once per in-memory logical call
+for live deduplication; caller-supplied IDs always win. For a failed plural
+Add chunk, only earlier chunks with observed responses count toward
+`BatchException.committed`.
 
 Set `LanternCallOptions(retry: false)` when a higher-level durable coordinator
 owns retry accounting. Each RPC is then attempted at most once while retaining
@@ -104,13 +107,15 @@ Automatic IDs do not turn two application calls into one operation and do not
 survive process restart. This package does not implement an offline queue. A
 contribution ID deduplicates only while the server retains that contribution.
 
-**Hosted 0.3.1 retry caveat (#1471):** With `retryPolicy` configured, a
+**Hosted 0.3.1 retry caveat (#1471):** Unlike the current source, published
+`lantern_client 0.3.1` has the bug: with `retryPolicy` configured, a
 receipt-less Add carrying IDs (including `idempotentAdds` IDs) is eligible for
 automatic retry. An intervening Delete or expiry can erase dedup evidence, so
 the retried Add may execute again with a different result. Do not rely on
 `idempotentAdds` plus automatic retry to recover the original Add result;
-use receipt-backed Add/status on a certified endpoint. The retry-policy fix
-is pending #1471 and is not in the published parent.
+use receipt-backed Add/status on a certified endpoint. This source fix is not
+in the published 0.3.1 archive; a new, independently qualified online patch
+release is required before hosted clients receive it.
 
 The hosted `lantern_client_offline` 0.3.0 outbox admits Put only. Merged
 offline 0.4.0 source separately implements receipt-backed conditional Vertex
@@ -125,16 +130,17 @@ that hosted parent outside the checkout and without a path override.
 
 `addDecayingEdge` expands a geometric curve into at most 16 staggered-TTL
 contributions whose initial live sum is exact. With `idempotentAdds` enabled,
-its contribution IDs stay stable across retries within that logical call
-while the contributions remain retained; it cannot recover an original
-result after Delete or expiry.
+its contribution IDs are stamped for live deduplication; the plain decaying
+call is not automatically retried, and IDs cannot recover an original result
+after Delete or expiry.
 
 ## Bounded online mutation receipts
 
 Receipt-bearing Vertex Put, exact Vertex Delete, Edge Delete, and
 contribution-keyed Edge Add are explicit APIs alongside the existing
-receipt-less methods. Existing methods retain their established retry and
-ambiguous-result behavior. Receipt-bearing Add requires a distinct explicit,
+receipt-less methods. Plain Add now reports ambiguous transport failures
+without replay, while receipt-bearing mutation retries validate endpoint
+continuity. Receipt-bearing Add requires a distinct explicit,
 nonzero 24-byte contribution ID for every item and returns the exact original
 effective weight. Finite Add inputs can accumulate to signed infinity, which
 remains an authoritative result. A retained NaN is likewise returned as
