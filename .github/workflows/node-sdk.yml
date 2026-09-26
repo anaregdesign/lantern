@@ -135,7 +135,15 @@ jobs:
         run: bun run example:typecheck
       - name: Build
         run: bun run build
-      - name: Test
+      # Connect-Node h2c runs under the supported Node runtime; Bun owns the
+      # browser Connect-Web coverage in the following step.
+      - name: Test authenticated Node h2c receipts
+        run: bun run test:real-wire
+        env:
+          LANTERN_NODE_RECEIPT_ENDPOINT: http://127.0.0.1:6384
+          LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: http://127.0.0.1:6385
+          LANTERN_NODE_RECEIPT_TOKEN: node-receipt-test-token
+      - name: Test Bun suite
         run: bun test
         env:
           LANTERN_NODE_REAL_WIRE_ENDPOINT: http://127.0.0.1:6380
@@ -149,7 +157,7 @@ jobs:
       - name: Verify npm pack candidate
         run: bun run verify:package
 
-      - name: Stop production search conformance servers
+      - name: Stop production conformance servers
         if: always()
         working-directory: .
         run: |

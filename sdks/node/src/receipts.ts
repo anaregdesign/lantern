@@ -396,7 +396,7 @@ function normalizeReceiptMutationKinds(value: unknown): readonly ReceiptMutation
   const normalized: ReceiptMutationKind[] = [];
   let previous = 0;
   for (let index = 0; index < value.length; index++) {
-    const kind = value[index];
+    const kind: unknown = value[index];
     if (kind !== "putVertex" && kind !== "deleteVertex" && kind !== "deleteEdge") {
       throw new InvalidArgumentError(
         `receipt supportedMutations[${index}] is not a supported mutation kind`,

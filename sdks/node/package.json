@@ -54,7 +54,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify:package": "node scripts/verify-package.mjs",
-    "test": "bun test"
+    "test": "bun test",
+    "test:real-wire": "node --test test/receipts-real-wire.node.mjs"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2",

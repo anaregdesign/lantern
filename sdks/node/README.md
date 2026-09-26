@@ -631,6 +631,13 @@ bun test
 bun run verify:package
 ```
 
+CI also runs `bun run test:real-wire` after the build against two authenticated
+Lantern h2c endpoints. That command imports the package through its published
+Node entrypoint and requires `LANTERN_NODE_RECEIPT_ENDPOINT`,
+`LANTERN_NODE_RECEIPT_OTHER_ENDPOINT`, and `LANTERN_NODE_RECEIPT_TOKEN`.
+The regular Bun suite retains the browser Connect-Web JSON and
+identity-only CDC coverage.
+
 `verify:package` creates a temporary `npm pack` tarball and checks its
 packaged manifest and contents: both entrypoints must include every declared
 ESM, CJS, and type target; only `dist/`, `README.md`, `LICENSE`, and
