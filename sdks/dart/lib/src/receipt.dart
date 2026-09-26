@@ -899,7 +899,7 @@ extension LanternReceipts on LanternClient {
           ReceiptEdgeAddResult._(
             edge: EdgeRef(input[index].tail, input[index].head),
             operationId: context.operationIds[index],
-            effectiveWeight: _finiteFloatFromProto(
+            effectiveWeight: _finiteFloat32FromProto(
               response.effectiveWeights[index],
               'receipt Edge Add effective weight',
             ),
@@ -1538,7 +1538,7 @@ MutationReceipt _mutationReceiptFromProto(
         itemCount: value.itemCount,
         intentSha256: intentSha256,
         deadline: deadline,
-        effectiveWeight: _finiteFloatFromProto(
+        effectiveWeight: _finiteFloat32FromProto(
           result.addEdgeEffectiveWeight,
           'receipt Edge Add effective weight',
         ),

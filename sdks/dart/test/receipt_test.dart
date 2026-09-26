@@ -681,6 +681,74 @@ void main() {
     expect(add.effectiveWeight, 5);
   });
 
+  test(
+    'Edge Add status preserves signed zero and rejects invalid float32',
+    () async {
+      final id = _operationId(epoch: 1, random: 1);
+      LanternClient clientFor(
+        double effectiveWeight, {
+        bool binaryRoundTrip = true,
+      }) => _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptStatusesRequest,
+              graph.GetReceiptStatusesResponse
+            >(
+              LanternService.getReceiptStatuses,
+              (request, context) => graph.GetReceiptStatusesResponse(
+                statuses: [
+                  _confirmedStatus(
+                    id,
+                    result: graph.ReceiptResult(
+                      addEdgeEffectiveWeight: effectiveWeight,
+                    ),
+                    binaryRoundTrip: binaryRoundTrip,
+                  ),
+                ],
+              ),
+            )
+            .build(),
+      );
+
+      final signedZero = await clientFor(-0.0).getReceiptStatus(id);
+      final signedZeroReceipt = signedZero.receipt! as EdgeAddReceipt;
+      expect(signedZeroReceipt.effectiveWeight, 0);
+      expect(signedZeroReceipt.effectiveWeight.isNegative, isTrue);
+
+      for (final invalid in [
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        await expectLater(
+          clientFor(invalid).getReceiptStatus(id),
+          throwsA(
+            isA<LanternInternalException>().having(
+              (error) => error.isSdkProtocolViolation,
+              'isSdkProtocolViolation',
+              isTrue,
+            ),
+          ),
+        );
+      }
+      for (final overflow in [double.maxFinite, -double.maxFinite]) {
+        await expectLater(
+          clientFor(
+            overflow,
+            binaryRoundTrip: false,
+          ).getReceiptStatus(id),
+          throwsA(
+            isA<LanternInternalException>().having(
+              (error) => error.isSdkProtocolViolation,
+              'isSdkProtocolViolation',
+              isTrue,
+            ),
+          ),
+        );
+      }
+    },
+  );
+
   test('receipt-bearing Vertex Put is plural canonical and exact', () async {
     final pluralContext = _receiptContext(
       count: 2,
@@ -1007,7 +1075,7 @@ void main() {
             if (request.edges.length == 1) {
               return graph.AddEdgesResponse(
                 written: 1,
-                effectiveWeights: [0],
+                effectiveWeights: [-0.0],
               );
             }
             return graph.AddEdgesResponse(
@@ -1059,7 +1127,7 @@ void main() {
       EdgeInput(
         tail: 'x',
         head: 'y',
-        weight: 1,
+        weight: -0.0,
         contribId: _bytes(24, 7),
       ),
       context: singularContext,
@@ -1067,8 +1135,11 @@ void main() {
     expect(singular.edge, const EdgeRef('x', 'y'));
     expect(singular.operationId, singularContext.operationIds.single);
     expect(singular.effectiveWeight, 0);
+    expect(singular.effectiveWeight.isNegative, isTrue);
     expect(requests, hasLength(2));
     expect(requests.last.contribIds.single, _bytes(24, 7));
+    expect(requests.last.edges.single.weight, 0);
+    expect(requests.last.edges.single.weight.isNegative, isTrue);
   });
 
   test('receipt-bearing Edge Add rejects contribution IDs before RPC', () async {
@@ -1104,6 +1175,23 @@ void main() {
             contribId: contributionId,
           ),
           context: context,
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+    }
+    for (final weight in [
+      double.nan,
+      double.infinity,
+      double.negativeInfinity,
+      double.maxFinite,
+      -double.maxFinite,
+    ]) {
+      expect(
+        () => EdgeInput(
+          tail: 'a',
+          head: 'b',
+          weight: weight,
+          contribId: _bytes(24, 1),
         ),
         throwsA(isA<LanternInvalidArgumentException>()),
       );
@@ -1692,6 +1780,22 @@ void main() {
           effectiveWeights: [double.nan],
         ),
         graph.AddEdgesResponse(
+          written: 1,
+          effectiveWeights: [double.infinity],
+        ),
+        graph.AddEdgesResponse(
+          written: 1,
+          effectiveWeights: [double.negativeInfinity],
+        ),
+        graph.AddEdgesResponse(
+          written: 1,
+          effectiveWeights: [double.maxFinite],
+        ),
+        graph.AddEdgesResponse(
+          written: 1,
+          effectiveWeights: [-double.maxFinite],
+        ),
+        graph.AddEdgesResponse(
           written: 0,
           effectiveWeights: [1],
         ),
@@ -1837,6 +1941,7 @@ graph.ReceiptStatus _confirmedStatus(
   ReceiptOperationId operationId, {
   bool existed = true,
   graph.ReceiptResult? result,
+  bool binaryRoundTrip = true,
 }) {
   final status = graph.ReceiptStatus(
     operationId: operationId.bytes,
@@ -1855,5 +1960,7 @@ graph.ReceiptStatus _confirmedStatus(
       originalResult: result ?? graph.ReceiptResult(deleteEdgeExisted: existed),
     ),
   );
-  return graph.ReceiptStatus.fromBuffer(status.writeToBuffer());
+  return binaryRoundTrip
+      ? graph.ReceiptStatus.fromBuffer(status.writeToBuffer())
+      : status;
 }

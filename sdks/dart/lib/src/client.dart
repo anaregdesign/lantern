@@ -468,19 +468,27 @@ final class LanternUnavailableException extends LanternException {
       );
 }
 
-/// An internal, unknown, or unmapped transport failure.
+/// An internal, unknown, unmapped transport, or malformed-response failure.
 final class LanternInternalException extends LanternException {
-  LanternInternalException._(_ErrorData data)
-    : super._(
-        code: LanternCode.internal,
-        transportCode: data.transportCode,
-        transportCodeName: data.transportCodeName,
-        message: data.message,
-        cause: data.cause,
-        headers: data.headers,
-        trailers: data.trailers,
-        metadata: data.metadata,
-      );
+  LanternInternalException._(
+    _ErrorData data, {
+    this.isSdkProtocolViolation = false,
+  }) : super._(
+         code: LanternCode.internal,
+         transportCode: data.transportCode,
+         transportCodeName: data.transportCodeName,
+         message: data.message,
+         cause: data.cause,
+         headers: data.headers,
+         trailers: data.trailers,
+         metadata: data.metadata,
+       );
+
+  /// Whether strict local response validation detected malformed server data.
+  ///
+  /// A genuine Connect `INTERNAL`, unknown transport failure, or unmapped
+  /// exception leaves this false.
+  final bool isSdkProtocolViolation;
 }
 
 /// Reusable Android/iOS-first Lantern client foundation.

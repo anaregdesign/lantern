@@ -607,7 +607,7 @@ Vertex _vertexFromProto($graph.Vertex value) {
       _finiteFloatFromProto(value.float64, 'float64'),
     ),
     $graph.Vertex_Value.float32 => VertexValue.float32(
-      _finiteFloatFromProto(value.float32, 'float32'),
+      _finiteFloat32FromProto(value.float32, 'float32'),
     ),
     $graph.Vertex_Value.int32 => VertexValue.int32(value.int32),
     $graph.Vertex_Value.int64 => VertexValue.int64(value.int64.toInt()),
@@ -651,7 +651,7 @@ $graph.Edge _edgeInputToProto(EdgeInput input, DateTime? expiration) {
 Edge _edgeFromProto($graph.Edge value) => Edge(
   tail: value.tail,
   head: value.head,
-  weight: _finiteFloatFromProto(value.weight, 'edge weight'),
+  weight: _finiteFloat32FromProto(value.weight, 'edge weight'),
   expiration: value.hasExpiration()
       ? _timestampFromProto(value.expiration)
       : null,
@@ -667,6 +667,7 @@ LanternException _internalSdkException(String message) =>
         trailers: const {},
         metadata: const {},
       ),
+      isSdkProtocolViolation: true,
     );
 
 double _finiteFloatFromProto(double value, String field) {
@@ -674,4 +675,16 @@ double _finiteFloatFromProto(double value, String field) {
     throw _internalSdkException('server returned a non-finite $field');
   }
   return value;
+}
+
+double _finiteFloat32FromProto(double value, String field) {
+  _finiteFloatFromProto(value, field);
+  final data = ByteData(4)..setFloat32(0, value, Endian.big);
+  final normalized = data.getFloat32(0, Endian.big);
+  if (!normalized.isFinite) {
+    throw _internalSdkException(
+      'server returned $field outside the finite float32 range',
+    );
+  }
+  return normalized;
 }
