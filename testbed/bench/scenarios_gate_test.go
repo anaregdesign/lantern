@@ -374,6 +374,46 @@ exit %d
 	}
 }
 
+func TestReceiptBenchSnapshotRejectsFailedGC(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "snapshot_runtime() {\n")
+	if !found {
+		t.Fatal("run.sh is missing snapshot_runtime")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nrun_ghz() {")
+	if !found {
+		t.Fatal("run.sh snapshot_runtime does not precede run_ghz")
+	}
+	outDir := t.TempDir()
+	fixture := `set -euo pipefail
+target_driver=receipt_edge_delete
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+curl() {
+  [[ "$*" == *"/debug/pprof/heap?gc=1"* ]] && return 22
+  echo "metrics must not be sampled without GC" >&2
+  return 98
+}
+snapshot_runtime() {
+` + body + `
+}
+snapshot_runtime "$OUTDIR/runtime.json"
+`
+	cmd := exec.Command("bash", "-c", fixture)
+	cmd.Env = append(os.Environ(), "OUTDIR="+outDir)
+	output, err := cmd.CombinedOutput()
+	if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
+		!strings.Contains(string(output), "forced GC failed for localhost:9390 (round 1)") {
+		t.Fatalf("snapshot exit = %v, err = %v, output = %s; want forced-GC failure", cmd.ProcessState, err, output)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); !os.IsNotExist(err) {
+		t.Fatalf("failed-GC snapshot artifact exists or stat failed: %v", err)
+	}
+}
+
 // TestBroadIlluminateScenarioTopologyContract is the #994 semantic guard that
 // complements TestScenarioTemplates_MatchWireSchema. A proto-valid Illuminate
 // request can still run over an empty or one-edge graph, so pin both the

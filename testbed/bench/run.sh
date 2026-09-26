@@ -382,8 +382,12 @@ snapshot_runtime() {
   for port in "${REPLICA_METRICS_PORTS[@]}"; do
     local g="" h_inuse="" h_alloc="" h_objs="" vhe="" vhw=""
     for (( round = 1; round <= rounds; round++ )); do
-      curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
-        -o /dev/null || true
+      if ! curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
+        -o /dev/null; then
+        if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+          die "receipt runtime snapshot: forced GC failed for localhost:${port} (round ${round})"
+        fi
+      fi
       local text
       text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
       local rg rhi rha rho rvhe rvhw

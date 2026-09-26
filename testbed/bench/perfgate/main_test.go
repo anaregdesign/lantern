@@ -211,6 +211,55 @@ perf_gate:
 	}
 }
 
+func TestEvaluateRejectsAmbiguousReceiptProducerSummary(t *testing.T) {
+	dir := t.TempDir()
+	scenario := filepath.Join(dir, "scenario.yaml")
+	writeText(t, scenario, `target:
+  endpoints: ["localhost:6380"]
+  calls: [{ name: receipt_admission, call: graph.v1.LanternService/DeleteEdge }]
+perf_gate:
+  min_steady_rps_total: 150
+  max_p99_ms: 500
+  max_non_ok_ratio: 0
+  producers:
+    receipt_admission: { min_steady_rps: 75, max_p99_ms: 500, max_non_ok_ratio: 0 }
+`)
+	for _, tc := range []struct {
+		name    string
+		summary string
+		wantErr string
+	}{
+		{
+			name:    "null non-OK status count",
+			summary: `{"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500,"Unavailable":null},"latencyDistribution":[{"percentage":99,"latency":1000000}]}`,
+			wantErr: `null status count "Unavailable"`,
+		},
+		{
+			name:    "duplicate status key hides non-OK",
+			summary: `{"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500,"Unavailable":1,"Unavailable":0},"latencyDistribution":[{"percentage":99,"latency":1000000}]}`,
+			wantErr: `duplicate JSON key "Unavailable"`,
+		},
+		{
+			name:    "duplicate percentile latency hides slow p99",
+			summary: `{"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500},"latencyDistribution":[{"percentage":99,"latency":600000000,"latency":1000000}]}`,
+			wantErr: `duplicate JSON key "latency"`,
+		},
+		{
+			name:    "duplicate top-level count",
+			summary: `{"count":0,"count":4500,"rps":150,"statusCodeDistribution":{"OK":4500},"latencyDistribution":[{"percentage":99,"latency":1000000}]}`,
+			wantErr: `duplicate JSON key "count"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeText(t, filepath.Join(dir, "ghz_steady_0_localhost_6380.json"), tc.summary)
+			_, err := evaluate(scenario, dir, "", "")
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("evaluate error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadProducerSummaryRejectsMalformedLatencyDistribution(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -206,6 +206,8 @@ the run. Each replica's observed peak must remain within +15 goroutines and
 post-cooldown/post-warmup GC live-set delta must **also** stay within those
 bounds. The report shows both independently; `LEAK_GATE_ONLY=1` skips optional
 profiles and Prometheus range queries, not steady resource sampling.
+For receipt runs, a failed forced-GC request on any replica or round
+disqualifies the pre/post live-set snapshots even when `/metrics` responds.
 
 Five preliminary Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in
@@ -340,7 +342,9 @@ All named producer gates are conjunctive with the aggregate gate and appear
 as separate rows in `perf_gate.json` and the rendered report. A nonempty
 producer summary without p99, or with duplicate or invalid latency percentiles,
 fails closed rather than treating missing latency as zero. A reported throughput
-must also agree with whether the producer recorded any calls.
+must also agree with whether the producer recorded any calls. Null status counts
+and duplicate JSON keys (including nested percentile fields) are rejected
+before status and latency gates are evaluated.
 
 #### Typed recovery lifecycle (`lifecycle_gate:` block)
 

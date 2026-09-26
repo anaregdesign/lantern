@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -466,8 +467,31 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 	if len(matches) != 1 {
 		return ghzSummary{}, fmt.Errorf("matched %d files with %s", len(matches), pattern)
 	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		return ghzSummary{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := rejectDuplicateJSONKeys(decoder); err != nil {
+		return ghzSummary{}, fmt.Errorf("invalid producer summary: %w", err)
+	}
+	var raw struct {
+		StatusCodeDistribution map[string]*int `json:"statusCodeDistribution"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ghzSummary{}, err
+	}
+	if raw.StatusCodeDistribution == nil {
+		return ghzSummary{}, errors.New("missing status distribution")
+	}
+	for status, count := range raw.StatusCodeDistribution {
+		if count == nil {
+			return ghzSummary{}, fmt.Errorf("null status count %q", status)
+		}
+	}
 	var summary ghzSummary
-	if err := readJSON(matches[0], &summary); err != nil {
+	if err := json.Unmarshal(data, &summary); err != nil {
 		return ghzSummary{}, err
 	}
 	if summary.Count > math.MaxInt64 {
@@ -504,6 +528,48 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 		return ghzSummary{}, errors.New("missing p99 latency for nonempty producer")
 	}
 	return summary, nil
+}
+
+func rejectDuplicateJSONKeys(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("invalid JSON object key %v", token)
+			}
+			if _, exists := keys[key]; exists {
+				return fmt.Errorf("duplicate JSON key %q", key)
+			}
+			keys[key] = struct{}{}
+			if err := rejectDuplicateJSONKeys(decoder); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := rejectDuplicateJSONKeys(decoder); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("invalid JSON delimiter %q", delim)
+	}
+	_, err = decoder.Token()
+	return err
 }
 
 func percentile(summary ghzSummary, percentage int) int64 {
