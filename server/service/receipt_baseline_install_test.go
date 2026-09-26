@@ -20,20 +20,25 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type receiptBaselineTestCodec struct {
-	raw   []byte
-	build func() (*ReceiptBaselineCandidate, error)
+	raw      []byte
+	build    func() (*ReceiptBaselineCandidate, error)
+	onEncode func(ReceiptWholeStateCapture)
 }
 
 func (c *receiptBaselineTestCodec) EncodeCombinedReceiptBaseline(
 	ctx context.Context,
-	_ ReceiptWholeStateCapture,
+	capture ReceiptWholeStateCapture,
 ) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if c.onEncode != nil {
+		c.onEncode(capture)
 	}
 	return append([]byte(nil), c.raw...), nil
 }
@@ -138,7 +143,7 @@ func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeCo
 		expiration := time.Now().Add(time.Hour)
 		if !graph.PutVertexWithExpirationHLC(
 			"baseline-searchable",
-			&pb.Vertex{Key: "baseline-searchable", Expiration: timestamppb.New(expiration)},
+			&pb.Vertex{Key: "baseline-searchable", Value: &pb.Vertex_Nil{Nil: true}, Expiration: timestamppb.New(expiration)},
 			expiration,
 			cutoff,
 		) {
@@ -162,6 +167,31 @@ func newReceiptBaselineTestImage(t *testing.T, config DurableReceiptWALRuntimeCo
 		origin: origin,
 		cutoff: cutoff,
 	}
+}
+
+func setReceiptBaselineTestGraphFrames(t *testing.T, image *receiptBaselineTestImage) {
+	t.Helper()
+	candidate, err := image.codec.build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := candidate.Graph.SnapshotReplication()
+	frames := &receiptSnapshotFrameCollector{}
+	err = sendSnapshotFrames(t.Context(), replicationSnapshotCut{
+		cutoffPerOrigin: map[string]uint64{fmt.Sprintf("%x", image.origin[:]): 1},
+		cutoffHLC:       image.cutoff,
+		cutoffLocalSeq:  41,
+		barriers:        snapshot.Barriers,
+		tombstones:      snapshot.Tombstones,
+		graph:           snapshot.Graph,
+	}, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, frames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateReceiptSnapshotGraphCapture(frames.frames, image.capture.Origins); err != nil {
+		t.Fatal(err)
+	}
+	image.capture.Graph = frames.frames
 }
 
 func baselineRuntimeTestConfig(path string) DurableReceiptWALRuntimeConfig {
@@ -349,6 +379,348 @@ func TestInstallReceiptBaselineRestartPreservesWholeStateAndSuffix(t *testing.T)
 	if next := restarted.clock.Now(); !suffix.HLC.Less(next) {
 		t.Fatalf("restart HLC = %+v, want above suffix %+v", next, suffix.HLC)
 	}
+}
+
+func TestInstallReceiptBaselinePristineReceiverClockRebase(t *testing.T) {
+	t.Run("keeps source cut and replays intervening suffix after restart", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		source := baselineRuntimeTestConfig(path)
+		source.Receipt.ClockHighWater = time.Now().Add(-20 * time.Minute).Truncate(time.Millisecond)
+		source.Now = source.Receipt.ClockHighWater
+		image := newReceiptBaselineTestImage(t, source)
+		retired, retiredID := mustRetiredCatalogSnapshot(
+			t, source.Receipt, image.capture.Receipts.ClockHighWaterMillis, 0x73,
+		)
+		setReceiptBaselineTestRetired(&image, retired)
+		setReceiptBaselineTestGraphFrames(t, &image)
+
+		config := source
+		config.Receipt.ClockHighWater = source.Now.Add(20 * time.Minute)
+		config.Now = config.Receipt.ClockHighWater
+		config.BaselineCodec = image.codec
+		var prepared *ReceiptWholeStateCapture
+		image.codec.onEncode = func(capture ReceiptWholeStateCapture) {
+			if capture.Receipts.ClockHighWaterMillis == config.Now.UnixMilli() {
+				prepared = &capture
+			}
+		}
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		primary := runtime.NewLanternService(nil)
+		if got := runtime.receipt.store.Stats().HighWaterMillis; got != config.Now.UnixMilli() {
+			t.Fatalf("pristine receiver high-water = %d, want %d", got, config.Now.UnixMilli())
+		}
+		if err := primary.InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+			t.Fatal(err)
+		}
+		if prepared == nil || prepared.Receipts.ClockHighWaterMillis != config.Now.UnixMilli() ||
+			prepared.Retired.ClockHighWaterMillis != config.Now.UnixMilli() ||
+			prepared.Policy.ClockHighWater.UnixMilli() != config.Now.UnixMilli() ||
+			len(prepared.Receipts.Receipts) != 1 || len(prepared.Retired.Epochs) != 1 {
+			t.Fatalf("prepared rebased sidecar = %+v", prepared)
+		}
+		if len(prepared.Graph) != len(image.capture.Graph) {
+			t.Fatalf("sender graph frame count changed: got %d, want %d", len(prepared.Graph), len(image.capture.Graph))
+		}
+		for i, frame := range image.capture.Graph {
+			if !proto.Equal(frame, prepared.Graph[i]) {
+				t.Fatalf("sender graph frame %d changed during receiver clock rebase", i)
+			}
+		}
+		if !reflect.DeepEqual(prepared.Origins, image.capture.Origins) {
+			t.Fatalf("sender origin cutoffs changed: %+v", prepared.Origins)
+		}
+		checkReceipts := func(r *ServingRuntime) {
+			t.Helper()
+			if got := r.receipt.store.Stats(); got.HighWaterMillis != config.Now.UnixMilli() || got.Entries != 1 {
+				t.Fatalf("active Store after rebase = %+v", got)
+			}
+			if status, receipt, err := r.receipt.store.Lookup(image.id, config.Now); err != nil ||
+				status != mutationreceipt.Confirmed || string(receipt.Result) != "baseline-result" {
+				t.Fatalf("active proof = %v, %+v, %v", status, receipt, err)
+			}
+			observations, err := r.receipt.retired.lookupMany(r.receipt.policy, []mutationreceipt.ID{retiredID}, config.Now)
+			if err != nil || len(observations) != 1 || observations[0].Status != mutationreceipt.Confirmed {
+				t.Fatalf("retired proof = %+v, %v", observations, err)
+			}
+		}
+		checkReceipts(runtime)
+
+		suffixWall := image.cutoff.WallNs + 1
+		if suffixWall >= config.Now.UnixNano() {
+			t.Fatalf("suffix HLC %d is not before receiver clock %d", suffixWall, config.Now.UnixNano())
+		}
+		suffix := recoveryGraphPutEffectEntry(t, 0x88, suffixWall, &pb.MutationOp{
+			Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{
+					Key: "intervening-suffix", Value: &pb.Vertex_Nil{Nil: true},
+					Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+				},
+			}},
+		})
+		suffix.Op.(*graphPutEffectEnvelope).Mutation.Seq = 2
+		if appended, err := runtime.log.Append(suffix.Op, suffix.HLC); err != nil || appended.Seq != 2 {
+			t.Fatalf("append source suffix = %+v, %v", appended, err)
+		}
+		if _, ok := runtime.graph.GetVertex("intervening-suffix"); ok {
+			t.Fatal("WAL-only suffix applied before restart")
+		}
+		if err := runtime.Close(); err != nil {
+			t.Fatal(err)
+		}
+		scan, err := scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !scan.hasMarker || scan.markerSequence != 1 ||
+			scan.marker.ReceiptHighWaterMillis != config.Now.UnixMilli() ||
+			!scan.marker.SnapshotHLC.Equal(image.cutoff) ||
+			scan.marker.SourceLocalCutoff != 41 ||
+			scan.marker.RestoreFloor.WallNs < config.Now.UnixNano() {
+			t.Fatalf("rebased marker lost source cut or receiver clock: %+v", scan)
+		}
+
+		originalBuild := image.codec.build
+		image.codec.build = func() (*ReceiptBaselineCandidate, error) {
+			candidate, err := originalBuild()
+			if err != nil {
+				return nil, err
+			}
+			candidate.Receipts, err = mutationreceipt.NewFromSnapshot(prepared.Policy, prepared.Receipts)
+			if err != nil {
+				return nil, err
+			}
+			candidate.Retired = prepared.Retired
+			candidate.Policy = prepared.Policy
+			return candidate, nil
+		}
+		restarted, err := OpenDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = restarted.Close() })
+		checkReceipts(restarted)
+		if _, ok := restarted.graph.GetVertex("intervening-suffix"); !ok {
+			t.Fatal("receiver clock suppressed a suffix newer than the real source cut")
+		}
+		if states := restarted.origins.States(); len(states) != 1 ||
+			states[0].LastSeq != 2 || !states[0].LastHLC.Equal(suffix.HLC) {
+			t.Fatalf("replayed origin cutoff = %+v, want suffix seq 2", states)
+		}
+	})
+
+	t.Run("prunes expired active and retired evidence at receiver clock", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		source := baselineRuntimeTestConfig(path)
+		source.Receipt.ClockHighWater = time.Now().Add(-3 * time.Hour).Truncate(time.Millisecond)
+		source.Now = source.Receipt.ClockHighWater
+		image := newReceiptBaselineTestImage(t, source)
+		retired, retiredID := mustRetiredCatalogSnapshot(
+			t, source.Receipt, image.capture.Receipts.ClockHighWaterMillis, 0x74,
+		)
+		setReceiptBaselineTestRetired(&image, retired)
+		setReceiptBaselineTestGraphFrames(t, &image)
+		config := source
+		config.Receipt.ClockHighWater = time.Now().Truncate(time.Millisecond)
+		config.Now = config.Receipt.ClockHighWater
+		config.BaselineCodec = image.codec
+		var prepared *ReceiptWholeStateCapture
+		image.codec.onEncode = func(capture ReceiptWholeStateCapture) {
+			if capture.Receipts.ClockHighWaterMillis == config.Now.UnixMilli() {
+				prepared = &capture
+			}
+		}
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		if err := runtime.NewLanternService(nil).InstallReceiptBaseline(t.Context(), image.capture); err != nil {
+			t.Fatal(err)
+		}
+		if prepared == nil || len(prepared.Receipts.Receipts) != 0 || len(prepared.Retired.Epochs) != 0 ||
+			prepared.Receipts.ClockHighWaterMillis != config.Now.UnixMilli() ||
+			prepared.Retired.ClockHighWaterMillis != config.Now.UnixMilli() {
+			t.Fatalf("expired rows survived rebased sidecar: %+v", prepared)
+		}
+		if got := runtime.receipt.store.Stats(); got.HighWaterMillis != config.Now.UnixMilli() || got.Entries != 0 {
+			t.Fatalf("expired active Store = %+v", got)
+		}
+		if status, _, err := runtime.receipt.store.Lookup(image.id, config.Now); err != nil ||
+			status != mutationreceipt.NoLongerProvable {
+			t.Fatalf("expired active proof = %v, %v", status, err)
+		}
+		observations, err := runtime.receipt.retired.lookupMany(
+			runtime.receipt.policy, []mutationreceipt.ID{retiredID}, config.Now,
+		)
+		if err != nil || len(observations) != 1 || observations[0].Status != mutationreceipt.NoLongerProvable {
+			t.Fatalf("expired retired proof = %+v, %v", observations, err)
+		}
+		if _, ok := runtime.graph.GetVertex("baseline-searchable"); !ok {
+			t.Fatal("receipt expiry removed source graph state")
+		}
+	})
+
+	t.Run("rejects an empty graph with committed WAL history", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		source := baselineRuntimeTestConfig(path)
+		source.Receipt.ClockHighWater = time.Now().Add(-20 * time.Minute).Truncate(time.Millisecond)
+		source.Now = source.Receipt.ClockHighWater
+		image := newReceiptBaselineTestImage(t, source)
+		config := source
+		config.Receipt.ClockHighWater = source.Now.Add(20 * time.Minute)
+		config.Now = config.Receipt.ClockHighWater
+		config.BaselineCodec = image.codec
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		entry := recoveryGraphPutEffectEntry(t, 0x88, image.cutoff.WallNs+1, &pb.MutationOp{
+			Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{
+					Key: "wal-only", Value: &pb.Vertex_Nil{Nil: true},
+					Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+				},
+			}},
+		})
+		if _, err := runtime.log.Append(entry.Op, entry.HLC); err != nil {
+			t.Fatal(err)
+		}
+		if !emptyReceiptWALRecoveryGraph(runtime.graph) {
+			t.Fatal("WAL-only fixture unexpectedly populated the graph")
+		}
+		if err := runtime.NewLanternService(nil).InstallReceiptBaseline(t.Context(), image.capture); !errors.Is(
+			err, mutationreceipt.ErrRetiredCatalogClockRollback,
+		) {
+			t.Fatalf("WAL evidence accepted a receiver clock rollback: %v", err)
+		}
+		if last, ok := runtime.log.LastSeq(); !ok || last != 1 {
+			t.Fatalf("rejected baseline changed WAL local seq = %d, %t", last, ok)
+		}
+		if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 0 {
+			t.Fatalf("rejected baseline persisted sidecars: %v", sidecars)
+		}
+	})
+
+	t.Run("rechecks causal evidence at final publication cut", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		source := baselineRuntimeTestConfig(path)
+		source.Receipt.ClockHighWater = time.Now().Add(-20 * time.Minute).Truncate(time.Millisecond)
+		source.Now = source.Receipt.ClockHighWater
+		image := newReceiptBaselineTestImage(t, source)
+		config := source
+		config.Receipt.ClockHighWater = source.Now.Add(20 * time.Minute)
+		config.Now = config.Receipt.ClockHighWater
+		config.BaselineCodec = image.codec
+		runtime, err := CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		hookCalls := 0
+		runtime.receipt.installFault = func(point receiptBaselineInstallFaultPoint) error {
+			if point == receiptBaselineAfterSidecarBeforeFinalCut && hookCalls == 0 {
+				hookCalls++
+				if !runtime.graph.ApplyVertexCausalBarrierHLC("expired-put", hlc.Timestamp{
+					WallNs: config.Now.UnixNano(), NodeID: hlc.NodeID{0x93},
+				}) {
+					t.Fatal("failed to install causal evidence")
+				}
+			}
+			return nil
+		}
+		if err := runtime.NewLanternService(nil).InstallReceiptBaseline(t.Context(), image.capture); !errors.Is(
+			err, mutationreceipt.ErrRetiredCatalogClockRollback,
+		) {
+			t.Fatalf("new causal evidence accepted a receiver clock rollback: %v", err)
+		}
+		if hookCalls != 1 || runtime.graph.VertexCount() != 0 ||
+			len(runtime.graph.SnapshotReplication().Barriers.Vertices) != 1 {
+			t.Fatalf("final-cut causal barrier = %d hooks, %+v", hookCalls, runtime.graph.SnapshotReplication().Barriers)
+		}
+		if _, ok := runtime.log.LastSeq(); ok {
+			t.Fatal("rejected baseline committed a marker")
+		}
+		if sidecars := receiptBaselineSidecars(t, path); len(sidecars) != 0 {
+			t.Fatalf("rejected baseline retained an orphan sidecar: %v", sidecars)
+		}
+	})
+
+	t.Run("WAL marker failures preserve pristine receiver state", func(t *testing.T) {
+		for _, tc := range []struct {
+			name        string
+			walError    func(error) error
+			wantFaulted bool
+		}{
+			{
+				name:     "definite abort",
+				walError: func(cause error) error { return &mutationlog.DefiniteWALAbort{Cause: cause} },
+			},
+			{
+				name:        "indeterminate",
+				walError:    func(cause error) error { return cause },
+				wantFaulted: true,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "receipts.wal")
+				source := baselineRuntimeTestConfig(path)
+				source.Receipt.ClockHighWater = time.Now().Add(-20 * time.Minute).Truncate(time.Millisecond)
+				source.Now = source.Receipt.ClockHighWater
+				image := newReceiptBaselineTestImage(t, source)
+				config := source
+				config.Receipt.ClockHighWater = source.Now.Add(20 * time.Minute)
+				config.Now = config.Receipt.ClockHighWater
+				config.BaselineCodec = image.codec
+				runtime, err := CreateDurableReceiptWALServingRuntime(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				originalLog := runtime.log
+				generation := runtime.receipt.generation
+				cause := errors.New("injected rebased marker failure")
+				failingLog := mutationlog.New(mutationlog.Options{
+					Capacity: 8,
+					WAL: receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
+						return tc.walError(cause)
+					}),
+				})
+				runtime.log = failingLog
+				t.Cleanup(func() {
+					runtime.log = originalLog
+					_ = failingLog.Close()
+					_ = runtime.Close()
+				})
+				primary := runtime.NewLanternService(nil)
+				err = primary.InstallReceiptBaseline(t.Context(), image.capture)
+				if !errors.Is(err, cause) || primary.receiptCommitFaulted != tc.wantFaulted {
+					t.Fatalf("rebased marker failure = %v, faulted = %t", err, primary.receiptCommitFaulted)
+				}
+				if tc.wantFaulted {
+					assertReceiptBaselinePublicationFault(t, primary)
+				}
+				if got := runtime.receipt.store.Stats(); got.HighWaterMillis != config.Now.UnixMilli() || got.Entries != 0 {
+					t.Fatalf("failed marker changed active Store = %+v", got)
+				}
+				if runtime.receipt.generation != generation || len(runtime.origins.States()) != 0 ||
+					!emptyReceiptWALRecoveryGraph(runtime.graph) {
+					t.Fatal("failed marker published rebased state")
+				}
+				retired, _, err := runtime.receipt.retired.snapshot(runtime.receipt.policy, config.Now.UnixMilli())
+				if err != nil || len(retired.Epochs) != 0 {
+					t.Fatalf("failed marker changed retired catalog = %+v, %v", retired, err)
+				}
+				sidecars := receiptBaselineSidecars(t, path)
+				if (len(sidecars) == 1) != tc.wantFaulted {
+					t.Fatalf("marker failure sidecars = %v, faulted = %t", sidecars, tc.wantFaulted)
+				}
+			})
+		}
+	})
 }
 
 func TestInstallReceiptBaselineRetiredStateInvariants(t *testing.T) {
