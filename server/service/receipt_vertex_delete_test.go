@@ -20,6 +20,44 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+func BenchmarkPublicReceiptVertexDeleteAdmission(b *testing.B) {
+	for _, withReceipt := range []bool{false, true} {
+		name := "no_receipt"
+		if withReceipt {
+			name = "admitted_receipt"
+		}
+		b.Run(name, func(b *testing.B) {
+			maxEntries := 32
+			if withReceipt {
+				maxEntries = b.N + 1
+			}
+			maxBytes := uint64(maxEntries) * 2048
+			if maxBytes < 1<<20 {
+				maxBytes = 1 << 20
+			}
+			runtime, svc, _ := newActivatedReceiptServiceWithLimits(b, maxEntries, maxBytes)
+			requests := make([]*pb.DeleteVertexRequest, b.N)
+			issued := time.Now().Add(-time.Second)
+			for i := range requests {
+				requests[i] = &pb.DeleteVertexRequest{Key: "benchmark-absent-vertex"}
+				if withReceipt {
+					requests[i].ReceiptContext = receiptBenchmarkContext(b, runtime, issued, uint64(i))
+				}
+			}
+			ctx := context.Background()
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				response, err := svc.DeleteVertex(ctx, requests[i])
+				if err != nil || response.GetExisted() {
+					b.Fatalf("DeleteVertex() = %+v, %v", response, err)
+				}
+			}
+		})
+	}
+}
+
 type receiptVertexDeleteWALFunc func(mutationlog.Entry) error
 
 func (f receiptVertexDeleteWALFunc) Write(entry mutationlog.Entry) error { return f(entry) }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -6133,4 +6135,97 @@ func mountDurableReceiptWireRuntime(
 		t.Fatal(err)
 	}
 	return server, sdk
+}
+
+func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
+	wire := newPublicReceiptWireServer(t, hlc.NodeID{0x76}, 128, testToken)
+	runProbe := func(t *testing.T, endpoint, token, family string, reports bool) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		var admissionPath, lookupPath string
+		args := []string{
+			"run", "./testbed/bench/receiptprobe",
+			"-family", family,
+			"-endpoints", endpoint,
+			"-token", token,
+			"-phase", "wire-test",
+			"-duration", "1s",
+			"-pair-rps", "12",
+			"-concurrency", "2",
+			"-request-timeout", "2s",
+		}
+		if reports {
+			dir := t.TempDir()
+			admissionPath = filepath.Join(dir, "admission.json")
+			lookupPath = filepath.Join(dir, "lookup.json")
+			args = append(args,
+				"-admission-report", admissionPath,
+				"-lookup-report", lookupPath,
+			)
+		}
+		cmd := exec.CommandContext(ctx, "go", args...)
+		cmd.Dir = filepath.Join("..", "..")
+		output, err := cmd.CombinedOutput()
+		if reports && err != nil {
+			t.Fatalf("receiptprobe %s over h2c: %v\n%s", family, err, output)
+		}
+		if !reports && err == nil {
+			t.Fatalf("receiptprobe %s unexpectedly passed: %s", family, output)
+		}
+		if reports {
+			var counts [2]int64
+			for i, path := range []string{admissionPath, lookupPath} {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var report struct {
+					Count                  int64            `json:"count"`
+					StatusCodeDistribution map[string]int64 `json:"statusCodeDistribution"`
+				}
+				if err := json.Unmarshal(data, &report); err != nil {
+					t.Fatalf("parse receiptprobe %s report: %v", family, err)
+				}
+				if report.Count == 0 || len(report.StatusCodeDistribution) != 1 ||
+					report.StatusCodeDistribution["OK"] != report.Count {
+					t.Fatalf("receiptprobe %s report %d = %+v, want positive all-OK RPC count",
+						family, i, report)
+				}
+				counts[i] = report.Count
+			}
+			if counts[0] != counts[1] {
+				t.Fatalf("receiptprobe %s admission/lookup counts = %d/%d", family, counts[0], counts[1])
+			}
+		}
+		return string(output)
+	}
+	for _, family := range []string{
+		"receipt_vertex_put", "receipt_vertex_delete",
+		"receipt_edge_delete", "receipt_edge_add",
+	} {
+		t.Run(family, func(t *testing.T) {
+			output := runProbe(t, wire.server.url, testToken, family, true)
+			if !strings.Contains(output, "admission=") || !strings.Contains(output, "lookup=") {
+				t.Fatalf("receiptprobe %s did not report both RPCs: %s", family, output)
+			}
+		})
+	}
+	t.Run("rejects unauthenticated capability before mutation", func(t *testing.T) {
+		before := wire.runtime.ReceiptStats().Entries
+		output := runProbe(t, wire.server.url, "wrong-token", "receipt_edge_add", false)
+		if !strings.Contains(strings.ToLower(output), "unauthenticated") {
+			t.Fatalf("wrong token did not fail capability discovery: %s", output)
+		}
+		if got := wire.runtime.ReceiptStats().Entries; got != before {
+			t.Fatalf("wrong-token probe changed receipt entries: before=%d after=%d", before, got)
+		}
+	})
+	t.Run("rejects graph-only endpoint", func(t *testing.T) {
+		graphOnly, _, _ := newAuthedServer(t)
+		output := runProbe(t, graphOnly.url, testToken, "receipt_vertex_put", false)
+		if !strings.Contains(output, "capability is disabled") {
+			t.Fatalf("graph-only endpoint did not fail closed: %s", output)
+		}
+	})
 }

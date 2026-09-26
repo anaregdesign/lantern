@@ -125,7 +125,9 @@ cooldown="$(yq -r '.phases.cooldown' "$SCENARIO_FILE")"
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
 target_driver="$(yq -r '.target.driver // "ghz"' "$SCENARIO_FILE")"
 case "$target_driver" in
-  ghz | receipt_edge_delete) ;;
+  ghz) receipt_driver=0 ;;
+  receipt_vertex_put | receipt_vertex_delete | receipt_edge_delete | receipt_edge_add)
+    receipt_driver=1 ;;
   *) die "unknown target.driver $target_driver in $SCENARIO_FILE" ;;
 esac
 if [[ "$target_driver" == "ghz" ]]; then
@@ -180,14 +182,14 @@ if [[ -n "$cluster_search" && "$cluster_search" != "null" ]]; then
 fi
 
 receipt_wal_enabled="$(yq -r '.cluster.receipt_wal.enabled // false' "$SCENARIO_FILE")"
-if [[ "$target_driver" == "receipt_edge_delete" && "$receipt_wal_enabled" != "true" ]]; then
-  die "receipt_edge_delete requires cluster.receipt_wal.enabled=true"
+if [[ "$receipt_driver" == "1" && "$receipt_wal_enabled" != "true" ]]; then
+  die "$target_driver requires cluster.receipt_wal.enabled=true"
 fi
 if [[ "$receipt_wal_enabled" == "true" ]]; then
-  [[ "$target_driver" == "receipt_edge_delete" ]] ||
-    die "cluster.receipt_wal is reserved for target.driver=receipt_edge_delete"
+  [[ "$receipt_driver" == "1" ]] ||
+    die "cluster.receipt_wal is reserved for a receipt target.driver"
   [[ "${SKIP_UP:-0}" != "1" ]] ||
-    die "receipt_edge_delete requires a fresh Compose lifecycle; unset SKIP_UP"
+    die "receipt driver requires a fresh Compose lifecycle; unset SKIP_UP"
 
   receipt_retention="$(yq -r '.cluster.receipt_wal.retention // ""' "$SCENARIO_FILE")"
   receipt_max_entries="$(yq -r '.cluster.receipt_wal.max_entries // 0' "$SCENARIO_FILE")"
@@ -210,8 +212,79 @@ if [[ "$receipt_wal_enabled" == "true" ]]; then
   export LANTERN_BENCH_RECEIPT_WAL_MODE="fresh"
   export LANTERN_BENCH_RECEIPT_WAL_PATH="/data/receipt-bench.wal"
   log "cluster override: fresh durable receipt WAL with bounded capacity"
-elif [[ "$target_driver" != "ghz" ]]; then
-  die "target.driver=$target_driver is not configured"
+fi
+
+# A receipt run pins one content-addressed image before Compose starts, then
+# proves all three running project services used exactly that image and source
+# commit before warmup and again after the verdict. The nightly passes the
+# same expected ID to all four separate fresh-WAL invocations.
+receipt_image_ref="${LANTERN_IMAGE:-}"
+receipt_image_id=""
+receipt_image_commit=""
+receipt_container_ids=()
+pin_receipt_image() {
+  [[ -n "$receipt_image_ref" ]] || die "receipt driver requires an explicit LANTERN_IMAGE"
+  receipt_image_id="$(docker image inspect --format '{{.Id}}' "$receipt_image_ref")" ||
+    die "cannot resolve receipt image $receipt_image_ref before Compose startup"
+  [[ "$receipt_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "receipt image $receipt_image_ref has no valid immutable image ID"
+  if [[ -n "${EXPECTED_LANTERN_IMAGE_ID:-}" && "$receipt_image_id" != "$EXPECTED_LANTERN_IMAGE_ID" ]]; then
+    die "receipt image $receipt_image_ref differs from pinned $EXPECTED_LANTERN_IMAGE_ID"
+  fi
+  receipt_image_commit="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$receipt_image_ref" |
+    sed -n 's/^LANTERN_COMMIT=//p')" ||
+    die "cannot read receipt image commit for $receipt_image_ref"
+  [[ "$receipt_image_commit" =~ ^[0-9a-f]{40}$ ]] ||
+    die "receipt image $receipt_image_ref lacks a full source commit"
+  if [[ -n "${EXPECTED_LANTERN_COMMIT:-}" && "$receipt_image_commit" != "$EXPECTED_LANTERN_COMMIT" ]]; then
+    die "receipt image commit $receipt_image_commit differs from pinned $EXPECTED_LANTERN_COMMIT"
+  fi
+}
+
+verify_receipt_image_provenance() {
+  local out="$1" actual_image_id service container identity
+  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica index=0
+  local -a replicas=()
+  actual_image_id="$(docker image inspect --format '{{.Id}}' "$receipt_image_ref")" ||
+    die "receipt image $receipt_image_ref disappeared"
+  [[ "$actual_image_id" == "$receipt_image_id" ]] ||
+    die "receipt image $receipt_image_ref changed since startup"
+  for service in lantern-0 lantern-1 lantern-2; do
+    container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" ||
+      die "cannot resolve receipt service $service"
+    [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] ||
+      die "receipt service $service has no unique running container"
+    identity="$(docker inspect --format \
+      '{{.Id}}|{{.Image}}|{{.Config.Image}}|{{.State.Running}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.RestartCount}}' \
+      "$container")" || die "cannot inspect receipt service $service"
+    IFS='|' read -r actual_container_id actual_container_image actual_ref running project actual_service restarts <<<"$identity"
+    [[ "$actual_container_id" =~ ^[0-9a-f]{64}$ && "$running" == "true" &&
+       "$project" == "$COMPOSE_PROJECT_NAME" && "$actual_service" == "$service" &&
+       "$actual_container_image" == "$receipt_image_id" && "$actual_ref" == "$receipt_image_ref" &&
+       "$restarts" == "0" ]] ||
+      die "receipt service $service is not a running, restart-free $receipt_image_id from $receipt_image_ref in $COMPOSE_PROJECT_NAME"
+    if [[ -n "${receipt_container_ids[$index]:-}" &&
+          "${receipt_container_ids[$index]}" != "$actual_container_id" ]]; then
+      die "receipt service $service was recreated during the run"
+    fi
+    receipt_container_ids[$index]="$actual_container_id"
+    index=$((index + 1))
+    replica="$(jq -nc --arg service "$service" --arg container_id "$actual_container_id" \
+      --arg image_id "$actual_container_image" --arg image_ref "$actual_ref" \
+      '{service:$service, container_id:$container_id, image_id:$image_id, image_ref:$image_ref}')" ||
+      die "cannot record receipt image provenance for $service"
+    replicas+=( "$replica" )
+  done
+  printf '%s\n' "${replicas[@]}" |
+    jq -s --arg ref "$receipt_image_ref" --arg id "$receipt_image_id" \
+      --arg commit "$receipt_image_commit" \
+      '{image_ref:$ref, image_id:$id, source_commit:$commit, replicas:.}' > "$out" ||
+    die "cannot write receipt image provenance to $out"
+  log "verified receipt image $receipt_image_id from $receipt_image_commit on all three replicas"
+}
+
+if [[ "$receipt_driver" == "1" ]]; then
+  pin_receipt_image
 fi
 
 # ----- compose up ------------------------------------------------------------
@@ -246,6 +319,9 @@ discover_ports() {
   log "discovered grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
 }
 discover_ports
+if [[ "$receipt_driver" == "1" ]]; then
+  verify_receipt_image_provenance "$OUTDIR/image_provenance_pre.json"
+fi
 
 # Rewrite scenario file with discovered ports so every `localhost:6380/81/82`
 # reference (target.endpoints, subscribe.endpoints, subscribe.consumers[].endpoint, ...)
@@ -408,12 +484,12 @@ snapshot_runtime() {
     for (( round = 1; round <= rounds; round++ )); do
       if ! curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
         -o /dev/null; then
-        if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+        if [[ "$receipt_driver" == "1" ]]; then
           die "receipt runtime snapshot: forced GC failed for localhost:${port} (round ${round})"
         fi
       fi
       local text
-      if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+      if [[ "$receipt_driver" == "1" ]]; then
         text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics")" ||
           die "receipt runtime snapshot: metrics scrape failed for localhost:${port} (round ${round})"
       else
@@ -422,7 +498,7 @@ snapshot_runtime() {
       local rg rhi rha rho rvhe rvhw
       # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
       # Coerce to integer so downstream JSON consumers (jq + Go int64) don't choke.
-      if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+      if [[ "$receipt_driver" == "1" ]]; then
         rg="$(receipt_runtime_scalar go_goroutines "$text")" ||
           die "receipt runtime snapshot: invalid go_goroutines for localhost:${port} (round ${round})"
         rhi="$(receipt_runtime_scalar go_memstats_heap_inuse_bytes "$text")" ||
@@ -498,13 +574,25 @@ run_receipt_probe() {
   # optional $5/$6 admission and lookup report paths.
   local phase="$1" conc="$2" aggregate_rps="$3" dur="$4"
   local admission_report="${5:-}" lookup_report="${6:-}"
-  local calls_len pair_rps endpoint_urls="" ep
+  local calls_len pair_rps endpoint_urls="" ep expected_call
+  case "$target_driver" in
+    receipt_vertex_put) expected_call="PutVertex" ;;
+    receipt_vertex_delete) expected_call="DeleteVertex" ;;
+    receipt_edge_delete) expected_call="DeleteEdge" ;;
+    receipt_edge_add) expected_call="AddEdge" ;;
+    *) die "unsupported receipt driver $target_driver" ;;
+  esac
   calls_len="$(yq -r '.target.calls | length' "$SCENARIO_FILE")"
   [[ "$calls_len" == "2" ]] ||
-    die "receipt_edge_delete requires exactly two declared producers"
+    die "$target_driver requires exactly two declared producers"
   (( aggregate_rps % calls_len == 0 )) ||
     die "receipt aggregate RPS ($aggregate_rps) must divide evenly across $calls_len producers"
   pair_rps=$((aggregate_rps / calls_len))
+  [[ "$(yq -r '.target.calls[0].name' "$SCENARIO_FILE")" == "receipt_admission" &&
+     "$(yq -r '.target.calls[0].call' "$SCENARIO_FILE")" == "graph.v1.LanternService/$expected_call" &&
+     "$(yq -r '.target.calls[1].name' "$SCENARIO_FILE")" == "receipt_lookup" &&
+     "$(yq -r '.target.calls[1].call' "$SCENARIO_FILE")" == "graph.v1.LanternService/GetReceiptStatus" ]] ||
+    die "$target_driver has a missing or wrong admission/lookup RPC"
   for ep in "${endpoints[@]}"; do
     [[ -z "$endpoint_urls" ]] || endpoint_urls+=","
     endpoint_urls+="http://${ep}"
@@ -512,6 +600,7 @@ run_receipt_probe() {
 
   local args=(
     -endpoints "$endpoint_urls"
+    -family "$target_driver"
     -token "$LANTERN_BENCH_AUTH_TOKEN"
     -phase "$phase"
     -duration "$dur"
@@ -554,7 +643,7 @@ snapshot_search_lifecycle() {
 
 # ----- WARMUP ----------------------------------------------------------------
 log "warmup: ${warmup_duration} @ c=${warmup_conc} rps=${warmup_rps}"
-if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+if [[ "$receipt_driver" == "1" ]]; then
   run_receipt_probe warmup "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
 else
   warm_call="$(yq -r '.target.call // .target.calls[0].call' "$SCENARIO_FILE")"
@@ -648,7 +737,7 @@ fi
 calls_len="$(yq -r '.target.calls | length // 0' "$SCENARIO_FILE")"
 prod_pids=()
 producer_failed=0
-if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+if [[ "$receipt_driver" == "1" ]]; then
   if ! run_receipt_probe \
     steady \
     "$steady_conc" \
@@ -769,7 +858,7 @@ g_thresh="$(yq -r '.leak_gate.goroutine_max_delta' "$SCENARIO_FILE")"
 # evaluate. See issue #248 — heap_inuse is span-level and includes free
 # slots, so it is unreliable as a leak signal under sustained churn.
 h_thresh_mb="$(yq -r '.leak_gate.heap_alloc_max_delta_mb // .leak_gate.heap_inuse_max_delta_mb' "$SCENARIO_FILE")"
-if [[ "$target_driver" == "receipt_edge_delete" ]]; then
+if [[ "$receipt_driver" == "1" ]]; then
   # Receipt sampling runs inside the steady driver, including with
   # LEAK_GATE_ONLY=1. Require all three unforced /metrics series in addition
   # to the existing post-warmup/post-cooldown GC live-set snapshots.
@@ -901,6 +990,9 @@ fi
 log "perf gate verdict: $perf_verdict"
 
 # ----- Render report ---------------------------------------------------------
+if [[ "$receipt_driver" == "1" ]]; then
+  verify_receipt_image_provenance "$OUTDIR/image_provenance_post.json"
+fi
 render_report
 
 if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$producer_failed" == "0" ]]; then exit 0; else exit 1; fi

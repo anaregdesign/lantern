@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"encoding/binary"
 	"sort"
 	"testing"
 	"time"
@@ -14,6 +15,33 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func receiptBenchmarkContext(
+	b testing.TB,
+	runtime *ServingRuntime,
+	issued time.Time,
+	sequence uint64,
+) *pb.MutationReceiptContext {
+	b.Helper()
+	var randomness [24]byte
+	randomness[0] = 1
+	binary.BigEndian.PutUint64(randomness[16:], sequence+1)
+	id, err := mutationreceipt.NewID(runtime.receipt.epoch, issued, randomness)
+	if err != nil {
+		b.Fatal(err)
+	}
+	group := mutationreceipt.GroupID{1}
+	binary.BigEndian.PutUint64(group[8:], sequence+1)
+	nodeID := runtime.clock.NodeID()
+	return &pb.MutationReceiptContext{
+		OperationIds:  [][]byte{id.Bytes()},
+		LogicalCallId: append([]byte(nil), group[:]...),
+		Endpoint: &pb.ReceiptEndpoint{
+			NodeId:     append([]byte(nil), nodeID[:]...),
+			Generation: append([]byte(nil), runtime.receipt.generation[:]...),
+		},
+	}
+}
 
 func canonicalizeReceiptReplicationSnapshot(snapshot *graphcache.ReplicationSnapshot[string, *pb.Vertex]) {
 	sort.Slice(snapshot.Graph.Vertices, func(i, j int) bool {
