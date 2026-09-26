@@ -132,8 +132,12 @@ a different artifact. Capture each marker as soon as the run and tracked
 cleanup finish. The host UTC `recordedAt` must be within 30 minutes of
 `finishedAt` (2-minute clock tolerance), and `RUN_STARTED_AT` must be taken
 just before launch: the marker start must fall within 2 minutes before to
-10 minutes after it. A run may last at most 4 hours. Keep the marker and
-host artifact in private storage until independently validated.
+10 minutes after it. A run may last at most 4 hours. Run the capture validator
+within 30 minutes of the record's `recordedAt` (and create the record within
+30 minutes of the marker finish); old matching marker/record pairs cannot
+pass a later capture-time check. The marker and record are each limited to
+64 KiB, including direct device output. Keep the marker and host artifact
+in private storage until independently validated.
 
 Create a **new** sanitized receipt record for each platform only from that
 captured marker. Keep markers and records outside the checkout while

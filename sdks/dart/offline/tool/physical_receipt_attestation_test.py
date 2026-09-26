@@ -157,6 +157,33 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another run"):
             self.validate(marker, record)
 
+    def test_entire_old_run_cannot_pass_capture_time_validation(self):
+        marker, record = self.fixture()
+        age = timedelta(days=7)
+        marker["startedAt"] = utc(self.started - age)
+        marker["finishedAt"] = utc(self.finished - age)
+        record["runStartedAt"] = utc(self.run_start - age)
+        record["recordedAt"] = utc(self.recorded - age)
+        with self.assertRaisesRegex(ValueError, "stale for capture-time"):
+            self.validate(marker, record, run_started_at=utc(self.run_start - age))
+
+        marker, record = self.fixture()
+        self.validate(marker, record, now=self.recorded + attestation.CAPTURE_LIMIT)
+        with self.assertRaisesRegex(ValueError, "stale for capture-time"):
+            self.validate_files(
+                now=self.recorded + attestation.CAPTURE_LIMIT + timedelta(microseconds=1)
+            )
+
+    def test_oversized_marker_or_record_is_rejected_before_json_parsing(self):
+        marker, record = self.fixture()
+        self.validate(marker, record)
+        self.record_path.write_bytes(b" " * (attestation.MAX_EVIDENCE_BYTES + 1))
+        with self.assertRaisesRegex(ValueError, "receipt evidence record.*oversized"):
+            self.validate_files()
+        self.marker_path.write_bytes(b" " * (attestation.MAX_EVIDENCE_BYTES + 1))
+        with self.assertRaisesRegex(ValueError, "on-device receipt marker.*oversized"):
+            self.validate_files()
+
     def test_failed_or_running_marker_including_cleanup_failure_is_rejected(self):
         for status, phase, failure_type in (
             ("failed", "body", None),
@@ -262,28 +289,56 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
 
     def test_device_capture_requires_hardware_and_reads_android_app_container(self):
         marker = b'{"kind":"physical_receipt_attestation"}'
-        calls = [
-            subprocess.CompletedProcess([], 0, stdout=b"0\n"),
-            subprocess.CompletedProcess([], 0, stdout=marker),
-        ]
-        with patch.object(attestation.subprocess, "run", side_effect=calls) as run:
+        with patch.object(
+            attestation, "_bounded_command_stdout", side_effect=[b"0\n", marker],
+        ) as capture:
             self.assertEqual(attestation.capture_device_marker("android"), marker)
             self.assertEqual(
-                run.call_args_list[0].args[0],
+                capture.call_args_list[0].args[0],
                 ["adb", "-d", "shell", "getprop", "ro.kernel.qemu"],
             )
-            self.assertIn("run-as", run.call_args_list[1].args[0])
+            self.assertIn("run-as", capture.call_args_list[1].args[0])
         with patch.object(
-            attestation.subprocess, "run",
-            return_value=subprocess.CompletedProcess([], 0, stdout=b"1\n"),
-        ) as run, self.assertRaisesRegex(ValueError, "physical hardware"):
+            attestation, "_bounded_command_stdout", return_value=b"1\n",
+        ) as capture, self.assertRaisesRegex(ValueError, "physical hardware"):
             attestation.capture_device_marker("android")
-        run.assert_called_once()
+        capture.assert_called_once()
         with patch.object(
-            attestation.subprocess, "run",
-            side_effect=[calls[0], subprocess.CompletedProcess([], 0, stdout=b"x" * 65537)],
+            attestation, "_bounded_command_stdout",
+            side_effect=[b"0\n", b"x" * (attestation.MAX_EVIDENCE_BYTES + 1)],
         ), self.assertRaisesRegex(ValueError, "oversized"):
             attestation.capture_device_marker("android")
+
+    def test_device_stdout_is_bounded_and_timeout_reaps_the_child(self):
+        command = [sys.executable, "-c", "import sys; print('ready')"]
+        self.assertEqual(
+            attestation._bounded_command_stdout(
+                command, timeout=5, limit=attestation.MAX_EVIDENCE_BYTES,
+                label="on-device receipt marker",
+            ),
+            b"ready\n",
+        )
+        oversized = [
+            sys.executable, "-c",
+            "import sys; sys.stdout.buffer.write(b'x' * 65537); sys.stdout.flush()",
+        ]
+        with self.assertRaisesRegex(ValueError, "oversized"):
+            attestation._bounded_command_stdout(
+                oversized, timeout=5, limit=attestation.MAX_EVIDENCE_BYTES,
+                label="on-device receipt marker",
+            )
+        with self.assertRaises(subprocess.CalledProcessError):
+            attestation._bounded_command_stdout(
+                [sys.executable, "-c", "import sys; sys.exit(2)"],
+                timeout=5, limit=attestation.MAX_DEVICE_PROBE_BYTES,
+                label="Android device probe",
+            )
+        stalled = [sys.executable, "-c", "import time; time.sleep(3)"]
+        with self.assertRaises(subprocess.TimeoutExpired):
+            attestation._bounded_command_stdout(
+                stalled, timeout=0.1, limit=attestation.MAX_DEVICE_PROBE_BYTES,
+                label="Android device probe",
+            )
 
     def test_ios_capture_copies_marker_from_app_container_only(self):
         marker = b'{"kind":"physical_receipt_attestation"}'
@@ -302,6 +357,11 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
             self.assertEqual(
                 attestation.capture_device_marker("ios", "private-device"), marker
             )
+        marker = b"x" * (attestation.MAX_EVIDENCE_BYTES + 1)
+        with patch.object(
+            attestation.subprocess, "run", side_effect=copy_from_device,
+        ), self.assertRaisesRegex(ValueError, "oversized"):
+            attestation.capture_device_marker("ios", "private-device")
         with self.assertRaisesRegex(ValueError, "private physical device ID"):
             attestation.capture_device_marker("ios")
         with patch.object(
@@ -342,6 +402,15 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
             return_value=self.marker_path.read_bytes(),
         ), redirect_stdout(io.StringIO()):
             attestation.main()
+
+        self.marker_path.write_bytes(b"x" * (attestation.MAX_EVIDENCE_BYTES + 1))
+        with patch.object(sys, "argv", arguments), patch.object(
+            attestation, "assert_capture_checkout",
+        ), patch.object(attestation, "capture_device_marker") as capture:
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
+                attestation.main()
+            capture.assert_not_called()
+        self.assertEqual(rejected.exception.code, 2)
 
 
 if __name__ == "__main__":

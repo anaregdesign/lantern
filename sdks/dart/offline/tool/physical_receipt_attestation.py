@@ -9,10 +9,13 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import select
 import subprocess
 import tempfile
+import time
 
 
 REPOSITORY = "anaregdesign/lantern"
@@ -39,6 +42,8 @@ CLOCK_SKEW = timedelta(minutes=2)
 LAUNCH_LIMIT = timedelta(minutes=10)
 RUN_LIMIT = timedelta(hours=4)
 CAPTURE_LIMIT = timedelta(minutes=30)
+MAX_EVIDENCE_BYTES = 64 * 1024
+MAX_DEVICE_PROBE_BYTES = 32
 MARKER_FIELDS = {
     "schema", "kind", "contentFree", "testedCommit", "target", "runId",
     "platform", "packageId", "installedBinarySha256", "startedAt",
@@ -60,15 +65,26 @@ def _unique_json_fields(pairs):
     return fields
 
 
-def _read_object(path, label):
+def _read_bytes_limited(path, label):
     if not path.is_file():
         raise ValueError(f"missing {label}")
     try:
+        with path.open("rb") as evidence:
+            data = evidence.read(MAX_EVIDENCE_BYTES + 1)
+    except OSError as error:
+        raise ValueError(f"invalid {label}") from error
+    if not data or len(data) > MAX_EVIDENCE_BYTES:
+        raise ValueError(f"{label} is missing or oversized")
+    return data
+
+
+def _read_object(path, label):
+    try:
         value = json.loads(
-            path.read_text(encoding="utf-8"),
+            _read_bytes_limited(path, label).decode("utf-8"),
             object_pairs_hook=_unique_json_fields,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid {label}") from error
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a JSON object")
@@ -152,23 +168,54 @@ def assert_capture_checkout(tested_commit, built_binary_path, platform, target):
         raise ValueError("receipt capture must use this checkout's target build")
 
 
+def _bounded_command_stdout(command, *, timeout, limit, label):
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    try:
+        deadline = time.monotonic() + timeout
+        data = bytearray()
+        with process.stdout as output:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([output], [], [], remaining)[0]:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                chunk = os.read(output.fileno(), min(8192, limit + 1 - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > limit:
+                    raise ValueError(f"{label} is oversized")
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command)
+        return bytes(data)
+    finally:
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        process.wait()
+
+
 def capture_device_marker(platform, device_id=None):
     """Read the current marker from a physical app, never from operator JSON."""
     try:
         if platform == "android":
             if device_id is not None:
                 raise ValueError("Android capture uses one USB-connected physical device")
-            qemu = subprocess.run(
+            qemu = _bounded_command_stdout(
                 ["adb", "-d", "shell", "getprop", "ro.kernel.qemu"],
-                capture_output=True, check=True, timeout=15,
-            ).stdout.strip()
+                timeout=15, limit=MAX_DEVICE_PROBE_BYTES, label="Android device probe",
+            ).strip()
             if qemu not in (b"", b"0"):
                 raise ValueError("Android receipt capture requires physical hardware")
-            marker = subprocess.run(
+            marker = _bounded_command_stdout(
                 ["adb", "-d", "exec-out", "run-as", PACKAGE_IDS["android"],
                  "cat", "cache/lantern-receipt-attestation.json"],
-                capture_output=True, check=True, timeout=30,
-            ).stdout
+                timeout=30, limit=MAX_EVIDENCE_BYTES, label="on-device receipt marker",
+            )
         elif platform == "ios":
             if not isinstance(device_id, str) or not device_id:
                 raise ValueError("iOS receipt capture requires a private physical device ID")
@@ -181,9 +228,10 @@ def capture_device_marker(platform, device_id=None):
                      "--domain-identifier", PACKAGE_IDS["ios"],
                      "--source", "tmp/lantern-receipt-attestation.json",
                      "--destination", str(destination)],
-                    capture_output=True, check=True, timeout=60,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    check=True, timeout=60,
                 )
-                marker = destination.read_bytes()
+                marker = _read_bytes_limited(destination, "on-device receipt marker")
         else:
             raise ValueError("unsupported receipt platform")
     except subprocess.TimeoutExpired:
@@ -192,7 +240,7 @@ def capture_device_marker(platform, device_id=None):
         raise ValueError("on-device receipt marker copy failed") from None
     except OSError:
         raise ValueError("on-device receipt marker or capture command is unavailable") from None
-    if not marker or len(marker) > 64 * 1024:
+    if not marker or len(marker) > MAX_EVIDENCE_BYTES:
         raise ValueError("on-device receipt marker is missing or oversized")
     return marker
 
@@ -312,6 +360,8 @@ def validate_receipt_attestation(
         raise ValueError("receipt marker was not freshly captured")
     if recorded < run_start or max(started, finished, recorded) > checked_at + CLOCK_SKEW:
         raise ValueError("receipt marker or record has impossible UTC timing")
+    if recorded < checked_at - CAPTURE_LIMIT:
+        raise ValueError("receipt record is stale for capture-time validation")
     return built_digest
 
 
@@ -332,7 +382,9 @@ def main():
         parser.error("receipt scenario IDs must be unique")
     try:
         assert_capture_checkout(args.tested_commit, args.built_binary, args.platform, args.target)
-        if Path(args.marker).read_bytes() != capture_device_marker(args.platform, args.device_id):
+        if _read_bytes_limited(Path(args.marker), "on-device receipt marker") != (
+            capture_device_marker(args.platform, args.device_id)
+        ):
             raise ValueError("receipt marker differs from the installed device's marker")
         validate_receipt_attestation(
             args.marker,
