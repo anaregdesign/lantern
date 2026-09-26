@@ -6,6 +6,7 @@ import test from "node:test";
 import { Code, ConnectError } from "@connectrpc/connect";
 
 import {
+  CONTRIB_ID_BYTES,
   InvalidArgumentError,
   LanternError,
   ReceiptMutationUncertainError,
@@ -27,7 +28,7 @@ const nanFixtureEndpoint = requiredEnvironment("LANTERN_NODE_NAN_FIXTURE_ENDPOIN
 const token = requiredEnvironment("LANTERN_NODE_RECEIPT_TOKEN");
 
 function randomContribId() {
-  const contribId = new Uint8Array(randomBytes(24));
+  const contribId = new Uint8Array(randomBytes(CONTRIB_ID_BYTES));
   if (!contribId.some((value) => value !== 0)) contribId[0] = 1;
   return contribId;
 }
@@ -255,6 +256,20 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       InvalidArgumentError,
     );
     assert.equal((await client.getEdge(addEdge.tail, addEdge.head)).weight, 5);
+
+    const invalidContribContext = mintReceiptOperationContext(capability, 1);
+    await assert.rejects(
+      client.addEdgeWithReceipt(
+        { ...addEdge, weight: 1, contribId: new Uint8Array(CONTRIB_ID_BYTES - 1) },
+        invalidContribContext,
+      ),
+      InvalidArgumentError,
+    );
+    assert.equal((await client.getEdge(addEdge.tail, addEdge.head)).weight, 5);
+    assert.equal(
+      (await client.getReceiptStatus(invalidContribContext.operationIds[0])).state,
+      "notYetObserved",
+    );
 
     const zeroContext = mintReceiptOperationContext(capability, 1);
     const zero = await client.addEdgeWithReceipt(

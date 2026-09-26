@@ -1,18 +1,19 @@
 import { expect, test } from "bun:test";
 
 import {
+  CONTRIB_ID_BYTES,
   InvalidArgumentError,
   LanternError,
   connectWeb,
   mintReceiptOperationContext,
-} from "../src/web.js";
+} from "lantern-sdk/web";
 
 const endpoint = process.env.LANTERN_NODE_RECEIPT_ENDPOINT;
 const nanFixtureEndpoint = process.env.LANTERN_NODE_NAN_FIXTURE_ENDPOINT;
 const token = process.env.LANTERN_NODE_RECEIPT_TOKEN;
 
 function randomContribId(): Uint8Array {
-  const contribId = crypto.getRandomValues(new Uint8Array(24));
+  const contribId = crypto.getRandomValues(new Uint8Array(CONTRIB_ID_BYTES));
   if (!contribId.some((value) => value !== 0)) contribId[0] = 1;
   return contribId;
 }
@@ -81,6 +82,23 @@ if (endpoint && token) {
         expect(
           addStatus.state === "confirmed" ? addStatus.receipt.originalResult : addStatus.state,
         ).toEqual({ kind: "addEdge", effectiveWeight: 2 });
+
+        const invalidContribContext = mintReceiptOperationContext(capability, 1);
+        await expect(
+          client.addEdgeWithReceipt(
+            {
+              tail: key,
+              head: `${key}:head`,
+              weight: 1,
+              contribId: new Uint8Array(CONTRIB_ID_BYTES - 1),
+            },
+            invalidContribContext,
+          ),
+        ).rejects.toBeInstanceOf(InvalidArgumentError);
+        expect((await client.getEdge(key, `${key}:head`)).weight).toBe(2);
+        expect((await client.getReceiptStatus(invalidContribContext.operationIds[0]!)).state).toBe(
+          "notYetObserved",
+        );
 
         const maxFloat32 = 3.4028234663852886e38;
         const overflowEdge = {

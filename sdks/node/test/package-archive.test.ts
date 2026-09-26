@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { assertPackageArchive } from "../scripts/package-archive.mjs";
+import { assertPackageArchive, assertReceiptPackageExports } from "../scripts/package-archive.mjs";
+import * as nodeSDK from "../src/index.js";
+import * as webSDK from "../src/web.js";
 
 const manifest = {
+  name: "lantern-sdk",
+  version: "0.12.0",
   type: "module",
   files: ["dist", "README.md", "LICENSE"],
   engines: { node: ">=20" },
@@ -111,5 +115,47 @@ describe("npm pack candidate validation", () => {
     expect(() => assertPackageArchive({ ...manifest, types: "./dist/web.d.ts" }, entries)).toThrow(
       'package.json types must match export "." condition "types"',
     );
+  });
+
+  test("rejects a package identity or version that differs from the release tag", () => {
+    expect(() => assertPackageArchive({ ...manifest, name: "other-sdk" }, entries)).toThrow(
+      'npm pack package name must be "lantern-sdk"',
+    );
+    expect(() => assertPackageArchive({ ...manifest, version: "" }, entries)).toThrow(
+      "npm pack package version is required",
+    );
+    for (const ref of [undefined, "refs/pull/42/merge", "refs/heads/main"]) {
+      expect(() => assertPackageArchive(manifest, entries, ref)).not.toThrow();
+    }
+    expect(() => assertPackageArchive(manifest, entries, "refs/tags/sdks/node/v0.11.0")).toThrow(
+      "npm pack version 0.12.0 does not match release tag refs/tags/sdks/node/v0.11.0",
+    );
+    expect(() =>
+      assertPackageArchive(manifest, entries, "refs/tags/sdks/node/v0.12.0"),
+    ).not.toThrow();
+  });
+
+  test("exposes receipt APIs from both Node and web entrypoints", () => {
+    expect(() => assertReceiptPackageExports(nodeSDK, "node")).not.toThrow();
+    expect(() => assertReceiptPackageExports(webSDK, "web")).not.toThrow();
+  });
+
+  test("rejects missing receipt exports and class methods", () => {
+    expect(() =>
+      assertReceiptPackageExports({ ...nodeSDK, mintReceiptOperationContext: undefined }, "node"),
+    ).toThrow("missing function export mintReceiptOperationContext");
+    expect(() =>
+      assertReceiptPackageExports({ ...webSDK, CONTRIB_ID_BYTES: undefined }, "web"),
+    ).toThrow("expected CONTRIB_ID_BYTES=24");
+    expect(() =>
+      assertReceiptPackageExports({ ...nodeSDK, RECEIPT_OPERATION_ID_BYTES: 48 }, "node"),
+    ).toThrow("expected RECEIPT_OPERATION_ID_BYTES=49");
+
+    function MissingStatuses() {}
+    Object.setPrototypeOf(MissingStatuses.prototype, nodeSDK.Lantern.prototype);
+    Object.defineProperty(MissingStatuses.prototype, "getReceiptStatuses", { value: undefined });
+    expect(() =>
+      assertReceiptPackageExports({ ...nodeSDK, Lantern: MissingStatuses }, "node"),
+    ).toThrow("missing Lantern.getReceiptStatuses");
   });
 });

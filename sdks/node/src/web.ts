@@ -61,6 +61,7 @@ export {
   SearchErrorReason,
   SearchIndexHealth,
 } from "./gen/graph/v1/graph_pb.js";
+export { CONTRIB_ID_BYTES } from "./contrib.js";
 export { MAX_DECAY_STEPS, decayContributions, halfLifeDecay } from "./decay.js";
 export type { DecayOptions } from "./decay.js";
 export {
