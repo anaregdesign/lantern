@@ -6,13 +6,13 @@
   reconciliation, and three-state status APIs for Vertex Put, exact Vertex
   Delete, Edge Delete, and contribution-keyed Edge Add. Receipt-bearing
   Add requires explicit nonzero 24-byte contribution IDs and retains each
-  original effective weight, including born-expired zero. All mutations retain
-  exact request-aligned original results and permit opt-in same-endpoint retry only
-  after continuity and family support are revalidated; existing receipt-less
-  mutations are unchanged. Locally detected malformed successful responses are
-  explicitly distinguished from genuine server or transport `INTERNAL`
-  failures so durable adapters can fail closed without suppressing retryable
-  uncertainty.
+  original effective weight, including born-expired zero and signed infinity.
+  All mutations retain exact request-aligned original results and permit opt-in
+  same-endpoint retry only after continuity and family support are revalidated;
+  existing receipt-less mutations are unchanged. Locally detected malformed
+  successful responses are explicitly distinguished from genuine server or
+  transport `INTERNAL` failures so durable adapters can fail closed without
+  suppressing retryable uncertainty.
 
 ## 0.3.1
 

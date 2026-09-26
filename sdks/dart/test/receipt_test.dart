@@ -682,7 +682,7 @@ void main() {
   });
 
   test(
-    'Edge Add status preserves signed zero and rejects invalid float32',
+    'Edge Add status preserves signed zero and infinity',
     () async {
       final id = _operationId(epoch: 1, random: 1);
       LanternClient clientFor(
@@ -710,26 +710,28 @@ void main() {
             .build(),
       );
 
-      final signedZero = await clientFor(-0.0).getReceiptStatus(id);
-      final signedZeroReceipt = signedZero.receipt! as EdgeAddReceipt;
-      expect(signedZeroReceipt.effectiveWeight, 0);
-      expect(signedZeroReceipt.effectiveWeight.isNegative, isTrue);
+      for (final binaryRoundTrip in [true, false]) {
+        final signedZero = await clientFor(
+          -0.0,
+          binaryRoundTrip: binaryRoundTrip,
+        ).getReceiptStatus(id);
+        final signedZeroReceipt = signedZero.receipt! as EdgeAddReceipt;
+        expect(signedZeroReceipt.effectiveWeight, 0);
+        expect(signedZeroReceipt.effectiveWeight.isNegative, isTrue);
 
-      for (final invalid in [
-        double.nan,
-        double.infinity,
-        double.negativeInfinity,
-      ]) {
-        await expectLater(
-          clientFor(invalid).getReceiptStatus(id),
-          throwsA(
-            isA<LanternInternalException>().having(
-              (error) => error.isSdkProtocolViolation,
-              'isSdkProtocolViolation',
-              isTrue,
-            ),
-          ),
-        );
+        for (final infinity in [
+          double.infinity,
+          double.negativeInfinity,
+        ]) {
+          final status = await clientFor(
+            infinity,
+            binaryRoundTrip: binaryRoundTrip,
+          ).getReceiptStatus(id);
+          expect(
+            (status.receipt! as EdgeAddReceipt).effectiveWeight,
+            infinity,
+          );
+        }
       }
       for (final overflow in [double.maxFinite, -double.maxFinite]) {
         await expectLater(
@@ -748,6 +750,49 @@ void main() {
       }
     },
   );
+
+  test('receipt-bearing Edge Add preserves signed infinity results', () async {
+    final context = _receiptContext(
+      count: 2,
+      mutation: ReceiptMutationKind.edgeAdd,
+    );
+    final client = _client(
+      FakeTransportBuilder()
+          .unary<graph.AddEdgesRequest, graph.AddEdgesResponse>(
+            LanternService.addEdges,
+            (request, callContext) => graph.AddEdgesResponse(
+              written: 2,
+              effectiveWeights: [
+                double.infinity,
+                double.negativeInfinity,
+              ],
+            ),
+          )
+          .build(),
+    );
+
+    final results = await client.addEdgesWithReceipt(
+      [
+        EdgeInput(
+          tail: 'positive',
+          head: 'infinity',
+          weight: 1,
+          contribId: _bytes(24, 1),
+        ),
+        EdgeInput(
+          tail: 'negative',
+          head: 'infinity',
+          weight: -1,
+          contribId: _bytes(24, 2),
+        ),
+      ],
+      context: context,
+    );
+    expect(results.map((result) => result.effectiveWeight), [
+      double.infinity,
+      double.negativeInfinity,
+    ]);
+  });
 
   test('receipt-bearing Vertex Put is plural canonical and exact', () async {
     final pluralContext = _receiptContext(
@@ -1778,14 +1823,6 @@ void main() {
         graph.AddEdgesResponse(
           written: 1,
           effectiveWeights: [double.nan],
-        ),
-        graph.AddEdgesResponse(
-          written: 1,
-          effectiveWeights: [double.infinity],
-        ),
-        graph.AddEdgesResponse(
-          written: 1,
-          effectiveWeights: [double.negativeInfinity],
         ),
         graph.AddEdgesResponse(
           written: 1,

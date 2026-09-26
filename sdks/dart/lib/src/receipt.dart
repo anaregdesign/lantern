@@ -392,6 +392,9 @@ final class EdgeAddReceipt extends MutationReceipt {
   }) : super._(mutation: ReceiptMutationKind.edgeAdd);
 
   /// The edge's effective live weight immediately after the original Add.
+  ///
+  /// Signed infinity remains an authoritative retained float32 result;
+  /// receipt-bearing Add inputs are still required to be finite.
   final double effectiveWeight;
 }
 
@@ -446,6 +449,9 @@ final class ReceiptEdgeAddResult {
   final ReceiptOperationId operationId;
 
   /// The edge's effective live weight immediately after the original Add.
+  ///
+  /// Signed infinity remains an authoritative retained float32 result;
+  /// receipt-bearing Add inputs are still required to be finite.
   final double effectiveWeight;
 }
 
@@ -899,7 +905,7 @@ extension LanternReceipts on LanternClient {
           ReceiptEdgeAddResult._(
             edge: EdgeRef(input[index].tail, input[index].head),
             operationId: context.operationIds[index],
-            effectiveWeight: _finiteFloat32FromProto(
+            effectiveWeight: _receiptResultFloat32FromProto(
               response.effectiveWeights[index],
               'receipt Edge Add effective weight',
             ),
@@ -1538,7 +1544,7 @@ MutationReceipt _mutationReceiptFromProto(
         itemCount: value.itemCount,
         intentSha256: intentSha256,
         deadline: deadline,
-        effectiveWeight: _finiteFloat32FromProto(
+        effectiveWeight: _receiptResultFloat32FromProto(
           result.addEdgeEffectiveWeight,
           'receipt Edge Add effective weight',
         ),

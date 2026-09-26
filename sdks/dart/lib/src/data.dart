@@ -688,3 +688,17 @@ double _finiteFloat32FromProto(double value, String field) {
   }
   return normalized;
 }
+
+double _receiptResultFloat32FromProto(double value, String field) {
+  if (value.isNaN) {
+    throw _internalSdkException('server returned a NaN $field');
+  }
+  final data = ByteData(4)..setFloat32(0, value, Endian.big);
+  final normalized = data.getFloat32(0, Endian.big);
+  if (value.isFinite && !normalized.isFinite) {
+    throw _internalSdkException(
+      'server returned $field outside the float32 range',
+    );
+  }
+  return normalized;
+}

@@ -118,7 +118,9 @@ contribution-keyed Edge Add are explicit APIs alongside the existing
 receipt-less methods. Existing methods retain their established retry and
 ambiguous-result behavior. Receipt-bearing Add requires a distinct explicit,
 nonzero 24-byte contribution ID for every item and returns the exact original
-effective weight. The online package does not persist receipt state.
+effective weight. Finite Add inputs can accumulate to signed infinity, which
+remains an authoritative result. The online package does not persist receipt
+state.
 
 Fetch capability from the target endpoint, mint one immutable context, persist
 its mutation kind plus exact operation/group/endpoint bytes if recovery must
