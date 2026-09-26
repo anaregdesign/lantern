@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as http from "node:http";
 import { type AddressInfo } from "node:net";
 
-import { Code, ConnectError, type ConnectRouter } from "@connectrpc/connect";
+import { Code, ConnectError, type ConnectRouter, type Transport } from "@connectrpc/connect";
 import { connectNodeAdapter, createConnectTransport } from "@connectrpc/connect-node";
 import { create, toJson } from "@bufbuild/protobuf";
 
@@ -29,6 +29,7 @@ import {
   Lantern,
   FailedPreconditionError,
   InvalidArgumentError,
+  LanternError,
   NotFoundError,
   ResourceExhaustedError,
   SearchContinuationLimitedError,
@@ -45,6 +46,7 @@ import {
   type BackupRecord,
   type IlluminateOptions,
 } from "../src/index.js";
+import { connectWeb } from "../src/web.js";
 import {
   LanternService,
   VertexSchema,
@@ -59,6 +61,7 @@ import {
 
 interface StubState {
   vertices: Map<string, ReturnType<typeof create<typeof VertexSchema>>>;
+  lastCallerHeader?: string | null;
   /** Last IlluminateRequest the stub observed, for request-building assertions (#605, #846). */
   lastIlluminate?: {
     seed: string;
@@ -152,7 +155,8 @@ interface StubState {
 function newStubRoutes(state: StubState) {
   return (router: ConnectRouter) => {
     router.service(LanternService, {
-      async getVertex(req) {
+      async getVertex(req, context) {
+        state.lastCallerHeader = context.requestHeader.get("X-Lantern-Caller");
         const v = state.vertices.get(req.key);
         if (!v) {
           throw new ConnectError("not found", Code.NotFound);
@@ -509,6 +513,65 @@ describe("Lantern client", () => {
 
   test("connect rejects empty baseUrl", () => {
     expect(() => connect("")).toThrow(/baseUrl/);
+  });
+
+  test("a counted failing transport receives one unary attempt even with idempotentAdds", async () => {
+    let attempts = 0;
+    const transport: Transport = {
+      async unary(): Promise<never> {
+        attempts++;
+        throw new ConnectError("injected transport failure", Code.Unavailable);
+      },
+      stream(): never {
+        throw new Error("unexpected streaming call");
+      },
+    };
+    const c = Lantern.withTransport(transport, { idempotentAdds: true });
+    try {
+      await expect(c.addEdge({ tail: "no-retry", head: "edge", weight: 1 })).rejects.toBeInstanceOf(
+        LanternError,
+      );
+      expect(attempts).toBe(1);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("connect forwards caller-supplied headers through its interceptor", async () => {
+    const c = connect(baseUrl, {
+      transportOptions: { httpVersion: "1.1" },
+      interceptors: [
+        (next) => (request) => {
+          request.header.set("X-Lantern-Caller", "caller");
+          return next(request);
+        },
+      ],
+    });
+    try {
+      state.lastCallerHeader = undefined;
+      await expect(c.getVertex("no-header-test-vertex")).rejects.toBeInstanceOf(NotFoundError);
+      expect(state.lastCallerHeader).toBe("caller");
+    } finally {
+      c.close();
+    }
+  });
+
+  test("connectWeb makes one fetch attempt on a transport failure", async () => {
+    let attempts = 0;
+    const c = connectWeb("http://127.0.0.1:6380", {
+      transportOptions: {
+        fetch: async (): Promise<never> => {
+          attempts++;
+          throw new Error("injected fetch failure");
+        },
+      },
+    });
+    try {
+      await expect(c.getVertex("no-retry")).rejects.toBeInstanceOf(LanternError);
+      expect(attempts).toBe(1);
+    } finally {
+      c.close();
+    }
   });
 
   test("PutVertex + GetVertex round-trips a string value", async () => {

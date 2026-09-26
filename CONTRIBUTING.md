@@ -235,7 +235,11 @@ of that surface ships, **in the same PR**:
    contract (NotFound sentinel, batch partial-miss, chunking, TTL expiry,
    idempotent retry, ...). Unit tests in the owning module complement but do not
    replace this: the wire path is where the singular→plural facades, validation
-   interceptors, and codec behaviour actually live.
+   interceptors, and codec behaviour actually live. For the standalone Node
+   SDK, real-wire cases instead live in `sdks/node/test/`: `node-sdk.yml` runs
+   `bun run test:real-wire` on Node 20/22 against Connect/h2c and `bun test`
+   for browser Connect-Web real-wire cases. Both paths must assert a happy
+   path and a failure/edge contract; in-process stubs do not replace them.
 2. **Bench coverage for perf-relevant paths.** A change on a hot path (reads,
    writes, scans, traversals, streams) joins an existing scenario fan-out in
    `testbed/bench/scenarios/` or gets a new scenario. The release-sweep scenarios

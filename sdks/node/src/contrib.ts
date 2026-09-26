@@ -3,9 +3,10 @@
  *
  * A contrib ID is the 24-byte identifier the server uses to make an
  * additive `AddEdge` / `AddEdges` contribution idempotent: re-sending the
- * same bytes (e.g. a transport retry) is a no-op instead of double-counting
- * the edge weight. The layout mirrors the Go SDK and the server's
- * `contribIDFor` exactly, so ids minted by either SDK are interchangeable:
+ * same bytes while that contribution remains live (e.g. via a transport
+ * retry) avoids double-counting weight. The layout mirrors the Go SDK and
+ * the server's `contribIDFor` exactly, so ids minted by either SDK are
+ * interchangeable:
  *
  *   bytes [0:16] = per-client nonce (origin)
  *   bytes [16:24] = uint64 big-endian = (seq << 16) | (index & 0xffff)
@@ -14,8 +15,8 @@
  * `ConnectOptions.idempotentAdds`):
  *
  *   - Opt-in automatic ids: the client mints `(nonce, seq, index)` triples,
- *     one `seq` per Add call (per chunk), so a retried call re-sends the
- *     same bytes.
+ *     one `seq` per Add call (per chunk). A transport-level resend of the
+ *     constructed request retains those ids; a new SDK call mints new ones.
  *   - Caller-supplied deterministic ids: pass an exactly-24-byte
  *     `contribId` per edge to control the dedup key yourself.
  *

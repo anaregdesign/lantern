@@ -15,10 +15,10 @@
  * BatchError is thrown by batch helpers (putVertices, addEdges, putEdges,
  * deleteVertices, deleteEdges) on partial-write failure; its `written`
  * field reports the input-prefix length whose responses were fully observed
- * before the failing chunk, so callers can resume with
- * `inputs.slice(err.written)`. For `putVerticesIfAbsent`, the failed chunk
- * may have committed without a usable response; replay is a new condition
- * evaluation and cannot recover the original per-item outcomes.
+ * before the failing chunk. The remaining `inputs.slice(err.written)` are
+ * uncertain, not automatically safe to replay: a failed chunk may have
+ * committed without a usable response, and a new call cannot in general
+ * recover its original result.
  */
 
 import { ConnectError } from "@connectrpc/connect";
@@ -163,21 +163,15 @@ export class ReceiptMutationUncertainError extends ReceiptReconciliationError {
  * sequence completed by chunks 0..N-1 before chunk N failed. It is not an
  * `appliedAndLive` count: a completed Put chunk can carry any bounded
  * per-item outcome.
- * Resume safely with `inputs.slice(err.written)`.
- *
- * Full retry from index 0 is safe for idempotent operations
- * (putVertices, putEdges, deleteVertices, deleteEdges) but NOT for
- * a plain addEdges — the already-applied prefix would be double-counted.
- * Attaching contrib ids to the edges (an automatic id via
- * `ConnectOptions.idempotentAdds`, or a deterministic `EdgeInput.contribId`)
- * makes both a resumed retry (`inputs.slice(err.written)`) and a full retry
- * from index 0 safe, because the server dedups each contribution while it is
- * live (#895).
- *
- * Conditional `putVerticesIfAbsent` is the exception to "resume safely": the
- * failed chunk may already have committed, and retry can return
- * `conditionNotMet` for an item whose original outcome was `appliedAndLive`.
- * Reconcile current server state before explicitly retrying that suffix.
+ * `inputs.slice(err.written)` identifies the uncertain suffix, not a safe
+ * replay plan. A plain Add can double-count; a conditional Put may return a
+ * new condition result; and a Delete can return a different existed/count
+ * result. Even unconditional Put can return a different TTL/outcome on a
+ * fresh call. Contrib IDs only deduplicate a matching live contribution:
+ * `idempotentAdds` mints NEW IDs on a new SDK call, and deleting/expiring a
+ * contribution permits reapplication with the same ID. For supported
+ * mutations, use a persisted receipt context on the same endpoint to
+ * recover the original result after response loss.
  */
 export class BatchError extends LanternError {
   readonly written: number;
