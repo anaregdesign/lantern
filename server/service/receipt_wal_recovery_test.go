@@ -1287,19 +1287,27 @@ func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialSt
 			status != mutationreceipt.Confirmed || string(receipt.Result) != "baseline-result" {
 			t.Fatalf("valid baseline receipt = %v, %+v, %v", status, receipt, err)
 		}
-		binding := receiptWALTipBinding(runtimeConfig.Receipt.Epoch, valid.receipt.store.PolicyFingerprint())
+		canonicalPath := valid.receipt.owner.lease.Path()
+		binding := receiptWALTipBinding(valid.receipt.epoch, valid.receipt.store.PolicyFingerprint())
+		certifiedSeq, certifiedChain, certified := valid.receipt.owner.tip.Frontier()
+		if valid.receipt.epoch != runtimeConfig.Receipt.Epoch || !certified || certifiedSeq == 0 {
+			t.Fatalf("valid runtime epoch/tip = %x, %d, verified %v", valid.receipt.epoch, certifiedSeq, certified)
+		}
 		if err := valid.Close(); err != nil {
 			t.Fatal(err)
 		}
 
-		lease, err := mutationlog.AcquireFileWALLease(path)
+		lease, err := mutationlog.AcquireFileWALLease(canonicalPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer lease.Close()
+		if lease.Path() != canonicalPath {
+			t.Fatalf("resumed WAL lease path %q differs from certified path %q", lease.Path(), canonicalPath)
+		}
 		var lastSeq uint64
 		var lastHLC hlc.Timestamp
-		wal, err := mutationlog.ResumeFileWAL(path, encodeOld, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
+		wal, err := mutationlog.ResumeFileWAL(lease.Path(), encodeOld, decodeReceiptWALUnion, func(entry mutationlog.Entry) error {
 			lastSeq = entry.Seq
 			lastHLC = entry.HLC
 			return nil
@@ -1311,13 +1319,17 @@ func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialSt
 		if lastSeq == 0 {
 			t.Fatal("valid baseline has no committed WAL marker")
 		}
-		tip, err := mutationlog.ResumeFileWALTipJournal(path, binding)
+		tip, err := mutationlog.ResumeFileWALTipJournal(lease.Path(), binding)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tip.Close()
-		if err := tip.VerifyAndCatchUp(path, decodeReceiptWALUnion, validateReceiptWALUnionEntry); err != nil {
+		if err := tip.VerifyAndCatchUp(lease.Path(), decodeReceiptWALUnion, validateReceiptWALUnionEntry); err != nil {
 			t.Fatal(err)
+		}
+		if seq, chain, verified := tip.Frontier(); !verified || seq != certifiedSeq || seq != lastSeq || chain != certifiedChain {
+			t.Fatalf("resumed WAL tip = %d, %x, verified %v; want certified seq %d, chain %x",
+				seq, chain, verified, certifiedSeq, certifiedChain)
 		}
 		if err := wal.BindTipJournal(tip); err != nil {
 			t.Fatal(err)
@@ -1349,7 +1361,7 @@ func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialSt
 		if err := lease.Close(); err != nil {
 			t.Fatal(err)
 		}
-		before, err := os.ReadFile(path)
+		before, err := os.ReadFile(canonicalPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1363,7 +1375,7 @@ func TestReceiptWALRecoveryCandidateRejectsOldGraphDeleteVersionWithoutPartialSt
 			errors.Is(err, ErrDurableReceiptWALBackupFallbackEligible) {
 			t.Fatalf("obsolete private v2 WAL startup = %p, %v", restarted, err)
 		}
-		after, err := os.ReadFile(path)
+		after, err := os.ReadFile(canonicalPath)
 		if err != nil {
 			t.Fatal(err)
 		}
