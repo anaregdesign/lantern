@@ -489,7 +489,7 @@ token providers, deadlines, cancellation, bounded retry, typed failures,
 and auth-exempt gRPC Health-v1 probing). See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
 Opt-in bounded mutation receipts are available in the hosted
-`lantern_client 0.3.1` package; its published archive passed exact-content
+`lantern_client 0.3.2` package; its published archive passed exact-content
 verification. This online release does not qualify an offline receipt release.
 
 [`lantern_client_offline`](sdks/dart/offline/) is an experimental,
