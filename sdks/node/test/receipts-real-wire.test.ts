@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
 
-import { mintReceiptOperationContext } from "../src/index.js";
-import { connectWeb } from "../src/web.js";
+import {
+  InvalidArgumentError,
+  LanternError,
+  connectWeb,
+  mintReceiptOperationContext,
+} from "../src/web.js";
 
 const endpoint = process.env.LANTERN_NODE_RECEIPT_ENDPOINT;
+const nanFixtureEndpoint = process.env.LANTERN_NODE_NAN_FIXTURE_ENDPOINT;
 const token = process.env.LANTERN_NODE_RECEIPT_TOKEN;
 
 function randomContribId(): Uint8Array {
@@ -100,6 +105,30 @@ if (endpoint && token) {
             : overflowStatus.state,
         ).toEqual({ kind: "addEdge", effectiveWeight: Number.POSITIVE_INFINITY });
 
+        const negativeOverflowEdge = {
+          tail: key,
+          head: `${key}:negative-overflow`,
+        };
+        await client.putEdge({ ...negativeOverflowEdge, weight: -maxFloat32 });
+        const negativeOverflowContext = mintReceiptOperationContext(capability, 1);
+        const negativeOverflow = await client.addEdgeWithReceipt(
+          {
+            ...negativeOverflowEdge,
+            weight: -maxFloat32,
+            contribId: randomContribId(),
+          },
+          negativeOverflowContext,
+        );
+        expect(negativeOverflow.effectiveWeight).toBe(Number.NEGATIVE_INFINITY);
+        const negativeOverflowStatus = await client.getReceiptStatus(
+          negativeOverflowContext.operationIds[0]!,
+        );
+        expect(
+          negativeOverflowStatus.state === "confirmed"
+            ? negativeOverflowStatus.receipt.originalResult
+            : negativeOverflowStatus.state,
+        ).toEqual({ kind: "addEdge", effectiveWeight: Number.NEGATIVE_INFINITY });
+
         let receiptOnly = false;
         for (let count = 0; count < 10_000; count++) {
           const next = await nextWithin(stream);
@@ -118,6 +147,85 @@ if (endpoint && token) {
       }
     } finally {
       client.close();
+    }
+  });
+
+  test("test-only NaN receipt fixture decodes original results over browser ProtoJSON", async () => {
+    if (!nanFixtureEndpoint) {
+      throw new Error("LANTERN_NODE_NAN_FIXTURE_ENDPOINT is required");
+    }
+    const observedResponses: string[] = [];
+    const client = connectWeb(nanFixtureEndpoint, {
+      token,
+      transportOptions: {
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const response = await fetch(input, init);
+          const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          if (response.ok && (path.endsWith("/AddEdges") || path.endsWith("/GetReceiptStatuses"))) {
+            observedResponses.push(await response.clone().text());
+          }
+          return response;
+        },
+      },
+    });
+    const unauthenticated = connectWeb(nanFixtureEndpoint);
+    const malformed = connectWeb(nanFixtureEndpoint, {
+      token,
+      interceptors: [
+        (next) => (request) => {
+          if (request.method.name === "GetReceiptStatuses") {
+            request.header.set("X-Fixture-Omit-Result", "true");
+          }
+          return next(request);
+        },
+      ],
+    });
+    try {
+      await expect(unauthenticated.getReceiptCapability()).rejects.toBeInstanceOf(LanternError);
+      const capability = await client.getReceiptCapability();
+      if (!capability.enabled) throw new Error("fixture did not advertise receipt Add support");
+      expect(capability.supportedMutations).toEqual(["addEdge"]);
+
+      const context = mintReceiptOperationContext(capability, 1);
+      const input = {
+        tail: `node-receipt-json-fixture-${crypto.randomUUID()}`,
+        head: "edge",
+        weight: 1,
+        contribId: randomContribId(),
+      };
+      const added = await client.addEdgeWithReceipt(input, context);
+      expect(Number.isNaN(added.effectiveWeight)).toBe(true);
+      const status = await client.getReceiptStatus(context.operationIds[0]!);
+      if (status.state !== "confirmed" || status.receipt.originalResult.kind !== "addEdge") {
+        throw new Error("fixture did not return a confirmed Edge Add result");
+      }
+      expect(Number.isNaN(status.receipt.originalResult.effectiveWeight)).toBe(true);
+      const replay = await client.addEdgeWithReceipt(input, context);
+      expect(Number.isNaN(replay.effectiveWeight)).toBe(true);
+      expect(observedResponses.some((body) => body.includes('"effectiveWeights":["NaN"]'))).toBe(
+        true,
+      );
+      expect(
+        observedResponses.some((body) => body.includes('"addEdgeEffectiveWeight":"NaN"')),
+      ).toBe(true);
+
+      const rejectedContext = mintReceiptOperationContext(capability, 1);
+      await expect(
+        client.addEdgeWithReceipt(
+          { ...input, weight: Number.NaN, contribId: randomContribId() },
+          rejectedContext,
+        ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+      const absent = await client.getReceiptStatus(rejectedContext.operationIds[0]!);
+      expect(absent.state).toBe("notYetObserved");
+      expect(absent).not.toHaveProperty("receipt");
+      await expect(malformed.getReceiptStatus(context.operationIds[0]!)).rejects.toBeInstanceOf(
+        LanternError,
+      );
+    } finally {
+      client.close();
+      unauthenticated.close();
+      malformed.close();
     }
   });
 }

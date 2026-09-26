@@ -216,10 +216,13 @@ lookup.
 Receipt-bearing Vertex Put resolves a relative `ttlSeconds` against the server
 clock embedded in the persisted operation ID, so replaying the same input and
 context reproduces the same absolute expiration rather than extending the TTL.
-Receipt-bearing Edge Add applies the same rule and preserves the server's
-exact float32 effective weight, including zero and signed infinity when finite
-additions overflow float32. Mutable `Date` and `Uint8Array` inputs are cloned
-before the capability preflight.
+Receipt-bearing Edge Add applies the same rule and accepts only finite float32
+contribution weights. Its response and confirmed status preserve the server's
+original effective float32 result, including zero, signed infinity after
+overflow, and semantic `NaN` if the existing edge already contains it.
+JavaScript and ProtoJSON do not preserve the payload bits of a `NaN` result.
+Mutable `Date` and `Uint8Array` inputs are cloned before the capability
+preflight.
 
 A receipt status is one of:
 
@@ -665,11 +668,14 @@ bun run verify:package
 ```
 
 CI also runs `bun run test:real-wire` after the build against two authenticated
-Lantern h2c endpoints. That command imports the package through its published
-Node entrypoint and requires `LANTERN_NODE_RECEIPT_ENDPOINT`,
-`LANTERN_NODE_RECEIPT_OTHER_ENDPOINT`, and `LANTERN_NODE_RECEIPT_TOKEN`.
-The regular Bun suite retains the browser Connect-Web JSON and
-identity-only CDC coverage.
+Lantern h2c endpoints and a separate authenticated, test-only NaN receipt
+codec fixture (`LANTERN_NODE_NAN_FIXTURE_ENDPOINT`). That command imports the
+package through its published Node entrypoint and requires
+`LANTERN_NODE_RECEIPT_ENDPOINT`, `LANTERN_NODE_RECEIPT_OTHER_ENDPOINT`,
+`LANTERN_NODE_NAN_FIXTURE_ENDPOINT`, and `LANTERN_NODE_RECEIPT_TOKEN`.
+The regular Bun suite retains browser Connect-Web JSON and identity-only CDC
+coverage. Fixture NaN results test the wire codecs and SDK decoding, not a
+claim that the production server accepts nonfinite Edge inputs.
 
 `verify:package` creates a temporary `npm pack` tarball and checks its
 packaged manifest and contents: both entrypoints must include every declared

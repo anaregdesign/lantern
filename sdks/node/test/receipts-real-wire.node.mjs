@@ -7,6 +7,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 
 import {
   InvalidArgumentError,
+  LanternError,
   ReceiptMutationUncertainError,
   ReceiptReconciliationError,
   connect,
@@ -22,6 +23,7 @@ function requiredEnvironment(name) {
 
 const endpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_ENDPOINT");
 const otherEndpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_OTHER_ENDPOINT");
+const nanFixtureEndpoint = requiredEnvironment("LANTERN_NODE_NAN_FIXTURE_ENDPOINT");
 const token = requiredEnvironment("LANTERN_NODE_RECEIPT_TOKEN");
 
 function randomContribId() {
@@ -295,8 +297,112 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
         : overflowStatus.state,
       { kind: "addEdge", effectiveWeight: Number.POSITIVE_INFINITY },
     );
+
+    const negativeOverflowEdge = {
+      tail: `${prefix}:add:negative-overflow`,
+      head: "edge",
+    };
+    await client.putEdge({ ...negativeOverflowEdge, weight: -maxFloat32 });
+    const negativeOverflowContext = mintReceiptOperationContext(capability, 1);
+    const negativeOverflow = await client.addEdgeWithReceipt(
+      {
+        ...negativeOverflowEdge,
+        weight: -maxFloat32,
+        contribId: randomContribId(),
+      },
+      negativeOverflowContext,
+    );
+    assert.equal(negativeOverflow.effectiveWeight, Number.NEGATIVE_INFINITY);
+    const negativeOverflowStatus = await client.getReceiptStatus(
+      negativeOverflowContext.operationIds[0],
+    );
+    assert.deepEqual(
+      negativeOverflowStatus.state === "confirmed"
+        ? negativeOverflowStatus.receipt.originalResult
+        : negativeOverflowStatus.state,
+      { kind: "addEdge", effectiveWeight: Number.NEGATIVE_INFINITY },
+    );
+
+    const rejectedContext = mintReceiptOperationContext(capability, 1);
+    for (const weight of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      await assert.rejects(
+        client.addEdgeWithReceipt(
+          { ...addEdge, weight, contribId: randomContribId() },
+          rejectedContext,
+        ),
+        InvalidArgumentError,
+      );
+    }
+    assert.equal(
+      (await client.getReceiptStatus(rejectedContext.operationIds[0])).state,
+      "notYetObserved",
+    );
   } finally {
     client.close();
+  }
+});
+
+test("test-only NaN receipt fixture decodes original results over authenticated Node h2c", async () => {
+  const client = connect(nanFixtureEndpoint, { token });
+  const unauthenticated = connect(nanFixtureEndpoint);
+  const malformed = connect(nanFixtureEndpoint, {
+    token,
+    interceptors: [
+      (next) => (request) => {
+        if (request.method.name === "GetReceiptStatuses") {
+          request.header.set("X-Fixture-Omit-Result", "true");
+        }
+        return next(request);
+      },
+    ],
+  });
+  try {
+    await assert.rejects(
+      unauthenticated.getReceiptCapability(),
+      (error) =>
+        error instanceof LanternError &&
+        error.cause instanceof ConnectError &&
+        error.cause.code === Code.Unauthenticated,
+    );
+    const capability = await client.getReceiptCapability();
+    assert.equal(capability.enabled, true);
+    assert.deepEqual(capability.supportedMutations, ["addEdge"]);
+
+    const context = mintReceiptOperationContext(capability, 1);
+    const input = {
+      tail: `node-receipt-fixture-${randomUUID()}`,
+      head: "edge",
+      weight: 1,
+      contribId: randomContribId(),
+    };
+    const added = await client.addEdgeWithReceipt(input, context);
+    assert.equal(Number.isNaN(added.effectiveWeight), true);
+    const status = await client.getReceiptStatus(context.operationIds[0]);
+    if (status.state !== "confirmed" || status.receipt.originalResult.kind !== "addEdge") {
+      throw new Error("fixture did not return a confirmed Edge Add result");
+    }
+    assert.equal(Number.isNaN(status.receipt.originalResult.effectiveWeight), true);
+    assert.equal(
+      Number.isNaN((await client.addEdgeWithReceipt(input, context)).effectiveWeight),
+      true,
+    );
+
+    const rejectedContext = mintReceiptOperationContext(capability, 1);
+    await assert.rejects(
+      client.addEdgeWithReceipt(
+        { ...input, weight: Number.NaN, contribId: randomContribId() },
+        rejectedContext,
+      ),
+      InvalidArgumentError,
+    );
+    const absent = await client.getReceiptStatus(rejectedContext.operationIds[0]);
+    assert.equal(absent.state, "notYetObserved");
+    assert.equal(Object.hasOwn(absent, "receipt"), false);
+    await assert.rejects(malformed.getReceiptStatus(context.operationIds[0]), LanternError);
+  } finally {
+    client.close();
+    unauthenticated.close();
+    malformed.close();
   }
 });
 

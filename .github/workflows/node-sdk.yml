@@ -99,6 +99,25 @@ jobs:
           done
           cat "$RUNNER_TEMP"/lantern-node-*.log
           exit 1
+      - name: Start test-only NaN receipt codec fixture
+        working-directory: .
+        run: |
+          go build -o "$RUNNER_TEMP/lantern-node-nan-fixture" ./sdks/node/testdata/receiptfixture
+          env LANTERN_NODE_RECEIPT_TOKEN=node-receipt-test-token \
+            LANTERN_NODE_NAN_FIXTURE_PORT=6386 \
+            "$RUNNER_TEMP/lantern-node-nan-fixture" > "$RUNNER_TEMP/lantern-node-nan-fixture.log" 2>&1 &
+          echo $! >> "$RUNNER_TEMP/lantern-node.pids"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --max-time 2 \
+              -H 'Authorization: Bearer node-receipt-test-token' \
+              -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
+              --data '{}' "http://127.0.0.1:6386/graph.v1.LanternService/GetReceiptCapability" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/lantern-node-nan-fixture.log"
+          exit 1
       - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v7
         with:
@@ -142,6 +161,7 @@ jobs:
         env:
           LANTERN_NODE_RECEIPT_ENDPOINT: http://127.0.0.1:6384
           LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: http://127.0.0.1:6385
+          LANTERN_NODE_NAN_FIXTURE_ENDPOINT: http://127.0.0.1:6386
           LANTERN_NODE_RECEIPT_TOKEN: node-receipt-test-token
       - name: Test Bun suite
         run: bun test
@@ -153,11 +173,12 @@ jobs:
           LANTERN_NODE_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
           LANTERN_NODE_RECEIPT_ENDPOINT: http://127.0.0.1:6384
           LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: http://127.0.0.1:6385
+          LANTERN_NODE_NAN_FIXTURE_ENDPOINT: http://127.0.0.1:6386
           LANTERN_NODE_RECEIPT_TOKEN: node-receipt-test-token
       - name: Verify npm pack candidate
         run: bun run verify:package
 
-      - name: Stop production conformance servers
+      - name: Stop conformance servers and receipt codec fixture
         if: always()
         working-directory: .
         run: |
