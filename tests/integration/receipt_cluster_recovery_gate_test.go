@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -21,6 +22,7 @@ import (
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
@@ -33,25 +35,50 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 
 	origin := newPublicReceiptWireServer(t, hlc.NodeID{0xa1}, 32, token)
 	follower := newPublicReceiptWireServer(t, hlc.NodeID{0xb2}, 32, token)
+	partitioned := newPublicReceiptWireServer(t, hlc.NodeID{0xe5}, 32, token)
 	stopFollower := startPublicReceiptPump(t, ctx, "receipt backup follower", follower, origin, token)
 	defer stopFollower()
 
 	oldCapability := publicReceiptCapability(t, origin, token)
+	partitionedCapability := publicReceiptCapability(t, partitioned, token)
+	if !proto.Equal(partitionedCapability.GetPolicy(), oldCapability.GetPolicy()) ||
+		proto.Equal(partitionedCapability.GetEndpoint(), oldCapability.GetEndpoint()) {
+		t.Fatalf("partitioned replica policy/endpoint = %+v, want A policy and independent endpoint",
+			partitionedCapability)
+	}
 	issued := time.UnixMilli(int64(oldCapability.GetServerNowUnixMs())).Add(-time.Second)
-	putContext := publicReceiptWireContext(t, oldCapability, 0xa1, 2, issued)
+	putContext := publicReceiptWireContext(t, oldCapability, 0xa1, 4, issued)
 	put, err := origin.raw.PutVertices(ctx, receiptRequestWithToken(&pb.PutVerticesRequest{
 		Vertices: []*pb.Vertex{
 			{Key: "cluster/live", Value: &pb.Vertex_String_{String_: "saved"}},
 			{Key: "cluster/deleted", Value: &pb.Vertex_String_{String_: "removed"}},
+			{Key: "cluster/add-deleted", Value: &pb.Vertex_String_{String_: "add then delete"}},
+			{Key: "cluster/add-live", Value: &pb.Vertex_String_{String_: "add survives"}},
 		},
 		ReceiptContext: putContext,
 	}, token))
 	if err != nil || !reflect.DeepEqual(put.Msg.GetOutcomes(), []pb.PutOutcome{
 		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
 		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
+		pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
 	}) {
 		t.Fatalf("receipt PutVertices = (%+v, %v)", put, err)
 	}
+	stopPartitioned := startPublicReceiptPump(t, ctx, "receipt backup partitioned replica", partitioned, origin, token)
+	defer stopPartitioned()
+	aOrigin := hex.EncodeToString(origin.config.NodeID[:])
+	seedCut := map[string]uint64{aOrigin: 1}
+	requireExactReceiptCut(t, "C before partition", waitForPublicReceiptCut(
+		t, ctx, "C before partition", partitioned, token, seedCut, 5*time.Second,
+	), seedCut)
+	seed, err := partitioned.raw.GetVertex(ctx, receiptRequestWithToken(
+		&pb.GetVertexRequest{Key: "cluster/live"}, token,
+	))
+	if err != nil || seed.Msg.GetVertex().GetString_() != "saved" {
+		t.Fatalf("C seed vertex before partition = (%+v, %v)", seed, err)
+	}
+	stopPartitioned()
 
 	edge := &pb.EdgeKey{Tail: "cluster/live", Head: "cluster/deleted"}
 	putReceiptWireEdges(t, origin.raw, token, edge)
@@ -71,20 +98,75 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatalf("receipt DeleteVertices = (%+v, %v)", deletedVertices, err)
 	}
 
-	originCut := map[string]uint64{hex.EncodeToString(origin.config.NodeID[:]): 4}
+	addContext := publicReceiptWireContext(t, oldCapability, 0xa4, 2, issued)
+	addEdges := []*pb.Edge{
+		{Tail: "cluster/live", Head: "cluster/add-deleted", Weight: 2,
+			Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		{Tail: "cluster/live", Head: "cluster/add-live", Weight: 3,
+			Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+	}
+	add, err := origin.raw.AddEdges(ctx, receiptRequestWithToken(&pb.AddEdgesRequest{
+		Edges: addEdges,
+		ContribIds: [][]byte{
+			bytes.Repeat([]byte{0xa4}, len(graphcache.ContribID{})),
+			bytes.Repeat([]byte{0xa5}, len(graphcache.ContribID{})),
+		},
+		ReceiptContext: addContext,
+	}, token))
+	addWeights := []float32{2, 3}
+	if err != nil || add.Msg.GetWritten() != 2 ||
+		!reflect.DeepEqual(add.Msg.GetEffectiveWeights(), addWeights) {
+		t.Fatalf("receipt AddEdges = (%+v, %v), want %v", add, err, addWeights)
+	}
+	addCut := map[string]uint64{aOrigin: 5}
+	requireExactReceiptCut(t, "B confirmed Add", waitForPublicReceiptCut(
+		t, ctx, "B confirmed Add", follower, token, addCut, 5*time.Second,
+	), addCut)
+	requireReceiptAddResults(t, "B confirmed Add", receiptWireStatuses(
+		t, ctx, follower, token, addContext.GetOperationIds(),
+	), addContext.GetOperationIds(), addWeights)
+	requireExactReceiptCut(t, "C partitioned from Add", waitForPublicReceiptCut(
+		t, ctx, "C partitioned from Add", partitioned, token, seedCut, 5*time.Second,
+	), seedCut)
+	for i, status := range receiptWireStatuses(t, ctx, partitioned, token, addContext.GetOperationIds()) {
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED ||
+			!bytes.Equal(status.GetOperationId(), addContext.GetOperationIds()[i]) ||
+			status.GetReceipt() != nil {
+			t.Fatalf("partitioned C Add status[%d] = %+v, want NOT_YET_OBSERVED", i, status)
+		}
+	}
+	if _, err := partitioned.raw.GetEdge(ctx, receiptRequestWithToken(&pb.GetEdgeRequest{
+		Tail: addEdges[1].GetTail(), Head: addEdges[1].GetHead(),
+	}, token)); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("partitioned C saw Add graph: %v", err)
+	}
+
+	deletedAdd, err := origin.raw.DeleteEdge(ctx, receiptRequestWithToken(&pb.DeleteEdgeRequest{
+		Tail: addEdges[0].GetTail(), Head: addEdges[0].GetHead(),
+	}, token))
+	if err != nil || !deletedAdd.Msg.GetExisted() {
+		t.Fatalf("DeleteEdge after confirmed Add = (%+v, %v), want existed", deletedAdd, err)
+	}
+
+	originCut := map[string]uint64{aOrigin: 6}
 	requireExactReceiptCut(t, "converged backup follower", waitForPublicReceiptCut(
 		t, ctx, "converged backup follower", follower, token, originCut, 5*time.Second,
 	), originCut)
 	operationIDs := append(append([][]byte{}, putContext.GetOperationIds()...), edgeContext.GetOperationIds()...)
 	operationIDs = append(operationIDs, vertexContext.GetOperationIds()...)
+	operationIDs = append(operationIDs, addContext.GetOperationIds()...)
 	wantResults := []*pb.ReceiptResult{
+		{Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}},
+		{Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}},
 		{Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}},
 		{Result: &pb.ReceiptResult_PutVertexOutcome{PutVertexOutcome: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}},
 		{Result: &pb.ReceiptResult_DeleteEdgeExisted{DeleteEdgeExisted: true}},
 		{Result: &pb.ReceiptResult_DeleteVertexExisted{DeleteVertexExisted: true}},
 		{Result: &pb.ReceiptResult_DeleteVertexExisted{DeleteVertexExisted: false}},
+		{Result: &pb.ReceiptResult_AddEdgeEffectiveWeight{AddEdgeEffectiveWeight: 2}},
+		{Result: &pb.ReceiptResult_AddEdgeEffectiveWeight{AddEdgeEffectiveWeight: 3}},
 	}
-	original := receiptWireStatuses(t, ctx, origin, token, operationIDs)
+	original := receiptWireStatuses(t, ctx, follower, token, operationIDs)
 	requireStatuses := func(name string, node publicReceiptWireServer) {
 		t.Helper()
 		statuses := receiptWireStatuses(t, ctx, node, token, operationIDs)
@@ -116,9 +198,21 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		)); connect.CodeOf(err) != connect.CodeNotFound {
 			t.Fatalf("%s deleted edge = %v, want NotFound", name, err)
 		}
+		if _, err := node.raw.GetEdge(ctx, receiptRequestWithToken(
+			&pb.GetEdgeRequest{Tail: addEdges[0].GetTail(), Head: addEdges[0].GetHead()}, token,
+		)); connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("%s deleted Add edge = %v, want NotFound despite original result 2", name, err)
+		}
+		liveAdd, err := node.raw.GetEdge(ctx, receiptRequestWithToken(
+			&pb.GetEdgeRequest{Tail: addEdges[1].GetTail(), Head: addEdges[1].GetHead()}, token,
+		))
+		if err != nil || liveAdd.Msg.GetEdge().GetWeight() != 3 {
+			t.Fatalf("%s surviving Add edge = (%+v, %v), want weight 3", name, liveAdd, err)
+		}
 	}
 	requireStatuses("origin", origin)
 	requireStatuses("backed-up follower", follower)
+	requireGraph("origin", origin)
 	requireGraph("backed-up follower", follower)
 
 	source, policy, err := follower.runtime.ReceiptWholeStateBackupSource(follower.server.svc, follower.server.rep)
@@ -134,13 +228,13 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats, err := producer.BackupNow(ctx)
-	if err != nil || stats.Vertices != 1 || stats.Edges != 0 ||
+	if err != nil || stats.Vertices != 3 || stats.Edges != 1 ||
 		stats.Receipts != len(operationIDs) || stats.Members != 3 {
 		t.Fatalf("converged follower backup = (%+v, %v)", stats, err)
 	}
 
 	stopFollower()
-	for _, node := range []publicReceiptWireServer{origin, follower} {
+	for _, node := range []publicReceiptWireServer{origin, follower, partitioned} {
 		node.server.srv.Close()
 		if err := node.runtime.Close(); err != nil {
 			t.Fatalf("close original cluster node: %v", err)
@@ -257,7 +351,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatalf("new-epoch PutVertex = (%+v, %v)", current, err)
 	}
 	joinedCut := map[string]uint64{
-		hex.EncodeToString(origin.config.NodeID[:]):   4,
+		hex.EncodeToString(origin.config.NodeID[:]):   6,
 		hex.EncodeToString(restored.config.NodeID[:]): 1,
 	}
 	joinedStatus := waitForPublicReceiptCut(t, ctx, "new-epoch tail on joiner", joiner, token, joinedCut, 5*time.Second)
