@@ -182,6 +182,7 @@ func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE,
 		}) {
 		t.Fatalf("capability = %+v, %v", capability, err)
 	}

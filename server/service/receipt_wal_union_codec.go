@@ -42,7 +42,7 @@ const (
 	// encode/decode rejects any populated context so persisted v4 semantics
 	// remain receipt-free. Review every later reachable field before changing
 	// this pin or the WAL version.
-	receiptWALGraphSchemaFingerprintV4 = "8d677f373d720ec99d55cbcbc4ce1ce575e1510e9b32c82dfe1d0f054dabe8bc"
+	receiptWALGraphSchemaFingerprintV4 = "feace74a806ec20caf51ff18f59d916c7a48ec512a33b9d118a959977d4f322c"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
@@ -484,6 +484,14 @@ func validateReceiptWALGraph(m *pb.Mutation) error {
 
 func rejectGraphReceiptContext(m *pb.Mutation) error {
 	switch op := m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_AddEdge:
+		if op != nil && op.AddEdge != nil && op.AddEdge.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph AddEdge cannot carry receipt context")
+		}
+	case *pb.MutationOp_AddEdges:
+		if op != nil && op.AddEdges != nil && op.AddEdges.GetReceiptContext() != nil {
+			return receiptWALUnionError("graph AddEdges cannot carry receipt context")
+		}
 	case *pb.MutationOp_PutVertex:
 		if op.PutVertex.GetReceiptContext() != nil {
 			return receiptWALUnionError("graph PutVertex cannot carry a receipt context")

@@ -57,7 +57,7 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}
-	if err := validateGenericGraphDeleteReceiptContext(m); err != nil {
+	if err := validateGenericGraphReceiptContext(m); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
 	var receiptEnvelope receiptMutationEnvelope
@@ -124,7 +124,7 @@ type graphApplyResult struct {
 }
 
 func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, error) {
-	if err := validateGenericGraphDeleteReceiptContext(m); err != nil {
+	if err := validateGenericGraphReceiptContext(m); err != nil {
 		return graphApplyResult{}, connect.NewError(
 			connect.CodeInvalidArgument,
 			fmt.Errorf("replication: %w", err),

@@ -2,7 +2,9 @@ package service
 
 import (
 	"encoding/hex"
+	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -216,6 +218,46 @@ func TestReceiptEdgeAddIntentIgnoresRelayAcceptedProjection(t *testing.T) {
 	if !sameReceiptEdgeAddIntent(envelope, relay) ||
 		len(envelope.AcceptedIndexes) != 1 || len(relay.AcceptedIndexes) != 0 {
 		t.Fatalf("accepted projection changed origin intent: origin=%+v relay=%+v", envelope, relay)
+	}
+}
+
+func TestReceiptEdgeAddWireCapacity(t *testing.T) {
+	payload := strings.Repeat("x", receiptVertexWALMaxBytes)
+	edge := &pb.Edge{Tail: "capacity", Head: "x", Weight: math.MaxFloat32}
+	low, high := 1, len(payload)
+	best := 0
+	for low <= high {
+		mid := low + (high-low)/2
+		edge.Head = payload[:mid]
+		if validateReceiptEdgeAddWALRequestCapacity([]*pb.Edge{edge}) == nil {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if best == 0 || best == len(payload) {
+		t.Fatalf("receipt Add capacity boundary = %d, want an interior payload length", best)
+	}
+	edge.Head = payload[:best]
+	if err := validateReceiptEdgeAddWALRequestCapacity([]*pb.Edge{edge}); err != nil {
+		t.Fatalf("largest fitting receipt Add request rejected: %v", err)
+	}
+	edge.Head = payload[:best+1]
+	if err := validateReceiptEdgeAddWALRequestCapacity([]*pb.Edge{edge}); !errors.Is(err, errReceiptEdgeAddWireCapacity) {
+		t.Fatalf("first oversized receipt Add request = %v, want wire-capacity error", err)
+	}
+
+	envelope := committedReceiptEdgeAddEnvelope(t, 1)
+	envelope.Original[0].Head = payload
+	digest, err := receiptEdgeAddDigest(envelope.Original[0], envelope.ContribIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope.Receipts[0].Digest = digest
+	envelope.Mutation = receiptEdgeAddMutation(envelope)
+	if _, err := envelope.ReplicationMutation(); !errors.Is(err, errReceiptEdgeAddWireCapacity) {
+		t.Fatalf("oversized receipt Add envelope = %v, want wire-capacity error", err)
 	}
 }
 

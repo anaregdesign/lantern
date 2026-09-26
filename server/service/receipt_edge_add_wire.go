@@ -2,7 +2,9 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -13,8 +15,64 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
+
+const (
+	receiptEdgeAddMutationArm protoreflect.FieldNumber = 18
+	receiptEdgeAddItemsField  protoreflect.FieldNumber = 3
+)
+
+var errReceiptEdgeAddWireCapacity = errors.New("receipt Edge Add exceeds the durable WAL wire-capacity bound")
+
+// validateReceiptEdgeAddWALRequestCapacity proves that the largest possible
+// receipt-bearing Add mutation for this request fits the intrinsic durable WAL
+// ceiling before any caller-owned edge payload is cloned or staged.
+func validateReceiptEdgeAddWALRequestCapacity(edges []*pb.Edge) error {
+	if len(edges) == 0 || len(edges) > receiptVertexWALMaxItems {
+		return receiptWALUnionError("receipt Edge Add item count is out of bounds")
+	}
+	callSize := proto.Size(&pb.ReplicatedReceiptEdgeAdd{
+		DeploymentEpoch:   make([]byte, len(mutationreceipt.Epoch{})),
+		PolicyFingerprint: make([]byte, sha256.Size),
+	})
+	receipt := worstCaseReceiptVertexWALReceipt(&pb.ReceiptResult{
+		Result: &pb.ReceiptResult_AddEdgeEffectiveWeight{
+			AddEdgeEffectiveWeight: math.MaxFloat32,
+		},
+	})
+	for _, edge := range edges {
+		itemSize := proto.Size(&pb.ReplicatedReceiptEdgeAddItem{
+			Original:         edge,
+			ContribId:        make([]byte, len(graphcache.ContribID{})),
+			Receipt:          receipt,
+			CausallyAccepted: true,
+		})
+		fieldSize := protowire.SizeTag(protowire.Number(receiptEdgeAddItemsField)) +
+			protowire.SizeBytes(itemSize)
+		if callSize > receiptVertexWALMaxBytes ||
+			fieldSize > receiptVertexWALMaxBytes-callSize {
+			return receiptEdgeAddWireCapacityError(callSize + fieldSize)
+		}
+		callSize += fieldSize
+	}
+	size := worstCaseReceiptVertexWALMutationSize(callSize, receiptEdgeAddMutationArm)
+	if size > receiptVertexWALMaxBytes {
+		return receiptEdgeAddWireCapacityError(size)
+	}
+	return nil
+}
+
+func receiptEdgeAddWireCapacityError(size int) error {
+	return fmt.Errorf("%w: %w: %d > %d bytes",
+		errReceiptWALUnion,
+		errReceiptEdgeAddWireCapacity,
+		size,
+		receiptVertexWALMaxBytes,
+	)
+}
 
 func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID) ([32]byte, error) {
 	if edge == nil || contribID.IsZero() {
@@ -286,7 +344,34 @@ func validateReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (int64, error) {
 	if !bytes.Equal(gotRaw, expectedRaw) {
 		return 0, receiptWALUnionError("receipt Add wire mutation differs from canonical evidence")
 	}
+	if size := proto.Size(expected); size > receiptVertexWALMaxBytes {
+		return 0, receiptEdgeAddWireCapacityError(size)
+	}
 	return retentionMS, nil
+}
+
+func maximalReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (*graphAddEffectEnvelope, error) {
+	if e == nil || !e.receiptBearing() {
+		return nil, receiptWALUnionError("maximal receipt Edge Add envelope is not receipt-bearing")
+	}
+	maximal := &graphAddEffectEnvelope{
+		Origin:            e.Origin,
+		OriginSeq:         e.OriginSeq,
+		HLC:               e.HLC,
+		Epoch:             e.Epoch,
+		PolicyFingerprint: e.PolicyFingerprint,
+		Original:          make([]*pb.Edge, len(e.Original)),
+		ContribIDs:        append([]graphcache.ContribID(nil), e.ContribIDs...),
+		AcceptedIndexes:   make([]uint32, len(e.Original)),
+		Receipts:          append([]mutationreceipt.Receipt(nil), e.Receipts...),
+	}
+	for i, edge := range e.Original {
+		maximal.Original[i] = proto.Clone(edge).(*pb.Edge)
+		maximal.AcceptedIndexes[i] = uint32(i)
+		maximal.Receipts[i].Result = append([]byte(nil), e.Receipts[i].Result...)
+	}
+	maximal.Mutation = receiptEdgeAddMutation(maximal)
+	return maximal, nil
 }
 
 func validateReceiptEdgeAddRow(

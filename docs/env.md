@@ -93,7 +93,7 @@ Snapshot keeps its independent bounded transport contract.
 | `LANTERN_RECEIPT_MAX_BYTES` | int | `0` | Positive retained-receipt logical-byte cap required by fresh/restart mode and immutable for restart. |
 | `LANTERN_RECEIPT_MAX_ENTRIES` | int | `0` | Positive retained-receipt entry cap required by fresh/restart mode and immutable for restart. |
 | `LANTERN_RECEIPT_RETENTION` | duration | `0s` | Receipt retention policy required by fresh/restart mode: a millisecond-aligned Go duration from 1h through 720h, immutable for restart. |
-| `LANTERN_RECEIPT_WAL_MODE` | string | `graph-only` | Receipt-WAL runtime mode: graph-only (default), fresh, or restart. Durable modes expose authenticated receipt-bearing Vertex Put, exact Vertex Delete, and exact Edge Delete only after runtime, recovery, replication, Snapshot, and backup certification. |
+| `LANTERN_RECEIPT_WAL_MODE` | string | `graph-only` | Receipt-WAL runtime mode: graph-only (default), fresh, or restart. Durable modes expose authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add only after runtime, recovery, replication, Snapshot, and backup certification. |
 | `LANTERN_RECEIPT_WAL_PATH` | string | (empty) | Absolute FileWAL path for fresh/restart mode; its .clock, .tip, .generation, and stable .lease sidecars share the same ownership boundary. |
 | `LANTERN_REFLECTION` | bool | `true` | Serve gRPC server reflection on the primary listener. |
 | `LANTERN_SCAN_DEFAULT_LIMIT` | uint32 | `1000` | Page size used when a Scan* request leaves limit unset. |

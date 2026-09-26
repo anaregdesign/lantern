@@ -1,12 +1,10 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"reflect"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -34,47 +32,6 @@ type receiptEdgeDeleteFixture struct {
 	log         *mutationlog.Log
 	replication *LanternReplicationService
 	epoch       mutationreceipt.Epoch
-}
-
-func canonicalizeReceiptReplicationSnapshot(snapshot *graphcache.ReplicationSnapshot[string, *pb.Vertex]) {
-	sort.Slice(snapshot.Graph.Vertices, func(i, j int) bool {
-		return snapshot.Graph.Vertices[i].Key < snapshot.Graph.Vertices[j].Key
-	})
-	sort.Slice(snapshot.Graph.Edges, func(i, j int) bool {
-		left, right := snapshot.Graph.Edges[i], snapshot.Graph.Edges[j]
-		if left.Tail != right.Tail {
-			return left.Tail < right.Tail
-		}
-		return left.Head < right.Head
-	})
-	for i := range snapshot.Graph.Edges {
-		sort.Slice(snapshot.Graph.Edges[i].Contributions, func(left, right int) bool {
-			return bytes.Compare(
-				snapshot.Graph.Edges[i].Contributions[left].ContribID[:],
-				snapshot.Graph.Edges[i].Contributions[right].ContribID[:],
-			) < 0
-		})
-	}
-	sort.Slice(snapshot.Barriers.Vertices, func(i, j int) bool {
-		return snapshot.Barriers.Vertices[i].Key < snapshot.Barriers.Vertices[j].Key
-	})
-	sort.Slice(snapshot.Barriers.Edges, func(i, j int) bool {
-		left, right := snapshot.Barriers.Edges[i], snapshot.Barriers.Edges[j]
-		if left.Tail != right.Tail {
-			return left.Tail < right.Tail
-		}
-		return left.Head < right.Head
-	})
-	sort.Slice(snapshot.Tombstones.Vertices, func(i, j int) bool {
-		return snapshot.Tombstones.Vertices[i].Key < snapshot.Tombstones.Vertices[j].Key
-	})
-	sort.Slice(snapshot.Tombstones.Edges, func(i, j int) bool {
-		left, right := snapshot.Tombstones.Edges[i], snapshot.Tombstones.Edges[j]
-		if left.Tail != right.Tail {
-			return left.Tail < right.Tail
-		}
-		return left.Head < right.Head
-	})
 }
 
 func newReceiptEdgeDeleteFixture(t *testing.T, wal mutationlog.WAL) receiptEdgeDeleteFixture {

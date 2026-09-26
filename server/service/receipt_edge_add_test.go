@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -370,6 +372,27 @@ func TestPublicReceiptEdgeAddValidationAndConflicts(t *testing.T) {
 }
 
 func TestReceiptEdgeAddCapacityAndWALFailureArePreMutation(t *testing.T) {
+	t.Run("Intrinsic WAL capacity", func(t *testing.T) {
+		f := newReceiptEdgeDeleteFixtureWithLimits(t, nil, hlc.NodeID{0x60}, 2, 1<<20)
+		coordinator, err := newEdgeAddReceiptCoordinator(f.service, f.coordinator.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := receiptEdgeAddTestCall(t, f.epoch, 0x30, &pb.Edge{
+			Tail:   "oversized",
+			Head:   strings.Repeat("x", receiptVertexWALMaxBytes),
+			Weight: 1,
+		})
+		if _, err := coordinator.Commit(t.Context(), call); connect.CodeOf(err) != connect.CodeResourceExhausted ||
+			!errors.Is(err, errReceiptEdgeAddWireCapacity) {
+			t.Fatalf("intrinsic capacity rejection = %v, want ResourceExhausted", err)
+		}
+		if f.log.Len() != 0 || f.coordinator.store.Stats().Entries != 0 ||
+			f.service.LocalSeq(f.service.clock.NodeID()) != 0 {
+			t.Fatal("intrinsic capacity rejection changed log, Store, or origin")
+		}
+	})
+
 	t.Run("Store capacity", func(t *testing.T) {
 		f := newReceiptEdgeDeleteFixtureWithLimits(t, nil, hlc.NodeID{0x61}, 1, 1<<20)
 		coordinator, err := newEdgeAddReceiptCoordinator(f.service, f.coordinator.store)
@@ -427,6 +450,162 @@ func TestReceiptEdgeAddCapacityAndWALFailureArePreMutation(t *testing.T) {
 			t.Fatalf("retry graph = (%v, %v), want (12, true)", weight, live)
 		}
 	})
+}
+
+func TestReceiptEdgeAddFrameAdmissionIsPrePublication(t *testing.T) {
+	const itemCount = 16
+	type prepared struct {
+		fixture     receiptEdgeDeleteFixture
+		coordinator *edgeAddReceiptCoordinator
+		call        receiptEdgeAddCall
+	}
+	prepare := func(t *testing.T, node, seed byte) prepared {
+		t.Helper()
+		f := newReceiptEdgeDeleteFixtureWithLimits(
+			t, nil, hlc.NodeID{node}, itemCount*2, 1<<20,
+		)
+		coordinator, err := newEdgeAddReceiptCoordinator(f.service, f.coordinator.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edges := make([]*pb.Edge, itemCount)
+		for i := range edges {
+			tail := string(rune('a'+i)) + strings.Repeat("k", 48)
+			edges[i] = &pb.Edge{Tail: tail, Head: "frame", Weight: 1}
+			if i%2 == 0 && !f.cache.ApplyEdgeCausalBarrierHLC(
+				tail,
+				"frame",
+				hlc.Timestamp{
+					WallNs: time.Now().Add(time.Minute).UnixNano(),
+					NodeID: f.service.clock.NodeID(),
+				},
+			) {
+				t.Fatal("cannot install receipt Add causal barrier")
+			}
+		}
+		return prepared{
+			fixture:     f,
+			coordinator: coordinator,
+			call:        receiptEdgeAddTestCall(t, f.epoch, seed, edges...),
+		}
+	}
+
+	reference := prepare(t, 0x66, 0x41)
+	if _, err := reference.coordinator.Commit(t.Context(), reference.call); err != nil {
+		t.Fatal(err)
+	}
+	envelope := reference.fixture.log.RetainedEntries()[0].Op.(*graphAddEffectEnvelope)
+	if len(envelope.AcceptedIndexes) != itemCount/2 {
+		t.Fatalf("sparse Add accepted indexes = %v", envelope.AcceptedIndexes)
+	}
+	sparseSize, err := validateReplicationFrameSize(envelope, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximal, err := maximalReplicationRelayEnvelope(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximalSize, err := validateReplicationFrameSize(maximal, 0)
+	if err != nil || maximalSize <= sparseSize {
+		t.Fatalf("sparse/maximal Add frame sizes = %d/%d, %v", sparseSize, maximalSize, err)
+	}
+
+	rejected := prepare(t, 0x67, 0x42)
+	rejected.fixture.service.replicationFrameCertified = true
+	rejected.fixture.service.replicationSendMaxBytes = maximalSize - 1
+	beforeGraph := rejected.fixture.cache.SnapshotReplication()
+	canonicalizeReceiptReplicationSnapshot(&beforeGraph)
+	_, err = rejected.coordinator.Commit(t.Context(), rejected.call)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("origin Add at maximal max-1 = %v, want ResourceExhausted", err)
+	}
+	afterGraph := rejected.fixture.cache.SnapshotReplication()
+	canonicalizeReceiptReplicationSnapshot(&afterGraph)
+	if !reflect.DeepEqual(beforeGraph, afterGraph) {
+		t.Fatal("rejected origin Add changed graph or causal state")
+	}
+	origin := rejected.fixture.service.clock.NodeID()
+	if rejected.fixture.log.Len() != 0 ||
+		rejected.fixture.service.LocalSeq(origin) != 0 ||
+		rejected.fixture.coordinator.store.Stats().Entries != 0 {
+		t.Fatal("rejected origin Add changed log, origin, or Store")
+	}
+	for _, item := range rejected.call.Items {
+		status, _, lookupErr := rejected.coordinator.Lookup(item.ID, time.Now())
+		if lookupErr != nil || status != mutationreceipt.NotYetObserved {
+			t.Fatalf("rejected origin Add status = %v, %v", status, lookupErr)
+		}
+	}
+
+	exact := prepare(t, 0x68, 0x43)
+	exact.fixture.service.replicationFrameCertified = true
+	exact.fixture.service.replicationSendMaxBytes = maximalSize
+	if _, err := exact.coordinator.Commit(t.Context(), exact.call); err != nil {
+		t.Fatalf("origin Add at exact maximal bound: %v", err)
+	}
+
+	wire, err := envelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := newReceiptEdgeDeleteFixtureWithLimits(
+		t, nil, hlc.NodeID{0x69}, itemCount*2, 1<<20,
+	)
+	followerAdd, err := newEdgeAddReceiptCoordinator(
+		follower.service,
+		follower.coordinator.store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower.service.replicationFrameCertified = true
+	follower.service.replicationSendMaxBytes = maximalSize - 1
+	err = follower.service.ApplyMutation(t.Context(), wire)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("follower Add at maximal max-1 = %v, want ResourceExhausted", err)
+	}
+	if follower.log.Len() != 0 ||
+		follower.service.LocalSeq(envelope.Origin) != 0 ||
+		follower.coordinator.store.Stats().Entries != 0 ||
+		follower.service.pendingCount != 1 {
+		t.Fatalf("rejected follower Add changed publication state: log=%d seq=%d entries=%d pending=%d",
+			follower.log.Len(),
+			follower.service.LocalSeq(envelope.Origin),
+			follower.coordinator.store.Stats().Entries,
+			follower.service.pendingCount,
+		)
+	}
+	for _, edge := range envelope.Original {
+		if _, live := follower.cache.GetWeight(edge.GetTail(), edge.GetHead()); live {
+			t.Fatal("rejected follower Add changed graph")
+		}
+	}
+	status, _, err := followerAdd.Lookup(envelope.Receipts[0].ID, time.Now())
+	if err != nil || status != mutationreceipt.NotYetObserved {
+		t.Fatalf("rejected follower Add status = %v, %v", status, err)
+	}
+
+	follower.service.replicationSendMaxBytes = maximalSize
+	if err := follower.service.ApplyMutation(t.Context(), wire); err != nil {
+		t.Fatalf("follower Add retry at exact maximal bound: %v", err)
+	}
+	if follower.log.Len() != 1 ||
+		follower.service.LocalSeq(envelope.Origin) != 1 ||
+		follower.coordinator.store.Stats().Entries != itemCount ||
+		follower.service.pendingCount != 0 {
+		t.Fatalf("exact follower Add publication state: log=%d seq=%d entries=%d pending=%d",
+			follower.log.Len(),
+			follower.service.LocalSeq(envelope.Origin),
+			follower.coordinator.store.Stats().Entries,
+			follower.service.pendingCount,
+		)
+	}
+	for _, edge := range envelope.Original {
+		if weight, live := follower.cache.GetWeight(edge.GetTail(), edge.GetHead()); !live || weight != 1 {
+			t.Fatalf("exact follower Add graph = (%v, %v), want (1, true)", weight, live)
+		}
+	}
 }
 
 func TestReceiptEdgeAddFollowerUsesLocalProjectionAndRelaysEvidence(t *testing.T) {
@@ -612,11 +791,22 @@ func TestReceiptEdgeAddReceiptSnapshotAndBackupContinuity(t *testing.T) {
 
 	recorder := &replicationSnapshotRecorder{}
 	if err := replication.Snapshot(t.Context(), &pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT_V1,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 	}, recorder); err != nil {
 		t.Fatal(err)
 	}
-	capture, err := DecodeReceiptSnapshotFrames(recorder.frames)
+	retiredConfig, _, err := retiredCatalogConfig(
+		runtime.receipt.policy,
+		backup.WholeState.Receipts.ClockHighWaterMillis,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := DecodeReceiptSnapshotFrames(
+		recorder.frames,
+		runtime.receipt.policy,
+		retiredConfig,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

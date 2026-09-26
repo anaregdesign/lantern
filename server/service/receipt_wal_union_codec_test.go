@@ -166,6 +166,18 @@ func TestReceiptWALUnionCodecRejectsReceiptContextInGraphArm(t *testing.T) {
 		op   *pb.MutationOp
 	}{
 		{
+			"add edge",
+			&pb.MutationOp{Op: &pb.MutationOp_AddEdge{
+				AddEdge: &pb.AddEdgeRequest{ReceiptContext: context},
+			}},
+		},
+		{
+			"add edges",
+			&pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+				AddEdges: &pb.AddEdgesRequest{ReceiptContext: context},
+			}},
+		},
+		{
 			"put vertex",
 			&pb.MutationOp{Op: &pb.MutationOp_PutVertex{
 				PutVertex: &pb.PutVertexRequest{ReceiptContext: context},

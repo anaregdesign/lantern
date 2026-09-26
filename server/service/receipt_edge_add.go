@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -48,12 +47,7 @@ func (s *LanternService) commitPublicReceiptEdgeAdd(
 	}
 	defer release()
 
-	receiptContext := request.GetReceiptContext()
-	if receiptContext == nil || receiptContext.GetEndpoint() == nil {
-		return nil, invalidReceiptRequest(errors.New("receipt context and endpoint are required"))
-	}
 	edges := request.GetEdges()
-	rawIDs := receiptContext.GetOperationIds()
 	contribIDs := request.GetContribIds()
 	if len(edges) > receiptVertexWALMaxItems {
 		return nil, invalidReceiptRequest(fmt.Errorf(
@@ -61,50 +55,24 @@ func (s *LanternService) commitPublicReceiptEdgeAdd(
 			receiptVertexWALMaxItems,
 		))
 	}
-	if len(rawIDs) != len(edges) || len(rawIDs) == 0 {
-		return nil, invalidReceiptRequest(errors.New(
-			"receipt operation IDs must be nonempty and index-aligned with edges",
-		))
-	}
 	if len(contribIDs) != len(edges) {
 		return nil, invalidReceiptRequest(errors.New(
 			"receipt ContribIDs must be explicit and index-aligned with every edge",
 		))
 	}
-	group, err := mutationreceipt.DecodeGroupID(receiptContext.GetLogicalCallId())
+	group, ids, err := s.validatePublicReceiptContext(
+		runtime,
+		request.GetReceiptContext(),
+		len(edges),
+		"edges",
+	)
 	if err != nil {
-		return nil, invalidReceiptRequest(err)
-	}
-	endpoint := receiptContext.GetEndpoint()
-	nodeID := s.clock.NodeID()
-	if len(endpoint.GetNodeId()) != len(nodeID) ||
-		len(endpoint.GetGeneration()) != len(runtime.generation) ||
-		!bytes.Equal(endpoint.GetNodeId(), nodeID[:]) ||
-		!bytes.Equal(endpoint.GetGeneration(), runtime.generation[:]) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("receipt endpoint does not match the active certified generation"))
+		return nil, err
 	}
 
 	items := make([]receiptEdgeAddItem, len(edges))
-	seenIDs := make(map[mutationreceipt.ID]struct{}, len(edges))
 	seenContribs := make(map[graphcache.ContribID]struct{}, len(edges))
-	for i, rawID := range rawIDs {
-		id, err := mutationreceipt.DecodeID(rawID)
-		if err != nil {
-			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
-		}
-		epoch, err := id.Epoch()
-		if err != nil {
-			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d]: %w", i, err))
-		}
-		if epoch != runtime.epoch {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("operation_ids[%d] is outside the active receipt epoch", i))
-		}
-		if _, duplicate := seenIDs[id]; duplicate {
-			return nil, invalidReceiptRequest(fmt.Errorf("operation_ids[%d] duplicates an earlier item", i))
-		}
-		seenIDs[id] = struct{}{}
+	for i, id := range ids {
 		if len(contribIDs[i]) != len(graphcache.ContribID{}) {
 			return nil, invalidReceiptRequest(fmt.Errorf(
 				"contrib_ids[%d] must be exactly %d bytes",
@@ -170,6 +138,12 @@ func prepareEdgeAddReceiptCall(
 		return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, mutationreceipt.ErrInvalidBatch)
 	}
 	original := make([]*pb.Edge, len(call.Items))
+	for i, item := range call.Items {
+		original[i] = item.Edge
+	}
+	if err := validateReceiptEdgeAddWALRequestCapacity(original); err != nil {
+		return nil, nil, nil, connect.NewError(connect.CodeResourceExhausted, err)
+	}
 	items := make([]graphcache.EdgeItem[string], len(call.Items))
 	intents := make([]mutationreceipt.Intent, len(call.Items))
 	for i, item := range call.Items {
@@ -181,10 +155,8 @@ func prepareEdgeAddReceiptCall(
 		if err := s.validateExpiration(expiration); err != nil {
 			return nil, nil, nil, err
 		}
-		edge := proto.Clone(item.Edge).(*pb.Edge)
-		original[i] = edge
 		items[i] = graphcache.EdgeItem[string]{
-			Tail: edge.GetTail(), Head: edge.GetHead(), Weight: edge.GetWeight(),
+			Tail: item.Edge.GetTail(), Head: item.Edge.GetHead(), Weight: item.Edge.GetWeight(),
 			Expiration: expiration, ContribID: item.ContribID,
 		}
 		var receiptContrib mutationreceipt.ContribID
@@ -194,6 +166,12 @@ func prepareEdgeAddReceiptCall(
 			Kind: mutationreceipt.AddEdge, Digest: digest,
 			HasContrib: true, ContribID: receiptContrib,
 		}
+	}
+	for i, edge := range original {
+		cloned := proto.Clone(edge).(*pb.Edge)
+		original[i] = cloned
+		items[i].Tail = cloned.GetTail()
+		items[i].Head = cloned.GetHead()
 	}
 	return original, items, intents, nil
 }
@@ -313,10 +291,7 @@ func (c *edgeAddReceiptCoordinator) Commit(
 	if err := storeTx.ReplaceReservedResults(results); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	if err := storeTx.Stage(); err != nil {
-		return nil, receiptStoreError(err)
-	}
-	receipts, err := storeTx.StagedReceipts()
+	receipts, err := storeTx.ReservedReceipts()
 	if err != nil {
 		return nil, receiptStoreError(err)
 	}
@@ -338,12 +313,21 @@ func (c *edgeAddReceiptCoordinator) Commit(
 	if err := validateGraphAddEffectEnvelope(envelope); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if err := s.validateReplicationFrame(envelope); err != nil {
+		return nil, err
+	}
+	if err := s.validateReplicationRelayFrame(envelope); err != nil {
+		return nil, err
+	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
 		return nil, connect.NewError(connect.CodeInternal,
 			errors.New("receipt Edge Add could not stage contiguous origin seq"))
 	}
 	defer originTx.Abort()
+	if err := storeTx.Stage(); err != nil {
+		return nil, receiptStoreError(err)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
@@ -430,6 +414,9 @@ func (c *edgeAddReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal,
 			errors.New("replication Edge Add receipt pending identity drift"))
 	}
+	if err := c.service.validateReplicationRelayFrame(e); err != nil {
+		return err
+	}
 	s := c.service
 	s.receiptOriginCutMu.Lock()
 	defer s.receiptOriginCutMu.Unlock()
@@ -483,12 +470,12 @@ func (c *edgeAddReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal,
 			fmt.Errorf("replication Edge Add receipt relay envelope: %w", err))
 	}
+	if err := s.validateReplicationFrame(localEnvelope); err != nil {
+		return err
+	}
 	if prior, ok := pending.receiptWAL.(*graphAddEffectEnvelope); ok &&
 		prior.receiptBearing() && slices.Equal(prior.AcceptedIndexes, localEnvelope.AcceptedIndexes) {
 		localEnvelope = prior
-	}
-	if err := storeTx.Stage(); err != nil {
-		return receiptStoreError(err)
 	}
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
@@ -496,6 +483,9 @@ func (c *edgeAddReceiptCoordinator) commitReplicated(
 			fmt.Errorf("replication Edge Add receipt could not stage origin %x seq %d", origin, seq))
 	}
 	defer originTx.Abort()
+	if err := storeTx.Stage(); err != nil {
+		return receiptStoreError(err)
+	}
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}

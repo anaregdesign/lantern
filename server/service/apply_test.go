@@ -48,13 +48,37 @@ func TestApplyMutation_UnknownReceiptArmFailsClosed(t *testing.T) {
 	}
 }
 
-func TestApplyMutation_GenericEdgeDeleteReceiptContextFailsBeforeQueue(t *testing.T) {
+func TestApplyMutation_GenericEdgeReceiptContextFailsBeforeQueue(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		op   func(*pb.MutationReceiptContext) *pb.MutationOp
 	}{
 		{
-			name: "singular",
+			name: "add singular",
+			op: func(receipt *pb.MutationReceiptContext) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{
+					Edge: &pb.Edge{
+						Tail: "target", Head: "edge", Weight: 1,
+					},
+					ContribId:      make([]byte, len(graphcache.ContribID{})),
+					ReceiptContext: receipt,
+				}}}
+			},
+		},
+		{
+			name: "add plural",
+			op: func(receipt *pb.MutationReceiptContext) *pb.MutationOp {
+				return &pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: &pb.AddEdgesRequest{
+					Edges: []*pb.Edge{{
+						Tail: "target", Head: "edge", Weight: 1,
+					}},
+					ContribIds:     [][]byte{make([]byte, len(graphcache.ContribID{}))},
+					ReceiptContext: receipt,
+				}}}
+			},
+		},
+		{
+			name: "delete singular",
 			op: func(receipt *pb.MutationReceiptContext) *pb.MutationOp {
 				return &pb.MutationOp{Op: &pb.MutationOp_DeleteEdge{DeleteEdge: &pb.DeleteEdgeRequest{
 					Tail: "target", Head: "edge", ReceiptContext: receipt,
@@ -62,7 +86,7 @@ func TestApplyMutation_GenericEdgeDeleteReceiptContextFailsBeforeQueue(t *testin
 			},
 		},
 		{
-			name: "plural",
+			name: "delete plural",
 			op: func(receipt *pb.MutationReceiptContext) *pb.MutationOp {
 				return &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{
 					Edges:          []*pb.EdgeKey{{Tail: "target", Head: "edge"}},
@@ -97,12 +121,12 @@ func TestApplyMutation_GenericEdgeDeleteReceiptContextFailsBeforeQueue(t *testin
 				context.Background(),
 				mutation(2, tc.op(&pb.MutationReceiptContext{})),
 			); connect.CodeOf(err) != connect.CodeInvalidArgument {
-				t.Fatalf("generic receipt-bearing Delete = %v, want InvalidArgument", err)
+				t.Fatalf("generic receipt-bearing Edge mutation = %v, want InvalidArgument", err)
 			}
 			if got := svc.LocalSeq(origin); got != 0 || log.Len() != 0 ||
 				svc.pendingCount != 0 || svc.pendingBytes != 0 {
 				t.Fatalf(
-					"rejected receipt-bearing Delete advanced origin/log/pending to %d/%d/%d/%d",
+					"rejected receipt-bearing Edge mutation advanced origin/log/pending to %d/%d/%d/%d",
 					got,
 					log.Len(),
 					svc.pendingCount,
@@ -110,7 +134,7 @@ func TestApplyMutation_GenericEdgeDeleteReceiptContextFailsBeforeQueue(t *testin
 				)
 			}
 			if _, _, live := cache.GetEdgeDetail("target", "edge"); !live {
-				t.Fatal("rejected receipt-bearing Delete changed graph")
+				t.Fatal("rejected receipt-bearing Edge mutation changed graph")
 			}
 
 			if err := svc.ApplyMutation(

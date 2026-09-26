@@ -4020,10 +4020,12 @@ class AddEdgeRequest extends $pb.GeneratedMessage {
   factory AddEdgeRequest({
     Edge? edge,
     $core.List<$core.int>? contribId,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (edge != null) result.edge = edge;
     if (contribId != null) result.contribId = contribId;
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -4043,6 +4045,8 @@ class AddEdgeRequest extends $pb.GeneratedMessage {
     ..aOM<Edge>(1, _omitFieldNames ? '' : 'edge', subBuilder: Edge.create)
     ..a<$core.List<$core.int>>(
         2, _omitFieldNames ? '' : 'contribId', $pb.PbFieldType.OY)
+    ..aOM<MutationReceiptContext>(3, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4092,6 +4096,20 @@ class AddEdgeRequest extends $pb.GeneratedMessage {
   $core.bool hasContribId() => $_has(1);
   @$pb.TagNumber(2)
   void clearContribId() => $_clearField(2);
+
+  /// receipt_context enables durable exactly-once proof for this Add. It is
+  /// valid only when contrib_id is an explicit non-zero 24-byte identifier.
+  /// Receipt-less Add remains the separate direct-online mode above.
+  @$pb.TagNumber(3)
+  MutationReceiptContext get receiptContext => $_getN(2);
+  @$pb.TagNumber(3)
+  set receiptContext(MutationReceiptContext value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceiptContext() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceiptContext() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(2);
 }
 
 class AddEdgeResponse extends $pb.GeneratedMessage {
@@ -4165,10 +4183,12 @@ class AddEdgesRequest extends $pb.GeneratedMessage {
   factory AddEdgesRequest({
     $core.Iterable<Edge>? edges,
     $core.Iterable<$core.List<$core.int>>? contribIds,
+    MutationReceiptContext? receiptContext,
   }) {
     final result = create();
     if (edges != null) result.edges.addAll(edges);
     if (contribIds != null) result.contribIds.addAll(contribIds);
+    if (receiptContext != null) result.receiptContext = receiptContext;
     return result;
   }
 
@@ -4188,6 +4208,8 @@ class AddEdgesRequest extends $pb.GeneratedMessage {
     ..pPM<Edge>(1, _omitFieldNames ? '' : 'edges', subBuilder: Edge.create)
     ..p<$core.List<$core.int>>(
         2, _omitFieldNames ? '' : 'contribIds', $pb.PbFieldType.PY)
+    ..aOM<MutationReceiptContext>(3, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4232,6 +4254,20 @@ class AddEdgesRequest extends $pb.GeneratedMessage {
   /// suites (#922) fail CI on any unilateral change.
   @$pb.TagNumber(2)
   $pb.PbList<$core.List<$core.int>> get contribIds => $_getList(1);
+
+  /// receipt_context enables durable exactly-once proof for the whole logical
+  /// call. Every edge must have an index-aligned explicit non-zero contrib_id;
+  /// mixed keyed/unkeyed batches are rejected rather than upgraded.
+  @$pb.TagNumber(3)
+  MutationReceiptContext get receiptContext => $_getN(2);
+  @$pb.TagNumber(3)
+  set receiptContext(MutationReceiptContext value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceiptContext() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceiptContext() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(2);
 }
 
 class AddEdgesResponse extends $pb.GeneratedMessage {
@@ -6601,6 +6637,7 @@ enum ReceiptResult_Result {
   deleteEdgeExisted,
   putVertexOutcome,
   deleteVertexExisted,
+  addEdgeEffectiveWeight,
   notSet
 }
 
@@ -6612,12 +6649,15 @@ class ReceiptResult extends $pb.GeneratedMessage {
     $core.bool? deleteEdgeExisted,
     PutOutcome? putVertexOutcome,
     $core.bool? deleteVertexExisted,
+    $core.double? addEdgeEffectiveWeight,
   }) {
     final result = create();
     if (deleteEdgeExisted != null) result.deleteEdgeExisted = deleteEdgeExisted;
     if (putVertexOutcome != null) result.putVertexOutcome = putVertexOutcome;
     if (deleteVertexExisted != null)
       result.deleteVertexExisted = deleteVertexExisted;
+    if (addEdgeEffectiveWeight != null)
+      result.addEdgeEffectiveWeight = addEdgeEffectiveWeight;
     return result;
   }
 
@@ -6635,17 +6675,20 @@ class ReceiptResult extends $pb.GeneratedMessage {
     1: ReceiptResult_Result.deleteEdgeExisted,
     2: ReceiptResult_Result.putVertexOutcome,
     3: ReceiptResult_Result.deleteVertexExisted,
+    4: ReceiptResult_Result.addEdgeEffectiveWeight,
     0: ReceiptResult_Result.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'ReceiptResult',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3])
+    ..oo(0, [1, 2, 3, 4])
     ..aOB(1, _omitFieldNames ? '' : 'deleteEdgeExisted')
     ..aE<PutOutcome>(2, _omitFieldNames ? '' : 'putVertexOutcome',
         enumValues: PutOutcome.values)
     ..aOB(3, _omitFieldNames ? '' : 'deleteVertexExisted')
+    ..aD(4, _omitFieldNames ? '' : 'addEdgeEffectiveWeight',
+        fieldType: $pb.PbFieldType.OF)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -6670,11 +6713,13 @@ class ReceiptResult extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
   @$pb.TagNumber(3)
+  @$pb.TagNumber(4)
   ReceiptResult_Result whichResult() =>
       _ReceiptResult_ResultByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
   @$pb.TagNumber(3)
+  @$pb.TagNumber(4)
   void clearResult() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -6703,6 +6748,15 @@ class ReceiptResult extends $pb.GeneratedMessage {
   $core.bool hasDeleteVertexExisted() => $_has(2);
   @$pb.TagNumber(3)
   void clearDeleteVertexExisted() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.double get addEdgeEffectiveWeight => $_getN(3);
+  @$pb.TagNumber(4)
+  set addEdgeEffectiveWeight($core.double value) => $_setFloat(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasAddEdgeEffectiveWeight() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearAddEdgeEffectiveWeight() => $_clearField(4);
 }
 
 /// MutationReceipt is one request-index-aligned item from an atomic logical
