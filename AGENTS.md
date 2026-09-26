@@ -169,9 +169,10 @@ The load-bearing always-on essentials:
 
 - **Search existing Issues, then link or file one before any non-trivial change**,
   including bugs, improvements, and validation repairs discovered mid-PR. Only
-  pure doc edits and in-flight review fixes to the already-filed Issue are exempt;
-  a separate discovered bug or improvement always needs an Issue, even if one
-  line. A cohesive PR can close related Issues with one keyword per Issue
+  already-scoped direct doc edits or proofreading and in-flight review fixes to
+  the already-filed Issue are exempt; a newly discovered bug or improvement,
+  including in docs, always needs an Issue, even if one line. A cohesive PR
+  can close related Issues with one keyword per Issue
   (`Closes #1, closes #2`).
 - **Track epic exits separately** in the driving Issue: merged source/CI, final
   exact-source acceptance, publication, and human/device evidence, each with

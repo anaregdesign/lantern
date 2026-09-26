@@ -81,9 +81,10 @@ boundaries, dependencies, and verification before editing, not after a diff exis
   may share a cohesive PR when each outcome remains independently reviewable.
 - Reference every closing Issue in the PR (`Closes #N` per Issue) so the merge
   wires each discussion to the diff.
-- Exceptions (no new Issue required): pure doc-only edits and direct fixes to
-  the already-filed Issue requested in an in-flight PR review. A distinct
-  discovered bug or improvement needs an Issue even if it is a one-line fix or
+- Exceptions (no new Issue required): already-scoped direct documentation edits
+  or proofreading, and direct fixes to the already-filed Issue requested in an
+  in-flight PR review. A newly discovered bug or improvement, including a
+  documentation improvement, needs an Issue even if it is a one-line fix or
   arises during review.
 - When in doubt, file the Issue — the overhead is tiny next to a reworked PR.
 

@@ -55,10 +55,11 @@ they must not conflict.
 ## Workflow (hard rules)
 
 - **Search existing Issues; link or file one before any non-trivial change**, including
-  bugs, improvements, and validation repairs discovered mid-PR. Only pure doc edits
-  and in-flight review fixes to the already-filed Issue are exempt; even one-line
-  newly discovered bugs or improvements need an Issue. A cohesive PR may close
-  related Issues with one keyword per Issue (`Closes #1, closes #2`).
+  bugs, improvements, and validation repairs discovered mid-PR. Only already-scoped
+  direct doc edits or proofreading and in-flight review fixes to the already-filed
+  Issue are exempt; newly discovered bugs or improvements, including in docs,
+  need an Issue even if one line. A cohesive PR may close related Issues with
+  one keyword per Issue (`Closes #1, closes #2`).
 - **Keep epic progress in independent exit buckets** for merged source/CI,
   final exact-source acceptance, publication, and human/device evidence, each with
   done/total and linked blockers. A branch diagnostic or simulator is not final
