@@ -257,12 +257,14 @@ func receiptPutVerticesRequest(
 		if err != nil {
 			return nil, nil, ReceiptContext{}, err
 		}
-		if err := vertex.GetExpiration().CheckValid(); err != nil {
-			return nil, nil, ReceiptContext{}, invalidReceiptError(
-				"vertices[%d] has invalid expiration: %v",
-				i,
-				err,
-			)
+		if expiration := vertex.GetExpiration(); expiration != nil {
+			if err := expiration.CheckValid(); err != nil {
+				return nil, nil, ReceiptContext{}, invalidReceiptError(
+					"vertices[%d] has invalid expiration: %v",
+					i,
+					err,
+				)
+			}
 		}
 		vertices[i] = proto.Clone(vertex).(*pb.Vertex)
 	}

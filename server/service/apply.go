@@ -596,7 +596,7 @@ func mutationTombstoneExpiration(m *pb.Mutation, retentionEnabled bool) (time.Ti
 		return time.Time{}, fmt.Errorf("invalid Delete tombstone expiration: %w", err)
 	}
 	expiration := stamp.AsTime()
-	if expiration.Unix() <= 0 {
+	if !expiration.After(time.Unix(0, 0)) {
 		return time.Time{}, fmt.Errorf("Delete tombstone expiration must be after Unix epoch")
 	}
 	return expiration, nil

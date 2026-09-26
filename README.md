@@ -829,6 +829,12 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 
 One default worth knowing: a write that omits TTL is stored **permanently**
 — decay is opt-in per write.
+An explicit absolute expiration is always a deadline, even at/before the Unix
+epoch or in its first fractional second. A past deadline makes an unconditional
+Put an `EXPIRED` delete-like overwrite; `if_absent` checks for an existing live
+vertex first, and an expired Add contributes no live edge weight. Invalid
+Protobuf timestamps are rejected, as is an explicitly supplied year-one zero
+time (which would otherwise be confused with omitted/permanent expiration).
 
 Receipt context is optional and canonical on `PutVertices`, exact
 `DeleteVertices`, exact `DeleteEdges`, and contribution-keyed `AddEdges`;

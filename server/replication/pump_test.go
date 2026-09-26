@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -819,6 +820,44 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 	})
 }
 
+func TestGraphOnlySnapshotInstallerValidatesVertexTimes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*pb.Vertex)
+	}{
+		{"explicit Go-zero expiration", func(v *pb.Vertex) { v.Expiration = timestamppb.New(time.Time{}) }},
+		{"invalid expiration", func(v *pb.Vertex) { v.Expiration = &timestamppb.Timestamp{Seconds: 253402300800} }},
+		{"invalid value timestamp", func(v *pb.Vertex) {
+			v.Value = &pb.Vertex_Timestamp{Timestamp: &timestamppb.Timestamp{Nanos: -1}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []string
+			frames := graphInstallerLifecycleFrames()
+			tc.change(frames[1].GetVertex().GetVertex())
+			_, err := installSnapshot(
+				t.Context(),
+				newGraphOnlySnapshotInstaller(&snapshotLifecycleMutationApplier{events: &events}, &snapshotLifecycleGraph{events: &events}),
+				&snapshotSliceStream{frames: frames},
+			)
+			if err == nil || slices.Contains(events, "vertex") {
+				t.Fatalf("invalid snapshot vertex = %v, events = %v", err, events)
+			}
+		})
+	}
+	frames := graphInstallerLifecycleFrames()
+	preEpoch := time.Unix(-1, 500_000_000).UTC()
+	frames[1].GetVertex().GetVertex().Value = &pb.Vertex_Timestamp{Timestamp: timestamppb.New(preEpoch)}
+	var events []string
+	if _, err := installSnapshot(
+		t.Context(),
+		newGraphOnlySnapshotInstaller(&snapshotLifecycleMutationApplier{events: &events}, &snapshotLifecycleGraph{events: &events}),
+		&snapshotSliceStream{frames: frames},
+	); err != nil {
+		t.Fatalf("valid pre-epoch value timestamp was rejected: %v", err)
+	}
+}
+
 func TestGraphOnlySnapshotInstallerRejectsNonFiniteEdgeBeforeApply(t *testing.T) {
 	var events []string
 	apply := &snapshotLifecycleMutationApplier{events: &events}
@@ -1017,6 +1056,20 @@ func TestSnapshotEdgeRows(t *testing.T) {
 	rows, err := snapshotEdgeRows(frame(stamp(30)))
 	if err != nil || len(rows) != 2 || rows[0].hlc.WallNs != 20 || rows[1].hlc.WallNs != 30 {
 		t.Fatalf("valid mixed rows=%+v err=%v", rows, err)
+	}
+	fraction := time.Unix(0, 500_000_000).UTC()
+	fractionFrame := frame(stamp(30))
+	fractionFrame.Contributions[0].Expiration = timestamppb.New(fraction)
+	rows, err = snapshotEdgeRows(fractionFrame)
+	if err != nil || len(rows) != 2 || !rows[0].expiration.Equal(fraction) {
+		t.Fatalf("fractional epoch row = %+v, %v, want %v", rows, err, fraction)
+	}
+	for _, row := range []int{0, 1} {
+		explicitZero := frame(stamp(30))
+		explicitZero.Contributions[row].Expiration = timestamppb.New(time.Time{})
+		if rows, err := snapshotEdgeRows(explicitZero); err == nil || len(rows) != 0 {
+			t.Fatalf("explicit zero-time row %d = %+v, %v, want rejection", row, rows, err)
+		}
 	}
 	for _, tc := range []struct {
 		name  string
@@ -1335,6 +1388,10 @@ func TestSnapshotTombstoneFields(t *testing.T) {
 	if err != nil || gotTS.WallNs != 10 || !gotDeadline.Equal(deadline) {
 		t.Fatalf("valid tombstone = (%+v,%v,%v)", gotTS, gotDeadline, err)
 	}
+	fraction := time.Unix(0, 500_000_000).UTC()
+	if _, got, err := snapshotTombstoneFields(stamp, timestamppb.New(fraction)); err != nil || !got.Equal(fraction) {
+		t.Fatalf("fraction after epoch = (%v, %v), want %v", got, err, fraction)
+	}
 	for _, tc := range []struct {
 		name       string
 		stamp      *pb.HLCTimestamp
@@ -1346,6 +1403,8 @@ func TestSnapshotTombstoneFields(t *testing.T) {
 		{"zero NodeID", &pb.HLCTimestamp{WallNs: 10, NodeId: make([]byte, 16)}, timestamppb.New(deadline)},
 		{"missing expiration", stamp, nil},
 		{"invalid expiration", stamp, &timestamppb.Timestamp{Seconds: 253402300800}},
+		{"epoch", stamp, timestamppb.New(time.Unix(0, 0).UTC())},
+		{"pre-epoch", stamp, timestamppb.New(time.Unix(-1, 0).UTC())},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, _, err := snapshotTombstoneFields(tc.stamp, tc.expiration); err == nil {
