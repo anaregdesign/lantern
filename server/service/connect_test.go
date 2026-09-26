@@ -229,7 +229,7 @@ func TestConnectAdapter_ReceiptAddPostSyncWALFaultRecoversAtomically(t *testing.
 			bytes.Repeat([]byte{0x72}, len(graphcache.ContribID{})),
 		},
 		ReceiptContext: &pb.MutationReceiptContext{
-			OperationIds: ids,
+			OperationIds:  ids,
 			LogicalCallId: bytes.Repeat([]byte{0x71}, 16),
 			Endpoint:      capability.Msg.GetEndpoint(),
 		},
