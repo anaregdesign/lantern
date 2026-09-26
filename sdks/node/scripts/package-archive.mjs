@@ -2,6 +2,39 @@ const PUBLIC_SELECTION = ["dist", "README.md", "LICENSE"];
 const PUBLIC_ROOT_FILES = ["package.json", "README.md", "LICENSE"];
 const REQUIRED_EXPORTS = [".", "./web"];
 const REQUIRED_CONDITIONS = ["types", "import", "require"];
+const RECEIPT_FUNCTION_EXPORTS = [
+  "mintReceiptOperationContext",
+  "parseGroupID",
+  "parseOperationID",
+  "parseReceiptOperationContext",
+  "ReceiptMutationUncertainError",
+  "ReceiptReconciliationError",
+];
+const RECEIPT_NUMBER_EXPORTS = {
+  CONTRIB_ID_BYTES: 24,
+  RECEIPT_EPOCH_BYTES: 16,
+  RECEIPT_GENERATION_BYTES: 16,
+  RECEIPT_GROUP_ID_BYTES: 16,
+  RECEIPT_NODE_ID_BYTES: 16,
+  RECEIPT_OPERATION_ID_BYTES: 49,
+  RECEIPT_POLICY_FINGERPRINT_BYTES: 32,
+  RECEIPT_STATUS_MAX_ITEMS: 10_000,
+};
+const RECEIPT_METHODS = [
+  "getReceiptCapability",
+  "getReceiptStatuses",
+  "getReceiptStatus",
+  "putVerticesWithReceipt",
+  "putVerticesIfAbsentWithReceipt",
+  "putVertexWithReceipt",
+  "putVertexIfAbsentWithReceipt",
+  "deleteVerticesWithReceipt",
+  "deleteVertexWithReceipt",
+  "deleteEdgesWithReceipt",
+  "deleteEdgeWithReceipt",
+  "addEdgesWithReceipt",
+  "addEdgeWithReceipt",
+];
 const REPO_ONLY_DIRECTORIES = new Set([
   "src",
   "test",
@@ -21,7 +54,7 @@ const REPO_ONLY_DIRECTORIES = new Set([
 const SECRET_FILE =
   /^(?:\.env(?:\..*)?|\.npmrc|\.netrc|id_(?:rsa|ed25519)|.*(?:secret|credential|private[-_.]?key).*|.*\.(?:pem|key|p8|p12|pfx))$/i;
 
-export function assertPackageArchive(manifest, entries) {
+export function assertPackageArchive(manifest, entries, gitRef) {
   if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error("npm pack package.json must be an object");
   }
@@ -30,6 +63,15 @@ export function assertPackageArchive(manifest, entries) {
   }
 
   const errors = [];
+  if (manifest.name !== "lantern-sdk") {
+    errors.push('npm pack package name must be "lantern-sdk"');
+  }
+  if (typeof manifest.version !== "string" || !manifest.version) {
+    errors.push("npm pack package version is required");
+  }
+  if (gitRef?.startsWith("refs/tags/") && gitRef !== `refs/tags/sdks/node/v${manifest.version}`) {
+    errors.push(`npm pack version ${manifest.version} does not match release tag ${gitRef}`);
+  }
   if (!Array.isArray(manifest.files) || manifest.files.some((file) => typeof file !== "string")) {
     errors.push("package.json files must select dist, README.md, and LICENSE");
   } else {
@@ -137,5 +179,39 @@ export function assertPackageArchive(manifest, entries) {
   }
   if (errors.length) {
     throw new Error(`Invalid npm pack candidate:\n- ${errors.join("\n- ")}`);
+  }
+}
+
+export function assertReceiptPackageExports(runtime, entrypoint) {
+  if (entrypoint !== "node" && entrypoint !== "web") {
+    throw new Error(`unknown npm pack entrypoint: ${entrypoint}`);
+  }
+  const specifier = entrypoint === "node" ? "lantern-sdk" : "lantern-sdk/web";
+  const errors = [];
+  const connect = entrypoint === "node" ? "connect" : "connectWeb";
+  if (typeof runtime?.[connect] !== "function") {
+    errors.push(`missing function export ${connect}`);
+  }
+  for (const name of RECEIPT_FUNCTION_EXPORTS) {
+    if (typeof runtime?.[name] !== "function") {
+      errors.push(`missing function export ${name}`);
+    }
+  }
+  for (const [name, expected] of Object.entries(RECEIPT_NUMBER_EXPORTS)) {
+    if (runtime?.[name] !== expected) {
+      errors.push(`expected ${name}=${expected}`);
+    }
+  }
+  if (typeof runtime?.Lantern !== "function" || !runtime.Lantern.prototype) {
+    errors.push("missing Lantern class");
+  } else {
+    for (const method of RECEIPT_METHODS) {
+      if (typeof runtime.Lantern.prototype[method] !== "function") {
+        errors.push(`missing Lantern.${method}`);
+      }
+    }
+  }
+  if (errors.length) {
+    throw new Error(`Invalid npm pack receipt surface for ${specifier}:\n- ${errors.join("\n- ")}`);
   }
 }

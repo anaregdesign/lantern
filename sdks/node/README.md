@@ -675,14 +675,43 @@ package through its published Node entrypoint and requires
 `LANTERN_NODE_NAN_FIXTURE_ENDPOINT`, and `LANTERN_NODE_RECEIPT_TOKEN`.
 The regular Bun suite retains browser Connect-Web JSON and identity-only CDC
 coverage. Fixture NaN results test the wire codecs and SDK decoding, not a
-claim that the production server accepts nonfinite Edge inputs.
+claim that the production server accepts nonfinite Edge inputs. The
+authenticated Node and web real-wire tests consume both package entrypoints
+and reject undersized receipt Add contribution IDs without applying a mutation.
 
 `verify:package` creates a temporary `npm pack` tarball and checks its
 packaged manifest and contents: both entrypoints must include every declared
 ESM, CJS, and type target; only `dist/`, `README.md`, `LICENSE`, and
-`package.json` may be shipped. Tests require the build first so the bundle
-isolation check cannot silently pass without compiled bundles. CI runs this
-gate on Node 20 and 22 and repeats it before tag publication.
+`package.json` may be shipped. It loads both Node and web entrypoints through
+ESM imports and CommonJS requires **from the extracted tarball**, verifies
+their receipt exports and methods, and typechecks both ESM and CommonJS
+consumers against the extracted declarations using the already-installed
+Bun dependencies. Tests require the build first so the bundle isolation
+check cannot silently pass without compiled bundles. CI runs this gate on
+Node 20 and 22.
+
+Before pushing a release tag, repeat the candidate check with the intended
+tag ref explicitly set; an untagged local checkout has no `GITHUB_REF`:
+
+```bash
+GITHUB_REF=refs/tags/sdks/node/v0.12.0 bun run verify:package
+```
+
+The tag workflow supplies `GITHUB_REF` automatically and fails if its version
+differs from the packed manifest; untagged PR and branch runs still verify
+the archive and receipt APIs without requiring a tag. A valid tag can
+automatically publish after CI: at the time of this candidate review, the
+GitHub `npm` environment has no reviewer or deployment-branch protection
+rules. Recheck those rules before tagging. Before pushing the immutable tag,
+complete the full local gate in
+[CONTRIBUTING.md](../../CONTRIBUTING.md), the Node build, authenticated
+real-wire and candidate checks, and independent source review; verify the
+npm registry's Trusted Publisher binding separately. A passing candidate
+is not a published package: compare the registry's immutable tarball
+file-for-file with the candidate built from the exact tagged source after
+the OIDC npm publish, before claiming hosted receipt support. `node-sdk.yml`
+does not create a GitHub Release; if one is created manually, do so only
+after the hosted archive comparison passes.
 
 ## High availability
 
