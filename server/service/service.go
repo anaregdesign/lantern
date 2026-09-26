@@ -1696,9 +1696,10 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		}
 		// contrib_ids is index-aligned and optional (#588): a shorter or
 		// missing slot, or an empty/zero key, leaves ContribID zero — the
-		// legacy additive path. A non-zero key makes the contribution
-		// idempotent so a transport retry re-sending the same bytes is a
-		// no-op instead of double-counting edge weight.
+		// legacy additive path. A non-zero key deduplicates an identical
+		// Add only while that contribution remains live. Delete or expiry
+		// drops the key, so a receipt-less Add must not automatically retry
+		// after an uncertain response.
 		if i < len(contribIDs) {
 			item.ContribID = contribIDFromBytes(contribIDs[i])
 		}

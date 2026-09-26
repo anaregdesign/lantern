@@ -407,14 +407,17 @@ for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
 ```
 
 Operational tiers compose in: `client.WithAuthToken` for bearer-token
-servers, `client.WithRetry` for opt-in full-jitter retries, and
-`client.NewLanternFailover` for sticky-cursor rotation across HA replicas.
+servers, `client.WithRetry` for opt-in full-jitter retries of eligible reads
+and unconditional Put, and `client.NewLanternFailover` for sticky-cursor
+rotation of replay-eligible calls across HA replicas. Receipt-bearing writes
+use a separate same-endpoint continuity check before retry; plain Add and
+exact/prefix Delete make one attempt in checked-in source.
 In published `sdks/go/v0.25.0`, these policies may retry receipt-less Add
 and exact/prefix Delete after an ambiguous commit, changing the original
 result or deleting a later prefix page. Avoid them for those operations;
 use receipt-backed APIs for supported exact mutations with same-endpoint
-continuity. Prefix Delete has no receipt path; the policy fix is pending
-#1468, not yet published.
+continuity. Prefix Delete has no receipt path; the #1468 fix is present
+in checked-in source, not in the published v0.25.0 tag.
 Full worked example: [sdks/go/example/main.go](sdks/go/example/main.go).
 
 ### TypeScript / Node

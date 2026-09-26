@@ -250,12 +250,11 @@ func TestCtxSleep(t *testing.T) {
 func TestRequestRetryable(t *testing.T) {
 	contrib := []byte("000000000000000000000001") // 24-byte canonical id shape
 
-	t.Run("reads and idempotent writes are retryable", func(t *testing.T) {
+	t.Run("reads and unconditional puts are retryable", func(t *testing.T) {
 		reqs := []any{
 			&pb.GetVertexRequest{}, &pb.GetVerticesRequest{}, &pb.GetEdgeRequest{}, &pb.GetEdgesRequest{},
 			&pb.PutVertexRequest{}, &pb.PutVerticesRequest{}, &pb.PutEdgeRequest{}, &pb.PutEdgesRequest{},
-			&pb.DeleteVertexRequest{}, &pb.DeleteVerticesRequest{}, &pb.DeleteEdgeRequest{}, &pb.DeleteEdgesRequest{},
-			&pb.DeleteVerticesByPrefixRequest{}, &pb.ScanVerticesRequest{}, &pb.ScanVertexKeysRequest{},
+			&pb.ScanVerticesRequest{}, &pb.ScanVertexKeysRequest{},
 			&pb.ScanEdgesRequest{}, &pb.CountVerticesByPrefixRequest{}, &pb.SearchVerticesRequest{},
 			&pb.IlluminateRequest{}, &pb.GetServerStatusRequest{}, &pb.GetReplicationStatusRequest{},
 			&pb.GetReceiptCapabilityRequest{}, &pb.GetReceiptStatusRequest{}, &pb.GetReceiptStatusesRequest{},
@@ -320,66 +319,70 @@ func TestRequestRetryable(t *testing.T) {
 		}
 	})
 
-	t.Run("AddEdge retryable only with a contrib id", func(t *testing.T) {
-		if requestRetryable(&pb.AddEdgeRequest{}) {
-			t.Error("AddEdge without contrib_id must not be retryable")
-		}
-		if !requestRetryable(&pb.AddEdgeRequest{ContribId: contrib}) {
-			t.Error("AddEdge with contrib_id must be retryable")
-		}
-	})
-
-	t.Run("AddEdges retryable only when every edge carries a contrib id", func(t *testing.T) {
-		edges := []*pb.Edge{{Tail: "a", Head: "b"}, {Tail: "c", Head: "d"}}
+	t.Run("plain result-bearing mutations never retry", func(t *testing.T) {
+		edges := []*pb.Edge{{Tail: "a", Head: "b"}}
 		cases := []struct {
 			name string
-			req  *pb.AddEdgesRequest
-			want bool
+			req  any
 		}{
-			{"no ids", &pb.AddEdgesRequest{Edges: edges}, false},
-			{"count mismatch", &pb.AddEdgesRequest{Edges: edges, ContribIds: [][]byte{contrib}}, false},
-			{"one empty id", &pb.AddEdgesRequest{Edges: edges, ContribIds: [][]byte{contrib, {}}}, false},
-			{"all ids present", &pb.AddEdgesRequest{Edges: edges, ContribIds: [][]byte{contrib, contrib}}, true},
-			{"empty edges", &pb.AddEdgesRequest{}, false},
+			{"AddEdge without id", &pb.AddEdgeRequest{}},
+			{"AddEdge with id", &pb.AddEdgeRequest{ContribId: contrib}},
+			{"AddEdges without ids", &pb.AddEdgesRequest{Edges: edges}},
+			{"AddEdges with ids", &pb.AddEdgesRequest{Edges: edges, ContribIds: [][]byte{contrib}}},
+			{"DeleteVertex", &pb.DeleteVertexRequest{Key: "a"}},
+			{"DeleteVertices", &pb.DeleteVerticesRequest{Keys: []string{"a"}}},
+			{"DeleteEdge", &pb.DeleteEdgeRequest{Tail: "a", Head: "b"}},
+			{"DeleteEdges", &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "a", Head: "b"}}}},
+			{"DeleteVerticesByPrefix capped", &pb.DeleteVerticesByPrefixRequest{Prefix: "a", Limit: 1}},
+			{"DeleteVerticesByPrefix dry run", &pb.DeleteVerticesByPrefixRequest{Prefix: "a", DryRun: true}},
+			{"DeleteEdgesByPrefix capped", &pb.DeleteEdgesByPrefixRequest{TailPrefix: "a", Limit: 1}},
+			{"DeleteEdgesByPrefix dry run", &pb.DeleteEdgesByPrefixRequest{TailPrefix: "a", DryRun: true}},
 		}
 		for _, tc := range cases {
-			if got := requestRetryable(tc.req); got != tc.want {
-				t.Errorf("%s: requestRetryable = %v, want %v", tc.name, got, tc.want)
-			}
+			t.Run(tc.name, func(t *testing.T) {
+				if requestRetryable(tc.req) {
+					t.Errorf("requestRetryable(%T) = true, want false", tc.req)
+				}
+			})
 		}
 	})
 }
 
 func TestRetryableMethod(t *testing.T) {
 	cases := []struct {
-		method         string
-		idempotentAdds bool
-		want           bool
+		method string
+		want   bool
 	}{
-		{"GetVertex", false, true},
-		{"PutVertices", false, true},
-		{"PutVerticesWithReceipt", false, true},
-		{"PutVerticesIfAbsentWithReceipt", false, true},
-		{"DeleteVerticesWithReceipt", false, true},
-		{"PutVertexIfAbsent", false, false},
-		{"PutVerticesIfAbsent", false, false},
-		{"DeleteEdges", false, true},
-		{"DeleteEdgesWithReceipt", false, true},
-		{"AddEdgesWithReceipt", false, true},
-		{"GetReceiptStatuses", false, true},
-		{"AddEdges", false, false},         // additive write, no idempotency
-		{"AddEdges", true, true},           // idempotency armed
-		{"AddEdge", true, true},            // idempotency armed
-		{"AddEdgeAt", false, false},        // additive write, no idempotency
-		{"Subscribe", true, false},         // streaming never retries
-		{"BootstrapIdentity", true, false}, // streaming recovery never retries
-		{"SubscribeIdentity", true, false}, // cursor ownership stays with caller
-		{"Backup", true, false},            // io stream never retries
-		{"NotAMethod", true, false},        // unknown fails closed
+		{"GetVertex", true},
+		{"PutVertices", true},
+		{"PutEdge", true},
+		{"PutVerticesWithReceipt", true},         // pinned endpoint
+		{"PutVerticesIfAbsentWithReceipt", true}, // pinned endpoint
+		{"DeleteVerticesWithReceipt", true},      // pinned endpoint
+		{"DeleteEdgesWithReceipt", true},         // pinned endpoint
+		{"AddEdgesWithReceipt", true},            // pinned endpoint
+		{"GetReceiptStatuses", true},
+		{"PutVertexIfAbsent", false},
+		{"PutVerticesIfAbsent", false},
+		{"DeleteVertex", false},
+		{"DeleteVertices", false},
+		{"DeleteEdge", false},
+		{"DeleteEdges", false},
+		{"DeleteVerticesByPrefix", false},
+		{"DeleteEdgesByPrefix", false},
+		{"AddEdge", false},
+		{"AddEdgeAt", false},
+		{"AddEdges", false},
+		{"AddDecayingEdge", false},
+		{"Subscribe", false},
+		{"BootstrapIdentity", false},
+		{"SubscribeIdentity", false},
+		{"Backup", false},
+		{"NotAMethod", false},
 	}
 	for _, c := range cases {
-		if got := retryableMethod(c.method, c.idempotentAdds); got != c.want {
-			t.Errorf("retryableMethod(%q, idempotent=%v) = %v, want %v", c.method, c.idempotentAdds, got, c.want)
+		if got := retryableMethod(c.method); got != c.want {
+			t.Errorf("retryableMethod(%q) = %v, want %v", c.method, got, c.want)
 		}
 	}
 }
@@ -524,25 +527,18 @@ func TestUnaryRetry_SingleEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("idempotent AddEdges retries with identical ContribIDs", func(t *testing.T) {
+	t.Run("ContribIDs do not authorize replay of plain AddEdges", func(t *testing.T) {
 		l := mustLantern(t, WithIdempotentAdds(), WithRetry(RetryPolicy{MaxAttempts: 3, sleepFn: noSleep}))
 		capt := &scriptedClient{addEdgesErrs: []error{unavailable, nil}}
 		l.client = capt
-		if _, err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}}); err != nil {
-			t.Fatalf("AddEdges: %v", err)
+		if _, err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}}); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("AddEdges error = %v, want ambiguous ErrUnavailable", err)
 		}
-		if capt.addEdgesN != 2 {
-			t.Fatalf("attempts = %d, want 2", capt.addEdgesN)
+		if capt.addEdgesN != 1 || len(capt.addEdgesReqs) != 1 {
+			t.Fatalf("attempts/requests = %d/%d, want 1/1", capt.addEdgesN, len(capt.addEdgesReqs))
 		}
-		if len(capt.addEdgesReqs) != 2 {
-			t.Fatalf("recorded %d requests, want 2", len(capt.addEdgesReqs))
-		}
-		first, second := capt.addEdgesReqs[0].GetContribIds(), capt.addEdgesReqs[1].GetContribIds()
-		if len(first) != 1 || len(second) != 1 {
-			t.Fatalf("contrib id counts = %d,%d, want 1,1", len(first), len(second))
-		}
-		if !reflect.DeepEqual(first, second) {
-			t.Fatalf("retried request must carry identical ContribIDs; got %x vs %x", first, second)
+		if ids := capt.addEdgesReqs[0].GetContribIds(); len(ids) != 1 || len(ids[0]) != ContribIDSize {
+			t.Fatalf("ContribIDs = %x, want one %d-byte ID on the single attempt", ids, ContribIDSize)
 		}
 	})
 
@@ -583,4 +579,76 @@ func TestUnaryRetry_SingleEndpoint(t *testing.T) {
 			t.Fatalf("attempts = %d, want 1 (double-count hazard blocks retry)", capt.addEdgesN)
 		}
 	})
+}
+
+func TestUnaryRetry_ResultBearingWritesStopAfterAmbiguousUnavailable(t *testing.T) {
+	expiration := time.Now().Add(time.Hour)
+	cases := []struct {
+		name string
+		call func(*Lantern) error
+	}{
+		{"DeleteVertex", func(l *Lantern) error { _, err := l.DeleteVertex(context.Background(), "k"); return err }},
+		{"DeleteVertices", func(l *Lantern) error { _, err := l.DeleteVertices(context.Background(), []string{"k"}); return err }},
+		{"DeleteEdge", func(l *Lantern) error { _, err := l.DeleteEdge(context.Background(), "a", "b"); return err }},
+		{"DeleteEdges", func(l *Lantern) error {
+			_, err := l.DeleteEdges(context.Background(), []EdgeRef{{Tail: "a", Head: "b"}})
+			return err
+		}},
+		{"DeleteVerticesByPrefix capped", func(l *Lantern) error {
+			_, err := l.DeleteVerticesByPrefix(context.Background(), "k/", WithDeleteByPrefixLimit(1))
+			return err
+		}},
+		{"DeleteVerticesByPrefix dry run", func(l *Lantern) error {
+			_, err := l.DeleteVerticesByPrefix(context.Background(), "k/", WithDryRun())
+			return err
+		}},
+		{"DeleteEdgesByPrefix capped", func(l *Lantern) error {
+			_, err := l.DeleteEdgesByPrefix(context.Background(), WithEdgeDeleteTailPrefix("a/"), WithEdgeDeleteLimit(1))
+			return err
+		}},
+		{"DeleteEdgesByPrefix dry run", func(l *Lantern) error {
+			_, err := l.DeleteEdgesByPrefix(context.Background(), WithEdgeDeleteTailPrefix("a/"), WithEdgeDeleteDryRun())
+			return err
+		}},
+		{"AddEdge with ContribID", func(l *Lantern) error {
+			_, err := l.AddEdge(context.Background(), "a", "b", 1, time.Hour)
+			return err
+		}},
+		{"AddEdgeAt with ContribID", func(l *Lantern) error {
+			_, err := l.AddEdgeAt(context.Background(), "a", "b", 1, expiration)
+			return err
+		}},
+		{"AddEdges with ContribIDs", func(l *Lantern) error {
+			_, err := l.AddEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1, Expiration: expiration}})
+			return err
+		}},
+		{"AddDecayingEdge with ContribIDs", func(l *Lantern) error {
+			_, err := l.AddDecayingEdge(context.Background(), "a", "b", DecayOpts{
+				InitialWeight: 1, Ratio: 0.5, Steps: 2, Interval: time.Minute,
+			})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			interceptor := connect.UnaryInterceptorFunc(func(connect.UnaryFunc) connect.UnaryFunc {
+				return func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+					calls++
+					return nil, connect.NewError(connect.CodeUnavailable, errors.New("committed response lost"))
+				}
+			})
+			l := mustLantern(t,
+				WithRetry(RetryPolicy{MaxAttempts: 3, sleepFn: noSleep}),
+				WithIdempotentAdds(),
+				WithConnectClientOption(connect.WithInterceptors(interceptor)),
+			)
+			if err := tc.call(l); !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("error = %v, want ErrUnavailable", err)
+			}
+			if calls != 1 {
+				t.Fatalf("wire attempts = %d, want 1 despite WithRetry", calls)
+			}
+		})
+	}
 }

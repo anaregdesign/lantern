@@ -90,8 +90,8 @@ URL. For load balancing across replicas you have two options:
 
 ### Static-endpoint failover
 
-`NewLanternFailover` wraps a fixed list of endpoints and transparently
-fails over to the next reachable one. It is the SDK-native generalisation
+`NewLanternFailover` wraps a fixed list of endpoints and rotates eligible
+operations to the next reachable one. It is the SDK-native generalisation
 of the failover MCP used to embed privately; the policy now lives here.
 
 ```go
@@ -105,8 +105,7 @@ if err != nil {
 }
 defer c.Close()
 
-// Same surface as *Lantern — every call routes to the current node and
-// rotates to another only when a node is unreachable.
+// Same surface as *Lantern — eligible calls rotate on Unavailable.
 if _, err := c.PutVertex(ctx, "user:42", "alice", 10*time.Minute); err != nil {
     log.Fatal(err)
 }
@@ -119,16 +118,21 @@ Semantics:
   discovery, gossip, or membership tracking — that explicit non-goal keeps
   the client a thin wrapper. If your endpoints churn, use a proxy / DNS
   instead (see above).
-- **Sticky current node.** Calls go to the current node and stay there
-  until it becomes unreachable; only then does the client rotate to the
-  next node in the ring. Application-level errors (not-found, etc.) never
-  trigger rotation.
-- **`ErrUnavailable`.** Rotation is driven by the exported `ErrUnavailable`
-  sentinel — a node is considered down when an RPC fails with Connect's
-  `CodeUnavailable` (connection refused or server-side unavailable), which
-  the SDK joins with `ErrUnavailable`. `errors.Is(err, client.ErrUnavailable)`
-  is true for those failures. When **all** nodes are unreachable the last
-  such error is returned.
+- **Sticky current node.** Replay-eligible calls (reads and unconditional
+  Put) may rotate on `ErrUnavailable`; deterministic application errors
+  (not-found, etc.) never do. A transport error may hide a committed write.
+- **Unsafe writes stay put (checked-in source).** Plain Add (even with
+  `WithIdempotentAdds`), exact Vertex/Edge Delete, capped prefix Delete, and
+  conditional Put make one attempt on the current endpoint, with or without
+  `WithRetry`. On `ErrUnavailable` their original result is unknown; reconcile
+  explicitly instead of retrying blindly. Dry-run prefix calls may be
+  repeated by the caller, but are not automatically classified differently
+  from deletes. Receipt-bearing writes alone can replay after persisted-
+  operation-ID and same-endpoint continuity checks.
+- **`ErrUnavailable`.** Connect's `CodeUnavailable` (connection refused or
+  server-side unavailable) is joined with `ErrUnavailable`, so
+  `errors.Is(err, client.ErrUnavailable)` identifies an ambiguous response.
+  If all endpoints fail for an eligible call, the last error is returned.
 - **Same API surface.** `*Failover` exposes the same read/write/delete/scan
   methods plus `Ping` and `Close`, so it is a drop-in for `*Lantern`.
 
@@ -288,7 +292,7 @@ commit, changing an Add's effective weight or a Delete's original result;
 repeating a capped prefix Delete can remove a later page. Use the separate
 receipt-backed APIs for Add and exact Vertex/Edge Delete result recovery with
 same-endpoint/generation continuity. Prefix Delete has no receipt path. The
-retry-policy fix is pending #1468 and is not in the published tag.
+#1468 source fix is not in the published tag.
 
 Every `PutVertex*` / `PutEdge*` singular call returns a typed `PutOutcome`.
 Plural Put calls return request-index-aligned `[]VertexPutResult` /
