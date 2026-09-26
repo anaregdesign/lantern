@@ -330,9 +330,28 @@ Tag order matters because each downstream module pins its upstream tag:
 
 1. `pb/vX.Y.Z`
 2. `core/vX.Y.Z`
-3. `sdks/go/vX.Y.Z` — triggers `sdks-go-publish.yml` (vet/build/test on the tagged
-   commit + a GitHub Release titled exactly the tag). The module proxy pulls source from
-   VCS, so there is no artifact to push.
+3. `sdks/go/vX.Y.Z` — first pin a **published** `pb/vA.B.C` tag in
+   `sdks/go/go.mod` whose Go sources and `go.mod` match `pb/` at the intended SDK
+   tag. After that pb tag is available through the public Go module proxy and
+   all applicable quality and physical-device gates pass, create the SDK tag
+   locally at a clean frozen HEAD and run
+   `python3 .github/scripts/verify_go_sdk_release.py --tag sdks/go/vX.Y.Z`
+   **before pushing** with the `sdks/go/go.mod` Go toolchain installed as `go`
+   (`GOTOOLCHAIN=local` disallows automatic toolchain selection). Push only
+   after it passes. The pushed SDK tag triggers
+   `sdks-go-publish.yml`: a workspace vet/build/test
+   gate followed by a standalone check of the exact tagged `sdks/go` archive.
+   That check strips the sole permitted `replace pb => ../../pb` directive
+   **only in a temporary copy** and rejects any other replacement,
+   resolves the pinned pb tag through the public Go module proxy and checksum
+   database from a checksum-free directory and fresh module cache with
+   `GOWORK=off`, compares the published pb Go sources and
+   `go.mod` with the SDK-tag pb tree, and builds/tests the isolated SDK. A
+   missing, stale, unresolved, or replaced pb blocks the exact-title GitHub
+   Release; green workspace tests alone are not enough. The Go module proxy
+   pulls tags directly from VCS, so this workflow cannot prevent an invalid
+   pushed tag from being indexed; check the pb dependency **before** tagging,
+   and never move a tag to repair it. There is no SDK artifact to push.
 4. Bump the matching `require`/`replace` lines in the root `go.mod` to the freshly-tagged
    versions.
 5. Root `vX.Y.Z` — triggers `docker-publish.yml`. Before any multi-arch image or GitHub
