@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -195,6 +197,149 @@ func TestConnectAdapter_FaultedReceiptRuntimeFailsClosed(t *testing.T) {
 	}
 	if _, _, ok := runtime.GraphCache().GetEdgeDetail("faulted", "protected"); !ok {
 		t.Fatal("faulted receipt mutation changed the graph")
+	}
+}
+
+func TestConnectAdapter_ReceiptAddPostSyncWALFaultRecoversAtomically(t *testing.T) {
+	runtime, svc, replication := newActivatedReceiptService(t, 8)
+	client := newConnectTestClient(t, svc, replication)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	capability, err := client.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}))
+	if err != nil || !capability.Msg.GetEnabled() {
+		t.Fatalf("initial capability = %+v, %v", capability, err)
+	}
+	issued := time.UnixMilli(int64(capability.Msg.GetServerNowUnixMs())).Add(-time.Second)
+	ids := make([][]byte, 2)
+	for i := range ids {
+		id, err := mutationreceipt.NewID(runtime.receipt.epoch, issued, [24]byte{0x71, byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id.Bytes()
+	}
+	request := &pb.AddEdgesRequest{
+		Edges: []*pb.Edge{
+			{Tail: "tip-fault", Head: "first", Weight: 2, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+			{Tail: "tip-fault", Head: "second", Weight: 3, Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+		},
+		ContribIds: [][]byte{
+			bytes.Repeat([]byte{0x71}, len(graphcache.ContribID{})),
+			bytes.Repeat([]byte{0x72}, len(graphcache.ContribID{})),
+		},
+		ReceiptContext: &pb.MutationReceiptContext{
+			OperationIds:  ids,
+			LogicalCallId: bytes.Repeat([]byte{0x71}, 16),
+			Endpoint:      capability.Msg.GetEndpoint(),
+		},
+	}
+	walPath := runtime.receipt.owner.lease.Path()
+	before, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.receipt.owner.tip.Close(); err != nil {
+		t.Fatalf("close tip journal before WAL append: %v", err)
+	}
+	if _, err := client.AddEdges(ctx, connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("post-Sync tip failure = %v, want Unavailable", err)
+	}
+	after, err := os.Stat(walPath)
+	if err != nil || after.Size() <= before.Size() {
+		t.Fatalf("post-Sync fault did not leave a complete WAL frame: before=%d after=%v error=%v",
+			before.Size(), after, err)
+	}
+	if runtime.ReceiptStats().Entries != 0 || svc.LocalSeq(runtime.clock.NodeID()) != 0 {
+		t.Fatalf("fault published Store or origin: stats=%+v seq=%d",
+			runtime.ReceiptStats(), svc.LocalSeq(runtime.clock.NodeID()))
+	}
+	if length, _, _ := runtime.MutationLogStats(); length != 0 {
+		t.Fatalf("fault published in-memory log length %d, want 0", length)
+	}
+	for _, edge := range request.GetEdges() {
+		if weight, live := runtime.graph.GetWeight(edge.GetTail(), edge.GetHead()); live {
+			t.Fatalf("fault published graph edge (%q, %q) weight %v", edge.GetTail(), edge.GetHead(), weight)
+		}
+	}
+	if _, err := client.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
+		Tail: "tip-fault", Head: "first",
+	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("faulted graph read = %v, want fail-closed", err)
+	}
+	if _, err := client.GetReceiptStatuses(ctx, connect.NewRequest(&pb.GetReceiptStatusesRequest{
+		OperationIds: ids,
+	})); connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("faulted receipt status = %v, want fail-closed", err)
+	}
+	if _, err := client.AddEdges(ctx, connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("same-endpoint retry during fault = %v, want FailedPrecondition", err)
+	}
+	disabled, err := client.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}))
+	if err != nil || disabled.Msg.GetEnabled() {
+		t.Fatalf("faulted capability = %+v, %v, want disabled", disabled, err)
+	}
+
+	config := durableRuntimeTestConfig(walPath)
+	config.Receipt.MaxEntries = 8
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("close faulted runtime: %v", err)
+	}
+	reopened, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatalf("restart from synced frame and stale tip: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	recovered := reopened.NewLanternService(nil).WithTombstoneTTL(time.Hour)
+	recoveredReplication, err := reopened.NewLanternReplicationService(recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.CertifyInstallation(recovered, recoveredReplication); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.CertifyReceiptBackup(recovered, recoveredReplication); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.ActivatePublicReceipts(recovered, recoveredReplication); err != nil {
+		t.Fatal(err)
+	}
+	recoveredClient := newConnectTestClient(t, recovered, recoveredReplication)
+	recoveredCapability, err := recoveredClient.GetReceiptCapability(ctx, connect.NewRequest(&pb.GetReceiptCapabilityRequest{}))
+	if err != nil || !recoveredCapability.Msg.GetEnabled() ||
+		!bytes.Equal(recoveredCapability.Msg.GetEndpoint().GetNodeId(), capability.Msg.GetEndpoint().GetNodeId()) ||
+		!bytes.Equal(recoveredCapability.Msg.GetEndpoint().GetGeneration(), capability.Msg.GetEndpoint().GetGeneration()) {
+		t.Fatalf("recovered endpoint = %+v, %v, want original enabled endpoint", recoveredCapability, err)
+	}
+	statuses, err := recoveredClient.GetReceiptStatuses(ctx, connect.NewRequest(&pb.GetReceiptStatusesRequest{
+		OperationIds: ids,
+	}))
+	if err != nil || len(statuses.Msg.GetStatuses()) != 2 {
+		t.Fatalf("recovered receipt statuses = %+v, %v", statuses, err)
+	}
+	for i, want := range []float32{2, 3} {
+		status := statuses.Msg.GetStatuses()[i]
+		if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+			!bytes.Equal(status.GetOperationId(), ids[i]) ||
+			status.GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != want {
+			t.Fatalf("recovered receipt[%d] = %+v, want confirmed weight %v", i, status, want)
+		}
+		edge := request.GetEdges()[i]
+		got, err := recoveredClient.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{
+			Tail: edge.GetTail(), Head: edge.GetHead(),
+		}))
+		if err != nil || got.Msg.GetEdge().GetWeight() != want {
+			t.Fatalf("recovered edge[%d] = %+v, %v, want weight %v", i, got, err, want)
+		}
+	}
+	replay, err := recoveredClient.AddEdges(ctx, connect.NewRequest(request))
+	if err != nil || replay.Msg.GetWritten() != 2 ||
+		len(replay.Msg.GetEffectiveWeights()) != 2 ||
+		replay.Msg.GetEffectiveWeights()[0] != 2 || replay.Msg.GetEffectiveWeights()[1] != 3 {
+		t.Fatalf("replay after attested recovery = %+v, %v, want original [2 3]", replay, err)
+	}
+	if recovered.LocalSeq(reopened.clock.NodeID()) != 1 {
+		t.Fatalf("duplicate Add appended origin seq %d, want 1", recovered.LocalSeq(reopened.clock.NodeID()))
 	}
 }
 

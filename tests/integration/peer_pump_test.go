@@ -781,9 +781,9 @@ func waitForLogSeq(t *testing.T, log *mutationlog.Log, want uint64, timeout time
 }
 
 // waitForWireEdge is the real Connect/h2c sibling used by gap-recovery tests
-// whose contract is externally observable through GetEdge. NotFound and a
-// publication gap during an in-flight Snapshot install are transient; a gap
-// still present at the deadline is terminal.
+// whose contract is externally observable through GetEdge. NotFound, a
+// Snapshot gap, and a publication change during a read are transient; an
+// error still present at the deadline is terminal.
 func waitForWireEdge(t *testing.T, ctx context.Context, raw graphv1connect.LanternServiceClient, tail, head string, want float32, timeout time.Duration) (float32, bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -796,7 +796,11 @@ func waitForWireEdge(t *testing.T, ctx context.Context, raw graphv1connect.Lante
 			}
 		} else if code := connect.CodeOf(err); code != connect.CodeNotFound &&
 			(code != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped:")) {
-			t.Fatalf("GetEdge %s->%s: %v", tail, head, err)
+			var connectErr *connect.Error
+			if code != connect.CodeUnavailable || !errors.As(err, &connectErr) ||
+				connectErr.Message() != "graph publication changed during read; retry" {
+				t.Fatalf("GetEdge %s->%s: %v", tail, head, err)
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -808,6 +812,27 @@ func waitForWireEdge(t *testing.T, ctx context.Context, raw graphv1connect.Lante
 		return 0, false
 	}
 	return response.Msg.GetEdge().GetWeight(), true
+}
+
+type onePublicationChangeClient struct {
+	graphv1connect.LanternServiceClient
+	calls int
+}
+
+func (c *onePublicationChangeClient) GetEdge(context.Context, *connect.Request[pb.GetEdgeRequest]) (*connect.Response[pb.GetEdgeResponse], error) {
+	c.calls++
+	if c.calls == 1 {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("graph publication changed during read; retry"))
+	}
+	return connect.NewResponse(&pb.GetEdgeResponse{Edge: &pb.Edge{Weight: 3}}), nil
+}
+
+func TestWaitForWireEdgeRetriesPublicationChange(t *testing.T) {
+	raw := &onePublicationChangeClient{}
+	got, ok := waitForWireEdge(t, context.Background(), raw, "tail", "head", 3, time.Second)
+	if !ok || got != 3 || raw.calls != 2 {
+		t.Fatalf("GetEdge after publication change = (%g, %v), calls=%d; want (3, true) after two calls", got, ok, raw.calls)
+	}
 }
 
 // TestPeerPump_E2E_ThreeNodeConvergence wires three peers in a full
