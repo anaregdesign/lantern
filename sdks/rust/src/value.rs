@@ -384,10 +384,20 @@ pub(crate) fn resolve_expiration(
             if duration.is_zero() {
                 return Err(LanternError::InvalidInput("relative TTL must be positive"));
             }
-            let deadline = now
-                .checked_add(*duration)
-                .ok_or(LanternError::InvalidInput("relative TTL overflows clock"))?;
-            system_time_timestamp(deadline)?
+            // Windows SystemTime arithmetic discards sub-100ns durations.
+            let start = system_time_timestamp(now)?;
+            let nanos = start.nanos as u32 + duration.subsec_nanos();
+            let seconds = i64::try_from(duration.as_secs())
+                .ok()
+                .and_then(|seconds| start.seconds.checked_add(seconds))
+                .and_then(|seconds| seconds.checked_add(i64::from(nanos / 1_000_000_000)))
+                .ok_or(LanternError::InvalidInput(
+                    "relative TTL exceeds protobuf timestamp range",
+                ))?;
+            Timestamp {
+                seconds,
+                nanos: (nanos % 1_000_000_000) as i32,
+            }
         }
     };
     validate_expiration_timestamp(&timestamp).map_err(LanternError::InvalidInput)?;

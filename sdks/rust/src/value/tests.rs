@@ -154,6 +154,22 @@ fn timestamps_validate_full_proto_range_and_distinguish_zero_time() {
     ] {
         assert!(resolve_expiration(&at(seconds, nanos), UNIX_EPOCH).is_ok());
     }
+    let one_ns_before_epoch = Timestamp {
+        seconds: -1,
+        nanos: 999_999_999,
+    };
+    assert_eq!(
+        resolve_expiration(&Expiration::At(one_ns_before_epoch), UNIX_EPOCH).unwrap(),
+        Some(one_ns_before_epoch)
+    );
+    assert_eq!(
+        VertexInput::timestamp("precise", one_ns_before_epoch)
+            .unwrap()
+            .into_wire(UNIX_EPOCH)
+            .unwrap()
+            .timestamp_value(),
+        Some(&one_ns_before_epoch)
+    );
     assert!(matches!(
         resolve_expiration(&at(TIMESTAMP_MIN, 0), UNIX_EPOCH),
         Err(LanternError::InvalidInput(_))
@@ -201,10 +217,10 @@ fn timestamps_validate_full_proto_range_and_distinguish_zero_time() {
         Err(LanternError::Protocol(_))
     ));
     assert_eq!(
-        system_time_timestamp(UNIX_EPOCH - Duration::from_nanos(1)).unwrap(),
+        system_time_timestamp(UNIX_EPOCH - Duration::from_nanos(100)).unwrap(),
         Timestamp {
             seconds: -1,
-            nanos: 999_999_999
+            nanos: 999_999_900
         }
     );
 }
@@ -289,6 +305,39 @@ fn signed_duration_and_positive_ttl_have_independent_validations() {
             nanos: 1
         })
     );
+    assert_eq!(
+        resolve_expiration(
+            &Expiration::After(Duration::from_nanos(101)),
+            UNIX_EPOCH - Duration::from_nanos(100)
+        )
+        .unwrap(),
+        Some(Timestamp {
+            seconds: 0,
+            nanos: 1
+        })
+    );
+    assert_eq!(
+        resolve_expiration(
+            &Expiration::After(Duration::from_nanos(101)),
+            UNIX_EPOCH + Duration::from_nanos(999_999_900)
+        )
+        .unwrap(),
+        Some(Timestamp {
+            seconds: 1,
+            nanos: 1
+        })
+    );
+    assert!(matches!(
+        resolve_expiration(&Expiration::After(Duration::MAX), UNIX_EPOCH),
+        Err(LanternError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        resolve_expiration(
+            &Expiration::After(Duration::from_secs(1)),
+            UNIX_EPOCH + Duration::from_secs(TIMESTAMP_MAX as u64)
+        ),
+        Err(LanternError::InvalidInput(_))
+    ));
 }
 
 #[test]
