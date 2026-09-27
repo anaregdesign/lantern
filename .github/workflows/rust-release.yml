@@ -1,0 +1,606 @@
+# Rust crate releases are independent of the Go workspace and the path-filtered
+# rust-sdk.yml workflow. A tag must pass the full native matrix again.
+#
+# Bootstrap: crates.io does not permit OIDC for a crate's first publication.
+# Its owner must publish the first version from the verified immutable tag with
+# operator-held credentials, then configure the crates.io trusted publisher for
+# anaregdesign/lantern, rust-release.yml, and environment "crates.io".
+# Protect that GitHub Environment with tag restrictions and required reviewers,
+# and protect Rust release tags against moving/deletion. Rerun this tag workflow
+# only after the registry archive is visible. Never put a registry token in
+# GitHub Secrets. Set the repository variable
+# LANTERN_RUST_CRATES_IO_OWNER to the expected crates.io owner login (user or
+# GitHub team, e.g. github:org:team). The crates.io /owners response puts both
+# kinds in its "users" array; an absent/mismatched owner blocks every release.
+# A first publish from another host is not assumed byte-reproducible: before
+# publishing, the owner must package the clean exact tag with Cargo 1.97.1
+# and compare that .crate's SHA-256 with the CI artifact. Abort on any
+# difference; prefer the same Linux environment. Keep the source and toolchain
+# unchanged between the comparison and the owner-held `cargo publish`.
+name: Rust SDK Release
+
+on:
+  push:
+    tags: ['sdks/rust/v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: sdks/rust
+
+jobs:
+  tag:
+    name: Verify exact immutable tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag_object_sha: ${{ steps.check.outputs.tag_object_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check tag, package identity, and changelog
+        id: check
+        working-directory: .
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != push || "$GITHUB_REF_TYPE" != tag ||
+                ! "$TAG" =~ ^sdks/rust/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Only push events for exact sdks/rust/vX.Y.Z tags may release"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"
+          tag_object_sha=$(git rev-parse "refs/tags/$TAG")
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$tag_object_sha"
+
+          version=${TAG#sdks/rust/v}
+          VERSION="$version" python3 -I -B - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("sdks/rust/Cargo.toml").read_text())
+          package = manifest["package"]
+          version = os.environ["VERSION"]
+          assert package["name"] == "lantern-client", "wrong crate name"
+          assert package["version"] == version, "tag and Cargo.toml versions differ"
+          assert package["repository"] == "https://github.com/anaregdesign/lantern"
+          assert package["license"] == "Apache-2.0"
+          assert package["rust-version"] == "1.88", "update the MSRV matrix with Cargo.toml"
+          headings = Path("sdks/rust/CHANGELOG.md").read_text().splitlines()
+          assert headings.count(f"## {version}") == 1, "missing/duplicate exact changelog heading"
+          assert Path("sdks/rust/LICENSE").is_file()
+          PY
+          {
+            echo "version=$version"
+            echo "tag_object_sha=$tag_object_sha"
+          } >> "$GITHUB_OUTPUT"
+
+  conformance:
+    name: Conformance (${{ matrix.os }}, Rust ${{ matrix.rust }})
+    needs: tag
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: ['1.88.0', stable]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy, rustfmt
+
+      - name: Verify checked-in bindings on the native toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask codegen
+          if [ -n "$(git status --porcelain -- src/generated)" ]; then
+            echo "::error::Rust bindings drifted from the tagged sources"
+            git status --short -- src/generated
+            exit 1
+          fi
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint all targets and features
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+      - name: Test default native TLS policy
+        run: cargo test --locked --no-default-features smoke::native_tls_roots_are_available_by_default
+      - name: Test all features
+        run: cargo test --locked --all-features
+      - name: Build rustdoc without warnings
+        run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - uses: actions/setup-go@v7
+        if: matrix.rust == 'stable'
+        with:
+          go-version-file: go.mod
+      - name: Build production server on each native OS
+        if: matrix.rust == 'stable'
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=''
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
+          mkdir -p sdks/rust/target
+          go build -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
+      - name: Test real h2c, TLS, auth, CRUD, and query failure paths
+        if: matrix.rust == 'stable'
+        shell: bash
+        env:
+          LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+        run: cargo test --locked --all-features -- --ignored --test-threads=1
+
+  preflight:
+    name: Audit and verify the tagged crate archive
+    needs: [tag, conformance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      archive_sha256: ${{ steps.candidate.outputs.archive_sha256 }}
+      artifact_id: ${{ steps.archive.outputs.artifact-id }}
+      publish_required: ${{ steps.registry.outputs.publish_required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action
+        with:
+          toolchain: '1.97.1'
+      - name: Require fixed packaging Cargo
+        run: test "$(cargo --version)" = 'cargo 1.97.1 (c980f4866 2026-06-30)'
+
+      - name: Test registry release policy against controlled versions
+        run: python3 -B -m unittest discover -s ci -p 'test_*.py'
+
+      - name: Block vulnerable or warned locked dependencies
+        run: |
+          set -euo pipefail
+          cargo install --locked --version 0.22.2 cargo-audit
+          cargo audit --deny warnings --file Cargo.lock
+
+      - name: Package and inspect the exact-tag candidate
+        id: candidate
+        shell: bash
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+          cargo package --locked --package lantern-client
+          archive="$GITHUB_WORKSPACE/.rust-release/lantern-client-$VERSION.crate"
+          mkdir -p "$GITHUB_WORKSPACE/.rust-release"
+          cp "target/package/lantern-client-$VERSION.crate" "$archive"
+          python3 -I -B - "$archive" "$VERSION" <<'PY'
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import subprocess
+          import sys
+          import tarfile
+          import tomllib
+
+          archive, version = sys.argv[1:]
+          prefix = f"lantern-client-{version}/"
+          files = {}
+          with tarfile.open(archive, "r:gz") as package:
+              for member in package.getmembers():
+                  if member.isdir() and member.name.rstrip("/") == prefix[:-1]:
+                      continue
+                  if not member.name.startswith(prefix):
+                      raise ValueError(f"entry outside crate archive: {member.name}")
+                  relative = member.name[len(prefix):]
+                  assert relative and ".." not in PurePosixPath(relative).parts, member.name
+                  if member.isdir():
+                      continue
+                  assert member.isfile(), f"link or special file in archive: {member.name}"
+                  assert relative not in files, f"duplicate archive entry: {relative}"
+                  assert (
+                      relative in {
+                          ".cargo_vcs_info.json", "Cargo.lock", "Cargo.toml",
+                          "Cargo.toml.orig", "CHANGELOG.md", "LICENSE", "README.md",
+                          "RELEASING.md",
+                      }
+                      or relative.startswith(("src/", "examples/", "tests/"))
+                  ), f"unexpected archive entry: {relative}"
+                  files[relative] = package.extractfile(member).read()
+
+          required = {
+              ".cargo_vcs_info.json", "Cargo.lock", "Cargo.toml", "Cargo.toml.orig",
+              "CHANGELOG.md", "LICENSE", "README.md", "RELEASING.md", "src/lib.rs",
+              "src/generated/graph.v1.rs",
+          }
+          assert required <= files.keys(), f"missing archive files: {required - files.keys()}"
+          tracked = set(subprocess.check_output(
+              ["git", "ls-files", "--", "src", "examples", "tests"], text=True,
+          ).splitlines())
+          assert tracked <= files.keys(), f"tracked crate source omitted: {tracked - files.keys()}"
+          for name, content in files.items():
+              if name in {"Cargo.toml", "Cargo.lock", ".cargo_vcs_info.json"}:
+                  continue
+              source = Path("Cargo.toml" if name == "Cargo.toml.orig" else name)
+              assert source.is_file() and source.read_bytes() == content, (
+                  f"archive differs from tagged source: {name}"
+              )
+          packaged = tomllib.loads(files["Cargo.toml"].decode())
+          assert packaged["package"]["name"] == "lantern-client"
+          assert packaged["package"]["version"] == version
+          assert packaged["package"]["license"] == "Apache-2.0"
+          assert b"Apache License\nVersion 2.0" in files["LICENSE"]
+          vcs = json.loads(files[".cargo_vcs_info.json"])
+          assert vcs["git"]["sha1"] == os.environ["GITHUB_SHA"]
+          assert not vcs["git"].get("dirty", False)
+          PY
+
+          unpacked="$GITHUB_WORKSPACE/.rust-release/unpacked"
+          mkdir -p "$unpacked"
+          tar -xzf "$archive" -C "$unpacked"
+          (
+            cd "$unpacked/lantern-client-$VERSION"
+            test ! -e build.rs
+            test ! -e xtask
+            test ! -e proto
+            PROTOC=/nonexistent/protoc \
+              CARGO_TARGET_DIR="$GITHUB_WORKSPACE/.rust-release/isolated-target" \
+              cargo test --locked --all-features
+          )
+          sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          echo "archive_sha256=$sha256" >> "$GITHUB_OUTPUT"
+          {
+            printf 'Tagged crate candidate: `lantern-client-%s.crate` (SHA-256 `%s`).\n\n' \
+              "$VERSION" "$sha256"
+            printf 'Tagged commit: `%s`; CI runner: `%s`; Cargo: `%s`.\n\n' \
+              "$GITHUB_SHA" "$RUNNER_OS" "$(cargo --version)"
+            echo 'For the first publication only: download this run’s candidate artifact, confirm the tag/commit and clean checkout, and run `rustup run 1.97.1 cargo package --locked --package lantern-client` from `sdks/rust/` on the owner host. Compare its `.crate` SHA-256 to the candidate above. If different, **stop before publishing**; use the same Cargo version and preferably the same Linux platform. Keep the checkout/toolchain unchanged for the owner-held `rustup run 1.97.1 cargo publish --locked --package lantern-client`. Cargo repackages on publish; registry equality is checked again before any GitHub Release.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry-run publication and independently repackage
+        shell: bash
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+          ARCHIVE_SHA256: ${{ steps.candidate.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          dry_run_target="$GITHUB_WORKSPACE/.rust-release/dry-run-target"
+          fresh_target="$GITHUB_WORKSPACE/.rust-release/fresh-package-target"
+          test ! -e "$dry_run_target"
+          test ! -e "$fresh_target"
+          CARGO_TARGET_DIR="$dry_run_target" cargo publish --dry-run --locked --package lantern-client
+          # The location of Cargo's temporary dry-run archive is not a public contract.
+          CARGO_TARGET_DIR="$fresh_target" cargo package --locked --package lantern-client
+          candidate="$GITHUB_WORKSPACE/.rust-release/lantern-client-$VERSION.crate"
+          fresh="$fresh_target/package/lantern-client-$VERSION.crate"
+          printf '%s  %s\n%s  %s\n' \
+            "$ARCHIVE_SHA256" "$candidate" "$ARCHIVE_SHA256" "$fresh" |
+            sha256sum --check --strict
+          cmp "$candidate" "$fresh"
+
+      - name: Preserve the tested candidate for publication and comparison
+        id: archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-rust-crate-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/.rust-release/lantern-client-${{ needs.tag.outputs.version }}.crate
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require crate ownership and decide if publication is needed
+        id: registry
+        working-directory: .
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+          ARCHIVE_SHA256: ${{ steps.candidate.outputs.archive_sha256 }}
+          EXPECTED_OWNER: ${{ vars.LANTERN_RUST_CRATES_IO_OWNER }}
+        run: |
+          python3 -I -B - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "sdks", "rust", "ci"))
+          from registry_policy import FirstPublicationRequired, release_requires_publish
+
+          name = "lantern-client"
+          version = os.environ["VERSION"]
+          checksum = os.environ["ARCHIVE_SHA256"]
+          owner = os.environ["EXPECTED_OWNER"]
+
+          def get(path, *, allow_missing=False):
+              request = Request(
+                  f"https://crates.io/api/v1/crates/{name}{path}",
+                  headers={"User-Agent": "lantern-rust-release/1.0"},
+              )
+              try:
+                  with urlopen(request, timeout=20) as response:
+                      return json.load(response)
+              except HTTPError as error:
+                  if allow_missing and error.code == 404:
+                      return None
+                  raise
+
+          crate = get("", allow_missing=True)
+          versions = get("/versions") if crate is not None else None
+          owners = get("/owners") if crate is not None else None
+          release = get(f"/{version}", allow_missing=True) if crate is not None else None
+          try:
+              required = release_requires_publish(
+                  crate, versions, owners, release,
+                  version=version, checksum=checksum, owner=owner,
+                  sha=os.environ["GITHUB_SHA"], run_id=os.environ["GITHUB_RUN_ID"],
+              )
+          except FirstPublicationRequired as error:
+              raise SystemExit(
+                  f"{error}: compare the owner-host package SHA-256 with this "
+                  "run's candidate BEFORE publishing (see the run summary); "
+                  "abort on mismatch. Configure the protected crates.io trusted "
+                  "publisher and rerun this tag workflow after manual publication. "
+                  "No CI publication or GitHub Release was attempted."
+              ) from None
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"publish_required={str(required).lower()}", file=output)
+          PY
+
+  publish:
+    name: Authenticate trusted publisher and publish if missing
+    needs: [tag, preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: crates.io
+      url: https://crates.io/crates/lantern-client
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Confirm the tag has not moved
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          TAG_OBJECT_SHA: ${{ needs.tag.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$TAG_OBJECT_SHA"
+
+      - uses: actions/checkout@v7
+        if: needs.preflight.outputs.publish_required == 'true'
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action
+        if: needs.preflight.outputs.publish_required == 'true'
+        with:
+          toolchain: '1.97.1'
+      - name: Require fixed publishing Cargo
+        if: needs.preflight.outputs.publish_required == 'true'
+        run: test "$(cargo --version)" = 'cargo 1.97.1 (c980f4866 2026-06-30)'
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
+          path: ${{ github.workspace }}/.rust-release
+
+      - name: Verify artifact and repeat the package fingerprint
+        working-directory: .
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+          SHA256: ${{ needs.preflight.outputs.archive_sha256 }}
+          PUBLISH_REQUIRED: ${{ needs.preflight.outputs.publish_required }}
+        run: |
+          set -euo pipefail
+          archive="$GITHUB_WORKSPACE/.rust-release/lantern-client-$VERSION.crate"
+          printf '%s  %s\n' "$SHA256" "$archive" | sha256sum --check --strict
+          if [[ "$PUBLISH_REQUIRED" == true ]]; then
+            (cd sdks/rust && cargo package --locked --package lantern-client)
+            cmp "$archive" "sdks/rust/target/package/lantern-client-$VERSION.crate"
+          else
+            test "$PUBLISH_REQUIRED" = false
+          fi
+
+      # Authenticate even on a verified-version rerun. Existing later
+      # versions must also carry this run's exact-tag OIDC provenance.
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+
+      - name: Publish with short-lived OIDC credentials
+        if: needs.preflight.outputs.publish_required == 'true'
+        # Cargo builds its own upload tarball; target/package holds the earlier
+        # cargo-package candidate, not proof of what cargo-publish uploaded.
+        # The separate read-only job checks the actual crates.io archive.
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          TAG: ${{ github.ref_name }}
+          TAG_OBJECT_SHA: ${{ needs.tag.outputs.tag_object_sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$TAG_OBJECT_SHA"
+          cargo publish --locked --package lantern-client
+
+  verify-published:
+    name: Verify crates.io visibility and exact archive bytes
+    needs: [tag, preflight, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
+          path: ${{ github.workspace }}/.rust-release
+
+      - name: Compare candidate, registry checksum, and downloaded crate
+        working-directory: .
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+          ARCHIVE_SHA256: ${{ needs.preflight.outputs.archive_sha256 }}
+          EXPECTED_OWNER: ${{ vars.LANTERN_RUST_CRATES_IO_OWNER }}
+        run: |
+          python3 -I -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import time
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "sdks", "rust", "ci"))
+          from registry_policy import release_requires_publish
+
+          name = "lantern-client"
+          version = os.environ["VERSION"]
+          checksum = os.environ["ARCHIVE_SHA256"]
+          owner = os.environ["EXPECTED_OWNER"]
+          assert len(checksum) == 64
+          candidate = Path(os.environ["GITHUB_WORKSPACE"]) / ".rust-release" / f"{name}-{version}.crate"
+          assert hashlib.sha256(candidate.read_bytes()).hexdigest() == checksum, (
+              "the downloaded candidate archive changed"
+          )
+
+          def fetch(url, *, missing_ok=False):
+              request = Request(url, headers={"User-Agent": "lantern-rust-release/1.0"})
+              try:
+                  with urlopen(request, timeout=25) as response:
+                      return response.read()
+              except HTTPError as error:
+                  if missing_ok and error.code == 404:
+                      return None
+                  raise
+
+          api = f"https://crates.io/api/v1/crates/{name}"
+          for attempt in range(18):
+              metadata = fetch(f"{api}/{version}", missing_ok=True)
+              archive = fetch(
+                  f"https://static.crates.io/crates/{name}/{name}-{version}.crate",
+                  missing_ok=True,
+              ) if metadata is not None else None
+              if metadata is not None and archive is not None:
+                  crate = fetch(api, missing_ok=True)
+                  versions = fetch(f"{api}/versions", missing_ok=True)
+                  owners = fetch(f"{api}/owners", missing_ok=True)
+                  if crate is not None and versions is not None and owners is not None:
+                      required = release_requires_publish(
+                          json.loads(crate), json.loads(versions), json.loads(owners),
+                          json.loads(metadata),
+                          version=version, checksum=checksum, owner=owner,
+                          sha=os.environ["GITHUB_SHA"], run_id=os.environ["GITHUB_RUN_ID"],
+                      )
+                      if required:
+                          raise ValueError("published version requires another publish")
+                      assert hashlib.sha256(archive).hexdigest() == checksum, (
+                          "downloaded registry archive differs from the tested archive"
+                      )
+                      print(f"Verified {name} {version}: registry and candidate SHA-256 {checksum}")
+                      break
+              if attempt == 17:
+                  raise SystemExit("crates.io version/archive not visible after bounded polling")
+              time.sleep(10)
+          PY
+
+  release:
+    name: Create exact-title GitHub Release
+    needs: [tag, verify-published]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Verify tag and any existing Release before writing
+        id: existing
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.tag.outputs.version }}
+          TAG_OBJECT_SHA: ${{ needs.tag.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sdks/rust/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$TAG" = "sdks/rust/v$VERSION"
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$TAG_OBJECT_SHA"
+          python3 -I -B - <<'PY'
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          tag = os.environ["TAG"]
+          request = Request(
+              f"https://api.github.com/repos/{os.environ['GH_REPO']}"
+              f"/releases/tags/{quote(tag, safe='')}",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "lantern-rust-release/1.0",
+              },
+          )
+          try:
+              with urlopen(request, timeout=20) as response:
+                  release = json.load(response)
+          except HTTPError as error:
+              if error.code != 404:
+                  raise
+              release = None
+          if release is not None:
+              assert release["tag_name"] == tag and release["name"] == tag, (
+                  "existing GitHub Release title/tag mismatch"
+              )
+              assert release["draft"] is False and release["prerelease"] is False
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"create={'true' if release is None else 'false'}", file=output)
+          PY
+
+      - name: Create GitHub Release only after registry verification
+        if: steps.existing.outputs.create == 'true'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes=$(printf '## Lantern Rust client SDK\n\nInstall `lantern-client` version %s from crates.io.\n' "$VERSION")
+          gh release create "$TAG" --title "$TAG" --notes "$notes" \
+            --verify-tag --latest=false -R "$GH_REPO"

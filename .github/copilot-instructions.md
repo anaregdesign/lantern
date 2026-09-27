@@ -3,8 +3,9 @@
 Lantern is an in-memory graph KVS (`key-vertex-store`) served over Connect/HTTP-2
 (wire-compatible with gRPC and gRPC-Web on a single h2c socket); both vertices and
 edges carry TTLs and decay over time. The repo is a monorepo: a multi-module Go
-workspace (`go.work`), a pure-Dart SDK (`sdks/dart/`), and standalone TypeScript
-packages, with every non-Go package **outside** `go.work`.
+workspace (`go.work`), a pure-Dart SDK (`sdks/dart/`), a native Rust crate
+(`sdks/rust/`), and standalone TypeScript packages, with every non-Go package
+**outside** `go.work`.
 
 `AGENTS.md` is the full agent guide and `CONTRIBUTING.md` is the release/CI/maintenance
 contract. This file is the short, always-on subset — when it and `AGENTS.md` overlap,
@@ -18,6 +19,8 @@ they must not conflict.
   `go tool wire ./cmd`.
 - `sdks/dart/lib/src/gen/**` — Dart Protobuf + Connect stubs. Regenerate with
   `sdks/dart/scripts/codegen.sh` (which cleans only that generated directory).
+- `sdks/rust/src/generated/**` — private Tonic/Prost stubs. Regenerate from
+  `sdks/rust/` with pinned `cargo xtask codegen`, never at library build time.
 
 ## Architecture invariants
 
@@ -31,6 +34,9 @@ they must not conflict.
   place that depends on everything. Cross-module Go integration tests live in
   `tests/integration/`, not under the producing package; standalone Node real-wire
   tests live in `sdks/node/test/` per `CONTRIBUTING.md`.
+- **Rust is standalone.** `sdks/rust/` is a Cargo crate outside `go.work`,
+  and its edition-2024 private module is `generated` (`gen` is reserved).
+  No generated gRPC service clients are exported from the crate root.
 - **SDK value accessors are free functions, not methods**: `Kind(v)`, `IntValue(v)`,
   `StringValue(v)`, etc. `client.Vertex`/`client.Edge` are true aliases of the `pb`
   types (one `Vertex` type, no boundary casts). Adding a value type updates three sites
@@ -75,11 +81,18 @@ they must not conflict.
 - **Before every push**, run the local quality gate: `gofmt -l` must print nothing,
   then `go test ./...` from the root **and** from each Go submodule (the root run does
   not span submodules), plus Dart format/analyze/test in `sdks/dart/` and Flutter
-  analyze/test in `sdks/dart/example/`.
+  analyze/test in `sdks/dart/example/`; the standalone Rust crate has its own
+  format, Clippy (warnings denied), test, and warning-free doc gate in
+  [CONTRIBUTING.md](../CONTRIBUTING.md).
 - **Dart releases are independent.** `sdks/dart/vX.Y.Z` must match
   `sdks/dart/pubspec.yaml` and `CHANGELOG.md`; the tag workflow runs Dart plus
   Android/iOS gates, publishes `lantern_client` through pub.dev OIDC, and only then
   creates an exact-title GitHub Release. Never store a pub token.
+- **Rust releases are independent.** `sdks/rust/vX.Y.Z` must match
+  `sdks/rust/Cargo.toml` and `CHANGELOG.md`. The first crates.io publish is
+  owner-held after archive verification; later versions use protected OIDC.
+  Verify the registry archive before the exact-title GitHub Release.
+  Never store a registry token.
 - Wait for all required CI checks before merging; never use `--admin`/`--no-verify`.
   Merge with `--squash --delete-branch`. Never push to `main` directly.
 
