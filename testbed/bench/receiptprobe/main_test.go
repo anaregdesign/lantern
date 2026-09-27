@@ -64,7 +64,9 @@ func TestReceiptHTTPSClientRejectsPlaintextRedirectAndUnverifiedPeer(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.ProtoMajor != 2 || accepted.Load() != 1 {
 		t.Fatalf("verified peer protocol = %s, accepted = %d", resp.Proto, accepted.Load())
 	}
