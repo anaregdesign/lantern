@@ -113,6 +113,23 @@ func TestDNSSource_Resolve_PropagatesLookupError(t *testing.T) {
 	}
 }
 
+func TestDNSSource_Resolve_RejectsNonIPAnswersAtomically(t *testing.T) {
+	for _, answer := range []string{
+		"redirect.example.com", "http://127.0.0.1", "127.0.0.1/health",
+		"fe80::1%eth0",
+	} {
+		t.Run(answer, func(t *testing.T) {
+			src := &DNSSource{
+				Name: "lantern.svc", Port: "6380",
+				Lookup: &fakeLookup{hosts: []string{"10.0.0.1", answer}},
+			}
+			if got, err := src.Resolve(context.Background()); err == nil || len(got) != 0 {
+				t.Fatalf("malformed DNS answer = %v, %v; want fail-closed result", got, err)
+			}
+		})
+	}
+}
+
 func TestDNSSource_Resolve_RequiresNameAndPort(t *testing.T) {
 	if _, err := (&DNSSource{Port: "50051"}).Resolve(context.Background()); err == nil {
 		t.Fatalf("expected error for empty Name")

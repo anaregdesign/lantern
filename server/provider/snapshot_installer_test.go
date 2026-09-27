@@ -96,10 +96,10 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 			}
 
 			pumpConfig := newReplicationPumpConfig(
-				PeerConfig{}, nil, ReplicationConfig{}, AuthConfig{}, primary, nil, logger, selection,
+				PeerConfig{}, nil, ReplicationConfig{}, nil, primary, nil, logger, selection,
 			)
 			antiEntropyConfig := newAntiEntropyReplicationConfig(
-				PeerConfig{}, nil, ReplicationConfig{}, AntiEntropyConfig{}, AuthConfig{},
+				PeerConfig{}, nil, ReplicationConfig{}, AntiEntropyConfig{}, nil,
 				primary, nil, logger, selection,
 			)
 			if pumpConfig.SnapshotInstaller != selection.selected() ||

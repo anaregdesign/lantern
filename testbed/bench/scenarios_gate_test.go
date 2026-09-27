@@ -262,12 +262,18 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	for _, contract := range []string{
 		`target_driver="$(yq -r '.target.driver // "ghz"'`,
 		`go run ./testbed/bench/receiptprobe`,
+		`go run ./testbed/bench/receipttls generate -dir "$PEER_TLS_DIR"`,
+		`COMPOSE_FILES+=( -f "$HERE/compose.receipt-tls.yml" )`,
 		`receipt driver requires a fresh Compose lifecycle`,
 		`docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`,
 		`-family "$target_driver"`,
+		`endpoint_urls+="https://${ep}"`,
+		`-ca-file "$PEER_TLS_DIR/ca.pem"`,
 		`pin_receipt_image`,
 		`verify_receipt_image_provenance "$OUTDIR/image_provenance_pre.json"`,
 		`verify_receipt_image_provenance "$OUTDIR/image_provenance_post.json"`,
+		`verify_receipt_peer_tls "$OUTDIR/peer_tls_pre.json"`,
+		`verify_receipt_peer_tls "$OUTDIR/peer_tls_post.json" "$OUTDIR/peer_tls_pre.json"`,
 		`EXPECTED_LANTERN_IMAGE_ID`,
 		`EXPECTED_LANTERN_COMMIT`,
 		`{{.Image}}|{{.Config.Image}}|{{.State.Running}}`,
@@ -290,6 +296,17 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	volumeReset := strings.Index(string(runScript), `docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`)
 	if projectScope < 0 || volumeReset < 0 || projectScope >= volumeReset {
 		t.Error("receipt volume reset must use the named bench Compose project")
+	}
+	preflight := strings.Index(string(runScript), `verify_receipt_peer_tls "$OUTDIR/peer_tls_pre.json"`)
+	warmup := strings.Index(string(runScript), `log "warmup:`)
+	postflight := strings.Index(string(runScript), `verify_receipt_peer_tls "$OUTDIR/peer_tls_post.json"`)
+	perfVerdict := strings.Index(string(runScript), `log "perf gate verdict:`)
+	if preflight < 0 || warmup <= preflight || postflight <= perfVerdict || perfVerdict < warmup {
+		t.Error("receipt TLS provenance must be checked before load and after the verdict")
+	}
+	if strings.Contains(string(runScript), `-token "$LANTERN_BENCH_AUTH_TOKEN"`) ||
+		strings.Contains(string(runScript), `lantern-bench-receipt-token`) {
+		t.Error("receipt token must not be a command-line argument or a committed default")
 	}
 	steadySampling := strings.Index(string(runScript), `-metrics-report "$OUTDIR/runtime_steady.json"`)
 	optionalCapture := strings.LastIndex(string(runScript), `if [[ "${LEAK_GATE_ONLY:-0}" == "1" ]]`)
@@ -317,6 +334,42 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	} {
 		if !strings.Contains(string(composeOverride), variable) {
 			t.Errorf("compose override missing %s", variable)
+		}
+		receiptOverlay, err := os.ReadFile("compose.receipt-tls.yml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var overlay struct {
+			Services map[string]struct {
+				Environment map[string]string `yaml:"environment"`
+				Volumes     []string          `yaml:"volumes"`
+			} `yaml:"services"`
+		}
+		if err := yaml.Unmarshal(receiptOverlay, &overlay); err != nil {
+			t.Fatal(err)
+		}
+		if len(overlay.Services) != 3 {
+			t.Fatalf("receipt TLS overlay has %d services, want three replicas only", len(overlay.Services))
+		}
+		for _, service := range []string{"lantern-0", "lantern-1", "lantern-2"} {
+			got, ok := overlay.Services[service]
+			if !ok {
+				t.Errorf("receipt TLS overlay is missing %s", service)
+				continue
+			}
+			if len(got.Volumes) != 1 || got.Volumes[0] !=
+				"${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/"+service+":/run/lantern-tls:ro" {
+				t.Errorf("%s must mount only its own TLS material read-only: %v", service, got.Volumes)
+			}
+			for name, path := range map[string]string{
+				"LANTERN_TLS_CERT_FILE": "/run/lantern-tls/server.pem",
+				"LANTERN_TLS_KEY_FILE":  "/run/lantern-tls/server.key",
+				"LANTERN_PEER_CA_FILE":  "/run/lantern-tls/ca.pem",
+			} {
+				if got.Environment[name] != path {
+					t.Errorf("%s %s = %q, want %q", service, name, got.Environment[name], path)
+				}
+			}
 		}
 	}
 
@@ -520,6 +573,137 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 			for _, replica := range proof.Replicas {
 				if replica.ImageID != imageID {
 					t.Fatalf("replica image drift in proof: %+v", proof)
+				}
+			}
+		})
+	}
+}
+
+func receiptTLSShellFunction(t *testing.T) string {
+	t.Helper()
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "verify_receipt_peer_tls() {\n")
+	if !found {
+		t.Fatal("run.sh has no receipt peer TLS preflight")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\n# ----- compose up")
+	if !found {
+		t.Fatal("run.sh has no complete receipt peer TLS preflight")
+	}
+	return "verify_receipt_peer_tls() {\n" + body + "\n}\n"
+}
+
+func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is required for the receipt harness")
+	}
+	for _, tc := range []struct {
+		name, wantErr string
+		postFailure   bool
+	}{
+		{name: "verified before and after load"},
+		{name: "missing own mount", wantErr: "no pinned, read-only"},
+		{name: "writable mount", wantErr: "no pinned, read-only"},
+		{name: "wrong discovery identity", wantErr: "missing or mismatched"},
+		{name: "wrong bearer config", wantErr: "missing or mismatched"},
+		{name: "invalid live TLS identity", wantErr: "TLS identity/provenance verification failed"},
+		{name: "changed live TLS identity", wantErr: "TLS identity/provenance verification failed", postFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			fixture := `set -euo pipefail
+COMPOSE_FILES=(-f fixture.yml)
+PEER_TLS_DIR="$OUTDIR/private"
+REPO_ROOT="$OUTDIR"
+REPLICA_GRPC_PORTS=(6380 6381 6382)
+LANTERN_BENCH_AUTH_TOKEN=fixture-only
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+docker() {
+  if [[ "$1" == compose && "$2" == -f && "$3" == fixture.yml &&
+        "$4" == ps && "$5" == -q ]]; then
+    printf 'container-%s\n' "$6"
+    return
+  fi
+  [[ "$1" == inspect && "$2" == --format ]] || return 88
+  local service="${4#container-}"
+  case "$3" in
+    '{{json .Mounts}}')
+      local source="$PEER_TLS_DIR/$service" rw=false
+      if [[ "$CASE" == "missing own mount" && "$service" == lantern-1 ]]; then
+        source="$PEER_TLS_DIR/lantern-0"
+      fi
+      if [[ "$CASE" == "writable mount" && "$service" == lantern-1 ]]; then rw=true; fi
+      jq -nc --arg source "$source" --argjson rw "$rw" \
+        '[{Type:"bind",Destination:"/run/lantern-tls",RW:$rw,Source:$source}]'
+      ;;
+    '{{json .Config.Env}}')
+      local dns=lantern token="$LANTERN_BENCH_AUTH_TOKEN"
+      if [[ "$CASE" == "wrong discovery identity" && "$service" == lantern-1 ]]; then
+        dns=unrelated.invalid
+      fi
+      if [[ "$CASE" == "wrong bearer config" && "$service" == lantern-1 ]]; then
+        token=unrelated
+      fi
+      jq -nc --arg dns "$dns" --arg token "$token" '[
+        "LANTERN_TLS_CERT_FILE=/run/lantern-tls/server.pem",
+        "LANTERN_TLS_KEY_FILE=/run/lantern-tls/server.key",
+        "LANTERN_PEER_CA_FILE=/run/lantern-tls/ca.pem",
+        "LANTERN_PEER_DISCOVERY=dns",
+        "LANTERN_PEER_DNS_NAME=" + $dns,
+        "LANTERN_PEER_DEFAULT_PORT=6380",
+        "LANTERN_AUTH_TOKENS=" + $token
+      ]'
+      ;;
+    *) return 89 ;;
+  esac
+}
+go() {
+  [[ "$1" == run && "$2" == ./testbed/bench/receipttls && "$3" == verify ]] ||
+    return 88
+  [[ "$*" == *"-dir $PEER_TLS_DIR"* && "$*" == *"-ports 6380,6381,6382"* ]] ||
+    return 88
+  if [[ "$CASE" == "invalid live TLS identity" ||
+        ( "$CASE" == "changed live TLS identity" && "$*" == *"-baseline"* ) ]]; then
+    return 86
+  fi
+  local out="" prev="" arg
+  for arg in "$@"; do
+    if [[ "$prev" == -out ]]; then out="$arg"; fi
+    prev="$arg"
+  done
+  [[ -n "$out" ]] || return 88
+  printf '{"ca_sha256":"fixture"}\n' > "$out"
+}
+` + receiptTLSShellFunction(t) + `
+verify_receipt_peer_tls "$OUTDIR/tls_pre.json"
+verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
+`
+			cmd := exec.Command("bash", "-c", fixture)
+			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name)
+			output, err := cmd.CombinedOutput()
+			if tc.wantErr != "" {
+				if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
+					!strings.Contains(string(output), tc.wantErr) {
+					t.Fatalf("preflight exit = %v, err = %v, output = %s; want %s",
+						cmd.ProcessState, err, output, tc.wantErr)
+				}
+				if _, err := os.Stat(filepath.Join(outDir, "tls_post.json")); !os.IsNotExist(err) {
+					t.Fatalf("invalid TLS postflight was recorded: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(outDir, "tls_pre.json")); tc.postFailure != (err == nil) {
+					t.Fatalf("TLS preflight present = %t, want %t: %v", err == nil, tc.postFailure, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("valid receipt TLS pre/postflight = %v, output = %s", err, output)
+			}
+			for _, name := range []string{"tls_pre.json", "tls_post.json"} {
+				if _, err := os.Stat(filepath.Join(outDir, name)); err != nil {
+					t.Fatalf("missing %s: %v", name, err)
 				}
 			}
 		})

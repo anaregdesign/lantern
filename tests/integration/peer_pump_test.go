@@ -40,6 +40,7 @@ import (
 // observationally equivalent at the wire level.
 type pumpNode struct {
 	url    string // full http://host:port URL (used by pump dialer + replication client)
+	server *connectTestServer
 	cache  *graphcache.GraphCache[string, *pb.Vertex]
 	clock  *hlc.Clock
 	log    *mutationlog.Log
@@ -103,6 +104,7 @@ func newPumpNodeWithToken(t *testing.T, nodeID hlc.NodeID, logCapacity int, posi
 
 	return &pumpNode{
 		url:    srv.url,
+		server: srv,
 		cache:  cache,
 		clock:  clock,
 		log:    log,
@@ -677,10 +679,10 @@ func (n *pumpNode) startPump(ctx context.Context, t *testing.T, peers []string) 
 }
 
 func (n *pumpNode) startPumpWithMetrics(ctx context.Context, t *testing.T, peers []string, metrics replication.Metrics) {
-	n.startPumpWithMetricsAndToken(ctx, t, peers, metrics, "")
+	n.startPumpWithMetricsAndTransport(ctx, t, peers, metrics, nil)
 }
 
-func (n *pumpNode) startPumpWithMetricsAndToken(ctx context.Context, t *testing.T, peers []string, metrics replication.Metrics, token string) {
+func (n *pumpNode) startPumpWithMetricsAndTransport(ctx context.Context, t *testing.T, peers []string, metrics replication.Metrics, transport *replication.PeerTransport) {
 	t.Helper()
 	p := replication.NewPump(replication.Config{
 		NodeID:                  n.nodeID,
@@ -690,7 +692,7 @@ func (n *pumpNode) startPumpWithMetricsAndToken(ctx context.Context, t *testing.
 		HTTPClient:              h2cClient(),
 		SearchConfigFingerprint: n.svc.SearchConfigFingerprint(),
 		Metrics:                 metrics,
-		AuthToken:               token,
+		PeerTransport:           transport,
 	}, n.svc, n.cache)
 	n.pump = p
 	pumpCtx, cancel := context.WithCancel(ctx)
@@ -2070,7 +2072,8 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 	assertLive(a)
 	b := newAuthedPumpNode(t, hlc.NodeID{0xD3}, 2)
 	bMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
-	b.startPumpWithMetricsAndToken(ctx, t, []string{a.url}, bMetrics, testToken)
+	peerA := newAuthenticatedReplicationPeer(t, a.server, testToken)
+	b.startPumpWithMetricsAndTransport(ctx, t, []string{peerA.url}, bMetrics, peerA.transport)
 	awaitSnapshot(b, bMetrics, a.nodeID, 5)
 	assertAggregate(b, 1)
 	assertLive(b)
@@ -2082,7 +2085,8 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 	}
 	c := newAuthedPumpNode(t, hlc.NodeID{0xD4}, 2)
 	cMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
-	c.startPumpWithMetricsAndToken(ctx, t, []string{b.url}, cMetrics, testToken)
+	peerB := newAuthenticatedReplicationPeer(t, b.server, testToken)
+	c.startPumpWithMetricsAndTransport(ctx, t, []string{peerB.url}, cMetrics, peerB.transport)
 	awaitSnapshot(c, cMetrics, b.nodeID, 4)
 	if got := c.svc.LocalSeq(a.nodeID); got != 5 {
 		t.Fatalf("relay Snapshot lost original origin cutoff: %d, want 5", got)

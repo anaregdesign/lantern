@@ -76,6 +76,8 @@ Triggered when `LANTERN_PEER_DISCOVERY=dns` **or** when
   See RFC §[9](replication.md#9-bootstrap-flow).
 
 Use one of the §3 topologies to deliver this mode.
+When authentication is enabled, peer replication additionally requires
+certificate-verified HTTPS (§5); a token alone does not start an HA node.
 
 ### 2.3 Opt-in durable receipt-WAL runtime
 
@@ -109,6 +111,17 @@ a `ClusterIP` `Service` (client traffic), a `PodDisruptionBudget`
 Defaults are HA-mode. Override `replication.peers` (CSV) and set
 `replication.discovery.mode: static` for static peer lists, or just
 leave the defaults to use DNS discovery against the headless Service.
+The stock chart is bearer-free h2c; an authenticated HA installation
+must set `peerTLS.existingSecret` to an operator-managed Secret containing
+`server.pem`, `server.key`, and `ca.pem`, plus source
+`LANTERN_AUTH_TOKENS` through `extraEnv.valueFrom.secretKeyRef`. The chart
+mounts the files read-only on each pod and sets inbound TLS and the
+separate outbound peer CA paths. Every certificate must cover the
+discovery FQDN in its DNS SAN; add the client Service FQDN for direct
+HTTPS clients. See the [chart's authenticated HA example](../deploy/helm/lantern/README.md#authenticated-ha).
+Its Secret is
+shared across replicas; use an external per-pod projection when
+independent leaf keys are required.
 
 ```sh
 helm install lantern deploy/helm/lantern
@@ -155,6 +168,13 @@ file declares three explicit `lantern-{0,1,2}` services with pinned
 host ports (`6380`, `6381`, `6382`); all three share the `lantern`
 network alias so `LANTERN_PEER_DNS_NAME=lantern` round-robins across
 them via Compose's embedded DNS.
+This stock Compose example is **bearer-free graph-only**. Supplying
+`LANTERN_AUTH_TOKENS` without TLS material is not an authenticated HA
+configuration: the replicas now refuse to start. The receipt benchmark's
+[`compose.receipt-tls.yml`](../testbed/bench/compose.receipt-tls.yml)
+demonstrates a separate, receipt-only overlay with per-replica TLS
+certificates; its HTTPS driver trusts an ephemeral CA. Do not reuse those
+short-lived benchmark identities or token in a production deployment.
 
 ```sh
 cd deploy/compose
@@ -175,8 +195,9 @@ answers:
    re-resolves DNS A records on a cadence (Caddy: `dynamic dns`;
    Traefik: Docker provider; envoy: `STRICT_DNS` cluster), so adding or
    removing replicas is picked up without a config push. The proxy
-   speaks h2c upstream → Lantern's single port, terminating TLS at the
-   edge.
+   may speak h2c upstream **only** in a bearer-free deployment; with
+   authentication, protect and verify every hop to Lantern, including the
+   peer-to-peer paths, rather than terminating TLS solely at the edge.
 2. **DNS round-robin from the client.** Point the SDK at a host name
    that resolves to all backends; the OS resolver hands the addresses
    to `net/http`'s `http2.Transport` in shuffled order, and any backend
@@ -259,6 +280,10 @@ export LANTERN_PEERS=host-a:6380,host-b:6380,host-c:6380
 Empty `LANTERN_PEERS` = single-instance mode. Editing the list
 requires restarting the affected pods, but rolling restarts converge
 cleanly via the bootstrap flow.
+When using authentication, replace those bare addresses with explicit
+`https://host-a:6380,https://host-b:6380,...` origins and provision
+certificate SANs for each configured host. Configure the same trusted
+peer CA independently of the inbound server certificate (see §5).
 
 **DNS round-robin (e.g., Route53 multi-value, internal coredns):**
 
@@ -271,7 +296,10 @@ export LANTERN_PEER_DISCOVERY_INTERVAL_MS=10000
 ```
 
 The pump re-resolves the DNS name every interval and reconciles its
-peer set.
+peer set. Authenticated DNS peers verify every server certificate
+against `lantern.internal.example.com`, not the resolved IP; include
+that DNS name as a SAN on **every** peer certificate, and distribute
+the issuing CA to every node.
 
 ---
 
@@ -486,17 +514,47 @@ write burst faster than TTL decay fails fast instead:
 
 **Securing the cluster (#850) — decision table:**
 
+The legacy token-only row describes trusted **single-instance**
+development, not a replicated cluster. Its old shared-dev wording
+does not authorize bearer-bearing HA over h2c; the verified-TLS row
+is mandatory for every authenticated HA deployment.
+
 | Tier | When | How |
 |---|---|---|
 | Open | isolated network, single-tenant dev | default (no `LANTERN_AUTH_TOKENS`, no TLS) |
 | Bearer token | shared dev cluster, managed platform where client certs are friction — `requirepass`-tier | `LANTERN_AUTH_TOKENS=<token>` on every node; clients use `WithAuthToken` / `--token` / `LANTERN_TOKEN` |
-| Token + TLS | anything crossing an untrusted network | the above plus `LANTERN_TLS_*` — **bearer tokens over plaintext h2c are sniffable**; token-only auth is NOT transport security |
-| mTLS | zero-trust | `LANTERN_TLS_CLIENT_CA_FILE` (unchanged; the strong option) |
+| Token + verified TLS | **every authenticated HA deployment**, and any untrusted client link | `LANTERN_AUTH_TOKENS`, inbound `LANTERN_TLS_CERT_FILE` + `LANTERN_TLS_KEY_FILE`, and separate outbound `LANTERN_PEER_CA_FILE` on every node; TLS peer identities must match the configured static origin or discovery DNS name |
+| mTLS | zero-trust | add inbound `LANTERN_TLS_CLIENT_CA_FILE` and outbound `LANTERN_PEER_CLIENT_CERT_FILE` + `LANTERN_PEER_CLIENT_KEY_FILE` on every node |
 
 Operational notes:
 
+- The token-without-TLS tier above applies **only to trusted
+  single-instance development**. It never qualifies an HA deployment,
+  even when every peer is on a private network. A browser, SDK, reverse
+  proxy or MCP client sending a bearer also needs its own trusted HTTPS
+  path; HA peer TLS does not automatically secure external clients.
 - All nodes in a cluster share the token set; the pump and anti-entropy
-  clients send `tokens[0]`. **Rotation order:** add the new token to
+  clients send `tokens[0]` **only over their approved, certificate-verified
+  HTTPS peer transport**. Static peers must use exact `https://host:port`
+  origins without URL credentials, paths, or query parameters; bare
+  `host:port` and `http://` fail startup with auth enabled. DNS discovery
+  dials the returned IPs but verifies the discovery DNS name against
+  each peer's SAN. An invalid answer, wrong CA/identity, redirect or
+  downgraded destination never receives the bearer.
+- **Migration:** issue server certificates with the right DNS/IP SANs,
+  mount them and a separate peer CA trust bundle on all replicas, switch
+  every static peer URL to HTTPS (or keep DNS discovery with its shared
+  SAN), then restart the nodes using a TLS-aware client path. The main
+  listener changes from h2c to TLS; update client SDKs, any browser
+  gateway, MCP target and reverse proxies to HTTPS and a trusted CA.
+  The default graph-only Compose/Helm client URLs and their h2c examples
+  are not drop-in authenticated-HA clients. Plan a controlled transition:
+  mixed plaintext and TLS peers cannot exchange authenticated traffic.
+  For cert/CA rotation, temporarily trust both issuers, roll verified
+  certificates and clients, then remove the old issuer; peer trust is
+  read at startup, not hot-reloaded. Never copy the inbound client CA
+  path as a substitute for `LANTERN_PEER_CA_FILE`.
+- **Token rotation order:** add the new token to
   `LANTERN_AUTH_TOKENS` on every server (old,new) → switch clients and
   restart nodes so peers pick the new `tokens[0]` → drop the old token.
 - `grpc.health.v1.Health` is always exempt (Kubernetes gRPC probes cannot
@@ -792,6 +850,11 @@ Walk the bootstrap flow:
 1. `kubectl logs <pod>` — look for `snapshot from peer …`.
 2. If no log line: pump can't reach any peer.
    - Check `LANTERN_PEER_DISCOVERY` env values.
+   - With auth enabled, confirm startup accepted `LANTERN_PEER_CA_FILE`,
+     inbound TLS certificate/key and valid HTTPS origins. TLS errors
+     from `PeerStatus` or `Subscribe` indicate a missing CA, wrong DNS/IP
+     SAN, invalid certificate, or a plaintext peer; never disable
+     verification to work around them.
    - From inside the pod, `getent hosts <discovery-dns-name>` should
      return one A record per other pod.
    - Confirm the headless Service has `publishNotReadyAddresses: true` so
@@ -839,6 +902,12 @@ A short checklist to walk before opening an incident:
       `LANTERN_PEER_DEFAULT_PORT=6380` (or whatever you've set
       `LANTERN_PORT` to). The Helm chart and Compose example do this
       for you; custom manifests must.
+- [ ] **Token set with bare/static HTTP peers, missing inbound TLS or
+      outbound CA:** authenticated HA now fails startup. Provision
+      `LANTERN_TLS_CERT_FILE`, `LANTERN_TLS_KEY_FILE`,
+      `LANTERN_PEER_CA_FILE`, and HTTPS static origins, or check that the
+      DNS discovery name is in every peer certificate SAN. Inbound mTLS
+      additionally requires outbound peer-client cert/key files.
 - [ ] **Probes on wrong port:** `/healthz` and `/readyz` are on the
       **metrics** port (9090), not the gRPC port (6380).
 - [ ] **`publishNotReadyAddresses: false` deadlock:** if every pod restarts

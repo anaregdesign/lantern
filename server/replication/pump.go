@@ -191,7 +191,7 @@ func (c *boundedSnapshotProtoCodec) Unmarshal(data []byte, message any) error {
 
 func newSnapshotClient(
 	httpClient connect.HTTPClient,
-	addr string,
+	baseURL string,
 	installer SnapshotInstaller,
 ) (graphv1connect.LanternReplicationServiceClient, error) {
 	limits, bounded, err := snapshotTransportLimitsFor(installer)
@@ -208,7 +208,7 @@ func newSnapshotClient(
 	}
 	return graphv1connect.NewLanternReplicationServiceClient(
 		httpClient,
-		peerBaseURL(addr),
+		baseURL,
 		options...,
 	), nil
 }
@@ -823,8 +823,8 @@ type Config struct {
 	NodeID hlc.NodeID
 
 	// Peers is the static list of peer addresses to subscribe to.
-	// Each entry must be a bare "host:port" (e.g. "lantern-0:6380").
-	// The pump prepends "http://" to build the Connect baseURL.
+	// Without bearer auth, entries are bare "host:port". With a
+	// PeerTransport, they are approved explicit HTTPS origins.
 	// Empty (or nil) is valid when Source is set; otherwise yields
 	// a no-op pump.
 	Peers []string
@@ -846,10 +846,10 @@ type Config struct {
 	// failure does not tear down established subscriptions.
 	DiscoveryInterval time.Duration
 
-	// AuthToken, when non-empty, is attached as "Authorization: Bearer"
-	// to every outbound Subscribe/Snapshot call so the pump can replicate
-	// against peers running with LANTERN_AUTH_TOKENS (#850).
-	AuthToken string
+	// PeerTransport is the validated HTTPS client and origin policy shared
+	// with anti-entropy when HA peers use bearer authentication. It takes
+	// precedence over HTTPClient and covers PeerStatus, Subscribe and Snapshot.
+	PeerTransport *PeerTransport
 
 	// SearchConfigFingerprint is the local search capability fingerprint.
 	// When non-empty, every peer session verifies PeerStatus before opening
@@ -858,11 +858,8 @@ type Config struct {
 	SearchConfigFingerprint string
 
 	// HTTPClient is the http.Client used to open Connect-Go streams
-	// against each peer. When nil, defaultH2CClient() is used so the
-	// pump talks plain HTTP/2 over the cluster network — sufficient
-	// for the HA topology where peers are only reachable via the
-	// cluster network. For TLS, supply an http.Client backed by an
-	// HTTP/2-enabled http.Transport with a real *tls.Config.
+	// against each bearer-free peer. When nil, defaultH2CClient() is
+	// used. This client never receives the HA deployment bearer.
 	HTTPClient *http.Client
 
 	// BackoffMin is the initial reconnect delay after a session
@@ -917,10 +914,11 @@ func NewPump(cfg Config, apply MutationApplier, snap SnapshotApplier) *Pump {
 	if cfg.Metrics == nil {
 		cfg.Metrics = nopMetrics{}
 	}
-	if cfg.HTTPClient == nil {
+	if cfg.PeerTransport != nil {
+		cfg.HTTPClient = cfg.PeerTransport.client
+	} else if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultH2CClient()
 	}
-	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
 	installer := cfg.SnapshotInstaller
 	if installer == nil {
 		installer = newGraphOnlySnapshotInstaller(apply, snap)
@@ -1049,6 +1047,10 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 // non-nil error from the Subscribe / Snapshot RPC.
 func (p *Pump) session(ctx context.Context, addr string) error {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
+	baseURL, err := peerURL(addr, p.cfg.PeerTransport)
+	if err != nil {
+		return err
+	}
 	// Connect-Go clients are cheap to construct and own no
 	// connection state of their own — the underlying http.Client
 	// pools connections internally. No defer-close needed.
@@ -1058,7 +1060,7 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	// family, so the gRPC binary framing pin from earlier cutover
 	// builds (§A of #393) is no longer needed.
 	cli := graphv1connect.NewLanternReplicationServiceClient(
-		p.cfg.HTTPClient, peerBaseURL(addr),
+		p.cfg.HTTPClient, baseURL,
 	)
 	status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
 	if err != nil {
@@ -1187,7 +1189,11 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 // watermark cut for the live tail. Replaying those cutoffs before Subscribe
 // prevents both duplicate application and an infinite gapped-snapshot loop.
 func (p *Pump) snapshot(ctx context.Context, addr string) (*pb.SnapshotHeader, error) {
-	cli, err := newSnapshotClient(p.cfg.HTTPClient, addr, p.installer)
+	baseURL, err := peerURL(addr, p.cfg.PeerTransport)
+	if err != nil {
+		return nil, err
+	}
+	cli, err := newSnapshotClient(p.cfg.HTTPClient, baseURL, p.installer)
 	if err != nil {
 		return nil, err
 	}

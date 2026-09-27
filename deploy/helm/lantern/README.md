@@ -51,6 +51,48 @@ The pump reads `LANTERN_PEER_DISCOVERY=dns` and resolves the headless
 the pod's own IP so the supervisor never dials itself. The headless Service
 publishes not-ready addresses so peers can discover one another during a cold
 start; the separate client Service continues to exclude unready pods.
+By default, this is a bearer-free h2c topology, not an authenticated
+receipt-enabled HA installation.
+
+## Authenticated HA
+
+For bearer-enabled HA, provision a Kubernetes Secret outside the chart with
+`server.pem`, `server.key`, and `ca.pem`. The server certificate must be signed
+by that CA and have the headless discovery FQDN (by default
+`<release>-lantern-headless.<namespace>.svc.cluster.local`) in its DNS SAN.
+Add the client Service FQDN to its SAN too if SDKs connect there directly over
+HTTPS. Configure the chart without putting credentials in the values file:
+
+```yaml
+peerTLS:
+  existingSecret: lantern-peer-tls
+extraEnv:
+  - name: LANTERN_AUTH_TOKENS
+    valueFrom:
+      secretKeyRef:
+        name: lantern-cluster-auth
+        key: token
+```
+
+The chart mounts the existing Secret read-only at `/run/lantern-tls` on the
+server pods and sets the inbound certificate/key and independent outbound
+peer CA paths. Missing files or invalid peer trust fail startup; the bearer
+never falls back to a plaintext peer. This mount uses **one shared
+certificate/key across the replica set** for the shared discovery DNS
+identity. Operators requiring per-pod keys must instead project separate
+per-pod material using a workload-specific injector or post-renderer and
+configure the same `LANTERN_TLS_CERT_FILE`, `LANTERN_TLS_KEY_FILE`, and
+`LANTERN_PEER_CA_FILE` paths. If inbound mTLS is enabled, also supply an
+inbound client CA and outbound client certificate/key (`LANTERN_TLS_CLIENT_CA_FILE`,
+`LANTERN_PEER_CLIENT_CERT_FILE`, and `LANTERN_PEER_CLIENT_KEY_FILE`) through
+`extraEnv` with files available to every pod.
+
+The client Service is HTTPS once the server listener uses TLS; client SDKs,
+admin gateways, and MCP targets need HTTPS URLs with a trusted CA and a
+matching client-facing certificate SAN. The chart's default h2c client URLs
+are only valid in bearer-free deployments. See the
+[HA runbook](../../../docs/ha-runbook.md)
+for static peers, DNS identity, certificate rotation, and migration.
 
 ## Single-instance fallback
 
@@ -73,6 +115,7 @@ be disabled via `podDisruptionBudget.enabled=false`.
 | `replication.discovery.dnsName`             | headless FQDN          | Auto-templated. Override only for cross-ns peers.  |
 | `replication.discovery.defaultPort`         | `"6380"`               | Appended to each resolved IP.                      |
 | `replication.discovery.intervalMs`          | `10000`                | `0` = resolve once at startup.                     |
+| `peerTLS.existingSecret`                     | `""`                   | Optional existing Secret containing server.pem, server.key, and ca.pem for authenticated HA; mounts read-only and sets server TLS and outbound peer-CA paths. |
 | `replication.maxLag`                        | `10000`                | Per-(peer,origin) lag cap before readiness flips.  |
 | `antiEntropy.intervalMs`                    | `30000`                | Background reconciliation cadence.                 |
 | `podDisruptionBudget.minAvailable`          | `1`                    | Keep one replica up while the other drains (correct for 2 replicas). |

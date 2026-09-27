@@ -32,6 +32,7 @@ func initializeApp() (*App, func(), error) {
 		provider.NewReplicationConfig,
 		provider.NewReadinessConfig,
 		provider.NewPeerConfig,
+		provider.NewPeerTransport,
 		provider.NewPeerResolver,
 		provider.NewAntiEntropyConfig,
 		provider.NewLogger,

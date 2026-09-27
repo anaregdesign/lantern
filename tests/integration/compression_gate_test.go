@@ -71,7 +71,10 @@ func newProviderReceiptWireServer(
 		}
 	})
 	url := "http://" + listener.Addr()
-	wire.server = &connectTestServer{svc: wire.server.svc, rep: wire.server.rep, url: url}
+	wire.server = &connectTestServer{
+		svc: wire.server.svc, rep: wire.server.rep,
+		handler: listener.Server().Handler, url: url,
+	}
 	wire.raw = graphv1connect.NewLanternServiceClient(h2cClient(), url)
 	return wire
 }
