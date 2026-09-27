@@ -875,11 +875,11 @@ Future<void> _waitForTransportFailure(
   while (DateTime.now().isBefore(deadline)) {
     try {
       await attempt();
-    } on LanternUnavailableException catch (error) {
+    } on Object catch (error) {
+      final unavailable = receiptUnavailableCause(error);
+      if (unavailable == null) rethrow;
       if (!localPrivacy) return;
-      final cause = '${error.cause}';
-      if (cause.contains('No route to host') ||
-          cause.contains('Operation not permitted')) {
+      if (isIosLocalNetworkDeniedCause(unavailable.cause)) {
         return;
       }
       throw StateError('iOS Local Network denial was not observed');
@@ -902,7 +902,8 @@ Future<void> _waitForCapability(
         throw StateError('Receipt responder changed during physical recovery');
       }
       return;
-    } on LanternUnavailableException {
+    } on Object catch (error) {
+      if (receiptUnavailableCause(error) == null) rethrow;
       await Future<void>.delayed(const Duration(milliseconds: 500));
     }
   }

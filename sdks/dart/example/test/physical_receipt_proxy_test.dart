@@ -2,11 +2,64 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lantern_client/lantern_client.dart';
 
 import '../integration_test/support/receipt_physical_fixture.dart';
 import '../tool/physical_receipt_proxy.dart';
 
 void main() {
+  test(
+    'receipt transport recognizes bounded unavailable without widening denial',
+    () async {
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = socket.port;
+      await socket.close();
+      final client = LanternClient.connect(
+        Uri.parse('http://127.0.0.1:$port'),
+        allowInsecure: true,
+        retryPolicy: const RetryPolicy(maxAttempts: 1),
+        defaultTimeout: const Duration(seconds: 2),
+      );
+      addTearDown(client.close);
+
+      Object? failure;
+      try {
+        await client.getReceiptCapability();
+      } on Object catch (error) {
+        failure = error;
+      }
+      expect(failure, isA<LanternRetryExhaustedException>());
+      final exhausted = failure! as LanternRetryExhaustedException;
+      expect(exhausted.cause, isA<LanternUnavailableException>());
+      expect(receiptUnavailableCause(exhausted), same(exhausted.cause));
+      expect(receiptUnavailableCause(exhausted.cause), same(exhausted.cause));
+      expect(receiptUnavailableCause(StateError('unrelated')), isNull);
+
+      expect(
+        isIosLocalNetworkDeniedCause(const SocketException('No route to host')),
+        isTrue,
+      );
+      expect(
+        isIosLocalNetworkDeniedCause(
+          const SocketException('Operation not permitted'),
+        ),
+        isTrue,
+      );
+      expect(
+        isIosLocalNetworkDeniedCause(
+          const SocketException('Connection refused'),
+        ),
+        isFalse,
+      );
+      expect(
+        isIosLocalNetworkDeniedCause(
+          HandshakeException('certificate rejected'),
+        ),
+        isFalse,
+      );
+    },
+  );
+
   test(
     'token connection retries socket failures within a fixed bound',
     () async {
