@@ -455,6 +455,54 @@ void main() {
     expect(await marker.exists(), isFalse);
   });
 
+  test('a normal SIGKILL wait timeout invalidates the handoff', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    final prepared = restartAttestation(() => 100);
+    await prepared.prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+      return _identityDigest;
+    });
+    var announced = false;
+    await expectLater(
+      prepared.awaitSigkillOrFail(() async {
+        announced = true;
+      }, timeout: Duration.zero),
+      throwsA(isA<StateError>()),
+    );
+    expect(announced, isTrue);
+    final failed = await savedMarker();
+    expect(failed['status'], 'failed');
+    expect(failed['phase'], 'handoff');
+    expect(failed['failureType'], 'handoff');
+    await expectLater(
+      restartAttestation(() => 101).resumeAfterRestart(journal, (run) async {}),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test('a SIGKILL announcement failure invalidates the handoff', () async {
+    final journal = File('${sandbox.path}/handoff.json');
+    final prepared = restartAttestation(() => 100);
+    await prepared.prepareForRestart(journal, (run) async {
+      await run.verifyScenario('receipt_prepared', () async {});
+      return _identityDigest;
+    });
+    await expectLater(
+      prepared.awaitSigkillOrFail(
+        () async => throw StateError('operator phase write failed'),
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'operator phase write failed',
+        ),
+      ),
+    );
+    expect((await savedMarker())['status'], 'failed');
+    expect((await savedMarker())['phase'], 'handoff');
+  });
+
   test('preparation rejects an invalid private identity digest', () async {
     final journal = File('${sandbox.path}/handoff.json');
     await expectLater(

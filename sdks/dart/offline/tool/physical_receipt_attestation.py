@@ -215,11 +215,32 @@ def capture_device_marker(platform, device_id=None):
             ).strip()
             if qemu not in (b"", b"0"):
                 raise ValueError("Android receipt capture requires physical hardware")
-            marker = _bounded_command_stdout(
-                ["adb", "-d", "exec-out", "run-as", PACKAGE_IDS["android"],
-                 "cat", "cache/lantern-receipt-attestation.json"],
-                timeout=30, limit=MAX_EVIDENCE_BYTES, label="on-device receipt marker",
-            )
+            # Flutter gives dart:io Directory.systemTemp the Android code cache
+            # first, falling back to the ordinary cache if it is unavailable.
+            # Prove that the other location is absent so an old marker cannot
+            # silently win when both app-private paths contain evidence.
+            markers = []
+            for directory in ("code_cache", "cache"):
+                path = f"{directory}/lantern-receipt-attestation.json"
+                prefix = ["adb", "-d", "exec-out", "run-as", PACKAGE_IDS["android"]]
+                try:
+                    captured = _bounded_command_stdout(
+                        [*prefix, "cat", path], timeout=30,
+                        limit=MAX_EVIDENCE_BYTES, label="on-device receipt marker",
+                    )
+                except subprocess.CalledProcessError:
+                    # A failed read is acceptable only when the file is absent,
+                    # not when run-as or file access failed.
+                    _bounded_command_stdout(
+                        [*prefix, "sh", "-c", f"test ! -e {path}"],
+                        timeout=15, limit=MAX_DEVICE_PROBE_BYTES,
+                        label="Android receipt marker path probe",
+                    )
+                else:
+                    markers.append(captured)
+            if len(markers) != 1:
+                raise ValueError("Android receipt marker is missing or ambiguous")
+            marker = markers[0]
         elif platform == "ios":
             if not isinstance(device_id, str) or not device_id:
                 raise ValueError("iOS receipt capture requires a private physical device ID")

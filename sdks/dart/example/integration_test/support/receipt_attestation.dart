@@ -274,6 +274,40 @@ class ReceiptAttestation {
     _throwFailures(failures);
   }
 
+  /// Keeps the prepared process alive for an operator SIGKILL. Any normal
+  /// return or announcement failure invalidates the handoff marker; SIGKILL
+  /// terminates the process without executing the finally block.
+  Future<Never> awaitSigkillOrFail(
+    Future<void> Function() announce, {
+    Duration timeout = const Duration(minutes: 20),
+  }) async {
+    if (_startedAt == null ||
+        _preparedAt == null ||
+        _resumedAt != null ||
+        _running ||
+        timeout.isNegative) {
+      throw StateError('Receipt SIGKILL handoff is not prepared');
+    }
+    try {
+      await announce();
+      await Future<void>.delayed(timeout);
+      throw StateError('Receipt app was not SIGKILLed after preparation');
+    } finally {
+      try {
+        await _write(
+          status: 'failed',
+          phase: 'handoff',
+          finishedAt: DateTime.now().toUtc(),
+          failureType: 'handoff',
+        );
+      } catch (_) {
+        // A failed replacement must not leave the old awaiting marker usable.
+        if (await _output.exists()) await _output.delete();
+        rethrow;
+      }
+    }
+  }
+
   /// Requires a real second process before continuing the prepared run.
   Future<void> resumeAfterRestart(
     File journal,
