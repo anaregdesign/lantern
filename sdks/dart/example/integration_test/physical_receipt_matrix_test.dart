@@ -902,7 +902,8 @@ Future<void> _waitForCapability(
         throw StateError('Receipt responder changed during physical recovery');
       }
       return;
-    } on LanternUnavailableException {
+    } on Object catch (error) {
+      if (receiptUnavailableCause(error) == null) rethrow;
       await Future<void>.delayed(const Duration(milliseconds: 500));
     }
   }
