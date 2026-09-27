@@ -61,7 +61,7 @@ func (k kmsKey) Wrap(ctx context.Context, dek []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(out) == 0 {
-		return nil, errors.New("Cloud KMS returned an empty wrapped key")
+		return nil, errors.New("cloud KMS returned an empty wrapped key")
 	}
 	return out, nil
 }
@@ -76,7 +76,7 @@ func (k kmsKey) Unwrap(ctx context.Context, wrapped []byte) ([]byte, error) {
 	}
 	if len(out) != 32 {
 		clear(out)
-		return nil, errors.New("Cloud KMS returned an invalid data key")
+		return nil, errors.New("cloud KMS returned an invalid data key")
 	}
 	return out, nil
 }
@@ -108,16 +108,16 @@ func (k kmsKey) invoke(parent context.Context, operation string, input []byte, l
 	if err := cmd.Run(); err != nil {
 		clear(output.bytes)
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("Cloud KMS %s cancelled or timed out", operation)
+			return nil, fmt.Errorf("cloud KMS %s cancelled or timed out", operation)
 		}
 		if output.exceeded {
-			return nil, fmt.Errorf("Cloud KMS %s response exceeded size limit", operation)
+			return nil, fmt.Errorf("cloud KMS %s response exceeded size limit", operation)
 		}
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return nil, fmt.Errorf("Cloud KMS %s failed (exit %d)", operation, exit.ExitCode())
+			return nil, fmt.Errorf("cloud KMS %s failed (exit %d)", operation, exit.ExitCode())
 		}
-		return nil, fmt.Errorf("Cloud KMS %s invocation failed", operation)
+		return nil, fmt.Errorf("cloud KMS %s invocation failed", operation)
 	}
 	return output.bytes, nil
 }
@@ -131,7 +131,7 @@ type limitedOutput struct {
 func (o *limitedOutput) Write(data []byte) (int, error) {
 	if len(data) > o.limit-len(o.bytes) {
 		o.exceeded = true
-		return 0, errors.New("Cloud KMS response exceeded size limit")
+		return 0, errors.New("cloud KMS response exceeded size limit")
 	}
 	o.bytes = append(o.bytes, data...)
 	return len(data), nil

@@ -29,7 +29,7 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New(usage)
+		return errors.New("missing custody operation; run custody help")
 	}
 	if args[0] == "help" {
 		_, err := io.WriteString(stdout, usage)
@@ -88,7 +88,13 @@ func processFile(ctx context.Context, operation, inputPath, outputPath string, k
 	if err != nil {
 		return fileResult{}, errors.New("open private input failed")
 	}
-	defer src.Close()
+	defer func() {
+		if src != nil {
+			if closeErr := src.Close(); closeErr != nil {
+				err = errors.Join(err, errors.New("close private input failed"))
+			}
+		}
+	}()
 	opened, err := src.Stat()
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
 		return fileResult{}, errors.New("private input changed before opening")
@@ -128,6 +134,11 @@ func processFile(ctx context.Context, operation, inputPath, outputPath string, k
 	}
 	if err != nil {
 		return fileResult{}, err
+	}
+	closeErr := src.Close()
+	src = nil
+	if closeErr != nil {
+		return fileResult{}, errors.New("close private input failed")
 	}
 	if err := tmp.Sync(); err != nil {
 		return fileResult{}, errors.New("sync private temporary output failed")

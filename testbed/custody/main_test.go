@@ -54,10 +54,11 @@ func TestCustodyPrivateFileLargeStreamingRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
 	actual := sha256.New()
-	if _, err := io.Copy(actual, reopened); err != nil || !bytes.Equal(actual.Sum(nil), digest[:]) {
-		t.Fatalf("restored bytes differ: %v", err)
+	_, copyErr := io.Copy(actual, reopened)
+	closeErr := reopened.Close()
+	if copyErr != nil || closeErr != nil || !bytes.Equal(actual.Sum(nil), digest[:]) {
+		t.Fatalf("restored bytes differ: copy=%v close=%v", copyErr, closeErr)
 	}
 	if len(keys.wrapped) != 1 || keys.unwrapped != 1 {
 		t.Fatalf("unexpected KMS boundary calls: wrapped=%d unwrapped=%d", len(keys.wrapped), keys.unwrapped)
