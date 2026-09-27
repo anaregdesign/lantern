@@ -788,15 +788,23 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	go func() {
 		runDone <- backupper.Run(runCtx)
 	}()
-	t.Cleanup(func() {
-		stop()
-		select {
-		case err := <-runDone:
-			if err != nil {
-				t.Errorf("stop durable backup scheduler: %v", err)
+	var stopOnce sync.Once
+	var stopErr error
+	stopAndJoin := func() error {
+		stopOnce.Do(func() {
+			stop()
+			select {
+			case err := <-runDone:
+				stopErr = err
+			case <-time.After(5 * time.Second):
+				stopErr = errors.New("durable backup scheduler did not stop")
 			}
-		case <-time.After(5 * time.Second):
-			t.Error("durable backup scheduler did not stop")
+		})
+		return stopErr
+	}
+	t.Cleanup(func() {
+		if err := stopAndJoin(); err != nil {
+			t.Errorf("stop durable backup scheduler: %v", err)
 		}
 	})
 
@@ -842,6 +850,9 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 		evidence.Stats.Bytes <= 0 || len(evidence.Archive) == 0 ||
 		len(evidence.RetiredCatalog) == 0 {
 		t.Fatalf("loaded durable backup evidence = %+v", evidence)
+	}
+	if err := stopAndJoin(); err != nil {
+		t.Fatalf("stop durable backup scheduler: %v", err)
 	}
 	for _, entry := range mustReadDir(t, backupDir) {
 		if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
