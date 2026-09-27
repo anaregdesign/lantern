@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import ci_scope
 
@@ -91,6 +92,34 @@ class ScopeTest(unittest.TestCase):
 
     def test_release_tag_requires_both_gates(self):
         self.assertEqual(ci_scope.classify([], release_tag=True), (True, True))
+
+    def test_workflow_dispatch_requires_both_gates_without_push_range(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            summary = Path(directory) / "summary"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_REF": "refs/heads/main",
+                        "GITHUB_EVENT_NAME": "workflow_dispatch",
+                        "GITHUB_OUTPUT": str(output),
+                        "GITHUB_STEP_SUMMARY": str(summary),
+                    },
+                    clear=True,
+                ),
+                patch.object(
+                    ci_scope,
+                    "classify_range",
+                    side_effect=AssertionError("manual dispatch has no push range"),
+                ),
+            ):
+                ci_scope.main()
+            self.assertEqual(output.read_text(), "full=true\nmobile=true\n")
+            self.assertIn(
+                "Full Dart package matrix: True; Android/iOS native matrix: True",
+                summary.read_text(),
+            )
 
     def test_go_directives_ignore_dependency_changes(self):
         old = "module example.com/test\n\ngo 1.27.0\n\nrequire example.com/a v1.0.0\n"

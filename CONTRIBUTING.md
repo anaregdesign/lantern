@@ -184,6 +184,15 @@ unpacks the resulting tarball outside the checkout, resolves every included
 `pubspec.yaml` with an isolated cache, then runs analysis, tests, and `pana`
 against the unpacked artifact.
 
+For exact-main source qualification after a change misses the Dart or Node SDK
+path filters, dispatch `dart-sdk.yml` and `node-sdk.yml` on `main` and record
+each run ID and `headSha`; rerunning an older run does not test the final SHA.
+Manual Dart dispatch selects the full package and Android/iOS matrix, and Node
+still tests both supported runtimes. SDK publication and GitHub Releases require
+release-tag **push** events and their existing test/preflight gates; manual
+dispatch, including on a tag, is test-only. Simulator results do not replace
+physical-device evidence.
+
 The opt-in `sdks/dart/offline_sqlite/` adapter has a mandatory Flutter host gate:
 format/analyze/test, real SQLite close/reopen conformance and disk-full checks,
 `dart run tool/crash_probe.dart` for process termination at transaction

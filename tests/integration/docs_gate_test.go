@@ -222,7 +222,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"release-preflight": {
 			needs:       []string{"gate"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "startsWith(github.ref, 'refs/tags/sdks/dart/v')",
+			condition:   "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v')",
 			contracts: []string{
 				`[[ "$TAG" =~ ^sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
 				`test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`,
@@ -269,7 +269,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"offline-release-preflight": {
 			needs:       []string{"gate"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')",
+			condition:   "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')",
 			contracts: []string{
 				`[[ "$TAG" =~ ^sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
 				`test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"`,
@@ -424,6 +424,78 @@ func TestDartPublishingContractGate(t *testing.T) {
 	}
 	if strings.Contains(string(contributing), "git switch --detach sdks/dart/v0.1.0") {
 		t.Error("CONTRIBUTING.md still contains the retired manual first-publish procedure")
+	}
+}
+
+func TestSDKManualDispatchGate(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+
+	for _, test := range []struct {
+		file          string
+		tags          []string
+		releaseGuards map[string]string
+	}{
+		{
+			file: ".github/workflows/dart-sdk.yml",
+			tags: []string{"sdks/dart/v*.*.*", "sdks/dart/offline/v*.*.*"},
+			releaseGuards: map[string]string{
+				"release-preflight":         "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v')",
+				"offline-release-preflight": "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')",
+			},
+		},
+		{
+			file: ".github/workflows/node-sdk.yml",
+			tags: []string{"sdks/node/v*"},
+			releaseGuards: map[string]string{
+				"publish": "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/node/v')",
+			},
+		},
+	} {
+		t.Run(test.file, func(t *testing.T) {
+			content, err := os.ReadFile(filepath.Join(repoRoot, test.file))
+			if err != nil {
+				t.Fatalf("read SDK workflow: %v", err)
+			}
+			var workflow struct {
+				On map[string]struct {
+					Branches []string `yaml:"branches"`
+					Paths    []string `yaml:"paths"`
+					Tags     []string `yaml:"tags"`
+				} `yaml:"on"`
+				Jobs map[string]struct {
+					If    string    `yaml:"if"`
+					Needs yaml.Node `yaml:"needs"`
+				} `yaml:"jobs"`
+			}
+			if err := yaml.Unmarshal(content, &workflow); err != nil {
+				t.Fatalf("parse SDK workflow: %v", err)
+			}
+			if _, ok := workflow.On["workflow_dispatch"]; !ok {
+				t.Error("SDK workflow cannot be dispatched on the final main SHA")
+			}
+			push, ok := workflow.On["push"]
+			if !ok || !reflect.DeepEqual(push.Branches, []string{"main"}) || !reflect.DeepEqual(push.Tags, test.tags) {
+				t.Errorf("push ref filters = %+v; want main and %v", push, test.tags)
+			}
+			pr, ok := workflow.On["pull_request"]
+			if !ok || len(push.Paths) == 0 || !reflect.DeepEqual(push.Paths, pr.Paths) {
+				t.Error("push and pull_request path filters must remain in place and match")
+			}
+			for name, guard := range test.releaseGuards {
+				job, ok := workflow.Jobs[name]
+				if !ok || job.If != guard {
+					t.Errorf("%s release entry guard = %q; want %q", name, job.If, guard)
+				}
+			}
+			if test.file == ".github/workflows/node-sdk.yml" {
+				if workflow.Jobs["publish"].Needs.Value != "test" || !strings.Contains(string(content), "bun run verify:package") {
+					t.Error("npm publish must depend on tested and verified package contents")
+				}
+			}
+		})
 	}
 }
 

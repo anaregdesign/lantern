@@ -69,6 +69,7 @@ on:
       - "README.md"
       - "CONTRIBUTING.md"
       - ".github/workflows/dart-sdk.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -1157,7 +1158,7 @@ jobs:
   release-preflight:
     name: Verify parent release candidate
     needs: [gate]
-    if: startsWith(github.ref, 'refs/tags/sdks/dart/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1359,7 +1360,7 @@ jobs:
   offline-release-preflight:
     name: Verify offline release candidate
     needs: [gate]
-    if: startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
