@@ -42,6 +42,21 @@ LanternUnavailableException? receiptUnavailableCause(Object error) =>
       _ => null,
     };
 
+/// Radio and recovery can prove a bounded transport failure by timeout too.
+/// iOS Local Network denial still requires [receiptUnavailableCause] and its
+/// concrete OS cause; a deadline alone is not privacy-denial evidence.
+LanternException? receiptTransientTransportCause(Object error) {
+  final cause = switch (error) {
+    LanternRetryExhaustedException(:final cause) => cause,
+    LanternException() => error,
+    _ => null,
+  };
+  return cause is LanternUnavailableException ||
+          cause is LanternDeadlineExceededException
+      ? cause
+      : null;
+}
+
 bool isIosLocalNetworkDeniedCause(Object? cause) {
   final message = '$cause';
   return message.contains('No route to host') ||

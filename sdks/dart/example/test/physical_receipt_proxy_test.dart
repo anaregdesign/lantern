@@ -34,6 +34,8 @@ void main() {
       expect(receiptUnavailableCause(exhausted), same(exhausted.cause));
       expect(receiptUnavailableCause(exhausted.cause), same(exhausted.cause));
       expect(receiptUnavailableCause(StateError('unrelated')), isNull);
+      expect(receiptTransientTransportCause(exhausted), same(exhausted.cause));
+      expect(receiptTransientTransportCause(StateError('unrelated')), isNull);
 
       expect(
         isIosLocalNetworkDeniedCause(const SocketException('No route to host')),
@@ -57,6 +59,39 @@ void main() {
         ),
         isFalse,
       );
+    },
+  );
+
+  test(
+    'radio timeout is transient but cannot prove iOS privacy denial',
+    () async {
+      final blocked = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      blocked.listen((_) {});
+      addTearDown(() => blocked.close(force: true));
+      final client = LanternClient.connect(
+        Uri.parse('http://127.0.0.1:${blocked.port}'),
+        allowInsecure: true,
+        retryPolicy: const RetryPolicy(maxAttempts: 1),
+        defaultTimeout: const Duration(milliseconds: 250),
+      );
+      addTearDown(client.close);
+
+      Object? failure;
+      try {
+        await client.getReceiptCapability().timeout(const Duration(seconds: 3));
+      } on Object catch (error) {
+        failure = error;
+      }
+      expect(failure, isA<LanternDeadlineExceededException>());
+      expect(receiptTransientTransportCause(failure!), same(failure));
+      expect(receiptUnavailableCause(failure), isNull);
+
+      final wrapped = LanternRetryExhaustedException(
+        attempts: 1,
+        cause: failure as LanternException,
+      );
+      expect(receiptTransientTransportCause(wrapped), same(failure));
+      expect(receiptUnavailableCause(wrapped), isNull);
     },
   );
 
