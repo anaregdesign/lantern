@@ -316,8 +316,17 @@ Future<void> _verifyTransport(
     try {
       await untrusted.getReceiptCapability();
       fail('An untrusted certificate unexpectedly passed validation');
-    } on LanternUnavailableException catch (error) {
-      final cause = '${error.cause}';
+    } on Object catch (error) {
+      final transportCause = switch (error) {
+        LanternUnavailableException(:final cause) => cause,
+        LanternRetryExhaustedException(
+          cause: LanternUnavailableException(:final cause),
+        ) =>
+          cause,
+        _ => null,
+      };
+      if (transportCause == null) rethrow;
+      final cause = '$transportCause';
       expect(
         cause.contains('CERTIFICATE_VERIFY_FAILED') ||
             cause.contains('Hostname mismatch') ||
@@ -574,7 +583,9 @@ Future<void> _verifyContributionAdd(
     ],
   ]) {
     await expectLater(
-      repository.addEdges(partitionId: _partition, inputs: inputs),
+      Future.sync(
+        () => repository.addEdges(partitionId: _partition, inputs: inputs),
+      ),
       throwsA(isA<OfflineArgumentException>()),
     );
   }

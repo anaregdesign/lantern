@@ -14,6 +14,23 @@ const _proxyControlPath = '/_receipt_matrix_status';
 const _proxyTraceLimit = 256;
 const _fixtureBodyLimit = 32 * 1024;
 
+/// Retries only transient socket failures while opening the token connection.
+/// TLS, HTTP response, and token decoding failures stay outside this retry.
+Future<T> retryReceiptTokenConnect<T>(
+  Future<T> Function() connect, {
+  Future<void> Function(Duration)? pause,
+}) async {
+  final wait = pause ?? (duration) => Future<void>.delayed(duration);
+  for (var attempt = 1; ; attempt++) {
+    try {
+      return await connect();
+    } on SocketException {
+      if (attempt >= 3) rethrow;
+      await wait(Duration(milliseconds: attempt * 500));
+    }
+  }
+}
+
 /// Private, compile-time fixture addresses never enter the public attestation.
 final class PhysicalReceiptFixture {
   PhysicalReceiptFixture._({
@@ -75,9 +92,9 @@ final class PhysicalReceiptFixture {
   Future<String> token() async {
     final cached = _cachedToken;
     if (cached != null) return cached;
-    final request = await _tokenHttp
-        .getUrl(tokenEndpoint)
-        .timeout(const Duration(seconds: 8));
+    final request = await retryReceiptTokenConnect(
+      () => _tokenHttp.getUrl(tokenEndpoint),
+    );
     request.persistentConnection = false;
     final response = await request.close().timeout(const Duration(seconds: 8));
     if (response.statusCode != HttpStatus.ok) {
