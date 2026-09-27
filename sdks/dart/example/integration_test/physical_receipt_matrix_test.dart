@@ -583,7 +583,9 @@ Future<void> _verifyContributionAdd(
     ],
   ]) {
     await expectLater(
-      repository.addEdges(partitionId: _partition, inputs: inputs),
+      Future.sync(
+        () => repository.addEdges(partitionId: _partition, inputs: inputs),
+      ),
       throwsA(isA<OfflineArgumentException>()),
     );
   }
