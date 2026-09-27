@@ -31,6 +31,23 @@ Future<T> retryReceiptTokenConnect<T>(
   }
 }
 
+/// Unwraps the SDK's bounded read retry without accepting other failures.
+LanternUnavailableException? receiptUnavailableCause(Object error) =>
+    switch (error) {
+      LanternUnavailableException() => error,
+      LanternRetryExhaustedException(
+        cause: LanternUnavailableException cause,
+      ) =>
+        cause,
+      _ => null,
+    };
+
+bool isIosLocalNetworkDeniedCause(Object? cause) {
+  final message = '$cause';
+  return message.contains('No route to host') ||
+      message.contains('Operation not permitted');
+}
+
 /// Private, compile-time fixture addresses never enter the public attestation.
 final class PhysicalReceiptFixture {
   PhysicalReceiptFixture._({

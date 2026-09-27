@@ -875,11 +875,11 @@ Future<void> _waitForTransportFailure(
   while (DateTime.now().isBefore(deadline)) {
     try {
       await attempt();
-    } on LanternUnavailableException catch (error) {
+    } on Object catch (error) {
+      final unavailable = receiptUnavailableCause(error);
+      if (unavailable == null) rethrow;
       if (!localPrivacy) return;
-      final cause = '${error.cause}';
-      if (cause.contains('No route to host') ||
-          cause.contains('Operation not permitted')) {
+      if (isIosLocalNetworkDeniedCause(unavailable.cause)) {
         return;
       }
       throw StateError('iOS Local Network denial was not observed');
