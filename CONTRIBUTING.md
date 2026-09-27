@@ -19,7 +19,7 @@ whole surface and don't hedge for old clients:
   **not** need to `reserved` retired field numbers/names purely for compatibility; add a
   `reserved` only when it prevents a real decode hazard you actually care about. If a
   `buf breaking` gate is ever added, treat it as waived until `v1.0.0`.
-- **SDK APIs (Go / Dart / Node), CLI / REPL grammar, the `LANTERN_*` env-var contract, and
+- **SDK APIs (Go / Dart / Node / Rust), CLI / REPL grammar, the `LANTERN_*` env-var contract, and
   metric names** — may change between releases. Update every call site in the same change.
 - **Still forbidden (unrelated to compatibility):** `buf generate --clean`. It deletes
   `pb/go.mod` + `pb/doc.go` — a tooling footgun, not a compat concern — so the `--clean`
@@ -41,8 +41,8 @@ created**:
 | Field | Allowed values |
 | --- | --- |
 | `Track` | `Admin` / `HA` / `Connect` / `SDK` / `Maintenance` / `Docs` |
-| `Module` | `pb` / `core` / `server` / `sdks-go` / `sdks-dart` / `sdks-node` / `sdks-python` / `admin` / `mcp` / `tests` / `docs` / `ci` |
-| `Release target` | `next pb` / `next sdks-go` / `next sdks-dart` / `next root` / `next mcp` / `next admin-internal` / `unscheduled` |
+| `Module` | `pb` / `core` / `server` / `sdks-go` / `sdks-dart` / `sdks-rust` / `sdks-node` / `sdks-python` / `admin` / `mcp` / `tests` / `docs` / `ci` |
+| `Release target` | `next pb` / `next sdks-go` / `next sdks-dart` / `next sdks-rust` / `next root` / `next mcp` / `next admin-internal` / `unscheduled` |
 | `Priority` | `P0` / `P1` / `P2` |
 
 Rules:
@@ -140,6 +140,10 @@ go test ./...                    # root module
   lib test tool && flutter pub get --enforce-lockfile \
   && flutter analyze && flutter test && dart run tool/crash_probe.dart \
   && dart run tool/performance_probe.dart)
+(cd sdks/rust && cargo fmt --all -- --check \
+  && cargo clippy --locked --all-targets --all-features -- -D warnings \
+  && cargo test --locked --all-features \
+  && RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features)
 ```
 
 During edits, run the narrowest targeted checks for changed behavior rather than
@@ -231,6 +235,34 @@ buffering their remaining contents. The artifact finalizer reserves space for
 classification and phase metadata, then shares its 2 MiB / 32-file budget
 across useful diagnostic tails from both attempts instead of dropping the
 artifact when logs are noisy.
+
+## Standalone Rust SDK gate
+
+`sdks/rust/` is outside `go.work`. Its checked-in `src/generated/**` sources
+come only from `cargo xtask codegen` run in that directory (pinned Tonic/Prost
+codegen with bundled `protoc`). Commit `Cargo.lock` for repository CI; the
+library archive builds without the Go workspace, root `proto/`, Buf, a system
+`protoc`, or a generator build script. `.github/workflows/rust-sdk.yml` checks
+codegen drift, formatting, warnings-denied Clippy, tests, example compilation,
+and warning-free docs with Rust 1.88/stable on Linux, macOS, and Windows.
+Each stable lane builds the production Go server and runs the full opt-in
+real-wire h2c/TLS/auth/CRUD/query suite, including failure paths. Locally,
+build the server from the root and run that suite from the crate:
+
+```sh
+mkdir -p sdks/rust/target
+go build -o sdks/rust/target/lantern-smoke ./server/cmd
+(cd sdks/rust && LANTERN_RUST_TEST_SERVER="$PWD/target/lantern-smoke" \
+  cargo test --locked --all-features -- --ignored --test-threads=1)
+```
+
+Audit locked runtime and codegen dependencies with
+`(cd sdks/rust && cargo audit --deny warnings --file Cargo.lock)`; an
+unmaintained crate warning blocks release as surely as a vulnerability.
+The independent [Rust release procedure](sdks/rust/RELEASING.md) freezes a
+clean candidate, inspects its license and archive, tests the package in
+isolation, runs a publish dry-run, and compares a fresh repackage. It does
+not authorize publishing during SDK development.
 
 ## Coverage floor (ratchet)
 
@@ -330,14 +362,17 @@ test.
 go generate ./...                                # buf generate (NO --clean) + wire
 sdks/dart/scripts/codegen.sh
 (cd sdks/node && bun run codegen)
+(cd sdks/rust && cargo xtask codegen)
 testbed/dart-transport-probe/scripts/codegen.sh
 ```
 
 Commit regenerated stubs under `pb/`, `sdks/dart/lib/src/gen/`,
-`sdks/node/src/gen/`, and both `testbed/dart-transport-probe/{connect,grpc}/lib/src/gen/`
+`sdks/node/src/gen/`, `sdks/rust/src/generated/`, and both
+`testbed/dart-transport-probe/{connect,grpc}/lib/src/gen/`
 when they change. Never hand-edit generated files. CI reruns these generators and
-checks for drift in `go.yml`, `dart-sdk.yml`, `node-sdk.yml`, and
-`dart-transport-probe.yml`; even a comment-only proto edit can change generated docs.
+checks for drift in `go.yml`, `dart-sdk.yml`, `node-sdk.yml`,
+`rust-sdk.yml`, and `dart-transport-probe.yml`; even a comment-only proto
+edit can change generated docs.
 Never pass `--clean` to buf — its output root is `pb/`, so `--clean` would delete
 `pb/go.mod` and `pb/doc.go` alongside the stubs.
 If the wire shape consumed or shipped by `lantern_client` changes, cut an independent
@@ -447,7 +482,7 @@ The `server/` module is never tagged independently — it ships under the root t
 buildx under QEMU is slow; if a root tag already pushed the amd64 image, bump the patch
 number rather than force-moving the tag.
 
-`mcp/`, `admin/`, `sdks/dart/`, and the offline core are cut
+`mcp/`, `admin/`, `sdks/dart/`, `sdks/rust/`, and the offline core are cut
 **independently** of the root cadence:
 
 - `mcp/vX.Y.Z` triggers `mcp-publish.yml` → `ghcr.io/anaregdesign/lantern-mcp` (multi-arch
@@ -459,6 +494,20 @@ number rather than force-moving the tag.
   only upstream pin that forces a re-tag. The container hosts the SPA on Caddy and does
   not reverse-proxy the Lantern listener — the browser calls the gateway directly, so the
   server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
+- `sdks/rust/vX.Y.Z` must match the `sdks/rust/Cargo.toml` package version and
+  an exact `## X.Y.Z` heading in `sdks/rust/CHANGELOG.md`. The prepared
+  `0.1.0` heading is not evidence of publication. `rust-release.yml` verifies
+  the exact immutable tag, six native OS/MSRV/stable conformance lanes,
+  warning-free dependency audit, and a license-checked, independently tested
+  crate archive; the publish dry-run must pass and a fresh repackage must
+  reproduce the tested bytes. The **first** crates.io publication is
+  owner-held from the verified tag after matching the owner's local package
+  SHA-256 with CI's candidate: no CI token or secret. After the crate exists,
+  only a protected `crates.io` Environment and repository-bound trusted
+  publisher may publish subsequent versions with short-lived OIDC. A separate
+  read-only job verifies the registry's actual archive bytes before the
+  exact-title GitHub Release. Follow [RELEASING.md](sdks/rust/RELEASING.md);
+  never publish an unverified package or bypass a failed gate.
 - `sdks/dart/vX.Y.Z` must match `sdks/dart/pubspec.yaml` version `X.Y.Z` and a
   `CHANGELOG.md` heading `## X.Y.Z`. It triggers `dart-sdk.yml`, which must pass the
   minimum/current Dart gates, real-wire tests, warning-free docs, isolated publish-
@@ -537,7 +586,7 @@ Issue open and create no Release; never move a published tag or version.
 
 **Release title convention (locked).** Every GitHub Release title MUST equal its tag name
 verbatim (`v0.7.2`, `core/v0.2.0`, `sdks/go/v0.8.0`, `sdks/dart/v0.1.0`,
-`sdks/dart/offline/v0.1.0`, `mcp/v0.1.0`, `admin/v0.1.0`, …) —
+`sdks/dart/offline/v0.1.0`, `sdks/rust/v0.1.0`, `mcp/v0.1.0`, `admin/v0.1.0`, …) —
 no friendly aliases. The container-publishing workflows enforce this via
 `gh release create --title "$TAG"`; when creating SDK releases manually, pass the same
 `--title "$TAG"`.

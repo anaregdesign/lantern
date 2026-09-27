@@ -4,7 +4,7 @@ Lantern is an in-memory `key-vertex-store` (graph-based KVS). It runs as a Conne
 
 ## Monorepo layout
 
-This project used to be split across four separate repositories (`lantern` / `lantern-proto` / `lantern-cli`, plus a shared graph/cache/NLP toolkit), but **everything is now consolidated into this repo**. Go components form a multi-module workspace so each module can be consumed (`go get`) on its own; Dart and TypeScript packages remain standalone:
+This project used to be split across four separate repositories (`lantern` / `lantern-proto` / `lantern-cli`, plus a shared graph/cache/NLP toolkit), but **everything is now consolidated into this repo**. Go components form a multi-module workspace so each module can be consumed (`go get`) on its own; Dart, Rust, and TypeScript packages remain standalone:
 
 | Path | Module | Role |
 |---|---|---|
@@ -14,6 +14,7 @@ This project used to be split across four separate repositories (`lantern` / `la
 | `sdks/dart/` | `lantern_client` (Dart package) | Pure-Dart Android/iOS-first client SDK plus maintained Flutter app under `example/`. Generated directly from `proto/`; outside `go.work`. |
 | `sdks/dart/offline/` | `lantern_client_offline` (experimental Dart package) | Opt-in storage-neutral confirmed cache, pending overlays, legacy-Add quarantine, and foreground replay. Hosted 0.3.0 has a Put-only outbox; merged 0.4.0 source adds receipt-backed conditional Put, exact Delete, and explicit-ID Add without qualifying or publishing a receipt release. Uses the hosted `lantern_client` package and has an independent release tag; excluded from the parent publish archive. |
 | `sdks/dart/offline_sqlite/` | `lantern_client_offline_sqlite` (unpublished Flutter package) | Opt-in `sqflite` adapter using Android/iOS platform SQLite. Depends on the public offline core; excluded from the parent archive. |
+| `sdks/rust/` | `lantern-client` (unpublished Rust crate) | Native single-endpoint SDK with Health, exact-value CRUD, bounded queries/traversal, and private generated Tonic/Prost clients. `cargo xtask codegen` regenerates only `src/generated/`. Outside `go.work`. |
 | `server/` | `github.com/anaregdesign/lantern/server` | Connect/HTTP-2 server (DI via google/wire). Depends on `pb/` and `core/`. **Does not depend on the client SDK.** |
 | `mcp/` | `github.com/anaregdesign/lantern/mcp` | MCP server binary that exposes Lantern as a shared multi-agent working context (presence / claims / activity / blackboard, #851) over **Streamable HTTP** (default `:6390`, endpoint `/mcp`). Depends on `pb/` and `sdks/go/` only. Ships as the `lantern-mcp` container. |
 | `.` (root) | `github.com/anaregdesign/lantern` | Umbrella module — hosts the CLI (`cli/`) and cross-module integration tests (`tests/integration/`). Depends on all five submodules. |
@@ -33,7 +34,7 @@ Dependency direction (must remain a DAG, no back edges):
          core ◀──────────────┘
 ```
 
-Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK, `core/vX.Y.Z` for core, `pb/vX.Y.Z` for the proto stubs, `sdks/dart/vX.Y.Z` for the independent pub.dev SDK, `sdks/dart/offline/vX.Y.Z` for the separately released storage-neutral offline core after #1162 (never the #1163 SQLite adapter), and `mcp/vX.Y.Z` for the MCP server image (cut independently of the root release cadence).
+Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK, `core/vX.Y.Z` for core, `pb/vX.Y.Z` for the proto stubs, `sdks/dart/vX.Y.Z` for the independent pub.dev SDK, `sdks/dart/offline/vX.Y.Z` for the separately released storage-neutral offline core after #1162 (never the #1163 SQLite adapter), `sdks/rust/vX.Y.Z` for the independently published crates.io library (first publication owner-held, later OIDC), and `mcp/vX.Y.Z` for the MCP server image.
 
 ## Architecture notes
 
@@ -51,6 +52,7 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   - `sdks/dart/` is a standalone pure-Dart package generated from `proto/`; it never joins `go.work` or imports a Go module. Its generated `lib/src/gen/**` files are regenerated with `sdks/dart/scripts/codegen.sh`, never hand-edited. `LanternClient` owns secure transport/auth/deadline/cancellation/retry policy and the auth-exempt Health-v1 probe; public facades cover exact values/TTL CRUD, cursor scans, search/incremental search, typed traversal families, cold-start ranking, and explicit status snapshots. Its `Graph` retains full immutable `Edge` values including expiration. `example/` is a Flutter Android/iOS app that depends on the package by path; it does not add Flutter to the SDK runtime dependency graph.
   - `sdks/dart/offline/` is a separate experimental pure-Dart package. The online parent never imports it. It injects `OfflineStore`, keeps credentials/encryption/OS scheduling application-owned, and its hosted 0.3.0 outbox remains Put-only. Merged 0.4.0 source adds receipt-backed conditional Vertex Put, exact Vertex/Edge Delete, and explicit-ID Add; its receipt release remains unpublished and unqualified before final #1399 gates, including performance and physical evidence (the #1449 capture preparation is not device evidence). `OfflineStoreTransaction` operations return `FutureOr<T>` and callers must await them. Legacy Add records remain decodable only for fail-closed `unsupported_add` terminal migration and authorized inspection; they never become receipt-backed work. Its `InMemoryOfflineStore` and canonical snapshots are conformance/test infrastructure only.
   - `sdks/dart/offline_sqlite/` implements that port with indexed SQL transactions through `sqflite`; the SQLite engine is platform-provided on Android/iOS. FFI is a host-test-only dependency. It stores per-origin CDC cursor/chunk progress but does not implement the #1116 network stream. Keep the core free of platform dependencies, preserve the parent archive exclusion, and never substitute host/simulator results for physical-device qualification.
+  - `sdks/rust/` is a standalone Cargo workspace outside `go.work`, with a checked-in `Cargo.lock` for repository CI. The publishable library builds from its archive without root proto, Buf, system `protoc`, or codegen at build time. Use pinned `cargo xtask codegen` from the crate directory to regenerate only `src/generated/`; do not hand-edit generated Rust. The edition-2024 private module is `generated` (`gen` is reserved). The crate exposes one-endpoint transport, auth-exempt Health, exact-value CRUD, bounded query/traversal, and explicit status snapshots but not generated service clients or receipt-backed operations; see [ADR 0011](docs/decisions/0011-native-rust-sdk.md) and [RELEASING.md](sdks/rust/RELEASING.md).
   - `Illuminate*` returns the SDK-local `client.Graph` (field shape `{Vertices map[string]*Vertex; Edges map[string]map[string]float32}`, JSON-compatible with `core/graph.Graph`). The server owns every traversal family and post-traversal reduction; since #846 `IlluminateRequest` carries a per-family `params` oneof (`bfs` / `ppr` / `community`) instead of a flat `Algorithm` axis — pass the typed SDK options `client.WithBFS(BFSOpts{Step, FanOut, Objective, Reduction})`, `client.WithPPR(PPROpts{TopN, RestartProb, Epsilon})`, or `client.WithLocalCommunity(LocalCommunityOpts{…})` (#845), plus the shared `client.WithWeighting` / `client.WithVertexPrefix`.
 - **Decay model**: edges are **additive** and carry their own TTL. Be mindful of the difference between `AddEdge` and `PutEdge` (idempotency) — see the discussion in [sdks/go/example/main.go](sdks/go/example/main.go).
 - **Offline receipt ID boundary (#1398)**: only a durably proven never-dispatched provisional ID/group may be refreshed before its first send; persist `mayHaveDispatched` before the mutation RPC. A possibly sent ID (including older records without the marker) stays immutable and status-first; capability freshness must include request latency.
@@ -71,6 +73,8 @@ docker build -t lantern .        # container build
 (cd sdks/dart/offline && dart pub get --enforce-lockfile && dart analyze && dart test)
 (cd sdks/dart/example && flutter pub get --enforce-lockfile && flutter analyze && flutter test)
 sdks/dart/scripts/codegen.sh     # regenerate only sdks/dart/lib/src/gen
+(cd sdks/rust && cargo xtask codegen)  # regenerate only sdks/rust/src/generated
+(cd sdks/rust && cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings && cargo test --locked --all-features)
 ```
 
 CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go test` on PR/push. [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml) publishes to ghcr.io on `v*.*.*` tag pushes with cosign keyless signing. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full release and CI flow.
@@ -187,7 +191,8 @@ The load-bearing always-on essentials:
   choose a passing sample or change workload, GC, or thresholds to obtain a pass.
 - **Before every push**, run the local quality gate: `gofmt -l` must print nothing, then
   `go test ./...` from the root **and** from each Go submodule (the root run does not span
-  submodules), plus `dart format`, `dart analyze`, and `dart test` in `sdks/dart/`.
+  submodules), plus Dart/Flutter gates and the standalone Rust crate gate in
+  [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,
   never `--clean`) and `server/cmd/wire_gen.go` from `server/` with `go tool wire ./cmd`.
 - **When your work surfaces a fact another open Issue needs, comment it on that Issue in

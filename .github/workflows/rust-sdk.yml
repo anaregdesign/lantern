@@ -1,0 +1,137 @@
+name: Rust SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/rust/**'
+      - 'proto/**'
+      - 'pb/**'
+      - 'server/**'
+      - 'core/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - 'docs/decisions/0011-native-rust-sdk.md'
+      - 'docs/rust-sdk-v0.1-contract.md'
+      - '.github/workflows/rust-sdk.yml'
+      - '.github/workflows/rust-release.yml'
+  pull_request:
+    paths:
+      - 'sdks/rust/**'
+      - 'proto/**'
+      - 'pb/**'
+      - 'server/**'
+      - 'core/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - 'docs/decisions/0011-native-rust-sdk.md'
+      - 'docs/rust-sdk-v0.1-contract.md'
+      - '.github/workflows/rust-sdk.yml'
+      - '.github/workflows/rust-release.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: sdks/rust
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Rust ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: ['1.88.0', stable]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy, rustfmt
+
+      - name: Verify checked-in codegen on native toolchain
+        run: |
+          cargo xtask codegen
+          if [ -n "$(git status --porcelain -- src/generated)" ]; then
+            echo "::error::Rust bindings drifted. Run 'cd sdks/rust && cargo xtask codegen' and commit src/generated."
+            git status --short -- src/generated
+            git diff -- src/generated
+            exit 1
+          fi
+        shell: bash
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint all targets and features
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+      - name: Check default native TLS policy
+        run: cargo test --locked --no-default-features smoke::native_tls_roots_are_available_by_default
+      - name: Test
+        run: cargo test --locked --all-features
+      - name: Compile maintained examples
+        run: cargo check --locked --examples
+      - name: Document without warnings
+        run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - uses: actions/setup-go@v7
+        if: matrix.rust == 'stable'
+        with:
+          go-version-file: go.mod
+      - name: Build production server for real-wire conformance
+        if: matrix.rust == 'stable'
+        working-directory: .
+        shell: bash
+        run: |
+          suffix=''
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
+          mkdir -p sdks/rust/target
+          go build -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
+      - name: Test real gRPC Health, CRUD, queries, traversal, and failure paths
+        if: matrix.rust == 'stable'
+        run: cargo test --locked --all-features -- --ignored --test-threads=1
+        env:
+          LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+      - name: Inspect and build isolated library archive
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+        shell: bash
+        run: |
+          expected=$(printf '%s\n' \
+            .cargo_vcs_info.json CHANGELOG.md Cargo.lock Cargo.toml \
+            Cargo.toml.orig LICENSE README.md RELEASING.md examples/complete.rs \
+            src/generated/graph.v1.rs \
+            src/batch.rs src/batch/tests.rs src/contrib.rs src/contrib/tests.rs \
+            src/crud.rs src/crud/tests.rs src/discovery.rs src/discovery/tests.rs \
+            src/error.rs src/lib.rs src/paging.rs src/paging/tests.rs \
+            src/prefix.rs src/prefix/tests.rs src/scans.rs src/scans/tests.rs \
+            src/search.rs src/search/tests.rs src/smoke.rs src/test_server.rs \
+            src/transport.rs src/transport/tests.rs src/traversal.rs \
+            src/traversal/tests.rs \
+            src/value.rs src/value/tests.rs | sort)
+          actual=$(cargo package --list --locked | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Unexpected Rust crate archive inputs"
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+            exit 1
+          fi
+          cargo package --no-verify --locked
+          staging="$RUNNER_TEMP/lantern-rust-package"
+          mkdir -p "$staging"
+          tar -xzf target/package/lantern-client-0.1.0.crate -C "$staging"
+          (
+            cd "$staging/lantern-client-0.1.0"
+            test ! -e build.rs
+            test ! -e xtask
+            test ! -e proto
+            PROTOC=/nonexistent/protoc CARGO_TARGET_DIR="$RUNNER_TEMP/lantern-rust-archive-target" \
+              cargo build --frozen
+          )

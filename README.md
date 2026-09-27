@@ -518,6 +518,24 @@ response.
 The in-memory reference snapshot is test infrastructure, not a production
 durability claim; the separately versioned SQLite adapter remains #1163.
 
+### Rust (unpublished native SDK)
+
+[`sdks/rust/`](sdks/rust/) is a standalone Cargo crate, `lantern-client`
+(`lantern_client` in Rust), targeting native Tokio applications on Linux,
+macOS, and Windows. It is **not yet published**. The public single-endpoint
+client supports native-root-verified HTTPS, optional private CA/mTLS,
+per-attempt bearer auth, auth-exempt gRPC Health, exact-value/TTL Vertex and
+Edge CRUD, bounded scan/search/prefix operations, typed BFS/PPR/community
+traversal, degree ranking, explicit status, and typed errors. Generated
+Tonic/Prost RPC clients remain private; packaged builds need neither proto
+nor system `protoc`. Authenticated HA clients require trusted HTTPS;
+bearer-over-h2c is only for explicitly trusted single-instance development.
+Use the [secure complete example](sdks/rust/examples/complete.rs) with a
+private namespace. The [crate README](sdks/rust/README.md) covers paging,
+deadlines, and safe retries; the [release runbook](sdks/rust/RELEASING.md)
+describes the independent owner-held first crates.io publish and later OIDC
+gates. [ADR 0011](docs/decisions/0011-native-rust-sdk.md) is the contract.
+
 ### Anything else
 
 Generate bindings from
@@ -576,6 +594,7 @@ flowchart LR
         GoSDK["sdks/go"]
         DartSDK["sdks/dart"]
         NodeSDK["sdks/node"]
+        RustSDK["sdks/rust"]
         CLI["lantern-cli"]
         MCP["lantern-mcp (mcp/)"]
         Other3P["any Connect / gRPC /<br/>gRPC-Web client"]
@@ -585,6 +604,7 @@ flowchart LR
     GoSDK   -->|Connect / gRPC| SVC
     DartSDK -->|Connect / HTTP/1.1| SVC
     NodeSDK -->|Connect / gRPC| SVC
+    RustSDK -->|gRPC / HTTP/2| SVC
     CLI     -->|Connect / gRPC| SVC
     MCP     -->|via sdks/go| SVC
     Other3P -->|":6380 (one h2c socket)"| SVC
@@ -610,8 +630,8 @@ flowchart LR
 ```
 
 - **One wire surface.** The `:6380` listener accepts Connect, gRPC, and
-  gRPC-Web on the same h2c socket; every client in this repo — the Admin
-  SPA, both SDKs, the CLI, the MCP server — shares the exact contract from
+  gRPC-Web on the same h2c socket; the Admin SPA, language SDKs, CLI, and
+  MCP server share the exact contract from
   [proto/graph/v1/](proto/graph/v1/graph.proto).
 - **HA is optional and leaderless.** Every replica holds the full graph;
   writes commit locally and fan out asynchronously via `Subscribe` /
@@ -879,7 +899,8 @@ Production-grade out of the box — details in the source links:
 ## Repository layout
 
 A monorepo of six Go modules stitched by [go.work](go.work), a pure-Dart SDK,
-and two Bun-managed TypeScript packages; dependency direction is a strict DAG:
+a standalone native Rust crate, and two Bun-managed TypeScript packages;
+dependency direction is a strict DAG:
 
 | Path | What it is |
 |---|---|
@@ -890,6 +911,7 @@ and two Bun-managed TypeScript packages; dependency direction is a strict DAG:
 | [`sdks/go/`](sdks/go/) | Go client SDK — depends on `pb/` only |
 | [`sdks/dart/`](sdks/dart/) | Pure-Dart Android/iOS-first SDK (`lantern_client`) |
 | [`sdks/dart/offline/`](sdks/dart/offline/) | Experimental storage-neutral offline Repository (`lantern_client_offline`) |
+| [`sdks/rust/`](sdks/rust/) | Native Rust client SDK (`lantern-client` Cargo crate; outside `go.work`) |
 | [`sdks/node/`](sdks/node/) | TypeScript client SDK (`lantern-sdk` on npm) |
 | [`cli/`](cli/) | `lantern-cli` — REPL + one-liners |
 | [`admin/`](admin/) | Browser Admin console (React Router / Fluent UI / Sigma.js) |

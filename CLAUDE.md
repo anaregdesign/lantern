@@ -35,6 +35,8 @@ Admin SPA (`admin/`, Bun-managed, outside `go.work`): `bun run format && bun run
 
 Node SDK (`sdks/node/`, Bun-managed, outside `go.work`, npm `lantern-sdk`): from `sdks/node/` run `bun run codegen` (must leave `src/generated` clean — CI fails otherwise), then `bun run lint && bun run format:check && bun run typecheck && bun test && bun run build`. Single-endpoint only — no counterpart to the Go SDK's failover.
 
+Rust SDK (`sdks/rust/`, Cargo-managed, outside `go.work`): from `sdks/rust/` run `cargo xtask codegen` to update only `src/generated/**` (never hand-edit generated code), then `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, `cargo test --locked --all-features`, and warning-free `cargo doc --locked --no-deps`. Cargo.lock is committed for CI; packaged library builds need no root proto, Buf, or system `protoc`. One-endpoint transport, Health, exact CRUD, bounded queries/traversal, and status are public, but Tonic gRPC service clients stay private. See [ADR 0011](docs/decisions/0011-native-rust-sdk.md), [sdks/rust/README.md](sdks/rust/README.md), and the independent [release runbook](sdks/rust/RELEASING.md).
+
 ## Architecture
 
 Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG with no back edges:
@@ -50,6 +52,7 @@ Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG wi
 
 - **Plural-first RPC surface** ([server/service/service.go](server/service/service.go)): every read/write/delete has singular + plural forms; the plural is the canonical implementation and the singular forwards a one-element batch to it. New write surface: implement plural first, singular as thin facade.
 - **Generated code**: `pb/**` (regen `go generate ./...`; buf `--clean` is forbidden — it would delete `pb/go.mod`) and `server/cmd/wire_gen.go` (regen from `server/`: `go tool wire ./cmd`). Wire cannot handle generic type arguments — providers return concrete types.
+- **Standalone Rust crate**: `sdks/rust/` is outside `go.work`; generated code is checked in under `src/generated/`, with exact protobuf domain types and one-endpoint transport/Health, CRUD, queries/traversal, and status exported but generated service clients private. Rust edition 2024 reserves `gen`, so the private module is named `generated`.
 - **Providers** ([server/provider/provider.go](server/provider/provider.go)): config comes from `LANTERN_*` env vars, split into focused sub-configs (`NetConfig`, `TLSConfig`, …); each provider takes only the slice it needs, not `*Config`. Env-var contract: [server/internal/envconfig](server/internal/envconfig).
 - **SDK value accessors are free functions, not methods**: `Kind(v)`, `IntValue(v)`, `StringValue(v)`, etc. `client.Vertex`/`client.Edge` are true aliases of the `pb` types. Adding a value type updates three sites in [sdks/go/value.go](sdks/go/value.go).
 - Server tests needing the client SDK (full-stack round-trips) go in `tests/integration/`, never under `server/`.
