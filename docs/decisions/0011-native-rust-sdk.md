@@ -27,7 +27,8 @@ scope. The implementation slices are #1379 (scaffold/codegen), #1376
 
 Use the maintained stable Tonic + Prost stack over gRPC/HTTP-2. Generate the
 entire root [`proto/`](../../proto/graph/v1/graph.proto) schema into checked-in
-`sdks/rust/src/gen/**` via one pinned `cargo xtask codegen` command. The
+`sdks/rust/src/generated/**` via one pinned `cargo xtask codegen` command. The
+module is private; `gen` is a reserved keyword in Rust 2024. The
 published library compiles from its archive without `protoc`, Buf, root proto
 files, `OUT_DIR` generation, or access to another Lantern package. CI compares
 a second generation with the checked-in output; generated code is never
@@ -123,8 +124,12 @@ no skip-verification switch.
 
 Plain h2c is usable for unauthenticated local/trusted-network deployments.
 Supplying a bearer-token provider with an `http://` endpoint requires a
-separate, explicit trusted-network/development opt-in; a plain endpoint alone
-is not consent to transmit credentials. An object-safe `Send + Sync` async
+separate, explicit opt-in for trusted single-instance development; a plain
+endpoint alone is not consent to transmit credentials. The SDK cannot infer
+cluster topology from the endpoint, so this opt-in does not qualify an
+authenticated HA deployment: peers require verified TLS and external SDK
+clients require their own trusted HTTPS path
+([runbook](../ha-runbook.md)). An object-safe `Send + Sync` async
 provider supplies a nonempty token **for every attempt**. Provider failures
 stop the call, never become an empty token, and tokens are neither persisted
 nor logged. A synchronous Tonic interceptor cannot substitute for an async
@@ -217,8 +222,18 @@ responses fail closed.
 
 Scans and search expose a bounded page plus a lazy `Send` stream, at most one
 page in flight and one page buffered, never an implicit all-results
-collection. Cursor bytes are opaque and bound to their request family,
-order/options and issuing endpoint. Search preserves the server's
+collection. Scan cursor bytes are opaque; the server checks Scan RPC kind
+and vertex/key scan order (edge scans are ascending), but does not bind
+prefix, page size, or endpoint. Distinct private-field Rust scan cursors
+carry the server bytes plus RPC kind, exact prefix(es), requested page
+size, normalized order where applicable, and issuing-client endpoint
+identity. Validate these SDK-owned bindings before every continuation;
+raw server bytes alone cannot prove their origin or restore those checks
+after persistence. Client endpoint identity is not proof that a proxy or
+DNS routed to the same backend, nor do scans become snapshots. Search
+cursors differ: the server signs its session cursor and checks request,
+configuration, and endpoint fingerprints. Keep search continuations on
+their issuing endpoint with unchanged options. Search preserves the server's
 `effective_limit`, `truncated`, `continuation_limited`, projection status,
 and typed stale/invalid failures. A bounded-tail stream yields its retained
 hits then a terminal continuation-limited error; it does not claim a complete

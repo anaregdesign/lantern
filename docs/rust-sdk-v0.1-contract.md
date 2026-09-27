@@ -7,10 +7,11 @@ API sketch, **not** checked-in compilable Rust.
 
 ## Public boundary and builder
 
-The library is `lantern-client` (`lantern_client` in Rust). `gen` is a
-**private** module. The crate selectively re-exports generated domain
-`Vertex`, `Edge`, `vertex::Value` as `VertexValue`, `PutOutcome`, traversal
-enums, scan/search/projection/status enums and `SearchCapabilities`; it does
+The library is `lantern-client` (`lantern_client` in Rust). `generated` is a
+**private** module (Rust 2024 reserves `gen`). The crate selectively
+re-exports generated domain `Vertex`, `Edge`, `vertex::Value` as
+`VertexValue`, `PutOutcome`, traversal enums, scan/search/projection/status
+enums and `SearchCapabilities`; it does
 not publicly expose generated RPC clients or request/response messages.
 `Timestamp` and signed `ProtoDuration` are direct re-exports of
 `prost_types` well-known messages, not chrono or `std::time::Duration`
@@ -39,7 +40,7 @@ impl LanternClient {
 }
 impl LanternClientBuilder {
     pub fn token_provider(self, provider: Arc<dyn TokenProvider>) -> Self;
-    pub fn allow_insecure_credentials_for_trusted_network(self, yes: bool) -> Self;
+    pub fn allow_credentialed_h2c_for_single_instance_development(self, yes: bool) -> Self;
     pub fn connect_timeout(self, timeout: Duration) -> Result<Self, LanternError>;
     pub fn unary_timeout(self, timeout: Duration) -> Result<Self, LanternError>;
     pub fn message_limits(self, encode: usize, decode: usize)
@@ -60,9 +61,12 @@ from `ClientTlsConfig::new().ca_certificate(...)` without either root flag.
 `with_enabled_roots` for policy selection. Optional mTLS identity is
 independent of root selection
 ([ADR](decisions/0011-native-rust-sdk.md#transport-security-and-lifecycle)).
-`http://` plus credentials fails
-`connect()` without the separate opt-in. `https://` always verifies and
-never downgrades. `TokenProvider::token()` is called for each data-plane
+`http://` plus credentials fails `connect()` without the separate opt-in,
+which is for trusted single-instance development only; callers must not use
+it to treat bearer-bearing HA as secure. Such deployments require verified
+peer TLS and a trusted HTTPS path for SDK clients
+([runbook](ha-runbook.md)). `https://` always verifies and never downgrades.
+`TokenProvider::token()` is called for each data-plane
 attempt, **not** for `ping()`: use
 [`tonic_health::pb::health_client::HealthClient`](https://docs.rs/tonic-health/0.14.6/tonic_health/pb/health_client/struct.HealthClient.html)
 on the bare channel, without copying bearer metadata. The crate supplies
@@ -176,8 +180,19 @@ can end the live dedup horizon. Receipt-bearing recovery is not v0.1.
 more than one page ahead, keep only one page buffered, and drop pending
 work when the consumer drops the stream. The public cursor types are
 separate opaque wrappers for vertex, keys, edge, and search cursors.
-Cursor bytes can be persisted verbatim but never cross-fed to a
-different RPC, order, filter, options, projection, or endpoint.
+Scan wrappers have private fields for opaque server bytes, RPC kind,
+exact prefix(es), requested page size, normalized vertex/key order
+(edges are ascending), and issuing-client endpoint identity. Reject
+mismatched continuations locally before transport. The scan server
+checks RPC kind and vertex/key order, but **not** prefix, page size, or
+endpoint; raw server bytes alone do not preserve the SDK bindings, so
+v0.1 makes no raw-byte-only cursor persistence guarantee. Matching a
+configured client endpoint cannot prove physical node affinity through
+a proxy or DNS, or make a scan a snapshot. Search instead uses a
+server-signed, endpoint-sticky session cursor binding the request
+(including options, projection, and effective page limit) and
+configuration; continue with the unchanged request on the issuing
+endpoint and preserve typed stale/invalid failures.
 
 `SearchPage` includes `hits`, `next_cursor`, `effective_limit`,
 `truncated`, and `continuation_limited`. `SearchHit` exposes its
