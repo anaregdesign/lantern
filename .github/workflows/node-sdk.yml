@@ -24,6 +24,7 @@ on:
       - 'server/**'
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
+  workflow_dispatch:
 
 defaults:
   run:
@@ -189,7 +190,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: test
-    if: startsWith(github.ref, 'refs/tags/sdks/node/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/node/v')
     runs-on: ubuntu-latest
     environment:
       name: npm

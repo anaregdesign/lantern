@@ -111,6 +111,8 @@ def main() -> None:
         full, mobile = classify_range(
             git("merge-base", base, head).decode().strip(), head
         )
+    elif os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+        full, mobile = True, True
     else:
         base = os.environ["PUSH_BEFORE_SHA"]
         head = os.environ["GITHUB_SHA"]
