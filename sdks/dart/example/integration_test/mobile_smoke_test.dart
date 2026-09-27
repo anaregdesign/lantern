@@ -4,18 +4,16 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:integration_test/integration_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
+import 'support/direct_launch_binding.dart';
 import 'support/physical_result_marker.dart';
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-
-  test('native mobile real-wire smoke', () async {
+  directLaunchIntegrationTest('native mobile real-wire smoke', () async {
     final result = PhysicalResultMarker(
       'lantern-mobile-smoke-result.json',
       kind: 'physical_mobile_smoke_on_device_result',
