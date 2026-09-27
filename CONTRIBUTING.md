@@ -564,7 +564,10 @@ settings, that `lantern_client_offline` has GitHub Actions publishing enabled
 for repository `anaregdesign/lantern`, tag pattern
 `sdks/dart/offline/v{{version}}`, the push event enabled, and **Require GitHub
 Actions environment** checked for exact `pub.dev`. Record dated, redacted
-confirmation and custody sign-off without credentials or emails. The
+confirmation without credentials or emails. For this single-maintainer beta,
+keep signed physical-test originals privately only through release verification
+as described in the physical release runbook; a second human custody review or
+year-long cloud archive is not a release prerequisite. The
 protected GitHub `pub.dev` environment already selects both parent
 `sdks/dart/v*.*.*` and offline `sdks/dart/offline/v*.*.*` tag patterns and
 requires human reviewers; its rules do not prove that separate private
