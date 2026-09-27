@@ -309,10 +309,9 @@ converging (the same caveat as Redis `SETNX` with async replicas).
 ## Idempotent additive edges
 
 `addEdge` / `addEdges` are **additive** — the server sums each contribution
-into the edge's weight — so a transport retry that re-sends the same edge
-double-counts its weight. Attach a 24-byte **contrib ID** to make a
-contribution idempotent: while that contribution is live, re-adding it with
-the same id is a no-op instead of adding weight again.
+into the edge's weight — so resending an unkeyed Add can double-count its
+weight. A 24-byte **contrib ID** makes a contribution idempotent while
+it remains live: re-adding it with the same id does not add weight again.
 
 Both resolve to the **post-accumulation effective weight**: `addEdge` returns
 the edge's new live total and `addEdges` returns an index-aligned `number[]`,
@@ -329,8 +328,8 @@ Two ways to get an id onto the wire:
 
 ```ts
 // 1. Opt-in automatic ids: the client mints one per contribution from a
-//    per-client random nonce + a monotonic sequence, so a retried call
-//    re-sends identical bytes.
+//    per-client random nonce + a monotonic sequence. A transport-level
+//    resend of this request retains the id; a new SDK call mints a new id.
 const client = connect("http://localhost:6380", {
   options: { idempotentAdds: true },
 });
@@ -416,6 +415,11 @@ a set larger than the server's per-call cap).
 `headPrefix` (the edge-shaped sibling of the scan filter). At least one prefix
 must be non-empty — a both-empty request rejects with `InvalidArgumentError`,
 so a whole-graph edge wipe is always explicitly scoped.
+
+If a prefix-delete response is lost, even an identical capped request can
+delete the next matching set; a repeat cannot recover the original count.
+Prefix deletes have no receipt variant. Reconcile rather than replaying an
+uncertain prefix delete automatically.
 
 ```ts
 // Preview, then delete every edge from a user into the session namespace.
@@ -629,14 +633,27 @@ await client.getVertex("slow-key", ctrl.signal);
 
 ## Transport tuning
 
-Override the Connect-Node transport options via `transportOptions`:
+The Node `connect()` transport defaults to protobuf binary over HTTP/2;
+`connectWeb()` defaults to JSON over browser fetch. Default unary calls make
+one attempt: neither entrypoint installs a retry interceptor, round-robin
+service config, or automatic failover. A custom transport or interceptor owns
+its retry policy and the ambiguity of responses lost after a write commits;
+plain Add, conditional Put, and exact or prefix Delete are not generally
+result-safe to replay. For supported operations, persist a receipt context
+and recover the original result from the same certified endpoint instead.
+
+`args.options` controls SDK settings such as `defaultTimeoutMs`,
+`batchChunkSize`, and `idempotentAdds`; use `args.interceptors` for custom
+request headers. Transport-specific knobs go in `transportOptions`. Setting
+`transportOptions.interceptors` directly replaces the supplied token and
+top-level interceptors; use `args.interceptors` for headers instead:
 
 ```ts
 import { connect } from "lantern-sdk";
 
 const client = connect("https://lantern.example.com:6380", {
   transportOptions: {
-    useBinaryFormat: true, // flip from Connect/JSON to Connect/protobuf
+    useBinaryFormat: false, // opt in to Connect/JSON instead of Node's protobuf default
     httpVersion: "2",
   },
   // Custom Connect interceptors run on every unary call.

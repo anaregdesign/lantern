@@ -174,6 +174,7 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewPublicReceiptsCertified(",
 		"provider.NewListener(",
 		"provider.NewMetricsServer(",
+		"provider.NewPeerTransport(",
 		"provider.NewSnapshotInstallerSelection(",
 		"provider.NewReplicationPump(",
 		"provider.NewAntiEntropyDriver(",
@@ -193,9 +194,10 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		t.Fatal("generated injector does not release listener before the serving runtime")
 	}
 	if strings.Count(text, "provider.NewSnapshotInstallerSelection(") != 1 ||
-		!strings.Contains(text, "logger, snapshotInstallerSelection, runtimeCertified)") ||
-		!strings.Contains(text, "logger, snapshotInstallerSelection)") {
-		t.Fatal("generated injector does not share one Snapshot installer selection across Pump and anti-entropy")
+		strings.Count(text, "provider.NewPeerTransport(") != 1 ||
+		!strings.Contains(text, "peerTransport, lanternService, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)") ||
+		!strings.Contains(text, "peerTransport, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)") {
+		t.Fatal("generated injector does not share the certified peer transport and Snapshot installer across Pump and anti-entropy")
 	}
 }
 

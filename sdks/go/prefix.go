@@ -132,13 +132,12 @@ func (l *Lantern) CountVerticesByPrefix(ctx context.Context, prefix string) (uin
 // Operational notes:
 //   - This is a destructive bulk operation. Always run with WithDryRun first
 //     to confirm the matched count before issuing a real delete.
-//   - The SDK does not retry this call automatically. If you wrap your
-//     http.Client with retry middleware, exclude DeleteVerticesByPrefix
-//     because a partial-success retry could over-delete (server already
-//     removed N when transport failed; the retry would remove the next N).
+//   - Neither WithRetry nor Failover replays this call. On an unavailable
+//     response the original count is unknown; a retry could remove the
+//     next N vertices. Exclude it from custom HTTP retry middleware too.
 //   - To remove EVERY matching vertex when the prefix exceeds the server's
-//     max delete-by-prefix limit, call repeatedly until the returned count is
-//     zero — the server applies the limit per call.
+//     max delete-by-prefix limit, repeat only after a successful response
+//     until the returned count is zero — the limit applies per call.
 func (l *Lantern) DeleteVerticesByPrefix(ctx context.Context, prefix string, opts ...DeleteByPrefixOption) (uint64, error) {
 	o := deleteByPrefixOptions{}
 	for _, apply := range opts {

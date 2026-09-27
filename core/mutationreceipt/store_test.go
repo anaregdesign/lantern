@@ -977,6 +977,10 @@ func TestStoreLiveGroupIDCannotBeReused(t *testing.T) {
 	s := testStore(t, 3, 1000)
 	original := testIntent(t, 1, testStart, GroupID{7}, 0, 1)
 	commitTestBatch(t, s, testStart, []Intent{original}, [][]byte{[]byte("original")})
+	if rows := s.groups[original.Group]; rows == nil || rows.count != 1 ||
+		rows.single != original.ID || rows.items != nil {
+		t.Fatalf("single-item group index = %+v, want inline ID without map", rows)
+	}
 	reused := testIntent(t, 2, testStart.Add(time.Minute), original.Group, 0, 1)
 	tx, err := s.Begin(testStart.Add(time.Minute))
 	if err != nil {
@@ -1006,6 +1010,10 @@ func TestStoreLiveGroupIDCannotBeReused(t *testing.T) {
 	if err := tx.Stage(); err != nil {
 		t.Fatal(err)
 	}
+	if rows := s.groups[aborted.Group]; rows == nil || rows.single != aborted.ID ||
+		rows.items != nil {
+		t.Fatalf("staged single-item group index = %+v", rows)
+	}
 	tx.Abort()
 	if _, bound := s.groups[aborted.Group]; bound {
 		t.Fatal("aborted logical-call ID remains bound")
@@ -1016,6 +1024,13 @@ func TestStoreLiveGroupIDCannotBeReused(t *testing.T) {
 	}
 	if _, bound := s.groups[original.Group]; bound {
 		t.Fatal("expired logical-call ID remains bound")
+	}
+	reusedAfterExpiry := testIntent(t, 4, testStart.Add(time.Hour+2*time.Minute), original.Group, 0, 1)
+	commitTestBatch(t, s, testStart.Add(time.Hour+2*time.Minute),
+		[]Intent{reusedAfterExpiry}, [][]byte{[]byte("new result")})
+	if status, receipt, err := s.Lookup(reusedAfterExpiry.ID, testStart.Add(time.Hour+2*time.Minute)); err != nil ||
+		status != Confirmed || string(receipt.Result) != "new result" {
+		t.Fatalf("reused expired group = %v, %+v, %v", status, receipt, err)
 	}
 }
 

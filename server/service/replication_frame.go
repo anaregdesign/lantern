@@ -60,11 +60,20 @@ func graphMutationFromLog(op mutationlog.MutationOp) (*pb.Mutation, bool) {
 }
 
 func validateReplicationFrameSize(op mutationlog.MutationOp, limit int) (int, error) {
-	frame, err := subscribeMutationFrame(op)
-	if err != nil {
-		return 0, err
+	var size int
+	if sized, ok := op.(interface{ replicationFrameSize() (int, error) }); ok {
+		var err error
+		size, err = sized.replicationFrameSize()
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		frame, err := subscribeMutationFrame(op)
+		if err != nil {
+			return 0, err
+		}
+		size = proto.Size(frame)
 	}
-	size := proto.Size(frame)
 	if limit > 0 && size > limit {
 		return size, &replicationFrameSizeError{size: size, limit: limit}
 	}

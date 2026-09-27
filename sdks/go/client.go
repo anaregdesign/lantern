@@ -373,12 +373,12 @@ func (l *Lantern) applyTimeout(ctx context.Context) (context.Context, context.Ca
 // errors through wrapConnectErr so the SDK sentinels (ErrNotFound, etc.)
 // match, and returns the unwrapped response.
 //
-// When WithRetry is armed (#849) and the request is retry-eligible
-// (requestRetryable — the code-enforced idempotency matrix), the call is
-// driven through the policy's bounded backoff loop. The request message is
-// built once and re-sent verbatim, so a retried AddEdges carries the SAME
-// ContribIDs on every attempt — the exactly-once property
-// WithIdempotentAdds provides.
+// When WithRetry is armed (#849) and the request is replay-eligible
+// (requestRetryable — the code-enforced matrix), the call is driven
+// through the policy's bounded backoff loop. The request message is
+// built once and re-sent verbatim. Plain Add and Delete are ineligible
+// even if a ContribID is present: response loss may hide an applied
+// mutation and an intervening Delete removes Add's deduplication key.
 //
 // Callers are responsible for applyTimeout — unary leaves ctx alone so
 // batch helpers can drive a single outer deadline across multiple
@@ -689,11 +689,13 @@ func (l *Lantern) DeleteVertex(ctx context.Context, key string) (bool, error) {
 // Returns the number of keys that actually existed and were therefore
 // removed (summed across chunks). Keys absent at call time are silently
 // skipped — they do not appear in the count and do not produce errors.
+// An unavailable response leaves the current chunk's original count
+// unknown; WithRetry and Failover do not automatically replay it.
 //
 // Partial-write semantics: chunks are sent sequentially. On failure the
 // returned error is a *BatchError whose Written field records the input-prefix
-// length whose chunk responses were fully observed, so callers can resume
-// with keys[err.Written:].
+// length whose chunk responses were fully observed. Reconcile the failed
+// chunk before explicitly deciding whether to send keys[err.Written:].
 func (l *Lantern) DeleteVertices(ctx context.Context, keys []string) (int, error) {
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []string) (int32, error) {
 		resp, err := unary(ctx, l, &pb.DeleteVerticesRequest{Keys: chunk}, l.client.DeleteVertices)
@@ -747,11 +749,11 @@ func (l *Lantern) GetEdge(ctx context.Context, tail string, head string) (*Edge,
 // contributions not yet streamed in — so treat it as a fast local estimate,
 // not a cluster-wide total.
 //
-// When the client was built WithIdempotentAdds, a transport-level retry of a
-// single AddEdge/AddEdgeAt call records the weight once (the SDK attaches a
-// stable per-call idempotency key); calling AddEdge twice yourself still
-// sums, as documented above. On a dedup no-op the returned weight is the
-// current live sum.
+// WithIdempotentAdds attaches a per-call ContribID so identical re-delivery
+// is ignored while the contribution remains live. A Delete or expiration
+// removes that protection, so WithRetry and Failover never automatically
+// replay an ambiguous plain Add. Calling AddEdge twice yourself still sums.
+// On a dedup no-op the returned weight is the current live sum.
 func (l *Lantern) AddEdge(ctx context.Context, tail string, head string, weight float32, ttl time.Duration) (float32, error) {
 	return l.AddEdgeAt(ctx, tail, head, weight, expirationFromTTL(ttl))
 }
@@ -763,8 +765,7 @@ func (l *Lantern) AddEdgeAt(ctx context.Context, tail string, head string, weigh
 
 // addEdgeAtWithIDs is AddEdgeAt with caller-supplied contrib ids (or nil for
 // the legacy additive path). Splitting the id source out of the request
-// builder lets the failover ring mint the ids once and reuse them across
-// retry attempts, instead of re-minting a fresh key per attempt (#916).
+// builder lets the failover wrapper mint ids once for each logical call.
 func (l *Lantern) addEdgeAtWithIDs(ctx context.Context, tail string, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()
@@ -787,20 +788,20 @@ func (l *Lantern) addEdgeAtWithIDs(ctx context.Context, tail string, head string
 // index-aligned with inputs — the live weight sum of each edge after its
 // contribution was applied. As with AddEdge this is a serving-node local
 // view. On error the slice is nil; use the *BatchError's Written field to
-// resume (see below).
+// identify the confirmed prefix (see below).
 //
 // Partial-write semantics: chunks are sent sequentially. On failure the
 // returned error is a *BatchError whose Written field records the number of
-// edges already committed, so callers can resume with inputs[err.Written:].
-// Note that because AddEdge is additive (not idempotent), naively retrying
-// from index 0 will double-count weight for the already-committed prefix.
+// edges whose chunk responses were fully observed. The failed chunk may
+// already have committed, so reconcile before choosing whether to resend
+// inputs[err.Written:].
 //
 // With WithIdempotentAdds the SDK stamps each contribution with a per-call
-// idempotency key, so a transport-level retry of a chunk records its weight
-// exactly once. The keys are minted once for the whole call (one contiguous
-// id space across chunks), so they are regenerated on each AddEdges
-// invocation — this does not make an application-level resume/retry from
-// index 0 idempotent; use err.Written to resume, as above.
+// ContribID. Its deduplication lasts only while that contribution is live;
+// it cannot recover the original result after Delete or expiration. IDs
+// are regenerated on each AddEdges invocation, so an application-level
+// resume is not idempotent either. For replay-safe results use
+// AddEdgesWithReceipt with persisted operation IDs.
 func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, error) {
 	return l.addEdgesWithIDs(ctx, inputs, l.nextContribIDs(len(inputs)))
 }
@@ -808,9 +809,8 @@ func (l *Lantern) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32, 
 // addEdgesWithIDs is AddEdges with caller-supplied contrib ids (or nil for
 // the legacy additive path). When ids is non-nil it must be index-aligned
 // with inputs; each chunk receives its contiguous sub-slice. Minting the ids
-// once here — rather than per attempt inside the request builder — is what
-// lets the failover ring reuse the same ids across retries and across a node
-// switch, so a mid-flight Unavailable retry cannot double-count (#916).
+// once here preserves contribution identity within one logical call but
+// does not authorize retry after an ambiguous response.
 func (l *Lantern) addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error) {
 	if len(inputs) == 0 {
 		return nil, nil
@@ -986,11 +986,13 @@ type EdgeRef struct {
 // Returns the number of edges that actually existed and were therefore
 // removed (summed across chunks). Edges absent at call time are silently
 // skipped — they do not appear in the count and do not produce errors.
+// An unavailable response leaves the current chunk's original count
+// unknown; WithRetry and Failover do not automatically replay it.
 //
 // Partial-write semantics: chunks are sent sequentially. On failure the
 // returned error is a *BatchError whose Written field records the input-prefix
-// length whose chunk responses were fully observed, so callers can resume
-// with refs[err.Written:].
+// length whose chunk responses were fully observed. Reconcile the failed
+// chunk before explicitly deciding whether to send refs[err.Written:].
 func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) {
 	if len(refs) == 0 {
 		return 0, nil

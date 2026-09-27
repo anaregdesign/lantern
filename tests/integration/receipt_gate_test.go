@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -786,15 +788,23 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 	go func() {
 		runDone <- backupper.Run(runCtx)
 	}()
-	t.Cleanup(func() {
-		stop()
-		select {
-		case err := <-runDone:
-			if err != nil {
-				t.Errorf("stop durable backup scheduler: %v", err)
+	var stopOnce sync.Once
+	var stopErr error
+	stopAndJoin := func() error {
+		stopOnce.Do(func() {
+			stop()
+			select {
+			case err := <-runDone:
+				stopErr = err
+			case <-time.After(5 * time.Second):
+				stopErr = errors.New("durable backup scheduler did not stop")
 			}
-		case <-time.After(5 * time.Second):
-			t.Error("durable backup scheduler did not stop")
+		})
+		return stopErr
+	}
+	t.Cleanup(func() {
+		if err := stopAndJoin(); err != nil {
+			t.Errorf("stop durable backup scheduler: %v", err)
 		}
 	})
 
@@ -840,6 +850,9 @@ func TestDurableReceiptBackupSchedule_RealConnectWire(t *testing.T) {
 		evidence.Stats.Bytes <= 0 || len(evidence.Archive) == 0 ||
 		len(evidence.RetiredCatalog) == 0 {
 		t.Fatalf("loaded durable backup evidence = %+v", evidence)
+	}
+	if err := stopAndJoin(); err != nil {
+		t.Fatalf("stop durable backup scheduler: %v", err)
 	}
 	for _, entry := range mustReadDir(t, backupDir) {
 		if strings.HasSuffix(entry.Name(), ".lbk") || strings.HasSuffix(entry.Name(), ".tmp") {
@@ -942,7 +955,8 @@ func startDurableReceiptPump(
 ) func() {
 	t.Helper()
 	return startDurableReceiptPumpWithApplier(
-		t, parent, name, config, targetRuntime, target, sourceURL, target.svc, nil,
+		t, parent, name, config, targetRuntime, target,
+		replicationTestPeer{url: sourceURL}, target.svc, nil,
 	)
 }
 
@@ -953,24 +967,19 @@ func startDurableReceiptPumpWithApplier(
 	config service.DurableReceiptWALRuntimeConfig,
 	targetRuntime *service.ServingRuntime,
 	target *connectTestServer,
-	sourceURL string,
+	source replicationTestPeer,
 	applier replication.MutationApplier,
 	metrics replication.Metrics,
-	authTokens ...string,
 ) func() {
 	t.Helper()
-	authToken := ""
-	if len(authTokens) > 0 {
-		authToken = authTokens[0]
-	}
 	runCtx, cancel := context.WithCancel(parent)
 	done := make(chan error, 1)
 	pump := replication.NewPump(replication.Config{
-		NodeID: config.NodeID, Peers: []string{sourceURL},
+		NodeID: config.NodeID, Peers: []string{source.url},
 		BackoffMin: 10 * time.Millisecond, BackoffMax: 50 * time.Millisecond,
 		HTTPClient: h2cClient(), SnapshotInstaller: newDurableReceiptSnapshotInstaller(t, config, target),
 		SearchConfigFingerprint: target.svc.SearchConfigFingerprint(), Metrics: metrics,
-		AuthToken: authToken,
+		PeerTransport: source.transport,
 	}, applier, targetRuntime.GraphCache())
 	go func() { done <- pump.Run(runCtx) }()
 
@@ -1001,7 +1010,7 @@ func startPublicReceiptPump(
 	t.Helper()
 	return startDurableReceiptPumpWithApplier(
 		t, parent, name, target.config, target.runtime, target.server,
-		source.server.url, target.server.svc, nil, token,
+		newAuthenticatedReplicationPeer(t, source.server, token), target.server.svc, nil,
 	)
 }
 
@@ -1016,11 +1025,11 @@ func startPublicReceiptAntiEntropy(
 	t.Helper()
 	runCtx, cancel := context.WithCancel(parent)
 	done := make(chan error, 1)
+	peer := newAuthenticatedReplicationPeer(t, source.server, token)
 	antiEntropy := replication.NewAntiEntropy(replication.AntiEntropyConfig{
-		NodeID: target.config.NodeID, Peers: []string{source.server.url},
+		NodeID: target.config.NodeID, Peers: []string{peer.url},
 		Interval: 20 * time.Millisecond, SubscribeTimeout: 2 * time.Second,
-		AuthToken:               token,
-		HTTPClient:              h2cClient(),
+		PeerTransport:           peer.transport,
 		SnapshotInstaller:       newDurableReceiptSnapshotInstaller(t, target.config, target.server),
 		SearchConfigFingerprint: target.server.svc.SearchConfigFingerprint(),
 	}, target.server.svc, target.server.svc, target.runtime.GraphCache())
@@ -1421,7 +1430,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireOutOfOrderDuplicatePump(t *test
 		config,
 		runtime,
 		target,
-		newScriptedReceiptPumpServer(t, peer),
+		replicationTestPeer{url: newScriptedReceiptPumpServer(t, peer)},
 		target.svc,
 		metrics,
 	)
@@ -1537,7 +1546,7 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 		config,
 		runtime,
 		target,
-		newScriptedReceiptPumpServer(t, peer),
+		replicationTestPeer{url: newScriptedReceiptPumpServer(t, peer)},
 		observer,
 		nil,
 	)
@@ -2874,7 +2883,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 	)
 	stopAB := startDurableReceiptPumpWithApplier(
 		t, ctx, "sparse-to-dense receipt relay", follower.config, follower.runtime,
-		follower.server, exact.wire.server.url, follower.server.svc, nil, token,
+		follower.server, newAuthenticatedReplicationPeer(t, exact.wire.server, token), follower.server.svc, nil,
 	)
 	defer stopAB()
 	cut := map[string]uint64{hex.EncodeToString(origin[:]): 1}
@@ -2890,7 +2899,7 @@ func TestPublicReceiptEdgeDeleteRelayMaximalFrame_RealConnectWire(t *testing.T) 
 	)
 	stopBC := startDurableReceiptPumpWithApplier(
 		t, ctx, "exact-boundary receipt Pump", downstream.config, downstream.runtime,
-		downstream.server, follower.server.url, downstream.server.svc, nil, token,
+		downstream.server, newAuthenticatedReplicationPeer(t, follower.server, token), downstream.server.svc, nil,
 	)
 	defer stopBC()
 	waitForDurableReceiptCut(t, ctx, "downstream at exact cap", downstream.server, downstream.runtime, cut, 5*time.Second, token)
@@ -3946,10 +3955,9 @@ func TestPublicReceiptEdgeAddRelayMaximalFrame_RealConnectWire(t *testing.T) {
 		follower.config,
 		follower.runtime,
 		follower.server,
-		exact.wire.server.url,
+		newAuthenticatedReplicationPeer(t, exact.wire.server, token),
 		follower.server.svc,
 		nil,
-		token,
 	)
 	defer stopAB()
 	cut := map[string]uint64{hex.EncodeToString(origin[:]): 1}
@@ -3975,10 +3983,9 @@ func TestPublicReceiptEdgeAddRelayMaximalFrame_RealConnectWire(t *testing.T) {
 		downstream.config,
 		downstream.runtime,
 		downstream.server,
-		follower.server.url,
+		newAuthenticatedReplicationPeer(t, follower.server, token),
 		downstream.server.svc,
 		nil,
-		token,
 	)
 	defer stopBC()
 	waitForDurableReceiptCut(
@@ -5908,9 +5915,14 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 						Expiration: timestamppb.New(time.Unix(time.Now().Add(time.Hour).Unix(), 600_000_000)),
 					},
 					{Key: existing.Key, Value: &pb.Vertex_String_{String_: "ignored"}},
+					{
+						Key:        "frame/expired",
+						Value:      &pb.Vertex_String_{String_: "expired"},
+						Expiration: timestamppb.New(time.Now().Add(-time.Minute).Truncate(time.Second)),
+					},
 				},
 				IfAbsent: true,
-				ReceiptContext: publicReceiptWireContext(t, capability, seed, 2,
+				ReceiptContext: publicReceiptWireContext(t, capability, seed, 3,
 					time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second)),
 			}
 			if size := proto.Size(request); size >= recvLimit {
@@ -5930,6 +5942,7 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		want := []pb.PutOutcome{
 			pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE,
 			pb.PutOutcome_PUT_OUTCOME_CONDITION_NOT_MET,
+			pb.PutOutcome_PUT_OUTCOME_EXPIRED,
 		}
 		reference, request := prepare(0, 0x31)
 		if response, err := put(reference, request); err != nil ||
@@ -5938,7 +5951,9 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		}
 		frame := readFrame(t, reference)
 		items := frame.GetMutation().GetOp().GetReplicatedReceiptVertexPut().GetItems()
-		if len(items) != 2 || items[0].GetAccepted() == nil || items[1].GetAccepted() != nil {
+		if len(items) != 3 || items[0].GetAccepted().GetLive() == nil ||
+			items[1].GetAccepted() != nil ||
+			items[2].GetAccepted().GetCausalBarrier().GetKey() != "frame/expired" {
 			t.Fatalf("mixed Vertex Put receipt frame = %+v", frame)
 		}
 		sendLimit := proto.Size(frame)
@@ -5969,6 +5984,16 @@ func TestPublicVertexReceiptFrameAdmission_RealConnectWire(t *testing.T) {
 		}
 		if size := proto.Size(readFrame(t, exact)); size != sendLimit {
 			t.Fatalf("exact-fit Vertex Put frame = %d, want %d", size, sendLimit)
+		}
+		statuses := receiptWireStatuses(t, context.Background(), exact, token,
+			request.GetReceiptContext().GetOperationIds())
+		for i, status := range statuses {
+			result, ok := status.GetReceipt().GetOriginalResult().GetResult().(*pb.ReceiptResult_PutVertexOutcome)
+			if status.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				!bytes.Equal(status.GetOperationId(), request.GetReceiptContext().GetOperationIds()[i]) ||
+				!ok || result.PutVertexOutcome != want[i] {
+				t.Fatalf("exact-fit Vertex Put status[%d] = %+v, want %v", i, status, want[i])
+			}
 		}
 	})
 
@@ -6133,4 +6158,115 @@ func mountDurableReceiptWireRuntime(
 		t.Fatal(err)
 	}
 	return server, sdk
+}
+
+func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
+	wire := newPublicReceiptWireServer(t, hlc.NodeID{0x76}, 128, testToken)
+	peer := newAuthenticatedReplicationPeer(t, wire.server, testToken)
+	runProbe := func(t *testing.T, peer replicationTestPeer, token, family string, reports bool) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		var admissionPath, lookupPath string
+		caFile := filepath.Join(t.TempDir(), "ca.pem")
+		if err := os.WriteFile(caFile, peer.ca, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args := []string{
+			"run", "./testbed/bench/receiptprobe",
+			"-family", family,
+			"-endpoints", peer.url,
+			"-ca-file", caFile,
+			"-phase", "wire-test",
+			"-duration", "1s",
+			"-pair-rps", "12",
+			"-concurrency", "2",
+			"-request-timeout", "2s",
+		}
+		if reports {
+			dir := t.TempDir()
+			admissionPath = filepath.Join(dir, "admission.json")
+			lookupPath = filepath.Join(dir, "lookup.json")
+			args = append(args,
+				"-admission-report", admissionPath,
+				"-lookup-report", lookupPath,
+			)
+		}
+		cmd := exec.CommandContext(ctx, "go", args...)
+		cmd.Dir = filepath.Join("..", "..")
+		cmd.Env = append(os.Environ(), "LANTERN_BENCH_AUTH_TOKEN="+token)
+		output, err := cmd.CombinedOutput()
+		if reports && err != nil {
+			t.Fatalf("receiptprobe %s over HTTPS: %v\n%s", family, err, output)
+		}
+		if !reports && err == nil {
+			t.Fatalf("receiptprobe %s unexpectedly passed: %s", family, output)
+		}
+		if reports {
+			var counts [2]int64
+			for i, path := range []string{admissionPath, lookupPath} {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var report struct {
+					Count                  int64            `json:"count"`
+					StatusCodeDistribution map[string]int64 `json:"statusCodeDistribution"`
+				}
+				if err := json.Unmarshal(data, &report); err != nil {
+					t.Fatalf("parse receiptprobe %s report: %v", family, err)
+				}
+				if report.Count == 0 || len(report.StatusCodeDistribution) != 1 ||
+					report.StatusCodeDistribution["OK"] != report.Count {
+					t.Fatalf("receiptprobe %s report %d = %+v, want positive all-OK RPC count",
+						family, i, report)
+				}
+				counts[i] = report.Count
+			}
+			if counts[0] != counts[1] {
+				t.Fatalf("receiptprobe %s admission/lookup counts = %d/%d", family, counts[0], counts[1])
+			}
+		}
+		return string(output)
+	}
+	for _, family := range []string{
+		"receipt_vertex_put", "receipt_vertex_delete",
+		"receipt_edge_delete", "receipt_edge_add",
+	} {
+		t.Run(family, func(t *testing.T) {
+			output := runProbe(t, peer, testToken, family, true)
+			if !strings.Contains(output, "admission=") || !strings.Contains(output, "lookup=") {
+				t.Fatalf("receiptprobe %s did not report both RPCs: %s", family, output)
+			}
+		})
+	}
+	t.Run("rejects unauthenticated capability before mutation", func(t *testing.T) {
+		before := wire.runtime.ReceiptStats().Entries
+		output := runProbe(t, peer, "wrong-token", "receipt_edge_add", false)
+		if !strings.Contains(strings.ToLower(output), "unauthenticated") {
+			t.Fatalf("wrong token did not fail capability discovery: %s", output)
+		}
+		if got := wire.runtime.ReceiptStats().Entries; got != before {
+			t.Fatalf("wrong-token probe changed receipt entries: before=%d after=%d", before, got)
+		}
+	})
+	t.Run("rejects graph-only endpoint", func(t *testing.T) {
+		graphOnly, _, _ := newAuthedServer(t)
+		output := runProbe(t, newAuthenticatedReplicationPeer(t, graphOnly, testToken),
+			testToken, "receipt_vertex_put", false)
+		if !strings.Contains(output, "capability is disabled") {
+			t.Fatalf("graph-only endpoint did not fail closed: %s", output)
+		}
+	})
+	t.Run("rejects plaintext endpoint before mutation", func(t *testing.T) {
+		before := wire.runtime.ReceiptStats().Entries
+		output := runProbe(t, replicationTestPeer{url: wire.server.url, ca: peer.ca},
+			testToken, "receipt_edge_add", false)
+		if !strings.Contains(output, "explicit https://") {
+			t.Fatalf("plaintext endpoint did not fail closed: %s", output)
+		}
+		if got := wire.runtime.ReceiptStats().Entries; got != before {
+			t.Fatalf("plaintext probe changed receipt entries: before=%d after=%d", before, got)
+		}
+	})
 }

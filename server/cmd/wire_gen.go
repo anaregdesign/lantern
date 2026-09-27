@@ -99,6 +99,12 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
+	peerTransport, err := provider.NewPeerTransport(peerConfig, tlsConfig, authConfig)
+	if err != nil {
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
 	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, cacheConfig, searchConfig, servingRuntime, lanternService, logger, runtimeCertified)
 	if err != nil {
@@ -106,10 +112,10 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, authConfig, lanternService, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)
+	pump := provider.NewReplicationPump(peerConfig, peerResolver, replicationConfig, peerTransport, lanternService, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)
 	antiEntropyConfig := provider.NewAntiEntropyConfig(config)
 	antiEntropyMetrics := provider.NewAntiEntropyMetrics(domainMetrics, gate)
-	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, authConfig, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)
+	antiEntropy := provider.NewAntiEntropyDriver(peerConfig, peerResolver, replicationConfig, antiEntropyConfig, peerTransport, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)
 	llmConfig := provider.NewLLMConfig(config)
 	llmEngine, err := provider.NewLLMEngine(llmConfig)
 	if err != nil {

@@ -69,6 +69,7 @@ on:
       - "README.md"
       - "CONTRIBUTING.md"
       - ".github/workflows/dart-sdk.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -427,6 +428,14 @@ jobs:
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" dart test
 
+      - name: Generate ephemeral authenticated HA certificates
+        working-directory: .
+        run: |
+          umask 077
+          tls_dir="$RUNNER_TEMP/lantern-offline-receipt-ha-tls"
+          mkdir -m 700 "$tls_dir"
+          go run ./testbed/bench/receipttls generate -dir "$tls_dir"
+
       - name: Test authenticated three-replica receipt ambiguity
         timeout-minutes: 5
         run: |
@@ -437,6 +446,7 @@ jobs:
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             LANTERN_DART_RECEIPT_HA_BINARY="$RUNNER_TEMP/lantern-offline" \
+            LANTERN_DART_RECEIPT_HA_TLS_DIR="$RUNNER_TEMP/lantern-offline-receipt-ha-tls" \
             dart test \
               --name '^receipt ambiguity stays status-first across three authenticated replicas$' \
               test/real_wire_test.dart
@@ -485,7 +495,7 @@ jobs:
           dart pub publish -C "$source_dir" --to-archive="$archive"
           version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.3.1
+            --archive "$archive" --version "$version" --parent-version 0.3.2
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)
@@ -496,6 +506,7 @@ jobs:
         run: |
           bash testbed/scripts/dart_receipt_fixture.sh stop "$RUNNER_TEMP/lantern-offline-receipt"
           cat "$RUNNER_TEMP/lantern-offline.log" 2>/dev/null || true
+          rm -rf -- "$RUNNER_TEMP/lantern-offline-receipt-ha-tls"
           if [[ -f "$RUNNER_TEMP/lantern-offline.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/lantern-offline.pid")" 2>/dev/null || true
           fi
@@ -1147,7 +1158,7 @@ jobs:
   release-preflight:
     name: Verify parent release candidate
     needs: [gate]
-    if: startsWith(github.ref, 'refs/tags/sdks/dart/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1349,7 +1360,7 @@ jobs:
   offline-release-preflight:
     name: Verify offline release candidate
     needs: [gate]
-    if: startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1420,7 +1431,7 @@ jobs:
           (cd "$source_dir" && dart pub get --enforce-lockfile)
           dart pub publish -C "$source_dir" --to-archive="$archive"
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.3.1
+            --archive "$archive" --version "$version" --parent-version 0.3.2
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)

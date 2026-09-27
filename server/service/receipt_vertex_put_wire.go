@@ -132,6 +132,14 @@ func (e *vertexPutReceiptEnvelope) ReplicationMutation() (*pb.Mutation, error) {
 	return receiptVertexPutReplicationMutation(e), nil
 }
 
+func (e *vertexPutReceiptEnvelope) replicationFrameSize() (int, error) {
+	size, err := validateReceiptVertexPutWALEnvelope(e)
+	if err != nil {
+		return 0, err
+	}
+	return protowire.SizeTag(1) + protowire.SizeBytes(size), nil
+}
+
 func receiptVertexPutReplicationMutation(e *vertexPutReceiptEnvelope) *pb.Mutation {
 	accepted := make(map[int]*pb.ReplicatedPutVertex, len(e.Accepted))
 	for _, item := range e.Accepted {
@@ -178,6 +186,59 @@ func receiptVertexPutReplicationMutation(e *vertexPutReceiptEnvelope) *pb.Mutati
 			},
 		}},
 	}
+}
+
+// Size the validated envelope without cloning its payloads or retaining a
+// second wire projection. proto.Size on each shallow item includes protobuf
+// presence, oneofs, and unknown fields exactly as the owned wire builder does.
+func receiptVertexPutReplicationMutationSize(e *vertexPutReceiptEnvelope) (int, error) {
+	callSize := proto.Size(&pb.ReplicatedReceiptVertexPut{
+		DeploymentEpoch: e.Epoch[:], PolicyFingerprint: e.PolicyFingerprint[:],
+		IfAbsent: e.IfAbsent,
+	})
+	nextAccepted := 0
+	for i := range e.Receipts {
+		receipt := &e.Receipts[i]
+		item := &pb.ReplicatedReceiptVertexPutItem{
+			Original: e.Original[i],
+			Receipt: &pb.MutationReceipt{
+				OperationId: receipt.ID[:], LogicalCallId: receipt.Group[:],
+				ItemIndex: receipt.Index, ItemCount: receipt.Count,
+				IntentSha256: receipt.Digest[:], DeadlineUnixMs: uint64(receipt.DeadlineMillis),
+				OriginalResult: &pb.ReceiptResult{
+					Result: &pb.ReceiptResult_PutVertexOutcome{
+						PutVertexOutcome: pb.PutOutcome(receipt.Result[0]),
+					},
+				},
+			},
+		}
+		if nextAccepted < len(e.Accepted) && e.Accepted[nextAccepted].Index == i {
+			accepted := &e.Accepted[nextAccepted]
+			switch accepted.Outcome {
+			case graphcache.PutOutcomeAppliedAndLive:
+				item.Accepted = &pb.ReplicatedPutVertex{
+					Outcome: &pb.ReplicatedPutVertex_Live{Live: accepted.Item.Value},
+				}
+			case graphcache.PutOutcomeExpired:
+				item.Accepted = &pb.ReplicatedPutVertex{
+					Outcome: &pb.ReplicatedPutVertex_CausalBarrier{
+						CausalBarrier: &pb.VertexCausalBarrier{Key: accepted.Item.Key},
+					},
+				}
+			default:
+				return 0, receiptVertexPutWALError("invalid accepted outcome at item %d", i)
+			}
+			nextAccepted++
+		}
+		callSize += protowire.SizeTag(protowire.Number(receiptVertexItemsField)) +
+			protowire.SizeBytes(proto.Size(item))
+	}
+	opSize := protowire.SizeTag(protowire.Number(receiptVertexPutMutationArm)) +
+		protowire.SizeBytes(callSize)
+	headerSize := proto.Size(&pb.Mutation{
+		Seq: e.OriginSeq, Origin: e.Origin[:], Hlc: hlcToProto(e.HLC),
+	})
+	return headerSize + protowire.SizeTag(4) + protowire.SizeBytes(opSize), nil
 }
 
 func receiptVertexPutGraphMutation(e *vertexPutReceiptEnvelope) *pb.Mutation {
@@ -460,7 +521,10 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 	if !sameReceiptVertexPutGraphMutation(e.Mutation, expectedGraph) {
 		return 0, receiptVertexPutWALError("graph projection drift")
 	}
-	size := proto.Size(receiptVertexPutReplicationMutation(e))
+	size, err := receiptVertexPutReplicationMutationSize(e)
+	if err != nil {
+		return 0, err
+	}
 	if size == 0 {
 		return 0, receiptVertexPutWALError("payload exceeds size limit")
 	}

@@ -10,7 +10,7 @@ import type { Transport, Interceptor } from "@connectrpc/connect";
 
 /**
  * Build a Node-flavoured Connect transport (h2c / HTTP/2 by default).
- * Used by `Lantern.connect()`.
+ * Used by `connect()` from the Node entrypoint.
  */
 export function makeNodeTransport(
   baseUrl: string,

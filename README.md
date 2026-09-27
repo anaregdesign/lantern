@@ -407,14 +407,18 @@ for batch, err := range cli.ScanVerticesAll(ctx, "user:", 100) {
 ```
 
 Operational tiers compose in: `client.WithAuthToken` for bearer-token
-servers, `client.WithRetry` for opt-in full-jitter retries, and
-`client.NewLanternFailover` for sticky-cursor rotation across HA replicas.
-In published `sdks/go/v0.25.0`, these policies may retry receipt-less Add
-and exact/prefix Delete after an ambiguous commit, changing the original
-result or deleting a later prefix page. Avoid them for those operations;
-use receipt-backed APIs for supported exact mutations with same-endpoint
-continuity. Prefix Delete has no receipt path; the policy fix is pending
-#1468, not yet published.
+servers, `client.WithRetry` for opt-in full-jitter retries of eligible reads
+and unconditional Put, and `client.NewLanternFailover` for sticky-cursor
+rotation of replay-eligible calls across HA replicas. Receipt-bearing writes
+use a separate same-endpoint continuity check before retry. Independently
+published `sdks/go/v0.25.1` includes #1468: receipt-less Add and exact/prefix
+Delete make one attempt even with `WithRetry` or `NewLanternFailover`. The
+older v0.25.0 can retry them after an ambiguous commit, changing the original
+result or deleting a later prefix page; callers pinned to v0.25.0 should
+avoid those policies for these operations or upgrade. Receipt-backed APIs
+recover results for supported exact mutations with same-endpoint continuity.
+Prefix Delete has no receipt path; a lost response is still ambiguous and
+manual replay is unsafe.
 Full worked example: [sdks/go/example/main.go](sdks/go/example/main.go).
 
 ### TypeScript / Node
@@ -486,7 +490,7 @@ token providers, deadlines, cancellation, bounded retry, typed failures,
 and auth-exempt gRPC Health-v1 probing). See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
 Opt-in bounded mutation receipts are available in the hosted
-`lantern_client 0.3.1` package; its published archive passed exact-content
+`lantern_client 0.3.2` package; its published archive passed exact-content
 verification. This online release does not qualify an offline receipt release.
 
 [`lantern_client_offline`](sdks/dart/offline/) is an experimental,

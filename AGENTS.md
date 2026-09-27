@@ -134,9 +134,10 @@ Release workflows publish artifacts only. Project-managed GKE deployment is reti
   [CONTRIBUTING.md](CONTRIBUTING.md) "External-surface testing policy". The always-on
   summary: every PR that adds or changes externally observable behaviour (RPC surface,
   SDKs, CLI grammar, MCP tools, `LANTERN_*` env contract, TTL/decay semantics) ships —
-  in the same PR — an integration test in `tests/integration/` over the real
-  Connect/h2c wire path covering the happy path plus at least one failure/edge
-  contract; perf-relevant hot paths also join a bench scenario in
+  in the same PR — an integration test in `tests/integration/` (standalone Node
+  SDK: `sdks/node/test/` via `node-sdk.yml`) over the real Connect wire path
+  covering the happy path plus at least one failure/edge contract; perf-relevant
+  hot paths also join a bench scenario in
   `testbed/bench/scenarios/` (the release-sweep scenarios carry `perf_gate:`
   throughput/latency floors enforced by the blocking nightly — sizing and
   re-baselining rules in [testbed/bench/README.md](testbed/bench/README.md)). Bench
@@ -166,9 +167,24 @@ release tag order, the toolchain-bump checklist, and the doc-staleness sweep —
 [CONTRIBUTING.md](CONTRIBUTING.md). Consult it whenever you take one of those actions.
 The load-bearing always-on essentials:
 
-- **File a GitHub Issue before any non-trivial change** (exceptions: doc-only edits,
-  in-flight PR-review follow-ups, one-line obvious fixes). The closing PR references it
-  with `Closes #N` — one keyword per issue (`Closes #1, closes #2`).
+- **Search existing Issues, then link or file one before any non-trivial change**,
+  including bugs, improvements, and validation repairs discovered mid-PR. Only
+  already-scoped direct doc edits or proofreading and in-flight review fixes to
+  the already-filed Issue are exempt; a newly discovered bug or improvement,
+  including in docs, always needs an Issue, even if one line. A cohesive PR
+  can close related Issues with one keyword per Issue
+  (`Closes #1, closes #2`).
+- **Track epic exits separately** in the driving Issue: merged source/CI, final
+  exact-source acceptance, publication, and human/device evidence, each with
+  done/total and linked blockers. Preliminary branch or simulator results do not
+  complete the final-source or physical buckets.
+- **Batch validation without relaxing it**: targeted checks during edits, then
+  the mandatory full gate before every push. Budget costly whole-host/device
+  runs in the driving Issue; preflight each required run/family boundary while
+  reusing the one immutable image and unchanged setup, pin final merged source,
+  and preserve raw evidence with exact SHA-256. Repeat only after a relevant
+  build change, documented invalid run, or predeclared stability check; never
+  choose a passing sample or change workload, GC, or thresholds to obtain a pass.
 - **Before every push**, run the local quality gate: `gofmt -l` must print nothing, then
   `go test ./...` from the root **and** from each Go submodule (the root run does not span
   submodules), plus `dart format`, `dart analyze`, and `dart test` in `sdks/dart/`.

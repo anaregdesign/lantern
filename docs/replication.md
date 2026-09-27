@@ -18,7 +18,7 @@ holding the actual workload shape of a `StatefulSet` (stable pod identity for
 peer discovery).
 
 ```
-Client (sdks/go: Connect over h2c to a ClusterIP / reverse proxy)
+Client (sdks/go: Connect over h2c or HTTPS to a ClusterIP / reverse proxy)
                 │
    ┌────────────┼────────────┐
    ▼            ▼            ▼
@@ -71,6 +71,19 @@ is required for either reads or writes.
    `NOT_SERVING` immediately, then keeps its listener serving for
    `LANTERN_DRAIN_DELAY_SECONDS` so kube-proxy / load balancers deregister
    it before it stops accepting. See the runbook §7.
+7. **Authenticated peer traffic has verified transport.** When bearer
+   authentication and HA peers are both enabled, the server requires an
+   inbound TLS certificate/key and a separate pinned outbound
+   `LANTERN_PEER_CA_FILE` before serving. Pump and anti-entropy use one
+   validated HTTPS policy for `PeerStatus`, `Subscribe`, and `Snapshot`:
+   static peers must be explicit, approved `https://host:port` origins
+   verified against their hostname or IP SAN; DNS-discovered IPs are dialed
+   on the configured port but their certificates are verified against
+   `LANTERN_PEER_DNS_NAME`. All redirects, plaintext destinations, and
+   proxy forwarding are refused; there is no TLS downgrade or insecure
+   verification flag. Bearer-free graph-only h2c and single-instance
+   deployments retain their existing behavior. A TLS-terminating edge
+   proxy cannot make plaintext bearer-bearing **peer** hops safe.
 
 ## 3. Binding decisions (D1–D7)
 
@@ -1119,7 +1132,7 @@ The pump resolves its peer set via `LANTERN_PEER_DISCOVERY`:
 
 | Mode | Env vars consumed | Behaviour |
 |---|---|---|
-| `static` (default) | `LANTERN_PEERS` (CSV `host:port,host:port`) | Resolved once at startup. Empty list → single-instance mode. |
+| `static` (default) | `LANTERN_PEERS` (CSV `host:port,host:port` without auth; `https://host:port` with auth) | Resolved once at startup. Empty list → single-instance mode. Bearer-enabled peers must have explicit, path-free HTTPS origins. |
 | `dns` | `LANTERN_PEER_DNS_NAME`, `LANTERN_PEER_DEFAULT_PORT` (default `50051`), `LANTERN_PEER_DISCOVERY_INTERVAL_MS` (default `10000`) | Periodic `net.Resolver.LookupHost` against `LANTERN_PEER_DNS_NAME`. Every A/AAAA record except the local node's interface IPs is treated as a peer. Re-poll on every interval; reconcile via add/cancel against the active per-peer goroutine set. |
 
 DNS mode is the canonical multi-instance path: it works against k8s
@@ -1132,6 +1145,17 @@ HLC-NodeID self-echo guard (§5) remains as defence-in-depth.
 A transient resolution error logs at `WARN` and preserves the
 previously-active peer set — established subscriptions are NOT torn
 down on a flapping DNS resolver.
+
+For authenticated DNS discovery, every resolved address must be an IP
+literal and each peer certificate must contain the **discovery DNS name**
+in its DNS SAN. This lets a peer dial the current IP while verifying a
+stable TLS identity; an arbitrary DNS answer cannot receive a bearer
+without a certificate trusted by `LANTERN_PEER_CA_FILE` for that name.
+Malformed answers and untrusted/mismatched certificates fail closed.
+The CA is outbound trust material; inbound `LANTERN_TLS_CLIENT_CA_FILE`
+does not substitute for it. If the listener requires client certificates,
+also configure `LANTERN_PEER_CLIENT_CERT_FILE` and
+`LANTERN_PEER_CLIENT_KEY_FILE` on every replica.
 
 **Manual verification recipe (k8s headless Service).**
 

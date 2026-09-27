@@ -416,23 +416,59 @@ func TestReceiptReadSurfaceCancellation(t *testing.T) {
 }
 
 func BenchmarkReceiptStatusLookup(b *testing.B) {
-	runtime, svc, _ := newActivatedReceiptService(b, 32)
-	now := time.Now().Add(-time.Second)
-	id := receiptOperationID(b, runtime.receipt.epoch, now, 0x7a)
-	commitReceiptForStatus(b, runtime.receipt.store, now, mutationreceipt.Intent{
-		ID: id, Group: mutationreceipt.GroupID{0x7b}, Count: 1,
-		Kind: mutationreceipt.DeleteEdge, Digest: mutationreceipt.IntentDigest([]byte("benchmark")),
-	}, 0)
-	request := &pb.GetReceiptStatusRequest{OperationId: id.Bytes()}
-	ctx := context.Background()
+	for _, family := range []string{"vertex_put", "vertex_delete", "edge_delete", "edge_add"} {
+		b.Run(family, func(b *testing.B) {
+			runtime, svc, _ := newActivatedReceiptService(b, 32)
+			ctx := context.Background()
+			receiptContext := receiptBenchmarkContext(b, runtime, time.Now().Add(-time.Second), 0)
+			var err error
+			switch family {
+			case "vertex_put":
+				_, err = svc.PutVertex(ctx, &pb.PutVertexRequest{
+					Vertex: &pb.Vertex{
+						Key: "benchmark-lookup-put", Value: &pb.Vertex_String_{String_: "value"},
+					},
+					IfAbsent: true, ReceiptContext: receiptContext,
+				})
+			case "vertex_delete":
+				_, err = svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{
+					Key: "benchmark-lookup-absent-vertex", ReceiptContext: receiptContext,
+				})
+			case "edge_delete":
+				_, err = svc.DeleteEdge(ctx, &pb.DeleteEdgeRequest{
+					Tail: "benchmark-lookup-absent-tail", Head: "head",
+					ReceiptContext: receiptContext,
+				})
+			case "edge_add":
+				_, err = svc.AddEdge(ctx, &pb.AddEdgeRequest{
+					Edge: &pb.Edge{
+						Tail: "benchmark-lookup-add", Head: "head", Weight: 1.25,
+					},
+					ContribId:      bytes.Repeat([]byte{0x42}, 24),
+					ReceiptContext: receiptContext,
+				})
+			}
+			if err != nil {
+				b.Fatalf("prepare %s receipt: %v", family, err)
+			}
+			request := &pb.GetReceiptStatusRequest{
+				OperationId: receiptContext.GetOperationIds()[0],
+			}
+			first, err := svc.GetReceiptStatus(ctx, request)
+			if err != nil || first.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+				first.GetStatus().GetReceipt().GetOriginalResult().GetResult() == nil {
+				b.Fatalf("prepare %s confirmed status = %+v, %v", family, first, err)
+			}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		response, err := svc.GetReceiptStatus(ctx, request)
-		if err != nil ||
-			response.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED {
-			b.Fatalf("GetReceiptStatus() = %+v, %v", response, err)
-		}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				response, err := svc.GetReceiptStatus(ctx, request)
+				if err != nil ||
+					response.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED {
+					b.Fatalf("GetReceiptStatus() = %+v, %v", response, err)
+				}
+			}
+		})
 	}
 }

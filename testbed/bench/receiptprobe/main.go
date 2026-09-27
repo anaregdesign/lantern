@@ -1,5 +1,5 @@
-// Command receiptprobe benchmarks receipt-bearing Edge Delete admission followed
-// by an immediate same-operation status lookup over Connect/h2c.
+// Command receiptprobe benchmarks receipt-bearing mutations followed by an
+// immediate same-operation status lookup over verified Connect/HTTPS.
 package main
 
 import (
@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -14,8 +16,10 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +35,36 @@ const (
 	bearerPrefix        = "Bearer "
 )
 
+type receiptFamily string
+
+const (
+	receiptVertexPut    receiptFamily = "receipt_vertex_put"
+	receiptVertexDelete receiptFamily = "receipt_vertex_delete"
+	receiptEdgeDelete   receiptFamily = "receipt_edge_delete"
+	receiptEdgeAdd      receiptFamily = "receipt_edge_add"
+)
+
+func (family receiptFamily) mutationKind() (graphv1.ReceiptMutationKind, error) {
+	switch family {
+	case receiptVertexPut:
+		return graphv1.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX, nil
+	case receiptVertexDelete:
+		return graphv1.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX, nil
+	case receiptEdgeDelete:
+		return graphv1.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE, nil
+	case receiptEdgeAdd:
+		return graphv1.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE, nil
+	default:
+		return graphv1.ReceiptMutationKind_RECEIPT_MUTATION_KIND_UNSPECIFIED,
+			fmt.Errorf("unsupported receipt family %q", family)
+	}
+}
+
 type receiptClient interface {
+	PutVertex(context.Context, *connect.Request[graphv1.PutVertexRequest]) (*connect.Response[graphv1.PutVertexResponse], error)
+	DeleteVertex(context.Context, *connect.Request[graphv1.DeleteVertexRequest]) (*connect.Response[graphv1.DeleteVertexResponse], error)
 	DeleteEdge(context.Context, *connect.Request[graphv1.DeleteEdgeRequest]) (*connect.Response[graphv1.DeleteEdgeResponse], error)
+	AddEdge(context.Context, *connect.Request[graphv1.AddEdgeRequest]) (*connect.Response[graphv1.AddEdgeResponse], error)
 	GetReceiptStatus(context.Context, *connect.Request[graphv1.GetReceiptStatusRequest]) (*connect.Response[graphv1.GetReceiptStatusResponse], error)
 }
 
@@ -44,13 +76,18 @@ type receiptEndpoint struct {
 }
 
 type receiptOperation struct {
-	deleteRequest     *graphv1.DeleteEdgeRequest
-	operationID       []byte
-	logicalCallID     []byte
-	intentSHA256      [sha256.Size]byte
-	deadlineUnixMS    uint64
-	expectedItem      uint32
-	expectedItemCount uint32
+	family                receiptFamily
+	putVertexRequest      *graphv1.PutVertexRequest
+	deleteVertexRequest   *graphv1.DeleteVertexRequest
+	deleteEdgeRequest     *graphv1.DeleteEdgeRequest
+	addEdgeRequest        *graphv1.AddEdgeRequest
+	operationID           []byte
+	logicalCallID         []byte
+	intentSHA256          [sha256.Size]byte
+	deadlineUnixMS        uint64
+	expectedItem          uint32
+	expectedItemCount     uint32
+	expectedAddWeightBits uint32
 }
 
 type rpcSample struct {
@@ -77,6 +114,7 @@ func (c *sampleCollector) snapshot() []rpcSample {
 }
 
 type probeConfig struct {
+	family         receiptFamily
 	phase          string
 	token          string
 	duration       time.Duration
@@ -113,7 +151,8 @@ func main() {
 	}
 	var (
 		endpointsFlag   = flag.String("endpoints", "", "comma-separated Lantern endpoint URLs")
-		token           = flag.String("token", "", "bearer token")
+		familyFlag      = flag.String("family", "", "receipt family (receipt_vertex_put, receipt_vertex_delete, receipt_edge_delete, receipt_edge_add)")
+		caFile          = flag.String("ca-file", "", "PEM trust roots for HTTPS receipt endpoints")
 		phase           = flag.String("phase", "", "benchmark phase name")
 		duration        = flag.Duration("duration", 0, "offered-load duration")
 		requestTimeout  = flag.Duration("request-timeout", 5*time.Second, "per-RPC timeout")
@@ -127,12 +166,17 @@ func main() {
 	)
 	flag.Parse()
 
+	family := receiptFamily(*familyFlag)
+	if _, err := family.mutationKind(); err != nil {
+		fatalf("%v", err)
+	}
 	endpointAddresses, err := parseEndpoints(*endpointsFlag)
 	if err != nil {
 		fatalf("%v", err)
 	}
-	if *token == "" {
-		fatalf("-token is required")
+	token := os.Getenv("LANTERN_BENCH_AUTH_TOKEN")
+	if token == "" {
+		fatalf("LANTERN_BENCH_AUTH_TOKEN is required")
 	}
 	if *phase == "" {
 		fatalf("-phase is required")
@@ -165,12 +209,13 @@ func main() {
 		steadyMetrics = &steadyMetricsConfig{endpoints: replicas, interval: *metricsInterval}
 	}
 
-	protocols := new(http.Protocols)
-	protocols.SetUnencryptedHTTP2(true)
-	httpClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
+	httpClient, err := newVerifiedReceiptHTTPClient(*caFile)
+	if err != nil {
+		fatalf("receipt HTTPS transport: %v", err)
+	}
 
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	endpoints, err := discoverEndpoints(setupCtx, httpClient, endpointAddresses, *token)
+	endpoints, err := discoverEndpoints(setupCtx, httpClient, endpointAddresses, token, family)
 	setupCancel()
 	if err != nil {
 		fatalf("discover receipt endpoints: %v", err)
@@ -183,8 +228,9 @@ func main() {
 	nonce[0] |= 1
 
 	cfg := probeConfig{
+		family:         family,
 		phase:          *phase,
-		token:          *token,
+		token:          token,
 		duration:       *duration,
 		requestTimeout: *requestTimeout,
 		concurrency:    *concurrency,
@@ -219,7 +265,8 @@ func main() {
 	}
 
 	fmt.Printf(
-		"receipt probe %s passed: admission=%d lookup=%d\n",
+		"receipt probe %s %s passed: admission=%d lookup=%d\n",
+		family,
 		*phase,
 		results.admission.Count,
 		results.lookup.Count,
@@ -233,10 +280,18 @@ func parseEndpoints(raw string) ([]string, error) {
 		if endpoint == "" {
 			continue
 		}
-		if !strings.HasPrefix(endpoint, "http://") {
-			return nil, fmt.Errorf("endpoint %q must use http:// for h2c", endpoint)
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Scheme != "https" || u.User != nil || u.Host == "" ||
+			u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" ||
+			u.Opaque != "" || u.ForceQuery || u.String() != endpoint {
+			return nil, errors.New("receipt endpoints must be explicit https://host:port without credentials, path, query or fragment")
 		}
-		endpoints = append(endpoints, strings.TrimRight(endpoint, "/"))
+		port, err := strconv.Atoi(u.Port())
+		if err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != u.Port() ||
+			u.Hostname() == "" {
+			return nil, errors.New("receipt endpoint must include a valid HTTPS host and port")
+		}
+		endpoints = append(endpoints, endpoint)
 	}
 	if len(endpoints) == 0 {
 		return nil, errors.New("-endpoints must contain at least one URL")
@@ -244,12 +299,48 @@ func parseEndpoints(raw string) ([]string, error) {
 	return endpoints, nil
 }
 
+func newVerifiedReceiptHTTPClient(caFile string) (*http.Client, error) {
+	if caFile == "" {
+		return nil, errors.New("-ca-file is required")
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read receipt CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("receipt CA file contains no valid PEM certificates")
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
+			Proxy:             nil,
+			TLSClientConfig: &tls.Config{
+				RootCAs: roots, MinVersion: tls.VersionTLS12,
+				VerifyConnection: func(state tls.ConnectionState) error {
+					if state.NegotiatedProtocol != "h2" {
+						return errors.New("receipt endpoint requires HTTP/2 over verified TLS")
+					}
+					return nil
+				},
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("receipt endpoint redirect rejected")
+		},
+	}, nil
+}
+
 func discoverEndpoints(
 	ctx context.Context,
 	httpClient *http.Client,
 	addresses []string,
 	token string,
+	family receiptFamily,
 ) ([]receiptEndpoint, error) {
+	if _, err := family.mutationKind(); err != nil {
+		return nil, err
+	}
 	endpoints := make([]receiptEndpoint, 0, len(addresses))
 	for _, address := range addresses {
 		client := graphv1connect.NewLanternServiceClient(httpClient, address)
@@ -257,6 +348,9 @@ func discoverEndpoints(
 		response, err := client.GetReceiptCapability(ctx, request)
 		if err != nil {
 			return nil, fmt.Errorf("%s capability: %w", address, err)
+		}
+		if response == nil || response.Msg == nil {
+			return nil, fmt.Errorf("%s capability response is missing", address)
 		}
 		capability := response.Msg
 		if !capability.GetEnabled() {
@@ -304,19 +398,40 @@ func discoverEndpoints(
 			issuedAt:   time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second),
 		})
 	}
-	if err := validateEndpointSet(endpoints); err != nil {
+	if err := validateEndpointSet(endpoints, family); err != nil {
 		return nil, err
 	}
 	return endpoints, nil
 }
 
-func validateEndpointSet(endpoints []receiptEndpoint) error {
+func validateEndpointSet(endpoints []receiptEndpoint, family receiptFamily) error {
 	if len(endpoints) == 0 {
 		return errors.New("no receipt endpoints discovered")
+	}
+	required, err := family.mutationKind()
+	if err != nil {
+		return err
+	}
+	if endpoints[0].capability == nil || endpoints[0].capability.GetPolicy() == nil {
+		return fmt.Errorf("%s receipt capability omitted policy", endpoints[0].address)
 	}
 	firstPolicy := endpoints[0].capability.GetPolicy()
 	seenNodeIDs := make(map[string]string, len(endpoints))
 	for _, endpoint := range endpoints {
+		if endpoint.capability == nil || !endpoint.capability.GetEnabled() ||
+			endpoint.capability.GetPolicy() == nil || endpoint.capability.GetEndpoint() == nil {
+			return fmt.Errorf("%s receipt capability is incomplete or disabled", endpoint.address)
+		}
+		supported := false
+		for _, kind := range endpoint.capability.GetSupportedMutations() {
+			if kind == required {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("%s does not support receipt mutation %s", endpoint.address, required)
+		}
 		policy := endpoint.capability.GetPolicy()
 		if !bytes.Equal(policy.GetDeploymentEpoch(), firstPolicy.GetDeploymentEpoch()) ||
 			!bytes.Equal(policy.GetFingerprint(), firstPolicy.GetFingerprint()) ||
@@ -343,6 +458,9 @@ func runProbe(
 	if len(endpoints) == 0 {
 		return resultSet{}, nil, errors.New("no receipt endpoints configured")
 	}
+	if _, err := cfg.family.mutationKind(); err != nil {
+		return resultSet{}, nil, err
+	}
 
 	var admissionSamples, lookupSamples sampleCollector
 	jobs := make(chan uint64, cfg.concurrency)
@@ -352,10 +470,14 @@ func runProbe(
 		go func() {
 			defer workers.Done()
 			for sequence := range jobs {
-				endpoint := &endpoints[(sequence-1)%uint64(len(endpoints))]
-				operation, err := newReceiptOperation(endpoint, nonce, sequence, cfg.phase)
+				slot := sequence - 1
+				if cfg.family == receiptEdgeAdd {
+					slot /= 2
+				}
+				endpoint := &endpoints[slot%uint64(len(endpoints))]
+				operation, err := newReceiptOperation(endpoint, cfg.family, nonce, sequence, cfg.phase)
 				if err != nil {
-					admissionSamples.add(rpcSample{status: "DataLoss"})
+					admissionSamples.add(rpcSample{status: "DataLoss", reason: err.Error()})
 					continue
 				}
 				admission, lookup, lookedUp := executeOperation(
@@ -459,6 +581,7 @@ schedule:
 
 func newReceiptOperation(
 	endpoint *receiptEndpoint,
+	family receiptFamily,
 	nonce [16]byte,
 	sequence uint64,
 	phase string,
@@ -478,35 +601,70 @@ func newReceiptOperation(
 	copy(logicalCallID[:8], nonce[:8])
 	binary.BigEndian.PutUint64(logicalCallID[8:], sequence)
 
-	tailKey := fmt.Sprintf("bench:receipt:%s:%d", phase, sequence)
-	headKey := "bench:receipt:missing"
-	intentSHA256 := edgeDeleteIntentSHA256(tailKey, headKey)
 	deadlineUnixMS := uint64(
 		endpoint.issuedAt.Add(
 			time.Duration(endpoint.capability.GetPolicy().GetRetentionMs()) * time.Millisecond,
 		).UnixMilli(),
 	)
 
-	return receiptOperation{
-		deleteRequest: &graphv1.DeleteEdgeRequest{
-			Tail: tailKey,
-			Head: headKey,
-			ReceiptContext: &graphv1.MutationReceiptContext{
-				OperationIds:  [][]byte{id.Bytes()},
-				LogicalCallId: append([]byte(nil), logicalCallID...),
-				Endpoint: &graphv1.ReceiptEndpoint{
-					NodeId:     append([]byte(nil), endpoint.capability.GetEndpoint().GetNodeId()...),
-					Generation: append([]byte(nil), endpoint.capability.GetEndpoint().GetGeneration()...),
-				},
-			},
-		},
+	operation := receiptOperation{
+		family:            family,
 		operationID:       id.Bytes(),
 		logicalCallID:     logicalCallID,
-		intentSHA256:      intentSHA256,
 		deadlineUnixMS:    deadlineUnixMS,
 		expectedItem:      0,
 		expectedItemCount: 1,
-	}, nil
+	}
+	receiptContext := &graphv1.MutationReceiptContext{
+		OperationIds:  [][]byte{operation.operationID},
+		LogicalCallId: append([]byte(nil), logicalCallID...),
+		Endpoint: &graphv1.ReceiptEndpoint{
+			NodeId:     append([]byte(nil), endpoint.capability.GetEndpoint().GetNodeId()...),
+			Generation: append([]byte(nil), endpoint.capability.GetEndpoint().GetGeneration()...),
+		},
+	}
+	key := fmt.Sprintf("bench:receipt:%x:%s:%d", nonce[:8], phase, sequence)
+	switch family {
+	case receiptVertexPut:
+		vertex := &graphv1.Vertex{
+			Key: key, Value: &graphv1.Vertex_String_{String_: "receipt-bench"},
+		}
+		operation.putVertexRequest = &graphv1.PutVertexRequest{
+			Vertex: vertex, IfAbsent: true, ReceiptContext: receiptContext,
+		}
+		operation.intentSHA256, err = vertexPutIntentSHA256(vertex)
+		if err != nil {
+			return receiptOperation{}, err
+		}
+	case receiptVertexDelete:
+		operation.deleteVertexRequest = &graphv1.DeleteVertexRequest{
+			Key: key, ReceiptContext: receiptContext,
+		}
+		operation.intentSHA256 = vertexDeleteIntentSHA256(key)
+	case receiptEdgeDelete:
+		head := "bench:receipt:missing"
+		operation.deleteEdgeRequest = &graphv1.DeleteEdgeRequest{
+			Tail: key, Head: head, ReceiptContext: receiptContext,
+		}
+		operation.intentSHA256 = edgeDeleteIntentSHA256(key, head)
+	case receiptEdgeAdd:
+		edge := &graphv1.Edge{
+			Tail: fmt.Sprintf("bench:receipt:%x:%s:%d", nonce[:8], phase, (sequence-1)/2),
+			Head: "bench:receipt:add", Weight: math.MaxFloat32,
+		}
+		contribID := append([]byte(nil), randomness[:]...)
+		operation.addEdgeRequest = &graphv1.AddEdgeRequest{
+			Edge: edge, ContribId: contribID, ReceiptContext: receiptContext,
+		}
+		operation.intentSHA256, err = edgeAddIntentSHA256(edge, contribID)
+		if err != nil {
+			return receiptOperation{}, err
+		}
+		operation.expectedAddWeightBits = math.Float32bits(edge.Weight)
+	default:
+		return receiptOperation{}, fmt.Errorf("unsupported receipt family %q", family)
+	}
+	return operation, nil
 }
 
 func executeOperation(
@@ -518,21 +676,49 @@ func executeOperation(
 ) (rpcSample, rpcSample, bool) {
 	requestCtx, cancel := context.WithTimeout(parent, requestTimeout)
 	start := time.Now()
-	response, err := client.DeleteEdge(
-		requestCtx,
-		authorizedRequest(operation.deleteRequest, token),
-	)
+	var err, semanticErr error
+	switch operation.family {
+	case receiptVertexPut:
+		var response *connect.Response[graphv1.PutVertexResponse]
+		response, err = client.PutVertex(requestCtx, authorizedRequest(operation.putVertexRequest, token))
+		if err == nil && (response == nil || response.Msg == nil ||
+			response.Msg.GetOutcome() != graphv1.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE) {
+			semanticErr = errors.New("PutVertex did not return APPLIED_AND_LIVE")
+		}
+	case receiptVertexDelete:
+		var response *connect.Response[graphv1.DeleteVertexResponse]
+		response, err = client.DeleteVertex(requestCtx, authorizedRequest(operation.deleteVertexRequest, token))
+		if err == nil && (response == nil || response.Msg == nil || response.Msg.GetExisted()) {
+			semanticErr = errors.New("DeleteVertex did not return existed=false")
+		}
+	case receiptEdgeDelete:
+		var response *connect.Response[graphv1.DeleteEdgeResponse]
+		response, err = client.DeleteEdge(requestCtx, authorizedRequest(operation.deleteEdgeRequest, token))
+		if err == nil && (response == nil || response.Msg == nil || response.Msg.GetExisted()) {
+			semanticErr = errors.New("DeleteEdge did not return existed=false")
+		}
+	case receiptEdgeAdd:
+		var response *connect.Response[graphv1.AddEdgeResponse]
+		response, err = client.AddEdge(requestCtx, authorizedRequest(operation.addEdgeRequest, token))
+		if err == nil {
+			if response == nil || response.Msg == nil || response.Msg.GetEffectiveWeight() == 0 {
+				semanticErr = errors.New("AddEdge returned an absent or zero effective weight")
+			} else {
+				operation.expectedAddWeightBits = math.Float32bits(response.Msg.GetEffectiveWeight())
+			}
+		}
+	default:
+		semanticErr = fmt.Errorf("unsupported receipt family %q", operation.family)
+	}
 	admission := sampleFor(time.Since(start), err)
 	cancel()
 	if err != nil {
 		return admission, rpcSample{}, false
 	}
-	if response == nil || response.Msg == nil || response.Msg.GetExisted() {
-		return rpcSample{
-			latency: admission.latency,
-			status:  "DataLoss",
-			reason:  "DeleteEdge returned an invalid semantic result",
-		}, rpcSample{}, false
+	if semanticErr != nil {
+		admission.status = "DataLoss"
+		admission.reason = semanticErr.Error()
+		return admission, rpcSample{}, false
 	}
 
 	requestCtx, cancel = context.WithTimeout(parent, requestTimeout)
@@ -591,26 +777,79 @@ func verifyConfirmedStatus(
 		receipt.GetItemCount() != operation.expectedItemCount {
 		return errors.New("confirmed receipt item coordinates mismatch")
 	}
-	result, ok := receipt.GetOriginalResult().GetResult().(*graphv1.ReceiptResult_DeleteEdgeExisted)
-	if !ok || result.DeleteEdgeExisted {
-		return errors.New("confirmed receipt original result is not delete_edge_existed=false")
+	switch operation.family {
+	case receiptVertexPut:
+		result, ok := receipt.GetOriginalResult().GetResult().(*graphv1.ReceiptResult_PutVertexOutcome)
+		if !ok || result.PutVertexOutcome != graphv1.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+			return errors.New("confirmed receipt original result is not put_vertex_outcome=APPLIED_AND_LIVE")
+		}
+	case receiptVertexDelete:
+		result, ok := receipt.GetOriginalResult().GetResult().(*graphv1.ReceiptResult_DeleteVertexExisted)
+		if !ok || result.DeleteVertexExisted {
+			return errors.New("confirmed receipt original result is not delete_vertex_existed=false")
+		}
+	case receiptEdgeDelete:
+		result, ok := receipt.GetOriginalResult().GetResult().(*graphv1.ReceiptResult_DeleteEdgeExisted)
+		if !ok || result.DeleteEdgeExisted {
+			return errors.New("confirmed receipt original result is not delete_edge_existed=false")
+		}
+	case receiptEdgeAdd:
+		result, ok := receipt.GetOriginalResult().GetResult().(*graphv1.ReceiptResult_AddEdgeEffectiveWeight)
+		if !ok || math.Float32bits(result.AddEdgeEffectiveWeight) != operation.expectedAddWeightBits {
+			return fmt.Errorf("confirmed AddEdge result does not match original response bits %08x", operation.expectedAddWeightBits)
+		}
+	default:
+		return fmt.Errorf("unsupported receipt family %q", operation.family)
 	}
 	return nil
 }
 
-func edgeDeleteIntentSHA256(tailKey, headKey string) [sha256.Size]byte {
-	tailBytes := []byte(tailKey)
-	headBytes := []byte(headKey)
-	canonical := make([]byte, 0, 1+8+len(tailKey)+8+len(headKey))
-	canonical = append(canonical, byte(mutationreceipt.DeleteEdge))
-	var length [8]byte
-	binary.BigEndian.PutUint64(length[:], uint64(len(tailBytes)))
-	canonical = append(canonical, length[:]...)
-	canonical = append(canonical, tailBytes...)
-	binary.BigEndian.PutUint64(length[:], uint64(len(headBytes)))
-	canonical = append(canonical, length[:]...)
-	canonical = append(canonical, headBytes...)
+func appendCanonicalString(canonical []byte, value string) []byte {
+	canonical = binary.BigEndian.AppendUint64(canonical, uint64(len(value)))
+	return append(canonical, value...)
+}
+
+func vertexPutIntentSHA256(vertex *graphv1.Vertex) ([sha256.Size]byte, error) {
+	if vertex == nil || vertex.GetKey() == "" || vertex.GetExpiration() != nil {
+		return [sha256.Size]byte{}, errors.New("receipt probe PutVertex requires a nonempty key and no expiration")
+	}
+	value, ok := vertex.GetValue().(*graphv1.Vertex_String_)
+	if !ok {
+		return [sha256.Size]byte{}, errors.New("receipt probe PutVertex requires a string value")
+	}
+	canonical := []byte{byte(mutationreceipt.PutVertex)}
+	canonical = appendCanonicalString(canonical, vertex.GetKey())
+	canonical = append(canonical, 17)
+	canonical = appendCanonicalString(canonical, value.String_)
+	canonical = append(canonical, 0, 1) // no expiration, if_absent=true
+	return mutationreceipt.IntentDigest(canonical), nil
+}
+
+func vertexDeleteIntentSHA256(key string) [sha256.Size]byte {
+	canonical := appendCanonicalString([]byte{byte(mutationreceipt.DeleteVertex)}, key)
 	return mutationreceipt.IntentDigest(canonical)
+}
+
+func edgeDeleteIntentSHA256(tailKey, headKey string) [sha256.Size]byte {
+	canonical := appendCanonicalString([]byte{byte(mutationreceipt.DeleteEdge)}, tailKey)
+	canonical = appendCanonicalString(canonical, headKey)
+	return mutationreceipt.IntentDigest(canonical)
+}
+
+func edgeAddIntentSHA256(edge *graphv1.Edge, contribID []byte) ([sha256.Size]byte, error) {
+	if edge == nil || edge.GetTail() == "" || edge.GetHead() == "" || edge.GetExpiration() != nil ||
+		math.IsInf(float64(edge.GetWeight()), 0) || math.IsNaN(float64(edge.GetWeight())) ||
+		len(contribID) != len(mutationreceipt.ContribID{}) ||
+		bytes.Equal(contribID, make([]byte, len(mutationreceipt.ContribID{}))) {
+		return [sha256.Size]byte{}, errors.New("receipt probe AddEdge requires a finite source, no expiration, and a nonzero 24-byte ContribID")
+	}
+	canonical := appendCanonicalString([]byte{byte(mutationreceipt.AddEdge)}, edge.GetTail())
+	canonical = appendCanonicalString(canonical, edge.GetHead())
+	canonical = binary.BigEndian.AppendUint32(canonical, math.Float32bits(edge.GetWeight()))
+	canonical = append(canonical, 0) // no expiration
+	canonical = binary.BigEndian.AppendUint64(canonical, uint64(len(contribID)))
+	canonical = append(canonical, contribID...)
+	return mutationreceipt.IntentDigest(canonical), nil
 }
 
 func authorizedRequest[T any](message *T, token string) *connect.Request[T] {

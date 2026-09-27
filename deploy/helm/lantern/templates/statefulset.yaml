@@ -118,6 +118,14 @@ spec:
               value: {{ .Values.antiEntropy.subscribeTimeoutMs | quote }}
             - name: LANTERN_DRAIN_DELAY_SECONDS
               value: {{ .Values.drain.delaySeconds | quote }}
+            {{- if .Values.peerTLS.existingSecret }}
+            - name: LANTERN_TLS_CERT_FILE
+              value: /run/lantern-tls/server.pem
+            - name: LANTERN_TLS_KEY_FILE
+              value: /run/lantern-tls/server.key
+            - name: LANTERN_PEER_CA_FILE
+              value: /run/lantern-tls/ca.pem
+            {{- end }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -176,16 +184,30 @@ spec:
             successThreshold: {{ .Values.probes.readiness.successThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.backup.enabled }}
+          {{- if or .Values.backup.enabled .Values.peerTLS.existingSecret }}
           volumeMounts:
+            {{- if .Values.backup.enabled }}
             - name: backup
               mountPath: {{ .Values.backup.dir }}
+            {{- end }}
+            {{- if .Values.peerTLS.existingSecret }}
+            - name: peer-tls
+              mountPath: /run/lantern-tls
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if and .Values.backup.enabled .Values.backup.persistence.existingClaim }}
+      {{- if or (and .Values.backup.enabled .Values.backup.persistence.existingClaim) .Values.peerTLS.existingSecret }}
       volumes:
+        {{- if and .Values.backup.enabled .Values.backup.persistence.existingClaim }}
         - name: backup
           persistentVolumeClaim:
             claimName: {{ .Values.backup.persistence.existingClaim }}
+        {{- end }}
+        {{- if .Values.peerTLS.existingSecret }}
+        - name: peer-tls
+          secret:
+            secretName: {{ .Values.peerTLS.existingSecret | quote }}
+        {{- end }}
       {{- end }}
   {{- if and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim) }}
   volumeClaimTemplates:

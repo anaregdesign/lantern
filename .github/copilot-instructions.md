@@ -28,8 +28,9 @@ they must not conflict.
 - **Dependency direction is a DAG — no back edges.** `pb` and `core` are leaves.
   `sdks/go` imports `pb` only (never `core`/`server`). `server` imports `pb` and `core`
   only (**never** the client SDK). The root module (cli + tests/integration) is the only
-  place that depends on everything. Cross-module/full-stack tests live in
-  `tests/integration/`, not under the producing package.
+  place that depends on everything. Cross-module Go integration tests live in
+  `tests/integration/`, not under the producing package; standalone Node real-wire
+  tests live in `sdks/node/test/` per `CONTRIBUTING.md`.
 - **SDK value accessors are free functions, not methods**: `Kind(v)`, `IntValue(v)`,
   `StringValue(v)`, etc. `client.Vertex`/`client.Edge` are true aliases of the `pb`
   types (one `Vertex` type, no boundary casts). Adding a value type updates three sites
@@ -53,10 +54,22 @@ they must not conflict.
 
 ## Workflow (hard rules)
 
-- **File a GitHub Issue before any non-trivial change.** Exceptions: doc-only edits,
-  in-flight PR-review follow-ups, and one-line obvious fixes. The PR closes it with
-  `Closes #N` — use one keyword per issue (`Closes #1, closes #2`), since GitHub only
-  auto-links the first issue on a comma-separated line.
+- **Search existing Issues; link or file one before any non-trivial change**, including
+  bugs, improvements, and validation repairs discovered mid-PR. Only already-scoped
+  direct doc edits or proofreading and in-flight review fixes to the already-filed
+  Issue are exempt; newly discovered bugs or improvements, including in docs,
+  need an Issue even if one line. A cohesive PR may close related Issues with
+  one keyword per Issue (`Closes #1, closes #2`).
+- **Keep epic progress in independent exit buckets** for merged source/CI,
+  final exact-source acceptance, publication, and human/device evidence, each with
+  done/total and linked blockers. A branch diagnostic or simulator is not final
+  acceptance.
+- **Batch validation, not standards**: targeted checks during edits, full mandatory
+  gate before each push. Budget costly whole-host/device runs before execution,
+  preflight every required run/family boundary while reusing the one immutable
+  image and unchanged setup, pin final merged source, and retain raw evidence
+  with its SHA-256. Repeat only for a relevant build change, documented invalid
+  run, or predeclared stability check; never select a pass or relax load, GC, or limits.
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
 - **Before every push**, run the local quality gate: `gofmt -l` must print nothing,

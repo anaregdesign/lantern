@@ -144,6 +144,10 @@ The receive and send caps are independent: a public request may fit
 envelope exceeds `LANTERN_MAX_SEND_MSG_BYTES`. Lantern returns
 `ResourceExhausted` before graph, receipt, origin, or log publication in that
 case (metric `lantern_validation_rejected_total{reason="replication_frame"}`).
+Negotiated gzip is skipped for response messages smaller than 1 KiB (including
+individual streaming frames). If a positive send cap is below 1 KiB, the
+compression threshold is that cap instead, keeping messages at or above it
+gzip-eligible. Request compression and both message-size caps are unchanged.
 Receipt writes are also bounded by the largest receiver-local relay of their
 same evidence, not just the origin's possibly sparse frame. A restart fails
 before listener creation if the configured send cap cannot carry any retained

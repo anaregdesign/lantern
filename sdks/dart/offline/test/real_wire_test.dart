@@ -768,14 +768,23 @@ void main() {
       if (token == null || token.isEmpty) {
         throw StateError('LANTERN_DART_RECEIPT_TOKEN is required for HA');
       }
+      final tlsDirectory =
+          Platform.environment['LANTERN_DART_RECEIPT_HA_TLS_DIR'];
+      if (tlsDirectory == null || tlsDirectory.isEmpty) {
+        throw StateError('LANTERN_DART_RECEIPT_HA_TLS_DIR is required for HA');
+      }
 
-      final cluster = await _ReceiptHaCluster.create(binary, token);
+      final cluster = await _ReceiptHaCluster.create(
+        binary,
+        token,
+        tlsDirectory,
+      );
       addTearDown(cluster.close);
       await cluster.start();
       LanternClient connect(Uri endpoint) => LanternClient.connect(
         endpoint,
-        allowInsecure: true,
         token: token,
+        httpClientFactory: cluster.trustedHttpClient,
         retryPolicy: const RetryPolicy(maxAttempts: 1),
         defaultTimeout: const Duration(seconds: 2),
       );
@@ -817,7 +826,7 @@ void main() {
       );
       final anonymous = LanternClient.connect(
         cluster.c,
-        allowInsecure: true,
+        httpClientFactory: cluster.trustedHttpClient,
         retryPolicy: const RetryPolicy(maxAttempts: 1),
       );
       addTearDown(anonymous.close);
@@ -852,6 +861,8 @@ void main() {
           'DeleteEdges': 1,
           'AddEdges': 1,
         },
+        serverTlsContext: cluster.proxyTlsContext(),
+        upstreamTlsContext: cluster.trustedContext,
       );
       addTearDown(proxy.close);
       final offlineClient = connect(proxy.endpoint);
@@ -1530,7 +1541,7 @@ void main() {
         proxy.endpoint,
         allowInsecure: true,
         idempotentAdds: true,
-        retryPolicy: const RetryPolicy(maxAttempts: 1),
+        retryPolicy: const RetryPolicy(maxAttempts: 3),
       );
       addTearDown(legacyClient.close);
 
@@ -1544,16 +1555,9 @@ void main() {
             contribId: contributionId,
           ),
         ),
-        throwsA(
-          isA<LanternRetryExhaustedException>()
-              .having((error) => error.attempts, 'attempts', 1)
-              .having(
-                (error) => error.cause,
-                'cause',
-                isA<LanternUnavailableException>(),
-              ),
-        ),
+        throwsA(isA<LanternUnavailableException>()),
       );
+      expect(proxy.forwarded('AddEdges'), 1);
       expect(proxy.dropped('AddEdges'), 1);
       expect(
         (await serverClient.getEdge(edgeRef)).weight,
@@ -1734,24 +1738,52 @@ Future<void> _awaitEdgeGone(LanternClient client, EdgeRef edge) async {
 }
 
 final class _ReceiptHaCluster {
-  _ReceiptHaCluster._(this._binary, this._token, this._directory);
+  _ReceiptHaCluster._(
+    this._binary,
+    this._token,
+    this._directory,
+    this._tlsDirectory,
+    this.trustedContext,
+  );
 
-  static Future<_ReceiptHaCluster> create(String binary, String token) async =>
-      _ReceiptHaCluster._(
-        binary,
-        token,
-        await Directory.systemTemp.createTemp('lantern-offline-ha-'),
-      );
+  static Future<_ReceiptHaCluster> create(
+    String binary,
+    String token,
+    String tlsDirectory,
+  ) async {
+    final tls = Directory(tlsDirectory);
+    if (await FileSystemEntity.type(tls.path) !=
+        FileSystemEntityType.directory) {
+      throw StateError('HA TLS fixture directory is missing');
+    }
+    final trustedContext = SecurityContext(withTrustedRoots: false)
+      ..setTrustedCertificates('${tls.path}/ca.pem');
+    return _ReceiptHaCluster._(
+      binary,
+      token,
+      await Directory.systemTemp.createTemp('lantern-offline-ha-'),
+      tls,
+      trustedContext,
+    );
+  }
 
   final String _binary;
   final String _token;
   final Directory _directory;
+  final Directory _tlsDirectory;
+  final SecurityContext trustedContext;
   final Set<int> _reservedPorts = <int>{};
   final Map<String, Process> _running = <String, Process>{};
   late final Uri a;
   late final Uri b;
   late final Uri c;
   late final int _cMetricsPort;
+
+  HttpClient trustedHttpClient() => HttpClient(context: trustedContext);
+
+  SecurityContext proxyTlsContext() => SecurityContext()
+    ..useCertificateChain('${_tlsDirectory.path}/lantern-0/server.pem')
+    ..usePrivateKey('${_tlsDirectory.path}/lantern-0/server.key');
 
   Future<void> start() async {
     final aPort = await _freePort();
@@ -1824,6 +1856,12 @@ final class _ReceiptHaCluster {
     String mode, {
     Uri? peer,
   }) async {
+    final replica = switch (name) {
+      'a' => 'lantern-0',
+      'b' => 'lantern-1',
+      'c' => 'lantern-2',
+      _ => throw StateError('unexpected receipt node $name'),
+    };
     final process = await Process.start(
       _binary,
       const <String>[],
@@ -1832,8 +1870,11 @@ final class _ReceiptHaCluster {
         'LANTERN_METRICS_ADDR': '127.0.0.1:$metricsPort',
         'LANTERN_LOG_LEVEL': 'warn',
         'LANTERN_AUTH_TOKENS': _token,
+        'LANTERN_TLS_CERT_FILE': '${_tlsDirectory.path}/$replica/server.pem',
+        'LANTERN_TLS_KEY_FILE': '${_tlsDirectory.path}/$replica/server.key',
+        'LANTERN_PEER_CA_FILE': '${_tlsDirectory.path}/ca.pem',
         'LANTERN_NODE_ID': nodeId,
-        'LANTERN_PEERS': peer == null ? '' : '${peer.host}:${peer.port}',
+        'LANTERN_PEERS': peer?.origin ?? '',
         'LANTERN_PUMP_BACKOFF_MIN_MS': '50',
         'LANTERN_PUMP_BACKOFF_MAX_MS': '200',
         'LANTERN_ANTI_ENTROPY_INTERVAL_MS': '250',
@@ -1866,7 +1907,7 @@ final class _ReceiptHaCluster {
 
     final probe = LanternClient.connect(
       endpoint,
-      allowInsecure: true,
+      httpClientFactory: trustedHttpClient,
       defaultTimeout: const Duration(seconds: 1),
     );
     try {
@@ -1919,7 +1960,7 @@ final class _ReceiptHaCluster {
   }
 
   static Uri _endpoint(int port) => Uri(
-    scheme: 'http',
+    scheme: 'https',
     host: InternetAddress.loopbackIPv4.address,
     port: port,
   );
@@ -1978,29 +2019,61 @@ final class _ResponseDroppingProxy {
     this._server,
     this._upstreamEndpoint,
     Map<String, int> drops,
+    this._upstreamTlsContext,
+    this._secure,
   ) : _remainingDrops = Map<String, int>.of(drops) {
-    _upstream.autoUncompress = false;
+    _upstream = _newUpstream();
     _server.listen((request) => unawaited(_forward(request)));
   }
 
   static Future<_ResponseDroppingProxy> bind(
     Uri upstreamEndpoint, {
     required Map<String, int> drops,
+    SecurityContext? serverTlsContext,
+    SecurityContext? upstreamTlsContext,
   }) async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    return _ResponseDroppingProxy._(server, upstreamEndpoint, drops);
+    if ((serverTlsContext == null) != (upstreamTlsContext == null)) {
+      throw ArgumentError('proxy TLS requires both server and upstream trust');
+    }
+    if (serverTlsContext != null &&
+        (upstreamEndpoint.scheme != 'https' ||
+            upstreamEndpoint.host != InternetAddress.loopbackIPv4.address)) {
+      throw ArgumentError.value(upstreamEndpoint, 'upstreamEndpoint');
+    }
+    final server = serverTlsContext == null
+        ? await HttpServer.bind(InternetAddress.loopbackIPv4, 0)
+        : await HttpServer.bindSecure(
+            InternetAddress.loopbackIPv4,
+            0,
+            serverTlsContext,
+          );
+    return _ResponseDroppingProxy._(
+      server,
+      upstreamEndpoint,
+      drops,
+      upstreamTlsContext,
+      serverTlsContext != null,
+    );
   }
 
   final HttpServer _server;
   Uri _upstreamEndpoint;
-  HttpClient _upstream = HttpClient();
+  final SecurityContext? _upstreamTlsContext;
+  final bool _secure;
+  late HttpClient _upstream;
   final Map<String, int> _remainingDrops;
   final Map<String, int> _forwarded = <String, int>{};
   final Map<String, int> _dropped = <String, int>{};
   final List<String> _forwardedRpcs = <String>[];
 
-  Uri get endpoint =>
-      Uri(scheme: 'http', host: _server.address.host, port: _server.port);
+  Uri get endpoint => Uri(
+    scheme: _secure ? 'https' : 'http',
+    host: _server.address.host,
+    port: _server.port,
+  );
+
+  HttpClient _newUpstream() =>
+      HttpClient(context: _upstreamTlsContext)..autoUncompress = false;
 
   int forwarded(String rpc) => _forwarded[rpc] ?? 0;
 
@@ -2009,8 +2082,13 @@ final class _ResponseDroppingProxy {
   List<String> get forwardedRpcs => List<String>.unmodifiable(_forwardedRpcs);
 
   void routeTo(Uri endpoint) {
+    if (_secure &&
+        (endpoint.scheme != 'https' ||
+            endpoint.host != InternetAddress.loopbackIPv4.address)) {
+      throw ArgumentError.value(endpoint, 'endpoint');
+    }
     _upstream.close(force: true);
-    _upstream = HttpClient()..autoUncompress = false;
+    _upstream = _newUpstream();
     _upstreamEndpoint = endpoint;
   }
 
@@ -2027,13 +2105,21 @@ final class _ResponseDroppingProxy {
     _forwardedRpcs.add(rpc);
     try {
       final target = _upstreamEndpoint.resolveUri(downstream.uri);
+      if (_secure && target.origin != _upstreamEndpoint.origin) {
+        throw StateError('authenticated receipt proxy rejects other origins');
+      }
       final upstreamRequest = await _upstream.openUrl(
         downstream.method,
         target,
       );
+      if (_secure) upstreamRequest.followRedirects = false;
       _copyHeaders(downstream.headers, upstreamRequest.headers);
       await upstreamRequest.addStream(downstream);
       final upstreamResponse = await upstreamRequest.close();
+      if (_secure && upstreamResponse.isRedirect) {
+        await upstreamResponse.drain<void>();
+        throw StateError('authenticated receipt proxy rejects redirects');
+      }
       final responseBytes = await upstreamResponse.fold<BytesBuilder>(
         BytesBuilder(copy: false),
         (builder, bytes) => builder..add(bytes),

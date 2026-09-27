@@ -34,6 +34,14 @@ import { makeWebTransport } from "./transport-web.js";
  *   - Batch chunk size 1000.
  *   - No per-call timeout; pass `args.options.defaultTimeoutMs` to
  *     apply one.
+ *   - One transport attempt per unary call; no automatic retry or failover.
+ *     Custom transports/interceptors own any retry policy and its safety.
+ *
+ * Plain Add, conditional Put, and exact or capped-prefix Delete are not
+ * result-safe to replay after response loss. Contrib IDs deduplicate only
+ * live contributions, not after Delete or expiry. For supported writes,
+ * persist a receipt context and use the receipt methods on the same
+ * endpoint to recover original results.
  */
 export function connectWeb(baseUrl: string, args: LanternArgs = {}): Lantern {
   const normalised = normaliseBaseUrl("connectWeb", baseUrl);

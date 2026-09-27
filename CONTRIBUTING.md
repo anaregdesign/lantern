@@ -72,14 +72,44 @@ same finding, also add a one-line entry to the relevant section of `AGENTS.md`.
 
 ## Before starting any non-trivial fix or feature
 
-**File a GitHub Issue first, then implement.** This is a hard rule. The Issue pins down
-the problem, the chosen option among alternatives, and the scope *before* a diff exists.
+**Search for a GitHub Issue first; link one or file one before implementing.** This is
+a hard rule for non-trivial changes, including bugs, improvements, and validation
+repairs discovered while another PR is in flight. Record the expected outcome,
+boundaries, dependencies, and verification before editing, not after a diff exists.
 
-- One Issue per coherent problem (`gh issue create`).
-- The closing PR references it (`Closes #N`) so the merge wires discussion to diff.
-- Exceptions (no Issue required): pure doc-only edits; direct follow-ups requested in an
-  in-flight PR review; one-line obvious bug fixes with nothing to discuss.
+- One Issue per coherent problem (`gh issue create` if none exists). Related Issues
+  may share a cohesive PR when each outcome remains independently reviewable.
+- Reference every closing Issue in the PR (`Closes #N` per Issue) so the merge
+  wires each discussion to the diff.
+- Exceptions (no new Issue required): already-scoped direct documentation edits
+  or proofreading, and direct fixes to the already-filed Issue requested in an
+  in-flight PR review. A newly discovered bug or improvement, including a
+  documentation improvement, needs an Issue even if it is a one-line fix or
+  arises during review.
 - When in doubt, file the Issue — the overhead is tiny next to a reworked PR.
+
+## Track independent exits and budget expensive validation
+
+For an epic or other multi-stage effort, keep a concise, issue-linked progress ledger
+in the driving Issue. Separately count completed/total outcomes for **merged source
+and CI**, **final exact-source acceptance**, **external publication**, and
+**human/physical-device evidence**; link the next unblocker for each unfinished
+bucket. Update at meaningful milestones, not every diagnostic sample. Do not
+collapse these buckets into one percentage or treat preliminary branch-image
+performance, partial CI, or simulator runs as final-source or physical acceptance.
+
+Before costly whole-host or device validation, record the owner, dependencies,
+acceptance matrix, pinned source/image revision, fresh-state requirements, and
+test budget (including any predeclared stability repetitions) in the driving
+Issue. Preflight at each required run or family boundary, including host
+contention, image provenance, and fresh state. Reuse the one immutable image
+and unchanged shared setup across the complete declared matrix on final exact
+merged source, without skipping per-family checks or repeating preflight of
+unchanged inputs. Preserve raw evidence securely and record its exact SHA-256
+alongside a content-free public verdict. Repeat a costly run only after a
+relevant build change, a documented invalid run, or a predeclared stability
+check; never cherry-pick a passing sample, force GC in a measured steady
+window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
@@ -112,6 +142,14 @@ go test ./...                    # root module
   && dart run tool/performance_probe.dart)
 ```
 
+During edits, run the narrowest targeted checks for changed behavior rather than
+repeating the whole gate after each intermediate change. Plan one complete
+mandatory gate for the reviewed, cohesive PR head before pushing; every later
+push must again have passing results for all required components. A passing
+component can carry across a documentation-only follow-up only when its inputs
+and any required documentation-dependent checks are unchanged. CI then
+validates the exact synthetic merge, not a preliminary local branch image.
+
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
 fails on any uncommitted codegen diff — regenerate locally first (below).
@@ -136,7 +174,7 @@ manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
 record required before an offline release. The merged offline 0.4.0 source
-candidate declares a hosted `lantern_client: ^0.3.1` dependency and has an
+candidate declares a hosted `lantern_client: ^0.3.2` dependency and has an
 independent candidate archive gate; the parent `lantern_client` publish
 archive continues to exclude `offline/` and `offline_sqlite/`. The maintained
 Flutter app under `sdks/dart/example/` is a repository integration fixture
@@ -145,6 +183,15 @@ included in the parent archive. CI uses Dart Pub's own archive builder,
 unpacks the resulting tarball outside the checkout, resolves every included
 `pubspec.yaml` with an isolated cache, then runs analysis, tests, and `pana`
 against the unpacked artifact.
+
+For exact-main source qualification after a change misses the Dart or Node SDK
+path filters, dispatch `dart-sdk.yml` and `node-sdk.yml` on `main` and record
+each run ID and `headSha`; rerunning an older run does not test the final SHA.
+Manual Dart dispatch selects the full package and Android/iOS matrix, and Node
+still tests both supported runtimes. SDK publication and GitHub Releases require
+release-tag **push** events and their existing test/preflight gates; manual
+dispatch, including on a tag, is test-only. Simulator results do not replace
+physical-device evidence.
 
 The opt-in `sdks/dart/offline_sqlite/` adapter has a mandatory Flutter host gate:
 format/analyze/test, real SQLite close/reopen conformance and disk-full checks,
@@ -235,7 +282,11 @@ of that surface ships, **in the same PR**:
    contract (NotFound sentinel, batch partial-miss, chunking, TTL expiry,
    idempotent retry, ...). Unit tests in the owning module complement but do not
    replace this: the wire path is where the singular→plural facades, validation
-   interceptors, and codec behaviour actually live.
+   interceptors, and codec behaviour actually live. For the standalone Node
+   SDK, real-wire cases instead live in `sdks/node/test/`: `node-sdk.yml` runs
+   `bun run test:real-wire` on Node 20/22 against Connect/h2c and `bun test`
+   for browser Connect-Web real-wire cases. Both paths must assert a happy
+   path and a failure/edge contract; in-process stubs do not replace them.
 2. **Bench coverage for perf-relevant paths.** A change on a hot path (reads,
    writes, scans, traversals, streams) joins an existing scenario fan-out in
    `testbed/bench/scenarios/` or gets a new scenario. The release-sweep scenarios
@@ -260,8 +311,9 @@ test.
 
 ## Before merging a PR
 
-- Wait for **all required checks** green. Never use `--admin` or `--no-verify`. One PR
-  per Issue from clean `main`.
+- Wait for **all required checks** green. Never use `--admin` or `--no-verify`.
+  A cohesive PR from clean `main` may close multiple related Issues when their
+  outcomes and verification remain independently reviewable.
 - Merge with `gh pr merge <n> --squash --delete-branch`, then
   `git checkout main && git pull --rebase`.
 - **Multi-issue `Closes` syntax:** GitHub only auto-links the *first* issue on a
@@ -442,7 +494,7 @@ complete, not a procedure for the receipt-bearing 0.4.0 candidate. Never
 repeat manual publication for a later version, reuse a published tag, or put
 a pub token in GitHub Secrets, CI, or the repository.
 
-**Dart publishing status.** The parent `lantern_client` 0.3.1 is published and
+**Dart publishing status.** The parent `lantern_client` 0.3.2 is published and
 its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
@@ -451,7 +503,7 @@ manual `dart pub publish`. Immediately before tagging, check
 already exist. Never force-move a published Dart tag/version—bump patch.
 
 **Offline receipt release preparation (#1398/#1115/#1399).** Merged offline
-0.4.0 source requires hosted `lantern_client ^0.3.1`; it is not yet a
+0.4.0 source requires hosted `lantern_client ^0.3.2`; it is not yet a
 published or qualified receipt release. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without

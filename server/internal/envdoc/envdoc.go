@@ -18,12 +18,12 @@ import (
 // descriptions is the curated one-line operator description per variable.
 // Render enforces that this table and the envconfig registry agree exactly.
 var descriptions = map[string]string{
-	"LANTERN_PORT":                   "TCP port of the primary Connect/h2c listener.",
+	"LANTERN_PORT":                   "TCP port of the primary Connect listener (h2c without TLS, HTTPS when TLS is configured).",
 	"LANTERN_MAX_RECV_MSG_BYTES":     "Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited); independent of replication response expansion.",
 	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response size per Protobuf message (0 = unlimited); certified before publication against both actual binary SubscribeResponse frames and maximal receiver-local receipt relays.",
 	"LANTERN_MAX_CONCURRENT_STREAMS": "HTTP/2 max concurrent streams per connection (0 = unlimited).",
 
-	"LANTERN_TLS_CERT_FILE":      "PEM certificate path; setting cert + key enables TLS on the primary listener.",
+	"LANTERN_TLS_CERT_FILE":      "PEM certificate path; setting cert + key enables TLS on the primary listener and is required for bearer-enabled HA.",
 	"LANTERN_TLS_KEY_FILE":       "PEM private-key path; pairs with LANTERN_TLS_CERT_FILE.",
 	"LANTERN_TLS_CLIENT_CA_FILE": "PEM client-CA bundle path; setting it additionally enables mTLS client verification.",
 
@@ -112,11 +112,14 @@ var descriptions = map[string]string{
 	"LANTERN_NODE_ID":                        "Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes.",
 	"LANTERN_TOMBSTONE_TTL":                  "Delete-tombstone retention window (D4) and upper bound on caller-supplied expirations. A tombstone consumes one causal-identity entry until expiration; an equal/newer write can transition the same identity between live floor, Put barrier, and tombstone without consuming another slot.",
 
-	"LANTERN_PEERS":                      "Comma-separated static peer list (host:port) for the replication pump; empty = single instance.",
+	"LANTERN_PEERS":                      "Comma-separated static peer origins: host:port without auth or explicit https://host:port when HA bears a token; empty = single instance.",
 	"LANTERN_PEER_DISCOVERY":             "Peer discovery mode: static or dns.",
-	"LANTERN_PEER_DNS_NAME":              "DNS name resolved for peer discovery when LANTERN_PEER_DISCOVERY=dns (e.g. a headless Service).",
+	"LANTERN_PEER_DNS_NAME":              "DNS name resolved for peer discovery; with bearer auth, the peer TLS certificate must contain this name as a DNS SAN even though the client dials its resolved IP.",
 	"LANTERN_PEER_DEFAULT_PORT":          "Port appended to DNS-discovered peer addresses.",
 	"LANTERN_PEER_DISCOVERY_INTERVAL_MS": "Peer re-resolution cadence in milliseconds (0 = resolve once at startup).",
+	"LANTERN_PEER_CA_FILE":               "Required PEM CA roots for verifying HTTPS peer identities whenever HA peers share bearer tokens; inbound client-CA settings are not outbound trust roots.",
+	"LANTERN_PEER_CLIENT_CERT_FILE":      "Outbound client certificate for bearer-enabled peer mTLS; required with LANTERN_PEER_CLIENT_KEY_FILE when inbound peer client-CA verification is enabled.",
+	"LANTERN_PEER_CLIENT_KEY_FILE":       "Outbound client private key for peer mTLS; paired with LANTERN_PEER_CLIENT_CERT_FILE.",
 	"LANTERN_PUMP_BACKOFF_MIN_MS":        "Initial reconnect backoff after a peer session error, in milliseconds.",
 	"LANTERN_PUMP_BACKOFF_MAX_MS":        "Reconnect backoff ceiling, in milliseconds.",
 
@@ -195,6 +198,11 @@ func Render(specs []envconfig.Spec) (string, error) {
 	b.WriteString("use compatible peer read limits. Full-mutation Subscribe requires binary\n")
 	b.WriteString("protobuf (not gRPC-Web text); identity-only ProtoJSON remains supported.\n")
 	b.WriteString("Snapshot keeps its independent bounded transport contract.\n\n")
+	b.WriteString("Authenticated HA peers require inbound TLS cert/key plus a separately pinned\n")
+	b.WriteString("outbound peer CA before startup; static peers must use HTTPS origins, while\n")
+	b.WriteString("DNS-discovered IPs are verified against the discovery DNS name. Every bearer-\n")
+	b.WriteString("sending peer path rejects redirects and plaintext; this does not secure\n")
+	b.WriteString("external clients, which must configure trusted HTTPS separately.\n\n")
 	b.WriteString("| Variable | Type | Default | Description |\n")
 	b.WriteString("|---|---|---|---|\n")
 	for _, s := range sorted {

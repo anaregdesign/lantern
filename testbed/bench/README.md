@@ -2,7 +2,7 @@
 
 Reusable performance + memory-leak harness for the HA `docker compose`
 cluster (see `deploy/compose/`). Drives the cluster with [`ghz`][ghz] or a
-narrow scenario-owned Connect/h2c driver, captures Prometheus range queries +
+narrow scenario-owned verified Connect/HTTPS receipt driver, captures Prometheus range queries +
 Go pprof snapshots, applies per-scenario leak / lifecycle-metric / semantic /
 producer-performance gates, and renders a Markdown report.
 
@@ -34,14 +34,14 @@ producer-performance gates, and renders a Markdown report.
 > qualification above. See issues [#256], [#262], [#573], [#708], [#1063],
 > [#1097].
 >
-> **Receipt qualification is nightly-only.** `bench-nightly.yml` runs
-> `receipt_admission_lookup` after the canonical sweep as a separate blocking
-> fresh-cluster gate. It is intentionally absent from
-> `release-scenarios.txt`: five local runs on the synthetic-parent stack
-> support provisional thresholds, **not final merged-stack evidence**.
-> Fresh measurements after #1440 and the receipt-family/SDK merges, plus
-> cross-runner nightly stability, are required before this durable-WAL
-> workload can become a release blocker ([#1399]).
+> **Receipt qualification is nightly-only.** `bench-nightly.yml` runs four
+> sequential fresh-WAL, three-replica scenarios from one pinned image after
+> the canonical sweep: conditional Vertex Put, absent Vertex Delete, absent
+> Edge Delete, and contribution-keyed Edge Add. None is in
+> `release-scenarios.txt`. Historical Edge-only synthetic-parent runs support
+> provisional thresholds, **not final merged-stack evidence**; the four-family
+> host qualification on a quiet exact integrated image is still required
+> ([#1399]). Each nightly scenario is blocking.
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
@@ -61,10 +61,12 @@ producer-performance gates, and renders a Markdown report.
   `connectrpc.com/grpcreflect` exposes the standard
   `grpc.reflection.v1*` service the harness uses for descriptor
   discovery. ghz keeps working unchanged. See [#383][i383] for the
-  verification log. The receipt scenario uses its dedicated Go driver instead.
+  verification log. The receipt scenarios use their dedicated Go driver instead.
 - [`yq`][yq] v4 (Go reimplementation)
 - `jq`, `curl`, `bash` ≥ 4
 - Go (matching `go.mod` toolchain) — used to build the report renderer
+  and generate the receipt scenario's ephemeral TLS material (no external
+  certificate tool or committed key is needed)
 
 [i335]: https://github.com/anaregdesign/lantern/issues/335
 [i383]: https://github.com/anaregdesign/lantern/issues/383
@@ -84,8 +86,17 @@ SKIP_UP=1 KEEP_UP=1 ./testbed/bench/run.sh mixed_rw
 # Also capture a 30s CPU profile per replica after the steady phase:
 PPROF_CPU=1 ./testbed/bench/run.sh addedge_contention
 
-# Exercise durable Edge Delete receipt admission plus exact-ID lookup:
-LANTERN_IMAGE=lantern:local ./testbed/bench/run.sh receipt_admission_lookup
+# Exploratory four-family receipt sweep; for #1399 qualification, use a clean
+# frozen source commit/image and separately record quiet-host evidence.
+docker build --build-arg COMMIT="$(git rev-parse HEAD)" -t lantern:local .
+export LANTERN_IMAGE=lantern:local
+export EXPECTED_LANTERN_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$LANTERN_IMAGE")"
+export EXPECTED_LANTERN_COMMIT="$(git rev-parse HEAD)"
+for scenario in receipt_vertex_put_admission_lookup \
+  receipt_vertex_delete_admission_lookup receipt_admission_lookup \
+  receipt_edge_add_admission_lookup; do
+  ./testbed/bench/run.sh "$scenario"
+done
 ```
 
 The exit code folds together the leak gate and any declared metric, semantic,
@@ -176,25 +187,61 @@ establish a significant latency change. The on-demand
 exercises the same operation mix over three replicas and is intentionally not
 in the short release sweep until a stable post-change baseline exists.
 
-## Receipt admission and lookup gate (#1442, preparatory for #1399)
+## Receipt admission and lookup gates (#1442, #1399)
 
-[`receipt_admission_lookup.yaml`](scenarios/receipt_admission_lookup.yaml)
-offers 100 operation pairs/s across three replicas. Every pair performs a
-receipt-bearing `DeleteEdge` followed immediately by `GetReceiptStatus` on the
-same endpoint with the exact operation ID. The lookup must return `CONFIRMED`,
-the matching operation/call IDs, intent digest, deadline and item coordinates,
-and the presence-preserving original result `delete_edge_existed=false`.
-Semantic mismatches become non-OK producer outcomes and fail the run.
+The four independent scenarios each offer 100 operation pairs/s across three
+replicas. Each admission is immediately followed by `GetReceiptStatus` on the
+**same endpoint and operation ID**. The driver checks `CONFIRMED`, the matching
+operation/call IDs, canonical intent SHA-256, deadline, item coordinates, and
+the original **present typed result arm**. Conditional `PutVertex` uses unique
+live keys and requires `APPLIED_AND_LIVE`; exact absent `DeleteVertex` and
+`DeleteEdge` require their respective `existed=false` arms. `AddEdge` supplies
+a distinct explicit 24-byte ContribID and a finite float32 source weight;
+pairs share an edge on one replica to exercise derived infinity while keeping
+per-edge contribution counts bounded. The driver's float32 comparison uses
+original response/result bits, not numeric equality, so it retains NaN and
+infinity results. Each endpoint must advertise the selected family in
+`supported_mutations`. Missing/wrong arms, digests, capabilities, or responses
+become non-OK outcomes and fail the run.
 
 ghz cannot safely generate one canonical binary operation ID and reuse it in
-another producer, so this scenario selects the allow-listed
-`receipt_edge_delete` driver. It still emits the ghz summary shape consumed by
-the existing perf evaluator and report renderer. The harness provisions a
-fresh authenticated durable-WAL cluster with fixed per-replica node IDs and
-rejects `SKIP_UP=1`. Before startup it removes only the named bench Compose
-project's containers and volumes, so a preceding `KEEP_UP=1` run cannot leak
-retained receipts into the measurement; unrelated volumes are untouched.
-Existing scenarios retain graph-only defaults.
+another producer, so each scenario selects one of the four allow-listed
+receipt family drivers. Each emits the ghz summary shape consumed by the
+existing perf evaluator and report renderer. The harness provisions a fresh
+authenticated durable-WAL cluster with fixed per-replica node IDs and rejects
+`SKIP_UP=1`. Before startup it removes only the named bench Compose project's
+containers and volumes, so a preceding `KEEP_UP=1` run cannot leak retained
+receipts into the next family; unrelated volumes are untouched. Before warmup
+and after the run, it checks the configured image reference, full embedded
+source commit, immutable image ID, Compose project/service labels, restart
+count, and all three container image IDs; it rejects changes or missing
+provenance. `image_provenance_pre.json` and `image_provenance_post.json` are
+saved in each distinct scenario output directory. Nightly pins one image ID
+and source SHA across all four runs. Existing scenarios retain graph-only
+defaults.
+
+For receipt runs only, `run.sh` overlays
+[`compose.receipt-tls.yml`](compose.receipt-tls.yml) and starts the three
+replicas plus Prometheus, not the default plaintext-configured admin/MCP
+clients. The Go `receipttls` helper creates a fresh random bearer, an
+ephemeral in-memory CA signing key, and **distinct per-replica** TLS
+certificate/key pairs in a private ignored directory under
+`testbed/bench/out/.peer-tls.*`. Each server certificate carries `lantern`
+(the DNS discovery TLS identity), `localhost`, and its replica name as
+DNS SANs; each replica sees only its own key via a read-only mount. The
+driver calls `https://localhost:<port>` with the pinned CA and refuses
+redirects, missing trust roots, hostname mismatch, plaintext, or a
+non-HTTP/2 handshake. The metrics port stays HTTP and bearer-free.
+Before warmup and after the verdict, `peer_tls_pre.json` and
+`peer_tls_post.json` attest the mounted TLS paths, auth/DNS settings,
+trusted CA, and the live certificate fingerprint on each published
+port. A changed identity or image disqualifies the run. The named
+Compose teardown removes the private material; `KEEP_UP=1` leaves it
+available only while the cluster remains up, and operators must tear
+down that named project and remove the printed private path afterward.
+Never archive `.peer-tls.*` alongside the public scenario reports.
+These changes do not alter the four scenario YAML files, phase
+durations, offered RPS, steady metrics, or resource/performance limits.
 
 The receipt leak gate samples `go_goroutines` and
 `go_memstats_heap_alloc_bytes` on **all three replicas** every 5s while the
@@ -213,7 +260,7 @@ nonnegative integral goroutine, heap-alloc, heap-inuse, and heap-object gauges
 on every replica and round; a fractional or malformed reading cannot round to
 zero.
 
-Five preliminary Compose runs on the synthetic-parent stack (Apple M3 Max,
+Five preliminary **Edge Delete-only** Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in
 [local scenario evidence](evidence/issue-1399/scenario.txt), sustained
 98.05-99.97 operations/s per producer with zero non-OK results. Admission p99
@@ -225,23 +272,25 @@ ceilings retain 2.9x and 3.2x headroom over those worst local p99s, following
 the harness's ≥2x shared-runner rule. These are step-change gates, not
 production capacity claims.
 
-Direct service benchmarks repeatedly delete a missing edge in the same
-durable FileWAL runtime and exclude request construction from timed work.
-They quantify absent-edge/no-op admission overhead, not live-edge delete
-costs. The five-run medians in
+Paired direct service benchmarks for all four families compare receipt-less
+and admitted receipt writes in the same durable FileWAL runtime, with request
+construction outside timed work. Vertex Put uses unique conditional live
+keys; both Delete families use absent identities; Add uses explicit finite
+contributions on unique edges. Four matching confirmed-status lookup
+sub-benchmarks measure each typed result. Historical Edge Delete medians in
 [local benchmark evidence](evidence/issue-1399/direct.txt) were 9.494 ms/op for
 receipt-less Edge Delete, 14.271 ms/op for admitted receipt Edge Delete
 (+4.777 ms, +50.3%), and 5.065 ms/op for confirmed receipt lookup. These
-host-only numbers quantify local overhead; the real-h2c nightly scenario owns
-the enforceable thresholds.
-Neither these direct timings nor the Compose runs above qualify the final
-merged receipt/SDK stack; they are historical synthetic-parent calibration
-and predate the steady-window resource gate. Fresh uncontended measurements
-after the remaining receipt families merge are required for #1399.
+host-only numbers quantify only that synthetic-parent Edge path; the
+verified real-wire
+nightly scenarios own enforceable thresholds. **No final four-family quiet-host
+measurements exist yet.** Neither the historical direct timings nor Compose
+runs qualify the final integrated receipt/SDK stack; fresh uncontended
+exact-image measurements are required for #1399.
 
 ```bash
 (cd server && go test ./service -run '^$' \
-  -bench 'Benchmark(PublicReceiptEdgeDeleteAdmission|ReceiptStatusLookup)$' \
+  -bench 'Benchmark(PublicReceipt(VertexPut|VertexDelete|EdgeDelete|EdgeAdd)Admission|ReceiptStatusLookup)$' \
   -benchmem -benchtime=500ms -count=5)
 ```
 
@@ -266,7 +315,10 @@ after the remaining receipt families merge are required for #1399.
 | `replication_apply_churn.yaml` | replicated write churn; asserts `lantern_vertex_hlc_entries` returns to baseline (#700, #705) |
 | `edge_contrib_idempotent.yaml` | AddEdge/AddEdges with repeated ContribIDs; verifies at-most-once dedup stays bounded (#706) |
 | `mixed_edge_reset_add.yaml` | on-demand three-replica Put/Delete/Add churn on bounded edge identities; measures reset-aware contribution cost (#1203) |
-| `receipt_admission_lookup.yaml` | nightly-only durable Edge Delete receipt admission plus exact-operation confirmed lookup over real h2c (#1399) |
+| `receipt_vertex_put_admission_lookup.yaml` | nightly-only conditional Vertex Put receipt admission plus same-operation typed lookup |
+| `receipt_vertex_delete_admission_lookup.yaml` | nightly-only absent Vertex Delete receipt admission plus same-operation typed lookup |
+| `receipt_admission_lookup.yaml` | nightly-only absent Edge Delete receipt admission plus same-operation typed lookup (#1442) |
+| `receipt_edge_add_admission_lookup.yaml` | nightly-only finite-source, contribution-keyed Edge Add receipt admission plus bit-exact typed lookup |
 | `backup_under_load.yaml`  | BackupSnapshot concurrent with sustained writes — on-demand only, not in release sweep (#707) |
 | `broad_illuminate.yaml` | Six named traversal producers over a verified 64-way/3-hop walk and planted dense communities; preflight rejects a collapsed topology (#994) |
 
@@ -302,7 +354,8 @@ retire or rename a wire field, migrate every scenario that sends it in the
 same PR. The receipt driver's template-less calls still resolve against the
 wire descriptors, and a dedicated contract test pins its driver, two RPCs,
 capacity, bounded phases, perf gates, fresh-cluster restriction, nightly
-wiring, and release-list exclusion.
+wiring, image provenance, sequential fresh-WAL scheduling, and release-list
+exclusion for all four families.
 
 `broad_illuminate` additionally has a semantic topology gate. Before warmup,
 the harness seeds a deterministic graph, then verifies the requested 64-way
@@ -454,6 +507,8 @@ testbed/bench/out/<scenario>/<ts>/
 ├── metric_gate.json                # per-replica pre/post gauge contracts (when declared)
 ├── semantic_{pre,post}.json        # bounded Search semantic verdicts (when declared)
 ├── perf_gate.json                  # perf verdict + thresholds + observed (only when perf_gate: declared)
+├── image_provenance_{pre,post}.json # receipt runs: pinned image and containers
+├── peer_tls_{pre,post}.json          # receipt runs: public TLS fingerprints (no keys)
 ├── runtime_pre.json                # runtime values + unlabeled lifecycle gauges, after warmup
 ├── runtime_post.json               # same, after cooldown
 ├── ghz_warmup_<endpoint>.json      # raw ghz results, one per invocation

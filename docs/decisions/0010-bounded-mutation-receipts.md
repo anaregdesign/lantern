@@ -2,7 +2,7 @@
 
 - Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Put Edge and prefix Delete remain disabled
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491
 
 ## Context and boundary
 
@@ -98,6 +98,16 @@ restored from an older backup may remain queryable, but an absent old-epoch ID
 must never execute in the new epoch. A future authenticated-principal/ACL
 design is required before tenant-scoped receipts are claimed.
 
+The deployment bearer grants both graph and receipt RPCs. For an HA
+deployment, Pump and anti-entropy may send it only to an approved
+certificate-verified HTTPS peer. Inbound server TLS, a separately pinned
+outbound peer CA, static HTTPS origins or a DNS-name SAN shared by
+DNS-discovered peers, and (when inbound mTLS is required) outbound
+client cert/key are startup requirements. Redirects and plaintext
+fallback are forbidden. An authenticated single-node runtime needs no
+peer transport; this transport rule does not replace receipt continuity,
+epoch, or principal-scoping proofs.
+
 The server computes `SHA-256("lantern-receipt-intent-v1\0" || canonical_intent)`
 after validation. The canonical intent is a length-delimited sequence of the
 operation kind, exact key/edge identity, value oneof and exact numeric bits,
@@ -189,6 +199,20 @@ retain the expired result. A receipt-only expired envelope still advances the
 cutoff. The operation ID's issuance time prevents a later new execution, and
 status is `NO_LONGER_PROVABLE`. A live receipt may never be discarded to
 resolve capacity pressure or a gap.
+
+Receipt-bearing Vertex Put frame admission sizes the validated original,
+receipt, and accepted effects as shallow protobuf items. It calculates the
+exact mutation and outer `SubscribeResponse` wire sizes without cloning the
+full message solely to check the intrinsic WAL and configured send limits.
+Actual WAL and Subscribe projections still own their copied payloads; sizing
+does not bypass intent, graph-projection, or canonical-WAL validation. Both
+limits remain pre-publication checks, including for a receiver-local relay
+whose accepted effects differ from the origin's.
+
+The active Store also keeps a one-item logical-call reverse index inline,
+without a per-group position map; plural calls retain their position maps
+through partial expiry and snapshot restore. This only changes in-memory
+bookkeeping, not receipt capacity, deadlines, or original result bytes.
 
 Replication Snapshot and the canonical whole-state receipt backup set include the
 active epoch, receipt-policy fingerprint, unexpired receipts (including no-op
@@ -1006,12 +1030,16 @@ gate, including real Connect/h2c response-loss, lag, capacity, retention,
 intent-conflict, transport-bound, token-rotation, and fail-closed tests.
 Put Edge and prefix Delete remain outside this receipt context. Online Go,
 Node, and Dart receipt APIs are merged in source; the hosted
-`lantern_client 0.3.1` online archive passed exact-content verification.
-Published `sdks/go/v0.25.0` pins published `pb/v0.13.0`. Node receipt APIs
-are in merged 0.12.0 source, not npm's current 0.11.0 `latest` package.
+`lantern_client 0.3.2` online archive passed exact-content verification.
+Independently published `sdks/go/v0.25.1` pins public `pb/v0.13.1`; root
+and MCP pin v0.25.1. It includes #1468's one-attempt policy for receipt-less
+Add and exact/prefix Delete, unlike older v0.25.0. A single attempt does
+not recover an ambiguous receipt-less result; prefix Delete has no receipt
+path. Node receipt APIs are in merged 0.12.0 source, not npm's current
+0.11.0 `latest` package.
 Merged offline 0.4.0 source implements the four receipt families, but no
 receipt-bearing offline release has been published or qualified. Its
-`lantern_client: ^0.3.1` constraint selects the hosted parent; verify
+`lantern_client: ^0.3.2` constraint selects the hosted parent; verify
 isolated resolution of the offline candidate archive against that published
 parent without path overrides before publishing. Final #1399 release
 evidence remains open, including performance and physical qualification.
@@ -1020,7 +1048,8 @@ legacy `unsupported_add` records remain terminal.
 
 The #1399 performance gate is prospective, not satisfied by the #1467
 preparatory driver: run four separate, sequential, fresh-WAL three-node
-real Connect/h2c scenarios on the **same immutable final image digest**,
+real Connect/HTTPS scenarios with verified peer and client TLS on the
+**same immutable final image digest**,
 one each for conditional Vertex Put, exact Vertex Delete, exact Edge Delete,
 and contribution-keyed Edge Add. Per family require admission at least
 75 RPC/s and exact same-operation receipt lookup at least 75 RPC/s
@@ -1030,5 +1059,8 @@ original typed results, receipt IDs, and digest. Every replica must stay within
 +15 goroutines and +32 MiB `heap_alloc` of the post-warmup baseline both
 during the steady 5s-sampled window and after cooldown GC. Exclude family
 setup from timed throughput; reset only the named Compose project and WAL
-volumes between families. A simultaneous four-family mixed load is not
-additionally required.
+volumes between families. The harness saves pre/post certificate identity
+and image provenance without archiving ephemeral tokens or keys. A branch
+diagnostic or a run on the old h2c topology cannot count as final-source
+acceptance; the new merged-source sweep belongs to #1399 and #1442.
+A simultaneous four-family mixed load is not additionally required.
