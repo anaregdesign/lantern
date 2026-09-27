@@ -155,7 +155,7 @@ Commit **only** those eight content-free records/markers (and an optional
 adjacent README) as the immediate child of the exact tested code commit.
 The offline tag points to this evidence-only child; preflight checks all
 eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
-manifests, and absence of changed code. The parent `lantern_client 0.3.2`
+manifests, and absence of changed code. The parent `lantern_client 0.3.3`
 is hosted on pub.dev. Offline `0.3.0` is already published and cannot be
 reused for the receipt-bearing source;
 the example's offline `^0.4.0` dependency and lock describe the candidate,

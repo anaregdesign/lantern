@@ -123,8 +123,8 @@ Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add; it is not a
 published or qualified receipt release. Final #1399 performance, archive,
 and physical evidence remain open (#1449's generic capture is not device
 evidence). The opt-in online APIs described below are hosted in
-`lantern_client 0.3.2` on pub.dev; its published archive passed exact-content
-verification. Offline 0.4.0 source declares `lantern_client: ^0.3.2`;
+`lantern_client 0.3.3` on pub.dev; its published archive passed exact-content
+verification. Offline 0.4.0 source declares `lantern_client: ^0.3.3`;
 before its publication, resolve the offline candidate archive against
 that hosted parent outside the checkout and without a path override.
 
