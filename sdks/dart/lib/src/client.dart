@@ -27,6 +27,7 @@ part 'retry.dart';
 part 'scan.dart';
 part 'search.dart';
 part 'status.dart';
+part 'transport.dart';
 part 'traversal.dart';
 
 /// Supplies the bearer token for one transport attempt.
@@ -596,7 +597,9 @@ final class LanternClient {
         return protocol.Transport(
           baseUrl: normalized.toString(),
           codec: const ProtoCodec(),
-          httpClient: connect_io.createHttpClient(ownedHttpClient!),
+          httpClient: (request) => connect_io.createHttpClient(
+            _AbortableOpenHttpClient(ownedHttpClient!, request.signal),
+          )(request),
           interceptors: interceptorList,
         );
       }(),

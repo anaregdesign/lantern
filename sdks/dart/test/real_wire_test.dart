@@ -1344,8 +1344,11 @@ void main() {
   );
 
   test(
-    'connection refusal exhausts the bounded real transport budget',
+    'default native transport handles healthy and refused real wire',
     () async {
+      final healthy = await client.getServerStatus();
+      expect(healthy.version, isNotEmpty);
+
       final unavailable = await io.HttpServer.bind(
         io.InternetAddress.loopbackIPv4,
         0,

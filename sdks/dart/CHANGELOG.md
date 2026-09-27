@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.3
+
+- Honor SDK deadlines and caller cancellation while a native HTTP connection
+  is opening. Abort a request that opens after the call has already been
+  canceled.
+
 ## 0.3.2
 
 - Make receipt-less Edge Add (singular, plural, and decaying) single-attempt

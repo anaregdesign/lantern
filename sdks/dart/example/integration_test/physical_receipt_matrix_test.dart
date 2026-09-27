@@ -876,9 +876,12 @@ Future<void> _waitForTransportFailure(
     try {
       await attempt();
     } on Object catch (error) {
+      if (!localPrivacy) {
+        if (receiptTransientTransportCause(error) != null) return;
+        rethrow;
+      }
       final unavailable = receiptUnavailableCause(error);
       if (unavailable == null) rethrow;
-      if (!localPrivacy) return;
       if (isIosLocalNetworkDeniedCause(unavailable.cause)) {
         return;
       }
@@ -903,7 +906,7 @@ Future<void> _waitForCapability(
       }
       return;
     } on Object catch (error) {
-      if (receiptUnavailableCause(error) == null) rethrow;
+      if (receiptTransientTransportCause(error) == null) rethrow;
       await Future<void>.delayed(const Duration(milliseconds: 500));
     }
   }
