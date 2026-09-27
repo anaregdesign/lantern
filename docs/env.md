@@ -26,6 +26,12 @@ use compatible peer read limits. Full-mutation Subscribe requires binary
 protobuf (not gRPC-Web text); identity-only ProtoJSON remains supported.
 Snapshot keeps its independent bounded transport contract.
 
+Authenticated HA peers require inbound TLS cert/key plus a separately pinned
+outbound peer CA before startup; static peers must use HTTPS origins, while
+DNS-discovered IPs are verified against the discovery DNS name. Every bearer-
+sending peer path rejects redirects and plaintext; this does not secure
+external clients, which must configure trusted HTTPS separately.
+
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `LANTERN_ANTI_ENTROPY_GAP_WARN_THRESHOLD` | int | `1024` | Origin-seq gap size above which the anti-entropy sweep logs a warning. |
@@ -78,12 +84,15 @@ Snapshot keeps its independent bounded transport contract.
 | `LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER` | int | `512` | Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped. |
 | `LANTERN_MUTEX_PROFILE_FRACTION` | int | `0` | runtime.SetMutexProfileFraction sampling rate (0 = disabled; has runtime cost). |
 | `LANTERN_NODE_ID` | string | (empty) | Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes. |
-| `LANTERN_PEERS` | string | (empty) | Comma-separated static peer list (host:port) for the replication pump; empty = single instance. |
+| `LANTERN_PEERS` | string | (empty) | Comma-separated static peer origins: host:port without auth or explicit https://host:port when HA bears a token; empty = single instance. |
+| `LANTERN_PEER_CA_FILE` | string | (empty) | Required PEM CA roots for verifying HTTPS peer identities whenever HA peers share bearer tokens; inbound client-CA settings are not outbound trust roots. |
+| `LANTERN_PEER_CLIENT_CERT_FILE` | string | (empty) | Outbound client certificate for bearer-enabled peer mTLS; required with LANTERN_PEER_CLIENT_KEY_FILE when inbound peer client-CA verification is enabled. |
+| `LANTERN_PEER_CLIENT_KEY_FILE` | string | (empty) | Outbound client private key for peer mTLS; paired with LANTERN_PEER_CLIENT_CERT_FILE. |
 | `LANTERN_PEER_DEFAULT_PORT` | string | `50051` | Port appended to DNS-discovered peer addresses. |
 | `LANTERN_PEER_DISCOVERY` | string | `static` | Peer discovery mode: static or dns. |
 | `LANTERN_PEER_DISCOVERY_INTERVAL_MS` | int | `10000` | Peer re-resolution cadence in milliseconds (0 = resolve once at startup). |
-| `LANTERN_PEER_DNS_NAME` | string | (empty) | DNS name resolved for peer discovery when LANTERN_PEER_DISCOVERY=dns (e.g. a headless Service). |
-| `LANTERN_PORT` | int | `6380` | TCP port of the primary Connect/h2c listener. |
+| `LANTERN_PEER_DNS_NAME` | string | (empty) | DNS name resolved for peer discovery; with bearer auth, the peer TLS certificate must contain this name as a DNS SAN even though the client dials its resolved IP. |
+| `LANTERN_PORT` | int | `6380` | TCP port of the primary Connect listener (h2c without TLS, HTTPS when TLS is configured). |
 | `LANTERN_PPROF_ENABLED` | bool | `false` | Mount /debug/pprof/* on the metrics listener (keep the listener internal-only). |
 | `LANTERN_PUMP_BACKOFF_MAX_MS` | int | `30000` | Reconnect backoff ceiling, in milliseconds. |
 | `LANTERN_PUMP_BACKOFF_MIN_MS` | int | `250` | Initial reconnect backoff after a peer session error, in milliseconds. |
@@ -127,7 +136,7 @@ Snapshot keeps its independent bounded transport contract.
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | int | `30` | Graceful-shutdown drain budget for in-flight requests before a hard close. |
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | int | `500` | RPCs slower than this emit a warn-level "slow rpc" log line (0 disables). |
 | `LANTERN_STRICT_CONFIG` | bool | `false` | Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set. |
-| `LANTERN_TLS_CERT_FILE` | string | (empty) | PEM certificate path; setting cert + key enables TLS on the primary listener. |
+| `LANTERN_TLS_CERT_FILE` | string | (empty) | PEM certificate path; setting cert + key enables TLS on the primary listener and is required for bearer-enabled HA. |
 | `LANTERN_TLS_CLIENT_CA_FILE` | string | (empty) | PEM client-CA bundle path; setting it additionally enables mTLS client verification. |
 | `LANTERN_TLS_KEY_FILE` | string | (empty) | PEM private-key path; pairs with LANTERN_TLS_CERT_FILE. |
 | `LANTERN_TOMBSTONE_TTL` | duration | `8760h0m0s` | Delete-tombstone retention window (D4) and upper bound on caller-supplied expirations. A tombstone consumes one causal-identity entry until expiration; an equal/newer write can transition the same identity between live floor, Put barrier, and tombstone without consuming another slot. |

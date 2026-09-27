@@ -5,8 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/pem"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +20,92 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	graphv1 "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func TestReceiptHTTPSClientRejectsPlaintextRedirectAndUnverifiedPeer(t *testing.T) {
+	var redirected atomic.Int32
+	plaintext := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirected.Add(1)
+	}))
+	t.Cleanup(plaintext.Close)
+	var accepted atomic.Int32
+	peer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-receipt-token" {
+			t.Error("trusted peer received no bearer")
+		}
+		accepted.Add(1)
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, plaintext.URL, http.StatusTemporaryRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	peer.EnableHTTP2 = true
+	peer.StartTLS()
+	t.Cleanup(peer.Close)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: peer.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseEndpoints(peer.URL)
+	if err != nil || len(parsed) != 1 {
+		t.Fatalf("valid HTTPS endpoint = (%v, %v)", parsed, err)
+	}
+	httpClient, err := newVerifiedReceiptHTTPClient(ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, parsed[0], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-receipt-token")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ProtoMajor != 2 || accepted.Load() != 1 {
+		t.Fatalf("verified peer protocol = %s, accepted = %d", resp.Proto, accepted.Load())
+	}
+	redirect, err := http.NewRequest(http.MethodGet, peer.URL+"/redirect", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirect.Header.Set("Authorization", "Bearer test-receipt-token")
+	if _, err := httpClient.Do(redirect); err == nil || !strings.Contains(err.Error(), "redirect rejected") {
+		t.Fatalf("HTTPS to HTTP redirect = %v", err)
+	}
+	if redirected.Load() != 0 {
+		t.Fatal("redirect leaked an authenticated request to plaintext")
+	}
+	for _, endpoint := range []string{
+		plaintext.URL, peer.URL + "/rpc", peer.URL + "?query=1",
+		"https://user:pass@127.0.0.1:6380",
+	} {
+		if _, err := parseEndpoints(endpoint); err == nil {
+			t.Errorf("accepted unapproved endpoint %q", endpoint)
+		}
+	}
+	other := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("sent a bearer to an untrusted certificate")
+	}))
+	t.Cleanup(other.Close)
+	if _, err := httpClient.Get(other.URL); err == nil {
+		t.Fatal("trusted an unknown peer CA")
+	}
+	if _, err := httpClient.Get(strings.Replace(peer.URL, "127.0.0.1", "localhost", 1)); err == nil {
+		t.Fatal("accepted a certificate with a mismatched hostname")
+	}
+	if _, err := newVerifiedReceiptHTTPClient(""); err == nil {
+		t.Fatal("accepted missing pinned CA")
+	}
+	if accepted.Load() != 2 {
+		t.Fatalf("valid HTTPS requests = %d, want 2", accepted.Load())
+	}
+}
 
 type fakeReceiptClient struct {
 	putRequest          *graphv1.PutVertexRequest

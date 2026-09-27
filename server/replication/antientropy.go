@@ -59,7 +59,7 @@ type LocalStateProvider interface {
 //
 // origin is the lowercase-hex encoding of the peer's self HLC NodeID
 // (i.e. the origin row the driver is comparing against). peer is the
-// peer's RPC address as configured in LANTERN_PEERS.
+// peer's RPC address as configured in LANTERN_PEERS or resolved by DNS.
 type AntiEntropyMetrics interface {
 	OnAntiEntropyCycle()
 	OnAntiEntropyTick(peer string)
@@ -114,10 +114,9 @@ type AntiEntropyConfig struct {
 	// always emitted regardless of this knob.
 	GapWarnThreshold uint64
 
-	// AuthToken, when non-empty, is attached as "Authorization: Bearer"
-	// to every outbound anti-entropy call so gap repair works against
-	// peers running with LANTERN_AUTH_TOKENS (#850).
-	AuthToken string
+	// PeerTransport is the same validated HTTPS peer policy used by the
+	// pump. It covers PeerStatus, catch-up Subscribe and Snapshot.
+	PeerTransport *PeerTransport
 
 	// SearchConfigFingerprint is compared with every PeerStatus response.
 	// Empty disables the comparison for narrow unit-test wiring; production
@@ -125,8 +124,7 @@ type AntiEntropyConfig struct {
 	SearchConfigFingerprint string
 
 	// HTTPClient is the http.Client used to open Connect-Go streams
-	// against each peer. Defaults to defaultH2CClient() (plaintext
-	// HTTP/2 for the in-cluster HA topology).
+	// against each bearer-free peer. Defaults to defaultH2CClient().
 	HTTPClient *http.Client
 
 	// Logger receives lifecycle events. slog.Default() when nil.
@@ -172,10 +170,11 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 	if cfg.Metrics == nil {
 		cfg.Metrics = nopAntiEntropyMetrics{}
 	}
-	if cfg.HTTPClient == nil {
+	if cfg.PeerTransport != nil {
+		cfg.HTTPClient = cfg.PeerTransport.client
+	} else if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultH2CClient()
 	}
-	cfg.HTTPClient = withAuthToken(cfg.HTTPClient, cfg.AuthToken)
 	installer := cfg.SnapshotInstaller
 	if installer == nil {
 		installer = newGraphOnlySnapshotInstaller(apply, snap)
@@ -248,9 +247,15 @@ func (a *AntiEntropy) tickAll(ctx context.Context) {
 func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 	a.cfg.Metrics.OnAntiEntropyTick(addr)
 	log := a.cfg.Logger.With(slog.String("peer", addr))
+	baseURL, err := peerURL(addr, a.cfg.PeerTransport)
+	if err != nil {
+		log.Warn("anti-entropy: unapproved peer", slog.Any("err", err))
+		a.cfg.Metrics.OnAntiEntropyError(addr, "peer_rejected")
+		return
+	}
 
 	cli := graphv1connect.NewLanternReplicationServiceClient(
-		a.cfg.HTTPClient, peerBaseURL(addr),
+		a.cfg.HTTPClient, baseURL,
 	)
 
 	resp, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
@@ -425,7 +430,11 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 // Triggered by FailedPrecondition on Subscribe. After this returns, the next
 // anti-entropy tick will re-probe PeerStatus and resume normal catch-up.
 func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string) error {
-	cli, err := newSnapshotClient(a.cfg.HTTPClient, addr, a.installer)
+	baseURL, err := peerURL(addr, a.cfg.PeerTransport)
+	if err != nil {
+		return err
+	}
+	cli, err := newSnapshotClient(a.cfg.HTTPClient, baseURL, a.installer)
 	if err != nil {
 		return err
 	}

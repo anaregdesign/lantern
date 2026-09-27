@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,10 +279,10 @@ func TestAuth_RawSingularPutEdgeRejectsNonFiniteSourceOverH2C(t *testing.T) {
 }
 
 // TestAuth_PumpReplicatesAgainstAuthedPeer pins the peer-credential path:
-// a pump configured with AuthToken replicates from an auth-enabled peer,
-// while a tokenless pump cannot.
+// a pump replicates through verified TLS to an auth-enabled peer.
 func TestAuth_PumpReplicatesAgainstAuthedPeer(t *testing.T) {
 	srcSrv, _, srcSvc := newAuthedServer(t)
+	peer := newAuthenticatedReplicationPeer(t, srcSrv, testToken)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -293,12 +295,11 @@ func TestAuth_PumpReplicatesAgainstAuthedPeer(t *testing.T) {
 	dstSvc := service.NewLanternService(dstCache).WithReplication(dstLog, dstClock, nil)
 
 	p := replication.NewPump(replication.Config{
-		NodeID:     dstID,
-		Peers:      []string{srcSrv.url},
-		BackoffMin: 20 * time.Millisecond,
-		BackoffMax: 200 * time.Millisecond,
-		HTTPClient: h2cClient(),
-		AuthToken:  testToken,
+		NodeID:        dstID,
+		Peers:         []string{peer.url},
+		BackoffMin:    20 * time.Millisecond,
+		BackoffMax:    200 * time.Millisecond,
+		PeerTransport: peer.transport,
 	}, dstSvc, dstCache)
 	pumpCtx, pumpCancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -321,6 +322,105 @@ func TestAuth_PumpReplicatesAgainstAuthedPeer(t *testing.T) {
 	if !waitForVertex(t, dstCache, "replicated", 5*time.Second) {
 		t.Fatal("authed pump did not replicate the vertex")
 	}
+}
+
+func TestAuth_DNSPeerAuthenticatesResolvedIPOverTLS(t *testing.T) {
+	srcSrv, _, srcSvc := newAuthedServer(t)
+	peer := newAuthenticatedReplicationPeer(t, srcSrv, testToken)
+	addr := strings.TrimPrefix(peer.url, "https://")
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, err := replication.NewAuthenticatedPeerTransport(
+		peer.ca, nil, testToken, nil, "example.com", port,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dstID hlc.NodeID
+	copy(dstID[:], "auth-node-dns000")
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
+	clock := hlc.New(dstID, hlc.Options{})
+	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pump := replication.NewPump(replication.Config{
+		NodeID: dstID, Peers: []string{addr},
+		BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
+		PeerTransport: transport,
+	}, svc, cache)
+	done := make(chan error, 1)
+	go func() { done <- pump.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("stop DNS pump: %v", err)
+		}
+	}()
+	if _, err := srcSvc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "dns-peer", Value: &pb.Vertex_Nil{Nil: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForVertex(t, cache, "dns-peer", 4*time.Second) {
+		t.Fatal("DNS-discovered IP did not authenticate against the configured certificate DNS identity")
+	}
+}
+
+func TestAuth_DNSPeerRejectsMismatchedIdentityOverTLS(t *testing.T) {
+	srcSrv, _, srcSvc := newAuthedServer(t)
+	peer := newAuthenticatedReplicationPeer(t, srcSrv, testToken)
+	addr := strings.TrimPrefix(peer.url, "https://")
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wrongIdentity = "unrelated.invalid"
+	transport, err := replication.NewAuthenticatedPeerTransport(
+		peer.ca, nil, testToken, nil, wrongIdentity, port,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dstID hlc.NodeID
+	copy(dstID[:], "auth-node-bad-dns")
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	log := mutationlog.New(mutationlog.Options{Capacity: 1024, SubscriberBuffer: 1024})
+	svc := service.NewLanternService(cache).WithReplication(log, hlc.New(dstID, hlc.Options{}), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := srcSvc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "must-not-replicate", Value: &pb.Vertex_Nil{Nil: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pump := replication.NewPump(replication.Config{
+		NodeID: dstID, Peers: []string{addr},
+		BackoffMin: 20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
+		PeerTransport: transport,
+	}, svc, cache)
+	done := make(chan error, 1)
+	go func() { done <- pump.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("stop mismatched DNS pump: %v", err)
+		}
+	}()
+	for ctx.Err() == nil {
+		peers := pump.Snapshot()
+		if len(peers) == 1 && strings.Contains(peers[0].LastError, "certificate") &&
+			strings.Contains(peers[0].LastError, wrongIdentity) {
+			if _, copied := cache.GetVertex("must-not-replicate"); copied {
+				t.Fatal("untrusted DNS identity received a bearer and replicated")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pump never reported a certificate mismatch: %+v", pump.Snapshot())
 }
 
 // connectCode unwraps the connect error code from an SDK error chain.

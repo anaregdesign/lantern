@@ -326,8 +326,9 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	snapshotMetrics := &clusterReceiptSnapshotMetrics{installed: make(chan struct{}, 1)}
 	stopJoiner := startDurableReceiptPumpWithApplier(
 		t, ctx, "recovered receipt snapshot",
-		joinConfig, joiner.runtime, joiner.server, restored.server.url,
-		joiner.server.svc, snapshotMetrics, token,
+		joinConfig, joiner.runtime, joiner.server,
+		newAuthenticatedReplicationPeer(t, restored.server, token),
+		joiner.server.svc, snapshotMetrics,
 	)
 	defer stopJoiner()
 	select {

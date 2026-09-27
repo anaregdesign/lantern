@@ -2,7 +2,7 @@
 
 Reusable performance + memory-leak harness for the HA `docker compose`
 cluster (see `deploy/compose/`). Drives the cluster with [`ghz`][ghz] or a
-narrow scenario-owned Connect/h2c driver, captures Prometheus range queries +
+narrow scenario-owned verified Connect/HTTPS receipt driver, captures Prometheus range queries +
 Go pprof snapshots, applies per-scenario leak / lifecycle-metric / semantic /
 producer-performance gates, and renders a Markdown report.
 
@@ -65,6 +65,8 @@ producer-performance gates, and renders a Markdown report.
 - [`yq`][yq] v4 (Go reimplementation)
 - `jq`, `curl`, `bash` ≥ 4
 - Go (matching `go.mod` toolchain) — used to build the report renderer
+  and generate the receipt scenario's ephemeral TLS material (no external
+  certificate tool or committed key is needed)
 
 [i335]: https://github.com/anaregdesign/lantern/issues/335
 [i383]: https://github.com/anaregdesign/lantern/issues/383
@@ -218,6 +220,29 @@ saved in each distinct scenario output directory. Nightly pins one image ID
 and source SHA across all four runs. Existing scenarios retain graph-only
 defaults.
 
+For receipt runs only, `run.sh` overlays
+[`compose.receipt-tls.yml`](compose.receipt-tls.yml) and starts the three
+replicas plus Prometheus, not the default plaintext-configured admin/MCP
+clients. The Go `receipttls` helper creates a fresh random bearer, an
+ephemeral in-memory CA signing key, and **distinct per-replica** TLS
+certificate/key pairs in a private ignored directory under
+`testbed/bench/out/.peer-tls.*`. Each server certificate carries `lantern`
+(the DNS discovery TLS identity), `localhost`, and its replica name as
+DNS SANs; each replica sees only its own key via a read-only mount. The
+driver calls `https://localhost:<port>` with the pinned CA and refuses
+redirects, missing trust roots, hostname mismatch, plaintext, or a
+non-HTTP/2 handshake. The metrics port stays HTTP and bearer-free.
+Before warmup and after the verdict, `peer_tls_pre.json` and
+`peer_tls_post.json` attest the mounted TLS paths, auth/DNS settings,
+trusted CA, and the live certificate fingerprint on each published
+port. A changed identity or image disqualifies the run. The named
+Compose teardown removes the private material; `KEEP_UP=1` leaves it
+available only while the cluster remains up, and operators must tear
+down that named project and remove the printed private path afterward.
+Never archive `.peer-tls.*` alongside the public scenario reports.
+These changes do not alter the four scenario YAML files, phase
+durations, offered RPS, steady metrics, or resource/performance limits.
+
 The receipt leak gate samples `go_goroutines` and
 `go_memstats_heap_alloc_bytes` on **all three replicas** every 5s while the
 steady producer runs, without forcing GC during load. It requires complete,
@@ -256,7 +281,8 @@ sub-benchmarks measure each typed result. Historical Edge Delete medians in
 [local benchmark evidence](evidence/issue-1399/direct.txt) were 9.494 ms/op for
 receipt-less Edge Delete, 14.271 ms/op for admitted receipt Edge Delete
 (+4.777 ms, +50.3%), and 5.065 ms/op for confirmed receipt lookup. These
-host-only numbers quantify only that synthetic-parent Edge path; the real-h2c
+host-only numbers quantify only that synthetic-parent Edge path; the
+verified real-wire
 nightly scenarios own enforceable thresholds. **No final four-family quiet-host
 measurements exist yet.** Neither the historical direct timings nor Compose
 runs qualify the final integrated receipt/SDK stack; fresh uncontended
@@ -481,6 +507,8 @@ testbed/bench/out/<scenario>/<ts>/
 ├── metric_gate.json                # per-replica pre/post gauge contracts (when declared)
 ├── semantic_{pre,post}.json        # bounded Search semantic verdicts (when declared)
 ├── perf_gate.json                  # perf verdict + thresholds + observed (only when perf_gate: declared)
+├── image_provenance_{pre,post}.json # receipt runs: pinned image and containers
+├── peer_tls_{pre,post}.json          # receipt runs: public TLS fingerprints (no keys)
 ├── runtime_pre.json                # runtime values + unlabeled lifecycle gauges, after warmup
 ├── runtime_post.json               # same, after cooldown
 ├── ghz_warmup_<endpoint>.json      # raw ghz results, one per invocation

@@ -217,6 +217,16 @@ runtime:
 # templated ones). Useful for TLS_* / RATE_LIMIT_* / LOG_* tweaks.
 extraEnv: []
 
+# Optional existing Secret for authenticated HA peer TLS. It must contain
+# server.pem, server.key, and ca.pem. The server certificate must cover the
+# discovery DNS name (or each configured static origin). The chart mounts
+# the files read-only and sets the inbound TLS and outbound peer-CA paths;
+# provide LANTERN_AUTH_TOKENS separately via extraEnv.valueFrom.secretKeyRef.
+# To require mTLS, also put client.pem, client.key, and client-ca.pem in this
+# Secret and set the corresponding LANTERN_* paths via extraEnv.
+peerTLS:
+  existingSecret: ""
+
 # Pod scheduling.
 nodeSelector: {}
 tolerations: []

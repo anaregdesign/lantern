@@ -15,7 +15,8 @@ import (
 // PeerConfig groups the outbound peer-replication pump knobs (#185, #190).
 //
 //   - LANTERN_PEERS                      CSV list of peer addresses
-//     ("host:port,host:port"). Empty (the default) yields a no-op pump
+//     ("host:port" without auth, "https://host:port" with auth).
+//     Empty (the default) yields a no-op pump
 //     unless LANTERN_PEER_DISCOVERY=dns; otherwise the server runs in
 //     single-instance mode. Whitespace around each entry is trimmed;
 //     empty entries are dropped.
@@ -37,8 +38,15 @@ import (
 //     10000ms (10s). A transient resolution failure logs and preserves
 //     the previously-active peer set so established subscriptions are
 //     not torn down.
+//   - LANTERN_PEER_CA_FILE               PEM trust roots required for
+//     bearer-bearing HA peers; never inferred from inbound TLS settings.
+//   - LANTERN_PEER_CLIENT_CERT_FILE / LANTERN_PEER_CLIENT_KEY_FILE
+//     optional outbound client certificate/key for peer mTLS.
 type PeerConfig struct {
 	Peers             []string
+	CAFile            string
+	ClientCertFile    string
+	ClientKeyFile     string
 	BackoffMin        time.Duration
 	BackoffMax        time.Duration
 	Discovery         string
@@ -65,6 +73,9 @@ func loadPeerConfig() PeerConfig {
 	}
 	return PeerConfig{
 		Peers:             peers,
+		CAFile:            envconfig.String("LANTERN_PEER_CA_FILE", ""),
+		ClientCertFile:    envconfig.String("LANTERN_PEER_CLIENT_CERT_FILE", ""),
+		ClientKeyFile:     envconfig.String("LANTERN_PEER_CLIENT_KEY_FILE", ""),
 		BackoffMin:        time.Duration(envconfig.Int("LANTERN_PUMP_BACKOFF_MIN_MS", 250)) * time.Millisecond,
 		BackoffMax:        time.Duration(envconfig.Int("LANTERN_PUMP_BACKOFF_MAX_MS", 30_000)) * time.Millisecond,
 		Discovery:         strings.ToLower(strings.TrimSpace(envconfig.String("LANTERN_PEER_DISCOVERY", "static"))),
@@ -86,7 +97,7 @@ func NewReplicationPump(
 	pc PeerConfig,
 	resolver *PeerResolver,
 	rc ReplicationConfig,
-	ac AuthConfig,
+	peerTransport *replication.PeerTransport,
 	svc *service.LanternService,
 	cache *graphcache.GraphCache[string, *v1.Vertex],
 	m replication.Metrics,
@@ -94,7 +105,7 @@ func NewReplicationPump(
 	installer *SnapshotInstallerSelection,
 	_ runtimeCertified,
 ) *replication.Pump {
-	cfg := newReplicationPumpConfig(pc, resolver, rc, ac, svc, m, logger, installer)
+	cfg := newReplicationPumpConfig(pc, resolver, rc, peerTransport, svc, m, logger, installer)
 	return replication.NewPump(cfg, svc, cache)
 }
 
@@ -102,7 +113,7 @@ func newReplicationPumpConfig(
 	pc PeerConfig,
 	resolver *PeerResolver,
 	rc ReplicationConfig,
-	ac AuthConfig,
+	peerTransport *replication.PeerTransport,
 	svc *service.LanternService,
 	m replication.Metrics,
 	logger *slog.Logger,
@@ -116,7 +127,7 @@ func newReplicationPumpConfig(
 		Logger:                  logger,
 		Metrics:                 m,
 		DiscoveryInterval:       pc.DiscoveryInterval,
-		AuthToken:               firstToken(ac.Tokens),
+		PeerTransport:           peerTransport,
 		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
 		SnapshotInstaller:       installer.selected(),
 	}

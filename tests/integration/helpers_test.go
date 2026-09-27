@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/pem"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -130,10 +132,37 @@ func waitForSearchConvergence(t *testing.T, ctx context.Context, query string, o
 // directly; tests that only need an SDK client take the *client.Lantern
 // returned by the convenience helpers.
 type connectTestServer struct {
-	svc *service.LanternService
-	rep *service.LanternReplicationService
-	srv *httptest.Server
-	url string
+	svc     *service.LanternService
+	rep     *service.LanternReplicationService
+	srv     *httptest.Server
+	handler http.Handler
+	url     string
+}
+
+type replicationTestPeer struct {
+	url       string
+	ca        []byte
+	transport *replication.PeerTransport
+}
+
+// Mount the same Connect handlers on a certificate-verified HTTP/2 listener
+// for authenticated peer traffic; existing client-facing h2c fixtures remain
+// separate so unrelated SDK tests retain their original wire contract.
+func newAuthenticatedReplicationPeer(t *testing.T, source *connectTestServer, token string) replicationTestPeer {
+	t.Helper()
+	if source == nil || source.handler == nil {
+		t.Fatal("authenticated replication peer requires a Connect handler")
+	}
+	srv := httptest.NewUnstartedServer(source.handler)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	transport, err := replication.NewAuthenticatedPeerTransport(ca, nil, token, []string{srv.URL}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return replicationTestPeer{url: srv.URL, ca: ca, transport: transport}
 }
 
 // defaultIntegrationValidationLimits matches the historical
@@ -201,7 +230,7 @@ func newConnectTestServerWithOptions(
 	srv.Config.Protocols = protos
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &connectTestServer{svc: svc, rep: rep, srv: srv, url: srv.URL}
+	return &connectTestServer{svc: svc, rep: rep, srv: srv, handler: srv.Config.Handler, url: srv.URL}
 }
 
 // newConnectClientFor wires a *client.Lantern via NewLanternConnect at

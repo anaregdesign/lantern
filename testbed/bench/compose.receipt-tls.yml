@@ -1,0 +1,27 @@
+# Receipt-only overlay: the shared DNS alias resolves to IPs, while each
+# replica presents its own CA-signed certificate with SANs for `lantern` and
+# the localhost-facing HTTPS driver. No private key is committed or shared
+# between replicas. run.sh generates LANTERN_BENCH_PEER_TLS_DIR before Compose.
+x-receipt-tls-env: &receipt-tls-env
+  LANTERN_TLS_CERT_FILE: /run/lantern-tls/server.pem
+  LANTERN_TLS_KEY_FILE: /run/lantern-tls/server.key
+  LANTERN_PEER_CA_FILE: /run/lantern-tls/ca.pem
+
+services:
+  lantern-0:
+    environment:
+      <<: *receipt-tls-env
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/lantern-0:/run/lantern-tls:ro
+
+  lantern-1:
+    environment:
+      <<: *receipt-tls-env
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/lantern-1:/run/lantern-tls:ro
+
+  lantern-2:
+    environment:
+      <<: *receipt-tls-env
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/lantern-2:/run/lantern-tls:ro

@@ -104,7 +104,12 @@ reconciliation.
 CI runs the real-wire receipt matrix against a separate authenticated
 receipt-WAL server while retaining the graph-only fixture for older Put tests.
 The receipt endpoint and ephemeral token are required for that CI run; the
-SQLite adapter's separate `--receipt` crash gate proves process-kill recovery
+three-replica ambiguity test also requires
+`LANTERN_DART_RECEIPT_HA_TLS_DIR`, a private directory of per-replica
+CA-signed certificates created by `go run ./testbed/bench/receipttls generate`
+from the repository root. It pins that CA for both peer and client/proxy
+HTTPS traffic; missing TLS material or a certificate mismatch fails the test.
+The SQLite adapter's separate `--receipt` crash gate proves process-kill recovery
 with a file-backed store.
 
 Snapshots written by the earlier experimental Add implementation remain

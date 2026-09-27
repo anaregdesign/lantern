@@ -1,5 +1,5 @@
 // Command receiptprobe benchmarks receipt-bearing mutations followed by an
-// immediate same-operation status lookup over Connect/h2c.
+// immediate same-operation status lookup over verified Connect/HTTPS.
 package main
 
 import (
@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -14,8 +16,10 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -148,7 +152,7 @@ func main() {
 	var (
 		endpointsFlag   = flag.String("endpoints", "", "comma-separated Lantern endpoint URLs")
 		familyFlag      = flag.String("family", "", "receipt family (receipt_vertex_put, receipt_vertex_delete, receipt_edge_delete, receipt_edge_add)")
-		token           = flag.String("token", "", "bearer token")
+		caFile          = flag.String("ca-file", "", "PEM trust roots for HTTPS receipt endpoints")
 		phase           = flag.String("phase", "", "benchmark phase name")
 		duration        = flag.Duration("duration", 0, "offered-load duration")
 		requestTimeout  = flag.Duration("request-timeout", 5*time.Second, "per-RPC timeout")
@@ -170,8 +174,9 @@ func main() {
 	if err != nil {
 		fatalf("%v", err)
 	}
-	if *token == "" {
-		fatalf("-token is required")
+	token := os.Getenv("LANTERN_BENCH_AUTH_TOKEN")
+	if token == "" {
+		fatalf("LANTERN_BENCH_AUTH_TOKEN is required")
 	}
 	if *phase == "" {
 		fatalf("-phase is required")
@@ -204,12 +209,13 @@ func main() {
 		steadyMetrics = &steadyMetricsConfig{endpoints: replicas, interval: *metricsInterval}
 	}
 
-	protocols := new(http.Protocols)
-	protocols.SetUnencryptedHTTP2(true)
-	httpClient := &http.Client{Transport: &http.Transport{Protocols: protocols}}
+	httpClient, err := newVerifiedReceiptHTTPClient(*caFile)
+	if err != nil {
+		fatalf("receipt HTTPS transport: %v", err)
+	}
 
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	endpoints, err := discoverEndpoints(setupCtx, httpClient, endpointAddresses, *token, family)
+	endpoints, err := discoverEndpoints(setupCtx, httpClient, endpointAddresses, token, family)
 	setupCancel()
 	if err != nil {
 		fatalf("discover receipt endpoints: %v", err)
@@ -224,7 +230,7 @@ func main() {
 	cfg := probeConfig{
 		family:         family,
 		phase:          *phase,
-		token:          *token,
+		token:          token,
 		duration:       *duration,
 		requestTimeout: *requestTimeout,
 		concurrency:    *concurrency,
@@ -274,15 +280,55 @@ func parseEndpoints(raw string) ([]string, error) {
 		if endpoint == "" {
 			continue
 		}
-		if !strings.HasPrefix(endpoint, "http://") {
-			return nil, fmt.Errorf("endpoint %q must use http:// for h2c", endpoint)
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Scheme != "https" || u.User != nil || u.Host == "" ||
+			u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" ||
+			u.Opaque != "" || u.ForceQuery || u.String() != endpoint {
+			return nil, errors.New("receipt endpoints must be explicit https://host:port without credentials, path, query or fragment")
 		}
-		endpoints = append(endpoints, strings.TrimRight(endpoint, "/"))
+		port, err := strconv.Atoi(u.Port())
+		if err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != u.Port() ||
+			u.Hostname() == "" {
+			return nil, errors.New("receipt endpoint must include a valid HTTPS host and port")
+		}
+		endpoints = append(endpoints, endpoint)
 	}
 	if len(endpoints) == 0 {
 		return nil, errors.New("-endpoints must contain at least one URL")
 	}
 	return endpoints, nil
+}
+
+func newVerifiedReceiptHTTPClient(caFile string) (*http.Client, error) {
+	if caFile == "" {
+		return nil, errors.New("-ca-file is required")
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read receipt CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("receipt CA file contains no valid PEM certificates")
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
+			Proxy:             nil,
+			TLSClientConfig: &tls.Config{
+				RootCAs: roots, MinVersion: tls.VersionTLS12,
+				VerifyConnection: func(state tls.ConnectionState) error {
+					if state.NegotiatedProtocol != "h2" {
+						return errors.New("receipt endpoint requires HTTP/2 over verified TLS")
+					}
+					return nil
+				},
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("receipt endpoint redirect rejected")
+		},
+	}, nil
 }
 
 func discoverEndpoints(

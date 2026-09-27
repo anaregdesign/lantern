@@ -98,6 +98,16 @@ restored from an older backup may remain queryable, but an absent old-epoch ID
 must never execute in the new epoch. A future authenticated-principal/ACL
 design is required before tenant-scoped receipts are claimed.
 
+The deployment bearer grants both graph and receipt RPCs. For an HA
+deployment, Pump and anti-entropy may send it only to an approved
+certificate-verified HTTPS peer. Inbound server TLS, a separately pinned
+outbound peer CA, static HTTPS origins or a DNS-name SAN shared by
+DNS-discovered peers, and (when inbound mTLS is required) outbound
+client cert/key are startup requirements. Redirects and plaintext
+fallback are forbidden. An authenticated single-node runtime needs no
+peer transport; this transport rule does not replace receipt continuity,
+epoch, or principal-scoping proofs.
+
 The server computes `SHA-256("lantern-receipt-intent-v1\0" || canonical_intent)`
 after validation. The canonical intent is a length-delimited sequence of the
 operation kind, exact key/edge identity, value oneof and exact numeric bits,
@@ -1038,7 +1048,8 @@ legacy `unsupported_add` records remain terminal.
 
 The #1399 performance gate is prospective, not satisfied by the #1467
 preparatory driver: run four separate, sequential, fresh-WAL three-node
-real Connect/h2c scenarios on the **same immutable final image digest**,
+real Connect/HTTPS scenarios with verified peer and client TLS on the
+**same immutable final image digest**,
 one each for conditional Vertex Put, exact Vertex Delete, exact Edge Delete,
 and contribution-keyed Edge Add. Per family require admission at least
 75 RPC/s and exact same-operation receipt lookup at least 75 RPC/s
@@ -1048,5 +1059,8 @@ original typed results, receipt IDs, and digest. Every replica must stay within
 +15 goroutines and +32 MiB `heap_alloc` of the post-warmup baseline both
 during the steady 5s-sampled window and after cooldown GC. Exclude family
 setup from timed throughput; reset only the named Compose project and WAL
-volumes between families. A simultaneous four-family mixed load is not
-additionally required.
+volumes between families. The harness saves pre/post certificate identity
+and image provenance without archiving ephemeral tokens or keys. A branch
+diagnostic or a run on the old h2c topology cannot count as final-source
+acceptance; the new merged-source sweep belongs to #1399 and #1442.
+A simultaneous four-family mixed load is not additionally required.

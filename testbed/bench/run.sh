@@ -41,6 +41,7 @@ COMPOSE_FILES=(
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"
 PROM_URL="${PROM_URL:-http://localhost:9091}"
 COMPOSE_STARTED=0
+PEER_TLS_DIR=""
 
 REPLICA_METRICS_PORTS=(9390 9391 9392)
 REPLICA_GRPC_PORTS=(6380 6381 6382)
@@ -74,6 +75,7 @@ log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
 cleanup() {
   local status=$?
+  local tls_in_use=0
   trap - EXIT
   if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then
     log "compose down -v (project=$COMPOSE_PROJECT_NAME)"
@@ -83,6 +85,18 @@ cleanup() {
         ! printf '\n**Bench run:** unqualified (named Compose teardown failed).\n' >> "$OUTDIR/report.md"; then
         echo "run.sh: could not mark report as unqualified" >&2
       fi
+      if (( status == 0 )); then status=1; fi
+      tls_in_use=1
+    fi
+  fi
+  if [[ -n "${PEER_TLS_DIR:-}" && -d "$PEER_TLS_DIR" ]]; then
+    if [[ "$PEER_TLS_DIR" != "$HERE"/out/.peer-tls.* ]]; then
+      echo "run.sh: refusing to clean unexpected TLS material path" >&2
+      if (( status == 0 )); then status=1; fi
+    elif [[ "${KEEP_UP:-0}" == "1" && "$COMPOSE_STARTED" == "1" ]] || (( tls_in_use != 0 )); then
+      log "receipt TLS material retained at $PEER_TLS_DIR while the named Compose project may be running"
+    elif ! rm -r -- "$PEER_TLS_DIR"; then
+      echo "run.sh: failed to remove ephemeral receipt TLS material" >&2
       if (( status == 0 )); then status=1; fi
     fi
   fi
@@ -200,7 +214,15 @@ if [[ "$receipt_wal_enabled" == "true" ]]; then
   [[ "$receipt_max_bytes" =~ ^[1-9][0-9]*$ ]] ||
     die "cluster.receipt_wal.max_bytes must be a positive integer"
 
-  export LANTERN_BENCH_AUTH_TOKEN="lantern-bench-receipt-token"
+  PEER_TLS_DIR="$(mktemp -d "$HERE/out/.peer-tls.XXXXXXXX")" ||
+    die "cannot create private receipt TLS directory"
+  export LANTERN_BENCH_PEER_TLS_DIR="$PEER_TLS_DIR"
+  (cd "$REPO_ROOT" && go run ./testbed/bench/receipttls generate -dir "$PEER_TLS_DIR") ||
+    die "cannot generate ephemeral receipt peer certificates"
+  export LANTERN_BENCH_AUTH_TOKEN="$(< "$PEER_TLS_DIR/token")"
+  [[ "$LANTERN_BENCH_AUTH_TOKEN" =~ ^[0-9a-f]{64}$ ]] ||
+    die "ephemeral receipt token is invalid"
+  COMPOSE_FILES+=( -f "$HERE/compose.receipt-tls.yml" )
   export LANTERN_BENCH_BACKUP_RESTORE_ON_START="false"
   export LANTERN_BENCH_NODE_ID_0="11111111111111111111111111111111"
   export LANTERN_BENCH_NODE_ID_1="22222222222222222222222222222222"
@@ -287,6 +309,38 @@ if [[ "$receipt_driver" == "1" ]]; then
   pin_receipt_image
 fi
 
+verify_receipt_peer_tls() {
+  local out="$1" baseline="${2:-}" service container mounts env
+  local ports="${REPLICA_GRPC_PORTS[0]},${REPLICA_GRPC_PORTS[1]},${REPLICA_GRPC_PORTS[2]}"
+  local -a args=(verify -dir "$PEER_TLS_DIR" -ports "$ports" -out "$out")
+  [[ -z "$baseline" ]] || args+=(-baseline "$baseline")
+  for service in lantern-0 lantern-1 lantern-2; do
+    container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" ||
+      die "cannot inspect TLS mounts for $service"
+    mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" ||
+      die "cannot inspect $service read-only TLS mount"
+    jq -e --arg source "$PEER_TLS_DIR/$service" '
+      [.[] | select(.Type == "bind" and .Destination == "/run/lantern-tls" and
+        (.RW == false) and (.Source | endswith($source)))] | length == 1
+    ' <<<"$mounts" >/dev/null ||
+      die "$service has no pinned, read-only per-replica TLS mount"
+    env="$(docker inspect --format '{{json .Config.Env}}' "$container")" ||
+      die "cannot inspect $service TLS configuration"
+    jq -e --arg token "$LANTERN_BENCH_AUTH_TOKEN" '
+      (index("LANTERN_TLS_CERT_FILE=/run/lantern-tls/server.pem") != null) and
+      (index("LANTERN_TLS_KEY_FILE=/run/lantern-tls/server.key") != null) and
+      (index("LANTERN_PEER_CA_FILE=/run/lantern-tls/ca.pem") != null) and
+      (index("LANTERN_PEER_DISCOVERY=dns") != null) and
+      (index("LANTERN_PEER_DNS_NAME=lantern") != null) and
+      (index("LANTERN_PEER_DEFAULT_PORT=6380") != null) and
+      (index("LANTERN_AUTH_TOKENS=" + $token) != null)
+    ' <<<"$env" >/dev/null ||
+      die "$service has missing or mismatched authenticated peer TLS settings"
+  done
+  (cd "$REPO_ROOT" && go run ./testbed/bench/receipttls "${args[@]}") ||
+    die "receipt peer TLS identity/provenance verification failed"
+}
+
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
   if [[ "$receipt_wal_enabled" == "true" ]]; then
@@ -298,7 +352,14 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
   COMPOSE_STARTED=1
-  docker compose "${COMPOSE_FILES[@]}" up -d --wait
+  if [[ "$receipt_driver" == "1" ]]; then
+    # The admin SPA and MCP example use the canonical plaintext listener;
+    # receipt qualification starts only HTTPS-capable replicas and metrics.
+    docker compose "${COMPOSE_FILES[@]}" up -d --wait \
+      lantern-0 lantern-1 lantern-2 prometheus
+  else
+    docker compose "${COMPOSE_FILES[@]}" up -d --wait
+  fi
 fi
 
 # ----- discover actual published ports ---------------------------------------
@@ -321,6 +382,7 @@ discover_ports() {
 discover_ports
 if [[ "$receipt_driver" == "1" ]]; then
   verify_receipt_image_provenance "$OUTDIR/image_provenance_pre.json"
+  verify_receipt_peer_tls "$OUTDIR/peer_tls_pre.json"
 fi
 
 # Rewrite scenario file with discovered ports so every `localhost:6380/81/82`
@@ -595,13 +657,13 @@ run_receipt_probe() {
     die "$target_driver has a missing or wrong admission/lookup RPC"
   for ep in "${endpoints[@]}"; do
     [[ -z "$endpoint_urls" ]] || endpoint_urls+=","
-    endpoint_urls+="http://${ep}"
+    endpoint_urls+="https://${ep}"
   done
 
   local args=(
     -endpoints "$endpoint_urls"
     -family "$target_driver"
-    -token "$LANTERN_BENCH_AUTH_TOKEN"
+    -ca-file "$PEER_TLS_DIR/ca.pem"
     -phase "$phase"
     -duration "$dur"
     -concurrency "$conc"
@@ -992,6 +1054,7 @@ log "perf gate verdict: $perf_verdict"
 # ----- Render report ---------------------------------------------------------
 if [[ "$receipt_driver" == "1" ]]; then
   verify_receipt_image_provenance "$OUTDIR/image_provenance_post.json"
+  verify_receipt_peer_tls "$OUTDIR/peer_tls_post.json" "$OUTDIR/peer_tls_pre.json"
 fi
 render_report
 

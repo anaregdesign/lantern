@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 )
@@ -21,11 +22,12 @@ import (
 // same set every call is correct and cheap — the supervisor only
 // acts on differences.
 //
-// Returned addresses are passed to the Connect peer client verbatim,
-// so each entry MUST already be in "host:port" form. Implementations
-// are responsible for any self-filtering (so the local node does not
-// subscribe to itself); the pump's mutation-level self-echo guard
-// is a defence-in-depth backstop, not a substitute.
+// Returned addresses are checked by the configured peer transport before
+// constructing a Connect client: bearer-free static peers may be host:port,
+// authenticated static peers are HTTPS origins, and authenticated DNS peers
+// are IP:port verified against the discovery DNS identity. Implementations
+// are responsible for self-filtering (so the local node does not subscribe
+// to itself); the pump's mutation-level self-echo guard is a backstop.
 type PeerSource interface {
 	Resolve(ctx context.Context) ([]string, error)
 }
@@ -117,6 +119,11 @@ func (d *DNSSource) Resolve(ctx context.Context) ([]string, error) {
 		if ip == "" {
 			continue
 		}
+		parsed, err := netip.ParseAddr(ip)
+		if err != nil || parsed.Zone() != "" {
+			return nil, fmt.Errorf("dns source: invalid IP address in %q response", d.Name)
+		}
+		ip = parsed.String()
 		if _, self := d.SelfIPs[ip]; self {
 			continue
 		}
