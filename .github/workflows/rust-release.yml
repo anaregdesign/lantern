@@ -13,8 +13,8 @@
 # GitHub team, e.g. github:org:team). The crates.io /owners response puts both
 # kinds in its "users" array; an absent/mismatched owner blocks every release.
 # A first publish from another host is not assumed byte-reproducible: before
-# publishing, the owner must package the clean exact tag with the CI Cargo
-# version and compare that .crate's SHA-256 with the CI artifact. Abort on any
+# publishing, the owner must package the clean exact tag with Cargo 1.97.1
+# and compare that .crate's SHA-256 with the CI artifact. Abort on any
 # difference; prefer the same Linux environment. Keep the source and toolchain
 # unchanged between the comparison and the owner-held `cargo publish`.
 name: Rust SDK Release
@@ -173,6 +173,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.97.1'
+      - name: Require fixed packaging Cargo
+        run: test "$(cargo --version)" = 'cargo 1.97.1 (c980f4866 2026-06-30)'
+
+      - name: Test registry release policy against controlled versions
+        run: python3 -B -m unittest discover -s ci -p 'test_*.py'
 
       - name: Block vulnerable or warned locked dependencies
         run: |
@@ -272,7 +279,7 @@ jobs:
               "$VERSION" "$sha256"
             printf 'Tagged commit: `%s`; CI runner: `%s`; Cargo: `%s`.\n\n' \
               "$GITHUB_SHA" "$RUNNER_OS" "$(cargo --version)"
-            echo 'First publication is owner-held. Before publishing, download this run’s candidate artifact, confirm the tag/commit and clean checkout, and run `cargo package --locked --package lantern-client` from `sdks/rust/` on the owner host. Compare its `.crate` SHA-256 to the candidate above. If different, **stop before publishing**; use the matching Cargo version and preferably the same Linux platform. Do not change the checkout/toolchain between that comparison and the owner-held publish. Cargo repackages on publish; registry equality is checked again before any GitHub Release.'
+            echo 'For the first publication only: download this run’s candidate artifact, confirm the tag/commit and clean checkout, and run `rustup run 1.97.1 cargo package --locked --package lantern-client` from `sdks/rust/` on the owner host. Compare its `.crate` SHA-256 to the candidate above. If different, **stop before publishing**; use the same Cargo version and preferably the same Linux platform. Keep the checkout/toolchain unchanged for the owner-held `rustup run 1.97.1 cargo publish --locked --package lantern-client`. Cargo repackages on publish; registry equality is checked again before any GitHub Release.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dry-run publication and independently repackage
@@ -316,16 +323,17 @@ jobs:
           python3 -I -B - <<'PY'
           import json
           import os
+          import sys
           from urllib.error import HTTPError
           from urllib.request import Request, urlopen
+
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "sdks", "rust", "ci"))
+          from registry_policy import FirstPublicationRequired, release_requires_publish
 
           name = "lantern-client"
           version = os.environ["VERSION"]
           checksum = os.environ["ARCHIVE_SHA256"]
           owner = os.environ["EXPECTED_OWNER"]
-          assert owner and owner == owner.strip(), (
-              "set LANTERN_RUST_CRATES_IO_OWNER to the exact crates.io owner login"
-          )
 
           def get(path, *, allow_missing=False):
               request = Request(
@@ -341,55 +349,25 @@ jobs:
                   raise
 
           crate = get("", allow_missing=True)
-          if crate is None:
+          versions = get("/versions") if crate is not None else None
+          owners = get("/owners") if crate is not None else None
+          release = get(f"/{version}", allow_missing=True) if crate is not None else None
+          try:
+              required = release_requires_publish(
+                  crate, versions, owners, release,
+                  version=version, checksum=checksum, owner=owner,
+                  sha=os.environ["GITHUB_SHA"], run_id=os.environ["GITHUB_RUN_ID"],
+              )
+          except FirstPublicationRequired as error:
               raise SystemExit(
-                  "First publication is owner-held: compare the owner-host "
-                  "package SHA-256 with this run's candidate BEFORE publishing "
-                  "(see the run summary); abort on mismatch. Then configure "
-                  "the crates.io trusted publisher and protected environment "
-                  "and rerun this tag workflow. "
+                  f"{error}: compare the owner-host package SHA-256 with this "
+                  "run's candidate BEFORE publishing (see the run summary); "
+                  "abort on mismatch. Configure the protected crates.io trusted "
+                  "publisher and rerun this tag workflow after manual publication. "
                   "No CI publication or GitHub Release was attempted."
-              )
-          info = crate["crate"]
-          assert info["id"] == name and info["name"] == name
-          assert info["repository"] == "https://github.com/anaregdesign/lantern"
-          assert crate["versions"], "crate exists without a published version"
-          owners = get("/owners")["users"]
-          assert any(
-              entry["login"] == owner and entry["kind"] in ("user", "team")
-              for entry in owners
-          ), (
-              f"configured crates.io owner {owner!r} does not own {name}"
-          )
-          release = get(f"/{version}", allow_missing=True)
-          if release is None:
-              if version == "0.1.0":
-                  raise SystemExit(
-                      "lantern-client 0.1.0 is the owner-held first publication. "
-                      "Compare the owner-host package SHA-256 with this run's "
-                      "candidate BEFORE publishing (see the run summary). "
-                      "Abort on mismatch; after manual publication, rerun."
-                  )
-              required = "true"
-          else:
-              published = release["version"]
-              assert published["crate"] == name and published["num"] == version
-              assert published["yanked"] is False, "published version is yanked"
-              assert published["checksum"] == checksum, (
-                  "existing registry archive differs from the tagged candidate"
-              )
-              provenance = published.get("trustpub_data")
-              if version == "0.1.0":
-                  assert provenance is None, "first publication must be owner-held"
-              else:
-                  assert isinstance(provenance, dict), "missing OIDC provenance"
-                  assert provenance.get("provider") == "github"
-                  assert provenance.get("repository") == "anaregdesign/lantern"
-                  assert provenance.get("sha") == os.environ["GITHUB_SHA"]
-                  assert str(provenance.get("run_id")) == os.environ["GITHUB_RUN_ID"]
-              required = "false"
+              ) from None
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              print(f"publish_required={required}", file=output)
+              print(f"publish_required={str(required).lower()}", file=output)
           PY
 
   publish:
@@ -423,6 +401,11 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         if: needs.preflight.outputs.publish_required == 'true'
+        with:
+          toolchain: '1.97.1'
+      - name: Require fixed publishing Cargo
+        if: needs.preflight.outputs.publish_required == 'true'
+        run: test "$(cargo --version)" = 'cargo 1.97.1 (c980f4866 2026-06-30)'
       - uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
@@ -474,6 +457,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
@@ -491,15 +478,19 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import sys
           import time
           from urllib.error import HTTPError
           from urllib.request import Request, urlopen
+
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "sdks", "rust", "ci"))
+          from registry_policy import release_requires_publish
 
           name = "lantern-client"
           version = os.environ["VERSION"]
           checksum = os.environ["ARCHIVE_SHA256"]
           owner = os.environ["EXPECTED_OWNER"]
-          assert owner and len(checksum) == 64
+          assert len(checksum) == 64
           candidate = Path(os.environ["GITHUB_WORKSPACE"]) / ".rust-release" / f"{name}-{version}.crate"
           assert hashlib.sha256(candidate.read_bytes()).hexdigest() == checksum, (
               "the downloaded candidate archive changed"
@@ -523,33 +514,23 @@ jobs:
                   missing_ok=True,
               ) if metadata is not None else None
               if metadata is not None and archive is not None:
-                  published = json.loads(metadata)["version"]
-                  assert published["crate"] == name and published["num"] == version
-                  assert published["yanked"] is False
-                  assert published["checksum"] == checksum, (
-                      "registry checksum differs from the tested archive"
-                  )
-                  provenance = published.get("trustpub_data")
-                  if version == "0.1.0":
-                      assert provenance is None, "first publication must be owner-held"
-                  else:
-                      assert isinstance(provenance, dict), "missing OIDC provenance"
-                      assert provenance.get("provider") == "github"
-                      assert provenance.get("repository") == "anaregdesign/lantern"
-                      assert provenance.get("sha") == os.environ["GITHUB_SHA"]
-                      assert str(provenance.get("run_id")) == os.environ["GITHUB_RUN_ID"]
-                  assert hashlib.sha256(archive).hexdigest() == checksum, (
-                      "downloaded registry archive differs from the tested archive"
-                  )
-                  owners = json.loads(fetch(f"{api}/owners"))["users"]
-                  assert any(
-                      entry["login"] == owner and entry["kind"] in ("user", "team")
-                      for entry in owners
-                  ), (
-                      "crate ownership changed before GitHub Release"
-                  )
-                  print(f"Verified {name} {version}: registry and candidate SHA-256 {checksum}")
-                  break
+                  crate = fetch(api, missing_ok=True)
+                  versions = fetch(f"{api}/versions", missing_ok=True)
+                  owners = fetch(f"{api}/owners", missing_ok=True)
+                  if crate is not None and versions is not None and owners is not None:
+                      required = release_requires_publish(
+                          json.loads(crate), json.loads(versions), json.loads(owners),
+                          json.loads(metadata),
+                          version=version, checksum=checksum, owner=owner,
+                          sha=os.environ["GITHUB_SHA"], run_id=os.environ["GITHUB_RUN_ID"],
+                      )
+                      if required:
+                          raise ValueError("published version requires another publish")
+                      assert hashlib.sha256(archive).hexdigest() == checksum, (
+                          "downloaded registry archive differs from the tested archive"
+                      )
+                      print(f"Verified {name} {version}: registry and candidate SHA-256 {checksum}")
+                      break
               if attempt == 17:
                   raise SystemExit("crates.io version/archive not visible after bounded polling")
               time.sleep(10)

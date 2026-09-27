@@ -500,13 +500,15 @@ number rather than force-moving the tag.
   the exact immutable tag, six native OS/MSRV/stable conformance lanes,
   warning-free dependency audit, and a license-checked, independently tested
   crate archive; the publish dry-run must pass and a fresh repackage must
-  reproduce the tested bytes. The **first** crates.io publication is
-  owner-held from the verified tag after matching the owner's local package
-  SHA-256 with CI's candidate: no CI token or secret. After the crate exists,
-  only a protected `crates.io` Environment and repository-bound trusted
-  publisher may publish subsequent versions with short-lived OIDC. A separate
-  read-only job verifies the registry's actual archive bytes before the
-  exact-title GitHub Release. Follow [RELEASING.md](sdks/rust/RELEASING.md);
+  reproduce the tested bytes. The **first** crates.io publication (the only
+  version in the complete registry history, not necessarily `0.1.0`) is
+  owner-held from the verified tag using pinned Cargo `1.97.1`, after
+  matching the owner's local package SHA-256 with CI's candidate: no CI token
+  or secret. After the crate exists, only a protected `crates.io` Environment
+  and repository-bound trusted publisher may publish subsequent versions
+  with short-lived OIDC. A separate read-only job verifies the registry's
+  actual archive bytes before the exact-title GitHub Release. Follow
+  [RELEASING.md](sdks/rust/RELEASING.md);
   never publish an unverified package or bypass a failed gate.
 - `sdks/dart/vX.Y.Z` must match `sdks/dart/pubspec.yaml` version `X.Y.Z` and a
   `CHANGELOG.md` heading `## X.Y.Z`. It triggers `dart-sdk.yml`, which must pass the

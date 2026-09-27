@@ -55,21 +55,33 @@ Before artifact upload or the registry decision, tag-time preflight also runs
 `cargo publish --dry-run --locked --package lantern-client` in a fresh target
 directory, then independently reruns `cargo package` in another fresh target
 and requires that archive's **SHA-256 and bytes** to match the inspected/tested
-package. The dry-run does not publish, and the location of its temporary
-archive is not a Cargo API; neither check proves the bytes of a later real
-publish. Registry archive verification after publication remains mandatory.
+package. Both packaging and the conditional publishing job use the fixed
+Rust/Cargo `1.97.1` toolchain, rather than a moving stable alias; each checks
+the exact `cargo --version` before running. The dry-run does not publish, and
+the location of its temporary archive is not a Cargo API; neither check
+proves the bytes of a later real publish. Registry archive verification after
+publication remains mandatory.
 Preflight then uploads the candidate `lantern-client-X.Y.Z.crate` as a 14-day
 Actions artifact and records its SHA-256, tagged commit, runner OS, and Cargo
 version in the run summary. Do not publish if **any** of these
 pre-publication checks fails, or if no candidate artifact was uploaded.
+
+The registry gate uses the complete crates.io `/versions` history (including
+its total and pagination marker), crate owner, checksum, and provenance to
+distinguish an absent crate, its first and only published version, and later
+versions. It does **not** assume `0.1.0` is necessarily the first version.
+Incomplete or inconsistent registry responses fail closed.
 
 ## First publication: crate owner only
 
 The first version (currently planned as `0.1.0`) **cannot** use crates.io
 trusted publishing before the crate exists. The owner performs a one-time
 manual publish from the verified immutable tag with **owner-held credentials**,
-never a registry token in CI or the repository. Do not manually publish any
-later version.
+never a registry token in CI or the repository. If `0.1.0` cannot be published
+from its immutable tag, prepare, review, and qualify a new commit and version
+(for example `0.1.1`) with a new immutable tag; that version may be the
+owner-held first publication. Never move the old tag or republish its version.
+Once any version is published, do not manually publish another version.
 
 1. With the authorized tag pushed, inspect its **Rust SDK Release** run. All
    six conformance lanes, the advisory audit, packaging, archive inspection,
@@ -82,22 +94,26 @@ later version.
    the commit SHA and run attempt). Check its SHA-256 against the run summary.
    On the owner host, check out the exact tag in a clean tree, confirm its
    remote tag object and peeled commit agree with the run, and use the
-   **same Cargo version** and preferably the same Linux packaging environment.
-   A `.crate` produced on another OS or with another Cargo version is not
-   assumed byte-reproducible. The following checks are for the future
-   owner-authorized release, not commands to run during preparation:
+   pinned Rust/Cargo `1.97.1` toolchain and preferably the same Linux
+   packaging environment. A `.crate` produced on another OS or with another
+   Cargo version is not assumed byte-reproducible. The following checks are
+   for the future owner-authorized release, not commands to run during
+   preparation:
 
    ```bash
    set -euo pipefail
-   tag=sdks/rust/v0.1.0
-   ci_archive=/path/to/downloaded/lantern-client-0.1.0.crate
+   tag=sdks/rust/v0.1.0 # replace with the approved first-publication tag
+   version=${tag#sdks/rust/v}
+   ci_archive="/path/to/downloaded/lantern-client-$version.crate"
    expected_sha='<SHA-256 from this Actions run summary>'
+   rustup toolchain install 1.97.1 --profile minimal
+   test "$(rustup run 1.97.1 cargo --version)" = 'cargo 1.97.1 (c980f4866 2026-06-30)'
    test -z "$(git status --porcelain)"
    test "$(git rev-parse HEAD)" = "$(git rev-parse "$tag^{commit}")"
    test "$(gh api "repos/anaregdesign/lantern/git/ref/tags/$tag" --jq '.object.sha')" = \
      "$(git rev-parse "refs/tags/$tag")"
-   (cd sdks/rust && cargo package --locked --package lantern-client)
-   local_archive=sdks/rust/target/package/lantern-client-0.1.0.crate
+   (cd sdks/rust && rustup run 1.97.1 cargo package --locked --package lantern-client)
+   local_archive="sdks/rust/target/package/lantern-client-$version.crate"
    printf '%s  %s\n' "$expected_sha" "$ci_archive" | sha256sum --check --strict
    printf '%s  %s\n' "$expected_sha" "$local_archive" | sha256sum --check --strict
    cmp "$ci_archive" "$local_archive"
@@ -112,14 +128,21 @@ later version.
    publish, so this pre-publish check is necessary but the registry check
    below remains mandatory.
 3. Only after the owner confirms all checks may the owner publish with their
-   own credentials from that verified tag. Wait for the exact version and
-   archive to become visible on crates.io. Configure the **protected**
+   own credentials from that verified tag using the same pinned toolchain:
+
+   ```bash
+   (cd sdks/rust && rustup run 1.97.1 cargo publish --locked --package lantern-client)
+   ```
+
+   Wait for the exact version and archive to become visible on crates.io.
+   Configure the **protected**
    GitHub Environment named `crates.io` with release-tag restrictions and
    required reviewers; register its crates.io trusted publisher for repository
    `anaregdesign/lantern`, workflow file `rust-release.yml`, and environment
    `crates.io`. Then choose **Re-run all jobs** on the original tag workflow
    run (not a new tag or a manual-dispatch workflow). Its registry preflight
-   must see the existing owner-held `0.1.0` without OIDC provenance and an
+   must see the existing first-and-only owner-held version (whether `0.1.0` or
+   a later first version) without OIDC provenance and with an
    exact candidate checksum; its protected publish job obtains a short-lived
    OIDC credential but does not republish the existing version. If registry
    propagation is incomplete, wait and rerun; if the new candidate differs
