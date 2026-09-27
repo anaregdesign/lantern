@@ -441,12 +441,14 @@ be inferred from the smoke or CDC runs. Follow the
 [receipt attestation runbook](receipt-attestation.md) for the exact per-platform
 12-scenario matrix, trusted HTTPS response-drop fixture, actual SIGKILL/relaunch
 protocol, capture-time installed-byte check, and private signed-original
-custody. Those operations have **not** been performed by the source change.
+custody through release verification. Those operations have **not** been
+performed by the source change.
 
 Commit **only** these eight content-free evidence files (and an optional
 README in the same directory) as the immediate child of the tested code
-commit. Tag that child only after independent validation of both physical
-receipt runs and approved private custody. The release gate requires its
+commit. Tag that child only after validating both physical receipt runs and
+copying the signed originals to the owner-controlled private location described
+in the runbook. The release gate requires its
 parent to equal all eight `testedCommit` fields and rejects every other
 changed path. It also compares smoke/CDC toolchain/package identity to the
 tag's same-attempt Android/iOS simulator manifests. This binds the tag to

@@ -146,9 +146,10 @@ and no limitations. The receipt-bearing release **also** requires
 and `ios-receipt-marker.json` from separate signed profile builds. Follow
 the [receipt physical runbook](receipt-attestation.md) for the private
 HTTPS proxy, real response loss, first-launch SIGKILL, on-device second-launch
-assertions, capture-time installed-byte comparison, and approved immutable
-private custody of signed originals. Neither older smoke/CDC evidence nor
-host or simulator probes qualify these receipt paths.
+assertions, capture-time installed-byte comparison, and short-lived private
+local copies of signed originals on the FileVault-encrypted Mac. Neither
+older smoke/CDC evidence nor host or simulator probes qualify these receipt
+paths.
 
 Commit **only** those eight content-free records/markers (and an optional
 adjacent README) as the immediate child of the exact tested code commit.
@@ -160,7 +161,10 @@ reused for the receipt-bearing source;
 the example's offline `^0.4.0` dependency and lock describe the candidate,
 not a published package. Do not retarget that dependency to the hosted
 Put-only `0.3.0`, tag, or publish until both actual physical receipt runs,
-approved private immutable custody, and every release gate are complete.
+verified local copies held through tag CI and hosted archive equality, and
+every release gate are complete. If release is not finished within 30 days of
+capture, discard the local copies and repeat the physical runs with fresh
+builds and run IDs before tagging.
 An offline package administrator must also confirm the offline pub.dev OIDC
 binding; it is not verified by this source change. The pub.dev OIDC process
 is described in [CONTRIBUTING.md](../../../CONTRIBUTING.md).
