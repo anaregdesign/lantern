@@ -178,7 +178,7 @@ manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
 record required before an offline release. The merged offline 0.4.0 source
-candidate declares a hosted `lantern_client: ^0.3.2` dependency and has an
+candidate declares a hosted `lantern_client: ^0.3.3` dependency and has an
 independent candidate archive gate; the parent `lantern_client` publish
 archive continues to exclude `offline/` and `offline_sqlite/`. The maintained
 Flutter app under `sdks/dart/example/` is a repository integration fixture
@@ -545,7 +545,7 @@ complete, not a procedure for the receipt-bearing 0.4.0 candidate. Never
 repeat manual publication for a later version, reuse a published tag, or put
 a pub token in GitHub Secrets, CI, or the repository.
 
-**Dart publishing status.** The parent `lantern_client` 0.3.2 is published and
+**Dart publishing status.** The parent `lantern_client` 0.3.3 is published and
 its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
@@ -554,7 +554,7 @@ manual `dart pub publish`. Immediately before tagging, check
 already exist. Never force-move a published Dart tag/version—bump patch.
 
 **Offline receipt release preparation (#1398/#1115/#1399).** Merged offline
-0.4.0 source requires hosted `lantern_client ^0.3.2`; it is not yet a
+0.4.0 source requires hosted `lantern_client ^0.3.3`; it is not yet a
 published or qualified receipt release. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without
