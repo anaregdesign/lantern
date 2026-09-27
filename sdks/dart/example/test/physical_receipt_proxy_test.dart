@@ -8,6 +8,52 @@ import '../tool/physical_receipt_proxy.dart';
 
 void main() {
   test(
+    'token connection retries socket failures within a fixed bound',
+    () async {
+      var attempts = 0;
+      final waits = <Duration>[];
+      final connection = await retryReceiptTokenConnect(() async {
+        attempts++;
+        if (attempts < 3) throw const SocketException('transient');
+        return 'connected';
+      }, pause: (duration) async => waits.add(duration));
+      expect(connection, 'connected');
+      expect(attempts, 3);
+      expect(waits, [
+        const Duration(milliseconds: 500),
+        const Duration(seconds: 1),
+      ]);
+
+      attempts = 0;
+      await expectLater(
+        retryReceiptTokenConnect(() async {
+          attempts++;
+          throw const SocketException('persistent');
+        }, pause: (_) async {}),
+        throwsA(isA<SocketException>()),
+      );
+      expect(attempts, 3);
+    },
+  );
+
+  test('token connection does not retry TLS or application failures', () async {
+    for (final error in [
+      HandshakeException('untrusted certificate'),
+      StateError('invalid response'),
+    ]) {
+      var attempts = 0;
+      await expectLater(
+        retryReceiptTokenConnect<void>(() async {
+          attempts++;
+          throw error;
+        }, pause: (_) async => fail('Unexpected retry delay')),
+        throwsA(same(error)),
+      );
+      expect(attempts, 1);
+    }
+  });
+
+  test(
     'the proxy drops committed responses and seals a restart trace',
     () async {
       var committed = 0;
