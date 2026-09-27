@@ -334,6 +334,67 @@ void main() {
     await expectLater(canceledCall, throwsA(isA<LanternCanceledException>()));
   });
 
+  test(
+    'deadline interrupts a pending native open and aborts its late request',
+    () async {
+      final native = _PendingOpenHttpClient();
+      final client = LanternClient.connect(
+        Uri.parse('https://example.test'),
+        defaultTimeout: const Duration(milliseconds: 20),
+        httpClientFactory: () => native,
+      );
+      addTearDown(client.close);
+
+      final call = client.getServerStatus();
+      final result = expectLater(
+        call.timeout(const Duration(seconds: 2)),
+        throwsA(isA<LanternDeadlineExceededException>()),
+      );
+      await native.opened.future.timeout(const Duration(seconds: 2));
+      await result;
+
+      final late = _LateOpenRequest();
+      native.completeOpen(late);
+      final reason = await late.aborted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(reason, isA<connect.ConnectException>());
+      expect(
+        (reason as connect.ConnectException).code,
+        connect.Code.deadlineExceeded,
+      );
+    },
+  );
+
+  test('caller cancellation interrupts a pending native open', () async {
+    final native = _PendingOpenHttpClient();
+    final cancellation = LanternCancellationToken();
+    final client = LanternClient.connect(
+      Uri.parse('https://example.test'),
+      defaultTimeout: null,
+      httpClientFactory: () => native,
+    );
+    addTearDown(client.close);
+
+    final call = client.getServerStatus(
+      options: LanternCallOptions(cancellation: cancellation),
+    );
+    await native.opened.future.timeout(const Duration(seconds: 2));
+    cancellation.cancel('screen disposed');
+    await expectLater(
+      call.timeout(const Duration(seconds: 2)),
+      throwsA(isA<LanternCanceledException>()),
+    );
+
+    final late = _LateOpenRequest();
+    native.completeOpen(late);
+    final reason = await late.aborted.future.timeout(
+      const Duration(seconds: 2),
+    );
+    expect(reason, isA<connect.ConnectException>());
+    expect((reason as connect.ConnectException).code, connect.Code.canceled);
+  });
+
   test('close is idempotent and rejects later calls', () async {
     var closeCalls = 0;
     final client = LanternClient.connect(
@@ -458,4 +519,37 @@ void main() {
     await subscription.cancel();
     await source.close();
   });
+}
+
+final class _PendingOpenHttpClient implements io.HttpClient {
+  final opened = Completer<void>();
+  final _pending = Completer<io.HttpClientRequest>();
+
+  @override
+  Future<io.HttpClientRequest> openUrl(String method, Uri url) {
+    if (!opened.isCompleted) opened.complete();
+    return _pending.future;
+  }
+
+  void completeOpen(io.HttpClientRequest request) => _pending.complete(request);
+
+  @override
+  void close({bool force = false}) {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('unexpected native HTTP operation');
+}
+
+final class _LateOpenRequest implements io.HttpClientRequest {
+  final aborted = Completer<Object?>();
+
+  @override
+  void abort([Object? exception, StackTrace? stackTrace]) {
+    if (!aborted.isCompleted) aborted.complete(exception);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnsupportedError('aborted request must not be used');
 }
