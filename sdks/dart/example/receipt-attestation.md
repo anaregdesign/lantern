@@ -50,8 +50,10 @@ schema-2 **passed / complete** marker with the `restart` proof. An
 incomplete, `running`, `failed`, or schema-1 marker cannot satisfy the
 dedicated release check.
 
-The marker stays content-free at `tmp/lantern-receipt-attestation.json`
-(Android app cache); it never records an endpoint, token, graph data,
+The marker stays content-free under `Directory.systemTemp`: normally
+`code_cache/lantern-receipt-attestation.json` on Android (with `cache/` as the
+Flutter fallback), and `tmp/lantern-receipt-attestation.json` on iOS. It never
+records an endpoint, token, graph data,
 receipt IDs or their identity digest, device identifier, binary path, or raw
 exception. The private journal is app-local and is not a public artifact.
 Android hashes the installed single APK containing the Dart AOT target;
@@ -73,9 +75,11 @@ app-temp file `lantern-receipt-binary-probe.json`. On Android, copy it with:
 
 ```bash
 adb -d exec-out run-as com.anaregdesign.lantern_example \
-  cat cache/lantern-receipt-binary-probe.json > "$PRIVATE_DIR/android-probe.json"
+  cat code_cache/lantern-receipt-binary-probe.json > "$PRIVATE_DIR/android-probe.json"
 ```
 
+If Flutter used the ordinary `cache/` fallback, read that path instead. Check
+both paths and reject an ambiguous duplicate before using a captured marker.
 On iOS use the CoreDevice `appDataContainer` copy shown below with
 `tmp/lantern-receipt-binary-probe.json`. This only checks that the
 installed-path lookup works on each device. The strict validator rejects
@@ -148,9 +152,12 @@ Vertex Delete, Edge Delete, and contribution-keyed Add. Wait for
 process remains live, send a genuine SIGKILL that does not
 clear app data, record the private kill method/PIDs, and relaunch that same
 installed app. Do not use `--terminate-existing` as evidence of SIGKILL.
+An operator-phase announcement failure or normal 20-minute wait timeout writes
+a failed handoff marker; start a fresh run rather than relaunching it.
 The second process must produce a fresh schema-2 `passed / complete` marker
 after post-relaunch assertions and cleanup. On Android retrieve it from
-`cache/lantern-receipt-attestation.json` via `adb -d exec-out run-as`;
+`code_cache/lantern-receipt-attestation.json` via `adb -d exec-out run-as`
+(or `cache/` only when the `code_cache/` file is absent);
 on iOS use CoreDevice `device copy from` with appDataContainer source
 `tmp/lantern-receipt-attestation.json`. If marker extraction, an operator
 phase, or any cleanup cannot be proven, stop and rerun from a fresh build
@@ -158,7 +165,8 @@ and run ID.
 
 On Android, capture each current phase and the pre-kill marker with
 `adb -d exec-out run-as com.anaregdesign.lantern_example cat
-cache/<file>.json` into a private file, and obtain the live PID with
+code_cache/<file>.json` into a private file (using `cache/` only if Flutter's
+code cache is unavailable), and obtain the live PID with
 `adb -d shell pidof com.anaregdesign.lantern_example`. When and only when
 the phase is `sigkill_now`, use
 `adb -d shell run-as com.anaregdesign.lantern_example kill -9 <pre-kill-PID>`.

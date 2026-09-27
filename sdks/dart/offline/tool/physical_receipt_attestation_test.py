@@ -326,24 +326,59 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
 
     def test_device_capture_requires_hardware_and_reads_android_app_container(self):
         marker = b'{"kind":"physical_receipt_attestation"}'
-        with patch.object(
-            attestation, "_bounded_command_stdout", side_effect=[b"0\n", marker],
-        ) as capture:
-            self.assertEqual(attestation.capture_device_marker("android"), marker)
-            self.assertEqual(
-                capture.call_args_list[0].args[0],
-                ["adb", "-d", "shell", "getprop", "ro.kernel.qemu"],
-            )
-            self.assertIn("run-as", capture.call_args_list[1].args[0])
+        code_path = "code_cache/lantern-receipt-attestation.json"
+        cache_path = "cache/lantern-receipt-attestation.json"
+
+        def capture_for(files, *, unreadable=()):
+            calls = []
+
+            def capture(command, **_):
+                calls.append(command)
+                if command == ["adb", "-d", "shell", "getprop", "ro.kernel.qemu"]:
+                    return b"0\n"
+                if command[-2] == "cat":
+                    path = command[-1]
+                    if path in files and path not in unreadable:
+                        return files[path]
+                    raise subprocess.CalledProcessError(1, command)
+                if command[-2] == "-c" and command[-1].startswith("test ! -e "):
+                    path = command[-1].removeprefix("test ! -e ")
+                    if path not in files:
+                        return b""
+                    raise subprocess.CalledProcessError(1, command)
+                self.fail(f"unexpected Android capture command: {command}")
+
+            return capture, calls
+
+        for files, selected in [
+            ({code_path: marker}, code_path),
+            ({cache_path: marker}, cache_path),
+        ]:
+            with self.subTest(selected=selected):
+                fake, calls = capture_for(files)
+                with patch.object(attestation, "_bounded_command_stdout", side_effect=fake):
+                    self.assertEqual(attestation.capture_device_marker("android"), marker)
+                self.assertEqual(calls[0], ["adb", "-d", "shell", "getprop", "ro.kernel.qemu"])
+                self.assertEqual(
+                    [call[-1] for call in calls if call[-2] == "cat"],
+                    [code_path, cache_path],
+                )
+        for files, unreadable, reason in [
+            ({}, (), "missing or ambiguous"),
+            ({code_path: marker, cache_path: marker}, (), "missing or ambiguous"),
+            ({code_path: marker, cache_path: marker}, (code_path,), "copy failed"),
+        ]:
+            with self.subTest(files=files, unreadable=unreadable):
+                fake, _ = capture_for(files, unreadable=unreadable)
+                with patch.object(attestation, "_bounded_command_stdout", side_effect=fake), self.assertRaisesRegex(ValueError, reason):
+                    attestation.capture_device_marker("android")
         with patch.object(
             attestation, "_bounded_command_stdout", return_value=b"1\n",
         ) as capture, self.assertRaisesRegex(ValueError, "physical hardware"):
             attestation.capture_device_marker("android")
         capture.assert_called_once()
-        with patch.object(
-            attestation, "_bounded_command_stdout",
-            side_effect=[b"0\n", b"x" * (attestation.MAX_EVIDENCE_BYTES + 1)],
-        ), self.assertRaisesRegex(ValueError, "oversized"):
+        fake, _ = capture_for({code_path: b"x" * (attestation.MAX_EVIDENCE_BYTES + 1)})
+        with patch.object(attestation, "_bounded_command_stdout", side_effect=fake), self.assertRaisesRegex(ValueError, "oversized"):
             attestation.capture_device_marker("android")
 
     def test_device_stdout_is_bounded_and_timeout_reaps_the_child(self):

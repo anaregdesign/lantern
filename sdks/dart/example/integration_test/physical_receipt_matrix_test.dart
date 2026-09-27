@@ -84,9 +84,7 @@ void main() {
           database,
         ),
       );
-      await actions.announce('sigkill_now');
-      await Future<void>.delayed(const Duration(minutes: 20));
-      throw StateError('Receipt app was not SIGKILLed after preparation');
+      await run.awaitSigkillOrFail(() => actions.announce('sigkill_now'));
     },
     timeout: const Timeout(Duration(hours: 4)),
   );
