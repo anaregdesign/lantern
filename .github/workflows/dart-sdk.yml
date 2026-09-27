@@ -427,6 +427,14 @@ jobs:
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" dart test
 
+      - name: Generate ephemeral authenticated HA certificates
+        working-directory: .
+        run: |
+          umask 077
+          tls_dir="$RUNNER_TEMP/lantern-offline-receipt-ha-tls"
+          mkdir -m 700 "$tls_dir"
+          go run ./testbed/bench/receipttls generate -dir "$tls_dir"
+
       - name: Test authenticated three-replica receipt ambiguity
         timeout-minutes: 5
         run: |
@@ -437,6 +445,7 @@ jobs:
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             LANTERN_DART_RECEIPT_HA_BINARY="$RUNNER_TEMP/lantern-offline" \
+            LANTERN_DART_RECEIPT_HA_TLS_DIR="$RUNNER_TEMP/lantern-offline-receipt-ha-tls" \
             dart test \
               --name '^receipt ambiguity stays status-first across three authenticated replicas$' \
               test/real_wire_test.dart
@@ -496,6 +505,7 @@ jobs:
         run: |
           bash testbed/scripts/dart_receipt_fixture.sh stop "$RUNNER_TEMP/lantern-offline-receipt"
           cat "$RUNNER_TEMP/lantern-offline.log" 2>/dev/null || true
+          rm -rf -- "$RUNNER_TEMP/lantern-offline-receipt-ha-tls"
           if [[ -f "$RUNNER_TEMP/lantern-offline.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/lantern-offline.pid")" 2>/dev/null || true
           fi
