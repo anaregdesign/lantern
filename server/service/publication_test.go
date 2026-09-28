@@ -50,6 +50,9 @@ func (b *countingCapacityBackend) CapacityFootprint() (int, int) {
 
 func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T) {
 	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
+	if svc.SnapshotInstallActive() {
+		t.Fatal("fresh service reports an active Snapshot")
+	}
 	oldGeneration, faulted := svc.publicationStatus()
 	if faulted {
 		t.Fatal("fresh service started with a CDC gap")
@@ -57,6 +60,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 	finish, err := svc.BeginSnapshotInstall()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !svc.SnapshotInstallActive() {
+		t.Fatal("active Snapshot is not visible to the pump")
 	}
 	if _, err := svc.BeginSnapshotInstall(); connect.CodeOf(err) != connect.CodeUnavailable {
 		t.Fatalf("concurrent Snapshot install error = %v", err)
@@ -67,6 +73,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 		t.Fatal("Snapshot install did not gap existing CDC generation")
 	}
 	finish(false)
+	if svc.SnapshotInstallActive() {
+		t.Fatal("failed Snapshot still reports an active installer")
+	}
 	if _, faulted := svc.publicationStatus(); !faulted {
 		t.Fatal("failed Snapshot replay cleared its CDC gap")
 	}
@@ -75,6 +84,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 		t.Fatal(err)
 	}
 	retry(true)
+	if svc.SnapshotInstallActive() {
+		t.Fatal("verified Snapshot still reports an active installer")
+	}
 	newGeneration, faulted := svc.publicationStatus()
 	if faulted || newGeneration == oldGeneration {
 		t.Fatal("verified Snapshot replay did not create a healthy CDC generation")
@@ -296,6 +308,9 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	svc := NewLanternService(cache).
 		WithTombstoneTTL(time.Hour).
 		WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	if svc.CanSkipSelfEcho(origin) || svc.CanSkipSelfEcho(bytes16("different")) {
+		t.Fatal("uncommitted or different local origin permitted self-echo suppression")
+	}
 	first := &pb.PutVerticesRequest{IfAbsent: true, Vertices: []*pb.Vertex{{
 		Key: "first", Value: &pb.Vertex_String_{String_: "original"}, Expiration: futureTs(time.Minute),
 	}}}
@@ -307,6 +322,9 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	}
 	if svc.pendingLocalMutation == nil || svc.pendingLocalMutation.mutation.GetSeq() != 1 {
 		t.Fatalf("pending local mutation = %v, want seq 1", svc.pendingLocalMutation)
+	}
+	if svc.CanSkipSelfEcho(origin) {
+		t.Fatal("unpublished local mutation permitted self-echo suppression")
 	}
 	pendingEffect := svc.pendingLocalMutation.walOp
 	if _, ok := pendingEffect.(*graphPutEffectEnvelope); !ok {
@@ -333,6 +351,9 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if svc.CanSkipSelfEcho(origin) {
+		t.Fatal("active Snapshot permitted self-echo suppression")
+	}
 	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "repair-probe"}}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("write repaired pending WAL during Snapshot fault: %v", err)
 	}
@@ -358,6 +379,9 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	if svc.pendingLocalMutation != nil || svc.publicationFaultCount != 0 {
 		t.Fatal("repair left local publication fault set")
 	}
+	if !svc.CanSkipSelfEcho(origin) {
+		t.Fatal("verified recovery did not restore safe self-echo suppression")
+	}
 	if got := svc.LocalSeq(origin); got != 1 {
 		t.Fatalf("repaired origin seq = %d, want 1", got)
 	}
@@ -374,6 +398,43 @@ func TestPublishLocalMutation_FaultBlocksLaterWritesAndRepairsOriginal(t *testin
 	live := mutation.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetLive()
 	if mutation.GetSeq() != 1 || live.GetKey() != "first" || live.GetString_() != "original" {
 		t.Fatalf("repaired original mutation = %v", mutation)
+	}
+}
+
+func TestCanSkipSelfEchoNeverSkipsDurableReceiptOrigin(t *testing.T) {
+	fixture := newReceiptEdgeDeleteFixture(t, nil)
+	if fixture.service.CanSkipSelfEcho(fixture.service.clock.NodeID()) {
+		t.Fatal("receipt-WAL origin permitted self-echo suppression")
+	}
+}
+
+func TestCanSkipSelfEchoRequiresCommittedLocalHistory(t *testing.T) {
+	origin := bytes16("echo-origin")
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithReplication(log, hlc.New(origin, hlc.Options{}), nil)
+	if svc.CanSkipSelfEcho(origin) {
+		t.Fatal("empty local origin permitted self-echo suppression")
+	}
+	if _, err := svc.PutVertex(context.Background(), &pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "own", Expiration: futureTs(time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.CanSkipSelfEcho(origin) {
+		t.Fatal("committed graph-only origin could not suppress self-echo")
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.CanSkipSelfEcho(origin) {
+		t.Fatal("Snapshot fault permitted self-echo suppression")
+	}
+	finish(true)
+	if !svc.CanSkipSelfEcho(origin) {
+		t.Fatal("verified Snapshot did not restore self-echo suppression")
 	}
 }
 

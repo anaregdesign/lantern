@@ -108,9 +108,22 @@ jobs:
           image_commit="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' lantern:local | sed -n 's/^LANTERN_COMMIT=//p')"
           [[ "$image_commit" == "$GITHUB_SHA" ]] ||
             { echo 'diagnostic image differs from requested source' >&2; exit 1; }
+          cpus="$(nproc)"
+          for attempt in $(seq 1 19); do
+            load="$(awk '{print $1}' /proc/loadavg)"
+            if awk -v host_load="$load" -v cpus="$cpus" 'BEGIN { exit !(host_load < cpus / 2) }'; then
+              break
+            fi
+            if [[ "$attempt" -eq 19 ]]; then
+              echo "diagnostic runner remained busy after 180s: 1m load=$load cpus=$cpus" >&2
+              exit 1
+            fi
+            sleep 10
+          done
           printf 'source=%s image=%s runner=%s/%s cpus=%s\n' \
             "$GITHUB_SHA" "$(docker image inspect --format '{{.Id}}' lantern:local)" \
-            "$RUNNER_OS" "$RUNNER_ARCH" "$(nproc)"
+            "$RUNNER_OS" "$RUNNER_ARCH" "$cpus"
+          printf 'preflight_load_1m=%s (must be < cpus/2, cpus=%s)\n' "$load" "$cpus"
           free -h
           uptime
       - name: Run manual leak-gate sweep (blocking)
@@ -134,15 +147,17 @@ jobs:
         # or a harness/setup error) fails this requested qualification.
         run: ./testbed/bench/release.sh --out bench-report.md
       - name: Run one diagnostic scenario
+        id: diagnostic
         if: inputs.diagnostic_scenario != ''
         env:
           LANTERN_IMAGE: lantern:local
           LEAK_GATE_ONLY: '1'
+          KEEP_UP: ${{ inputs.diagnostic_scenario == 'broad_rw' && '1' || '0' }}
           DIAGNOSTIC_SCENARIO: ${{ inputs.diagnostic_scenario }}
           LANTERN_BENCH_MUTATION_LOG_CAPACITY: ${{ inputs.diagnostic_log_capacity }}
         run: ./testbed/bench/run.sh "$DIAGNOSTIC_SCENARIO"
       - name: Summarize diagnostic RPC errors
-        if: always() && inputs.diagnostic_scenario != ''
+        if: always() && inputs.diagnostic_scenario != '' && steps.diagnostic.outcome != 'skipped'
         run: |
           set -euo pipefail
           find testbed/bench/out -name 'ghz_steady_*.json' -print0 | sort -z | while IFS= read -r -d '' file; do
@@ -158,6 +173,40 @@ jobs:
               }) | group_by(.reason)[] | "  \(.[0].reason): \(map(.count) | add)"
             ' "$file"
           done
+      - name: Summarize diagnostic replication health
+        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          for port in 9390 9391 9392; do
+            echo "replica=localhost:${port}"
+            curl -fsS --max-time 10 "http://localhost:${port}/metrics" |
+              awk '$1 ~ /^lantern_(mutation_log_(entries_total|capacity|fill_ratio|evicted_total)|mutationlog_subscriber_dropped_total|subscribe_(active_streams|dropped_total)|replication_(applied_total|apply_total|dropped_total|lag_seq)|peer_connected|snapshot_replayed_total|anti_entropy_(cycles_total|gaps_found_total))(\{|$)/ {print}'
+          done
+      - name: Summarize diagnostic peer repairs
+        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          for replica in lantern-0 lantern-1 lantern-2; do
+            echo "replica=${replica}"
+            docker compose --project-name lantern-bench \
+              -f deploy/compose/docker-compose.yml \
+              -f testbed/bench/compose.override.yml \
+              logs --no-color --since 10m "$replica" |
+              awk '
+                /replication pump: peer transition|replication pump: peer session error|anti-entropy: Subscribe gapped|anti-entropy: catch-up failed|local mutation log append failed/ {
+                  matches++
+                  lines[matches % 160] = $0
+                }
+                END {
+                  printf "peer_repair_events=%d, showing last %d\n", matches, (matches < 160 ? matches : 160)
+                  first = matches > 160 ? matches - 159 : 1
+                  for (i = first; i <= matches; i++) print lines[i % 160]
+                }
+              '
+          done
+      - name: Stop diagnostic cluster
+        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
+        run: docker compose --project-name lantern-bench -f deploy/compose/docker-compose.yml -f testbed/bench/compose.override.yml down -v --remove-orphans
       - name: Run four receipt admission and lookup gates (blocking)
         if: inputs.diagnostic_scenario == ''
         env:
@@ -181,6 +230,7 @@ jobs:
           name: bench-report-manual
           path: |
             bench-report.md
+            testbed/bench/out/broad_rw/
             testbed/bench/out/edge_contrib_idempotent/
             testbed/bench/out/receipt_admission_lookup/
             testbed/bench/out/receipt_vertex_put_admission_lookup/

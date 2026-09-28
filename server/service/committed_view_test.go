@@ -144,6 +144,128 @@ func TestLanternService_CommittedViewFailsClosed(t *testing.T) {
 	}
 }
 
+func TestLanternService_PublicGraphReadRetrySerializesAndFailsClosed(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(newFakeBackend()).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
+	ctx := context.Background()
+	attempts := 0
+	if err := svc.withPublicGraphReadRetry(ctx, func() error {
+		attempts++
+		if attempts == 1 {
+			svc.replicationCutMu.Lock()
+			svc.replicationCutMu.Unlock()
+		}
+		return nil
+	}); err != nil || attempts != 2 {
+		t.Fatalf("one overlapping publication = %v, attempts=%d; want stable retry", err, attempts)
+	}
+
+	attempts = 0
+	err := svc.withPublicGraphReadRetry(ctx, func() error {
+		attempts++
+		if attempts <= 3 {
+			svc.replicationCutMu.Lock()
+			svc.replicationCutMu.Unlock()
+		}
+		return nil
+	})
+	if err != nil || attempts != 4 {
+		t.Fatalf("continuous publications = %v, attempts=%d; want one serialized capture", err, attempts)
+	}
+	captureErr := errors.New("capture failed")
+	attempts = 0
+	err = svc.withPublicGraphReadRetry(ctx, func() error {
+		attempts++
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		return captureErr
+	})
+	if !errors.Is(err, captureErr) || attempts != 1 {
+		t.Fatalf("failed capture = %v, attempts=%d; want original failure without retry", err, attempts)
+	}
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	attempts = 0
+	err = svc.withPublicGraphReadRetry(cancelledCtx, func() error {
+		attempts++
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		cancel()
+		return nil
+	})
+	if connect.CodeOf(err) != connect.CodeCanceled || attempts != 1 {
+		t.Fatalf("cancelled retry = %v, attempts=%d; want immediate Canceled", err, attempts)
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish(false)
+	attempts = 0
+	err = svc.withPublicGraphReadRetry(ctx, func() error { attempts++; return nil })
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || attempts != 0 {
+		t.Fatalf("faulted retry = %v, attempts=%d; want fail-closed without capture", err, attempts)
+	}
+}
+
+func TestLanternService_PublicGraphReadFallbackBlocksPublication(t *testing.T) {
+	svc := NewLanternService(newFakeBackend())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	attempts := 0
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- svc.withPublicGraphReadRetry(context.Background(), func() error {
+			attempts++
+			if attempts <= 3 {
+				svc.replicationCutMu.Lock()
+				svc.replicationCutMu.Unlock()
+			} else {
+				close(entered)
+				<-release
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serialized capture did not start")
+	}
+	writerDone := make(chan struct{})
+	go func() {
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		close(writerDone)
+	}()
+	select {
+	case <-writerDone:
+		t.Fatal("publication entered during serialized graph read")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-readDone:
+		if err != nil || attempts != 4 {
+			t.Fatalf("serialized graph read = %v, attempts=%d", err, attempts)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serialized graph read did not finish")
+	}
+	select {
+	case <-writerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("publication remained blocked after graph read")
+	}
+}
+
 type heldVertexReadBackend struct {
 	Backend
 	entered chan struct{}

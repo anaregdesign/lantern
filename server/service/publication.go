@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -158,7 +159,7 @@ func (s *LanternService) commitReplicatedReceipt(
 }
 
 func publicationGapError() error {
-	return connect.NewError(connect.CodeFailedPrecondition,
+	return replicationstatus.TransientGap(replicationstatus.ReasonPublicationFault,
 		errors.New("gapped: mutation publication or Snapshot install requires repair before reading, subscribing, or taking a snapshot"))
 }
 
@@ -195,6 +196,28 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 		}
 		s.snapshotInstallMu.Unlock()
 	}, nil
+}
+
+// SnapshotInstallActive lets the replication pump defer a second Snapshot
+// while another installer is already repairing this receiver. A failed
+// install releases the lock but leaves the publication fault for repair.
+func (s *LanternService) SnapshotInstallActive() bool {
+	if !s.snapshotInstallMu.TryLock() {
+		return true
+	}
+	s.snapshotInstallMu.Unlock()
+	return false
+}
+
+// CanSkipSelfEcho is true only when this graph-only replica has no unpublished
+// local mutation or repair fault. Receipt-WAL peers keep the full origin stream
+// so receipt evidence and durable recovery cannot be bypassed.
+func (s *LanternService) CanSkipSelfEcho(origin hlc.NodeID) bool {
+	s.replicationCutMu.RLock()
+	defer s.replicationCutMu.RUnlock()
+	return s.receiptStore == nil && s.clock != nil && s.clock.NodeID() == origin &&
+		s.origins != nil && s.origins.LocalSeq(origin) > 0 &&
+		s.publicationFaultCount == 0 && !s.receiptCommitFaulted && s.pendingLocalMutation == nil
 }
 
 func publicationChangedDuringReadError() error {

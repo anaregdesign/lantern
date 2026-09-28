@@ -358,8 +358,10 @@ A completed Snapshot replay may advance the prefix past unavailable log
 entries because its graph image supplies the missing effects.
 
 Buffer size is `LANTERN_MUTATION_LOG_CAPACITY` (default 100,000). Overflow
-drops **oldest** entries; consumers that fall behind that far are forced to
-re-bootstrap via `Snapshot`. The capacity is published as
+drops **oldest** entries. Consumers whose needed per-origin entries were
+evicted must re-bootstrap via `Snapshot`; a portable origin vector may
+still resume without a Snapshot if every entry it needs is retained.
+The capacity is published as
 `lantern_mutation_log_capacity`; successful appends increment
 `lantern_mutation_log_entries_total`.
 
@@ -513,12 +515,19 @@ Consequence:
   dedupe by `(origin, seq)` on the client side; the server already
   does that work via the per-origin commit cursor.
 - A consumer that fails over from replica X to replica Y resumes by
-  sending the highest seq it has already observed FOR EACH origin in
+  sending the next seq it expects FOR EACH origin in
   `from_seq_per_origin`. The new replica delivers only entries with
   `mu.Seq >= cursor[origin]` for origins present in the cursor;
   origins absent from the cursor are delivered from the oldest
   retained entry (so a freshly-joined origin is picked up
-  automatically).
+  automatically). Under the same publication cut used to register the
+  live tail, full and identity-only Subscribe prove that each needed
+  origin-anchored entry through the published frontier is still retained.
+  A genuinely missing origin entry returns `FailedPrecondition` (`gapped`)
+  for Snapshot repair; evicting unrelated already-consumed entries does
+  not force a Snapshot. Pump reconnects and anti-entropy catch-up send
+  their complete committed local origin vectors; a cold node sends an
+  empty vector and Snapshot resume uses the verified header cutoffs.
 - `Mutation.Seq` is the originating writer's local seq, NOT the
   forwarding replica's local seq. This is preserved end-to-end: the
   Subscribe relay never overwrites `mu.Seq`, and the originating writer
@@ -539,11 +548,17 @@ replica is read-only and may not yet have converged. The identity-only CDC
 server and storage-neutral offline consumer are implemented under #1116;
 their production Dart package bridge and release qualification remain #1314.
 
-The internal peer pump uses the same RPC. Ordinary sessions start with an
-empty portable cursor and rely on `ApplyMutation`'s contiguous cursor to dedup
-duplicate hops; snapshot recovery resumes with both header-derived origin and
-same-responder local cursors. It still performs input-side self-echo
-suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
+The internal peer pump uses the same RPC. Ordinary sessions resume from the
+local contiguous committed origin vector; snapshot recovery resumes with both
+header-derived origin and same-responder local cursors. In graph-only mode,
+if PeerStatus proves the peer's local-origin watermark does not exceed the
+receiver's nonempty committed prefix and the receiver has no publication
+fault, the Pump requests that its own origin be filtered from that Subscribe
+stream. Receipt-WAL mode retains the full stream. The input-side self-echo guard
+remains defence-in-depth; if a peer instead reports local-origin history
+ahead of a restarted receiver, or sends such a frame after status, the Pump
+repairs it by verified Snapshot, not by discarding those frames. Equal
+peer/local NodeIDs fail closed.
 
 **Full-mutation frame admission (#1440).** The canonical transport projection
 is the protobuf `SubscribeResponse` containing the mutation that `Subscribe`
@@ -589,13 +604,52 @@ limits in §8.3 remain independent and are not raised by this invariant.
 
 Back-pressure and publication faults: server terminates the stream with
 `FAILED_PRECONDITION` (`gapped`) if (a) the ring has been truncated below the
-requested responder-local replay position, (b) the consumer's send buffer
-overflows, or (c) a local or remote mutation changed the graph but its log
-append failed. The fault also rejects new Subscribe/Snapshot attempts until
-repair, and closes every stream from the previous generation even if repair
-completes quickly. After repair the consumer must re-bootstrap via
-`Snapshot` and resume `Subscribe` with the
-`cutoff_seq_per_origin` and `cutoff_local_seq` returned by `SnapshotHeader`.
+requested responder-local replay position or an undelivered replay tail,
+(b) the bounded **live** subscriber buffer overflows after retained replay
+has caught up, or (c) a local or remote mutation changed the graph but its log
+append failed. A publication fault rejects new Subscribe/Snapshot attempts
+until repair, and closes every stream from the previous generation even if
+repair completes quickly.
+
+The status carries a fixed `google.rpc.ErrorInfo` detail (domain
+`github.com/anaregdesign/lantern`) for two conditions that do **not** by
+themselves prove missing history: `SUBSCRIBER_STREAM_CLOSED` when the log
+subscriber closes (a live-buffer overrun, a replay tail evicted during
+forwarding, or shutdown) and `PUBLICATION_FAULT` when this responder cannot
+currently publish or serve a consistent snapshot. The peer Pump backs off
+and reconnects from its **committed per-origin cursor** for those two
+peer-side reasons; anti-entropy defers to its next tick. A publication
+fault may require a verified repair of the affected node before retries can
+succeed. In particular, a local publication fault returned by
+`ApplyMutation` still requires the receiver to install a Snapshot from a
+healthy peer. Neither error detail permits skipping an origin or advancing
+a cursor without applying its mutation. Since a closed stream alone cannot
+distinguish buffer overflow from an evicted replay tail, the next
+per-origin cursor validation must prove the retained history before replay.
+After successfully applying a Subscribe frame, the Pump resets its bounded
+reconnect backoff; repeated transient closures cannot compound a delay despite
+forward progress. If a Snapshot is already installing locally, another Pump
+defers its own repair until that install completes. An interrupted install
+still requires a subsequent verified Snapshot, rather than silently reopening
+publication.
+
+Anti-entropy does not open a competing catch-up stream when the Pump has
+recently delivered frames from that peer and the peer origin's committed
+watermark is advancing between probes. Retained-ring eviction on a *second*
+stream does not prove that the active stream missed those mutations. If
+the peer origin stops advancing, the Pump becomes inactive, or its last
+delivery grows stale, anti-entropy resumes its normal Subscribe/Snapshot
+repair on the next tick; neither process skips missing mutations.
+
+A proven retained-ring/origin gap is still an unannotated
+`FAILED_PRECONDITION`: the receiver installs `Snapshot`, then resumes
+`Subscribe` with the `cutoff_seq_per_origin` and `cutoff_local_seq` from
+`SnapshotHeader`. Unknown or missing reasons retain this safe Snapshot
+fallback; consumers do not parse error text. A transient reconnect can
+discover that history was evicted in the meantime and then take this
+Snapshot path. Writes arriving while replay is being forwarded are caught
+up from the retained ring before the live subscriber is registered; a small
+live buffer alone does not make a retained replay gap.
 
 Handler implementation notes (issue #180):
 
@@ -604,9 +658,9 @@ Handler implementation notes (issue #180):
   alongside `LanternService` and shares the same `*mutationlog.Log` as
   the write path.
 - The handler maps `mutationlog.ErrGapped` to `codes.FailedPrecondition`
-  with the reason `"gapped"`, both at subscribe time (initial check) and
-  when the in-flight channel is closed by the log's slow-subscriber
-  eviction. This matches the wire contract above.
+  with the message `"gapped"` at subscribe time; only a live-channel
+  overflow carries the typed transient reason. Both keep the existing
+  `FAILED_PRECONDITION` status for other clients.
 - The handler forwards the buffered `*pb.Mutation` with its originating
   writer's `Mutation.Seq` intact. A relay's replica-local `entry.Seq` is a
   separate transport cursor and must never overwrite the portable origin seq.
@@ -635,7 +689,8 @@ it registers a live log subscriber at `last_local_seq + 1` and captures that
 vector. It then releases the gate and sends the checkpoint as the first frame;
 the registered tail buffers later mutations. Reading `OriginStates()` before
 or after an independent `Log.Subscribe` would leave a skip window. The
-subscriber buffer is finite; overflow ends the stream as `gapped`. A bootstrap
+subscriber buffer is finite; overflow ends the stream as `gapped` with
+the same `SUBSCRIBER_STREAM_CLOSED` error detail. A bootstrap
 checkpoint reports this responder's state, not a cluster-wide consensus
 barrier or a proof that another replica has caught up.
 
@@ -716,10 +771,16 @@ remains owned: after complete frame validation, installer watermarks either
 cover it with the verified cutoff or append its retained WAL envelope above
 the cutoff without reapplying the graph effect. Outside Snapshot installation,
 ordinary peer retries still repair failed relay WAL appends.
-The ordinary publication cut is sampled before and after a graph-data read,
-not held through a slow query; an overlapping local publication causes a
-retryable `UNAVAILABLE` instead of a mixed result. Only a complete, verified
-Snapshot retry clears the fault and makes the graph readable again.
+The ordinary publication cut is sampled before and after the graph-data
+capture, not held through a slow query. Pure read-only captures retry at
+most twice after an overlapping local publication; continued healthy
+contention takes the shared publication cut for one final consistent
+capture instead of returning `UNAVAILABLE`. Non-repeatable cursor/session
+reads do not retry, and capture errors or Snapshot/publication faults fail
+closed. A publication after a complete detached capture cannot invalidate
+that immutable result while it is assembled and serialized.
+Only a complete, verified Snapshot retry clears the fault and makes the
+graph readable again.
 `GetReplicationStatus` remains available for diagnosis without reading the
 graph; direct in-process GraphCache access is outside this public-read gate.
 

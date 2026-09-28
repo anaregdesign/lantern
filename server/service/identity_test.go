@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 func testIdentityMutation(seq uint64, op *pb.MutationOp) *pb.Mutation {
@@ -155,27 +156,27 @@ func TestProjectMutationIdentities(t *testing.T) {
 	})
 }
 
-func TestValidateIdentityResume(t *testing.T) {
+func TestValidateRetainedOriginResume(t *testing.T) {
 	origin := "0102030405060708090a0b0c0d0e0f10"
 	entry := func(seq uint64) mutationlog.Entry {
 		return mutationlog.Entry{Seq: seq, Op: testIdentityMutation(seq, &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{DeleteVertices: &pb.DeleteVerticesRequest{Keys: []string{"x"}}}})}
 	}
 	frontier := map[string]uint64{origin: 3}
-	if err := validateIdentityResume(map[string]uint64{origin: 2}, frontier, []mutationlog.Entry{entry(1), entry(2), entry(3)}); err != nil {
+	if err := validateRetainedOriginResume(map[string]uint64{origin: 2}, frontier, []mutationlog.Entry{entry(1), entry(2), entry(3)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateIdentityResume(map[string]uint64{origin: 4}, frontier, nil); err != nil {
+	if err := validateRetainedOriginResume(map[string]uint64{origin: 4}, frontier, nil); err != nil {
 		t.Fatalf("future cursor rejected: %v", err)
 	}
 	for _, retained := range [][]mutationlog.Entry{{entry(1), entry(3)}, {entry(2)}} {
-		if err := validateIdentityResume(map[string]uint64{origin: 2}, frontier, retained); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		if err := validateRetainedOriginResume(map[string]uint64{origin: 2}, frontier, retained); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 			t.Fatalf("hole did not gap: %v", err)
 		}
 	}
-	if _, err := identityCursor(map[string]uint64{"ABC": 1}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := parseOriginCursor(map[string]uint64{"ABC": 1}); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("malformed origin accepted: %v", err)
 	}
-	if _, err := identityCursor(map[string]uint64{origin: 0}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := parseOriginCursor(map[string]uint64{origin: 0}); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("zero cursor accepted: %v", err)
 	}
 }
@@ -271,6 +272,9 @@ func TestIdentitySubscribe_SlowSenderGaps(t *testing.T) {
 	case err := <-done:
 		if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
 			t.Fatalf("slow identity stream error = %v", err)
+		}
+		if transient, detailErr := replicationstatus.IsTransientGap(err); detailErr != nil || !transient {
+			t.Fatalf("slow identity gap = %v, transient=%t, detailErr=%v", err, transient, detailErr)
 		}
 	case <-ctx.Done():
 		t.Fatal("slow identity stream did not end")

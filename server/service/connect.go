@@ -62,34 +62,14 @@ func unary[Req, Resp any](ctx context.Context, req *connect.Request[Req], fn fun
 	return connect.NewResponse(out), nil
 }
 
-// unaryGraphReadOptimistic invalidates a graph result if publication changes
-// between the service call and wire boxing. The service orders each GraphCache
-// read against Snapshot admission and checks publication generations; holding
-// an outer publication lock through the call would stall long graph reads.
-func unaryGraphReadOptimistic[Req, Resp any](ctx context.Context, req *connect.Request[Req], svc *LanternService, fn func(context.Context, *Req) (*Resp, error)) (*connect.Response[Resp], error) {
-	before, err := svc.graphReadGeneration()
-	if err != nil {
-		return nil, err
-	}
-	out, callErr := unary(ctx, req, fn)
-	after, err := svc.graphReadGeneration()
-	if err != nil {
-		return nil, err
-	}
-	if before != after {
-		return nil, publicationChangedDuringReadError()
-	}
-	return out, callErr
-}
-
 func (h *lanternServiceConnect) Illuminate(ctx context.Context, req *connect.Request[pb.IlluminateRequest]) (*connect.Response[pb.IlluminateResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.Illuminate)
+	return unary(ctx, req, h.svc.Illuminate)
 }
 func (h *lanternServiceConnect) GetVertex(ctx context.Context, req *connect.Request[pb.GetVertexRequest]) (*connect.Response[pb.GetVertexResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetVertex)
+	return unary(ctx, req, h.svc.GetVertex)
 }
 func (h *lanternServiceConnect) GetVertices(ctx context.Context, req *connect.Request[pb.GetVerticesRequest]) (*connect.Response[pb.GetVerticesResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetVertices)
+	return unary(ctx, req, h.svc.GetVertices)
 }
 func (h *lanternServiceConnect) PutVertex(ctx context.Context, req *connect.Request[pb.PutVertexRequest]) (*connect.Response[pb.PutVertexResponse], error) {
 	return unary(ctx, req, h.svc.PutVertex)
@@ -104,31 +84,28 @@ func (h *lanternServiceConnect) DeleteVertices(ctx context.Context, req *connect
 	return unary(ctx, req, h.svc.DeleteVertices)
 }
 func (h *lanternServiceConnect) ScanVertices(ctx context.Context, req *connect.Request[pb.ScanVerticesRequest]) (*connect.Response[pb.ScanVerticesResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.ScanVertices)
+	return unary(ctx, req, h.svc.ScanVertices)
 }
 func (h *lanternServiceConnect) ScanVertexKeys(ctx context.Context, req *connect.Request[pb.ScanVertexKeysRequest]) (*connect.Response[pb.ScanVertexKeysResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.ScanVertexKeys)
+	return unary(ctx, req, h.svc.ScanVertexKeys)
 }
 func (h *lanternServiceConnect) SearchVertices(ctx context.Context, req *connect.Request[pb.SearchVerticesRequest]) (*connect.Response[pb.SearchVerticesResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.SearchVertices)
+	return unary(ctx, req, h.svc.SearchVertices)
 }
 func (h *lanternServiceConnect) CountVerticesByPrefix(ctx context.Context, req *connect.Request[pb.CountVerticesByPrefixRequest]) (*connect.Response[pb.CountVerticesByPrefixResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.CountVerticesByPrefix)
+	return unary(ctx, req, h.svc.CountVerticesByPrefix)
 }
 func (h *lanternServiceConnect) DeleteVerticesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteVerticesByPrefixRequest]) (*connect.Response[pb.DeleteVerticesByPrefixResponse], error) {
-	if req.Msg.GetDryRun() {
-		return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.DeleteVerticesByPrefix)
-	}
 	return unary(ctx, req, h.svc.DeleteVerticesByPrefix)
 }
 func (h *lanternServiceConnect) TopVerticesByDegree(ctx context.Context, req *connect.Request[pb.TopVerticesByDegreeRequest]) (*connect.Response[pb.TopVerticesByDegreeResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.TopVerticesByDegree)
+	return unary(ctx, req, h.svc.TopVerticesByDegree)
 }
 func (h *lanternServiceConnect) GetEdge(ctx context.Context, req *connect.Request[pb.GetEdgeRequest]) (*connect.Response[pb.GetEdgeResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetEdge)
+	return unary(ctx, req, h.svc.GetEdge)
 }
 func (h *lanternServiceConnect) GetEdges(ctx context.Context, req *connect.Request[pb.GetEdgesRequest]) (*connect.Response[pb.GetEdgesResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.GetEdges)
+	return unary(ctx, req, h.svc.GetEdges)
 }
 func (h *lanternServiceConnect) AddEdge(ctx context.Context, req *connect.Request[pb.AddEdgeRequest]) (*connect.Response[pb.AddEdgeResponse], error) {
 	return unary(ctx, req, h.svc.AddEdge)
@@ -155,13 +132,10 @@ func (h *lanternServiceConnect) DeleteEdgeContributions(ctx context.Context, req
 	return unary(ctx, req, h.svc.DeleteEdgeContributions)
 }
 func (h *lanternServiceConnect) DeleteEdgesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteEdgesByPrefixRequest]) (*connect.Response[pb.DeleteEdgesByPrefixResponse], error) {
-	if req.Msg.GetDryRun() {
-		return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.DeleteEdgesByPrefix)
-	}
 	return unary(ctx, req, h.svc.DeleteEdgesByPrefix)
 }
 func (h *lanternServiceConnect) ScanEdges(ctx context.Context, req *connect.Request[pb.ScanEdgesRequest]) (*connect.Response[pb.ScanEdgesResponse], error) {
-	return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.ScanEdges)
+	return unary(ctx, req, h.svc.ScanEdges)
 }
 func (h *lanternServiceConnect) GetServerStatus(ctx context.Context, req *connect.Request[pb.GetServerStatusRequest]) (*connect.Response[pb.GetServerStatusResponse], error) {
 	// GetServerStatus owns its committed view so direct service callers and

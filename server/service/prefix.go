@@ -60,7 +60,9 @@ func (s *LanternService) ScanVertices(ctx context.Context, in *pb.ScanVerticesRe
 	vertices := make([]*pb.Vertex, 0, limit)
 	var lastKey string
 	var more bool
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
+		vertices = vertices[:0]
+		lastKey = ""
 		more, _ = s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, v *pb.Vertex) bool {
 			// Normalise nil-valued vertices the same way GetVertex does so
 			// callers see a uniform shape.
@@ -131,7 +133,9 @@ func (s *LanternService) ScanVertexKeys(ctx context.Context, in *pb.ScanVertexKe
 	keys := make([]string, 0, limit)
 	var lastKey string
 	var more bool
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
+		keys = keys[:0]
+		lastKey = ""
 		more, _ = s.cache.ScanByPrefixPage(ctx, in.GetPrefix(), cursor.LastKey, int(limit), desc, func(_ string, key string, _ *pb.Vertex) bool {
 			keys = append(keys, key)
 			lastKey = key
@@ -161,7 +165,7 @@ func (s *LanternService) CountVerticesByPrefix(ctx context.Context, in *pb.Count
 	}
 	start := time.Now()
 	var n int
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
 		n = s.cache.CountByPrefix(in.GetPrefix())
 		return nil
 	}); err != nil {
@@ -187,7 +191,7 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 
 	if in.GetDryRun() {
 		var n uint64
-		if err := s.withPublicGraphRead(func() error {
+		if err := s.withPublicGraphReadRetry(ctx, func() error {
 			n = uint64(s.cache.CountByPrefix(in.GetPrefix()))
 			return nil
 		}); err != nil {
@@ -274,7 +278,8 @@ func (s *LanternService) DeleteEdgesByPrefix(ctx context.Context, in *pb.DeleteE
 		// without mutating state; the page collector caps the count at the
 		// effective limit and applies the identical live-visibility filter.
 		n := 0
-		if err := s.withPublicGraphRead(func() error {
+		if err := s.withPublicGraphReadRetry(ctx, func() error {
+			n = 0
 			s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), "", "", int(limit),
 				func(string, string, string, string, float32, time.Time) bool {
 					n++
@@ -426,7 +431,9 @@ func (s *LanternService) ScanEdges(ctx context.Context, in *pb.ScanEdgesRequest)
 	edges := make([]*pb.Edge, 0, limit)
 	var lastTail, lastHead string
 	var more bool
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
+		edges = edges[:0]
+		lastTail, lastHead = "", ""
 		more, _ = s.cache.ScanEdgesByPrefixPage(ctx, in.GetTailPrefix(), in.GetHeadPrefix(), cursor.LastTail, cursor.LastHead, int(limit),
 			func(_ string, tail string, _ string, head string, weight float32, exp time.Time) bool {
 				edge := &pb.Edge{Tail: tail, Head: head, Weight: weight}

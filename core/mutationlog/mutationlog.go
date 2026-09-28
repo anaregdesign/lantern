@@ -14,10 +14,9 @@
 // evicted, so [Log.Subscribe] returns [ErrGapped] and the caller is then
 // expected to snapshot and resubscribe (RFC §7). The replay window is
 // delivered ahead of live traffic without being bounded by the subscriber
-// buffer; only the live tail shares a bounded outbound channel, so a slow
-// consumer of *live* entries exerts back-pressure rather than allowing the
-// log to drift forward without it (see [Log.Subscribe] for the #812
-// rationale).
+// buffer. Writes arriving during replay are caught up from the retained
+// ring before the bounded live tail is registered; an actual eviction still
+// gaps the subscriber (see [Log.Subscribe]).
 //
 // A [WAL] hook lets a future durability layer (RFC D1) intercept appends
 // before they fan out. The default [NopWAL] is a no-op, matching today's
@@ -28,6 +27,7 @@ package mutationlog
 
 import (
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -89,11 +89,10 @@ type Options struct {
 	// SubscriberBuffer is the per-subscriber outbound channel size. Smaller
 	// values increase back-pressure sensitivity; defaults to 512 when zero.
 	//
-	// At sustained write rates a too-small buffer turns transient scheduling
-	// jitter into permanent gap-closes: the fan-out path uses a
-	// non-blocking send and closes the subscriber on a full channel
-	// (see [Log.Append]). 512 gives ~256 ms of headroom at 2k writes/s,
-	// which is well above typical scheduler stalls on a loaded host.
+	// After replay catches up, fan-out uses a non-blocking send and closes
+	// a slow live subscriber on a full channel (see [Log.Append]). During
+	// replay, new entries remain in the retained ring instead. 512 gives
+	// ~256 ms of live headroom at 2k writes/s.
 	SubscriberBuffer int
 	// WAL receives every appended entry before it fans out to subscribers.
 	// Nil defaults to [NopWAL].
@@ -182,10 +181,8 @@ type Log struct {
 // subscription is the live state for one subscriber.
 type subscription struct {
 	ch chan Entry
-	// startSeq is the first Seq the dispatcher is allowed to deliver to
-	// this subscriber. Entries with Seq < startSeq were already loaded
-	// into ch as part of the replay window during Subscribe, so the
-	// dispatcher must skip them to avoid duplicate delivery.
+	// startSeq is the first Seq the dispatcher may deliver. Earlier entries
+	// belong to retained replay/catch-up windows and must not be duplicated.
 	startSeq uint64
 	gapped   bool // set when a fan-out drop turned into a gap
 }
@@ -444,18 +441,13 @@ func (l *Log) fanout(entry Entry) {
 // channel. It is safe to call cancel more than once; subsequent calls
 // return nil.
 //
-// Replay vs. back-pressure (#812): the replay window is delivered by a
-// dedicated forwarder goroutine with a blocking send, so a catch-up larger
-// than [Options.SubscriberBuffer] is NOT mistaken for a slow subscriber —
-// it merely back-pressures the producer until the consumer drains it.
-// SubscriberBuffer continues to bound only the *live* tail: once caught up,
-// a consumer that then falls behind by more than SubscriberBuffer entries
-// is marked gapped, its channel is closed, and it must snapshot and
-// resubscribe. Before #812 the replay was loaded straight into the
-// SubscriberBuffer-bounded channel and Subscribe returned ErrGapped the
-// instant the retained ring exceeded SubscriberBuffer, which
-// deterministically broke replication to any peer whose log had grown past
-// that bound.
+// Replay vs. back-pressure (#812): a forwarder delivers retained entries
+// with a blocking send, then catches up from the ring in bounded windows.
+// Registering the live subscriber before replay drains would fill its small
+// buffer even while the complete tail is retained. The switch to live
+// delivery is atomic with the last ring check; actual eviction still closes
+// the channel as a gap. Once live, slow consumers remain subject to the
+// SubscriberBuffer limit and drop rather than blocking writers.
 func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 	l.mu.Lock()
 	if l.closed {
@@ -470,66 +462,100 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 		l.mu.Unlock()
 		return nil, nil, ErrGapped
 	}
-	// Snapshot the replay window [fromSeq, lastSeq] out of the ring under
-	// l.mu so it cannot tear against a concurrent Append/eviction. Entries
-	// occupy ring positions [head, head+size); iterate that active window
-	// rather than ranging over the backing slice (which holds stale slots
-	// past size). The forwarder goroutine below delivers this snapshot with
-	// a blocking send, so a replay larger than subBuf does not gap (#812).
-	var replay []Entry
-	for i := 0; i < l.size; i++ {
-		e := l.ring[(l.head+i)%l.capacity]
-		if e.Seq < fromSeq {
-			continue
+	// Each replay window is copied under mu. A subsequent window may have
+	// been evicted while the previous one was delivered; detect that gap
+	// before sending any later entries.
+	replay := l.retainedFromLocked(fromSeq)
+	next := fromSeq
+	exhausted := false
+	if len(replay) != 0 {
+		last := replay[len(replay)-1].Seq
+		exhausted = last == math.MaxUint64
+		if !exhausted {
+			next = last + 1
 		}
-		replay = append(replay, e)
 	}
-	// startSeq pins the boundary between replay (the snapshot above) and
-	// live delivery (handed in by the dispatcher). It is captured under
-	// l.mu so it cannot tear against concurrent Append calls (#260), and the
-	// subscriber is registered before mu is released so the dispatcher
-	// cannot deliver a Seq >= startSeq entry that the snapshot missed.
 	live := &subscription{
 		ch:       make(chan Entry, l.subBuf),
 		startSeq: l.lastSeq + 1,
 	}
-	// Register the subscriber under subsMu (lock order: mu → subsMu).
-	l.subsMu.Lock()
-	l.subscribers[live] = struct{}{}
-	l.subsMu.Unlock()
-	l.mu.Unlock()
-
-	// out carries replay-then-live to the caller. A single forwarder
-	// goroutine drains the snapshot first (blocking, so a large catch-up
-	// back-pressures the producer instead of gapping), then mirrors the
-	// bounded live channel. The slow-subscriber protection is preserved: the
-	// dispatcher still fills and closes live.ch on overflow, which the
-	// forwarder surfaces by returning and closing out.
 	out := make(chan Entry)
 	done := make(chan struct{})
+	registered := len(replay) == 0
+	if registered {
+		// Lock order is mu → subsMu. Register before releasing mu so
+		// no new entry can slip between an empty replay and the live tail.
+		l.subsMu.Lock()
+		l.subscribers[live] = struct{}{}
+		l.subsMu.Unlock()
+	}
+	l.mu.Unlock()
+
 	go func() {
 		defer close(out)
-		for _, e := range replay {
-			select {
-			case out <- e:
-			case <-done:
-				return
-			}
-		}
 		for {
-			select {
-			case e, ok := <-live.ch:
-				if !ok {
-					return
-				}
+			for _, e := range replay {
 				select {
 				case out <- e:
 				case <-done:
 					return
 				}
-			case <-done:
+			}
+			if registered {
+				for {
+					select {
+					case e, ok := <-live.ch:
+						if !ok {
+							return
+						}
+						select {
+						case out <- e:
+						case <-done:
+							return
+						}
+					case <-done:
+						return
+					}
+				}
+			}
+
+			l.mu.Lock()
+			if l.closed || l.unusableErr != nil || (!exhausted && l.hasEntries && next < l.firstSeq) {
+				l.mu.Unlock()
 				return
 			}
+			if exhausted {
+				l.mu.Unlock()
+				// No subsequent sequence is representable. Do not register
+				// a live subscriber that could redeliver the queued max entry.
+				select {
+				case <-done:
+				case <-l.dispatcherDone:
+				}
+				return
+			}
+			replay = l.retainedFromLocked(next)
+			if len(replay) != 0 {
+				last := replay[len(replay)-1].Seq
+				exhausted = last == math.MaxUint64
+				if !exhausted {
+					next = last + 1
+				}
+			} else {
+				l.subsMu.Lock()
+				select {
+				case <-done:
+					l.subsMu.Unlock()
+					l.mu.Unlock()
+					return
+				default:
+					live.startSeq = l.lastSeq + 1
+					l.subscribers[live] = struct{}{}
+					registered = true
+				}
+				l.subsMu.Unlock()
+			}
+			l.mu.Unlock()
 		}
 	}()
 
@@ -550,6 +576,23 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 		return nil
 	}
 	return out, cancel, nil
+}
+
+// retainedFromLocked copies one bounded ring window in sequence order.
+// The caller holds mu while checking the gap and choosing the live boundary.
+func (l *Log) retainedFromLocked(fromSeq uint64) []Entry {
+	if l.size == 0 || fromSeq > l.lastSeq {
+		return nil
+	}
+	start := 0
+	if fromSeq > l.firstSeq {
+		start = int(fromSeq - l.firstSeq)
+	}
+	entries := make([]Entry, l.size-start)
+	for i := range entries {
+		entries[i] = l.ring[(l.head+start+i)%l.capacity]
+	}
+	return entries
 }
 
 // Close stops accepting appends, signals the dispatcher to drain, and

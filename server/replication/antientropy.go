@@ -18,9 +18,9 @@ package replication
 // gaps must be healed by talking to the originating node, which is
 // outside the scope of one peer's mutation log), the driver opens
 // a bounded Subscribe(from_seq_per_origin = local_for_peer + 1) and applies
-// up to the peer-reported target seq. FailedPrecondition triggers
-// a Snapshot replay; later ticks retain that responder's local cutoff so
-// Subscribe can resume the live tail without re-requesting an evicted prefix.
+// up to the peer-reported target seq. Missing retained history triggers a
+// Snapshot; transient buffer or publication faults defer to the next tick,
+// which resumes from the committed origin vector.
 //
 // LANTERN_ANTI_ENTROPY_INTERVAL controls the tick cadence. The
 // default 30s is a deliberate compromise: short enough that a
@@ -35,12 +35,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 
 	"connectrpc.com/connect"
 )
@@ -107,6 +109,11 @@ type AntiEntropyConfig struct {
 	// tick will resume from where we stopped.
 	SubscribeTimeout time.Duration
 
+	// Pump, when present, owns the ongoing stream from the same peers.
+	// Anti-entropy defers a competing catch-up while that stream is
+	// recently active and the peer's origin watermark is advancing.
+	Pump *Pump
+
 	// GapWarnThreshold escalates the per-peer catch-up log from
 	// info to an additional warn when (peer_seq - local_seq)
 	// exceeds this many mutations. 0 disables the warn (the
@@ -151,6 +158,8 @@ type AntiEntropy struct {
 	installer   SnapshotInstaller
 	resumeMu    sync.Mutex
 	resumeLocal map[string]uint64
+	observedMu  sync.Mutex
+	observedSeq map[string]uint64
 }
 
 // NewAntiEntropy constructs the driver. local MUST be the same LanternService
@@ -182,6 +191,7 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 	return &AntiEntropy{
 		cfg: cfg, local: local, apply: apply, installer: installer,
 		resumeLocal: make(map[string]uint64),
+		observedSeq: make(map[string]uint64),
 	}
 }
 
@@ -230,6 +240,13 @@ func (a *AntiEntropy) tickAll(ctx context.Context) {
 		}
 		peers = resolved
 	}
+	a.observedMu.Lock()
+	for addr := range a.observedSeq {
+		if !slices.Contains(peers, addr) {
+			delete(a.observedSeq, addr)
+		}
+	}
+	a.observedMu.Unlock()
 	var wg sync.WaitGroup
 	for _, addr := range peers {
 		wg.Add(1)
@@ -326,6 +343,7 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 	}
 
 	localSeq := a.local.LocalSeq(peerNID)
+	pumpAdvancing := a.pumpAdvancing(addr, localSeq)
 	if localSeq >= target {
 		return
 	}
@@ -342,6 +360,11 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 			slog.Uint64("gap", gap),
 			slog.Uint64("threshold", a.cfg.GapWarnThreshold))
 	}
+	if pumpAdvancing {
+		log.Debug("anti-entropy: active pump is advancing peer origin",
+			slog.Uint64("local_seq", localSeq), slog.Uint64("peer_seq", target))
+		return
+	}
 
 	applied, err := a.catchUp(ctx, addr, cli, peerNID, localSeq+1, target)
 	if err != nil {
@@ -356,18 +379,35 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		slog.Uint64("target_seq", target))
 }
 
+func (a *AntiEntropy) pumpAdvancing(addr string, localSeq uint64) bool {
+	if a.cfg.Pump == nil {
+		return false
+	}
+	a.observedMu.Lock()
+	previous, seen := a.observedSeq[addr]
+	a.observedSeq[addr] = localSeq
+	a.observedMu.Unlock()
+	if seen && localSeq <= previous {
+		return false
+	}
+	for _, peer := range a.cfg.Pump.Snapshot() {
+		if peer.Address == addr && !peer.LastEventAt.IsZero() &&
+			peer.State != PeerStateClosed && time.Since(peer.LastEventAt) < a.cfg.SubscribeTimeout {
+			return true
+		}
+	}
+	return false
+}
+
 // catchUp opens a bounded Subscribe stream and applies mutations
 // until the local tracker for peerNID has reached or exceeded
 // target. FailedPrecondition triggers a Snapshot install (which itself
 // advances the selected format's publication cut) after which catchUp returns
 // — the next tick will re-probe.
 //
-// Under the leaderless Subscribe contract (#415), the peer's log
-// carries entries from every cluster origin. We narrow the request to
-// peerNID's own origin via a per-origin cursor so the server only
-// streams the entries we actually care about, avoiding wasted
-// bandwidth on cross-origin entries that this catch-up call would
-// drop anyway.
+// The responder may have retained mutations from other origins. Include our
+// complete committed vector so unrelated evictions do not force a Snapshot;
+// the peer's own origin still resumes from the compared watermark.
 //
 // Returns the number of mutations applied during this call.
 func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
@@ -375,6 +415,19 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 	defer cancel()
 
 	cursor := map[string]uint64{hex.EncodeToString(peerNID[:]): fromSeq}
+	if local, ok := a.local.(subscribeResumeCursorProvider); ok {
+		committed, err := local.SubscribeResumeCursor()
+		if err != nil {
+			return 0, err
+		}
+		for origin, next := range committed {
+			cursor[origin] = next
+		}
+		origin := hex.EncodeToString(peerNID[:])
+		if cursor[origin] < fromSeq {
+			cursor[origin] = fromSeq
+		}
+	}
 	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           a.snapshotResumeLocal(addr),
@@ -382,7 +435,14 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 	}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-			return 0, a.snapshotFrom(ctx, addr)
+			transient, classifyErr := replicationstatus.IsTransientGap(err)
+			if classifyErr != nil {
+				return 0, classifyErr
+			}
+			if transient {
+				return 0, err
+			}
+			return 0, a.snapshotAfterGap(ctx, addr, err)
 		}
 		return 0, err
 	}
@@ -414,7 +474,14 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		return applied, nil
 	}
 	if connect.CodeOf(recvErr) == connect.CodeFailedPrecondition {
-		return applied, a.snapshotFrom(ctx, addr)
+		transient, classifyErr := replicationstatus.IsTransientGap(recvErr)
+		if classifyErr != nil {
+			return applied, classifyErr
+		}
+		if transient {
+			return applied, recvErr
+		}
+		return applied, a.snapshotAfterGap(ctx, addr, recvErr)
 	}
 	// Deadline-exceeded from the subscribe timeout is expected
 	// when the catch-up window is shorter than the gap — surface as
@@ -424,6 +491,12 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		return applied, nil
 	}
 	return applied, recvErr
+}
+
+func (a *AntiEntropy) snapshotAfterGap(ctx context.Context, addr string, reason error) error {
+	a.cfg.Logger.Info("anti-entropy: Subscribe gapped, requesting Snapshot",
+		slog.String("peer", addr), slog.Any("err", reason))
+	return a.snapshotFrom(ctx, addr)
 }
 
 // snapshotFrom delegates a full peer Snapshot to the selected installer.

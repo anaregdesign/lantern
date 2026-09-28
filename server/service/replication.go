@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 
 	"connectrpc.com/connect"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 // Sender is the slim, transport-agnostic surface Subscribe and
@@ -234,11 +236,10 @@ func (s *LanternReplicationService) ConfigureReceiptSnapshot(source *ReceiptWhol
 // does not require deduplication or seq remapping.
 //
 // Flow:
-//  1. Open a log subscription under the service publication cut at
-//     req.FromLocalSeq when a snapshot consumer resumes against the same
-//     responder; otherwise start at local seq 1 so ring eviction remains a
-//     detectable gap. Per-origin sequence is unrelated to this replica-local
-//     position and filtering happens at this layer.
+//  1. Open a log subscription under the service publication cut. A nonempty
+//     portable origin cursor is proved against the contiguous published
+//     frontier and retained ring before selecting its earliest needed entry.
+//     An empty cursor still starts at req.FromLocalSeq (or local seq 1).
 //  2. For each entry, filter by the per-origin cursor: deliver only
 //     when mu.Seq >= cursor[origin]. Origins absent from the cursor
 //     are delivered from the oldest retained entry — this lets a
@@ -247,9 +248,8 @@ func (s *LanternReplicationService) ConfigureReceiptSnapshot(source *ReceiptWhol
 //     mu.Seq carries the originating writer's seq (stamped at local
 //     publication / preserved across relay), NOT the forwarding
 //     replica's local log seq.
-//  3. ErrGapped from the log layer (the ring was truncated below the
-//     requested local position) surfaces as
-//     FailedPrecondition + reason "gapped" so the client knows to
+//  3. A missing needed origin entry or ErrGapped from the local log surfaces
+//     as FailedPrecondition + reason "gapped" so the client knows to
 //     snapshot and resubscribe (RFC §8.2).
 //  4. If the channel is closed mid-stream the subscriber fell behind
 //     the per-subscriber buffer (Options.SubscriberBuffer). Surface
@@ -283,11 +283,15 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 	default:
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown Subscribe projection %d", req.GetProjection()))
 	}
-	cursor := req.GetFromSeqPerOrigin()
+	cursor, err := parseOriginCursor(req.GetFromSeqPerOrigin())
+	if err != nil {
+		return err
+	}
 	fromLocalSeq := req.GetFromLocalSeq()
 	if fromLocalSeq == 0 {
 		fromLocalSeq = 1
 	}
+	cut, hasCut := s.origins.(subscribeCutProvider)
 	var (
 		faultCh <-chan struct{}
 		ch      <-chan mutationlog.Entry
@@ -296,9 +300,32 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 	)
 	register := func(generation <-chan struct{}) {
 		faultCh = generation
+		if hasCut && len(cursor) > 0 {
+			frontier := make(map[string]uint64)
+			for _, state := range s.origins.OriginStates() {
+				frontier[hex.EncodeToString(state.Origin[:])] = state.LastSeq
+			}
+			retained := s.log.RetainedEntries()
+			if openErr = validateRetainedOriginResume(cursor, frontier, retained); openErr != nil {
+				return
+			}
+			lastLocal, _ := s.log.LastSeq()
+			if lastLocal == math.MaxUint64 {
+				openErr = connect.NewError(connect.CodeResourceExhausted, errors.New("replica-local log sequence exhausted"))
+				return
+			}
+			fromLocalSeq = lastLocal + 1
+			for _, entry := range retained {
+				mutation, _ := graphMutationFromLog(entry.Op) // validated above
+				if mutation.GetSeq() >= cursorNext(cursor, hex.EncodeToString(mutation.GetOrigin())) {
+					fromLocalSeq = entry.Seq
+					break
+				}
+			}
+		}
 		ch, cancel, openErr = s.log.Subscribe(fromLocalSeq)
 	}
-	if cut, ok := s.origins.(subscribeCutProvider); ok {
+	if hasCut {
 		if err := cut.withReplicationSubscribeCut(register); err != nil {
 			s.metrics.OnSubscribeDropped("gapped")
 			return err
@@ -317,10 +344,15 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		register(faultCh)
 	}
 	if openErr != nil {
-		if errors.Is(openErr, mutationlog.ErrGapped) {
+		if connect.CodeOf(openErr) == connect.CodeFailedPrecondition || errors.Is(openErr, mutationlog.ErrGapped) {
 			s.metrics.OnSubscribeDropped("gapped")
+		}
+		if errors.Is(openErr, mutationlog.ErrGapped) {
 			return connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("gapped: log truncated below requested local seq %d; snapshot and resubscribe", fromLocalSeq))
+		}
+		if _, ok := openErr.(*connect.Error); ok {
+			return openErr
 		}
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", openErr))
 	}
@@ -356,10 +388,12 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			default:
 			}
 			if !ok {
-				// Slow subscriber: log closed our channel mid-stream.
+				// A closed channel may be a live-buffer overflow or a replay
+				// tail evicted while forwarding. The next cursor validation
+				// determines whether Snapshot is actually required.
 				s.metrics.OnSubscribeDropped("gapped")
-				return connect.NewError(connect.CodeFailedPrecondition,
-					errors.New("gapped: subscriber fell behind; snapshot and resubscribe"))
+				return replicationstatus.TransientGap(replicationstatus.ReasonSubscriberStreamClosed,
+					errors.New("gapped: subscriber stream closed; reconnect from committed cursor"))
 			}
 			frame, err := subscribeMutationFrame(entry.Op)
 			if err != nil {

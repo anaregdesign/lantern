@@ -18,9 +18,10 @@ import (
 // whose source-weight validation also applies to folded backup edges.
 //
 // BackupSnapshot also works without replication. Its in-memory capture checks
-// the publication generation around a point-in-time GraphCache copy and fails
-// closed during an incomplete Snapshot install or WAL publication fault. The
-// whole graph is materialised once under the GraphCache lock via SnapshotGraph
+// the publication generation around a point-in-time GraphCache copy, retries
+// boundedly on overlap, and fails closed during an incomplete Snapshot install
+// or WAL publication fault. The whole graph is materialised once under
+// the GraphCache lock via SnapshotGraph
 // (#689), so vertices and edges share one instant; records are sent off-lock.
 //
 // vertex_prefix, when non-empty, scopes the backup to the induced subgraph
@@ -32,7 +33,7 @@ func (s *LanternService) BackupSnapshot(ctx context.Context, request *pb.BackupS
 		return ctxToConnect(err)
 	}
 	var snap graphcache.GraphSnapshot[string, *pb.Vertex]
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
 		snap = s.cache.SnapshotGraph()
 		detachSnapshotVertices(snap.Vertices)
 		return nil

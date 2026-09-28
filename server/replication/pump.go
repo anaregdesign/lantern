@@ -5,12 +5,11 @@
 // and, in order:
 //
 //  1. Verifies PeerStatus search-config compatibility, then opens
-//     LanternReplicationService.Subscribe with an empty portable cursor.
-//  2. If the server replies codes.FailedPrecondition (reason "gapped" —
-//     the canonical bootstrap signal from #180), opens
-//     LanternReplicationService.Snapshot, hands the complete stream to the
-//     configured format-specific installer, then resumes against the same responder at
-//     both header origin cutoffs + 1 and header.cutoff_local_seq + 1.
+//     LanternReplicationService.Subscribe with the local committed origin
+//     vector (empty only for a cold node).
+//  2. If the server proves retained history is missing, opens Snapshot,
+//     installs it, and resumes at its cutoffs. A transient buffer overrun or
+//     peer publication fault instead retries from the committed origin cursor.
 //  3. Applies every received Mutation via the local MutationApplier
 //     (LanternService.ApplyMutation). Reading B appends a newly-observed remote
 //     mutation to the local log so any replica can serve the full cluster
@@ -19,10 +18,10 @@
 //     Unavailable) the goroutine reconnects with exponential backoff
 //     capped at BackoffMax.
 //
-// Self-echo suppression: a Mutation whose Origin == local NodeID is
-// dropped on receipt. The replication design is symmetric — every peer
-// log carries entries from every cluster origin, so receivers must filter
-// their own writes back out.
+// Self-echo suppression: a graph-only receiver with proven committed local
+// history asks the peer to omit its origin. Any self-origin frame received
+// beyond the local committed prefix requires Snapshot repair; already-owned
+// frames are dropped. Receipt-WAL streams retain the full origin history.
 //
 // LANTERN_PEERS="" (the default) yields a no-op pump: Run returns
 // immediately and no goroutines are spawned. This is single-instance
@@ -37,6 +36,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -47,6 +48,7 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/edgeweight"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
@@ -59,6 +61,17 @@ import (
 // peer-applied writes are not re-broadcast).
 type MutationApplier interface {
 	ApplyMutation(ctx context.Context, m *pb.Mutation) error
+}
+
+// subscribeResumeCursorProvider supplies a complete committed origin vector
+// when a pump reconnects. Narrow test appliers without it retain the legacy
+// empty-cursor path.
+type subscribeResumeCursorProvider interface {
+	SubscribeResumeCursor() (map[string]uint64, error)
+}
+
+type selfEchoSkipProvider interface {
+	CanSkipSelfEcho(origin hlc.NodeID) bool
 }
 
 // SnapshotApplier is the surface the default graph-only installer uses to
@@ -1061,12 +1074,9 @@ func (p *Pump) Run(ctx context.Context) error {
 // the loop sleeps for the current backoff (doubling, capped at
 // BackoffMax) and retries until ctx is cancelled.
 //
-// Under the leaderless Subscribe contract (#415, B-2/B-3/B-4), ordinary
-// reconnects send an empty per-origin cursor and the local ApplyMutation
-// watermark CAS dedups anything already seen via this peer or any other.
-// A gapped session is different: after replaying a snapshot, the pump resumes
-// from the snapshot header's cutoff so it does not request the same unavailable
-// log prefix again.
+// Ordinary reconnects capture the committed per-origin cursor. After a
+// verified Snapshot, the pump resumes from its header cutoffs so it does not
+// request the same unavailable log prefix again.
 func (p *Pump) runPeer(ctx context.Context, addr string) {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
 	defer p.tracker.removePeer(addr)
@@ -1074,6 +1084,7 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 
 	for ctx.Err() == nil {
 		p.tracker.setState(addr, PeerStateConnecting)
+		lastEvent := p.tracker.lastEvent(addr)
 		err := p.session(ctx, addr)
 		if err == nil {
 			// session ended cleanly (ctx cancelled mid-stream).
@@ -1081,6 +1092,9 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if p.tracker.lastEvent(addr).After(lastEvent) {
+			backoff = p.cfg.BackoffMin
 		}
 		p.tracker.recordError(addr, err)
 		log.Warn("replication pump: peer session error",
@@ -1100,10 +1114,9 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 	}
 }
 
-// session runs one Subscribe attempt against addr, falling back to a
-// Snapshot+Subscribe bootstrap when the server reports the request as
-// gapped. Returns nil on clean ctx-cancel exit; otherwise the
-// non-nil error from the Subscribe / Snapshot RPC.
+// session runs one Subscribe attempt against addr, using Snapshot only for
+// a missing-history gap. Transient peer gaps return to the bounded reconnect
+// loop so it can retry from the newly captured committed origin cursor.
 func (p *Pump) session(ctx context.Context, addr string) error {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
 	baseURL, err := peerURL(addr, p.cfg.PeerTransport)
@@ -1146,7 +1159,23 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	log.Info("replication pump: peer transition",
 		slog.String("transition", "connect"))
 
-	err = p.subscribe(ctx, cli, addr, nil, 0)
+	var cursor map[string]uint64
+	if local, ok := p.apply.(subscribeResumeCursorProvider); ok {
+		cursor, err = local.SubscribeResumeCursor()
+		if err != nil {
+			return fmt.Errorf("local Subscribe resume cursor: %w", err)
+		}
+	}
+	own, err := p.selfEchoResume(status.Msg, cursor)
+	if err != nil {
+		return fmt.Errorf("peer origin status: %w", err)
+	}
+	if own.needsSnapshot {
+		err = connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("gapped: peer has committed local-origin history beyond this replica's cursor"))
+	} else {
+		err = p.subscribe(ctx, cli, addr, cursor, 0, own.skip)
+	}
 	if err == nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 		log.Info("replication pump: peer transition",
@@ -1161,13 +1190,35 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			slog.String("reason", "ctx_cancel"))
 		return nil
 	}
+	disconnect := func(failure error) error {
+		p.cfg.Metrics.OnPumpDisconnect(addr, "subscribe_failed")
+		log.Warn("replication pump: peer transition",
+			slog.String("transition", "disconnect"),
+			slog.String("reason", "subscribe_failed"),
+			slog.Any("err", failure))
+		return failure
+	}
 	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+		var peerErr *peerSubscribeError
+		if errors.As(err, &peerErr) {
+			transient, classifyErr := replicationstatus.IsTransientGap(peerErr.err)
+			if classifyErr != nil {
+				return disconnect(classifyErr)
+			}
+			if transient {
+				return disconnect(err)
+			}
+		}
+		if local, ok := p.apply.(interface{ SnapshotInstallActive() bool }); ok && local.SnapshotInstallActive() {
+			return disconnect(err)
+		}
 		// Gapped: snapshot, then resume after the snapshot cutoffs. Sending
 		// an empty cursor here would request the unavailable log prefix again
 		// and loop through snapshots indefinitely.
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_start"),
-			slog.String("reason", "gapped"))
+			slog.String("reason", "gapped"),
+			slog.Any("err", err))
 		header, sErr := p.snapshot(ctx, addr)
 		if sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")
@@ -1181,7 +1232,23 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			slog.String("transition", "snapshot_finish"),
 			slog.String("reason", "applied"))
 		resume := resumeAfterSnapshot(header)
-		err = p.subscribe(ctx, cli, addr, resume.origins, resume.local)
+		skipSelf := false
+		if local, ok := p.apply.(subscribeResumeCursorProvider); ok {
+			fresh, cursorErr := local.SubscribeResumeCursor()
+			if cursorErr != nil {
+				return disconnect(fmt.Errorf("local Subscribe cursor after Snapshot: %w", cursorErr))
+			}
+			own, planErr := p.selfEchoResume(status.Msg, fresh)
+			if planErr != nil {
+				return disconnect(fmt.Errorf("peer origin status after Snapshot: %w", planErr))
+			}
+			if own.needsSnapshot {
+				return disconnect(connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("gapped: Snapshot did not cover peer's committed local-origin history")))
+			}
+			skipSelf = own.skip
+		}
+		err = p.subscribe(ctx, cli, addr, resume.origins, resume.local, skipSelf)
 		if err == nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 			log.Info("replication pump: peer transition",
@@ -1190,12 +1257,66 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			return nil
 		}
 	}
-	p.cfg.Metrics.OnPumpDisconnect(addr, "subscribe_failed")
-	log.Warn("replication pump: peer transition",
-		slog.String("transition", "disconnect"),
-		slog.String("reason", "subscribe_failed"),
-		slog.Any("err", err))
-	return err
+	return disconnect(err)
+}
+
+// A failed local ApplyMutation may also return FailedPrecondition, but unlike
+// a peer-side stream fault it must still trigger local Snapshot repair.
+type peerSubscribeError struct{ err error }
+
+func (e *peerSubscribeError) Error() string { return e.err.Error() }
+func (e *peerSubscribeError) Unwrap() error { return e.err }
+
+type selfEchoResumePlan struct {
+	skip          bool
+	needsSnapshot bool
+}
+
+func (p *Pump) selfEchoResume(status *pb.PeerStatusResponse, cursor map[string]uint64) (selfEchoResumePlan, error) {
+	var zero hlc.NodeID
+	if p.cfg.NodeID == zero || len(status.GetSelfOrigin()) != len(p.cfg.NodeID) {
+		return selfEchoResumePlan{}, nil
+	}
+	if bytes.Equal(status.GetSelfOrigin(), p.cfg.NodeID[:]) {
+		return selfEchoResumePlan{}, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("peer and local replica share a NodeID"))
+	}
+	if cursor == nil {
+		return selfEchoResumePlan{}, nil
+	}
+	next := cursor[hex.EncodeToString(p.cfg.NodeID[:])]
+	if next == 0 {
+		next = 1
+	}
+	var remoteSeq uint64
+	found := false
+	for _, origin := range status.GetOrigins() {
+		if !bytes.Equal(origin.GetOrigin(), p.cfg.NodeID[:]) {
+			continue
+		}
+		if found {
+			return selfEchoResumePlan{}, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("peer reported duplicate local-origin watermarks"))
+		}
+		found = true
+		remoteSeq = origin.GetLastSeq()
+	}
+	if !found {
+		return selfEchoResumePlan{}, nil
+	}
+	if remoteSeq >= next {
+		return selfEchoResumePlan{needsSnapshot: true}, nil
+	}
+	if next == 1 {
+		return selfEchoResumePlan{}, nil
+	}
+	if p.installer.RequiredFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
+		return selfEchoResumePlan{}, nil
+	}
+	if local, ok := p.apply.(selfEchoSkipProvider); ok && local.CanSkipSelfEcho(p.cfg.NodeID) {
+		return selfEchoResumePlan{skip: true}, nil
+	}
+	return selfEchoResumePlan{}, nil
 }
 
 // subscribe opens a Subscribe stream and applies every received
@@ -1205,18 +1326,24 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 //
 // Under the leaderless Subscribe contract (#415), the peer's local log carries
 // mutations from every cluster origin, not just the peer's own writes. Ordinary
-// reconnects pass an empty cursor (= deliver every retained entry) and rely on
-// LanternService.ApplyMutation's per-origin watermark CAS for deduplication.
-// Snapshot recovery instead passes the header-derived cursor supplied by the
-// caller so the live tail starts after the point-in-time cut.
-func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64) error {
+// reconnects pass the local committed origin vector, so a peer can prove a
+// retained tail after ring eviction without an unnecessary Snapshot. Snapshot
+// recovery passes the header-derived cursor supplied by the caller so the live
+// tail starts after the point-in-time cut.
+func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64, skipSelf bool) error {
+	if skipSelf {
+		// The origin cannot advance beyond this cursor; only a proven
+		// locally committed graph-only origin uses the exclusion.
+		cursor = maps.Clone(cursor)
+		cursor[hex.EncodeToString(p.cfg.NodeID[:])] = math.MaxUint64
+	}
 	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           fromLocalSeq,
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(p.installer),
 	}))
 	if err != nil {
-		return err
+		return &peerSubscribeError{err}
 	}
 	defer func() { _ = stream.Close() }()
 	for stream.Receive() {
@@ -1226,6 +1353,11 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 			continue
 		}
 		if p.isSelfEcho(mu) {
+			if local, ok := p.apply.(interface{ LocalSeq(hlc.NodeID) uint64 }); ok &&
+				mu.GetSeq() > local.LocalSeq(p.cfg.NodeID) {
+				return connect.NewError(connect.CodeFailedPrecondition,
+					fmt.Errorf("gapped: peer sent uncommitted local-origin seq %d; Snapshot repair required", mu.GetSeq()))
+			}
 			p.cfg.Metrics.OnPumpDropSelfEcho(addr)
 			continue
 		}
@@ -1236,7 +1368,7 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 		p.tracker.recordEvent(addr, mu.GetSeq(), time.Now())
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return err
+		return &peerSubscribeError{err}
 	}
 	return nil
 }

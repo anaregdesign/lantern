@@ -102,7 +102,10 @@ type installerTestPeer struct {
 	frames            []*pb.SnapshotResponse
 	selfOrigin        hlc.NodeID
 	originSeq         uint64
+	extraOrigins      []*pb.OriginState
 	gapFirstSubscribe bool
+	firstSubscribeErr error
+	subscribeMutation *pb.Mutation
 	subscribeRequests []*pb.SubscribeRequest
 	snapshotRequests  []*pb.SnapshotRequest
 }
@@ -123,13 +126,16 @@ func (p *installerTestPeer) PeerStatus(
 			}}
 		}
 	}
+	for _, origin := range p.extraOrigins {
+		response.Origins = append(response.Origins, proto.Clone(origin).(*pb.OriginState))
+	}
 	return connect.NewResponse(response), nil
 }
 
 func (p *installerTestPeer) Subscribe(
 	_ context.Context,
 	req *connect.Request[pb.SubscribeRequest],
-	_ *connect.ServerStream[pb.SubscribeResponse],
+	stream *connect.ServerStream[pb.SubscribeResponse],
 ) error {
 	p.mu.Lock()
 	p.subscribeRequests = append(
@@ -141,6 +147,16 @@ func (p *installerTestPeer) Subscribe(
 	p.mu.Unlock()
 	if gap {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped"))
+	}
+	if p.subscribeMutation != nil {
+		if err := stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{
+			Mutation: proto.Clone(p.subscribeMutation).(*pb.Mutation),
+		}}); err != nil {
+			return err
+		}
+	}
+	if call == 1 && p.firstSubscribeErr != nil {
+		return p.firstSubscribeErr
 	}
 	return nil
 }
@@ -216,3 +232,15 @@ type fixedLocalState struct {
 func (s fixedLocalState) LocalSeq(hlc.NodeID) uint64 {
 	return s.seq
 }
+
+type cursorTestState struct {
+	fixedLocalState
+	cursor map[string]uint64
+	err    error
+}
+
+func (s *cursorTestState) SubscribeResumeCursor() (map[string]uint64, error) {
+	return s.cursor, s.err
+}
+
+func (*cursorTestState) ApplyMutation(context.Context, *pb.Mutation) error { return nil }

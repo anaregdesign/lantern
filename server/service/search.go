@@ -144,8 +144,8 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 		var pageErr error
 		if viewErr := s.withPublicGraphRead(func() error {
 			hits, next, truncated, limited, pageErr = s.searchSessions.page(in.GetCursor(), requestHash, configFingerprint, int(limit))
-			return nil
-		}); viewErr != nil {
+			return err
+		}); viewErr != nil && !errors.Is(viewErr, err) {
 			observation.Outcome, observation.Reason = "failed_precondition", "publication_gap"
 			return nil, viewErr
 		}
@@ -193,7 +193,7 @@ func (s *LanternService) SearchVertices(ctx context.Context, in *pb.SearchVertic
 	queryLimit := retainedLimit + 1
 	var hits []*pb.SearchHit
 	var workStats search.Stats
-	if viewErr := s.withPublicGraphRead(func() error {
+	if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
 		if projection == pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX {
 			var snapshotErr error
 			snapshot, stats, snapshotErr := s.cache.SearchVerticesSnapshotContext(ctx, in.GetQuery(), queryLimit, in.GetPrefix(), opts, phrase, s.search.WorkBudget)

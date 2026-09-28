@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -12,24 +14,52 @@ import (
 // read either completes before replay starts or sees the fault. Callbacks
 // must detach all returned graph values before releasing this latch: Connect
 // serializes responses after the service call has returned. Short
-// publication-generation samples also reject reads overlapping a WAL write
+// publication-generation samples reject reads overlapping a WAL write
 // without holding the publication lock across a slow traversal or scan.
 func (s *LanternService) withPublicGraphRead(capture func() error) error {
+	return s.withPublicGraphReadAttempts(context.Background(), 1, capture)
+}
+
+// withPublicGraphReadRetry may repeat a read-only capture after an overlapping
+// publication. Callers must replace, not append to, their per-attempt result.
+// If writes overlap all optimistic attempts, the final capture holds the
+// publication read cut instead of returning an error for healthy contention.
+func (s *LanternService) withPublicGraphReadRetry(ctx context.Context, capture func() error) error {
+	return s.withPublicGraphReadAttempts(ctx, 3, capture)
+}
+
+func (s *LanternService) withPublicGraphReadAttempts(ctx context.Context, attempts int, capture func() error) error {
 	s.snapshotReadCutMu.RLock()
 	defer s.snapshotReadCutMu.RUnlock()
-	before, err := s.graphReadGeneration()
-	if err != nil {
-		return err
+	for attempt := 0; attempt < attempts; attempt++ {
+		before, err := s.graphReadGeneration()
+		if err != nil {
+			return err
+		}
+		captureErr := capture()
+		after, err := s.graphReadGeneration()
+		if err != nil {
+			return err
+		}
+		if captureErr != nil {
+			return captureErr
+		}
+		if before == after {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return ctxToConnect(err)
+		}
 	}
-	captureErr := capture()
-	after, err := s.graphReadGeneration()
-	if err != nil {
-		return err
+	if attempts > 1 {
+		return s.withCommittedView(func() error {
+			if err := ctx.Err(); err != nil {
+				return ctxToConnect(err)
+			}
+			return capture()
+		})
 	}
-	if before != after {
-		return publicationChangedDuringReadError()
-	}
-	return captureErr
+	return publicationChangedDuringReadError()
 }
 
 func (s *LanternService) graphReadGeneration() (uint64, error) {
