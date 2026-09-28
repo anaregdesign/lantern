@@ -54,38 +54,39 @@ jobs:
           set -euo pipefail
           dir="$RUNNER_TEMP/node-registry-audit"
           mkdir -p "$dir"
-          npm view "lantern-sdk@$PACKAGE_VERSION" version --json \
-            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/version.json"
-          jq -e --arg version "$PACKAGE_VERSION" '. == $version' "$dir/version.json" >/dev/null
-          npm view "lantern-sdk@$PACKAGE_VERSION" dist --json \
-            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/dist.json"
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 60 \
+            -H 'Cache-Control: no-cache' \
+            "https://registry.npmjs.org/lantern-sdk/$PACKAGE_VERSION" > "$dir/metadata.json"
+          jq -e --arg version "$PACKAGE_VERSION" '
+            .name == "lantern-sdk" and .version == $version and (.dist | type == "object")
+          ' "$dir/metadata.json" >/dev/null
+          echo "Exact registry version and distribution metadata confirmed"
           npm pack "lantern-sdk@$PACKAGE_VERSION" --json --pack-destination "$dir" \
             --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/pack.json"
+          echo "Public npm tarball downloaded"
           REGISTRY_AUDIT_DIR="$dir" node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
           import { createHash } from 'node:crypto';
           import { readFileSync } from 'node:fs';
           import { join } from 'node:path';
 
           const dir = process.env.REGISTRY_AUDIT_DIR;
-          const dist = JSON.parse(readFileSync(join(dir, 'dist.json')));
-          const packs = JSON.parse(readFileSync(join(dir, 'pack.json')));
-          assert.equal(packs.length, 1);
-          const [pack] = packs;
-          assert.equal(pack.name, 'lantern-sdk');
-          assert.equal(pack.version, process.env.PACKAGE_VERSION);
-          assert.equal(pack.filename, `lantern-sdk-${pack.version}.tgz`);
+          const { dist } = JSON.parse(readFileSync(join(dir, 'metadata.json')));
+          const archiveName = `lantern-sdk-${process.env.PACKAGE_VERSION}.tgz`;
+          const archivePath = join(dir, archiveName);
+          const manifest = JSON.parse(execFileSync('tar', ['-xOzf', archivePath, 'package/package.json']));
+          assert.equal(manifest.name, 'lantern-sdk');
+          assert.equal(manifest.version, process.env.PACKAGE_VERSION);
           assert.equal(new URL(dist.tarball).host, 'registry.npmjs.org');
           assert.ok(dist.attestations?.url, 'published provenance is missing');
-          const archive = readFileSync(join(dir, pack.filename));
+          const archive = readFileSync(archivePath);
           const sha1 = createHash('sha1').update(archive).digest('hex');
           const sha512 = createHash('sha512').update(archive).digest();
           assert.equal(sha1, process.env.PUBLISHED_SHASUM);
           assert.equal(sha1, dist.shasum);
           assert.equal(`sha512-${sha512.toString('base64')}`, dist.integrity);
-          assert.equal(pack.shasum, sha1);
-          assert.equal(pack.integrity, dist.integrity);
-          console.log(`Registry archive matches tagged publish: ${pack.name}@${pack.version} SHA-1 ${sha1}`);
+          console.log(`Registry archive matches tagged publish: ${manifest.name}@${manifest.version} SHA-1 ${sha1}`);
           NODE
       - name: Verify signed registry provenance and source
         env:
