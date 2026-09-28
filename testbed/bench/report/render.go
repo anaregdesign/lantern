@@ -33,14 +33,16 @@ import (
 
 // LeakGate mirrors the schema written by run.sh.
 //
-// The leak gate evaluates against heap_alloc (post-GC live bytes), not
+// The leak gate evaluates against heap_alloc (post-GC live bytes and, for
+// receipt scenarios, unforced steady peaks), not
 // heap_inuse (span-level, includes free slots). See issue #248 — under
 // sustained churn, heap_inuse drifts upward as the allocator opens new
 // spans even when live memory is flat, producing false-positive verdicts.
 type LeakGate struct {
 	Thresholds struct {
-		GoroutineMaxDelta   int `json:"goroutine_max_delta"`
-		HeapAllocMaxDeltaMB int `json:"heap_alloc_max_delta_mb"`
+		GoroutineMaxDelta         int `json:"goroutine_max_delta"`
+		HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
+		SteadyHeapAllocMaxDeltaMB int `json:"steady_heap_alloc_max_delta_mb"`
 		// HeapInuseMaxDeltaMB is the legacy field name retained for backward
 		// compatibility with older leak_gate.json artifacts.
 		HeapInuseMaxDeltaMB int `json:"heap_inuse_max_delta_mb,omitempty"`
@@ -369,6 +371,10 @@ func RenderReport(w io.Writer, in Input) error {
 		}
 		bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n",
 			in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
+		if in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB > 0 {
+			bw.printf("Receipt unforced steady heap_alloc peak threshold: +%d MiB; post-GC live-set threshold: +%d MiB.\n\n",
+				in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB)
+		}
 		bw.printf("Post-cooldown gate evaluates `heap_alloc` after forced GC; `heap_inuse` and `heap_objects` are shown for context only.\n\n")
 		bw.printf("| replica | goroutines (Δ) | heap_alloc MiB (pre → post = Δ) | heap_inuse MiB (pre → post = Δ) | heap_objects (Δ) | vertex_hlc post (entries / high-water) |\n")
 		bw.printf("| --- | --- | --- | --- | --- | --- |\n")

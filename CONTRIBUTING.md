@@ -323,7 +323,7 @@ of that surface ships, **in the same PR**:
    writes, scans, traversals, streams) joins an existing scenario fan-out in
    `testbed/bench/scenarios/` or gets a new scenario. The release-sweep scenarios
    carry `perf_gate:` floors (min steady rps / max p99 / max non-OK ratio) enforced
-   by the blocking nightly (`bench-nightly.yml`); sizing and re-baselining rules
+   by the on-demand qualification workflow (`bench-nightly.yml`); sizing and re-baselining rules
    live in [testbed/bench/README.md](testbed/bench/README.md). Perf floors are a
    ratchet like the coverage floors: when a PR legitimately moves one (an accepted
    performance trade-off), adjust the floor in the same PR and say so in the PR

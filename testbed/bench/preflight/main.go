@@ -5,12 +5,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/testbed/bench/topology"
 )
@@ -45,7 +47,7 @@ func main() {
 			_ = lantern.Close()
 			fatalf("replica %s: %v", endpoint, err)
 		}
-		replicaReport, err := topology.VerifyBroadIlluminate(ctx, lantern)
+		replicaReport, err := verifyReplica(ctx, lantern)
 		_ = lantern.Close()
 		if err != nil {
 			fatalf("verify replica %s: %v", endpoint, err)
@@ -65,6 +67,34 @@ func main() {
 		}
 	}
 	fmt.Println(string(encoded))
+}
+
+func verifyReplica(ctx context.Context, lantern *client.Lantern) (topology.BroadIlluminateVerification, error) {
+	for {
+		report, err := topology.VerifyBroadIlluminate(ctx, lantern)
+		if err == nil || !transientPublication(err) {
+			return report, err
+		}
+		if err := ctx.Err(); err != nil {
+			return report, fmt.Errorf("timed out waiting for stable topology publication: %w", err)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func transientPublication(err error) bool {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return false
+	}
+	switch connectErr.Code() {
+	case connect.CodeUnavailable:
+		return connectErr.Message() == "graph publication changed during read; retry"
+	case connect.CodeFailedPrecondition:
+		return connectErr.Message() == "gapped: mutation publication or Snapshot install requires repair before reading, subscribing, or taking a snapshot"
+	default:
+		return false
+	}
 }
 
 func waitForReplica(ctx context.Context, lantern *client.Lantern) error {
