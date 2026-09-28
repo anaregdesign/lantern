@@ -111,7 +111,7 @@ jobs:
           cpus="$(nproc)"
           for attempt in $(seq 1 19); do
             load="$(awk '{print $1}' /proc/loadavg)"
-            if awk -v load="$load" -v cpus="$cpus" 'BEGIN { exit !(load < cpus / 2) }'; then
+            if awk -v host_load="$load" -v cpus="$cpus" 'BEGIN { exit !(host_load < cpus / 2) }'; then
               break
             fi
             if [[ "$attempt" -eq 19 ]]; then
@@ -123,7 +123,7 @@ jobs:
           printf 'source=%s image=%s runner=%s/%s cpus=%s\n' \
             "$GITHUB_SHA" "$(docker image inspect --format '{{.Id}}' lantern:local)" \
             "$RUNNER_OS" "$RUNNER_ARCH" "$cpus"
-          printf 'preflight_load_1m=%s (must be < %s)\n' "$load" "$((cpus / 2))"
+          printf 'preflight_load_1m=%s (must be < cpus/2, cpus=%s)\n' "$load" "$cpus"
           free -h
           uptime
       - name: Run manual leak-gate sweep (blocking)
@@ -147,6 +147,7 @@ jobs:
         # or a harness/setup error) fails this requested qualification.
         run: ./testbed/bench/release.sh --out bench-report.md
       - name: Run one diagnostic scenario
+        id: diagnostic
         if: inputs.diagnostic_scenario != ''
         env:
           LANTERN_IMAGE: lantern:local
@@ -156,7 +157,7 @@ jobs:
           LANTERN_BENCH_MUTATION_LOG_CAPACITY: ${{ inputs.diagnostic_log_capacity }}
         run: ./testbed/bench/run.sh "$DIAGNOSTIC_SCENARIO"
       - name: Summarize diagnostic RPC errors
-        if: always() && inputs.diagnostic_scenario != ''
+        if: always() && inputs.diagnostic_scenario != '' && steps.diagnostic.outcome != 'skipped'
         run: |
           set -euo pipefail
           find testbed/bench/out -name 'ghz_steady_*.json' -print0 | sort -z | while IFS= read -r -d '' file; do
@@ -173,7 +174,7 @@ jobs:
             ' "$file"
           done
       - name: Summarize diagnostic replication health
-        if: always() && inputs.diagnostic_scenario == 'broad_rw'
+        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
         run: |
           set -euo pipefail
           for port in 9390 9391 9392; do
@@ -182,7 +183,7 @@ jobs:
               awk '$1 ~ /^lantern_(mutation_log_(entries_total|capacity|fill_ratio|evicted_total)|mutationlog_subscriber_dropped_total|subscribe_(active_streams|dropped_total)|replication_(applied_total|apply_total|dropped_total|lag_seq)|peer_connected|snapshot_replayed_total|anti_entropy_(cycles_total|gaps_found_total))(\{|$)/ {print}'
           done
       - name: Summarize diagnostic peer repairs
-        if: always() && inputs.diagnostic_scenario == 'broad_rw'
+        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
         run: |
           set -euo pipefail
           for replica in lantern-0 lantern-1 lantern-2; do
@@ -202,8 +203,9 @@ jobs:
                   for (i = first; i <= matches; i++) print lines[i % 160]
                 }
               '
+          done
       - name: Stop diagnostic cluster
-        if: always() && inputs.diagnostic_scenario == 'broad_rw'
+        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
         run: docker compose --project-name lantern-bench -f deploy/compose/docker-compose.yml -f testbed/bench/compose.override.yml down -v --remove-orphans
       - name: Run four receipt admission and lookup gates (blocking)
         if: inputs.diagnostic_scenario == ''
