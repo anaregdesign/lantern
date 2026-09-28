@@ -1,12 +1,14 @@
-use std::{error::Error, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{error::Error, future::Future, marker::PhantomData, pin::Pin, sync::Arc, time::Duration};
 
-use http::Uri;
+use bytes::Buf;
+use http::{Uri, uri::PathAndQuery};
 use prost::Message;
 use rustls::RootCertStore;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::time::{Instant, sleep, timeout_at};
 use tonic::{
     Code, Request, Response, Status,
+    codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
     metadata::MetadataValue,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
@@ -46,6 +48,49 @@ pub enum CallOptions {
     Default,
     After(Duration),
     NoDeadline,
+}
+
+/// Budgets for one true server stream, independent of the unary deadline.
+///
+/// Both limits are opt-in. `lifetime` includes authentication and opening the
+/// stream; `idle` restarts for each received frame. Either limit cancels the
+/// stream on expiry. Neither setting enables a retry or a background reader.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StreamOptions {
+    pub lifetime: Option<Duration>,
+    pub idle: Option<Duration>,
+}
+
+impl StreamOptions {
+    pub fn with_lifetime(mut self, lifetime: Duration) -> Self {
+        self.lifetime = Some(lifetime);
+        self
+    }
+
+    pub fn with_idle(mut self, idle: Duration) -> Self {
+        self.idle = Some(idle);
+        self
+    }
+
+    pub(crate) fn validate(self) -> Result<(), LanternError> {
+        self.deadline().map(|_| ())
+    }
+
+    fn deadline(self) -> Result<Option<Instant>, LanternError> {
+        if let Some(idle) = self.idle {
+            validate_timeout(idle)?;
+        }
+        self.lifetime
+            .map(|lifetime| {
+                validate_timeout(lifetime)?;
+                Instant::now()
+                    .checked_add(lifetime)
+                    .ok_or(LanternError::InvalidConfig(
+                        "stream lifetime exceeds the clock range",
+                    ))
+            })
+            .transpose()
+    }
 }
 
 /// Automatic retries are off unless explicitly enabled.
@@ -165,6 +210,77 @@ impl LanternClient {
             )
             .await?;
         require_serving(health.status)
+    }
+
+    /// Open exactly one data-plane server stream. Keep the raw protobuf frame
+    /// until it has been checked for unknown fields before decoding it into
+    /// generated types; Prost otherwise discards newly introduced oneof arms.
+    pub(crate) async fn raw_data_stream<R>(
+        &self,
+        message: R,
+        path: &'static str,
+        options: StreamOptions,
+    ) -> Result<DataStream, LanternError>
+    where
+        R: Message + Send + 'static,
+    {
+        let actual = message.encoded_len();
+        if actual > self.state.encode_limit {
+            return Err(LanternError::MessageTooLarge {
+                actual,
+                limit: self.state.encode_limit,
+            });
+        }
+        let deadline = options.deadline()?;
+        let idle_deadline = options
+            .idle
+            .map(|idle| {
+                Instant::now()
+                    .checked_add(idle)
+                    .ok_or(LanternError::InvalidConfig(
+                        "stream idle timeout exceeds the clock range",
+                    ))
+            })
+            .transpose()?;
+        let open = async {
+            let mut request = Request::new(message);
+            if let Some(provider) = &self.state.token_provider {
+                let token = provider
+                    .token()
+                    .await
+                    .map_err(LanternError::TokenProvider)?;
+                request
+                    .metadata_mut()
+                    .insert("authorization", bearer_header(&token)?);
+            }
+            let mut grpc = tonic::client::Grpc::new(self.state.channel.clone())
+                .max_encoding_message_size(self.state.encode_limit)
+                .max_decoding_message_size(self.state.decode_limit);
+            grpc.ready().await.map_err(|error| {
+                LanternError::from(Status::unknown(format!("Service was not ready: {error}")))
+            })?;
+            let response = grpc
+                .server_streaming(
+                    request,
+                    PathAndQuery::from_static(path),
+                    RawCodec::<R>::default(),
+                )
+                .await
+                .map_err(LanternError::from)?;
+            Ok(response.into_inner())
+        };
+        let stream = match earlier_stream_deadline(deadline, idle_deadline) {
+            Some(end) => timeout_at(end, open)
+                .await
+                .unwrap_or_else(|_| Err(stream_timeout_error(deadline, idle_deadline)))?,
+            None => open.await?,
+        };
+        Ok(DataStream {
+            stream: Some(stream),
+            deadline,
+            idle: options.idle,
+            idle_deadline,
+        })
     }
 
     #[allow(dead_code)]
@@ -369,6 +485,100 @@ impl LanternClient {
             }
         }
         Err(LanternError::Protocol("retry loop ended without a result"))
+    }
+}
+
+/// One bounded, demand-driven gRPC stream. Dropping it releases the HTTP/2
+/// response and cancels server work; no task owns a hidden stream clone.
+pub(crate) struct DataStream {
+    stream: Option<tonic::Streaming<Vec<u8>>>,
+    deadline: Option<Instant>,
+    idle: Option<Duration>,
+    idle_deadline: Option<Instant>,
+}
+
+impl DataStream {
+    pub(crate) async fn next(&mut self) -> Result<Option<Vec<u8>>, LanternError> {
+        let Some(stream) = &mut self.stream else {
+            return Ok(None);
+        };
+        let read = async { stream.message().await.map_err(LanternError::from) };
+        let result = match earlier_stream_deadline(self.deadline, self.idle_deadline) {
+            Some(end) => timeout_at(end, read)
+                .await
+                .unwrap_or_else(|_| Err(stream_timeout_error(self.deadline, self.idle_deadline))),
+            None => read.await,
+        };
+        if matches!(result, Ok(Some(_))) {
+            self.idle_deadline = self.idle.map(|idle| Instant::now() + idle);
+        } else {
+            self.stream = None;
+        }
+        result
+    }
+}
+
+fn earlier_stream_deadline(lifetime: Option<Instant>, idle: Option<Instant>) -> Option<Instant> {
+    match (lifetime, idle) {
+        (Some(lifetime), Some(idle)) => Some(lifetime.min(idle)),
+        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+        (None, None) => None,
+    }
+}
+
+fn stream_timeout_error(lifetime: Option<Instant>, idle: Option<Instant>) -> LanternError {
+    if idle.is_some_and(|idle| lifetime.is_none_or(|lifetime| idle < lifetime)) {
+        LanternError::StreamIdleTimeout
+    } else {
+        LanternError::DeadlineExceeded
+    }
+}
+
+/// Decode complete gRPC frames without losing unknown protobuf fields.
+/// Domain decoders check every frame's round-trip length before accepting it.
+struct RawCodec<R>(PhantomData<R>);
+
+impl<R> Default for RawCodec<R> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+struct RawEncoder<R>(PhantomData<R>);
+struct RawDecoder;
+
+impl<R: Message + Send + 'static> Codec for RawCodec<R> {
+    type Encode = R;
+    type Decode = Vec<u8>;
+    type Encoder = RawEncoder<R>;
+    type Decoder = RawDecoder;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        RawEncoder(PhantomData)
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        RawDecoder
+    }
+}
+
+impl<R: Message + Send + 'static> Encoder for RawEncoder<R> {
+    type Item = R;
+    type Error = Status;
+
+    fn encode(&mut self, item: R, dst: &mut EncodeBuf<'_>) -> Result<(), Status> {
+        item.encode(dst)
+            .map_err(|error| Status::internal(format!("cannot encode stream request: {error}")))
+    }
+}
+
+impl Decoder for RawDecoder {
+    type Item = Vec<u8>;
+    type Error = Status;
+
+    fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Vec<u8>>, Status> {
+        let size = src.remaining();
+        Ok(Some(src.copy_to_bytes(size).to_vec()))
     }
 }
 

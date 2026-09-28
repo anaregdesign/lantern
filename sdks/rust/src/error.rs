@@ -3,7 +3,7 @@ use std::{error::Error, fmt};
 use prost::Message;
 use tonic::{Code, Status};
 
-use crate::generated::graph::v1::{SearchErrorDetail, SearchErrorReason};
+use crate::generated::graph::v1::{PutOutcome, SearchErrorDetail, SearchErrorReason};
 
 const SEARCH_ERROR_TYPE: &str = "type.googleapis.com/graph.v1.SearchErrorDetail";
 
@@ -180,6 +180,56 @@ impl Error for RpcFailure {
     }
 }
 
+/// A CDC stream cannot safely advance its cursor. Identity consumers must
+/// bootstrap and revalidate resident identities; full-mutation consumers
+/// must reconcile against an application-owned source of truth.
+#[derive(Debug)]
+pub struct CdcGap {
+    reason: &'static str,
+    failure: Option<RpcFailure>,
+}
+
+impl CdcGap {
+    pub(crate) fn protocol(reason: &'static str) -> Self {
+        Self {
+            reason,
+            failure: None,
+        }
+    }
+
+    pub(crate) fn rpc(failure: RpcFailure) -> Self {
+        Self {
+            reason: "server reported a CDC publication or retention gap",
+            failure: Some(failure),
+        }
+    }
+
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// Original FAILED_PRECONDITION status, if the server reported the gap.
+    pub fn failure(&self) -> Option<&RpcFailure> {
+        self.failure.as_ref()
+    }
+}
+
+impl fmt::Display for CdcGap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Lantern CDC gap: {}", self.reason)?;
+        if let Some(failure) = &self.failure {
+            write!(f, " ({failure})")?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for CdcGap {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.failure.as_ref().map(|failure| failure as &dyn Error)
+    }
+}
+
 /// Client errors are non-exhaustive; inspect [`Self::Rpc`] for the exact wire
 /// status. A local timeout or dropped mutation does not establish its outcome.
 #[non_exhaustive]
@@ -193,7 +243,15 @@ pub enum LanternError {
     Rpc(RpcFailure),
     NotFound,
     DeadlineExceeded,
+    StreamIdleTimeout,
+    CdcGap(CdcGap),
     Protocol(&'static str),
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    BackupFormat(&'static str),
+    BackupIntegrity(&'static str),
+    UnsupportedBackup(&'static str),
+    RestoreOutcome(PutOutcome),
     MessageTooLarge { actual: usize, limit: usize },
     HealthNotServing(i32),
     Entropy(getrandom::Error),
@@ -262,7 +320,21 @@ impl fmt::Debug for LanternError {
             Self::Rpc(error) => f.debug_tuple("Rpc").field(error).finish(),
             Self::NotFound => f.write_str("NotFound"),
             Self::DeadlineExceeded => f.write_str("DeadlineExceeded"),
+            Self::StreamIdleTimeout => f.write_str("StreamIdleTimeout"),
+            Self::CdcGap(error) => f.debug_tuple("CdcGap").field(error).finish(),
             Self::Protocol(reason) => f.debug_tuple("Protocol").field(reason).finish(),
+            Self::Io(error) => f.debug_tuple("Io").field(error).finish(),
+            Self::Json(error) => f.debug_tuple("Json").field(error).finish(),
+            Self::BackupFormat(reason) => f.debug_tuple("BackupFormat").field(reason).finish(),
+            Self::BackupIntegrity(reason) => {
+                f.debug_tuple("BackupIntegrity").field(reason).finish()
+            }
+            Self::UnsupportedBackup(reason) => {
+                f.debug_tuple("UnsupportedBackup").field(reason).finish()
+            }
+            Self::RestoreOutcome(outcome) => {
+                f.debug_tuple("RestoreOutcome").field(outcome).finish()
+            }
             Self::MessageTooLarge { actual, limit } => f
                 .debug_struct("MessageTooLarge")
                 .field("actual", actual)
@@ -292,7 +364,24 @@ impl fmt::Display for LanternError {
             Self::Rpc(error) => error.fmt(f),
             Self::NotFound => f.write_str("Lantern item not found"),
             Self::DeadlineExceeded => f.write_str("Lantern call deadline exceeded"),
+            Self::StreamIdleTimeout => f.write_str("Lantern stream idle timeout"),
+            Self::CdcGap(error) => error.fmt(f),
             Self::Protocol(reason) => write!(f, "Lantern protocol error: {reason}"),
+            Self::Io(error) => write!(f, "Lantern I/O error: {error}"),
+            Self::Json(error) => write!(f, "Lantern backup JSON error: {error}"),
+            Self::BackupFormat(reason) => write!(f, "Lantern backup format error: {reason}"),
+            Self::BackupIntegrity(reason) => {
+                write!(f, "Lantern backup integrity error: {reason}")
+            }
+            Self::UnsupportedBackup(reason) => {
+                write!(
+                    f,
+                    "Lantern backup cannot be restored through public Puts: {reason}"
+                )
+            }
+            Self::RestoreOutcome(outcome) => {
+                write!(f, "Lantern restore did not apply a live value: {outcome:?}")
+            }
             Self::MessageTooLarge { actual, limit } => {
                 write!(f, "Lantern message size {actual} exceeds limit {limit}")
             }
@@ -316,6 +405,9 @@ impl Error for LanternError {
             Self::TokenProvider(error) => Some(error.as_ref()),
             Self::Transport(error) => Some(error),
             Self::Rpc(error) => Some(error),
+            Self::CdcGap(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::Json(error) => Some(error),
             Self::Entropy(error) => Some(error),
             Self::Batch(error) => Some(error),
             _ => None,

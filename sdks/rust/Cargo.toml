@@ -1,6 +1,6 @@
 [package]
 name = "lantern-client"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -21,6 +21,8 @@ default = []
 bundled-roots = ["tonic/tls-webpki-roots"]
 
 [dependencies]
+base64 = "=0.22.1"
+bytes = "=1.12.1"
 fastrand = "=2.5.0"
 futures-util = "=0.3.34"
 getrandom = "=0.4.3"
@@ -29,7 +31,10 @@ prost = "=0.14.4"
 prost-types = "=0.14.4"
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = "=1.15.1"
-tokio = { version = "1", features = ["time"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+tokio = { version = "1", features = ["io-util", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["transport", "codegen", "tls-ring", "tls-native-roots"] }
 tonic-health = "=0.14.6"
 tonic-prost = "=0.14.6"

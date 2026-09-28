@@ -16,7 +16,9 @@ mod generated {
     }
 }
 
+mod backup;
 mod batch;
+mod cdc;
 mod contrib;
 mod crud;
 mod discovery;
@@ -29,13 +31,25 @@ mod transport;
 mod traversal;
 mod value;
 
+pub use backup::{
+    BackupFormat, BackupManifest, BackupRecord, BackupStream, RestoreFailure, RestoreOptions,
+    RestoreReport,
+};
 pub use batch::{AddBatch, DeleteBatch, GetBatch};
+pub use cdc::{
+    CdcCursor, CdcHlc, EdgeWrite, FullMutation, FullMutationOp, FullMutationStream,
+    IdentityCategory, IdentityCheckpoint, IdentityChunk, IdentityEvent, IdentityStream, OriginId,
+    Receipt, ReceiptEdgeAdd, ReceiptEdgeAddItem, ReceiptEdgeContributionDelete,
+    ReceiptEdgeContributionDeleteItem, ReceiptEdgeDelete, ReceiptEdgeDeleteItem, ReceiptMetadata,
+    ReceiptOriginalResult, ReceiptVertexDelete, ReceiptVertexDeleteItem, ReceiptVertexPut,
+    ReceiptVertexPutItem, VertexWrite,
+};
 pub use contrib::{AddInput, ContribId, PreparedAdd};
 pub use discovery::{
     DegreeDirection, DegreeEntry, DegreeRankingOptions, ReplicationPeer, ReplicationPeerState,
     ReplicationStatus, ServerStatus,
 };
-pub use error::{BatchError, LanternError, RpcErrorKind, RpcFailure, SearchDetails};
+pub use error::{BatchError, CdcGap, LanternError, RpcErrorKind, RpcFailure, SearchDetails};
 pub use generated::graph::v1::{
     Edge, MatchMode, Objective, PutOutcome, Reduction, ScanOrder, SearchCapabilities,
     SearchErrorReason, SearchHitProjectionStatus, SearchIndexHealth, SearchProjection, Vertex,
@@ -46,7 +60,8 @@ pub use prost_types::{Duration as ProtoDuration, Timestamp};
 pub use scans::{EdgeCursor, EdgeScanOptions, KeyCursor, ScanOptions, ScanPage, VertexCursor};
 pub use search::{SearchCursor, SearchHit, SearchPage, SearchRequest};
 pub use transport::{
-    CallOptions, LanternClient, LanternClientBuilder, RetryPolicy, TokenError, TokenProvider,
+    CallOptions, LanternClient, LanternClientBuilder, RetryPolicy, StreamOptions, TokenError,
+    TokenProvider,
 };
 pub use traversal::{
     BfsOptions, CommunityOptions, Graph, GraphEdge, PprOptions, TraversalFamily, TraversalOptions,

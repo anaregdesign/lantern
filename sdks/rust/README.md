@@ -1,15 +1,16 @@
 # Lantern Rust client
 
-`lantern-client` is the standalone native Rust crate (`lantern_client` in Rust)
-for [Lantern](https://github.com/anaregdesign/lantern). It includes a public
-single-endpoint connection builder, gRPC Health `ping`, typed errors, and
-exact-value Vertex/Edge CRUD with bounded plural-first batches, bounded
-queries, typed graph traversal, and explicit status snapshots. Generated
-Tonic/Prost clients and RPC envelopes remain private. Receipt and
-long-lived streaming APIs are tracked in
-[ADR 0011](https://github.com/anaregdesign/lantern/blob/main/docs/decisions/0011-native-rust-sdk.md)
-and later issues. The `0.1.0` crate is published; selective contribution
-deletion requires `0.2.0` or later and a compatible Lantern server.
+[`lantern-client` on crates.io](https://crates.io/crates/lantern-client) is
+the published native Rust crate (`lantern_client` in Rust) for
+[Lantern](https://github.com/anaregdesign/lantern). Check the registry for
+available versions: features in this source tree may await the next
+independently tagged Rust release and require a compatible server. It includes
+a single-endpoint builder, gRPC Health `ping`, typed errors, exact-value
+Vertex/Edge CRUD with bounded plural-first batches, bounded queries, typed
+graph traversal, status snapshots, true server-streaming CDC and graph
+backup, and bounded graph-only restore. Generated Tonic/Prost clients and
+RPC request envelopes remain private; durable receipt *write/replay* and
+peer replication administration are not public SDK APIs.
 
 The crate builds independently of the Go workspace. Consumer builds use the
 checked-in `src/generated/graph.v1.rs` and need neither the repository's `proto/`
@@ -219,6 +220,138 @@ server-side edges, `O(E_total)`. `server_status` and
 `replication_status` fetch snapshots only when explicitly called;
 neither starts background polling.
 
+## True server-streaming CDC
+
+`bootstrap_identities(StreamOptions)` explicitly requests
+`IDENTITY_ONLY`, an empty origin vector, and a checkpoint **before** the
+registered live tail. Opening is deferred until `next_event()` is first
+polled. The checkpoint is the selected responder's publication cut, **not**
+a cluster-wide snapshot or proof that resident cache entries remain fresh.
+Revalidate resident identities against that cut while the stream remains
+open. Only after applying the invalidations and recording the cut can an
+application use `IdentityCheckpoint::cursor_after_revalidation()`.
+`resume_identities(CdcCursor, StreamOptions)` supplies a per-origin map of
+**next expected** sequence numbers (canonical nonzero origins are 32
+lowercase hex characters). Persist a completed invalidation and its cursor
+**atomically** in application-owned storage. This SDK does not implement an
+offline cache or persist a cursor.
+
+```rust
+use std::time::Duration;
+use lantern_client::{IdentityEvent, LanternClient, StreamOptions};
+
+# async fn example(client: &LanternClient) -> Result<(), Box<dyn std::error::Error>> {
+let mut stream = client.bootstrap_identities(
+    StreamOptions::default().with_idle(Duration::from_secs(5)),
+).await?;
+let IdentityEvent::Checkpoint(checkpoint) = stream.next_event().await? else {
+    return Err("missing bootstrap checkpoint".into());
+};
+// Revalidate your resident identities now; the stream has already registered
+// its tail. Commit that state and the checkpoint's next-expected cursor together.
+let cursor = checkpoint.cursor_after_revalidation()?;
+let mut resumed = client.resume_identities(cursor, StreamOptions::default()).await?;
+if let IdentityEvent::Chunk(chunk) = resumed.next_event().await? {
+    // Invalidate the named keys and atomically persist chunk.next_cursor
+    // only when it is Some (the final chunk, including zero-key final frames).
+    let _final_cursor = chunk.next_cursor;
+}
+# Ok(())
+# }
+```
+
+Identity chunks contain **only** keys, HLC coordinates, operation category,
+offsets and sequence: no Vertex value, Edge weight, contribution ID,
+expiration, receipt, or bearer metadata. A mutation may span multiple
+ordered chunks (at most 1,024 identities and 1 MiB per frame). A
+`next_cursor` exists **only** on its final chunk; never advance a cursor
+after a partial mutation. Category `DELETE_EDGE_CONTRIBUTION` (wire 7)
+invalidates the named `(tail, head)` for a **re-read**; it is not a
+whole-edge Delete. Category `RECEIPT_ONLY` (wire 6) has a zero-key final
+chunk when a receipt caused no graph effect. Natural TTL expiration
+produces **no synthetic CDC event**: use TTL checks and revalidation for
+freshness.
+
+`subscribe_full_mutations(cursor, options)` is a separate **explicit**
+opt-in to `FULL_MUTATION` with `accept_receipt_envelopes=true`. Its owned
+`FullMutationOp` covers every currently defined graph-only and
+receipt-bearing mutation arm (including both contribution Delete forms,
+accepted-expired causal barriers, and the five Vertex/Edge receipt
+families). It retains origin, sequence, HLC, absolute deadlines,
+contribution targets, request-index-aligned original receipt results
+(including `false` Deletes and nonfinite *effective* Add weights), and
+unknown-arm/malformed-frame rejection. Never log a full mutation
+indiscriminately: it may expose values and receipt metadata. It is **not**
+a receipt write/replay API or an all-history archive.
+
+Both streams use the existing verified TLS/mTLS and per-open bearer provider
+on their single configured endpoint; a stream never switches endpoints,
+retries, or restarts in the background. `StreamOptions` has independent
+optional `lifetime` and `idle` budgets (including authentication/open and
+the first-frame wait); the unary 15-second budget does not apply. Dropping
+a stream cancels its server subscriber. `FAILED_PRECONDITION` (including
+log eviction or publication-generation changes), premature EOF, missing or
+duplicate chunks, unknown categories/oneof arms, and malformed frames
+fail closed with `LanternError::CdcGap` instead of skipping entries.
+Transport/auth/idle failures are also terminal and retain their own errors.
+Across replicas, a next-expected cursor is portable **if the selected
+responder retains the origin history**; a lagging responder may remain
+silent, and a gapped responder requires a fresh identity bootstrap plus
+resident-identity revalidation. Full-mode gaps cannot be repaired by
+pretending the current graph is full mutation history.
+
+## Graph-only backup and bounded restore
+
+`backup_snapshot(vertex_prefix, StreamOptions)` yields a cancellable
+`BackupStream::next_record()`; empty prefix selects the whole graph and a
+nonempty prefix selects vertices with that prefix plus edges whose **both**
+endpoints match it. `write_backup(&mut writer, prefix, BackupFormat, options)`
+streams one record at a time into caller-owned storage and returns a
+`BackupManifest` **only** after clean stream EOF and a successful writer
+flush. Discard partial output on any failure. The supported formats are
+length-delimited `BackupSnapshotResponse` protobuf records
+(`LengthDelimitedProtobuf`) and **Rust-specific** versioned NDJSON
+(`RustNdjsonV1`); the latter has **not** been qualified as Go/Node NDJSON.
+Every NDJSON line is the crate's canonical JSON encoding, ends in `\n`,
+and contains `version:1` plus exactly one `vertex` or `edge`; duplicate or
+noncanonical fields are rejected. An unset Vertex value is `null`, explicit nil is
+`{"kind":"nil"}`, integers and signed timestamp/duration seconds are
+decimal strings, float values and folded Edge weights use lowercase
+8/16-digit IEEE bit strings, bytes use canonical standard base64, and
+expiration is `null` or a `{seconds,nanos}` object.
+
+Store the manifest **separately**, authenticate it as needed, and retain
+its version/format, selected prefix, record counts, byte length, and
+SHA-256 digest of the exact archive bytes. `BackupManifest::to_json()` and
+`from_json()` carry this contract. A checksum proves only that the stored
+archive matches the caller's manifest: the server has **no snapshot
+footer/whole-dump checksum**, so clean EOF cannot independently prove that
+the serving graph was transmitted completely.
+
+`restore_backup(&mut immutable_seekable_source, &manifest, RestoreOptions)`
+checks the archive length, record framing, checksum, counts, prefix,
+values/expirations, **every folded Edge weight**, and individual Put message
+sizes before sending any write. It then makes bounded application passes:
+all `PutVertices` batches, followed by all `PutEdges` batches, even if
+archive records were interleaved. Defaults are a 1,000-item batch,
+64-MiB per-record limit and 16-GiB total archive limit; callers can
+lower them. The source must not change between passes. This is **merge/
+upsert**, not an atomic transaction or replace-all: other destination
+keys/edges are not deleted. Use an empty destination for an exact
+**folded graph** clone. `RestoreFailure` carries the original error and
+fully validated earlier Put response counts; its failed batch might have
+applied, and an expiration may lapse before a later pass.
+
+Backup contains neither per-contribution identities nor decay history,
+causal frontiers, removal floors, receipt Store/WAL, or mutation receipts.
+It cannot reconstruct those from a folded Edge. Finite folded weights
+are restorable through public Put; a server can fold finite contributions
+into **NaN or infinity**, but public `PutEdges` rejects nonfinite source
+weights. Restore therefore returns `UnsupportedBackup` **before any Put**
+for such an archive (or already-expired records), rather than dropping an
+Edge or claiming an exact all-weights restore. Peer `Snapshot` and
+receipt-aware whole-state backup are different, private protocols.
+
 ## Secure end-to-end example
 
 `examples/complete.rs` compiles under Rust 1.88 and stable. It requires a
@@ -244,6 +377,30 @@ batch failure progress, prepared Add versus Put, a bounded keys-only scan,
 optional search, all three traversal families, degree ranking, and explicit
 server/replication status. It intentionally does **not** automatically
 retry a potentially applied Add or Delete after a lost response.
+
+`examples/cdc_backup.rs` uses the same verified HTTPS, optional private CA,
+mTLS and per-open bearer settings. It demonstrates checkpoint-first
+resident-key revalidation, explicit identity/full-mode selection, a
+prefix-induced graph-only archive with a separate manifest, and an
+**opt-in** two-pass restore. It never prints mutation values or credentials:
+
+```sh
+LANTERN_ENDPOINT=https://localhost:6380 \
+LANTERN_PREFIX=your-private-example-prefix: \
+LANTERN_BACKUP_PATH=./graph-backup.pb \
+LANTERN_MANIFEST_PATH=./graph-backup.manifest.json \
+cargo run --locked --example cdc_backup
+```
+
+Both paths must be new; neither file is overwritten. To restore, additionally
+set `LANTERN_RESTORE_ENDPOINT` to a **different, empty, authorized** HTTPS
+destination and `LANTERN_CONFIRM_EMPTY_RESTORE=yes`; the example uses the
+same CA/mTLS/token settings for both endpoints. `LANTERN_RESIDENT_KEYS` is
+an optional comma-separated list of private resident keys for this
+demonstration, `LANTERN_SHOW_FULL_CDC=1` explicitly opts into one full
+mutation, and `LANTERN_BACKUP_FORMAT=rust-ndjson-v1` chooses the Rust NDJSON
+format instead of the default protobuf. This example does not persist a
+cache/cursor transaction or prove server-side whole-dump integrity.
 
 From this directory, after installing Rust and Cargo:
 
@@ -274,17 +431,21 @@ LANTERN_RUST_TEST_SERVER="$PWD/target/lantern-smoke" \
   cargo test --locked --all-features -- --ignored --test-threads=1
 ```
 
-The scaffold smoke intentionally sends no bearer token. Other tests exercise
-the explicit single-instance h2c exception, verified TLS, mTLS, auth,
-structured search failures, a response above Tonic's 4-MiB default, all
-exact values/expiration boundaries, bounded CRUD chunks, failure reporting,
-and retained-ID Add semantics over the production h2c wire.
+Tests exercise the explicit single-instance h2c exception, verified TLS,
+mTLS, bearer rotation, authenticated two-node HA streaming, retained-log
+gaps, receipt-WAL envelope negotiation, subscriber cancellation, graph
+backup/restore, structured search failures, a response above Tonic's
+4-MiB default, all exact values/expiration boundaries, bounded CRUD
+chunks, failure reporting, and retained-ID Add semantics over the
+production wire.
 The `target/` build and server binary are ignored. Ordinary `cargo test`
 needs neither Go nor a running server.
 
 See [RELEASING.md](RELEASING.md) for the independent
 `sdks/rust/vX.Y.Z` tag gates, crate archive/advisory checks, and the
-owner-held first-publication versus later OIDC procedures. No release
-has been authorized or published yet.
+owner-held historical first publication and protected later OIDC procedures.
+Published versions and current release availability are listed on
+[crates.io](https://crates.io/crates/lantern-client); source preparation
+alone does not publish a new version.
 
 This crate is licensed under Apache-2.0; see [LICENSE](LICENSE).

@@ -98,7 +98,7 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
           mkdir -p sdks/rust/target
           go build -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
-      - name: Test real gRPC Health, CRUD, queries, traversal, and failure paths
+      - name: Test real Health, CRUD, queries, CDC, backup, HA, and failure paths
         if: matrix.rust == 'stable'
         run: cargo test --locked --all-features -- --ignored --test-threads=1
         env:
@@ -110,9 +110,13 @@ jobs:
         run: |
           expected=$(printf '%s\n' \
             .cargo_vcs_info.json CHANGELOG.md Cargo.lock Cargo.toml \
-            Cargo.toml.orig LICENSE README.md RELEASING.md examples/complete.rs \
+            Cargo.toml.orig LICENSE README.md RELEASING.md \
+            examples/cdc_backup.rs examples/complete.rs \
             src/generated/graph.v1.rs \
+            src/backup.rs src/backup/format.rs src/backup/tests.rs \
             src/batch.rs src/batch/tests.rs src/contrib.rs src/contrib/tests.rs \
+            src/cdc.rs src/cdc/full.rs src/cdc/identity.rs \
+            src/cdc/identity/tests.rs src/cdc/receipt.rs src/cdc/tests.rs \
             src/crud.rs src/crud/tests.rs src/discovery.rs src/discovery/tests.rs \
             src/error.rs src/lib.rs src/paging.rs src/paging/tests.rs \
             src/prefix.rs src/prefix/tests.rs src/scans.rs src/scans/tests.rs \

@@ -150,7 +150,7 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
           mkdir -p sdks/rust/target
           go build -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
-      - name: Test real h2c, TLS, auth, CRUD, and query failure paths
+      - name: Test real h2c, TLS, auth, CDC, backup, HA, and failure paths
         if: matrix.rust == 'stable'
         shell: bash
         env:
@@ -255,6 +255,16 @@ jobs:
           assert packaged["package"]["version"] == version
           assert packaged["package"]["license"] == "Apache-2.0"
           assert b"Apache License\nVersion 2.0" in files["LICENSE"]
+          readme = files["README.md"].decode("utf-8").lower()
+          assert "https://crates.io/crates/lantern-client" in readme, (
+              "packaged README must identify the published registry crate"
+          )
+          for stale in (
+              "lantern rust client (unpublished)",
+              "do not treat this source as a published release",
+              "no release has been authorized or published yet",
+          ):
+              assert stale not in readme, f"packaged README has stale wording: {stale}"
           vcs = json.loads(files[".cargo_vcs_info.json"])
           assert vcs["git"]["sha1"] == os.environ["GITHUB_SHA"]
           assert not vcs["git"].get("dirty", False)
