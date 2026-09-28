@@ -87,7 +87,8 @@ impl FromStr for OriginId {
             ));
         }
         let mut id = [0; 16];
-        for (index, pair) in bytes.chunks_exact(2).enumerate() {
+        let (pairs, _) = bytes.as_chunks::<2>();
+        for (index, pair) in pairs.iter().enumerate() {
             let nibble = |byte: u8| match byte {
                 b'0'..=b'9' => Some(byte - b'0'),
                 b'a'..=b'f' => Some(byte - b'a' + 10),

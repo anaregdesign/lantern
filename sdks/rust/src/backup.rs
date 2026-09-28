@@ -222,7 +222,8 @@ impl BackupManifest {
             return Err(LanternError::BackupFormat("SHA-256 must be 64 hex digits"));
         }
         let mut sha256 = [0; 32];
-        for (index, pair) in digest.as_bytes().chunks_exact(2).enumerate() {
+        let (pairs, _) = digest.as_bytes().as_chunks::<2>();
+        for (index, pair) in pairs.iter().enumerate() {
             let nibble = |byte: u8| match byte {
                 b'0'..=b'9' => Some(byte - b'0'),
                 b'a'..=b'f' => Some(byte - b'a' + 10),
