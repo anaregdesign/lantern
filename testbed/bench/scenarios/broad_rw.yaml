@@ -125,12 +125,3 @@ leak_gate:
 perf_gate:
   min_steady_rps_total: 1300
   max_non_ok_ratio: 0.02
-# The exact fail-closed publication errors measured in #1505 are expected
-# under this intentionally saturated writer/read mix. The separate bound
-# retains a regression signal; all other errors stay under the 2% budget.
-publication_gate:
-  max_ratio: 0.35
-  producers:
-    producer-6: 0.55
-    producer-9: 0.55
-    producer-10: 0.55

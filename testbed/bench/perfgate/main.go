@@ -26,8 +26,6 @@ const (
 	searchCallsMetric      = "lantern_search_calls_total"
 	indexIncompleteOutcome = "failed_precondition"
 	indexIncompleteStatus  = "FailedPrecondition"
-	publicationGapMessage  = "rpc error: code = FailedPrecondition desc = gapped: mutation publication or Snapshot install requires repair before reading, subscribing, or taking a snapshot"
-	publicationReadMessage = "rpc error: code = Unavailable desc = graph publication changed during read; retry"
 )
 
 var (
@@ -49,9 +47,8 @@ type scenarioDocument struct {
 		Call      string         `yaml:"call"`
 		Calls     []scenarioCall `yaml:"calls"`
 	} `yaml:"target"`
-	PerfGate        perfGateConfig         `yaml:"perf_gate"`
-	LifecycleGate   *lifecycleGateConfig   `yaml:"lifecycle_gate"`
-	PublicationGate *publicationGateConfig `yaml:"publication_gate"`
+	PerfGate      perfGateConfig       `yaml:"perf_gate"`
+	LifecycleGate *lifecycleGateConfig `yaml:"lifecycle_gate"`
 }
 
 type scenarioCall struct {
@@ -82,17 +79,10 @@ type lifecycleProducerConfig struct {
 	MetricLabels map[string]string `yaml:"metric_labels"`
 }
 
-type publicationGateConfig struct {
-	MaxRatio             *float64           `yaml:"max_ratio"`
-	Producers            map[string]float64 `yaml:"producers"`
-	RecoveryBackupPrefix string             `yaml:"recovery_backup_prefix"`
-}
-
 type ghzSummary struct {
 	Count                  uint64         `json:"count"`
 	RPS                    float64        `json:"rps"`
 	StatusCodeDistribution map[string]int `json:"statusCodeDistribution"`
-	ErrorDistribution      map[string]int `json:"errorDistribution"`
 	LatencyDistribution    []struct {
 		Percentage int    `json:"percentage"`
 		Latency    *int64 `json:"latency"`
@@ -103,18 +93,16 @@ type perfGateReport struct {
 	Thresholds      aggregateThresholds  `json:"thresholds"`
 	Observed        aggregateObservation `json:"observed"`
 	LifecycleReason string               `json:"lifecycle_reason,omitempty"`
-	PublicationGate bool                 `json:"publication_gate,omitempty"`
 	ProducerResults []producerResult     `json:"producer_results"`
 	Failures        []string             `json:"failures,omitempty"`
 	Verdict         string               `json:"verdict"`
 }
 
 type aggregateThresholds struct {
-	MinSteadyRPSTotal           *float64 `json:"min_steady_rps_total"`
-	MaxP99MS                    *float64 `json:"max_p99_ms"`
-	MaxNonOKRatio               *float64 `json:"max_non_ok_ratio"`
-	MaxExpectedLifecycleRatio   *float64 `json:"max_expected_lifecycle_ratio"`
-	MaxExpectedPublicationRatio *float64 `json:"max_expected_publication_ratio,omitempty"`
+	MinSteadyRPSTotal         *float64 `json:"min_steady_rps_total"`
+	MaxP99MS                  *float64 `json:"max_p99_ms"`
+	MaxNonOKRatio             *float64 `json:"max_non_ok_ratio"`
+	MaxExpectedLifecycleRatio *float64 `json:"max_expected_lifecycle_ratio"`
 }
 
 type aggregateObservation struct {
@@ -124,16 +112,14 @@ type aggregateObservation struct {
 	CountTotal                     int64   `json:"count_total"`
 	RawNonOKTotal                  int64   `json:"raw_non_ok_total"`
 	ExpectedLifecycleTotal         int64   `json:"expected_lifecycle_total"`
-	ExpectedPublicationTotal       int64   `json:"expected_publication_total,omitempty"`
 	ExpectedLifecycleEligibleTotal int64   `json:"expected_lifecycle_eligible_total"`
 	UnexpectedNonOKTotal           int64   `json:"unexpected_non_ok_total"`
 	// NonOKTotal and NonOKRatio retain the established artifact fields. When
 	// lifecycle classification is configured they intentionally mean
 	// unexpected non-OK, which is the value consumed by max_non_ok_ratio.
-	NonOKTotal               int64   `json:"non_ok_total"`
-	NonOKRatio               float64 `json:"non_ok_ratio"`
-	ExpectedLifecycleRatio   float64 `json:"expected_lifecycle_ratio"`
-	ExpectedPublicationRatio float64 `json:"expected_publication_ratio,omitempty"`
+	NonOKTotal             int64   `json:"non_ok_total"`
+	NonOKRatio             float64 `json:"non_ok_ratio"`
+	ExpectedLifecycleRatio float64 `json:"expected_lifecycle_ratio"`
 }
 
 type producerResult struct {
@@ -146,26 +132,23 @@ type producerResult struct {
 }
 
 type producerThresholds struct {
-	MinSteadyRPS                *float64 `json:"min_steady_rps"`
-	MaxP99MS                    *float64 `json:"max_p99_ms"`
-	MaxNonOKRatio               *float64 `json:"max_non_ok_ratio"`
-	MaxExpectedLifecycleRatio   *float64 `json:"max_expected_lifecycle_ratio"`
-	MaxExpectedPublicationRatio *float64 `json:"max_expected_publication_ratio,omitempty"`
+	MinSteadyRPS              *float64 `json:"min_steady_rps"`
+	MaxP99MS                  *float64 `json:"max_p99_ms"`
+	MaxNonOKRatio             *float64 `json:"max_non_ok_ratio"`
+	MaxExpectedLifecycleRatio *float64 `json:"max_expected_lifecycle_ratio"`
 }
 
 type producerObservation struct {
-	SteadyRPS                float64        `json:"steady_rps"`
-	P99MS                    float64        `json:"p99_ms"`
-	Count                    int64          `json:"count"`
-	RawNonOK                 int64          `json:"raw_non_ok"`
-	ExpectedLifecycle        int64          `json:"expected_lifecycle"`
-	ExpectedPublication      int64          `json:"expected_publication,omitempty"`
-	UnexpectedNonOK          int64          `json:"unexpected_non_ok"`
-	NonOK                    int64          `json:"non_ok"`
-	NonOKRatio               float64        `json:"non_ok_ratio"`
-	ExpectedLifecycleRatio   float64        `json:"expected_lifecycle_ratio"`
-	ExpectedPublicationRatio float64        `json:"expected_publication_ratio,omitempty"`
-	StatusCodeDistribution   map[string]int `json:"status_code_distribution"`
+	SteadyRPS              float64        `json:"steady_rps"`
+	P99MS                  float64        `json:"p99_ms"`
+	Count                  int64          `json:"count"`
+	RawNonOK               int64          `json:"raw_non_ok"`
+	ExpectedLifecycle      int64          `json:"expected_lifecycle"`
+	UnexpectedNonOK        int64          `json:"unexpected_non_ok"`
+	NonOK                  int64          `json:"non_ok"`
+	NonOKRatio             float64        `json:"non_ok_ratio"`
+	ExpectedLifecycleRatio float64        `json:"expected_lifecycle_ratio"`
+	StatusCodeDistribution map[string]int `json:"status_code_distribution"`
 }
 
 func evaluate(scenarioPath, runDir, prePath, postPath string) (perfGateReport, error) {
@@ -205,10 +188,6 @@ func evaluate(scenarioPath, runDir, prePath, postPath string) (perfGateReport, e
 		report.LifecycleReason = doc.LifecycleGate.Reason
 		report.Thresholds.MaxExpectedLifecycleRatio = doc.LifecycleGate.MaxRatio
 	}
-	if doc.PublicationGate != nil {
-		report.PublicationGate = true
-		report.Thresholds.MaxExpectedPublicationRatio = doc.PublicationGate.MaxRatio
-	}
 
 	producerNames := make([]string, len(doc.Target.Calls))
 	if len(doc.Target.Calls) == 0 {
@@ -235,7 +214,6 @@ func evaluate(scenarioPath, runDir, prePath, postPath string) (perfGateReport, e
 		report.Observed.CountTotal += result.Observed.Count
 		report.Observed.RawNonOKTotal += result.Observed.RawNonOK
 		report.Observed.ExpectedLifecycleTotal += result.Observed.ExpectedLifecycle
-		report.Observed.ExpectedPublicationTotal += result.Observed.ExpectedPublication
 		report.Observed.UnexpectedNonOKTotal += result.Observed.UnexpectedNonOK
 		if result.LifecycleReason != "" {
 			report.Observed.ExpectedLifecycleEligibleTotal += result.Observed.Count
@@ -247,13 +225,11 @@ func evaluate(scenarioPath, runDir, prePath, postPath string) (perfGateReport, e
 	report.Observed.NonOKTotal = report.Observed.UnexpectedNonOKTotal
 	report.Observed.NonOKRatio = ratio(report.Observed.UnexpectedNonOKTotal, report.Observed.CountTotal)
 	report.Observed.ExpectedLifecycleRatio = ratio(report.Observed.ExpectedLifecycleTotal, report.Observed.ExpectedLifecycleEligibleTotal)
-	report.Observed.ExpectedPublicationRatio = ratio(report.Observed.ExpectedPublicationTotal, report.Observed.CountTotal)
 
 	if below(report.Observed.SteadyRPSTotal, report.Thresholds.MinSteadyRPSTotal) ||
 		above(report.Observed.P99WorstMS, report.Thresholds.MaxP99MS) ||
 		above(report.Observed.NonOKRatio, report.Thresholds.MaxNonOKRatio) ||
-		above(report.Observed.ExpectedLifecycleRatio, report.Thresholds.MaxExpectedLifecycleRatio) ||
-		above(report.Observed.ExpectedPublicationRatio, report.Thresholds.MaxExpectedPublicationRatio) {
+		above(report.Observed.ExpectedLifecycleRatio, report.Thresholds.MaxExpectedLifecycleRatio) {
 		report.Verdict = "fail"
 	}
 	return report, nil
@@ -300,34 +276,14 @@ func classifyProducer(doc scenarioDocument, before, after searchCounterSnapshot,
 			}
 		}
 	}
-	if doc.PublicationGate != nil {
-		result.Thresholds.MaxExpectedPublicationRatio = doc.PublicationGate.MaxRatio
-		if summary.ErrorDistribution == nil && rawNonOK != 0 {
-			result.Failures = append(result.Failures, "publication gate requires ghz error distribution")
-		}
-		if override, ok := doc.PublicationGate.Producers[name]; ok {
-			result.Thresholds.MaxExpectedPublicationRatio = &override
-		}
-		gap := int64(summary.ErrorDistribution[publicationGapMessage])
-		changed := int64(summary.ErrorDistribution[publicationReadMessage])
-		if gap > int64(summary.StatusCodeDistribution["FailedPrecondition"])-result.Observed.ExpectedLifecycle ||
-			changed > int64(summary.StatusCodeDistribution["Unavailable"]) {
-			result.Failures = append(result.Failures, "publication reason counts exceed matching status totals")
-		} else {
-			result.Observed.ExpectedPublication = gap + changed
-			result.Observed.UnexpectedNonOK -= gap + changed
-		}
-	}
 	result.Observed.NonOK = result.Observed.UnexpectedNonOK
 	result.Observed.NonOKRatio = ratio(result.Observed.UnexpectedNonOK, count)
 	result.Observed.ExpectedLifecycleRatio = ratio(result.Observed.ExpectedLifecycle, count)
-	result.Observed.ExpectedPublicationRatio = ratio(result.Observed.ExpectedPublication, count)
 	if len(result.Failures) > 0 ||
 		below(result.Observed.SteadyRPS, result.Thresholds.MinSteadyRPS) ||
 		above(result.Observed.P99MS, result.Thresholds.MaxP99MS) ||
 		above(result.Observed.NonOKRatio, result.Thresholds.MaxNonOKRatio) ||
-		above(result.Observed.ExpectedLifecycleRatio, result.Thresholds.MaxExpectedLifecycleRatio) ||
-		above(result.Observed.ExpectedPublicationRatio, result.Thresholds.MaxExpectedPublicationRatio) {
+		above(result.Observed.ExpectedLifecycleRatio, result.Thresholds.MaxExpectedLifecycleRatio) {
 		result.Verdict = "fail"
 	}
 	return result
@@ -415,22 +371,6 @@ func validateScenario(doc scenarioDocument) error {
 			"max_non_ok_ratio": gate.MaxNonOKRatio,
 		} {
 			if err := validateThreshold("perf_gate.producers."+name+"."+field, value, strings.Contains(field, "ratio")); err != nil {
-				return err
-			}
-		}
-	}
-	if doc.PublicationGate != nil {
-		if doc.PublicationGate.MaxRatio == nil {
-			return errors.New("publication_gate.max_ratio is required")
-		}
-		if err := validateThreshold("publication_gate.max_ratio", doc.PublicationGate.MaxRatio, true); err != nil {
-			return err
-		}
-		for name, bound := range doc.PublicationGate.Producers {
-			if !known[name] {
-				return fmt.Errorf("publication gate references unknown producer %q", name)
-			}
-			if err := validateThreshold("publication_gate.producers."+name, &bound, true); err != nil {
 				return err
 			}
 		}
@@ -538,7 +478,6 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 	}
 	var raw struct {
 		StatusCodeDistribution map[string]*int `json:"statusCodeDistribution"`
-		ErrorDistribution      map[string]*int `json:"errorDistribution"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return ghzSummary{}, err
@@ -549,11 +488,6 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 	for status, count := range raw.StatusCodeDistribution {
 		if count == nil {
 			return ghzSummary{}, fmt.Errorf("null status count %q", status)
-		}
-	}
-	for reason, count := range raw.ErrorDistribution {
-		if reason == "" || count == nil || *count < 0 {
-			return ghzSummary{}, fmt.Errorf("invalid error distribution entry %q", reason)
 		}
 	}
 	var summary ghzSummary
@@ -575,18 +509,6 @@ func loadProducerSummary(dir string, index int, fanout bool) (ghzSummary, error)
 	}
 	if statusTotal != int64(summary.Count) {
 		return ghzSummary{}, fmt.Errorf("status distribution total %d does not equal count %d", statusTotal, summary.Count)
-	}
-	if summary.ErrorDistribution != nil {
-		errorTotal := int64(0)
-		for _, count := range summary.ErrorDistribution {
-			if int64(count) > math.MaxInt64-errorTotal {
-				return ghzSummary{}, errors.New("error distribution total exceeds int64")
-			}
-			errorTotal += int64(count)
-		}
-		if errorTotal > statusTotal-int64(summary.StatusCodeDistribution["OK"]) {
-			return ghzSummary{}, errors.New("error distribution exceeds non-OK status count")
-		}
 	}
 	if math.IsNaN(summary.RPS) || math.IsInf(summary.RPS, 0) || summary.RPS < 0 {
 		return ghzSummary{}, fmt.Errorf("invalid rps %v", summary.RPS)

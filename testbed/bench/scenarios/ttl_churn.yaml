@@ -54,5 +54,3 @@ perf_gate:
   producers:
     born_expired_put: { min_steady_rps: 1000, max_p99_ms: 150, max_non_ok_ratio: 0.02 }
     delete: { min_steady_rps: 300, max_p99_ms: 150, max_non_ok_ratio: 0.02 }
-publication_gate:
-  max_ratio: 0.08

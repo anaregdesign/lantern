@@ -88,11 +88,10 @@ type LeakGateReplica struct {
 // fan-outs).
 type PerfGate struct {
 	Thresholds struct {
-		MinSteadyRpsTotal           *float64 `json:"min_steady_rps_total"`
-		MaxP99Ms                    *float64 `json:"max_p99_ms"`
-		MaxNonOKRatio               *float64 `json:"max_non_ok_ratio"`
-		MaxExpectedLifecycleRatio   *float64 `json:"max_expected_lifecycle_ratio"`
-		MaxExpectedPublicationRatio *float64 `json:"max_expected_publication_ratio"`
+		MinSteadyRpsTotal         *float64 `json:"min_steady_rps_total"`
+		MaxP99Ms                  *float64 `json:"max_p99_ms"`
+		MaxNonOKRatio             *float64 `json:"max_non_ok_ratio"`
+		MaxExpectedLifecycleRatio *float64 `json:"max_expected_lifecycle_ratio"`
 	} `json:"thresholds"`
 	Observed struct {
 		Producers                      int     `json:"producers"`
@@ -101,16 +100,13 @@ type PerfGate struct {
 		CountTotal                     int64   `json:"count_total"`
 		RawNonOKTotal                  int64   `json:"raw_non_ok_total"`
 		ExpectedLifecycleTotal         int64   `json:"expected_lifecycle_total"`
-		ExpectedPublicationTotal       int64   `json:"expected_publication_total"`
 		ExpectedLifecycleEligibleTotal int64   `json:"expected_lifecycle_eligible_total"`
 		UnexpectedNonOKTotal           int64   `json:"unexpected_non_ok_total"`
 		NonOKTotal                     int64   `json:"non_ok_total"`
 		NonOKRatio                     float64 `json:"non_ok_ratio"`
 		ExpectedLifecycleRatio         float64 `json:"expected_lifecycle_ratio"`
-		ExpectedPublicationRatio       float64 `json:"expected_publication_ratio"`
 	} `json:"observed"`
 	LifecycleReason string               `json:"lifecycle_reason"`
-	PublicationGate bool                 `json:"publication_gate"`
 	ProducerResults []PerfProducerResult `json:"producer_results"`
 	Failures        []string             `json:"failures"`
 	Verdict         string               `json:"verdict"`
@@ -122,25 +118,22 @@ type PerfGate struct {
 type PerfProducerResult struct {
 	Name       string `json:"name"`
 	Thresholds struct {
-		MinSteadyRps                *float64 `json:"min_steady_rps"`
-		MaxP99Ms                    *float64 `json:"max_p99_ms"`
-		MaxNonOKRatio               *float64 `json:"max_non_ok_ratio"`
-		MaxExpectedLifecycleRatio   *float64 `json:"max_expected_lifecycle_ratio"`
-		MaxExpectedPublicationRatio *float64 `json:"max_expected_publication_ratio"`
+		MinSteadyRps              *float64 `json:"min_steady_rps"`
+		MaxP99Ms                  *float64 `json:"max_p99_ms"`
+		MaxNonOKRatio             *float64 `json:"max_non_ok_ratio"`
+		MaxExpectedLifecycleRatio *float64 `json:"max_expected_lifecycle_ratio"`
 	} `json:"thresholds"`
 	Observed struct {
-		SteadyRps                float64        `json:"steady_rps"`
-		P99Ms                    float64        `json:"p99_ms"`
-		Count                    int64          `json:"count"`
-		RawNonOK                 int64          `json:"raw_non_ok"`
-		ExpectedLifecycle        int64          `json:"expected_lifecycle"`
-		ExpectedPublication      int64          `json:"expected_publication"`
-		UnexpectedNonOK          int64          `json:"unexpected_non_ok"`
-		NonOK                    int64          `json:"non_ok"`
-		NonOKRatio               float64        `json:"non_ok_ratio"`
-		ExpectedLifecycleRatio   float64        `json:"expected_lifecycle_ratio"`
-		ExpectedPublicationRatio float64        `json:"expected_publication_ratio"`
-		StatusCodeDistribution   map[string]int `json:"status_code_distribution"`
+		SteadyRps              float64        `json:"steady_rps"`
+		P99Ms                  float64        `json:"p99_ms"`
+		Count                  int64          `json:"count"`
+		RawNonOK               int64          `json:"raw_non_ok"`
+		ExpectedLifecycle      int64          `json:"expected_lifecycle"`
+		UnexpectedNonOK        int64          `json:"unexpected_non_ok"`
+		NonOK                  int64          `json:"non_ok"`
+		NonOKRatio             float64        `json:"non_ok_ratio"`
+		ExpectedLifecycleRatio float64        `json:"expected_lifecycle_ratio"`
+		StatusCodeDistribution map[string]int `json:"status_code_distribution"`
 	} `json:"observed"`
 	LifecycleReason string   `json:"lifecycle_reason"`
 	Failures        []string `json:"failures"`
@@ -461,19 +454,16 @@ func RenderReport(w io.Writer, in Input) error {
 		} else {
 			bw.printf("Aggregation over %d steady producer(s): rps = sum and p99 = worst producer. `%s` is classified only from the exact steady-window bounded reason-counter delta after it is cross-checked against the matching ghz status count. Every remaining non-OK response stays in the unexpected-error budget. `—` = metric not gated.\n\n", pg.Observed.Producers, pg.LifecycleReason)
 		}
-		if pg.PublicationGate {
-			bw.printf("Publication classification uses only the two exact server reasons for Snapshot/publication gap and overlapping read. The expected ratio has its own ceiling; every other error remains under the existing unexpected non-OK ceiling. Post-cooldown recovery is required separately.\n\n")
-		}
 		bw.printf("| metric | threshold | observed |\n")
 		bw.printf("| --- | ---: | ---: |\n")
 		bw.printf("| steady rps (total, floor) | %s | %.1f |\n",
 			perfThreshold(pg.Thresholds.MinSteadyRpsTotal, "%.1f"), pg.Observed.SteadyRpsTotal)
 		bw.printf("| p99 ms (worst, ceiling) | %s | %.2f |\n",
 			perfThreshold(pg.Thresholds.MaxP99Ms, "%.2f"), pg.Observed.P99WorstMs)
-		if pg.LifecycleReason == "" && !pg.PublicationGate {
+		if pg.LifecycleReason == "" {
 			bw.printf("| non-OK ratio (ceiling) | %s | %.5f |\n",
 				perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
-		} else if pg.LifecycleReason != "" {
+		} else {
 			bw.printf("| unexpected non-OK ratio (ceiling) | %s | %.5f |\n",
 				perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
 			bw.printf("| `%s` ratio (ceiling) | %s | %.5f |\n",
@@ -482,25 +472,12 @@ func RenderReport(w io.Writer, in Input) error {
 				pg.Observed.ExpectedLifecycleRatio)
 			bw.printf("| raw / expected lifecycle / unexpected non-OK counts | — | %d / %d / %d |\n",
 				pg.Observed.RawNonOKTotal, pg.Observed.ExpectedLifecycleTotal, pg.Observed.UnexpectedNonOKTotal)
-		} else {
-			bw.printf("| unexpected non-OK ratio (ceiling) | %s | %.5f |\n",
-				perfThreshold(pg.Thresholds.MaxNonOKRatio, "%.5f"), pg.Observed.NonOKRatio)
-		}
-		if pg.PublicationGate {
-			bw.printf("| expected publication ratio (ceiling) | %s | %.5f |\n",
-				perfThreshold(pg.Thresholds.MaxExpectedPublicationRatio, "%.5f"), pg.Observed.ExpectedPublicationRatio)
-			bw.printf("| raw / expected publication / unexpected non-OK counts | — | %d / %d / %d |\n",
-				pg.Observed.RawNonOKTotal, pg.Observed.ExpectedPublicationTotal, pg.Observed.UnexpectedNonOKTotal)
 		}
 		bw.printf("\n")
 		if len(pg.ProducerResults) > 0 {
 			bw.printf("Named producer gates are conjunctive with the aggregate gate: every row must pass.\n\n")
 			if pg.LifecycleReason == "" {
-				label := "non-OK ratio (ceiling)"
-				if pg.PublicationGate {
-					label = "unexpected non-OK ratio (ceiling)"
-				}
-				bw.printf("| producer | verdict | rps (floor) | p99 ms (ceiling) | %s |\n", label)
+				bw.printf("| producer | verdict | rps (floor) | p99 ms (ceiling) | non-OK ratio (ceiling) |\n")
 				bw.printf("| --- | --- | ---: | ---: | ---: |\n")
 				for _, producer := range pg.ProducerResults {
 					bw.printf("| `%s` | `%s` | %.1f (%s) | %.2f (%s) | %.5f (%s) |\n",
@@ -519,15 +496,6 @@ func RenderReport(w io.Writer, in Input) error {
 						producer.Observed.P99Ms, perfThreshold(producer.Thresholds.MaxP99Ms, "%.2f"),
 						producer.Observed.UnexpectedNonOK, producer.Observed.NonOKRatio, perfThreshold(producer.Thresholds.MaxNonOKRatio, "%.5f"),
 						producer.Observed.ExpectedLifecycle, producer.Observed.ExpectedLifecycleRatio, perfThreshold(producer.Thresholds.MaxExpectedLifecycleRatio, "%.5f"))
-				}
-			}
-			if pg.PublicationGate {
-				bw.printf("\n| producer | expected publication count / ratio (ceiling) |\n")
-				bw.printf("| --- | ---: |\n")
-				for _, producer := range pg.ProducerResults {
-					bw.printf("| `%s` | %d / %.5f (%s) |\n", producer.Name,
-						producer.Observed.ExpectedPublication, producer.Observed.ExpectedPublicationRatio,
-						perfThreshold(producer.Thresholds.MaxExpectedPublicationRatio, "%.5f"))
 				}
 			}
 			bw.printf("\n")
