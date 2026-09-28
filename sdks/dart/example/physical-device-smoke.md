@@ -94,6 +94,12 @@ marker with `phase: complete` means the test body and its registered cleanup
 finished; a missing, stale, `running`, or `failed` marker does not qualify the
 run. Match the installed binary and trusted HTTPS route to the evidence record.
 
+For a signed profile release run, pass
+`--dart-define=LANTERN_PHYSICAL_QUALIFICATION=true`. Only its final pass marker
+adds `platform`, `packageId`, and `installedBinarySha256`, read from the native
+installed APK or iOS `App.framework/App`. A failed native lookup prevents a
+pass. Ordinary debug/simulator markers keep the original diagnostic shape.
+
 ## Required matrix
 
 | Scenario | Physical Android | Physical iOS |
@@ -370,6 +376,14 @@ registered cleanup completed. A missing, stale, `running`, or `failed` marker
 is not a pass. The marker supplements the exact-binary, trusted-HTTPS, and
 sanitized RPC evidence required above; it does not qualify a different app
 build or network route.
+
+For a signed profile release run, pass
+`--dart-define=LANTERN_PHYSICAL_QUALIFICATION=true`. The final pass marker then
+contains the native installed binary SHA-256 and package identity; intermediate
+markers, including `running/live_invalidation`, retain their existing fields.
+Compare the copied final marker against the signed build and matching public
+record with `sdks/dart/offline/tool/physical_result_attestation.py` as shown in
+the offline release runbook.
 
 For a cabled Android development run when the LAN route is unstable, forward
 the fixture ports over USB and use device loopback. Configure the local BFF to

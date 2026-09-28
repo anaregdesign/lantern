@@ -266,9 +266,11 @@ Future<void> _verifyAfterKill(
 OfflineConfig _directConfig() => OfflineConfig(
   maxConcurrency: 1,
   maxConcurrencyPerPartition: 1,
-  baseRetryDelay: const Duration(seconds: 1),
-  maxRetryDelay: const Duration(seconds: 1),
-  jitter: (_) => Duration.zero,
+  // Exceed the fixture's 8-second RPC deadline so an offline drain stops
+  // after its first failed send instead of immediately reclaiming the item.
+  baseRetryDelay: const Duration(seconds: 15),
+  maxRetryDelay: const Duration(seconds: 15),
+  jitter: (ceiling) => ceiling,
 );
 
 OfflineConfig _ambiguousConfig() => OfflineConfig(
@@ -664,7 +666,9 @@ Future<void> _verifyRadioRecovery(
     direct,
     (capability as ReceiptCapabilityEnabled).endpoint,
   );
-  await Future<void>.delayed(const Duration(seconds: 2));
+  // The offline failure scheduled a 15-second retry. Wait beyond that
+  // deadline before explicitly replaying on the restored foreground route.
+  await Future<void>.delayed(const Duration(seconds: 16));
   expect(await repository.drain(_partition), 1);
   await _expectResult<OfflineVertexPutReceiptResult>(
     repository,
