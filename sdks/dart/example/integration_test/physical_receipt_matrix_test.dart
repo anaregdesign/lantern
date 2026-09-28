@@ -219,6 +219,10 @@ Future<void> _verifyAfterKill(
   });
 
   await run.verifyScenario('receipt_relaunch_status_first_no_resend', () async {
+    // A fresh process may outlive Android's DNS recovery after radio/Doze.
+    // Fetch the fixture token outside the SDK's eight-second RPC deadline;
+    // the first receipt RPC remains the status lookup inside drain().
+    await fixture.token();
     expect(await repository.drain(_partition), 4);
     final trace = await fixture.proxyTrace();
     trace.assertRecoveredWithoutResend();

@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
@@ -14,19 +16,33 @@ const _proxyControlPath = '/_receipt_matrix_status';
 const _proxyTraceLimit = 256;
 const _fixtureBodyLimit = 32 * 1024;
 
-/// Retries only transient socket failures while opening the token connection.
+/// Retries transient socket failures in the complete token request.
 /// TLS, HTTP response, and token decoding failures stay outside this retry.
 Future<T> retryReceiptTokenConnect<T>(
-  Future<T> Function() connect, {
+  Future<T> Function() request, {
   Future<void> Function(Duration)? pause,
+  Duration recoveryWindow = const Duration(seconds: 60),
+  int maxAttempts = 32,
 }) async {
+  if (recoveryWindow <= Duration.zero || maxAttempts < 1) {
+    throw ArgumentError('Invalid token recovery bound');
+  }
   final wait = pause ?? (duration) => Future<void>.delayed(duration);
+  final stopwatch = Stopwatch()..start();
+  SocketException? lastSocketFailure;
   for (var attempt = 1; ; attempt++) {
+    final remaining = recoveryWindow - stopwatch.elapsed;
+    if (remaining <= Duration.zero) {
+      throw lastSocketFailure ?? TimeoutException('Token recovery timed out');
+    }
     try {
-      return await connect();
-    } on SocketException {
-      if (attempt >= 3) rethrow;
-      await wait(Duration(milliseconds: attempt * 500));
+      return await request().timeout(remaining);
+    } on SocketException catch (error) {
+      lastSocketFailure = error;
+      final remaining = recoveryWindow - stopwatch.elapsed;
+      if (attempt >= maxAttempts || remaining <= Duration.zero) rethrow;
+      final backoff = Duration(milliseconds: math.min(attempt * 500, 2000));
+      await wait(backoff < remaining ? backoff : remaining).timeout(remaining);
     }
   }
 }
@@ -124,21 +140,25 @@ final class PhysicalReceiptFixture {
   Future<String> token() async {
     final cached = _cachedToken;
     if (cached != null) return cached;
-    final request = await retryReceiptTokenConnect(
-      () => _tokenHttp.getUrl(tokenEndpoint),
-    );
-    request.persistentConnection = false;
-    final response = await request.close().timeout(const Duration(seconds: 8));
-    if (response.statusCode != HttpStatus.ok) {
-      throw StateError('Receipt token fixture rejected authentication');
-    }
-    final decoded = jsonDecode(utf8.decode(await _bounded(response)));
-    if (decoded is! Map<String, dynamic> ||
-        decoded['access_token'] is! String ||
-        (decoded['access_token'] as String).isEmpty) {
-      throw StateError('Receipt token fixture returned an invalid token');
-    }
-    return _cachedToken = decoded['access_token'] as String;
+    final fetched = await retryReceiptTokenConnect(() async {
+      final request = await _tokenHttp.getUrl(tokenEndpoint);
+      request.persistentConnection = false;
+      final response = await request.close().timeout(
+        const Duration(seconds: 8),
+      );
+      if (response.statusCode != HttpStatus.ok) {
+        throw StateError('Receipt token fixture rejected authentication');
+      }
+      final decoded = jsonDecode(utf8.decode(await _bounded(response)));
+      if (decoded is! Map<String, dynamic> ||
+          decoded['access_token'] is! String ||
+          (decoded['access_token'] as String).isEmpty) {
+        throw StateError('Receipt token fixture returned an invalid token');
+      }
+      return decoded['access_token'] as String;
+    });
+    _cachedToken = fetched;
+    return fetched;
   }
 
   LanternClient client(Uri uri) => LanternClient.connect(
