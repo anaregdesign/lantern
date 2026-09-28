@@ -78,9 +78,10 @@ jobs:
 
           const dir = process.env.REGISTRY_AUDIT_DIR;
           const dist = JSON.parse(readFileSync(join(dir, 'dist.json')));
-          const packs = JSON.parse(readFileSync(join(dir, 'pack.json')));
-          assert.equal(packs.length, 1);
-          const [pack] = packs;
+          const result = JSON.parse(readFileSync(join(dir, 'pack.json')));
+          if (Array.isArray(result)) assert.equal(result.length, 1);
+          const pack = Array.isArray(result) ? result[0] : result;
+          assert.ok(pack && typeof pack === 'object', 'npm pack did not return package metadata');
           assert.equal(pack.name, 'lantern-sdk');
           assert.equal(pack.version, process.env.PACKAGE_VERSION);
           assert.equal(pack.filename, `lantern-sdk-${pack.version}.tgz`);
