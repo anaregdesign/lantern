@@ -8,10 +8,15 @@
 // LanternService.BackupSnapshot RPC verbatim through a file-backed Sender,
 // so files are byte-identical to `lantern-cli dump --format proto` and
 // interchange with the CLI. Restore replays frames through the in-process
-// RestoreVertices / RestoreEdges. Restore preserves graph convergence even
+// RestoreVertices / RestoreEdges. Restore preserves graph values even
 // when local search-index limits differ, while the born-expired delete-like
 // application (#698) prevents an entry whose TTL elapsed since the dump from
 // resurrecting and removes any older live local state.
+// The legacy .lbk format intentionally folds Add contributions into effective
+// edge weights and omits deleted contribution IDs and their D4 floors. It
+// cannot prove a prior selective Delete after restore. Replication graph-only
+// Snapshot and certified receipt whole-state Snapshot/backup preserve those
+// per-ID floors instead; the .lbk wire format is not a substitute.
 //
 // Shared storage is never assumed safe for concurrent writes (networked or
 // FUSE-backed filesystems generally have no reliable file locking), so every

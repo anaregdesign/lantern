@@ -131,6 +131,7 @@ func emptyReceiptStageGraph(graph *graphcache.GraphCache[string, *pb.Vertex]) bo
 	snapshot := graph.SnapshotReplication()
 	return len(snapshot.Barriers.Vertices) == 0 && len(snapshot.Barriers.Edges) == 0 &&
 		len(snapshot.Tombstones.Vertices) == 0 && len(snapshot.Tombstones.Edges) == 0 &&
+		len(snapshot.Tombstones.EdgeContributions) == 0 &&
 		len(snapshot.Graph.Vertices) == 0 && len(snapshot.Graph.Edges) == 0
 }
 
@@ -177,6 +178,20 @@ func replayReceiptArchiveGraph(
 			if restoreNow.Before(expiration) {
 				ts, _ := archiveHLC(item.GetHlc())
 				graph.ApplySnapshotEdgeTombstoneHLC(item.GetTail(), item.GetHead(), ts, expiration)
+			}
+		case *pb.SnapshotResponse_EdgeContributionTombstone:
+			item := entry.EdgeContributionTombstone
+			expiration := item.GetExpiration().AsTime()
+			if restoreNow.Before(expiration) {
+				ts, _ := archiveHLC(item.GetHlc())
+				var id graphcache.ContribID
+				copy(id[:], item.GetContribId())
+				key := graphcache.EdgeContributionKey[string]{
+					Tail: item.GetTail(), Head: item.GetHead(), ContribID: id,
+				}
+				if err := graph.ApplySnapshotEdgeContributionTombstoneHLC(key, ts, expiration); err != nil {
+					return fmt.Errorf("backup: stage edge contribution tombstone: %w", err)
+				}
 			}
 		case *pb.SnapshotResponse_Vertex:
 			item := entry.Vertex
@@ -247,6 +262,7 @@ func validateStagedTombstones(graph *graphcache.GraphCache[string, *pb.Vertex], 
 	}
 	vertices := make(map[string]marker)
 	edges := make(map[archiveEdgeKey]marker)
+	contributions := make(map[graphcache.EdgeContributionKey[string]]marker)
 	for _, frame := range frames[1 : len(frames)-1] {
 		switch entry := frame.GetEntry().(type) {
 		case *pb.SnapshotResponse_VertexTombstone:
@@ -257,6 +273,14 @@ func validateStagedTombstones(graph *graphcache.GraphCache[string, *pb.Vertex], 
 			item := entry.EdgeTombstone
 			ts, _ := archiveHLC(item.GetHlc())
 			edges[archiveEdgeKey{item.GetTail(), item.GetHead()}] = marker{ts, item.GetExpiration().AsTime()}
+		case *pb.SnapshotResponse_EdgeContributionTombstone:
+			item := entry.EdgeContributionTombstone
+			ts, _ := archiveHLC(item.GetHlc())
+			var id graphcache.ContribID
+			copy(id[:], item.GetContribId())
+			contributions[graphcache.EdgeContributionKey[string]{
+				Tail: item.GetTail(), Head: item.GetHead(), ContribID: id,
+			}] = marker{ts, item.GetExpiration().AsTime()}
 		}
 	}
 	snapshot := graph.SnapshotReplication().Tombstones
@@ -276,6 +300,13 @@ func validateStagedTombstones(graph *graphcache.GraphCache[string, *pb.Vertex], 
 		}
 		delete(edges, key)
 	}
+	for _, item := range snapshot.EdgeContributions {
+		want, ok := contributions[item.EdgeContributionKey]
+		if !ok || want.hlc != item.HLC || !want.expiration.Equal(item.Expiration) {
+			return wholeStateArchiveError("staged edge contribution tombstone differs from archive")
+		}
+		delete(contributions, item.EdgeContributionKey)
+	}
 	for _, want := range vertices {
 		if now.Before(want.expiration) {
 			return wholeStateArchiveError("live staged vertex tombstone is missing")
@@ -284,6 +315,11 @@ func validateStagedTombstones(graph *graphcache.GraphCache[string, *pb.Vertex], 
 	for _, want := range edges {
 		if now.Before(want.expiration) {
 			return wholeStateArchiveError("live staged edge tombstone is missing")
+		}
+	}
+	for _, want := range contributions {
+		if now.Before(want.expiration) {
+			return wholeStateArchiveError("live staged edge contribution tombstone is missing")
 		}
 	}
 	return nil

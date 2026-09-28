@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -105,12 +106,13 @@ type LanternService struct {
 	// receiptStore binds the private receipt coordinator and archive source to
 	// one Store instance. Protected by replicationCutMu; a second Store with
 	// the same policy still cannot substitute an incomplete receipt image.
-	receiptStore                   *mutationreceipt.Store
-	receiptRetiredCatalog          *retiredReceiptCatalogSlot
-	receiptEdgeAddCoordinator      *edgeAddReceiptCoordinator
-	receiptEdgeDeleteCoordinator   *edgeDeleteReceiptCoordinator
-	receiptVertexPutCoordinator    *vertexPutReceiptCoordinator
-	receiptVertexDeleteCoordinator *vertexDeleteReceiptCoordinator
+	receiptStore                             *mutationreceipt.Store
+	receiptRetiredCatalog                    *retiredReceiptCatalogSlot
+	receiptEdgeAddCoordinator                *edgeAddReceiptCoordinator
+	receiptEdgeDeleteCoordinator             *edgeDeleteReceiptCoordinator
+	receiptEdgeContributionDeleteCoordinator *edgeContributionDeleteReceiptCoordinator
+	receiptVertexPutCoordinator              *vertexPutReceiptCoordinator
+	receiptVertexDeleteCoordinator           *vertexDeleteReceiptCoordinator
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the
@@ -1983,6 +1985,110 @@ func (s *LanternService) DeleteEdges(ctx context.Context, in *pb.DeleteEdgesRequ
 		return nil, err
 	}
 	return &pb.DeleteEdgesResponse{Deleted: deleted, Existed: outcomes}, nil
+}
+
+func edgeContributionKeysFromWire(in []*pb.EdgeContributionKey) ([]graphcache.EdgeContributionKey[string], error) {
+	if len(in) == 0 {
+		return nil, errors.New("contributions must not be empty")
+	}
+	keys := make([]graphcache.EdgeContributionKey[string], len(in))
+	for i, item := range in {
+		if item == nil {
+			return nil, fmt.Errorf("contributions[%d] is nil", i)
+		}
+		if item.GetTail() == "" || item.GetHead() == "" ||
+			!utf8.ValidString(item.GetTail()) || !utf8.ValidString(item.GetHead()) {
+			return nil, fmt.Errorf("contributions[%d] requires nonempty UTF-8 tail and head", i)
+		}
+		if len(item.GetContribId()) != len(graphcache.ContribID{}) {
+			return nil, fmt.Errorf("contributions[%d].contrib_id must be 24 bytes", i)
+		}
+		id := contribIDFromBytes(item.GetContribId())
+		if id.IsZero() {
+			return nil, fmt.Errorf("contributions[%d].contrib_id must be nonzero", i)
+		}
+		keys[i] = graphcache.EdgeContributionKey[string]{
+			Tail: item.GetTail(), Head: item.GetHead(), ContribID: id,
+		}
+	}
+	return keys, nil
+}
+
+func (s *LanternService) DeleteEdgeContribution(ctx context.Context, in *pb.DeleteEdgeContributionRequest) (*pb.DeleteEdgeContributionResponse, error) {
+	if in == nil {
+		in = &pb.DeleteEdgeContributionRequest{}
+	}
+	if in.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(in.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
+	resp, err := s.DeleteEdgeContributions(ctx, &pb.DeleteEdgeContributionsRequest{
+		Contributions: []*pb.EdgeContributionKey{{
+			Tail: in.GetTail(), Head: in.GetHead(), ContribId: in.GetContribId(),
+		}},
+		ReceiptContext: in.GetReceiptContext(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.GetExisted()) != 1 {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("DeleteEdgeContributions returned %d outcomes for singular request", len(resp.GetExisted())))
+	}
+	return &pb.DeleteEdgeContributionResponse{Existed: resp.GetExisted()[0]}, nil
+}
+
+func (s *LanternService) DeleteEdgeContributions(ctx context.Context, in *pb.DeleteEdgeContributionsRequest) (*pb.DeleteEdgeContributionsResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ctxToConnect(err)
+	}
+	if in == nil {
+		in = &pb.DeleteEdgeContributionsRequest{}
+	}
+	if in.GetReceiptContext() != nil {
+		if err := rejectProtoUnknownFields(in.ProtoReflect()); err != nil {
+			return nil, invalidReceiptRequest(err)
+		}
+	}
+	keys, err := edgeContributionKeysFromWire(in.GetContributions())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	s.metrics.OnBatch("DeleteEdgeContributions", len(keys))
+	if in.GetReceiptContext() != nil {
+		return s.commitPublicReceiptEdgeContributionDelete(ctx, in)
+	}
+	if s.clock == nil || s.tombstoneTTL <= 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("contribution Delete requires replication and D4 tombstone retention"))
+	}
+
+	s.replicationCutMu.Lock()
+	defer s.replicationCutMu.Unlock()
+	if err := s.prepareLocalMutationLocked(); err != nil {
+		return nil, err
+	}
+	ts, tombExp, err := s.sampleDeleteStamp()
+	if err != nil {
+		return nil, err
+	}
+	mutationOp := &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContributions{DeleteEdgeContributions: in}}
+	if err := s.preflightLocalGraphDeleteLocked(mutationOp, ts, tombExp); err != nil {
+		return nil, err
+	}
+	outcomes, accepted, err := s.cache.DeleteEdgeContributionsHLCDecisionsChecked(keys, ts, tombExp)
+	if err != nil {
+		return nil, writeError(err)
+	}
+	deleted, err := checkedDeleteOutcomes(outcomes, len(keys))
+	if err != nil {
+		return nil, err
+	}
+	if err := s.publishLocalGraphDeleteLocked(mutationOp, ts, tombExp, accepted); err != nil {
+		return nil, err
+	}
+	return &pb.DeleteEdgeContributionsResponse{Deleted: deleted, Existed: outcomes}, nil
 }
 
 // LanternServer ties the Connect HTTP/2 server, its listener, the cache GC loop, and

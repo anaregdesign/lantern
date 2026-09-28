@@ -77,6 +77,7 @@ export type IdentityOperation =
   | "addEdge"
   | "putEdge"
   | "deleteEdge"
+  | "deleteEdgeContribution"
   | "receiptOnly";
 
 /** Nanosecond-precision causal coordinate of the original mutation. */
@@ -131,6 +132,8 @@ function operationFromWire(operation: PbIdentityOperation): IdentityOperation {
       return "putEdge";
     case PbIdentityOperation.DELETE_EDGE:
       return "deleteEdge";
+    case PbIdentityOperation.DELETE_EDGE_CONTRIBUTION:
+      return "deleteEdgeContribution";
     case PbIdentityOperation.RECEIPT_ONLY:
       return "receiptOnly";
     default:

@@ -1,6 +1,10 @@
 package parser
 
-import "time"
+import (
+	"time"
+
+	client "github.com/anaregdesign/lantern/sdks/go"
+)
 
 // Help is the parsed `help [topic]` command. Topic is empty for the complete
 // grammar overview, or one of the known traversal-family topics.
@@ -40,6 +44,8 @@ type AddEdge struct {
 	Head   string
 	Weight float32
 	TTL    time.Duration
+	// ContribID is zero when no id= was supplied (the ordinary Add path).
+	ContribID client.ContribID
 }
 
 // AddDecayingEdge backs
@@ -77,6 +83,12 @@ type EdgePair struct {
 // holds one or more (tail, head) pairs (the token count must be even).
 type DeleteEdge struct {
 	Pairs []EdgePair
+}
+
+// DeleteContribution backs `delete contribution <tail> <head> <contrib_id_hex>
+// [<tail> <head> <contrib_id_hex> ...]`, without removing the whole edge.
+type DeleteContribution struct {
+	Refs []client.EdgeContributionRef
 }
 
 // Bfs backs the bfs family verb (#975):

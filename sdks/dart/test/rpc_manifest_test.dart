@@ -40,6 +40,8 @@ const _appFacingRpcs = <String>{
   'CountVerticesByPrefix',
   'DeleteEdge',
   'DeleteEdges',
+  'DeleteEdgeContribution',
+  'DeleteEdgeContributions',
   'DeleteEdgesByPrefix',
   'DeleteVertex',
   'DeleteVertices',

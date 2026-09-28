@@ -37,6 +37,7 @@ func (s *LanternService) publicReceiptRuntime() *receiptServingRuntime {
 	runtime := s.runtime.receipt
 	edgeAdd := s.receiptEdgeAddCoordinator
 	edgeDelete := s.receiptEdgeDeleteCoordinator
+	contributionDelete := s.receiptEdgeContributionDeleteCoordinator
 	vertexPut := s.receiptVertexPutCoordinator
 	vertexDelete := s.receiptVertexDeleteCoordinator
 	if runtime.store == nil || runtime.retired == nil ||
@@ -45,6 +46,8 @@ func (s *LanternService) publicReceiptRuntime() *receiptServingRuntime {
 		edgeAdd.cache != s.runtime.graph || edgeAdd.store != runtime.store ||
 		edgeDelete == nil || edgeDelete.service != s ||
 		edgeDelete.cache != s.runtime.graph || edgeDelete.store != runtime.store ||
+		contributionDelete == nil || contributionDelete.service != s ||
+		contributionDelete.cache != s.runtime.graph || contributionDelete.store != runtime.store ||
 		vertexPut == nil || vertexPut.service != s ||
 		vertexPut.cache != s.runtime.graph || vertexPut.store != runtime.store ||
 		vertexDelete == nil || vertexDelete.service != s ||
@@ -174,6 +177,7 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
 		},
 	}, nil
 }
@@ -311,6 +315,16 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 			}
 			result = &pb.ReceiptResult{
 				Result: &pb.ReceiptResult_DeleteEdgeExisted{DeleteEdgeExisted: receipt.Result[0] == 1},
+			}
+		case mutationreceipt.DeleteEdgeContribution:
+			if len(receipt.Result) != 1 || receipt.Result[0] > 1 {
+				return nil, connect.NewError(connect.CodeInternal,
+					errors.New("confirmed contribution Delete receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{
+				Result: &pb.ReceiptResult_DeleteEdgeContributionExisted{
+					DeleteEdgeContributionExisted: receipt.Result[0] == 1,
+				},
 			}
 		case mutationreceipt.AddEdge:
 			if len(receipt.Result) != 4 {

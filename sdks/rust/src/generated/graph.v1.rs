@@ -689,6 +689,51 @@ pub struct DeleteEdgeResponse {
     #[prost(bool, tag = "1")]
     pub existed: bool,
 }
+/// An additive contribution is identified by its directed edge and its
+/// nonzero 24-byte ContribID. The ID is not a receipt operation ID.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EdgeContributionKey {
+    #[prost(string, tag = "1")]
+    pub tail: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub head: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub contrib_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteEdgeContributionRequest {
+    #[prost(string, tag = "1")]
+    pub tail: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub head: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub contrib_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub receipt_context: ::core::option::Option<MutationReceiptContext>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteEdgeContributionResponse {
+    /// True only when a live contribution with this identity was removed.
+    #[prost(bool, tag = "1")]
+    pub existed: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DeleteEdgeContributionsRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub contributions: ::prost::alloc::vec::Vec<EdgeContributionKey>,
+    /// When present, operation_ids must align with contributions. An absent
+    /// context requests an online write without a durable result receipt.
+    #[prost(message, optional, tag = "2")]
+    pub receipt_context: ::core::option::Option<MutationReceiptContext>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteEdgeContributionsResponse {
+    #[prost(int32, tag = "1")]
+    pub deleted: i32,
+    /// One observation per input position, including duplicates and misses.
+    #[prost(bool, repeated, tag = "2")]
+    pub existed: ::prost::alloc::vec::Vec<bool>,
+}
 /// EdgeKey identifies an edge by its (tail, head) pair without weight.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EdgeKey {
@@ -1325,7 +1370,7 @@ pub struct GetReceiptCapabilityResponse {
 /// mutation-family results are added only with their atomic write slices.
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ReceiptResult {
-    #[prost(oneof = "receipt_result::Result", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "receipt_result::Result", tags = "1, 2, 3, 4, 5")]
     pub result: ::core::option::Option<receipt_result::Result>,
 }
 /// Nested message and enum types in `ReceiptResult`.
@@ -1340,6 +1385,8 @@ pub mod receipt_result {
         DeleteVertexExisted(bool),
         #[prost(float, tag = "4")]
         AddEdgeEffectiveWeight(f32),
+        #[prost(bool, tag = "5")]
+        DeleteEdgeContributionExisted(bool),
     }
 }
 /// MutationReceipt is one request-index-aligned item from an atomic logical
@@ -1847,6 +1894,7 @@ pub enum ReceiptMutationKind {
     DeleteVertex = 2,
     DeleteEdge = 3,
     AddEdge = 4,
+    DeleteEdgeContribution = 5,
 }
 impl ReceiptMutationKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1860,6 +1908,9 @@ impl ReceiptMutationKind {
             Self::DeleteVertex => "RECEIPT_MUTATION_KIND_DELETE_VERTEX",
             Self::DeleteEdge => "RECEIPT_MUTATION_KIND_DELETE_EDGE",
             Self::AddEdge => "RECEIPT_MUTATION_KIND_ADD_EDGE",
+            Self::DeleteEdgeContribution => {
+                "RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1870,6 +1921,9 @@ impl ReceiptMutationKind {
             "RECEIPT_MUTATION_KIND_DELETE_VERTEX" => Some(Self::DeleteVertex),
             "RECEIPT_MUTATION_KIND_DELETE_EDGE" => Some(Self::DeleteEdge),
             "RECEIPT_MUTATION_KIND_ADD_EDGE" => Some(Self::AddEdge),
+            "RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION" => {
+                Some(Self::DeleteEdgeContribution)
+            }
             _ => None,
         }
     }
@@ -2545,6 +2599,62 @@ pub mod lantern_service_client {
                 .insert(GrpcMethod::new("graph.v1.LanternService", "DeleteEdges"));
             self.inner.unary(req, path, codec).await
         }
+        /// DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+        /// It is a thin facade over DeleteEdgeContributions.
+        pub async fn delete_edge_contribution(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteEdgeContributionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteEdgeContributionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternService/DeleteEdgeContribution",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternService", "DeleteEdgeContribution"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+        /// missing rows still install an absolute D4 remove-wins tombstone.
+        pub async fn delete_edge_contributions(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteEdgeContributionsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeleteEdgeContributionsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternService/DeleteEdgeContributions",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternService", "DeleteEdgeContributions"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
         /// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
         /// At least one prefix must be non-empty. Pass `dry_run = true` to preview
@@ -2807,7 +2917,7 @@ pub struct HlcTimestamp {
 pub struct MutationOp {
     #[prost(
         oneof = "mutation_op::Op",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub op: ::core::option::Option<mutation_op::Op>,
 }
@@ -2863,6 +2973,16 @@ pub mod mutation_op {
         /// accepted projection.
         #[prost(message, tag = "18")]
         ReplicatedReceiptEdgeAdd(super::ReplicatedReceiptEdgeAdd),
+        #[prost(message, tag = "19")]
+        DeleteEdgeContribution(super::DeleteEdgeContributionRequest),
+        #[prost(message, tag = "20")]
+        DeleteEdgeContributions(super::DeleteEdgeContributionsRequest),
+        /// Independent receipt family; the target ContribID is not the
+        /// deletion operation's receipt identity.
+        #[prost(message, tag = "21")]
+        ReplicatedReceiptEdgeContributionDelete(
+            super::ReplicatedReceiptEdgeContributionDelete,
+        ),
     }
 }
 /// One request-index-aligned item in a receipt-bearing Edge Delete. The
@@ -2892,6 +3012,26 @@ pub struct ReplicatedReceiptEdgeDelete {
     pub tombstone_expiration: ::core::option::Option<::prost_types::Timestamp>,
     #[prost(message, repeated, tag = "4")]
     pub items: ::prost::alloc::vec::Vec<ReplicatedReceiptEdgeDeleteItem>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplicatedReceiptEdgeContributionDeleteItem {
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<EdgeContributionKey>,
+    #[prost(message, optional, tag = "2")]
+    pub receipt: ::core::option::Option<MutationReceipt>,
+    #[prost(bool, tag = "3")]
+    pub causally_accepted: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplicatedReceiptEdgeContributionDelete {
+    #[prost(bytes = "vec", tag = "1")]
+    pub deployment_epoch: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub policy_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub tombstone_expiration: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, repeated, tag = "4")]
+    pub items: ::prost::alloc::vec::Vec<ReplicatedReceiptEdgeContributionDeleteItem>,
 }
 /// One request-index-aligned item in a receipt-bearing Vertex Put. Original
 /// retains the complete semantic intent. Accepted is omitted when this receiver
@@ -3041,7 +3181,8 @@ pub struct Mutation {
     #[prost(message, optional, tag = "4")]
     pub op: ::core::option::Option<MutationOp>,
     /// The origin's absolute D4 tombstone deadline for an exact-identity
-    /// DeleteVertex/Vertices or DeleteEdge/Edges. It is sampled once with the
+    /// DeleteVertex/Vertices, DeleteEdge/Edges, or DeleteEdgeContribution(s).
+    /// It is sampled once with the
     /// graph effect and retained unchanged by relay and WAL replay. A receiver
     /// with tombstone retention enabled must reject a Delete without it rather
     /// than extend the deadline from its own wall clock. Other operations omit it.
@@ -3268,6 +3409,8 @@ pub struct SnapshotFooter {
     pub retired_epoch_count: u64,
     #[prost(uint64, tag = "10")]
     pub retired_receipt_count: u64,
+    #[prost(uint64, tag = "11")]
+    pub edge_contribution_tombstone_count: u64,
 }
 /// Contribution metadata is present exactly for an AddEdge receipt. Keeping
 /// it in a message preserves presence and leaves room for later contribution
@@ -3426,17 +3569,33 @@ pub struct SnapshotEdgeTombstone {
     #[prost(message, optional, tag = "4")]
     pub expiration: ::core::option::Option<::prost_types::Timestamp>,
 }
+/// Remove-wins floor for one Add identity. expiration is its absolute D4
+/// retention deadline, never the edge's data expiration.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SnapshotEdgeContributionTombstone {
+    #[prost(string, tag = "1")]
+    pub tail: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub head: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub contrib_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub hlc: ::core::option::Option<HlcTimestamp>,
+    #[prost(message, optional, tag = "5")]
+    pub expiration: ::core::option::Option<::prost_types::Timestamp>,
+}
 /// SnapshotResponse is the union type streamed from `rpc Snapshot`. The frame
 /// order is always: exactly one SnapshotHeader; for RECEIPT, zero or more
 /// SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
 /// frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
-/// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
-/// zero or more SnapshotVertex frames, zero or more SnapshotEdge frames; then
+/// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone and
+/// SnapshotEdgeContributionTombstone frames, zero or more SnapshotVertex
+/// frames, zero or more SnapshotEdge frames; then
 /// exactly one SnapshotFooter. Receivers MUST treat any other order as a
 /// protocol violation.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SnapshotResponse {
-    #[prost(oneof = "snapshot_response::Entry", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "snapshot_response::Entry", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub entry: ::core::option::Option<snapshot_response::Entry>,
 }
 /// Nested message and enum types in `SnapshotResponse`.
@@ -3461,6 +3620,8 @@ pub mod snapshot_response {
         EdgeTombstone(super::SnapshotEdgeTombstone),
         #[prost(message, tag = "9")]
         Receipt(super::SnapshotReceipt),
+        #[prost(message, tag = "10")]
+        EdgeContributionTombstone(super::SnapshotEdgeContributionTombstone),
     }
 }
 /// PeerStatusRequest is intentionally empty — the responder always
@@ -3547,6 +3708,9 @@ pub enum IdentityOperation {
     /// A committed receipt envelope with no causally accepted graph identity.
     /// It closes one origin sequence with a final, zero-key IdentityChunk.
     ReceiptOnly = 6,
+    /// Invalidate (tail, head); other Add or Put rows may still be live.
+    /// Identity-only delivery never reveals the target ContribID.
+    DeleteEdgeContribution = 7,
 }
 impl IdentityOperation {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3562,6 +3726,7 @@ impl IdentityOperation {
             Self::PutEdge => "IDENTITY_OPERATION_PUT_EDGE",
             Self::DeleteEdge => "IDENTITY_OPERATION_DELETE_EDGE",
             Self::ReceiptOnly => "IDENTITY_OPERATION_RECEIPT_ONLY",
+            Self::DeleteEdgeContribution => "IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3574,6 +3739,9 @@ impl IdentityOperation {
             "IDENTITY_OPERATION_PUT_EDGE" => Some(Self::PutEdge),
             "IDENTITY_OPERATION_DELETE_EDGE" => Some(Self::DeleteEdge),
             "IDENTITY_OPERATION_RECEIPT_ONLY" => Some(Self::ReceiptOnly),
+            "IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION" => {
+                Some(Self::DeleteEdgeContribution)
+            }
             _ => None,
         }
     }
@@ -3624,6 +3792,7 @@ pub enum SnapshotReceiptKind {
     AddEdge = 3,
     DeleteVertex = 4,
     DeleteEdge = 5,
+    DeleteEdgeContribution = 6,
 }
 impl SnapshotReceiptKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3638,6 +3807,9 @@ impl SnapshotReceiptKind {
             Self::AddEdge => "SNAPSHOT_RECEIPT_KIND_ADD_EDGE",
             Self::DeleteVertex => "SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX",
             Self::DeleteEdge => "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE",
+            Self::DeleteEdgeContribution => {
+                "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3649,6 +3821,9 @@ impl SnapshotReceiptKind {
             "SNAPSHOT_RECEIPT_KIND_ADD_EDGE" => Some(Self::AddEdge),
             "SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX" => Some(Self::DeleteVertex),
             "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE" => Some(Self::DeleteEdge),
+            "SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION" => {
+                Some(Self::DeleteEdgeContribution)
+            }
             _ => None,
         }
     }

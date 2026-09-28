@@ -19,13 +19,14 @@ producer-performance gates, and renders a Markdown report.
 > driver that sweeps the scenarios listed in `release-scenarios.txt`. Each
 > scenario owns a fresh Compose lifecycle so data, retained high-water state,
 > and scenario-specific cluster env cannot leak into its successor (#1097). To
-> keep wall-time bounded without losing coverage, the sweep is seven
-> scenarios: three fan-out scenarios (`broad_rw`, `broad_mutate`,
-> `broad_illuminate`) that
+> keep wall-time bounded without losing coverage, the sweep is eight
+> scenarios: four fan-out scenarios (`broad_rw`, `broad_mutate`,
+> `broad_illuminate`, `edge_contrib_idempotent`) that
 > exercise many call paths inside a single steady window (read / write /
 > batch / scan / edge / delete / ScanVertexKeys / CountVerticesByPrefix /
-> idempotent AddEdge, and the Illuminate algorithm/reduction × objective ×
-> weighting axes) plus `ttl_churn`, `many_subscribers`, `search_churn` (index decay
+> idempotent AddEdge, targeted contribution deletion, and the Illuminate
+> algorithm/reduction × objective × weighting axes) plus `ttl_churn`,
+> `many_subscribers`, `search_churn` (index decay
 > / thread-safety under churn, #703), and `replication_apply_churn`
 > (vertexHLC map regression gate, #700 / #705). It produces a
 > fixed-format `bench-report.md` that is spliced into the GitHub Release
@@ -312,8 +313,8 @@ exact-image measurements are required for #1399.
 | `search_churn.yaml`       | PutVertex (short TTL) + all advanced SearchVertices families; per-producer perf plus semantic/index-decay gates (#1048) |
 | `search_qualification.yaml` | short fresh-cluster tag-SHA gate; deterministic Search semantics, TTL cleanup, metric, leak, and producer perf contracts (#1063) |
 | `prefix_surface.yaml`     | ScanVertexKeys + ScanEdges + CountVerticesByPrefix + DeleteVerticesByPrefix fan-out (#704) |
+| `edge_contrib_idempotent.yaml` | Bounded contribution-keyed Add and targeted Delete (singular/plural), including D4 tombstone churn (#706, #1528) |
 | `replication_apply_churn.yaml` | replicated write churn; asserts `lantern_vertex_hlc_entries` returns to baseline (#700, #705) |
-| `edge_contrib_idempotent.yaml` | AddEdge/AddEdges with repeated ContribIDs; verifies at-most-once dedup stays bounded (#706) |
 | `mixed_edge_reset_add.yaml` | on-demand three-replica Put/Delete/Add churn on bounded edge identities; measures reset-aware contribution cost (#1203) |
 | `receipt_vertex_put_admission_lookup.yaml` | nightly-only conditional Vertex Put receipt admission plus same-operation typed lookup |
 | `receipt_vertex_delete_admission_lookup.yaml` | nightly-only absent Vertex Delete receipt admission plus same-operation typed lookup |
@@ -478,7 +479,7 @@ HTTP-OK response with empty hits therefore fails. The bounded `semantic_pre.json
 `semantic_post.json` artifacts contain only phase, replica endpoint, check
 count, and verdict—never query text, prefixes, keys, or values.
 
-Sizing rules (all seven release scenarios carry a block sized this way):
+Sizing rules (all eight release scenarios carry a block sized this way):
 
 - Floors are **ratchet floors with ≥2x headroom** over the worst nightly
   baseline — they exist to catch step-change regressions (accidental O(n²),

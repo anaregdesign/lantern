@@ -1,8 +1,8 @@
 # 0010: Bounded mutation receipts for ambiguous responses
 
-- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Put Edge and prefix Delete remain disabled
+- Status: Accepted and active for authenticated receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and targeted Edge contribution Delete; the internal Store, atomic commit envelope, guarded receipt-tail wire, active-plus-retired durable recovery, RECEIPT Snapshot, manifest-last backup sets, and pre-listener startup certification provide the continuity proof, while Put Edge and prefix Delete remain disabled
 - Date: 2026-09-24
-- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491
+- Issues: #1115, #1282, #1203, #1116, #1393, #1394, #1395, #1396, #1397, #1491, #1528
 
 ## Context and boundary
 
@@ -30,8 +30,9 @@ Simply adding a receipt map to any one of these paths would permit graph,
 result, receipt, and log to disagree. #1395 replaces that ordering for exact
 Edge Delete, and #1396 extends the same envelope to conditional Vertex Put and
 exact Vertex Delete. #1397 extends it to contribution-keyed Edge Add when the
-optional receipt context is present. All context-free writes retain their
-existing behavior.
+optional receipt context is present. #1528 adds a separate targeted Edge
+contribution Delete, without changing whole-edge `DeleteEdge(s)`. All
+context-free writes retain their existing behavior.
 
 New public and peer Put/Add edge **source** weights and ordinary Snapshot
 contributions must be finite. Graph-only `.lbk` can instead fold finite
@@ -73,6 +74,20 @@ ID or intent while that binding is live, or a mixed keyed/unkeyed receipt
 batch is rejected before commit. After its deadline, that binding expires;
 clients must generate fresh cryptographic IDs for later operations. The
 current unkeyed Add path remains outside receipt guarantees.
+
+Targeted Delete is identified by `(tail, head, ContribID)`, not a global
+ContribID lookup. It requires an exactly 24-byte nonzero target ID already
+known to the caller; a missing ID is never interpreted as a whole-edge
+Delete. Its **own** receipt operation ID is distinct from the target
+ContribID and from any receipt on the original Add. The canonical Delete
+intent commits all three identity fields and the operation kind; a different
+target with the same operation ID is a conflict. Each request-index-aligned
+original result is a typed `delete_edge_contribution_existed` boolean,
+including an explicit `false` for an absent, already removed, or expired
+row. Repeating the same certified logical call returns that original value
+after later graph changes, not a new graph observation. A missing target may
+still install a D4-bounded per-ID remove-wins floor, while the Add receipt
+and unrelated contributions remain intact.
 
 The deployment epoch is a random cluster identity, not a user identity or a
 hash of a bearer token. All HA members must have the same epoch and receipt
@@ -187,8 +202,12 @@ A receipt-only envelope still advances the origin seq. Identity-only Subscribe
 emits a final zero-key `RECEIPT_ONLY` chunk when no graph identity was
 accepted, advancing the CDC cursor without invalidating graph data.
 [`projectMutationIdentities`](../../server/service/identity.go) implements
-that bounded marker for all four receipt families; maintained SDK identity
-decoders accept it. During peer Snapshot installation, new receipt-capable
+that bounded marker for all five receipt families; maintained SDK identity
+decoders accept it. Contribution Delete with a graph effect projects only
+its Edge pair, never the target ContribID, weight, or deadline. Older
+identity subscribers that do not recognize its new operation category must
+be upgraded or fail closed rather than silently advance their cursor.
+During peer Snapshot installation, new receipt-capable
 admission and receipt status fail closed until graph, receipts, epoch, and
 cutoffs are verified together; a read fault alone is not an admission
 interlock.
@@ -335,7 +354,8 @@ partitioned status, and total-cluster loss remain explicit unknown outcomes.
 The [Edge Delete coordinator](../../server/service/receipt_edge_delete.go),
 [Vertex Put coordinator](../../server/service/receipt_vertex_put.go),
 [Vertex Delete coordinator](../../server/service/receipt_vertex_delete.go),
-and [Edge Add coordinator](../../server/service/receipt_edge_add.go)
+the [Edge Add coordinator](../../server/service/receipt_edge_add.go),
+and the [targeted contribution Delete coordinator](../../server/service/receipt_edge_contribution_delete.go)
 stage graph, per-item receipts, and one origin row before a WAL call. Public
 plural calls invoke their coordinator only when the sole optional
 `MutationReceiptContext` is present; each singular call forwards a one-item
@@ -353,7 +373,13 @@ HLC, while its local seq is independent of the origin-local seq. Tombstone
 expiration is encoded as UTC Unix nanoseconds, without Go location or monotonic
 clock metadata. Durable receipt-WAL mode carries this codec through the union
 WAL and replay path; the codec alone does not certify receipt recovery,
-replication, or status continuity.
+replication, or status continuity. Targeted Delete has its own bounded
+versioned [WAL codec](../../server/service/receipt_edge_contribution_delete_codec.go)
+and a distinct `ReplicatedReceiptEdgeContributionDelete` arm; neither may be
+decoded as an ordinary whole-edge Delete. The original result and the
+accepted contribution identity indexes are both retained, even when an
+accepted target was absent. Its D4 deadline remains the origin's absolute
+timestamp through WAL, relay, and Snapshot.
 The private [FileWAL union codec](../../server/service/receipt_wal_union_codec.go)
 adds a versioned kind discriminator for graph-only `Mutation`, private
 [graph Delete effect](../../server/service/graph_delete_effect_wal.go) and
@@ -533,7 +559,8 @@ itself does not recover graph state, Store clock high-water, receipt epoch
 continuity, or an absent-ID status.
 The guarded full Subscribe projection carries receipt-bearing entries in
 dedicated `ReplicatedReceiptEdgeDelete`, `ReplicatedReceiptVertexPut`,
-`ReplicatedReceiptVertexDelete`, and `ReplicatedReceiptEdgeAdd` mutation arms.
+`ReplicatedReceiptVertexDelete`, `ReplicatedReceiptEdgeAdd`, and
+`ReplicatedReceiptEdgeContributionDelete` mutation arms.
 A full-stream consumer without `accept_receipt_envelopes` receives
 `INVALID_ARGUMENT` before such a frame; a receiver that did not opt in
 rejects the unknown oneof before advancing its origin watermark.
@@ -542,7 +569,7 @@ families, or a final zero-key `RECEIPT_ONLY` marker for a call with no graph
 effect. Generic graph mutation arms with nested receipt context fail closed
 in the durable WAL path; the dedicated outer arms alone preserve receipt
 evidence. Graph-only Pump does not opt in, and graph-only remote apply rejects
-all four receipt arms.
+all five receipt arms.
 This remains an internal wire prerequisite, not a supported receipt CDC
 contract. In durable receipt-WAL mode, Pump and anti-entropy now opt in only
 after the runtime is certified; they require `RECEIPT`, so an evicted
@@ -945,7 +972,8 @@ private identity-bearing barrier before `NewRuntimeCertified`. Snapshot
 installer, Pump, anti-entropy, and backup construction follow that barrier.
 After the exact production backup source is certified, a separate public
 receipt barrier activates capability, status, and receipt-bearing Vertex Put,
-exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add only
+exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and
+targeted Edge contribution Delete only
 when bearer authentication is configured; primary listener construction
 follows that decision. Graph-only mode alone keeps the
 historical `.lbk` restore in `App.Run`; its producer, filenames, retention,
@@ -1001,14 +1029,16 @@ marker that receipt-bearing requests must echo.
 `GetReceiptStatus` and plural-first `GetReceiptStatuses` are read-only and
 return exactly `CONFIRMED`, `NOT_YET_OBSERVED`, or
 `NO_LONGER_PROVABLE`; only `CONFIRMED` carries the exact original result.
-`PutVertices`, exact `DeleteVertices`, exact `DeleteEdges`, and
-contribution-keyed `AddEdges` are the enabled receipt-bearing mutation
+`PutVertices`, exact `DeleteVertices`, exact `DeleteEdges`,
+contribution-keyed `AddEdges`, and targeted `DeleteEdgeContributions` are the
+enabled receipt-bearing mutation
 families. Their optional context carries one
 index-aligned 49-byte operation ID per item, one nonzero 16-byte logical-call
 ID, and the capability endpoint. The complete group is validated and
 capacity-reserved before mutation. A matching duplicate returns the original
 request-index-aligned result: canonical `PutOutcome` values for Vertex Put,
-exact `existed` booleans for Delete, and the original effective float32 weight
+exact typed `existed` booleans for whole-edge and per-ID Delete (including
+`false`), and the original effective float32 weight
 for Edge Add, including signed infinity derived from finite inputs or
 previously accepted NaN, retained as opaque result bits. Numeric SDK
 surfaces preserve semantic NaN classification; NaN payload-bit identity
@@ -1016,7 +1046,8 @@ cannot be promised across binary64 and ProtoJSON. Receipt-bearing Add
 additionally requires every item to carry an explicit nonzero 24-byte
 contribution ID; IDs are never synthesized. Intent, group, operation-ID,
 or contribution-ID reuse conflicts fail without mutation.
-`PutVertex`, `DeleteVertex`, `DeleteEdge`, and `AddEdge` are one-item facades.
+`PutVertex`, `DeleteVertex`, `DeleteEdge`, `AddEdge`, and
+`DeleteEdgeContribution` are one-item facades.
 Omitting the context preserves receipt-less behavior; Put Edge and prefix
 Delete remain excluded.
 
@@ -1025,9 +1056,11 @@ cutoffs (#1282), mixed Add/Put/Delete convergence (#1203), and the
 replication/Snapshot/backup/startup continuity work (#1393, #1394) used by
 #1395, #1396, and #1397. A graph-before-relay retry rule or contribution ID
 alone never supplied original-result proof. Edge Add, Edge Delete, conditional
-Vertex Put, and exact Vertex Delete now satisfy the public server vertical-slice
-gate, including real Connect/h2c response-loss, lag, capacity, retention,
-intent-conflict, transport-bound, token-rotation, and fail-closed tests.
+Vertex Put, and exact Vertex Delete satisfy the existing public server
+vertical-slice gate, including real Connect/h2c response-loss, lag, capacity,
+retention, intent-conflict, transport-bound, token-rotation, and fail-closed
+tests. Targeted contribution Delete adds its separate receipt/WAL, replica,
+Snapshot, backup/restore, and status acceptance in #1528.
 Put Edge and prefix Delete remain outside this receipt context. Online Go,
 Node, and Dart receipt APIs are merged in source; the hosted
 `lantern_client 0.3.2` online archive passed exact-content verification.
@@ -1037,7 +1070,8 @@ Add and exact/prefix Delete, unlike older v0.25.0. A single attempt does
 not recover an ambiguous receipt-less result; prefix Delete has no receipt
 path. Node receipt APIs are in merged 0.12.0 source, not npm's current
 0.11.0 `latest` package.
-Merged offline 0.4.0 source implements the four receipt families, but no
+Merged offline 0.4.0 source implements the original four receipt families,
+not targeted contribution Delete (deferred with Dart #1530); no
 receipt-bearing offline release has been published or qualified. Its
 `lantern_client: ^0.3.2` constraint selects the hosted parent; verify
 isolated resolution of the offline candidate archive against that published

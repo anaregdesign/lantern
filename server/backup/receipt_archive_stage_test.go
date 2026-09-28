@@ -94,6 +94,53 @@ func TestReceiptWholeStateArchiveStageRetainsFiniteSourcesWithInfiniteSum(t *tes
 	}
 }
 
+func TestReceiptWholeStateArchiveStageRestoresContributionTombstone(t *testing.T) {
+	archive := wholeStateArchiveFixtureAt(t, time.Now().UTC().Truncate(time.Millisecond))
+	deadline := time.Now().Add(2 * time.Hour).UTC()
+	dataExpiration := deadline.Add(-time.Hour)
+	archive.Graph[3].GetEdge().Contributions[0].Expiration = timestamppb.New(dataExpiration)
+	deletedID := graphcache.ContribID{8}
+	addContributionTombstoneToArchive(&archive, deletedID, deadline)
+	raw := encodedWholeStateArchive(t, archive)
+	stage, err := stageReceiptWholeStateArchive(
+		t.Context(), bytes.NewReader(raw), archive.Policy, time.Hour, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := stage.graph.SnapshotReplication()
+	if len(snapshot.Tombstones.EdgeContributions) != 1 ||
+		snapshot.Tombstones.EdgeContributions[0].EdgeContributionKey !=
+			(graphcache.EdgeContributionKey[string]{Tail: "tail", Head: "head", ContribID: deletedID}) ||
+		!snapshot.Tombstones.EdgeContributions[0].Expiration.Equal(deadline) {
+		t.Fatalf("staged per-ID D4 floor differs from archive: %+v", snapshot.Tombstones.EdgeContributions)
+	}
+	if weight, expiration, ok := stage.graph.GetEdgeDetail("tail", "head"); !ok ||
+		weight != 1.5 || !expiration.Equal(dataExpiration) || expiration.Equal(deadline) {
+		t.Fatalf("staged Add data TTL changed to tombstone D4: %v, %v, %t", weight, expiration, ok)
+	}
+	newer := hlc.Timestamp{
+		WallNs: archive.Graph[0].GetHeader().GetCutoffHlc().GetWallNs() + 1,
+		NodeID: archive.Origins[0].Origin,
+	}
+	if stage.graph.AddEdgeWithExpirationContribHLC(
+		"tail", "head", 100, dataExpiration, deletedID, newer,
+	) {
+		t.Fatal("staged D4 floor allowed a newer replay of the removed ID")
+	}
+	if weight, _, _ := stage.graph.GetEdgeDetail("tail", "head"); weight != 1.5 {
+		t.Fatalf("staged edge changed on removed ID replay: %v", weight)
+	}
+	if !stage.graph.AddEdgeWithExpirationContribHLC(
+		"tail", "head", 2, dataExpiration, graphcache.ContribID{9}, newer,
+	) {
+		t.Fatal("staged floor blocked a different Add identity")
+	}
+	if weight, _, _ := stage.graph.GetEdgeDetail("tail", "head"); weight != 3.5 {
+		t.Fatalf("surviving and new Add weights = %v, want 3.5", weight)
+	}
+}
+
 func TestReceiptWholeStateArchiveStageRejectsDerivedAggregate(t *testing.T) {
 	archive := wholeStateArchiveFixture(t)
 	edge := archive.Graph[3].GetEdge()
@@ -368,10 +415,18 @@ func TestReceiptWholeStateArchiveStageReapsNaturallyExpiredTombstones(t *testing
 				Hlc: archive.Graph[0].GetHeader().GetCutoffHlc(), Expiration: expired,
 			},
 		}},
+		{Entry: &pb.SnapshotResponse_EdgeContributionTombstone{
+			EdgeContributionTombstone: &pb.SnapshotEdgeContributionTombstone{
+				Tail: "old-tail", Head: "old-head",
+				ContribId: append([]byte{8}, make([]byte, 23)...),
+				Hlc:       archive.Graph[0].GetHeader().GetCutoffHlc(), Expiration: expired,
+			},
+		}},
 	}, archive.Graph[1:]...)...)
 	footer := archive.Graph[len(archive.Graph)-1].GetFooter()
 	footer.VertexTombstoneCount++
 	footer.EdgeTombstoneCount++
+	footer.EdgeContributionTombstoneCount++
 	raw := encodedWholeStateArchive(t, archive)
 
 	candidate, err := stageReceiptWholeStateArchive(
@@ -381,7 +436,8 @@ func TestReceiptWholeStateArchiveStageReapsNaturallyExpiredTombstones(t *testing
 		t.Fatal(err)
 	}
 	tombstones := candidate.graph.SnapshotReplication().Tombstones
-	if len(tombstones.Vertices) != 0 || len(tombstones.Edges) != 0 {
+	if len(tombstones.Vertices) != 0 || len(tombstones.Edges) != 0 ||
+		len(tombstones.EdgeContributions) != 0 {
 		t.Fatalf("expired tombstones were resurrected: %+v", tombstones)
 	}
 }

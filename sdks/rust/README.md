@@ -1,4 +1,4 @@
-# Lantern Rust client (unpublished)
+# Lantern Rust client
 
 `lantern-client` is the standalone native Rust crate (`lantern_client` in Rust)
 for [Lantern](https://github.com/anaregdesign/lantern). It includes a public
@@ -8,7 +8,8 @@ queries, typed graph traversal, and explicit status snapshots. Generated
 Tonic/Prost clients and RPC envelopes remain private. Receipt and
 long-lived streaming APIs are tracked in
 [ADR 0011](https://github.com/anaregdesign/lantern/blob/main/docs/decisions/0011-native-rust-sdk.md)
-and later issues. Do not treat this source as a published release.
+and later issues. The `0.1.0` crate is published; selective contribution
+deletion requires `0.2.0` or later and a compatible Lantern server.
 
 The crate builds independently of the Go workspace. Consumer builds use the
 checked-in `src/generated/graph.v1.rs` and need neither the repository's `proto/`
@@ -79,7 +80,8 @@ rich details remain inspectable but cannot masquerade as known reasons.
 ```rust
 use std::time::Duration;
 use lantern_client::{
-    AddInput, EdgeInput, EdgeRef, Expiration, LanternClient, PutOutcome, VertexInput,
+    AddInput, EdgeContributionRef, EdgeInput, EdgeRef, Expiration, LanternClient,
+    PutOutcome, VertexInput,
 };
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -102,6 +104,11 @@ let prepared = client.prepare_add([
 ])?;
 assert_eq!(client.add_prepared_edges(&prepared).await?.effective_weights, [3.0]);
 assert_eq!(client.get_edge("rust:tail", "rust:head").await?.weight, 3.0);
+let id = prepared.contrib_ids()[0].expect("auto_contribution_ids is enabled");
+assert!(client.delete_edge_contribution(
+    EdgeContributionRef::new("rust:tail", "rust:head", id),
+).await?);
+assert_eq!(client.get_edge("rust:tail", "rust:head").await?.weight, 2.0);
 assert_eq!(client.delete_edges([EdgeRef::new("rust:tail", "rust:head")]).await?.existed, [true]);
 # Ok(())
 # }
@@ -148,11 +155,28 @@ contribution. `AddInput::with_contrib_id` accepts a caller-supplied
 opts into a clone-shared CSPRNG nonce and monotonic sequence. Prepared
 Add inputs expose their frozen IDs and absolute expirations for caller
 retention. Do not reuse IDs across distinct logical calls. A retained
-ID deduplicates only while its contribution remains **live**; Delete or
-expiry permits that same ID to apply again. Therefore neither automatic
+ID deduplicates while its contribution remains **live**; selective Delete
+fences the same ID for the D4 tombstone-retention window. An expired row
+or retired tombstone may permit it to apply again. Therefore neither automatic
 retry nor prepared-input replay is proof of an uncertain receipt-less
 Add's original result. Only the caller can decide whether a manual
 attempt is appropriate; this SDK does not implement receipt recovery.
+
+`delete_edge_contribution(EdgeContributionRef::new(tail, head, id))` and
+`delete_edge_contributions(refs)` delete only the named live Add rows, not a
+Put base or other contributions. Both use the plural wire path; the batch
+returns request-index-aligned `DeleteBatch { deleted, existed }`, including
+duplicate IDs (true, then false) and misses. Retain a caller-supplied
+`ContribId` or `PreparedAdd::contrib_ids()` before sending Add to name the row
+later. An ID is **24 nonzero bytes**, not a 49-byte receipt operation ID.
+Large batches respect the same chunk and encoded-size limits as other CRUD
+writes. Neither selective Delete nor Add is automatically retried after an
+uncertain outcome, even with an opt-in retry policy; a later Delete could
+return false after the original removal succeeded.
+The D4 tombstone suppresses delayed Add of the deleted ID only while retained;
+use a fresh ID for new Add calls. Folded graph-only backup cannot carry
+per-ID tombstones across restore, so it cannot prove the anti-resurrection
+bound for a delayed Add.
 
 ## Bounded queries and traversal
 

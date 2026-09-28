@@ -321,6 +321,8 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		category = pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE
 	case *pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
 		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
+	case *pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
+		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
 		var err error
 		receiptEdgeKeys, err = acceptedReceiptEdgeDeleteKeys(m)
@@ -328,6 +330,16 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity projection invalid receipt envelope: %w", err))
 		}
 		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
+		if len(receiptEdgeKeys) == 0 {
+			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+		}
+	case *pb.MutationOp_ReplicatedReceiptEdgeContributionDelete:
+		var err error
+		receiptEdgeKeys, err = acceptedReceiptEdgeContributionDeleteKeys(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity projection invalid contribution receipt envelope: %w", err))
+		}
+		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION
 		if len(receiptEdgeKeys) == 0 {
 			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
 		}
@@ -448,7 +460,21 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 				return err
 			}
 		}
+	case *pb.MutationOp_DeleteEdgeContribution:
+		err = p.addEdge(op.DeleteEdgeContribution.GetTail(), op.DeleteEdgeContribution.GetHead())
+	case *pb.MutationOp_DeleteEdgeContributions:
+		for _, key := range op.DeleteEdgeContributions.GetContributions() {
+			if err = p.addEdge(key.GetTail(), key.GetHead()); err != nil {
+				return err
+			}
+		}
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
+		for _, edge := range receiptEdgeKeys {
+			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	case *pb.MutationOp_ReplicatedReceiptEdgeContributionDelete:
 		for _, edge := range receiptEdgeKeys {
 			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
 				return err

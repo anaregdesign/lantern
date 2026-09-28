@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"errors"
@@ -52,7 +53,7 @@ func NewValidationInterceptor(l ValidationLimits) *ValidationInterceptor {
 // WithRejectHook registers a callback invoked once per rejected request
 // with the canonical reason label (one of empty_key, key_too_long,
 // empty_batch, batch_too_large, nil_item, bad_weight, step_too_large,
-// k_too_large). Used by provider/metrics to bump
+// k_too_large, bad_contrib_id). Used by provider/metrics to bump
 // lantern_validation_rejected_total{reason}. A nil hook disables the
 // callback; safe to call exactly once during wiring.
 func (v *ValidationInterceptor) WithRejectHook(f func(reason string)) *ValidationInterceptor {
@@ -163,6 +164,19 @@ func (v *ValidationInterceptor) validate(req any) error {
 				return err
 			}
 		}
+	case *pb.DeleteEdgeContributionRequest:
+		return v.validateContributionKey(&pb.EdgeContributionKey{
+			Tail: r.GetTail(), Head: r.GetHead(), ContribId: r.GetContribId(),
+		}, "contribution")
+	case *pb.DeleteEdgeContributionsRequest:
+		if err := v.checkBatch(len(r.GetContributions())); err != nil {
+			return err
+		}
+		for i, key := range r.GetContributions() {
+			if err := v.validateContributionKey(key, fmt.Sprintf("contributions[%d]", i)); err != nil {
+				return err
+			}
+		}
 	case *pb.AddEdgeRequest:
 		return v.validateEdges([]*pb.Edge{r.GetEdge()})
 	case *pb.AddEdgesRequest:
@@ -220,6 +234,24 @@ func (v *ValidationInterceptor) validateEdges(edges []*pb.Edge) error {
 		if !edgeweight.IsFiniteSource(e.GetWeight()) {
 			return v.reject("bad_weight", "edges[%d].weight must be finite, got %v", i, e.GetWeight())
 		}
+	}
+	return nil
+}
+
+func (v *ValidationInterceptor) validateContributionKey(key *pb.EdgeContributionKey, field string) error {
+	if key == nil {
+		return v.reject("nil_item", "%s is nil", field)
+	}
+	if err := v.checkKey(field+".tail", key.GetTail()); err != nil {
+		return err
+	}
+	if err := v.checkKey(field+".head", key.GetHead()); err != nil {
+		return err
+	}
+	id := key.GetContribId()
+	var zero [24]byte
+	if len(id) != len(zero) || bytes.Equal(id, zero[:]) {
+		return v.reject("bad_contrib_id", "%s.contrib_id must be a nonzero 24-byte ID", field)
 	}
 	return nil
 }

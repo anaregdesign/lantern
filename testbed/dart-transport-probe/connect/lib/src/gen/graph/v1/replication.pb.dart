@@ -133,6 +133,9 @@ enum MutationOp_Op {
   replicatedReceiptVertexPut,
   replicatedReceiptVertexDelete,
   replicatedReceiptEdgeAdd,
+  deleteEdgeContribution,
+  deleteEdgeContributions,
+  replicatedReceiptEdgeContributionDelete,
   notSet
 }
 
@@ -164,6 +167,10 @@ class MutationOp extends $pb.GeneratedMessage {
     ReplicatedReceiptVertexPut? replicatedReceiptVertexPut,
     ReplicatedReceiptVertexDelete? replicatedReceiptVertexDelete,
     ReplicatedReceiptEdgeAdd? replicatedReceiptEdgeAdd,
+    $0.DeleteEdgeContributionRequest? deleteEdgeContribution,
+    $0.DeleteEdgeContributionsRequest? deleteEdgeContributions,
+    ReplicatedReceiptEdgeContributionDelete?
+        replicatedReceiptEdgeContributionDelete,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -192,6 +199,13 @@ class MutationOp extends $pb.GeneratedMessage {
       result.replicatedReceiptVertexDelete = replicatedReceiptVertexDelete;
     if (replicatedReceiptEdgeAdd != null)
       result.replicatedReceiptEdgeAdd = replicatedReceiptEdgeAdd;
+    if (deleteEdgeContribution != null)
+      result.deleteEdgeContribution = deleteEdgeContribution;
+    if (deleteEdgeContributions != null)
+      result.deleteEdgeContributions = deleteEdgeContributions;
+    if (replicatedReceiptEdgeContributionDelete != null)
+      result.replicatedReceiptEdgeContributionDelete =
+          replicatedReceiptEdgeContributionDelete;
     return result;
   }
 
@@ -223,13 +237,38 @@ class MutationOp extends $pb.GeneratedMessage {
     16: MutationOp_Op.replicatedReceiptVertexPut,
     17: MutationOp_Op.replicatedReceiptVertexDelete,
     18: MutationOp_Op.replicatedReceiptEdgeAdd,
+    19: MutationOp_Op.deleteEdgeContribution,
+    20: MutationOp_Op.deleteEdgeContributions,
+    21: MutationOp_Op.replicatedReceiptEdgeContributionDelete,
     0: MutationOp_Op.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'MutationOp',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])
+    ..oo(0, [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21
+    ])
     ..aOM<$0.PutVertexRequest>(1, _omitFieldNames ? '' : 'putVertex',
         subBuilder: $0.PutVertexRequest.create)
     ..aOM<$0.PutVerticesRequest>(2, _omitFieldNames ? '' : 'putVertices',
@@ -273,6 +312,15 @@ class MutationOp extends $pb.GeneratedMessage {
     ..aOM<ReplicatedReceiptEdgeAdd>(
         18, _omitFieldNames ? '' : 'replicatedReceiptEdgeAdd',
         subBuilder: ReplicatedReceiptEdgeAdd.create)
+    ..aOM<$0.DeleteEdgeContributionRequest>(
+        19, _omitFieldNames ? '' : 'deleteEdgeContribution',
+        subBuilder: $0.DeleteEdgeContributionRequest.create)
+    ..aOM<$0.DeleteEdgeContributionsRequest>(
+        20, _omitFieldNames ? '' : 'deleteEdgeContributions',
+        subBuilder: $0.DeleteEdgeContributionsRequest.create)
+    ..aOM<ReplicatedReceiptEdgeContributionDelete>(
+        21, _omitFieldNames ? '' : 'replicatedReceiptEdgeContributionDelete',
+        subBuilder: ReplicatedReceiptEdgeContributionDelete.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -516,6 +564,49 @@ class MutationOp extends $pb.GeneratedMessage {
   void clearReplicatedReceiptEdgeAdd() => $_clearField(18);
   @$pb.TagNumber(18)
   ReplicatedReceiptEdgeAdd ensureReplicatedReceiptEdgeAdd() => $_ensure(17);
+
+  @$pb.TagNumber(19)
+  $0.DeleteEdgeContributionRequest get deleteEdgeContribution => $_getN(18);
+  @$pb.TagNumber(19)
+  set deleteEdgeContribution($0.DeleteEdgeContributionRequest value) =>
+      $_setField(19, value);
+  @$pb.TagNumber(19)
+  $core.bool hasDeleteEdgeContribution() => $_has(18);
+  @$pb.TagNumber(19)
+  void clearDeleteEdgeContribution() => $_clearField(19);
+  @$pb.TagNumber(19)
+  $0.DeleteEdgeContributionRequest ensureDeleteEdgeContribution() =>
+      $_ensure(18);
+
+  @$pb.TagNumber(20)
+  $0.DeleteEdgeContributionsRequest get deleteEdgeContributions => $_getN(19);
+  @$pb.TagNumber(20)
+  set deleteEdgeContributions($0.DeleteEdgeContributionsRequest value) =>
+      $_setField(20, value);
+  @$pb.TagNumber(20)
+  $core.bool hasDeleteEdgeContributions() => $_has(19);
+  @$pb.TagNumber(20)
+  void clearDeleteEdgeContributions() => $_clearField(20);
+  @$pb.TagNumber(20)
+  $0.DeleteEdgeContributionsRequest ensureDeleteEdgeContributions() =>
+      $_ensure(19);
+
+  /// Independent receipt family; the target ContribID is not the
+  /// deletion operation's receipt identity.
+  @$pb.TagNumber(21)
+  ReplicatedReceiptEdgeContributionDelete
+      get replicatedReceiptEdgeContributionDelete => $_getN(20);
+  @$pb.TagNumber(21)
+  set replicatedReceiptEdgeContributionDelete(
+          ReplicatedReceiptEdgeContributionDelete value) =>
+      $_setField(21, value);
+  @$pb.TagNumber(21)
+  $core.bool hasReplicatedReceiptEdgeContributionDelete() => $_has(20);
+  @$pb.TagNumber(21)
+  void clearReplicatedReceiptEdgeContributionDelete() => $_clearField(21);
+  @$pb.TagNumber(21)
+  ReplicatedReceiptEdgeContributionDelete
+      ensureReplicatedReceiptEdgeContributionDelete() => $_ensure(20);
 }
 
 /// One request-index-aligned item in a receipt-bearing Edge Delete. The
@@ -713,6 +804,201 @@ class ReplicatedReceiptEdgeDelete extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(4)
   $pb.PbList<ReplicatedReceiptEdgeDeleteItem> get items => $_getList(3);
+}
+
+class ReplicatedReceiptEdgeContributionDeleteItem extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptEdgeContributionDeleteItem({
+    $0.EdgeContributionKey? key,
+    $0.MutationReceipt? receipt,
+    $core.bool? causallyAccepted,
+  }) {
+    final result = create();
+    if (key != null) result.key = key;
+    if (receipt != null) result.receipt = receipt;
+    if (causallyAccepted != null) result.causallyAccepted = causallyAccepted;
+    return result;
+  }
+
+  ReplicatedReceiptEdgeContributionDeleteItem._();
+
+  factory ReplicatedReceiptEdgeContributionDeleteItem.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptEdgeContributionDeleteItem.fromJson(
+          $core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptEdgeContributionDeleteItem',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$0.EdgeContributionKey>(1, _omitFieldNames ? '' : 'key',
+        subBuilder: $0.EdgeContributionKey.create)
+    ..aOM<$0.MutationReceipt>(2, _omitFieldNames ? '' : 'receipt',
+        subBuilder: $0.MutationReceipt.create)
+    ..aOB(3, _omitFieldNames ? '' : 'causallyAccepted')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeContributionDeleteItem clone() =>
+      ReplicatedReceiptEdgeContributionDeleteItem()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeContributionDeleteItem copyWith(
+          void Function(ReplicatedReceiptEdgeContributionDeleteItem) updates) =>
+      super.copyWith((message) =>
+              updates(message as ReplicatedReceiptEdgeContributionDeleteItem))
+          as ReplicatedReceiptEdgeContributionDeleteItem;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeContributionDeleteItem create() =>
+      ReplicatedReceiptEdgeContributionDeleteItem._();
+  @$core.override
+  ReplicatedReceiptEdgeContributionDeleteItem createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptEdgeContributionDeleteItem>
+      createRepeated() =>
+          $pb.PbList<ReplicatedReceiptEdgeContributionDeleteItem>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeContributionDeleteItem getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          ReplicatedReceiptEdgeContributionDeleteItem>(create);
+  static ReplicatedReceiptEdgeContributionDeleteItem? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $0.EdgeContributionKey get key => $_getN(0);
+  @$pb.TagNumber(1)
+  set key($0.EdgeContributionKey value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasKey() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearKey() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $0.EdgeContributionKey ensureKey() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $0.MutationReceipt get receipt => $_getN(1);
+  @$pb.TagNumber(2)
+  set receipt($0.MutationReceipt value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceipt() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceipt() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $0.MutationReceipt ensureReceipt() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.bool get causallyAccepted => $_getBF(2);
+  @$pb.TagNumber(3)
+  set causallyAccepted($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCausallyAccepted() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCausallyAccepted() => $_clearField(3);
+}
+
+class ReplicatedReceiptEdgeContributionDelete extends $pb.GeneratedMessage {
+  factory ReplicatedReceiptEdgeContributionDelete({
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? policyFingerprint,
+    $1.Timestamp? tombstoneExpiration,
+    $core.Iterable<ReplicatedReceiptEdgeContributionDeleteItem>? items,
+  }) {
+    final result = create();
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (policyFingerprint != null) result.policyFingerprint = policyFingerprint;
+    if (tombstoneExpiration != null)
+      result.tombstoneExpiration = tombstoneExpiration;
+    if (items != null) result.items.addAll(items);
+    return result;
+  }
+
+  ReplicatedReceiptEdgeContributionDelete._();
+
+  factory ReplicatedReceiptEdgeContributionDelete.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedReceiptEdgeContributionDelete.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedReceiptEdgeContributionDelete',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'policyFingerprint', $pb.PbFieldType.OY)
+    ..aOM<$1.Timestamp>(3, _omitFieldNames ? '' : 'tombstoneExpiration',
+        subBuilder: $1.Timestamp.create)
+    ..pc<ReplicatedReceiptEdgeContributionDeleteItem>(
+        4, _omitFieldNames ? '' : 'items', $pb.PbFieldType.PM,
+        subBuilder: ReplicatedReceiptEdgeContributionDeleteItem.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeContributionDelete clone() =>
+      ReplicatedReceiptEdgeContributionDelete()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedReceiptEdgeContributionDelete copyWith(
+          void Function(ReplicatedReceiptEdgeContributionDelete) updates) =>
+      super.copyWith((message) =>
+              updates(message as ReplicatedReceiptEdgeContributionDelete))
+          as ReplicatedReceiptEdgeContributionDelete;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeContributionDelete create() =>
+      ReplicatedReceiptEdgeContributionDelete._();
+  @$core.override
+  ReplicatedReceiptEdgeContributionDelete createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedReceiptEdgeContributionDelete> createRepeated() =>
+      $pb.PbList<ReplicatedReceiptEdgeContributionDelete>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedReceiptEdgeContributionDelete getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          ReplicatedReceiptEdgeContributionDelete>(create);
+  static ReplicatedReceiptEdgeContributionDelete? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get deploymentEpoch => $_getN(0);
+  @$pb.TagNumber(1)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeploymentEpoch() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeploymentEpoch() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get policyFingerprint => $_getN(1);
+  @$pb.TagNumber(2)
+  set policyFingerprint($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPolicyFingerprint() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPolicyFingerprint() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $1.Timestamp get tombstoneExpiration => $_getN(2);
+  @$pb.TagNumber(3)
+  set tombstoneExpiration($1.Timestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasTombstoneExpiration() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearTombstoneExpiration() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $1.Timestamp ensureTombstoneExpiration() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<ReplicatedReceiptEdgeContributionDeleteItem> get items =>
+      $_getList(3);
 }
 
 /// One request-index-aligned item in a receipt-bearing Vertex Put. Original
@@ -1802,7 +2088,8 @@ class Mutation extends $pb.GeneratedMessage {
   MutationOp ensureOp() => $_ensure(3);
 
   /// The origin's absolute D4 tombstone deadline for an exact-identity
-  /// DeleteVertex/Vertices or DeleteEdge/Edges. It is sampled once with the
+  /// DeleteVertex/Vertices, DeleteEdge/Edges, or DeleteEdgeContribution(s).
+  /// It is sampled once with the
   /// graph effect and retained unchanged by relay and WAL replay. A receiver
   /// with tombstone retention enabled must reject a Delete without it rather
   /// than extend the deadline from its own wall clock. Other operations omit it.
@@ -2624,6 +2911,7 @@ class SnapshotFooter extends $pb.GeneratedMessage {
     $fixnum.Int64? originCount,
     $fixnum.Int64? retiredEpochCount,
     $fixnum.Int64? retiredReceiptCount,
+    $fixnum.Int64? edgeContributionTombstoneCount,
   }) {
     final result = create();
     if (vertexCount != null) result.vertexCount = vertexCount;
@@ -2642,6 +2930,8 @@ class SnapshotFooter extends $pb.GeneratedMessage {
     if (retiredEpochCount != null) result.retiredEpochCount = retiredEpochCount;
     if (retiredReceiptCount != null)
       result.retiredReceiptCount = retiredReceiptCount;
+    if (edgeContributionTombstoneCount != null)
+      result.edgeContributionTombstoneCount = edgeContributionTombstoneCount;
     return result;
   }
 
@@ -2687,6 +2977,11 @@ class SnapshotFooter extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..a<$fixnum.Int64>(
         10, _omitFieldNames ? '' : 'retiredReceiptCount', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        11,
+        _omitFieldNames ? '' : 'edgeContributionTombstoneCount',
+        $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..hasRequiredFields = false;
 
@@ -2802,6 +3097,16 @@ class SnapshotFooter extends $pb.GeneratedMessage {
   $core.bool hasRetiredReceiptCount() => $_has(9);
   @$pb.TagNumber(10)
   void clearRetiredReceiptCount() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $fixnum.Int64 get edgeContributionTombstoneCount => $_getI64(10);
+  @$pb.TagNumber(11)
+  set edgeContributionTombstoneCount($fixnum.Int64 value) =>
+      $_setInt64(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasEdgeContributionTombstoneCount() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearEdgeContributionTombstoneCount() => $_clearField(11);
 }
 
 /// Contribution metadata is present exactly for an AddEdge receipt. Keeping
@@ -3795,6 +4100,125 @@ class SnapshotEdgeTombstone extends $pb.GeneratedMessage {
   $1.Timestamp ensureExpiration() => $_ensure(3);
 }
 
+/// Remove-wins floor for one Add identity. expiration is its absolute D4
+/// retention deadline, never the edge's data expiration.
+class SnapshotEdgeContributionTombstone extends $pb.GeneratedMessage {
+  factory SnapshotEdgeContributionTombstone({
+    $core.String? tail,
+    $core.String? head,
+    $core.List<$core.int>? contribId,
+    HLCTimestamp? hlc,
+    $1.Timestamp? expiration,
+  }) {
+    final result = create();
+    if (tail != null) result.tail = tail;
+    if (head != null) result.head = head;
+    if (contribId != null) result.contribId = contribId;
+    if (hlc != null) result.hlc = hlc;
+    if (expiration != null) result.expiration = expiration;
+    return result;
+  }
+
+  SnapshotEdgeContributionTombstone._();
+
+  factory SnapshotEdgeContributionTombstone.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotEdgeContributionTombstone.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotEdgeContributionTombstone',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'tail')
+    ..aOS(2, _omitFieldNames ? '' : 'head')
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'contribId', $pb.PbFieldType.OY)
+    ..aOM<HLCTimestamp>(4, _omitFieldNames ? '' : 'hlc',
+        subBuilder: HLCTimestamp.create)
+    ..aOM<$1.Timestamp>(5, _omitFieldNames ? '' : 'expiration',
+        subBuilder: $1.Timestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeContributionTombstone clone() =>
+      SnapshotEdgeContributionTombstone()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotEdgeContributionTombstone copyWith(
+          void Function(SnapshotEdgeContributionTombstone) updates) =>
+      super.copyWith((message) =>
+              updates(message as SnapshotEdgeContributionTombstone))
+          as SnapshotEdgeContributionTombstone;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeContributionTombstone create() =>
+      SnapshotEdgeContributionTombstone._();
+  @$core.override
+  SnapshotEdgeContributionTombstone createEmptyInstance() => create();
+  static $pb.PbList<SnapshotEdgeContributionTombstone> createRepeated() =>
+      $pb.PbList<SnapshotEdgeContributionTombstone>();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotEdgeContributionTombstone getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotEdgeContributionTombstone>(
+          create);
+  static SnapshotEdgeContributionTombstone? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get tail => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set tail($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTail() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTail() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get head => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set head($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHead() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHead() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get contribId => $_getN(2);
+  @$pb.TagNumber(3)
+  set contribId($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasContribId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearContribId() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  HLCTimestamp get hlc => $_getN(3);
+  @$pb.TagNumber(4)
+  set hlc(HLCTimestamp value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasHlc() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearHlc() => $_clearField(4);
+  @$pb.TagNumber(4)
+  HLCTimestamp ensureHlc() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  $1.Timestamp get expiration => $_getN(4);
+  @$pb.TagNumber(5)
+  set expiration($1.Timestamp value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasExpiration() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearExpiration() => $_clearField(5);
+  @$pb.TagNumber(5)
+  $1.Timestamp ensureExpiration() => $_ensure(4);
+}
+
 enum SnapshotResponse_Entry {
   header,
   vertex,
@@ -3805,6 +4229,7 @@ enum SnapshotResponse_Entry {
   vertexTombstone,
   edgeTombstone,
   receipt,
+  edgeContributionTombstone,
   notSet
 }
 
@@ -3812,8 +4237,9 @@ enum SnapshotResponse_Entry {
 /// order is always: exactly one SnapshotHeader; for RECEIPT, zero or more
 /// SnapshotReceipt frames; then zero or more SnapshotVertexCausalBarrier
 /// frames, zero or more SnapshotEdgeCausalBarrier frames, zero or more
-/// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone frames,
-/// zero or more SnapshotVertex frames, zero or more SnapshotEdge frames; then
+/// SnapshotVertexTombstone frames, zero or more SnapshotEdgeTombstone and
+/// SnapshotEdgeContributionTombstone frames, zero or more SnapshotVertex
+/// frames, zero or more SnapshotEdge frames; then
 /// exactly one SnapshotFooter. Receivers MUST treat any other order as a
 /// protocol violation.
 class SnapshotResponse extends $pb.GeneratedMessage {
@@ -3827,6 +4253,7 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     SnapshotVertexTombstone? vertexTombstone,
     SnapshotEdgeTombstone? edgeTombstone,
     SnapshotReceipt? receipt,
+    SnapshotEdgeContributionTombstone? edgeContributionTombstone,
   }) {
     final result = create();
     if (header != null) result.header = header;
@@ -3839,6 +4266,8 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     if (vertexTombstone != null) result.vertexTombstone = vertexTombstone;
     if (edgeTombstone != null) result.edgeTombstone = edgeTombstone;
     if (receipt != null) result.receipt = receipt;
+    if (edgeContributionTombstone != null)
+      result.edgeContributionTombstone = edgeContributionTombstone;
     return result;
   }
 
@@ -3862,13 +4291,14 @@ class SnapshotResponse extends $pb.GeneratedMessage {
     7: SnapshotResponse_Entry.vertexTombstone,
     8: SnapshotResponse_Entry.edgeTombstone,
     9: SnapshotResponse_Entry.receipt,
+    10: SnapshotResponse_Entry.edgeContributionTombstone,
     0: SnapshotResponse_Entry.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SnapshotResponse',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     ..aOM<SnapshotHeader>(1, _omitFieldNames ? '' : 'header',
         subBuilder: SnapshotHeader.create)
     ..aOM<SnapshotVertex>(2, _omitFieldNames ? '' : 'vertex',
@@ -3889,6 +4319,9 @@ class SnapshotResponse extends $pb.GeneratedMessage {
         subBuilder: SnapshotEdgeTombstone.create)
     ..aOM<SnapshotReceipt>(9, _omitFieldNames ? '' : 'receipt',
         subBuilder: SnapshotReceipt.create)
+    ..aOM<SnapshotEdgeContributionTombstone>(
+        10, _omitFieldNames ? '' : 'edgeContributionTombstone',
+        subBuilder: SnapshotEdgeContributionTombstone.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4016,6 +4449,19 @@ class SnapshotResponse extends $pb.GeneratedMessage {
   void clearReceipt() => $_clearField(9);
   @$pb.TagNumber(9)
   SnapshotReceipt ensureReceipt() => $_ensure(8);
+
+  @$pb.TagNumber(10)
+  SnapshotEdgeContributionTombstone get edgeContributionTombstone => $_getN(9);
+  @$pb.TagNumber(10)
+  set edgeContributionTombstone(SnapshotEdgeContributionTombstone value) =>
+      $_setField(10, value);
+  @$pb.TagNumber(10)
+  $core.bool hasEdgeContributionTombstone() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearEdgeContributionTombstone() => $_clearField(10);
+  @$pb.TagNumber(10)
+  SnapshotEdgeContributionTombstone ensureEdgeContributionTombstone() =>
+      $_ensure(9);
 }
 
 /// PeerStatusRequest is intentionally empty — the responder always

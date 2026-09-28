@@ -87,10 +87,11 @@ const HelpText = `Lantern CLI grammar:
   get    edge   <tail: string> <head: string>
   put    vertex <key: string> <value: string|int|float|bool|datetime> [<ttl_seconds: int>] [type=auto|string|int|float|bool|datetime|duration|json]
   put    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
-  add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]
+  add    edge   <tail: string> <head: string> <weight: float> [<ttl_seconds: int>] [id=<contrib_id_hex>]
   add    decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>
   delete vertex <key: string> [<key: string> ...]
   delete edge   <tail: string> <head: string> [<tail: string> <head: string> ...]
+  delete contribution <tail: string> <head: string> <contrib_id_hex: 48 hex chars> [<tail> <head> <contrib_id_hex> ...]
   scan   vertices <prefix: string> [<limit: int>] [all=true]
   scan   edges    <tail-prefix: string> [<limit: int>] [head=<prefix>] [all=true]
   count  vertices <prefix: string>
@@ -121,6 +122,15 @@ const HelpText = `Lantern CLI grammar:
   exit
 
 Search contract: https://github.com/anaregdesign/lantern/blob/main/docs/search.md
+
+Contribution IDs name individual Add rows, not edges or receipt operation IDs.
+Supply a nonzero 24-byte (48-hex-character) id= when adding; persist it before
+sending. "delete contribution" removes that Add row only, leaves any Put base
+and other Adds untouched, and prints {"deleted":N,"existed":[...]} in input order.
+Receipt-less Add/Delete cannot recover the original result after response loss.
+Within D4 tombstone retention a deleted ID cannot be re-added; mint a fresh
+ID for any new Add. A folded graph-only backup does not preserve per-ID
+tombstones across restore.
 
 Quoting: "double" with C-style escapes (\" \\ \n \r \t); 'single' verbatim.
 Verb/objective case-insensitive; argument values preserve case.`

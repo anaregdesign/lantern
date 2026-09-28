@@ -62,6 +62,34 @@ func TestProjectMutationIdentities(t *testing.T) {
 			t.Fatalf("identity frame leaked edge payload: %s", encoded)
 		}
 	})
+	t.Run("contribution Delete invalidates edge without exposing ContribID or deadline", func(t *testing.T) {
+		contributionID := []byte("PRIVATE-CONTRIBUTION-ID!")
+		mutation := testIdentityMutation(8, &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContributions{
+			DeleteEdgeContributions: &pb.DeleteEdgeContributionsRequest{Contributions: []*pb.EdgeContributionKey{
+				{Tail: "tail", Head: "head", ContribId: contributionID},
+			}},
+		}})
+		var frame *pb.SubscribeResponse
+		if err := projectMutationIdentities(mutation, func(v *pb.SubscribeResponse) error {
+			frame = v
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		chunk := frame.GetIdentityChunk()
+		if chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION ||
+			len(chunk.GetEdgeKeys()) != 1 || chunk.GetEdgeKeys()[0].GetTail() != "tail" ||
+			chunk.GetEdgeKeys()[0].GetHead() != "head" {
+			t.Fatalf("wrong contribution Delete identity: %+v", chunk)
+		}
+		encoded, err := protojson.Marshal(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), string(contributionID)) || strings.Contains(string(encoded), "contribId") {
+			t.Fatalf("identity frame leaked contribution ID: %s", encoded)
+		}
+	})
 	t.Run("nil repeated items still invalidate their zero-value identity", func(t *testing.T) {
 		for _, op := range []*pb.MutationOp{
 			{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{nil}}}},

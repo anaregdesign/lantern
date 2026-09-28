@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import process from "node:process";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { Code, ConnectError } from "@connectrpc/connect";
 
@@ -101,6 +102,70 @@ test("plain Node Delete is single-attempt over h2c, with an ambiguous lost resul
   }
 });
 
+test("plain contribution Delete retains the Put base and never retries response loss", async () => {
+  const client = connect(endpoint, { token });
+  let attempts = 0;
+  const lossy = connect(endpoint, {
+    token,
+    interceptors: [
+      (next) => async (request) => {
+        if (request.method.name !== "DeleteEdgeContributions") return next(request);
+        attempts++;
+        await next(request);
+        throw new ConnectError("injected post-commit response loss", Code.Unavailable);
+      },
+    ],
+  });
+  const tail = `node-plain-contrib-${randomUUID()}:tail`;
+  const head = `${tail}:head`;
+  const idA = randomContribId();
+  const idB = randomContribId();
+  try {
+    await client.putEdge({ tail, head, weight: 2 });
+    await client.addEdges([
+      { tail, head, weight: 1, contribId: idA },
+      { tail, head, weight: 3, contribId: idB },
+    ]);
+    const refA = { tail, head, contribId: idA };
+    const result = await client.deleteEdgeContributions([
+      refA,
+      refA,
+      { tail: "absent", head, contribId: idA },
+    ]);
+    assert.deepEqual(result, { deleted: 1, existed: [true, false, false] });
+    assert.equal((await client.getEdge(tail, head)).weight, 5);
+    await assert.rejects(
+      client.deleteEdgeContribution(tail, head, new Uint8Array(49).fill(1)),
+      InvalidArgumentError,
+    );
+    await assert.rejects(
+      client.deleteEdgeContribution(tail, head, new Uint8Array(24)),
+      InvalidArgumentError,
+    );
+    await assert.rejects(
+      lossy.deleteEdgeContribution(tail, head, idB),
+      (error) => error instanceof BatchError && error.written === 0,
+    );
+    assert.equal(attempts, 1);
+    assert.equal((await client.getEdge(tail, head)).weight, 2);
+    assert.equal(await client.deleteEdgeContribution(tail, head, idB), false);
+    const expiring = randomContribId();
+    await client.addEdge({
+      tail,
+      head,
+      weight: 4,
+      contribId: expiring,
+      expiration: new Date(Date.now() + 100),
+    });
+    await delay(180);
+    assert.equal(await client.deleteEdgeContribution(tail, head, expiring), false);
+    assert.equal((await client.getEdge(tail, head)).weight, 2);
+  } finally {
+    client.close();
+    lossy.close();
+  }
+});
+
 test("all receipt mutation families reconcile exact results over real Connect/h2c", async () => {
   const client = connect(endpoint, { token });
   const prefix = `node-receipt-${randomUUID()}`;
@@ -112,6 +177,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       "deleteVertex",
       "deleteEdge",
       "addEdge",
+      "deleteEdgeContribution",
     ]);
 
     const putContext = mintReceiptOperationContext(capability, 2);
@@ -300,6 +366,78 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       InvalidArgumentError,
     );
     assert.equal((await client.getEdge(addEdge.tail, addEdge.head)).weight, 5);
+
+    const selectiveEdge = {
+      tail: `${prefix}:selective:tail`,
+      head: `${prefix}:selective:head`,
+    };
+    const selectiveIds = [randomContribId(), randomContribId()];
+    await client.putEdge({ ...selectiveEdge, weight: 2 });
+    await client.addEdgesWithReceipt(
+      [
+        { ...selectiveEdge, weight: 1, contribId: selectiveIds[0] },
+        { ...selectiveEdge, weight: 3, contribId: selectiveIds[1] },
+      ],
+      mintReceiptOperationContext(capability, 2),
+    );
+    const contributionDeleteContext = mintReceiptOperationContext(capability, 3);
+    const contributionDeleted = await client.deleteEdgeContributionsWithReceipt(
+      [
+        { ...selectiveEdge, contribId: selectiveIds[0] },
+        { ...selectiveEdge, contribId: selectiveIds[0] },
+        { ...selectiveEdge, contribId: randomContribId() },
+      ],
+      contributionDeleteContext,
+    );
+    assert.equal(contributionDeleted.deleted, 1);
+    assert.deepEqual(
+      contributionDeleted.results.map((result) => result.existed),
+      [true, false, false],
+    );
+    assert.equal((await client.getEdge(selectiveEdge.tail, selectiveEdge.head)).weight, 5);
+    const contributionStatuses = await client.getReceiptStatuses(
+      contributionDeleteContext.operationIds,
+    );
+    assert.deepEqual(
+      contributionStatuses.map((status) =>
+        status.state === "confirmed" ? status.receipt.originalResult : status.state,
+      ),
+      [
+        { kind: "deleteEdgeContribution", existed: true },
+        { kind: "deleteEdgeContribution", existed: false },
+        { kind: "deleteEdgeContribution", existed: false },
+      ],
+    );
+    const replayed = await client.deleteEdgeContributionsWithReceipt(
+      contributionDeleted.results.map((result) => ({
+        tail: result.tail,
+        head: result.head,
+        contribId: result.contribId,
+      })),
+      contributionDeleteContext,
+    );
+    assert.deepEqual(
+      replayed.results.map((result) => result.existed),
+      [true, false, false],
+    );
+    assert.equal((await client.getEdge(selectiveEdge.tail, selectiveEdge.head)).weight, 5);
+    const remainingContext = mintReceiptOperationContext(capability, 1);
+    assert.equal(
+      (
+        await client.deleteEdgeContributionWithReceipt(
+          selectiveEdge.tail,
+          selectiveEdge.head,
+          selectiveIds[1],
+          remainingContext,
+        )
+      ).existed,
+      true,
+    );
+    assert.equal((await client.getEdge(selectiveEdge.tail, selectiveEdge.head)).weight, 2);
+    assert.equal(await client.deleteEdge(selectiveEdge.tail, selectiveEdge.head), true);
+    await assert.rejects(client.getEdge(selectiveEdge.tail, selectiveEdge.head), {
+      name: "NotFoundError",
+    });
 
     const invalidContribContext = mintReceiptOperationContext(capability, 1);
     await assert.rejects(

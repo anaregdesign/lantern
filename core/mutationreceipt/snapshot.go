@@ -301,10 +301,11 @@ func (s *Store) validateSnapshotReceipt(receipt Receipt, snapshotHighWater int64
 	if err != nil || epoch != s.epoch || issued > math.MaxInt64-s.retentionMS ||
 		tooFarFuture(issued, snapshotHighWater) ||
 		item.Group == (GroupID{}) || item.Count == 0 || item.Index >= item.Count ||
-		item.Kind < PutVertex || item.Kind > DeleteEdge ||
+		item.Kind < PutVertex || item.Kind > DeleteEdgeContribution ||
 		(item.Kind == AddEdge) != item.HasContrib ||
 		(item.HasContrib && item.ContribID == (ContribID{})) ||
 		(!item.HasContrib && item.ContribID != (ContribID{})) ||
+		(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) ||
 		receipt.DeadlineMillis != issued+s.retentionMS ||
 		receipt.DeadlineMillis <= snapshotHighWater {
 		return ErrInvalidSnapshot

@@ -116,6 +116,10 @@ interface StubState {
   lastAddEdge?: { contribId: Uint8Array };
   /** Every AddEdgesRequest the stub observed, in order, for chunk-alignment assertions (#895). */
   addEdgesCalls: { contribIds: Uint8Array[]; tails: string[]; weights: number[] }[];
+  contributionIds: Set<string>;
+  contributionDeleteCalls: Array<Array<{ tail: string; head: string; contribId: Uint8Array }>>;
+  contributionDeleteFailOnCall?: number;
+  contributionDeleteMalformed?: "length" | "count";
   /** Edge weights keyed tail → head → weight, seeded by DeleteEdgesByPrefix tests (#899). */
   edges: Map<string, Map<string, number>>;
   /** Last DeleteEdgesByPrefixRequest the stub observed, for request-building assertions (#899). */
@@ -225,6 +229,33 @@ function newStubRoutes(state: StubState) {
           return sum;
         });
         return { effectiveWeights };
+      },
+      async deleteEdgeContributions(req) {
+        state.contributionDeleteCalls.push(
+          req.contributions.map((ref) => ({
+            tail: ref.tail,
+            head: ref.head,
+            contribId: new Uint8Array(ref.contribId),
+          })),
+        );
+        const existed = req.contributions.map((ref) =>
+          state.contributionIds.delete(
+            `${ref.tail}\u0000${ref.head}\u0000${Buffer.from(ref.contribId).toString("hex")}`,
+          ),
+        );
+        if (state.contributionDeleteCalls.length === state.contributionDeleteFailOnCall) {
+          state.contributionDeleteFailOnCall = undefined;
+          throw new ConnectError("response lost after contribution Delete", Code.Unavailable);
+        }
+        if (state.contributionDeleteMalformed === "length") {
+          state.contributionDeleteMalformed = undefined;
+          return { deleted: 0, existed: existed.slice(1) };
+        }
+        if (state.contributionDeleteMalformed === "count") {
+          state.contributionDeleteMalformed = undefined;
+          return { deleted: 0, existed };
+        }
+        return { deleted: existed.filter(Boolean).length, existed };
       },
       async deleteVertex(req) {
         const existed = state.vertices.delete(req.key);
@@ -461,9 +492,97 @@ const state: StubState = {
   vertices: new Map(),
   searchCursors: [],
   addEdgesCalls: [],
+  contributionIds: new Set(),
+  contributionDeleteCalls: [],
   edges: new Map(),
   writeLog: [],
 };
+
+function contributionKey(tail: string, head: string, id: Uint8Array): string {
+  return `${tail}\u0000${head}\u0000${Buffer.from(id).toString("hex")}`;
+}
+
+describe("selective contribution Delete (#1529)", () => {
+  test("chunks without losing request indexes, duplicates, or miss outcomes", async () => {
+    state.contributionIds.clear();
+    state.contributionDeleteCalls = [];
+    const idA = new Uint8Array(24).fill(1);
+    const idB = new Uint8Array(24).fill(2);
+    state.contributionIds.add(contributionKey("t", "h", idA));
+    state.contributionIds.add(contributionKey("t", "h", idB));
+    const client = connect(baseUrl, {
+      options: { batchChunkSize: 2 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    try {
+      expect(
+        await client.deleteEdgeContributions([
+          { tail: "t", head: "h", contribId: idA },
+          { tail: "t", head: "h", contribId: idA },
+          { tail: "t", head: "h", contribId: idB },
+          { tail: "missing", head: "h", contribId: idA },
+          { tail: "t", head: "h", contribId: idB },
+        ]),
+      ).toEqual({ deleted: 2, existed: [true, false, true, false, false] });
+      expect(state.contributionDeleteCalls.map((chunk) => chunk.length)).toEqual([2, 2, 1]);
+      expect(await client.deleteEdgeContribution("t", "h", idA)).toBe(false);
+      expect(state.contributionDeleteCalls[3]?.[0]?.contribId).toEqual(idA);
+      expect(await client.deleteEdgeContributions([])).toEqual({ deleted: 0, existed: [] });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("rejects zero or receipt-sized ID before any write and never retries uncertainty", async () => {
+    state.contributionIds.clear();
+    state.contributionDeleteCalls = [];
+    const id = new Uint8Array(24).fill(3);
+    state.contributionIds.add(contributionKey("t", "h", id));
+    const client = connect(baseUrl, {
+      options: { batchChunkSize: 2 },
+      transportOptions: { httpVersion: "1.1" },
+    });
+    try {
+      for (const invalid of [new Uint8Array(24), new Uint8Array(49).fill(1)]) {
+        await expect(
+          client.deleteEdgeContributions([
+            { tail: "t", head: "h", contribId: id },
+            { tail: "t", head: "h", contribId: invalid },
+          ]),
+        ).rejects.toThrow(InvalidArgumentError);
+      }
+      expect(state.contributionDeleteCalls).toHaveLength(0);
+      state.contributionDeleteFailOnCall = 2;
+      await expect(
+        client.deleteEdgeContributions([
+          { tail: "not-found", head: "h", contribId: id },
+          { tail: "not-found", head: "h", contribId: id },
+          { tail: "t", head: "h", contribId: id },
+        ]),
+      ).rejects.toMatchObject({ written: 2 });
+      expect(state.contributionDeleteCalls).toHaveLength(2);
+      expect(state.contributionIds.has(contributionKey("t", "h", id))).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("rejects malformed result length and count", async () => {
+    state.contributionIds.clear();
+    state.contributionDeleteCalls = [];
+    const id = new Uint8Array(24).fill(4);
+    const client = newClient();
+    try {
+      for (const malformed of ["length", "count"] as const) {
+        state.contributionIds.add(contributionKey("t", "h", id));
+        state.contributionDeleteMalformed = malformed;
+        await expect(client.deleteEdgeContribution("t", "h", id)).rejects.toThrow(LanternError);
+      }
+    } finally {
+      client.close();
+    }
+  });
+});
 
 beforeAll(async () => {
   // HTTP/1.1 server (not http2) — Bun's test runner has rough edges

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.0
+
+- Add typed singular and plural deletion of one caller-known edge contribution
+  without removing other contributions or the Put base. Validate identities
+  and index-aligned results; never retry an uncertain receipt-less Delete.
+- Regenerate private bindings for the new contribution Delete and receipt/CDC
+  wire variants without adding a partial Rust receipt API.
+
 ## 0.1.0
 
 - Initial standalone crate scaffold, checked-in private gRPC bindings, and

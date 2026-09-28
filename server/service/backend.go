@@ -115,6 +115,8 @@ type Backend interface {
 	DeleteEdgesHLCOutcomesChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) ([]bool, error)
 	DeleteEdgesHLCDecisions(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int)
 	DeleteEdgesHLCDecisionsChecked(keys []graphcache.EdgeKey[string], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error)
+	DeleteEdgeContributionsHLCDecisionsChecked(keys []graphcache.EdgeContributionKey[string], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error)
+	DeleteEdgeContributionsHLCDecisions(keys []graphcache.EdgeContributionKey[string], ts hlc.Timestamp, expiration time.Time) (existed []bool, acceptedIndexes []int, err error)
 	DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteByPrefixHLCChecked(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) (int, error)
 	DeleteByPrefixHLCCheckedKeys(ctx context.Context, prefix string, limit uint32, ts hlc.Timestamp, expiration time.Time) ([]string, error)

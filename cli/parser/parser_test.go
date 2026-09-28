@@ -1,8 +1,11 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
 // TestKeysParam pins `keys <prefix> [limit]` (#674): a prefix is required and
@@ -102,6 +105,70 @@ func TestDeleteParam_Batch(t *testing.T) {
 			t.Errorf("DeleteEdgeParam(odd) = nil, want error")
 		}
 	})
+	t.Run("contribution triples preserve order, case, and duplicate IDs", func(t *testing.T) {
+		hexID := strings.Repeat("aB", client.ContribIDSize)
+		s, _ := NewSource("Tail Head " + hexID + " tail head " + hexID)
+		got, err := DeleteContributionParam(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Refs) != 2 || got.Refs[0].Tail != "Tail" || got.Refs[1].Tail != "tail" ||
+			got.Refs[0].ContribID != got.Refs[1].ContribID {
+			t.Fatalf("contributions = %+v", got.Refs)
+		}
+	})
+	t.Run("contribution rejects zero and receipt operation IDs", func(t *testing.T) {
+		id := strings.Repeat("aB", client.ContribIDSize)
+		for _, input := range []string{
+			"", "a b", "a b " + id + " c",
+			"a b " + strings.Repeat("00", client.ContribIDSize),
+			"a b " + strings.Repeat("ab", 49),
+			"a b " + strings.Repeat("gg", client.ContribIDSize),
+			`"" b ` + id,
+		} {
+			t.Run(input, func(t *testing.T) {
+				s, _ := NewSource(input)
+				if _, err := DeleteContributionParam(s); err == nil {
+					t.Fatalf("accepted malformed contribution: %q", input)
+				}
+			})
+		}
+	})
+}
+
+func TestAddEdgeParam_ExplicitContribID(t *testing.T) {
+	id := strings.Repeat("ab", client.ContribIDSize)
+	for _, input := range []string{
+		"a b 2 30 id=" + id,
+		"a b 2 id=" + id + " 30",
+	} {
+		s, _ := NewSource(input)
+		got, err := AddEdgeParam(s)
+		if err != nil {
+			t.Fatalf("AddEdgeParam(%q): %v", input, err)
+		}
+		if got.TTL != 30*time.Second || got.ContribID.String() != id {
+			t.Errorf("AddEdgeParam(%q) = %+v", input, got)
+		}
+	}
+	for _, input := range []string{
+		"a b 2 id=" + strings.Repeat("00", client.ContribIDSize),
+		"a b 2 id=" + strings.Repeat("ab", 49),
+		"a b 2 id=zz",
+		"a b 2 id=" + id + " id=" + id,
+		"a b 2 bogus=1",
+		"a b 2 30 40",
+	} {
+		s, _ := NewSource(input)
+		if _, err := AddEdgeParam(s); err == nil {
+			t.Errorf("AddEdgeParam(%q) accepted malformed Add", input)
+		}
+	}
+	s, _ := NewSource("a b 2")
+	got, err := AddEdgeParam(s)
+	if err != nil || got.ContribID != (client.ContribID{}) {
+		t.Fatalf("ordinary Add changed: %+v, %v", got, err)
+	}
 }
 
 // TestScanParam_Kwargs pins the #679 scan paging kwargs: an optional

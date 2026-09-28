@@ -34,7 +34,8 @@ func receiptWALUnionGraphFixture(op *pb.MutationOp) *pb.Mutation {
 	}
 	switch op.GetOp().(type) {
 	case *pb.MutationOp_DeleteVertex, *pb.MutationOp_DeleteVertices,
-		*pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
+		*pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges,
+		*pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
 		m.TombstoneExpiration = timestamppb.New(time.Unix(1730003600, 0))
 	}
 	return m
@@ -78,10 +79,162 @@ func TestReceiptWALUnionCodecRejectsSupersededVersions(t *testing.T) {
 	}
 }
 
+func TestReceiptWALUnionV5ReadsExistingV4GraphAndReceipts(t *testing.T) {
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{
+		Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{}},
+	})
+	_, oldReceipt := receiptEdgeDeleteCodecFixture(t, nil)
+	for _, op := range []mutationlog.MutationOp{graph, oldReceipt} {
+		raw, err := encodeReceiptWALUnion(op)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw[4] = 4
+		decoded, err := decodeReceiptWALUnion(raw)
+		if err != nil {
+			t.Fatalf("preexisting v4 WAL row %T cannot restart: %v", op, err)
+		}
+		switch wanted := op.(type) {
+		case *pb.Mutation:
+			if got, ok := decoded.(*pb.Mutation); !ok || !proto.Equal(got, wanted) {
+				t.Fatalf("v4 graph row changed: %T %+v", decoded, decoded)
+			}
+		case *edgeDeleteReceiptEnvelope:
+			if got, ok := decoded.(*edgeDeleteReceiptEnvelope); !ok ||
+				!reflect.DeepEqual(got.Receipts, wanted.Receipts) {
+				t.Fatalf("v4 receipt row changed: %T %+v", decoded, decoded)
+			}
+		}
+	}
+}
+
+func TestReceiptWALUnionContributionDeleteNeedsV5Envelope(t *testing.T) {
+	entry, envelope := receiptEdgeContributionDeleteCodecFixture(t)
+	raw, err := encodeReceiptWALUnion(entry.Op)
+	if err != nil || raw[8] != receiptWALUnionEdgeContributionDelete ||
+		string(raw[:8]) != receiptWALUnionMagic {
+		t.Fatalf("distinct WAL kind/version = %x, %v", raw[:min(len(raw), 16)], err)
+	}
+	decoded, err := decodeReceiptWALUnion(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	received, ok := decoded.(*edgeContributionDeleteReceiptEnvelope)
+	if !ok || !reflect.DeepEqual(received.Receipts, envelope.Receipts) ||
+		!reflect.DeepEqual(received.OriginalKeys, envelope.OriginalKeys) ||
+		!reflect.DeepEqual(received.Accepted, envelope.Accepted) {
+		t.Fatalf("contribution receipt union roundtrip = %T %+v", decoded, decoded)
+	}
+	if err := validateReceiptWALUnionEntry(mutationlog.Entry{
+		Seq: entry.Seq, HLC: entry.HLC, Op: decoded,
+	}); err != nil {
+		t.Fatalf("contribution Delete WAL entry invalid: %v", err)
+	}
+	legacy := append([]byte(nil), raw...)
+	legacy[4] = 4
+	if _, err := decodeReceiptWALUnion(legacy); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("contribution receipt smuggled into v4: %v", err)
+	}
+	if _, err := encodeReceiptWALUnion(envelope.Mutation); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("graph-only contribution Delete lost receipt evidence: %v", err)
+	}
+	wired, err := envelope.ReplicationMutation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := encodeReceiptWALUnion(wired); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("raw receipt-bearing protobuf bypassed WAL evidence: %v", err)
+	}
+}
+
+func TestReceiptWALUnionGraphOnlyContributionDeleteEffect(t *testing.T) {
+	key := &pb.EdgeContributionKey{Tail: "tail", Head: "head", ContribId: bytes.Repeat([]byte{0x7a}, 24)}
+	for _, tc := range []struct {
+		name string
+		op   *pb.MutationOp
+	}{
+		{"singular", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContribution{
+			DeleteEdgeContribution: &pb.DeleteEdgeContributionRequest{
+				Tail: key.Tail, Head: key.Head, ContribId: append([]byte(nil), key.ContribId...),
+			},
+		}}},
+		{"plural", &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContributions{
+			DeleteEdgeContributions: &pb.DeleteEdgeContributionsRequest{
+				Contributions: []*pb.EdgeContributionKey{key},
+			},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutation := receiptWALUnionGraphFixture(tc.op)
+			effect, err := newGraphDeleteEffectEnvelope(mutation, []int{0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := encodeReceiptWALUnion(mutation); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("plain contribution Delete bypassed accepted-effect sidecar: %v", err)
+			}
+			raw, err := encodeReceiptWALUnion(effect)
+			if err != nil {
+				t.Fatalf("encode graph-only contribution Delete effect: %v", err)
+			}
+			decoded, err := decodeReceiptWALUnion(raw)
+			if err != nil {
+				t.Fatalf("decode graph-only contribution Delete effect: %v", err)
+			}
+			got, ok := decoded.(*graphDeleteEffectEnvelope)
+			if !ok || !proto.Equal(got.Mutation, mutation) ||
+				!reflect.DeepEqual(got.AcceptedIndexes, effect.AcceptedIndexes) {
+				t.Fatalf("graph-only contribution Delete effect = %T %+v", decoded, decoded)
+			}
+			legacy := append([]byte(nil), raw...)
+			legacy[4] = 4
+			if _, err := decodeReceiptWALUnion(legacy); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("v5 graph-only contribution Delete smuggled into v4: %v", err)
+			}
+			withContext := proto.Clone(mutation).(*pb.Mutation)
+			switch op := withContext.GetOp().GetOp().(type) {
+			case *pb.MutationOp_DeleteEdgeContribution:
+				op.DeleteEdgeContribution.ReceiptContext = &pb.MutationReceiptContext{}
+			case *pb.MutationOp_DeleteEdgeContributions:
+				op.DeleteEdgeContributions.ReceiptContext = &pb.MutationReceiptContext{}
+			}
+			if _, err := newGraphDeleteEffectEnvelope(withContext, []int{0}); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("receipt context entered graph-only contribution Delete: %v", err)
+			}
+			if _, err := encodeReceiptWALUnion(&graphDeleteEffectEnvelope{
+				Mutation: withContext, AcceptedIndexes: []uint32{0},
+			}); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("receipt context entered graph-only WAL: %v", err)
+			}
+			protobuf, err := proto.Marshal(withContext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			arm, err := receiptWALGraphArm(withContext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			graphBody := receiptWALUnionRawGraphProto(protobuf, uint32(arm.count))[receiptWALUnionHeaderSize:]
+			body := make([]byte, 8+len(graphBody)+4)
+			binary.BigEndian.PutUint32(body[:4], uint32(len(graphBody)))
+			copy(body[4:], graphBody)
+			binary.BigEndian.PutUint32(body[4+len(graphBody):], 1)
+			malformed := make([]byte, receiptWALUnionHeaderSize+len(body))
+			copy(malformed[:8], receiptWALUnionMagic)
+			malformed[8] = receiptWALUnionGraphDeleteEffect
+			binary.BigEndian.PutUint32(malformed[12:16], uint32(len(body)))
+			copy(malformed[receiptWALUnionHeaderSize:], body)
+			if _, err := decodeReceiptWALUnion(malformed); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("receipt context decoded from graph-only Delete sidecar: %v", err)
+			}
+		})
+	}
+}
+
 func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
-	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV4 {
-		t.Fatalf("WAL union v4 graph schema changed to %s; review replay and migration", got)
+	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV5 {
+		t.Fatalf("WAL union v5 graph schema changed to %s; review replay and migration", got)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -111,8 +264,8 @@ func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV4 {
-				t.Fatal("new graph mutation field did not invalidate WAL union v4 schema")
+			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV5 {
+				t.Fatal("new graph mutation field did not invalidate WAL union v5 schema")
 			}
 		})
 	}

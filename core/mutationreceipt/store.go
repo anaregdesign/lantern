@@ -67,11 +67,14 @@ const (
 	AddEdge
 	DeleteVertex
 	DeleteEdge
+	DeleteEdgeContribution
 )
 
 // Intent names one operation in an ordered logical call. Digest must be
 // computed from validated canonical semantic fields, not protobuf bytes.
-// AddEdge requires a nonzero ContribID; no other Kind may supply one.
+// AddEdge requires a nonzero ContribID for its reverse binding; no other Kind
+// may supply one. DeleteEdgeContribution binds its target ID in Digest instead
+// of reserving that Add-only reverse binding.
 type Intent struct {
 	ID         ID
 	Group      GroupID
@@ -509,7 +512,7 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 	stale := false
 	for i, item := range intents {
 		if item.Group != group || item.Count != uint32(len(intents)) || item.Index != uint32(i) ||
-			item.Kind < PutVertex || item.Kind > DeleteEdge ||
+			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution ||
 			(item.Kind == AddEdge) != item.HasContrib ||
 			(item.HasContrib && item.ContribID == (ContribID{})) ||
 			(!item.HasContrib && item.ContribID != (ContribID{})) {
@@ -697,10 +700,11 @@ func (s *Store) validateCommitted(receipts []Receipt, acceptedAtMillis int64) (G
 	for i, receipt := range receipts {
 		item := receipt.Intent
 		if item.Group != group || item.Count != uint32(len(receipts)) || item.Index != uint32(i) ||
-			item.Kind < PutVertex || item.Kind > DeleteEdge ||
+			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution ||
 			(item.Kind == AddEdge) != item.HasContrib ||
 			(item.HasContrib && item.ContribID == (ContribID{})) ||
-			(!item.HasContrib && item.ContribID != (ContribID{})) {
+			(!item.HasContrib && item.ContribID != (ContribID{})) ||
+			(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) {
 			return GroupID{}, nil, ErrInvalidBatch
 		}
 		if _, duplicate := seenID[item.ID]; duplicate {
@@ -744,6 +748,9 @@ func (tx *Tx) Reserve(results [][]byte) error {
 	}
 	var additional uint64
 	for i, result := range results {
+		if tx.intents[i].Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(result) {
+			return ErrInvalidBatch
+		}
 		cost := receiptFixedBytes + uint64(len(result))
 		if tx.intents[i].HasContrib {
 			cost += bindingBytes
@@ -780,7 +787,8 @@ func (tx *Tx) ReplaceReservedResults(results [][]byte) error {
 		return ErrTransactionState
 	}
 	for i, result := range results {
-		if len(result) != len(tx.staged[i].Result) {
+		if len(result) != len(tx.staged[i].Result) ||
+			(tx.intents[i].Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(result)) {
 			return ErrInvalidBatch
 		}
 	}
@@ -849,6 +857,10 @@ func cloneReceipts(receipts []Receipt) []Receipt {
 		result[i] = cloneReceipt(receipt)
 	}
 	return result
+}
+
+func validEdgeContributionDeleteResult(result []byte) bool {
+	return len(result) == 1 && result[0] <= 1
 }
 
 // Commit has no Store mutation or allocation: releasing mu makes all staged

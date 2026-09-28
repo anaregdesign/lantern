@@ -17,9 +17,9 @@ bun add lantern-sdk
 pnpm add lantern-sdk
 ```
 
-The npm `latest` package is currently `lantern-sdk@0.11.0` and does not
-include the receipt APIs below. Those APIs are merged in 0.12.0 source but
-are not yet available from a verified published npm archive.
+The published `lantern-sdk@0.12.0` includes receipt APIs for Vertex Put,
+exact Vertex/Edge Delete, and keyed Edge Add. Selective contribution
+deletion requires a newer package and a server advertising that capability.
 
 ## Quick start
 
@@ -81,8 +81,8 @@ type than `number` / `bigint` would infer.
 
 ## Batch APIs
 
-`putVertices`, `deleteVertices`, `addEdges`, `putEdges`, and `deleteEdges`
-split inputs into chunks (default 1000, override via
+`putVertices`, `deleteVertices`, `addEdges`, `putEdges`, `deleteEdges`, and
+`deleteEdgeContributions` split inputs into chunks (default 1000, override via
 `ConnectOptions.batchChunkSize`). On a chunk failure the call throws
 `BatchError`, which carries `.written` — the input-prefix length whose
 responses were fully observed and validated before the error — and the
@@ -92,11 +92,47 @@ not an automatically safe resume point. An unchanged unconditional Put is
 idempotent as a state write, subject to TTL and intervening writes, but
 replay cannot prove its original outcome. Plain Add or Delete replay cannot
 recover the original effective weight or exact `existed` result. A
-contribution ID deduplicates Add only while the contribution remains
-retained; after Delete or expiry, replay can add again. Surface an unknown
-original result rather than blindly retrying. The opt-in receipt APIs below
+contribution ID deduplicates Add while the contribution remains live.
+Selective Delete fences that ID with a D4-bounded tombstone: a delayed Add
+cannot restore it while the tombstone remains retained. After expiry or
+tombstone retirement, replay may add again; never recycle an ID for a new
+logical Add. Surface an unknown original result rather than blindly retrying.
+The opt-in receipt APIs below
 recover Add and exact Delete results on a certified endpoint, but remain
 source-only until a verified npm release.
+
+### Delete a single Add contribution
+
+To make an Add row selectable later, supply and persist a nonzero, exactly
+24-byte `contribId` **before** sending the Add. This ID is unrelated to a
+49-byte receipt `OperationID`. `idempotentAdds` automatically generates IDs
+for wire deduplication but does not expose them for later selection.
+
+```ts
+import { CONTRIB_ID_BYTES } from "lantern-sdk";
+
+const contribId = crypto.getRandomValues(new Uint8Array(CONTRIB_ID_BYTES));
+if (!contribId.some((byte) => byte !== 0)) contribId[0] = 1;
+// Persist { tail, head, contribId } before sending the Add.
+await client.addEdge({ tail: "a", head: "b", weight: 3, contribId });
+const removed = await client.deleteEdgeContribution("a", "b", contribId);
+// true only if that live Add row existed; other Adds and a Put base remain.
+```
+
+`deleteEdgeContributions(refs)` accepts `EdgeContributionRef[]` and returns
+`{ deleted, existed }`; the boolean list aligns to every input position
+(including duplicates, where the first can be true and the second false).
+The singular method delegates to this plural path. Both reject empty
+endpoints, all-zero/wrong-sized/non-byte IDs before transport; an empty
+receipt-less batch returns `{ deleted: 0, existed: [] }`. Chunking uses the
+same size option as other batch writes, and `BatchError.written` is only the
+length of a fully observed prefix. **Do not automatically repeat an uncertain
+receipt-less Delete**: a committed removal may report false on a later call.
+Unlike `deleteEdges`, this operation never deletes the entire edge bucket.
+Removal of a delayed Add is guaranteed only within the server's D4
+tombstone-retention bound. Folded graph-only backups do not preserve this
+per-ID tombstone: restoring one cannot prove that an old delayed Add will
+stay removed.
 
 `putVerticesIfAbsent` is deliberately not described as safely resumable. If a
 response is lost after the server commits the failed chunk, its original
@@ -125,12 +161,13 @@ try {
 
 ## Receipt-safe online mutations
 
-This section describes merged 0.12.0 source, **not** the npm 0.11.0
-`latest` package installed above. Wait for a verified receipt-bearing
-npm release before importing these APIs from npm.
+The original receipt APIs are available in published npm 0.12.0.
+Selective contribution Delete in this checkout is not included in 0.12.0;
+check the installed SDK version and the server capability before calling it.
 
-Receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and
-contribution-keyed Edge Add let an application mint and durably retain the
+Receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete,
+contribution-keyed Edge Add, and selective contribution Delete let an application
+mint and durably retain the
 wire identity of one logical call before sending it. Each call uses one
 `GroupID` and one request-index-aligned `OperationID` per item. Receipt calls
 are not automatically chunked because splitting one would change that
@@ -211,6 +248,19 @@ const added = await client.addEdgeWithReceipt(
   addContext,
 );
 console.log(added.effectiveWeight); // exact original application result
+
+if (!capability.supportedMutations.includes("deleteEdgeContribution")) {
+  throw new Error("this endpoint does not support receipt-backed contribution Delete");
+}
+const deletionContext = mintReceiptOperationContext(capability, 1);
+// Persist the context with the exact edge and contribId before the first send.
+const deleted = await client.deleteEdgeContributionWithReceipt(
+  "session:123",
+  "member:a",
+  contribId,
+  deletionContext,
+);
+console.log(deleted.existed, deleted.operationId); // original result + receipt ID
 ```
 
 The plural methods are canonical:
@@ -219,10 +269,12 @@ The plural methods are canonical:
 - `deleteVerticesWithReceipt`
 - `deleteEdgesWithReceipt`
 - `addEdgesWithReceipt`
+- `deleteEdgeContributionsWithReceipt`
 
 `putVertexWithReceipt`, `putVertexIfAbsentWithReceipt`,
-`deleteVertexWithReceipt`, `deleteEdgeWithReceipt`, and
-`addEdgeWithReceipt` are thin one-item facades over their plural methods;
+`deleteVertexWithReceipt`, `deleteEdgeWithReceipt`,
+`deleteEdgeContributionWithReceipt`, and `addEdgeWithReceipt` are thin one-item
+facades over their plural methods;
 `getReceiptStatus` similarly forwards one operation ID to the plural status
 lookup.
 Receipt-bearing Vertex Put resolves a relative `ttlSeconds` against the server
@@ -239,7 +291,8 @@ preflight.
 A receipt status is one of:
 
 - `"confirmed"` — carries the exact original Vertex Put outcome, Vertex Delete
-  `existed`, Edge Delete `existed`, or Edge Add effective-weight result.
+  `existed`, whole-Edge Delete `existed`, selective contribution Delete
+  `existed` (including false), or Edge Add effective-weight result.
 - `"notYetObserved"` — no matching receipt is currently observed; if the
   application retries, it must reuse the exact semantic inputs and persisted
   context.
@@ -526,7 +579,9 @@ phrase/typo, pagination, disabled, cancellation, and incremental flows in CI.
 value-free CDC stream. Its first frame is an atomic checkpoint of **LAST**
 committed per-origin sequences; later chunk frames carry exact Vertex keys or
 Edge `(tail, head)` identities, operation category, HLC, and chunk position.
-The stream contains no Vertex values, Edge weights, or contribution IDs.
+The `"deleteEdgeContribution"` category invalidates only the edge key (no
+contribution ID). The stream contains no Vertex values, Edge weights, or
+contribution IDs.
 
 ```ts
 import { IdentityNextCursor, FailedPreconditionError } from "lantern-sdk";
@@ -698,7 +753,7 @@ publish, without uploading it:
 
 ```bash
 bun run build
-bun test
+bun run test
 bun run verify:package
 ```
 
@@ -712,7 +767,10 @@ The regular Bun suite retains browser Connect-Web JSON and identity-only CDC
 coverage. Fixture NaN results test the wire codecs and SDK decoding, not a
 claim that the production server accepts nonfinite Edge inputs. The
 authenticated Node and web real-wire tests consume both package entrypoints
-and reject undersized receipt Add contribution IDs without applying a mutation.
+and reject invalid receipt Add and selective Delete IDs without applying a
+mutation. Selective Delete coverage includes duplicate/missing IDs, Put-base
+retention, expired contributions, original receipt results (including false),
+and a lost response with no automatic receipt-less retry.
 
 `verify:package` creates a temporary `npm pack` tarball and checks its
 packaged manifest and contents: both entrypoints must include every declared
@@ -729,7 +787,7 @@ Before pushing a release tag, repeat the candidate check with the intended
 tag ref explicitly set; an untagged local checkout has no `GITHUB_REF`:
 
 ```bash
-GITHUB_REF=refs/tags/sdks/node/v0.12.0 bun run verify:package
+GITHUB_REF=refs/tags/sdks/node/v0.13.0 bun run verify:package
 ```
 
 The tag workflow supplies `GITHUB_REF` automatically and fails if its version

@@ -1558,6 +1558,10 @@ MutationReceipt _mutationReceiptFromProto(
           'receipt Edge Add effective weight',
         ),
       );
+    case $graph.ReceiptResult_Result.deleteEdgeContributionExisted:
+      throw _internalSdkException(
+        'targeted Edge contribution Delete receipts are not supported by this SDK',
+      );
     case $graph.ReceiptResult_Result.notSet:
       throw _internalSdkException(
         'confirmed receipt omitted its original result',

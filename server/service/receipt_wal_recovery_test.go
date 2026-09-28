@@ -167,6 +167,137 @@ func recoveryEdgeEntry(seq uint64) mutationlog.Entry {
 	return mutationlog.Entry{HLC: receiptWALUnionGraphHLC(graph), Op: graph}
 }
 
+func TestReceiptWALRecoveryContributionDeleteRestoresTombstonesAndFalseResults(t *testing.T) {
+	entry, envelope := receiptEdgeContributionDeleteCodecFixture(t)
+	path := writeReceiptWALAuditEntries(t, entry)
+	config := mutationreceipt.Config{
+		Epoch: envelope.Epoch, Retention: time.Hour, MaxEntries: 32, MaxBytes: 1 << 20,
+	}
+	candidate, err := resumeReceiptWALCandidate(path, config, time.Now(),
+		mutationlog.Options{Capacity: 16}, time.Hour)
+	if err != nil {
+		t.Fatalf("restart after contribution Delete receipt: %v", err)
+	}
+	requireReceiptWALEvidence(t, candidate, envelope.Receipts)
+	snapshot := candidate.graph.SnapshotReplication()
+	if len(snapshot.Tombstones.EdgeContributions) != 2 {
+		t.Fatalf("recovered accepted no-op tombstones = %+v", snapshot.Tombstones.EdgeContributions)
+	}
+	for _, key := range envelope.OriginalKeys {
+		if candidate.graph.AddEdgeWithExpirationContribHLC(key.Tail, key.Head, 1,
+			time.Now().Add(time.Hour), key.ContribID,
+			hlc.Timestamp{WallNs: envelope.HLC.WallNs - 1, NodeID: envelope.Origin}) {
+			t.Fatalf("recovered tombstone let a delayed Add through: %+v", key)
+		}
+	}
+	changed := cloneReceiptEdgeContributionDeleteCodecEnvelope(envelope)
+	changed.Accepted = nil
+	changed.Mutation = receiptEdgeContributionDeleteWALMutation(changed)
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	if err := replayReceiptEnvelopeGraph(graph, changed); !errors.Is(err, errReceiptWALUnion) {
+		t.Fatalf("receiver-local accepted projection drift on recovery = %v", err)
+	}
+}
+
+func TestReceiptWALRecoveryCandidateReplaysGraphOnlyContributionDeleteEffects(t *testing.T) {
+	config, receiptEntry := receiptWALAuditFixture(t)
+	now := time.Now()
+	expiration := now.Add(time.Hour)
+	target := graphcache.ContribID{0x71}
+	survivor := graphcache.ContribID{0x72}
+	missing := graphcache.ContribID{0x73}
+	omitted := graphcache.ContribID{0x74}
+	singular := graphcache.ContribID{0x75}
+	rejected := graphcache.ContribID{0x76}
+	tail, head := "graph-tail", "graph-head"
+	add := recoveryGraphAddEffectEntry(t, 1, &pb.MutationOp{Op: &pb.MutationOp_AddEdges{
+		AddEdges: &pb.AddEdgesRequest{
+			Edges: []*pb.Edge{
+				{Tail: tail, Head: head, Weight: 2, Expiration: timestamppb.New(expiration)},
+				{Tail: tail, Head: head, Weight: 3, Expiration: timestamppb.New(expiration)},
+			},
+			ContribIds: [][]byte{target[:], survivor[:]},
+		},
+	}}, true, true)
+	keys := []*pb.EdgeContributionKey{
+		{Tail: tail, Head: head, ContribId: target[:]},
+		{Tail: tail, Head: head, ContribId: survivor[:]},
+		{Tail: tail, Head: head, ContribId: missing[:]},
+		{Tail: tail, Head: head, ContribId: target[:]},
+		{Tail: tail, Head: head, ContribId: omitted[:]},
+	}
+	plural := recoveryGraphDeleteEffectEntry(t, 0x6d, 1, now.UnixNano(),
+		&pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContributions{
+			DeleteEdgeContributions: &pb.DeleteEdgeContributionsRequest{Contributions: keys},
+		}}, expiration, 0, 2, 3)
+	single := recoveryGraphDeleteEffectEntry(t, 0x6e, 1, now.Add(time.Millisecond).UnixNano(),
+		&pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContribution{
+			DeleteEdgeContribution: &pb.DeleteEdgeContributionRequest{
+				Tail: "single-tail", Head: "single-head", ContribId: singular[:],
+			},
+		}}, expiration, 0)
+	zeroAccepted := recoveryGraphDeleteEffectEntry(t, 0x6f, 1, now.Add(2*time.Millisecond).UnixNano(),
+		&pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContributions{
+			DeleteEdgeContributions: &pb.DeleteEdgeContributionsRequest{Contributions: []*pb.EdgeContributionKey{
+				{Tail: tail, Head: head, ContribId: rejected[:]},
+			}},
+		}}, expiration)
+	path := writeReceiptWALAuditEntries(t, add, receiptEntry, plural, single, zeroAccepted)
+	candidate, err := resumeReceiptWALCandidate(path, config, now,
+		mutationlog.Options{Capacity: 8}, time.Hour)
+	if err != nil {
+		t.Fatalf("mixed receipt and graph-only contribution Delete replay: %v", err)
+	}
+	requireReceiptWALEvidence(t, candidate, receiptEntry.Op.(*edgeDeleteReceiptEnvelope).Receipts)
+	if weight, live := candidate.graph.GetWeight(tail, head); !live || weight != 3 {
+		t.Fatalf("accepted per-ID Delete removed an omitted contribution: (%g, %v)", weight, live)
+	}
+	want := map[graphcache.EdgeContributionKey[string]]struct{}{
+		{Tail: tail, Head: head, ContribID: target}:                     {},
+		{Tail: tail, Head: head, ContribID: missing}:                    {},
+		{Tail: "single-tail", Head: "single-head", ContribID: singular}: {},
+	}
+	for _, tombstone := range candidate.graph.SnapshotReplication().Tombstones.EdgeContributions {
+		if _, ok := want[tombstone.EdgeContributionKey]; !ok ||
+			!tombstone.Expiration.Equal(expiration) {
+			t.Fatalf("unexpected contribution Delete tombstone: %+v", tombstone)
+		}
+		delete(want, tombstone.EdgeContributionKey)
+	}
+	if len(want) != 0 {
+		t.Fatalf("recovery lost accepted per-ID tombstones: %+v", want)
+	}
+	older := hlc.Timestamp{WallNs: now.Add(-time.Second).UnixNano(), NodeID: hlc.NodeID{0x70}}
+	if candidate.graph.AddEdgeWithExpirationContribHLC(tail, head, 1, expiration, target, older) ||
+		candidate.graph.AddEdgeWithExpirationContribHLC(tail, head, 1, expiration, missing, older) ||
+		candidate.graph.AddEdgeWithExpirationContribHLC("single-tail", "single-head", 1, expiration, singular, older) {
+		t.Fatal("delayed Add resurrected an accepted contribution Delete")
+	}
+	if !candidate.graph.AddEdgeWithExpirationContribHLC(tail, head, 5, expiration, omitted, older) {
+		t.Fatal("omitted contribution was incorrectly fenced by another ID's Delete")
+	}
+	if !candidate.graph.AddEdgeWithExpirationContribHLC(tail, head, 4, expiration, rejected, older) {
+		t.Fatal("zero-accepted contribution Delete installed a tombstone")
+	}
+	if seq, ok := candidate.log.LastSeq(); !ok || seq != 5 ||
+		len(candidate.origins.States()) != 5 {
+		t.Fatalf("mixed graph/receipt origin frontier = %d, %v, %+v", seq, ok, candidate.origins.States())
+	}
+
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	newer := hlc.Timestamp{WallNs: now.Add(time.Second).UnixNano(), NodeID: hlc.NodeID{0x79}}
+	if _, accepted, err := graph.DeleteEdgeContributionsHLCDecisions(
+		[]graphcache.EdgeContributionKey[string]{{Tail: tail, Head: head, ContribID: target}},
+		newer, expiration,
+	); err != nil || !reflect.DeepEqual(accepted, []int{0}) {
+		t.Fatalf("seed a newer target tombstone: %v, %v", accepted, err)
+	}
+	if err := replayGraphDeleteEffect(graph, plural.Op.(*graphDeleteEffectEnvelope)); !errors.Is(err, errReceiptWALUnion) ||
+		!strings.Contains(err.Error(), "replayed as rejected") {
+		t.Fatalf("contradictory accepted contribution Delete replay = %v", err)
+	}
+}
+
 func TestReceiptWALRecoveryCandidateReplaysDetachedOriginalResults(t *testing.T) {
 	config, receiptEntry := receiptWALAuditFixture(t)
 	path := writeReceiptWALAuditEntries(t, auditGraphEntry(1), recoveryEdgeEntry(2), receiptEntry)

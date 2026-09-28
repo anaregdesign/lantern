@@ -39,6 +39,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"sync/atomic"
 	"time"
@@ -116,12 +117,14 @@ type failoverNode interface {
 	DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error)
 	DeleteEdge(ctx context.Context, tail, head string) (bool, error)
 	DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error)
+	DeleteEdgeContributions(ctx context.Context, refs []EdgeContributionRef) ([]bool, int, error)
 	GetReceiptCapability(ctx context.Context) (ReceiptCapability, error)
 	GetReceiptStatuses(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
 	PutVerticesWithReceipt(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
 	PutVerticesIfAbsentWithReceipt(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
 	DeleteVerticesWithReceipt(ctx context.Context, keys []string, receiptContext ReceiptContext) ([]VertexDeleteReceiptResult, error)
 	DeleteEdgesWithReceipt(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
+	DeleteEdgeContributionsWithReceipt(ctx context.Context, refs []EdgeContributionRef, receiptContext ReceiptContext) ([]EdgeContributionDeleteReceiptResult, error)
 	AddEdgesWithReceipt(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error)
 	Illuminate(ctx context.Context, seed string, opts ...IlluminateOption) (*Graph, error)
 	Ping(ctx context.Context) error
@@ -541,6 +544,49 @@ func (f *Failover) AddEdges(ctx context.Context, inputs []EdgeInput) ([]float32,
 	return effective, err
 }
 
+// AddEdgesWithIDs sends caller-owned IDs once on the current endpoint.
+// Neither an unavailable response nor the IDs themselves prove the original
+// effective weights; this path never rotates or automatically retries.
+func (f *Failover) AddEdgesWithIDs(ctx context.Context, inputs []EdgeAddInput) ([]float32, error) {
+	edges, ids, err := explicitAddInputs(inputs)
+	if err != nil {
+		return nil, err
+	}
+	if len(inputs) == 0 {
+		return []float32{}, nil
+	}
+	var effective []float32
+	err = f.call(ctx, "AddEdgesWithIDs", func(node failoverNode) error {
+		var callErr error
+		effective, callErr = node.addEdgesWithIDs(ctx, edges, ids)
+		return callErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(effective) != len(inputs) {
+		return nil, fmt.Errorf("lantern: server returned %d Add outcomes for %d contributions", len(effective), len(inputs))
+	}
+	return effective, nil
+}
+
+// AddEdgeWithID is the one-item relative-TTL facade over AddEdgesWithIDs.
+func (f *Failover) AddEdgeWithID(ctx context.Context, tail, head string, weight float32, ttl time.Duration, id ContribID) (float32, error) {
+	return f.AddEdgeAtWithID(ctx, tail, head, weight, expirationFromTTL(ttl), id)
+}
+
+// AddEdgeAtWithID is the one-item absolute-expiration facade over AddEdgesWithIDs.
+func (f *Failover) AddEdgeAtWithID(ctx context.Context, tail, head string, weight float32, expiration time.Time, id ContribID) (float32, error) {
+	effective, err := f.AddEdgesWithIDs(ctx, []EdgeAddInput{{
+		Edge:      EdgeInput{Tail: tail, Head: head, Weight: weight, Expiration: expiration},
+		ContribID: id,
+	}})
+	if err != nil {
+		return 0, err
+	}
+	return effective[0], nil
+}
+
 // AddDecayingEdge forwards the geometric decay staircase (see the *Lantern
 // method of the same name) on the current endpoint. The curve is expanded
 // ONCE — one base time and one mint of the per-contribution ids. An
@@ -709,6 +755,38 @@ func (f *Failover) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error)
 		return e
 	})
 	return deleted, err
+}
+
+// DeleteEdgeContributions sends once to the current endpoint; an uncertain
+// response is not retried or rotated because the original existed values
+// could change even when the supplied IDs are the same.
+func (f *Failover) DeleteEdgeContributions(ctx context.Context, refs []EdgeContributionRef) ([]bool, int, error) {
+	if _, err := edgeContributionKeys(refs); err != nil {
+		return nil, 0, err
+	}
+	if len(refs) == 0 {
+		return []bool{}, 0, nil
+	}
+	var existed []bool
+	var deleted int
+	err := f.call(ctx, "DeleteEdgeContributions", func(node failoverNode) error {
+		var callErr error
+		existed, deleted, callErr = node.DeleteEdgeContributions(ctx, refs)
+		return callErr
+	})
+	return existed, deleted, err
+}
+
+// DeleteEdgeContribution is the one-item plural facade.
+func (f *Failover) DeleteEdgeContribution(ctx context.Context, tail, head string, id ContribID) (bool, error) {
+	existed, _, err := f.DeleteEdgeContributions(ctx, []EdgeContributionRef{{Tail: tail, Head: head, ContribID: id}})
+	if err != nil {
+		return false, err
+	}
+	if len(existed) != 1 {
+		return false, fmt.Errorf("lantern: server returned %d outcomes for one contribution", len(existed))
+	}
+	return existed[0], nil
 }
 
 // GetReceiptCapability returns a capability from the first reachable
@@ -965,6 +1043,48 @@ func (f *Failover) DeleteEdgesWithReceipt(
 		return err
 	})
 	return results, err
+}
+
+// DeleteEdgeContributionsWithReceipt finds the endpoint matching the
+// persisted continuity marker and pins all attempts to that endpoint.
+func (f *Failover) DeleteEdgeContributionsWithReceipt(
+	ctx context.Context,
+	refs []EdgeContributionRef,
+	receiptContext ReceiptContext,
+) ([]EdgeContributionDeleteReceiptResult, error) {
+	_, stableRefs, stableContext, err := receiptContributionDeleteRequest(refs, receiptContext)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := f.findReceiptNode(ctx, stableContext.Continuity, ReceiptMutationDeleteEdgeContribution)
+	if err != nil {
+		return nil, err
+	}
+	f.cur.Store(uint64(idx))
+
+	var results []EdgeContributionDeleteReceiptResult
+	err = f.callNode(ctx, idx, "DeleteEdgeContributionsWithReceipt", func(node failoverNode) error {
+		var callErr error
+		results, callErr = node.DeleteEdgeContributionsWithReceipt(ctx, stableRefs, stableContext)
+		return callErr
+	})
+	return results, err
+}
+
+// DeleteEdgeContributionWithReceipt is the one-item plural facade.
+func (f *Failover) DeleteEdgeContributionWithReceipt(
+	ctx context.Context, tail, head string, id ContribID, receiptContext ReceiptContext,
+) (EdgeContributionDeleteReceiptResult, error) {
+	results, err := f.DeleteEdgeContributionsWithReceipt(
+		ctx, []EdgeContributionRef{{Tail: tail, Head: head, ContribID: id}}, receiptContext,
+	)
+	if err != nil {
+		return EdgeContributionDeleteReceiptResult{}, err
+	}
+	if len(results) != 1 {
+		return EdgeContributionDeleteReceiptResult{}, receiptProtocolError("singular contribution Delete returned %d items", len(results))
+	}
+	return results[0], nil
 }
 
 func (f *Failover) findReceiptNode(

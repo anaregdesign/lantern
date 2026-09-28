@@ -407,6 +407,12 @@ class ReceiptMutationKind extends $pb.ProtobufEnum {
   static const ReceiptMutationKind RECEIPT_MUTATION_KIND_ADD_EDGE =
       ReceiptMutationKind._(
           4, _omitEnumNames ? '' : 'RECEIPT_MUTATION_KIND_ADD_EDGE');
+  static const ReceiptMutationKind
+      RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION = ReceiptMutationKind._(
+          5,
+          _omitEnumNames
+              ? ''
+              : 'RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION');
 
   static const $core.List<ReceiptMutationKind> values = <ReceiptMutationKind>[
     RECEIPT_MUTATION_KIND_UNSPECIFIED,
@@ -414,10 +420,11 @@ class ReceiptMutationKind extends $pb.ProtobufEnum {
     RECEIPT_MUTATION_KIND_DELETE_VERTEX,
     RECEIPT_MUTATION_KIND_DELETE_EDGE,
     RECEIPT_MUTATION_KIND_ADD_EDGE,
+    RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
   ];
 
   static final $core.List<ReceiptMutationKind?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 4);
+      $pb.ProtobufEnum.$_initByValueList(values, 5);
   static ReceiptMutationKind? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

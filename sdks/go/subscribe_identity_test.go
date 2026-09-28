@@ -120,6 +120,7 @@ func TestIdentityReceiptOnlyMarkerAdvancesWithoutKeys(t *testing.T) {
 		Origin: origin[:], Seq: 2, Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: 10},
 		Operation: IdentityReceiptOnly, IsLast: true,
 	}
+
 	chunk, err := parseIdentityChunk(wire)
 	if err != nil || chunk.Operation != IdentityReceiptOnly || len(chunk.VertexKeys)+len(chunk.EdgeKeys) != 0 {
 		t.Fatalf("receipt-only marker = %+v, %v", chunk, err)
@@ -142,5 +143,22 @@ func TestIdentityReceiptOnlyMarkerAdvancesWithoutKeys(t *testing.T) {
 				t.Fatalf("invalid receipt-only marker = %v", err)
 			}
 		})
+	}
+}
+
+func TestIdentityContributionDeleteOnlyInvalidatesEdgeKeys(t *testing.T) {
+	origin := ChangeOrigin{0x51}
+	wire := &pb.IdentityChunk{
+		Origin: origin[:], Seq: 1, Hlc: &pb.HLCTimestamp{NodeId: origin[:], WallNs: 10},
+		Operation: IdentityDeleteEdgeContribution, EdgeKeys: []*pb.EdgeKey{{Tail: "t", Head: "h"}}, IsLast: true,
+	}
+	chunk, err := parseIdentityChunk(wire)
+	if err != nil || chunk.Operation != IdentityDeleteEdgeContribution ||
+		!reflect.DeepEqual(chunk.EdgeKeys, []EdgeRef{{Tail: "t", Head: "h"}}) {
+		t.Fatalf("contribution Delete identity chunk = %+v, %v", chunk, err)
+	}
+	wire.VertexKeys = []string{"not-an-edge"}
+	if _, err := parseIdentityChunk(wire); !errors.Is(err, ErrInvalidIdentityEvent) {
+		t.Fatalf("mixed contribution Delete identity = %v", err)
 	}
 }

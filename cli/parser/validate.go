@@ -53,9 +53,9 @@ func Validate(input string) error {
 			return errors.New("usage: put { vertex | edge } ... ")
 		}
 	case "delete":
-		o, err := Objective(s)
+		o, err := DeleteObjective(s)
 		if err != nil {
-			return errors.New("usage: delete { vertex | edge }")
+			return errors.New("usage: delete { vertex | edge | contribution }")
 		}
 		switch o {
 		case "vertex":
@@ -66,8 +66,12 @@ func Validate(input string) error {
 			if _, err := DeleteEdgeParam(s); err != nil {
 				return errors.New("usage: delete edge <tail: string> <head: string>")
 			}
+		case "contribution":
+			if _, err := DeleteContributionParam(s); err != nil {
+				return errors.New("usage: delete contribution <tail: string> <head: string> <contrib_id_hex: 48 hex chars> [<tail> <head> <contrib_id_hex> ...]")
+			}
 		default:
-			return errors.New("usage: delete { vertex | edge }")
+			return errors.New("usage: delete { vertex | edge | contribution }")
 		}
 	case "add":
 		o, err := AddObjective(s)
@@ -77,7 +81,7 @@ func Validate(input string) error {
 		switch o {
 		case "edge":
 			if _, err := AddEdgeParam(s); err != nil {
-				return errors.New("usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
+				return errors.New("usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>] [id=<contrib_id_hex>]")
 			}
 		case "decaying-edge":
 			if _, err := AddDecayingEdgeParam(s); err != nil {

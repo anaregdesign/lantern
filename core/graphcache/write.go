@@ -30,6 +30,9 @@ func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expirat
 }
 
 func (c *GraphCache[S, T]) addEdgeContribHLCLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time) (applied bool, effective float32) {
+	if !contribID.IsZero() && c.edgeContributionTombstoneLockedAt(EdgeContributionKey[S]{Tail: tail, Head: head, ContribID: contribID}, now) {
+		return false, c.edges.liveSumAt(tail, head, now)
+	}
 	created, tailID, headID, applied, effective := c.edges.addWithExpirationContribHLCAt(tail, head, w, expiration, contribID, ts, now)
 	if applied || created {
 		c.ensureVertexLocked(tail, expiration)
@@ -66,9 +69,20 @@ func (c *GraphCache[S, T]) addEdgeContribHLCLocked(tail, head S, w float32, expi
 // `now` supplies the liveness clock and effective returns the post-apply live
 // weight sum (#897).
 func (c *GraphCache[S, T]) tryAddExistingEdgeContrib(tail, head S, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32, ok bool) {
+	if !contribID.IsZero() && c.contributionTombstonesPresent.Load() {
+		return false, 0, false
+	}
 	if c.publicationGate != nil {
 		c.publicationGate.RLock()
 		defer c.publicationGate.RUnlock()
+	} else if !contribID.IsZero() {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+	}
+	// Recheck under the exclusion gate: a Delete may have installed its
+	// tombstone after the optimistic first check but before this Add arrived.
+	if !contribID.IsZero() && c.contributionTombstonesPresent.Load() {
+		return false, 0, false
 	}
 	if c.dict == nil {
 		return false, 0, false

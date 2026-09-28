@@ -148,6 +148,12 @@ func (h *lanternServiceConnect) DeleteEdge(ctx context.Context, req *connect.Req
 func (h *lanternServiceConnect) DeleteEdges(ctx context.Context, req *connect.Request[pb.DeleteEdgesRequest]) (*connect.Response[pb.DeleteEdgesResponse], error) {
 	return unary(ctx, req, h.svc.DeleteEdges)
 }
+func (h *lanternServiceConnect) DeleteEdgeContribution(ctx context.Context, req *connect.Request[pb.DeleteEdgeContributionRequest]) (*connect.Response[pb.DeleteEdgeContributionResponse], error) {
+	return unary(ctx, req, h.svc.DeleteEdgeContribution)
+}
+func (h *lanternServiceConnect) DeleteEdgeContributions(ctx context.Context, req *connect.Request[pb.DeleteEdgeContributionsRequest]) (*connect.Response[pb.DeleteEdgeContributionsResponse], error) {
+	return unary(ctx, req, h.svc.DeleteEdgeContributions)
+}
 func (h *lanternServiceConnect) DeleteEdgesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteEdgesByPrefixRequest]) (*connect.Response[pb.DeleteEdgesByPrefixResponse], error) {
 	if req.Msg.GetDryRun() {
 		return unaryGraphReadOptimistic(ctx, req, h.svc, h.svc.DeleteEdgesByPrefix)

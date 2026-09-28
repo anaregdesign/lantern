@@ -32,6 +32,7 @@ package replication
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -73,6 +74,7 @@ type SnapshotApplier interface {
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 	ApplySnapshotVertexTombstoneHLC(key string, ts hlc.Timestamp, expiration time.Time)
 	ApplySnapshotEdgeTombstoneHLC(tail, head string, ts hlc.Timestamp, expiration time.Time)
+	ApplySnapshotEdgeContributionTombstoneHLC(key graphcache.EdgeContributionKey[string], ts hlc.Timestamp, expiration time.Time) error
 }
 
 // SnapshotStream is the transport-neutral receive side consumed by a
@@ -89,12 +91,13 @@ type SnapshotStream interface {
 // SnapshotGraphCounts reports the verified graph frames installed from one
 // complete Snapshot stream.
 type SnapshotGraphCounts struct {
-	Vertices             uint64
-	Edges                uint64
-	VertexCausalBarriers uint64
-	EdgeCausalBarriers   uint64
-	VertexTombstones     uint64
-	EdgeTombstones       uint64
+	Vertices                   uint64
+	Edges                      uint64
+	VertexCausalBarriers       uint64
+	EdgeCausalBarriers         uint64
+	VertexTombstones           uint64
+	EdgeTombstones             uint64
+	EdgeContributionTombstones uint64
 }
 
 // SnapshotInstallResult is returned only after a complete verified install.
@@ -267,28 +270,31 @@ const (
 	snapshotPhaseEdgeBarrier
 	snapshotPhaseVertexTombstone
 	snapshotPhaseEdgeTombstone
+	snapshotPhaseEdgeContributionTombstone
 	snapshotPhaseVertex
 	snapshotPhaseEdge
 	snapshotPhaseFooter
 )
 
 type snapshotReplayCounts struct {
-	vertices        uint64
-	edges           uint64
-	vertexBarrier   uint64
-	edgeBarrier     uint64
-	vertexTombstone uint64
-	edgeTombstone   uint64
+	vertices                  uint64
+	edges                     uint64
+	vertexBarrier             uint64
+	edgeBarrier               uint64
+	vertexTombstone           uint64
+	edgeTombstone             uint64
+	edgeContributionTombstone uint64
 }
 
 func (c snapshotReplayCounts) graphCounts() SnapshotGraphCounts {
 	return SnapshotGraphCounts{
-		Vertices:             c.vertices,
-		Edges:                c.edges,
-		VertexCausalBarriers: c.vertexBarrier,
-		EdgeCausalBarriers:   c.edgeBarrier,
-		VertexTombstones:     c.vertexTombstone,
-		EdgeTombstones:       c.edgeTombstone,
+		Vertices:                   c.vertices,
+		Edges:                      c.edges,
+		VertexCausalBarriers:       c.vertexBarrier,
+		EdgeCausalBarriers:         c.edgeBarrier,
+		VertexTombstones:           c.vertexTombstone,
+		EdgeTombstones:             c.edgeTombstone,
+		EdgeContributionTombstones: c.edgeContributionTombstone,
 	}
 }
 
@@ -453,12 +459,13 @@ func (s *snapshotReplayState) acceptFooter(footer *pb.SnapshotFooter) error {
 	s.sawFooter = true
 	s.phase = snapshotPhaseFooter
 	s.want = snapshotReplayCounts{
-		vertices:        footer.GetVertexCount(),
-		edges:           footer.GetEdgeCount(),
-		vertexBarrier:   footer.GetVertexCausalBarrierCount(),
-		edgeBarrier:     footer.GetEdgeCausalBarrierCount(),
-		vertexTombstone: footer.GetVertexTombstoneCount(),
-		edgeTombstone:   footer.GetEdgeTombstoneCount(),
+		vertices:                  footer.GetVertexCount(),
+		edges:                     footer.GetEdgeCount(),
+		vertexBarrier:             footer.GetVertexCausalBarrierCount(),
+		edgeBarrier:               footer.GetEdgeCausalBarrierCount(),
+		vertexTombstone:           footer.GetVertexTombstoneCount(),
+		edgeTombstone:             footer.GetEdgeTombstoneCount(),
+		edgeContributionTombstone: footer.GetEdgeContributionTombstoneCount(),
 	}
 	return nil
 }
@@ -472,9 +479,9 @@ func (s *snapshotReplayState) validateComplete() error {
 	}
 	if s.counts != s.want {
 		return snapshotProtocolError(
-			"footer count mismatch: applied vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d vertex_tombstones=%d edge_tombstones=%d; footer vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d vertex_tombstones=%d edge_tombstones=%d",
-			s.counts.vertices, s.counts.edges, s.counts.vertexBarrier, s.counts.edgeBarrier, s.counts.vertexTombstone, s.counts.edgeTombstone,
-			s.want.vertices, s.want.edges, s.want.vertexBarrier, s.want.edgeBarrier, s.want.vertexTombstone, s.want.edgeTombstone,
+			"footer count mismatch: applied vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d vertex_tombstones=%d edge_tombstones=%d edge_contribution_tombstones=%d; footer vertices=%d edges=%d vertex_barriers=%d edge_barriers=%d vertex_tombstones=%d edge_tombstones=%d edge_contribution_tombstones=%d",
+			s.counts.vertices, s.counts.edges, s.counts.vertexBarrier, s.counts.edgeBarrier, s.counts.vertexTombstone, s.counts.edgeTombstone, s.counts.edgeContributionTombstone,
+			s.want.vertices, s.want.edges, s.want.vertexBarrier, s.want.edgeBarrier, s.want.vertexTombstone, s.want.edgeTombstone, s.want.edgeContributionTombstone,
 		)
 	}
 	return nil
@@ -626,6 +633,7 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 	var searchIndexErr error
 	var replay snapshotReplayState
 	var seenEdges map[graphcache.EdgeKey[string]]struct{}
+	var seenContributionTombstones map[graphcache.EdgeContributionKey[string]]struct{}
 	for stream.Receive() {
 		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
@@ -701,6 +709,46 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			}
 			i.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
 			replay.counts.edgeTombstone++
+		case *pb.SnapshotResponse_EdgeContributionTombstone:
+			if err := replay.acceptBody("edge contribution tombstone", snapshotPhaseEdgeContributionTombstone); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			marker := e.EdgeContributionTombstone
+			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" {
+				return SnapshotInstallResult{}, snapshotProtocolError("nil or empty edge contribution tombstone")
+			}
+			idBytes := marker.GetContribId()
+			if len(idBytes) != len(graphcache.ContribID{}) {
+				return SnapshotInstallResult{}, snapshotProtocolError("invalid edge contribution tombstone ContribID length")
+			}
+			var id graphcache.ContribID
+			copy(id[:], idBytes)
+			if id.IsZero() {
+				return SnapshotInstallResult{}, snapshotProtocolError("zero edge contribution tombstone ContribID")
+			}
+			ts, exp, err := snapshotTombstoneFields(marker.GetHlc(), marker.GetExpiration())
+			if err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			cutoff, err := snapshotFloorHLC(replay.header.GetCutoffHlc())
+			if err != nil || cutoff.Less(ts) ||
+				replay.header.GetCutoffSeqPerOrigin()[hex.EncodeToString(ts.NodeID[:])] == 0 {
+				return SnapshotInstallResult{}, snapshotProtocolError("edge contribution tombstone exceeds snapshot causal cutoff or has an unknown origin")
+			}
+			key := graphcache.EdgeContributionKey[string]{
+				Tail: marker.GetTail(), Head: marker.GetHead(), ContribID: id,
+			}
+			if _, duplicate := seenContributionTombstones[key]; duplicate {
+				return SnapshotInstallResult{}, snapshotProtocolError("duplicate edge contribution tombstone")
+			}
+			if seenContributionTombstones == nil {
+				seenContributionTombstones = make(map[graphcache.EdgeContributionKey[string]]struct{})
+			}
+			seenContributionTombstones[key] = struct{}{}
+			if err := i.snap.ApplySnapshotEdgeContributionTombstoneHLC(key, ts, exp); err != nil {
+				return SnapshotInstallResult{}, snapshotProtocolError("apply edge contribution tombstone: %v", err)
+			}
+			replay.counts.edgeContributionTombstone++
 		case *pb.SnapshotResponse_Vertex:
 			if err := replay.acceptBody("vertex", snapshotPhaseVertex); err != nil {
 				return SnapshotInstallResult{}, err
@@ -740,6 +788,17 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 				seenEdges = make(map[graphcache.EdgeKey[string]]struct{})
 			}
 			seenEdges[identity] = struct{}{}
+			for _, row := range rows {
+				if row.contribID.IsZero() {
+					continue
+				}
+				key := graphcache.EdgeContributionKey[string]{
+					Tail: se.GetTail(), Head: se.GetHead(), ContribID: row.contribID,
+				}
+				if _, overlap := seenContributionTombstones[key]; overlap {
+					return SnapshotInstallResult{}, snapshotProtocolError("live edge Add and contribution tombstone overlap")
+				}
+			}
 			for _, row := range rows {
 				if row.derivedAggregate {
 					i.snap.PutEdgeDerivedAggregateWithExpirationHLC(

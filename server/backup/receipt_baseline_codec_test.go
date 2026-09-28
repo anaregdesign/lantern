@@ -419,7 +419,11 @@ func mutateCombinedRetiredSection(
 }
 
 func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *testing.T) {
-	archive := wholeStateArchiveFixture(t)
+	issued := time.Now().UTC().Truncate(time.Millisecond)
+	archive := wholeStateArchiveFixtureAt(t, issued)
+	removed := graphcache.ContribID{0x78}
+	deadline := issued.Add(2 * time.Hour)
+	addContributionTombstoneToArchive(&archive, removed, deadline)
 	capture := producerCapture(archive)
 	capture.Retired = producerRetiredSnapshot(
 		t,
@@ -466,6 +470,10 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 	}
 	if got, _, ok := graphIdentity.GetEdgeDetail("tail", "head"); !ok || got != 1.5 {
 		t.Fatalf("installed baseline edge = %v, %t", got, ok)
+	}
+	if got := graphIdentity.SnapshotReplication().Tombstones.EdgeContributions; len(got) != 1 ||
+		got[0].ContribID != removed || !got[0].Expiration.Equal(deadline) {
+		t.Fatalf("installed baseline per-ID floor = %+v", got)
 	}
 	if length, _, evicted := runtime.MutationLogStats(); length != 0 || evicted != 1 {
 		t.Fatalf("post-marker log = len %d evicted %d, want 0 and 1", length, evicted)
@@ -515,6 +523,20 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 	if recovered.Retired.ClockHighWaterMillis != recovered.Receipts.ClockHighWaterMillis ||
 		!reflect.DeepEqual(recovered.Retired, wantRetired) {
 		t.Fatalf("restarted retired catalog = %+v, want %+v", recovered.Retired, wantRetired)
+	}
+	if recovered.Graph[len(recovered.Graph)-1].GetFooter().GetEdgeContributionTombstoneCount() != 1 {
+		t.Fatal("post-restart backup capture lost the per-ID floor")
+	}
+	staged := restarted.GraphCache().SnapshotReplication().Tombstones.EdgeContributions
+	if len(staged) != 1 || staged[0].ContribID != removed ||
+		!staged[0].Expiration.Equal(deadline) {
+		t.Fatalf("restart lost the per-ID D4 deadline: %+v", staged)
+	}
+	if restarted.GraphCache().AddEdgeWithExpirationContribHLC(
+		"tail", "head", 9, time.Now().Add(time.Hour), removed,
+		hlc.Timestamp{WallNs: staged[0].HLC.WallNs + 1, NodeID: staged[0].HLC.NodeID},
+	) {
+		t.Fatal("restart allowed a delayed Add to resurrect the removed ID")
 	}
 	if got, _, ok := restarted.GraphCache().GetEdgeDetail("tail", "head"); !ok || got != 1.5 {
 		t.Fatalf("restarted baseline edge = %v, %t", got, ok)

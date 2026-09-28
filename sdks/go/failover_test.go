@@ -15,35 +15,37 @@ import (
 // only the methods it exercises. It mirrors the fake used by the MCP
 // failover tests before the logic moved into the SDK (#592).
 type fakeNode struct {
-	getVertexFn              func(ctx context.Context, key string) (*Vertex, error)
-	putVertexAtFn            func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
-	putVertexIfAbsentAtFn    func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
-	putVerticesFn            func(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
-	putVerticesIfAbsentFn    func(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
-	deleteVertexFn           func(ctx context.Context, key string) (bool, error)
-	deleteVerticesFn         func(ctx context.Context, keys []string) (int, error)
-	deleteEdgeFn             func(ctx context.Context, tail, head string) (bool, error)
-	deleteEdgesFn            func(ctx context.Context, refs []EdgeRef) (int, error)
-	deleteVerticesByPrefixFn func(ctx context.Context, prefix string, opts ...DeleteByPrefixOption) (uint64, error)
-	deleteEdgesByPrefixFn    func(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error)
-	putEdgeAtFn              func(ctx context.Context, tail, head string, weight float32, expiration time.Time) (PutOutcome, error)
-	putEdgesFn               func(ctx context.Context, inputs []EdgeInput) ([]EdgePutResult, error)
-	searchPageFn             func(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error)
+	getVertexFn               func(ctx context.Context, key string) (*Vertex, error)
+	putVertexAtFn             func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
+	putVertexIfAbsentAtFn     func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
+	putVerticesFn             func(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
+	putVerticesIfAbsentFn     func(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)
+	deleteVertexFn            func(ctx context.Context, key string) (bool, error)
+	deleteVerticesFn          func(ctx context.Context, keys []string) (int, error)
+	deleteEdgeFn              func(ctx context.Context, tail, head string) (bool, error)
+	deleteEdgesFn             func(ctx context.Context, refs []EdgeRef) (int, error)
+	deleteEdgeContributionsFn func(ctx context.Context, refs []EdgeContributionRef) ([]bool, int, error)
+	deleteVerticesByPrefixFn  func(ctx context.Context, prefix string, opts ...DeleteByPrefixOption) (uint64, error)
+	deleteEdgesByPrefixFn     func(ctx context.Context, opts ...DeleteEdgesByPrefixOption) (uint64, error)
+	putEdgeAtFn               func(ctx context.Context, tail, head string, weight float32, expiration time.Time) (PutOutcome, error)
+	putEdgesFn                func(ctx context.Context, inputs []EdgeInput) ([]EdgePutResult, error)
+	searchPageFn              func(ctx context.Context, query string, opts ...SearchOption) (SearchPage, error)
 	// addEdgeAtWithIDsFn / addEdgesWithIDsFn drive the id-accepting seams the
 	// failover ring actually calls for additive writes (#916); the failover
 	// AddEdge/AddEdgeAt/AddEdges methods route through these, so tests wire
 	// them to observe the contrib ids passed down.
-	addEdgeAtWithIDsFn               func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
-	addEdgesWithIDsFn                func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
-	getReceiptCapabilityFn           func(ctx context.Context) (ReceiptCapability, error)
-	getReceiptStatusesFn             func(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
-	putVerticesWithReceiptFn         func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
-	putVerticesIfAbsentWithReceiptFn func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
-	deleteVerticesWithReceiptFn      func(ctx context.Context, keys []string, receiptContext ReceiptContext) ([]VertexDeleteReceiptResult, error)
-	deleteEdgesWithReceiptFn         func(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
-	addEdgesWithReceiptFn            func(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error)
-	pingErr                          error
-	closed                           int
+	addEdgeAtWithIDsFn                   func(ctx context.Context, tail, head string, weight float32, expiration time.Time, ids [][]byte) (float32, error)
+	addEdgesWithIDsFn                    func(ctx context.Context, inputs []EdgeInput, ids [][]byte) ([]float32, error)
+	getReceiptCapabilityFn               func(ctx context.Context) (ReceiptCapability, error)
+	getReceiptStatusesFn                 func(ctx context.Context, ids []ReceiptOperationID) ([]ReceiptStatus, error)
+	putVerticesWithReceiptFn             func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
+	putVerticesIfAbsentWithReceiptFn     func(ctx context.Context, inputs []VertexInput, receiptContext ReceiptContext) ([]VertexPutReceiptResult, error)
+	deleteVerticesWithReceiptFn          func(ctx context.Context, keys []string, receiptContext ReceiptContext) ([]VertexDeleteReceiptResult, error)
+	deleteEdgesWithReceiptFn             func(ctx context.Context, refs []EdgeRef, receiptContext ReceiptContext) ([]EdgeDeleteReceiptResult, error)
+	deleteEdgeContributionsWithReceiptFn func(ctx context.Context, refs []EdgeContributionRef, receiptContext ReceiptContext) ([]EdgeContributionDeleteReceiptResult, error)
+	addEdgesWithReceiptFn                func(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error)
+	pingErr                              error
+	closed                               int
 }
 
 func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) (PutOutcome, error) {
@@ -179,6 +181,12 @@ func (f *fakeNode) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error)
 	}
 	return 0, nil
 }
+func (f *fakeNode) DeleteEdgeContributions(ctx context.Context, refs []EdgeContributionRef) ([]bool, int, error) {
+	if f.deleteEdgeContributionsFn != nil {
+		return f.deleteEdgeContributionsFn(ctx, refs)
+	}
+	return nil, 0, nil
+}
 func (f *fakeNode) GetReceiptCapability(ctx context.Context) (ReceiptCapability, error) {
 	if f.getReceiptCapabilityFn != nil {
 		return f.getReceiptCapabilityFn(ctx)
@@ -227,6 +235,12 @@ func (f *fakeNode) DeleteEdgesWithReceipt(ctx context.Context, refs []EdgeRef, r
 	}
 	return nil, nil
 }
+func (f *fakeNode) DeleteEdgeContributionsWithReceipt(ctx context.Context, refs []EdgeContributionRef, receiptContext ReceiptContext) ([]EdgeContributionDeleteReceiptResult, error) {
+	if f.deleteEdgeContributionsWithReceiptFn != nil {
+		return f.deleteEdgeContributionsWithReceiptFn(ctx, refs, receiptContext)
+	}
+	return nil, nil
+}
 func (f *fakeNode) AddEdgesWithReceipt(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error) {
 	if f.addEdgesWithReceiptFn != nil {
 		return f.addEdgesWithReceiptFn(ctx, inputs, receiptContext)
@@ -238,6 +252,82 @@ func (f *fakeNode) Illuminate(context.Context, string, ...IlluminateOption) (*Gr
 }
 func (f *fakeNode) Ping(context.Context) error { return f.pingErr }
 func (f *fakeNode) Close() error               { f.closed++; return nil }
+
+func TestFailoverContributionDeleteAndExplicitAddDoNotRotate(t *testing.T) {
+	id := testContribID(0x71)
+	ref := EdgeContributionRef{Tail: "tail", Head: "head", ContribID: id}
+	firstDeletes, secondDeletes := 0, 0
+	firstAdds, secondAdds := 0, 0
+	first := &fakeNode{
+		deleteEdgeContributionsFn: func(_ context.Context, got []EdgeContributionRef) ([]bool, int, error) {
+			firstDeletes++
+			if len(got) != 1 || got[0] != ref {
+				t.Fatalf("refs = %+v", got)
+			}
+			return nil, 0, wrapConnectErr(connect.NewError(connect.CodeUnavailable, errors.New("response lost")))
+		},
+		addEdgesWithIDsFn: func(_ context.Context, got []EdgeInput, ids [][]byte) ([]float32, error) {
+			firstAdds++
+			if len(got) != 1 || len(ids) != 1 || !bytes.Equal(ids[0], id.Bytes()) {
+				t.Fatalf("explicit Add inputs=%+v IDs=%x", got, ids)
+			}
+			return nil, wrapConnectErr(connect.NewError(connect.CodeUnavailable, errors.New("response lost")))
+		},
+	}
+	second := &fakeNode{
+		deleteEdgeContributionsFn: func(context.Context, []EdgeContributionRef) ([]bool, int, error) {
+			secondDeletes++
+			return []bool{true}, 1, nil
+		},
+		addEdgesWithIDsFn: func(context.Context, []EdgeInput, [][]byte) ([]float32, error) {
+			secondAdds++
+			return []float32{1}, nil
+		},
+	}
+	f := &Failover{nodes: []failoverNode{first, second}, retry: testRetryPolicy(3)}
+	if _, err := f.DeleteEdgeContribution(context.Background(), ref.Tail, ref.Head, id); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("DeleteEdgeContribution = %v", err)
+	}
+	if _, err := f.AddEdgeWithID(context.Background(), ref.Tail, ref.Head, 1, 0, id); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("AddEdgeWithID = %v", err)
+	}
+	if firstDeletes != 1 || secondDeletes != 0 || firstAdds != 1 || secondAdds != 0 {
+		t.Fatalf("unsafe rotations: delete=%d/%d add=%d/%d", firstDeletes, secondDeletes, firstAdds, secondAdds)
+	}
+}
+
+func TestFailoverContributionDeleteReceiptPinsMatchingEndpoint(t *testing.T) {
+	capability := testReceiptCapability(0x74)
+	other := testReceiptCapability(0x75)
+	contextValue := testReceiptContextForMutation(t, capability, ReceiptMutationDeleteEdgeContribution, 1, 0x76)
+	id := testContribID(0x77)
+	firstCalls, secondCalls := 0, 0
+	first := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) { return other, nil },
+		deleteEdgeContributionsWithReceiptFn: func(context.Context, []EdgeContributionRef, ReceiptContext) ([]EdgeContributionDeleteReceiptResult, error) {
+			firstCalls++
+			return nil, errors.New("wrong endpoint received mutation")
+		},
+	}
+	second := &fakeNode{
+		getReceiptCapabilityFn: func(context.Context) (ReceiptCapability, error) { return capability, nil },
+		deleteEdgeContributionsWithReceiptFn: func(_ context.Context, refs []EdgeContributionRef, got ReceiptContext) ([]EdgeContributionDeleteReceiptResult, error) {
+			secondCalls++
+			if secondCalls == 1 {
+				return nil, wrapConnectErr(connect.NewError(connect.CodeUnavailable, errors.New("response lost")))
+			}
+			return []EdgeContributionDeleteReceiptResult{{
+				Contribution: refs[0], OperationID: got.OperationIDs[0], Existed: true,
+			}}, nil
+		},
+	}
+	f := &Failover{nodes: []failoverNode{first, second}, retry: testRetryPolicy(2)}
+	result, err := f.DeleteEdgeContributionWithReceipt(context.Background(), "tail", "head", id, contextValue)
+	if err != nil || !result.Existed || result.OperationID != contextValue.OperationIDs[0] ||
+		firstCalls != 0 || secondCalls != 2 {
+		t.Fatalf("pinned receipt = (%+v, %v), calls=%d/%d", result, err, firstCalls, secondCalls)
+	}
+}
 
 func TestFailoverReceiptDeleteNeverRotates(t *testing.T) {
 	capability := testReceiptCapability(0x70)

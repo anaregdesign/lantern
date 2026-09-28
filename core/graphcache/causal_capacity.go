@@ -177,12 +177,14 @@ func (e *CausalMetadataCapacityError) Error() string {
 // than allocator-specific claims, so dashboards remain comparable across Go
 // releases.
 const (
-	causalVertexIdentityBaseBytes      uint64 = 96
-	causalEdgeIdentityBaseBytes        uint64 = 160
-	causalVertexDeadlineEntryBaseBytes uint64 = 48
-	causalEdgeDeadlineEntryBaseBytes   uint64 = 64
-	causalUsageShrinkFloor                    = 1024
-	causalUsageShrinkDivisor                  = 4
+	causalVertexIdentityBaseBytes           uint64 = 96
+	causalEdgeIdentityBaseBytes             uint64 = 160
+	causalEdgeContributionBaseBytes         uint64 = 208
+	causalVertexDeadlineEntryBaseBytes      uint64 = 48
+	causalEdgeDeadlineEntryBaseBytes        uint64 = 64
+	causalEdgeContributionDeadlineBaseBytes uint64 = 88
+	causalUsageShrinkFloor                         = 1024
+	causalUsageShrinkDivisor                       = 4
 )
 
 // SetCausalMetadataLimits replaces the local-origin admission limits. It is
@@ -212,7 +214,7 @@ func (c *GraphCache[S, T]) CausalMetadataStats() CausalMetadataStats {
 		MaxVertexEntries:              c.causalLimits.MaxVertexEntries,
 		MaxEdgeEntries:                c.causalLimits.MaxEdgeEntries,
 		VertexEntries:                 len(c.vertexCausalUsage),
-		EdgeEntries:                   len(c.edgeCausalUsage),
+		EdgeEntries:                   c.edgeCausalEntriesLocked(),
 		VertexEstimatedBytes:          c.vertexCausalEstimatedBytesLocked(),
 		EdgeEstimatedBytes:            c.edgeCausalEstimatedBytesLocked(),
 		VertexEntriesHighWater:        c.vertexCausalHighWater,
@@ -226,6 +228,10 @@ func (c *GraphCache[S, T]) CausalMetadataStats() CausalMetadataStats {
 	stats.EdgeOverLimit = stats.MaxEdgeEntries > 0 && stats.EdgeEntries > stats.MaxEdgeEntries
 	stats.OldestVertexRetentionDeadline = c.oldestVertexTombstoneDeadline
 	stats.OldestEdgeRetentionDeadline = c.oldestEdgeTombstoneDeadline
+	if deadline := c.oldestEdgeContributionDeadline; !deadline.IsZero() &&
+		(stats.OldestEdgeRetentionDeadline.IsZero() || deadline.Before(stats.OldestEdgeRetentionDeadline)) {
+		stats.OldestEdgeRetentionDeadline = deadline
+	}
 	return stats
 }
 
@@ -311,7 +317,18 @@ func (c *GraphCache[S, T]) vertexCausalEstimatedBytesLocked() uint64 {
 }
 
 func (c *GraphCache[S, T]) edgeCausalEstimatedBytesLocked() uint64 {
-	return c.edgeCausalUsageBytes + c.edgeTombstoneDeadlineBytes
+	return c.edgeCausalUsageBytes + c.edgeTombstoneDeadlineBytes +
+		c.edgeContributionTombstoneBytes + c.edgeContributionDeadlineBytes
+}
+
+func (c *GraphCache[S, T]) edgeCausalEntriesLocked() int {
+	return len(c.edgeCausalUsage) + len(c.edgeContributionTombstones)
+}
+
+func (c *GraphCache[S, T]) updateEdgeCausalHighWaterLocked() {
+	if current := c.edgeCausalEntriesLocked(); current > c.edgeCausalHighWater {
+		c.edgeCausalHighWater = current
+	}
 }
 
 func (c *GraphCache[S, T]) updateVertexCausalBytesHighWaterLocked() {
@@ -369,9 +386,7 @@ func (c *GraphCache[S, T]) ensureEdgeCausalUsageLocked(key EdgeKey[S]) {
 	if len(c.edgeCausalUsage) > c.edgeCausalUsagePeak {
 		c.edgeCausalUsagePeak = len(c.edgeCausalUsage)
 	}
-	if len(c.edgeCausalUsage) > c.edgeCausalHighWater {
-		c.edgeCausalHighWater = len(c.edgeCausalUsage)
-	}
+	c.updateEdgeCausalHighWaterLocked()
 	c.updateEdgeCausalBytesHighWaterLocked()
 }
 
@@ -506,9 +521,32 @@ func (c *GraphCache[S, T]) checkEdgeCausalCapacityLocked(keys []EdgeKey[S]) erro
 	if requested == 0 {
 		return nil
 	}
-	if len(c.edgeCausalUsage)+requested <= limit {
+	if c.edgeCausalEntriesLocked()+requested <= limit {
 		return nil
 	}
 	c.edgeCausalRejected++
-	return &CausalMetadataCapacityError{Kind: "edge", Current: len(c.edgeCausalUsage), Requested: requested, Limit: limit}
+	return &CausalMetadataCapacityError{Kind: "edge", Current: c.edgeCausalEntriesLocked(), Requested: requested, Limit: limit}
+}
+
+func (c *GraphCache[S, T]) checkEdgeContributionCausalCapacityLocked(keys []EdgeContributionKey[S]) error {
+	limit := c.causalLimits.MaxEdgeEntries
+	if limit <= 0 {
+		return nil
+	}
+	seen := make(map[EdgeContributionKey[S]]struct{}, len(keys))
+	requested := 0
+	for _, key := range keys {
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		if _, retained := c.edgeContributionTombstones[key]; !retained {
+			requested++
+		}
+	}
+	if requested == 0 || c.edgeCausalEntriesLocked()+requested <= limit {
+		return nil
+	}
+	c.edgeCausalRejected++
+	return &CausalMetadataCapacityError{Kind: "edge", Current: c.edgeCausalEntriesLocked(), Requested: requested, Limit: limit}
 }

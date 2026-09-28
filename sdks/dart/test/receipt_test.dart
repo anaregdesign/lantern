@@ -630,6 +630,37 @@ void main() {
       ),
     );
 
+    final unsupportedContributionDelete = _client(
+      FakeTransportBuilder()
+          .unary<
+            graph.GetReceiptStatusesRequest,
+            graph.GetReceiptStatusesResponse
+          >(
+            LanternService.getReceiptStatuses,
+            (request, context) => graph.GetReceiptStatusesResponse(
+              statuses: [
+                _confirmedStatus(
+                  id,
+                  result: graph.ReceiptResult(
+                    deleteEdgeContributionExisted: false,
+                  ),
+                ),
+              ],
+            ),
+          )
+          .build(),
+    );
+    await expectLater(
+      unsupportedContributionDelete.getReceiptStatus(id),
+      throwsA(
+        isA<LanternInternalException>().having(
+          (error) => error.isSdkProtocolViolation,
+          'isSdkProtocolViolation',
+          isTrue,
+        ),
+      ),
+    );
+
     for (final retention in [
       const Duration(minutes: 59),
       const Duration(days: 31),

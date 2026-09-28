@@ -45,6 +45,7 @@ const IdentityOperation$json = {
     {'1': 'IDENTITY_OPERATION_PUT_EDGE', '2': 4},
     {'1': 'IDENTITY_OPERATION_DELETE_EDGE', '2': 5},
     {'1': 'IDENTITY_OPERATION_RECEIPT_ONLY', '2': 6},
+    {'1': 'IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION', '2': 7},
   ],
 };
 
@@ -54,7 +55,8 @@ final $typed_data.Uint8List identityOperationDescriptor = $convert.base64Decode(
     'IhCh1JREVOVElUWV9PUEVSQVRJT05fUFVUX1ZFUlRFWBABEiQKIElERU5USVRZX09QRVJBVElP'
     'Tl9ERUxFVEVfVkVSVEVYEAISHwobSURFTlRJVFlfT1BFUkFUSU9OX0FERF9FREdFEAMSHwobSU'
     'RFTlRJVFlfT1BFUkFUSU9OX1BVVF9FREdFEAQSIgoeSURFTlRJVFlfT1BFUkFUSU9OX0RFTEVU'
-    'RV9FREdFEAUSIwofSURFTlRJVFlfT1BFUkFUSU9OX1JFQ0VJUFRfT05MWRAG');
+    'RV9FREdFEAUSIwofSURFTlRJVFlfT1BFUkFUSU9OX1JFQ0VJUFRfT05MWRAGEi8KK0lERU5USV'
+    'RZX09QRVJBVElPTl9ERUxFVEVfRURHRV9DT05UUklCVVRJT04QBw==');
 
 @$core.Deprecated('Use snapshotFormatDescriptor instead')
 const SnapshotFormat$json = {
@@ -82,6 +84,7 @@ const SnapshotReceiptKind$json = {
     {'1': 'SNAPSHOT_RECEIPT_KIND_ADD_EDGE', '2': 3},
     {'1': 'SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX', '2': 4},
     {'1': 'SNAPSHOT_RECEIPT_KIND_DELETE_EDGE', '2': 5},
+    {'1': 'SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION', '2': 6},
   ],
 };
 
@@ -91,7 +94,8 @@ final $typed_data.Uint8List snapshotReceiptKindDescriptor = $convert.base64Decod
     'lFRBAAEiQKIFNOQVBTSE9UX1JFQ0VJUFRfS0lORF9QVVRfVkVSVEVYEAESIgoeU05BUFNIT1Rf'
     'UkVDRUlQVF9LSU5EX1BVVF9FREdFEAISIgoeU05BUFNIT1RfUkVDRUlQVF9LSU5EX0FERF9FRE'
     'dFEAMSJwojU05BUFNIT1RfUkVDRUlQVF9LSU5EX0RFTEVURV9WRVJURVgQBBIlCiFTTkFQU0hP'
-    'VF9SRUNFSVBUX0tJTkRfREVMRVRFX0VER0UQBQ==');
+    'VF9SRUNFSVBUX0tJTkRfREVMRVRFX0VER0UQBRIyCi5TTkFQU0hPVF9SRUNFSVBUX0tJTkRfRE'
+    'VMRVRFX0VER0VfQ09OVFJJQlVUSU9OEAY=');
 
 @$core.Deprecated('Use hLCTimestampDescriptor instead')
 const HLCTimestamp$json = {
@@ -274,6 +278,33 @@ const MutationOp$json = {
       '9': 0,
       '10': 'replicatedReceiptEdgeAdd'
     },
+    {
+      '1': 'delete_edge_contribution',
+      '3': 19,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.DeleteEdgeContributionRequest',
+      '9': 0,
+      '10': 'deleteEdgeContribution'
+    },
+    {
+      '1': 'delete_edge_contributions',
+      '3': 20,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.DeleteEdgeContributionsRequest',
+      '9': 0,
+      '10': 'deleteEdgeContributions'
+    },
+    {
+      '1': 'replicated_receipt_edge_contribution_delete',
+      '3': 21,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptEdgeContributionDelete',
+      '9': 0,
+      '10': 'replicatedReceiptEdgeContributionDelete'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -308,7 +339,13 @@ final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
     'BoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0VmVydGV4RGVsZXRlSABSHXJlcGxpY2F0ZWRSZWNlaXB0'
     'VmVydGV4RGVsZXRlEmMKG3JlcGxpY2F0ZWRfcmVjZWlwdF9lZGdlX2FkZBgSIAEoCzIiLmdyYX'
     'BoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0RWRnZUFkZEgAUhhyZXBsaWNhdGVkUmVjZWlwdEVkZ2VB'
-    'ZGRCBAoCb3A=');
+    'ZGQSYwoYZGVsZXRlX2VkZ2VfY29udHJpYnV0aW9uGBMgASgLMicuZ3JhcGgudjEuRGVsZXRlRW'
+    'RnZUNvbnRyaWJ1dGlvblJlcXVlc3RIAFIWZGVsZXRlRWRnZUNvbnRyaWJ1dGlvbhJmChlkZWxl'
+    'dGVfZWRnZV9jb250cmlidXRpb25zGBQgASgLMiguZ3JhcGgudjEuRGVsZXRlRWRnZUNvbnRyaW'
+    'J1dGlvbnNSZXF1ZXN0SABSF2RlbGV0ZUVkZ2VDb250cmlidXRpb25zEpEBCityZXBsaWNhdGVk'
+    'X3JlY2VpcHRfZWRnZV9jb250cmlidXRpb25fZGVsZXRlGBUgASgLMjEuZ3JhcGgudjEuUmVwbG'
+    'ljYXRlZFJlY2VpcHRFZGdlQ29udHJpYnV0aW9uRGVsZXRlSABSJ3JlcGxpY2F0ZWRSZWNlaXB0'
+    'RWRnZUNvbnRyaWJ1dGlvbkRlbGV0ZUIECgJvcA==');
 
 @$core.Deprecated('Use replicatedReceiptEdgeDeleteItemDescriptor instead')
 const ReplicatedReceiptEdgeDeleteItem$json = {
@@ -386,6 +423,88 @@ final $typed_data.Uint8List replicatedReceiptEdgeDeleteDescriptor = $convert.bas
     'Z2VycHJpbnQSTQoUdG9tYnN0b25lX2V4cGlyYXRpb24YAyABKAsyGi5nb29nbGUucHJvdG9idW'
     'YuVGltZXN0YW1wUhN0b21ic3RvbmVFeHBpcmF0aW9uEj8KBWl0ZW1zGAQgAygLMikuZ3JhcGgu'
     'djEuUmVwbGljYXRlZFJlY2VpcHRFZGdlRGVsZXRlSXRlbVIFaXRlbXM=');
+
+@$core.Deprecated(
+    'Use replicatedReceiptEdgeContributionDeleteItemDescriptor instead')
+const ReplicatedReceiptEdgeContributionDeleteItem$json = {
+  '1': 'ReplicatedReceiptEdgeContributionDeleteItem',
+  '2': [
+    {
+      '1': 'key',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.EdgeContributionKey',
+      '10': 'key'
+    },
+    {
+      '1': 'receipt',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+    {
+      '1': 'causally_accepted',
+      '3': 3,
+      '4': 1,
+      '5': 8,
+      '10': 'causallyAccepted'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptEdgeContributionDeleteItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List
+    replicatedReceiptEdgeContributionDeleteItemDescriptor =
+    $convert.base64Decode(
+        'CitSZXBsaWNhdGVkUmVjZWlwdEVkZ2VDb250cmlidXRpb25EZWxldGVJdGVtEi8KA2tleRgBIA'
+        'EoCzIdLmdyYXBoLnYxLkVkZ2VDb250cmlidXRpb25LZXlSA2tleRIzCgdyZWNlaXB0GAIgASgL'
+        'MhkuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0UgdyZWNlaXB0EisKEWNhdXNhbGx5X2FjY2VwdG'
+        'VkGAMgASgIUhBjYXVzYWxseUFjY2VwdGVk');
+
+@$core
+    .Deprecated('Use replicatedReceiptEdgeContributionDeleteDescriptor instead')
+const ReplicatedReceiptEdgeContributionDelete$json = {
+  '1': 'ReplicatedReceiptEdgeContributionDelete',
+  '2': [
+    {'1': 'deployment_epoch', '3': 1, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 2,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+    {
+      '1': 'tombstone_expiration',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'tombstoneExpiration'
+    },
+    {
+      '1': 'items',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedReceiptEdgeContributionDeleteItem',
+      '10': 'items'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedReceiptEdgeContributionDelete`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedReceiptEdgeContributionDeleteDescriptor =
+    $convert.base64Decode(
+        'CidSZXBsaWNhdGVkUmVjZWlwdEVkZ2VDb250cmlidXRpb25EZWxldGUSKQoQZGVwbG95bWVudF'
+        '9lcG9jaBgBIAEoDFIPZGVwbG95bWVudEVwb2NoEi0KEnBvbGljeV9maW5nZXJwcmludBgCIAEo'
+        'DFIRcG9saWN5RmluZ2VycHJpbnQSTQoUdG9tYnN0b25lX2V4cGlyYXRpb24YAyABKAsyGi5nb2'
+        '9nbGUucHJvdG9idWYuVGltZXN0YW1wUhN0b21ic3RvbmVFeHBpcmF0aW9uEksKBWl0ZW1zGAQg'
+        'AygLMjUuZ3JhcGgudjEuUmVwbGljYXRlZFJlY2VpcHRFZGdlQ29udHJpYnV0aW9uRGVsZXRlSX'
+        'RlbVIFaXRlbXM=');
 
 @$core.Deprecated('Use replicatedReceiptVertexPutItemDescriptor instead')
 const ReplicatedReceiptVertexPutItem$json = {
@@ -1129,6 +1248,13 @@ const SnapshotFooter$json = {
       '5': 4,
       '10': 'retiredReceiptCount'
     },
+    {
+      '1': 'edge_contribution_tombstone_count',
+      '3': 11,
+      '4': 1,
+      '5': 4,
+      '10': 'edgeContributionTombstoneCount'
+    },
   ],
 };
 
@@ -1142,7 +1268,9 @@ final $typed_data.Uint8List snapshotFooterDescriptor = $convert.base64Decode(
     'NvdW50GAYgASgEUhJlZGdlVG9tYnN0b25lQ291bnQSMAoUYWN0aXZlX3JlY2VpcHRfY291bnQY'
     'ByABKARSEmFjdGl2ZVJlY2VpcHRDb3VudBIhCgxvcmlnaW5fY291bnQYCCABKARSC29yaWdpbk'
     'NvdW50Ei4KE3JldGlyZWRfZXBvY2hfY291bnQYCSABKARSEXJldGlyZWRFcG9jaENvdW50EjIK'
-    'FXJldGlyZWRfcmVjZWlwdF9jb3VudBgKIAEoBFITcmV0aXJlZFJlY2VpcHRDb3VudA==');
+    'FXJldGlyZWRfcmVjZWlwdF9jb3VudBgKIAEoBFITcmV0aXJlZFJlY2VpcHRDb3VudBJJCiFlZG'
+    'dlX2NvbnRyaWJ1dGlvbl90b21ic3RvbmVfY291bnQYCyABKARSHmVkZ2VDb250cmlidXRpb25U'
+    'b21ic3RvbmVDb3VudA==');
 
 @$core.Deprecated('Use snapshotReceiptContributionDescriptor instead')
 const SnapshotReceiptContribution$json = {
@@ -1436,6 +1564,40 @@ final $typed_data.Uint8List snapshotEdgeTombstoneDescriptor = $convert.base64Dec
     'gJUgRoZWFkEigKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcFIDaGxjEjoKCmV4'
     'cGlyYXRpb24YBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpleHBpcmF0aW9u');
 
+@$core.Deprecated('Use snapshotEdgeContributionTombstoneDescriptor instead')
+const SnapshotEdgeContributionTombstone$json = {
+  '1': 'SnapshotEdgeContributionTombstone',
+  '2': [
+    {'1': 'tail', '3': 1, '4': 1, '5': 9, '10': 'tail'},
+    {'1': 'head', '3': 2, '4': 1, '5': 9, '10': 'head'},
+    {'1': 'contrib_id', '3': 3, '4': 1, '5': 12, '10': 'contribId'},
+    {
+      '1': 'hlc',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.HLCTimestamp',
+      '10': 'hlc'
+    },
+    {
+      '1': 'expiration',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'expiration'
+    },
+  ],
+};
+
+/// Descriptor for `SnapshotEdgeContributionTombstone`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotEdgeContributionTombstoneDescriptor =
+    $convert.base64Decode(
+        'CiFTbmFwc2hvdEVkZ2VDb250cmlidXRpb25Ub21ic3RvbmUSEgoEdGFpbBgBIAEoCVIEdGFpbB'
+        'ISCgRoZWFkGAIgASgJUgRoZWFkEh0KCmNvbnRyaWJfaWQYAyABKAxSCWNvbnRyaWJJZBIoCgNo'
+        'bGMYBCABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSA2hsYxI6CgpleHBpcmF0aW9uGAUgAS'
+        'gLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKZXhwaXJhdGlvbg==');
+
 @$core.Deprecated('Use snapshotResponseDescriptor instead')
 const SnapshotResponse$json = {
   '1': 'SnapshotResponse',
@@ -1521,6 +1683,15 @@ const SnapshotResponse$json = {
       '9': 0,
       '10': 'receipt'
     },
+    {
+      '1': 'edge_contribution_tombstone',
+      '3': 10,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotEdgeContributionTombstone',
+      '9': 0,
+      '10': 'edgeContributionTombstone'
+    },
   ],
   '8': [
     {'1': 'entry'},
@@ -1539,7 +1710,9 @@ final $typed_data.Uint8List snapshotResponseDescriptor = $convert.base64Decode(
     'F1c2FsQmFycmllchJOChB2ZXJ0ZXhfdG9tYnN0b25lGAcgASgLMiEuZ3JhcGgudjEuU25hcHNo'
     'b3RWZXJ0ZXhUb21ic3RvbmVIAFIPdmVydGV4VG9tYnN0b25lEkgKDmVkZ2VfdG9tYnN0b25lGA'
     'ggASgLMh8uZ3JhcGgudjEuU25hcHNob3RFZGdlVG9tYnN0b25lSABSDWVkZ2VUb21ic3RvbmUS'
-    'NQoHcmVjZWlwdBgJIAEoCzIZLmdyYXBoLnYxLlNuYXBzaG90UmVjZWlwdEgAUgdyZWNlaXB0Qg'
+    'NQoHcmVjZWlwdBgJIAEoCzIZLmdyYXBoLnYxLlNuYXBzaG90UmVjZWlwdEgAUgdyZWNlaXB0Em'
+    '0KG2VkZ2VfY29udHJpYnV0aW9uX3RvbWJzdG9uZRgKIAEoCzIrLmdyYXBoLnYxLlNuYXBzaG90'
+    'RWRnZUNvbnRyaWJ1dGlvblRvbWJzdG9uZUgAUhllZGdlQ29udHJpYnV0aW9uVG9tYnN0b25lQg'
     'cKBWVudHJ5');
 
 @$core.Deprecated('Use peerStatusRequestDescriptor instead')
@@ -1686,6 +1859,15 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
       ReplicatedReceiptVertexDeleteItem$json,
   '.graph.v1.ReplicatedReceiptEdgeAdd': ReplicatedReceiptEdgeAdd$json,
   '.graph.v1.ReplicatedReceiptEdgeAddItem': ReplicatedReceiptEdgeAddItem$json,
+  '.graph.v1.DeleteEdgeContributionRequest':
+      $0.DeleteEdgeContributionRequest$json,
+  '.graph.v1.DeleteEdgeContributionsRequest':
+      $0.DeleteEdgeContributionsRequest$json,
+  '.graph.v1.EdgeContributionKey': $0.EdgeContributionKey$json,
+  '.graph.v1.ReplicatedReceiptEdgeContributionDelete':
+      ReplicatedReceiptEdgeContributionDelete$json,
+  '.graph.v1.ReplicatedReceiptEdgeContributionDeleteItem':
+      ReplicatedReceiptEdgeContributionDeleteItem$json,
   '.graph.v1.IdentityCheckpoint': IdentityCheckpoint$json,
   '.graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry':
       IdentityCheckpoint_LastSeqPerOriginEntry$json,
@@ -1709,6 +1891,8 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SnapshotEdgeTombstone': SnapshotEdgeTombstone$json,
   '.graph.v1.SnapshotReceipt': SnapshotReceipt$json,
   '.graph.v1.SnapshotReceiptContribution': SnapshotReceiptContribution$json,
+  '.graph.v1.SnapshotEdgeContributionTombstone':
+      SnapshotEdgeContributionTombstone$json,
   '.graph.v1.PeerStatusRequest': PeerStatusRequest$json,
   '.graph.v1.PeerStatusResponse': PeerStatusResponse$json,
 };

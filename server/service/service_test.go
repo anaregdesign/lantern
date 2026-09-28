@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -994,6 +995,89 @@ func TestLanternService_DeleteEdge(t *testing.T) {
 			t.Fatalf("receipt-less DeleteEdges outcomes = %v, want [true]", pluralResp.GetExisted())
 		}
 	})
+}
+
+func TestLanternService_DeleteEdgeContributions(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 16})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(cache).
+		WithReplication(log, hlc.New(hlc.NodeID{0x81}, hlc.Options{}), nil).
+		WithTombstoneTTL(time.Hour)
+	ctx := context.Background()
+	first := []byte("abcdefghijklmnopqrstuvwx")
+	second := []byte("ABCDEFGHIJKLMNOPQRSTUVWX")
+	absent := []byte("0123456789abcdefghijklmn")
+	edge := &pb.Edge{Tail: "tail", Head: "head", Weight: 3}
+	if _, err := svc.AddEdges(ctx, &pb.AddEdgesRequest{
+		Edges:      []*pb.Edge{edge, {Tail: "tail", Head: "head", Weight: 5}},
+		ContribIds: [][]byte{first, second},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := func(id []byte) *pb.EdgeContributionKey {
+		return &pb.EdgeContributionKey{Tail: "tail", Head: "head", ContribId: id}
+	}
+	resp, err := svc.DeleteEdgeContributions(ctx, &pb.DeleteEdgeContributionsRequest{
+		Contributions: []*pb.EdgeContributionKey{key(first), key(absent), key(first)},
+	})
+	if err != nil || resp.GetDeleted() != 1 ||
+		!slices.Equal(resp.GetExisted(), []bool{true, false, false}) {
+		t.Fatalf("DeleteEdgeContributions = (%v, %v)", resp, err)
+	}
+	if weight, ok := cache.GetWeight("tail", "head"); !ok || weight != 5 {
+		t.Fatalf("surviving contribution = %v, %v, want 5, true", weight, ok)
+	}
+	if _, err := svc.AddEdge(ctx, &pb.AddEdgeRequest{
+		Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 17}, ContribId: absent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if weight, ok := cache.GetWeight("tail", "head"); !ok || weight != 5 {
+		t.Fatalf("delayed Add after absent-key Delete = %v, %v, want 5, true", weight, ok)
+	}
+	one, err := svc.DeleteEdgeContribution(ctx, &pb.DeleteEdgeContributionRequest{
+		Tail: "tail", Head: "head", ContribId: second,
+	})
+	if err != nil || !one.GetExisted() {
+		t.Fatalf("DeleteEdgeContribution = (%v, %v)", one, err)
+	}
+	if _, ok := cache.GetWeight("tail", "head"); ok {
+		t.Fatal("deleting the last Add contribution left a live edge")
+	}
+	entries := log.RetainedEntries()
+	if len(entries) != 4 {
+		t.Fatalf("published mutations = %d, want 4", len(entries))
+	}
+	frame, ok := graphMutationFromLog(entries[1].Op)
+	if !ok || frame.GetOp().GetDeleteEdgeContributions() == nil ||
+		frame.GetTombstoneExpiration() == nil {
+		t.Fatalf("first Delete was not published with D4 deadline: %v", frame)
+	}
+}
+
+func TestLanternService_DeleteEdgeContributionRejectsWithoutRetentionOrValidIdentity(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).
+		WithReplication(log, hlc.New(hlc.NodeID{0x81}, hlc.Options{}), nil)
+	ctx := context.Background()
+	for _, id := range [][]byte{nil, make([]byte, 24), []byte("short")} {
+		_, err := svc.DeleteEdgeContribution(ctx, &pb.DeleteEdgeContributionRequest{
+			Tail: "tail", Head: "head", ContribId: id,
+		})
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("invalid ContribID %x returned %v", id, err)
+		}
+	}
+	if _, err := svc.DeleteEdgeContribution(ctx, &pb.DeleteEdgeContributionRequest{
+		Tail: "tail", Head: "head", ContribId: bytes.Repeat([]byte{1}, 24),
+	}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("disabled retention returned %v", err)
+	}
+	if log.Len() != 0 {
+		t.Fatal("rejected contribution Delete entered log")
+	}
 }
 
 func seedTriangle(t *testing.T, s *LanternService) {

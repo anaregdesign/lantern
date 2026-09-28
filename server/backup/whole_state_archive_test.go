@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -132,7 +133,33 @@ func TestWholeStateArchiveRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWholeStateArchivePreservesVertexReceiptKindsAndOpaqueResults(t *testing.T) {
+func TestWholeStateArchivePreservesContributionTombstone(t *testing.T) {
+	a := wholeStateArchiveFixture(t)
+	deadline := time.Now().Add(2 * time.Hour).UTC()
+	dataExpiration := deadline.Add(-time.Hour)
+	id := graphcache.ContribID{8}
+	a.Graph[3].GetEdge().Contributions[0].Expiration = timestamppb.New(dataExpiration)
+	addContributionTombstoneToArchive(&a, id, deadline)
+	raw := encodedWholeStateArchive(t, a)
+	got, err := decodeWholeStateArchive(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := got.Graph[1].GetEdgeContributionTombstone()
+	if len(got.Graph) != 6 || marker == nil ||
+		!bytes.Equal(marker.GetContribId(), id[:]) ||
+		!marker.GetExpiration().AsTime().Equal(deadline) ||
+		got.Graph[len(got.Graph)-1].GetFooter().GetEdgeContributionTombstoneCount() != 1 ||
+		!got.Graph[4].GetEdge().GetContributions()[0].GetExpiration().AsTime().Equal(dataExpiration) {
+		t.Fatalf("archive lost per-ID D4 floor or confused it with data TTL: %+v", got.Graph)
+	}
+	var again bytes.Buffer
+	if err := encodeWholeStateArchive(&again, got); err != nil || !bytes.Equal(again.Bytes(), raw) {
+		t.Fatalf("per-ID archive encoding is not deterministic: %v", err)
+	}
+}
+
+func TestWholeStateArchivePreservesReceiptKindsAndOpaqueResults(t *testing.T) {
 	archive := wholeStateArchiveFixture(t)
 	policy := archive.Policy
 	policy.ClockHighWater = time.Time{}
@@ -151,6 +178,7 @@ func TestWholeStateArchivePreservesVertexReceiptKindsAndOpaqueResults(t *testing
 	cases := []receiptCase{
 		{kind: mutationreceipt.PutVertex, result: []byte{1, 0, 0xff, 7}, seed: 0x21},
 		{kind: mutationreceipt.DeleteVertex, result: []byte{0, 0xfe, 9}, seed: 0x22},
+		{kind: mutationreceipt.DeleteEdgeContribution, result: []byte{0}, seed: 0x23},
 	}
 	for _, tc := range cases {
 		id, err := mutationreceipt.NewID(policy.Epoch, issued, [24]byte{tc.seed})
@@ -207,7 +235,7 @@ func TestWholeStateArchivePreservesVertexReceiptKindsAndOpaqueResults(t *testing
 		t.Fatal(err)
 	}
 	if !bytes.Equal(reencoded.Bytes(), raw) {
-		t.Fatal("Vertex receipt archive round trip was not canonical")
+		t.Fatal("receipt archive round trip was not canonical")
 	}
 	decoded.Receipts.Receipts[0].Result[0] ^= 0xff
 	again, err := decodeWholeStateArchive(bytes.NewReader(raw))
@@ -314,6 +342,9 @@ func TestWholeStateArchiveRejectsInconsistentCut(t *testing.T) {
 		{"missing origin", func(a *wholeStateArchive) { a.Origins = nil }},
 		{"origin cutoff drift", func(a *wholeStateArchive) { a.Origins[0].LastSeq++ }},
 		{"graph footer drift", func(a *wholeStateArchive) { a.Graph[len(a.Graph)-1].GetFooter().EdgeCount++ }},
+		{"contribution tombstone footer drift", func(a *wholeStateArchive) {
+			a.Graph[len(a.Graph)-1].GetFooter().EdgeContributionTombstoneCount++
+		}},
 		{"graph order", func(a *wholeStateArchive) { a.Graph[1], a.Graph[3] = a.Graph[3], a.Graph[1] }},
 		{"unknown nested graph field", func(a *wholeStateArchive) {
 			a.Graph[1].GetVertex().ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
@@ -497,6 +528,26 @@ func TestWholeStateArchiveRejectsInvalidGraphPayload(t *testing.T) {
 				Expiration: timestamppb.New(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)),
 			}}})
 			a.Graph[len(a.Graph)-1].GetFooter().EdgeTombstoneCount++
+		}},
+		{"short contribution tombstone ID", "invalid edge contribution tombstone", func(a *wholeStateArchive) {
+			addContributionTombstoneToArchive(a, graphcache.ContribID{8}, time.Now().Add(time.Hour))
+			a.Graph[1].GetEdgeContributionTombstone().ContribId = []byte{8}
+		}},
+		{"duplicate contribution tombstone", "duplicate edge contribution tombstone", func(a *wholeStateArchive) {
+			addContributionTombstoneToArchive(a, graphcache.ContribID{8}, time.Now().Add(time.Hour))
+			addContributionTombstoneToArchive(a, graphcache.ContribID{8}, time.Now().Add(time.Hour))
+		}},
+		{"contribution tombstone unknown origin", "invalid edge contribution tombstone", func(a *wholeStateArchive) {
+			addContributionTombstoneToArchive(a, graphcache.ContribID{8}, time.Now().Add(time.Hour))
+			a.Graph[1].GetEdgeContributionTombstone().Hlc.NodeId[0]++
+		}},
+		{"contribution tombstone missing D4 deadline", "invalid edge contribution tombstone", func(a *wholeStateArchive) {
+			addContributionTombstoneToArchive(a, graphcache.ContribID{8}, time.Now().Add(time.Hour))
+			a.Graph[1].GetEdgeContributionTombstone().Expiration = nil
+		}},
+		{"later Add overlaps contribution tombstone", "live edge Add and contribution tombstone overlap", func(a *wholeStateArchive) {
+			addContributionTombstoneToArchive(a, graphcache.ContribID{7}, time.Now().Add(time.Hour))
+			a.Graph[1].GetEdgeContributionTombstone().Hlc.WallNs--
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

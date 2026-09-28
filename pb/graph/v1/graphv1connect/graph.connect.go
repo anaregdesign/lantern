@@ -90,6 +90,12 @@ const (
 	// LanternServiceDeleteEdgesProcedure is the fully-qualified name of the LanternService's
 	// DeleteEdges RPC.
 	LanternServiceDeleteEdgesProcedure = "/graph.v1.LanternService/DeleteEdges"
+	// LanternServiceDeleteEdgeContributionProcedure is the fully-qualified name of the LanternService's
+	// DeleteEdgeContribution RPC.
+	LanternServiceDeleteEdgeContributionProcedure = "/graph.v1.LanternService/DeleteEdgeContribution"
+	// LanternServiceDeleteEdgeContributionsProcedure is the fully-qualified name of the
+	// LanternService's DeleteEdgeContributions RPC.
+	LanternServiceDeleteEdgeContributionsProcedure = "/graph.v1.LanternService/DeleteEdgeContributions"
 	// LanternServiceDeleteEdgesByPrefixProcedure is the fully-qualified name of the LanternService's
 	// DeleteEdgesByPrefix RPC.
 	LanternServiceDeleteEdgesByPrefixProcedure = "/graph.v1.LanternService/DeleteEdgesByPrefix"
@@ -175,6 +181,12 @@ type LanternServiceClient interface {
 	DeleteEdge(context.Context, *connect.Request[v1.DeleteEdgeRequest]) (*connect.Response[v1.DeleteEdgeResponse], error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(context.Context, *connect.Request[v1.DeleteEdgesRequest]) (*connect.Response[v1.DeleteEdgesResponse], error)
+	// DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+	// It is a thin facade over DeleteEdgeContributions.
+	DeleteEdgeContribution(context.Context, *connect.Request[v1.DeleteEdgeContributionRequest]) (*connect.Response[v1.DeleteEdgeContributionResponse], error)
+	// DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+	// missing rows still install an absolute D4 remove-wins tombstone.
+	DeleteEdgeContributions(context.Context, *connect.Request[v1.DeleteEdgeContributionsRequest]) (*connect.Response[v1.DeleteEdgeContributionsResponse], error)
 	// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
 	// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
 	// At least one prefix must be non-empty. Pass `dry_run = true` to preview
@@ -352,6 +364,18 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(lanternServiceMethods.ByName("DeleteEdges")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteEdgeContribution: connect.NewClient[v1.DeleteEdgeContributionRequest, v1.DeleteEdgeContributionResponse](
+			httpClient,
+			baseURL+LanternServiceDeleteEdgeContributionProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("DeleteEdgeContribution")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteEdgeContributions: connect.NewClient[v1.DeleteEdgeContributionsRequest, v1.DeleteEdgeContributionsResponse](
+			httpClient,
+			baseURL+LanternServiceDeleteEdgeContributionsProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("DeleteEdgeContributions")),
+			connect.WithClientOptions(opts...),
+		),
 		deleteEdgesByPrefix: connect.NewClient[v1.DeleteEdgesByPrefixRequest, v1.DeleteEdgesByPrefixResponse](
 			httpClient,
 			baseURL+LanternServiceDeleteEdgesByPrefixProcedure,
@@ -405,35 +429,37 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // lanternServiceClient implements LanternServiceClient.
 type lanternServiceClient struct {
-	illuminate             *connect.Client[v1.IlluminateRequest, v1.IlluminateResponse]
-	getVertex              *connect.Client[v1.GetVertexRequest, v1.GetVertexResponse]
-	getVertices            *connect.Client[v1.GetVerticesRequest, v1.GetVerticesResponse]
-	putVertex              *connect.Client[v1.PutVertexRequest, v1.PutVertexResponse]
-	putVertices            *connect.Client[v1.PutVerticesRequest, v1.PutVerticesResponse]
-	deleteVertex           *connect.Client[v1.DeleteVertexRequest, v1.DeleteVertexResponse]
-	deleteVertices         *connect.Client[v1.DeleteVerticesRequest, v1.DeleteVerticesResponse]
-	scanVertices           *connect.Client[v1.ScanVerticesRequest, v1.ScanVerticesResponse]
-	scanVertexKeys         *connect.Client[v1.ScanVertexKeysRequest, v1.ScanVertexKeysResponse]
-	searchVertices         *connect.Client[v1.SearchVerticesRequest, v1.SearchVerticesResponse]
-	countVerticesByPrefix  *connect.Client[v1.CountVerticesByPrefixRequest, v1.CountVerticesByPrefixResponse]
-	deleteVerticesByPrefix *connect.Client[v1.DeleteVerticesByPrefixRequest, v1.DeleteVerticesByPrefixResponse]
-	topVerticesByDegree    *connect.Client[v1.TopVerticesByDegreeRequest, v1.TopVerticesByDegreeResponse]
-	getEdge                *connect.Client[v1.GetEdgeRequest, v1.GetEdgeResponse]
-	getEdges               *connect.Client[v1.GetEdgesRequest, v1.GetEdgesResponse]
-	addEdge                *connect.Client[v1.AddEdgeRequest, v1.AddEdgeResponse]
-	addEdges               *connect.Client[v1.AddEdgesRequest, v1.AddEdgesResponse]
-	putEdge                *connect.Client[v1.PutEdgeRequest, v1.PutEdgeResponse]
-	putEdges               *connect.Client[v1.PutEdgesRequest, v1.PutEdgesResponse]
-	deleteEdge             *connect.Client[v1.DeleteEdgeRequest, v1.DeleteEdgeResponse]
-	deleteEdges            *connect.Client[v1.DeleteEdgesRequest, v1.DeleteEdgesResponse]
-	deleteEdgesByPrefix    *connect.Client[v1.DeleteEdgesByPrefixRequest, v1.DeleteEdgesByPrefixResponse]
-	scanEdges              *connect.Client[v1.ScanEdgesRequest, v1.ScanEdgesResponse]
-	getServerStatus        *connect.Client[v1.GetServerStatusRequest, v1.GetServerStatusResponse]
-	getReplicationStatus   *connect.Client[v1.GetReplicationStatusRequest, v1.GetReplicationStatusResponse]
-	getReceiptCapability   *connect.Client[v1.GetReceiptCapabilityRequest, v1.GetReceiptCapabilityResponse]
-	getReceiptStatus       *connect.Client[v1.GetReceiptStatusRequest, v1.GetReceiptStatusResponse]
-	getReceiptStatuses     *connect.Client[v1.GetReceiptStatusesRequest, v1.GetReceiptStatusesResponse]
-	backupSnapshot         *connect.Client[v1.BackupSnapshotRequest, v1.BackupSnapshotResponse]
+	illuminate              *connect.Client[v1.IlluminateRequest, v1.IlluminateResponse]
+	getVertex               *connect.Client[v1.GetVertexRequest, v1.GetVertexResponse]
+	getVertices             *connect.Client[v1.GetVerticesRequest, v1.GetVerticesResponse]
+	putVertex               *connect.Client[v1.PutVertexRequest, v1.PutVertexResponse]
+	putVertices             *connect.Client[v1.PutVerticesRequest, v1.PutVerticesResponse]
+	deleteVertex            *connect.Client[v1.DeleteVertexRequest, v1.DeleteVertexResponse]
+	deleteVertices          *connect.Client[v1.DeleteVerticesRequest, v1.DeleteVerticesResponse]
+	scanVertices            *connect.Client[v1.ScanVerticesRequest, v1.ScanVerticesResponse]
+	scanVertexKeys          *connect.Client[v1.ScanVertexKeysRequest, v1.ScanVertexKeysResponse]
+	searchVertices          *connect.Client[v1.SearchVerticesRequest, v1.SearchVerticesResponse]
+	countVerticesByPrefix   *connect.Client[v1.CountVerticesByPrefixRequest, v1.CountVerticesByPrefixResponse]
+	deleteVerticesByPrefix  *connect.Client[v1.DeleteVerticesByPrefixRequest, v1.DeleteVerticesByPrefixResponse]
+	topVerticesByDegree     *connect.Client[v1.TopVerticesByDegreeRequest, v1.TopVerticesByDegreeResponse]
+	getEdge                 *connect.Client[v1.GetEdgeRequest, v1.GetEdgeResponse]
+	getEdges                *connect.Client[v1.GetEdgesRequest, v1.GetEdgesResponse]
+	addEdge                 *connect.Client[v1.AddEdgeRequest, v1.AddEdgeResponse]
+	addEdges                *connect.Client[v1.AddEdgesRequest, v1.AddEdgesResponse]
+	putEdge                 *connect.Client[v1.PutEdgeRequest, v1.PutEdgeResponse]
+	putEdges                *connect.Client[v1.PutEdgesRequest, v1.PutEdgesResponse]
+	deleteEdge              *connect.Client[v1.DeleteEdgeRequest, v1.DeleteEdgeResponse]
+	deleteEdges             *connect.Client[v1.DeleteEdgesRequest, v1.DeleteEdgesResponse]
+	deleteEdgeContribution  *connect.Client[v1.DeleteEdgeContributionRequest, v1.DeleteEdgeContributionResponse]
+	deleteEdgeContributions *connect.Client[v1.DeleteEdgeContributionsRequest, v1.DeleteEdgeContributionsResponse]
+	deleteEdgesByPrefix     *connect.Client[v1.DeleteEdgesByPrefixRequest, v1.DeleteEdgesByPrefixResponse]
+	scanEdges               *connect.Client[v1.ScanEdgesRequest, v1.ScanEdgesResponse]
+	getServerStatus         *connect.Client[v1.GetServerStatusRequest, v1.GetServerStatusResponse]
+	getReplicationStatus    *connect.Client[v1.GetReplicationStatusRequest, v1.GetReplicationStatusResponse]
+	getReceiptCapability    *connect.Client[v1.GetReceiptCapabilityRequest, v1.GetReceiptCapabilityResponse]
+	getReceiptStatus        *connect.Client[v1.GetReceiptStatusRequest, v1.GetReceiptStatusResponse]
+	getReceiptStatuses      *connect.Client[v1.GetReceiptStatusesRequest, v1.GetReceiptStatusesResponse]
+	backupSnapshot          *connect.Client[v1.BackupSnapshotRequest, v1.BackupSnapshotResponse]
 }
 
 // Illuminate calls graph.v1.LanternService.Illuminate.
@@ -541,6 +567,16 @@ func (c *lanternServiceClient) DeleteEdges(ctx context.Context, req *connect.Req
 	return c.deleteEdges.CallUnary(ctx, req)
 }
 
+// DeleteEdgeContribution calls graph.v1.LanternService.DeleteEdgeContribution.
+func (c *lanternServiceClient) DeleteEdgeContribution(ctx context.Context, req *connect.Request[v1.DeleteEdgeContributionRequest]) (*connect.Response[v1.DeleteEdgeContributionResponse], error) {
+	return c.deleteEdgeContribution.CallUnary(ctx, req)
+}
+
+// DeleteEdgeContributions calls graph.v1.LanternService.DeleteEdgeContributions.
+func (c *lanternServiceClient) DeleteEdgeContributions(ctx context.Context, req *connect.Request[v1.DeleteEdgeContributionsRequest]) (*connect.Response[v1.DeleteEdgeContributionsResponse], error) {
+	return c.deleteEdgeContributions.CallUnary(ctx, req)
+}
+
 // DeleteEdgesByPrefix calls graph.v1.LanternService.DeleteEdgesByPrefix.
 func (c *lanternServiceClient) DeleteEdgesByPrefix(ctx context.Context, req *connect.Request[v1.DeleteEdgesByPrefixRequest]) (*connect.Response[v1.DeleteEdgesByPrefixResponse], error) {
 	return c.deleteEdgesByPrefix.CallUnary(ctx, req)
@@ -640,6 +676,12 @@ type LanternServiceHandler interface {
 	DeleteEdge(context.Context, *connect.Request[v1.DeleteEdgeRequest]) (*connect.Response[v1.DeleteEdgeResponse], error)
 	// DeleteEdges removes several edges in one round trip.
 	DeleteEdges(context.Context, *connect.Request[v1.DeleteEdgesRequest]) (*connect.Response[v1.DeleteEdgesResponse], error)
+	// DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+	// It is a thin facade over DeleteEdgeContributions.
+	DeleteEdgeContribution(context.Context, *connect.Request[v1.DeleteEdgeContributionRequest]) (*connect.Response[v1.DeleteEdgeContributionResponse], error)
+	// DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+	// missing rows still install an absolute D4 remove-wins tombstone.
+	DeleteEdgeContributions(context.Context, *connect.Request[v1.DeleteEdgeContributionsRequest]) (*connect.Response[v1.DeleteEdgeContributionsResponse], error)
 	// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
 	// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
 	// At least one prefix must be non-empty. Pass `dry_run = true` to preview
@@ -813,6 +855,18 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		connect.WithSchema(lanternServiceMethods.ByName("DeleteEdges")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternServiceDeleteEdgeContributionHandler := connect.NewUnaryHandler(
+		LanternServiceDeleteEdgeContributionProcedure,
+		svc.DeleteEdgeContribution,
+		connect.WithSchema(lanternServiceMethods.ByName("DeleteEdgeContribution")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternServiceDeleteEdgeContributionsHandler := connect.NewUnaryHandler(
+		LanternServiceDeleteEdgeContributionsProcedure,
+		svc.DeleteEdgeContributions,
+		connect.WithSchema(lanternServiceMethods.ByName("DeleteEdgeContributions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	lanternServiceDeleteEdgesByPrefixHandler := connect.NewUnaryHandler(
 		LanternServiceDeleteEdgesByPrefixProcedure,
 		svc.DeleteEdgesByPrefix,
@@ -905,6 +959,10 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServiceDeleteEdgeHandler.ServeHTTP(w, r)
 		case LanternServiceDeleteEdgesProcedure:
 			lanternServiceDeleteEdgesHandler.ServeHTTP(w, r)
+		case LanternServiceDeleteEdgeContributionProcedure:
+			lanternServiceDeleteEdgeContributionHandler.ServeHTTP(w, r)
+		case LanternServiceDeleteEdgeContributionsProcedure:
+			lanternServiceDeleteEdgeContributionsHandler.ServeHTTP(w, r)
 		case LanternServiceDeleteEdgesByPrefixProcedure:
 			lanternServiceDeleteEdgesByPrefixHandler.ServeHTTP(w, r)
 		case LanternServiceScanEdgesProcedure:
@@ -1012,6 +1070,14 @@ func (UnimplementedLanternServiceHandler) DeleteEdge(context.Context, *connect.R
 
 func (UnimplementedLanternServiceHandler) DeleteEdges(context.Context, *connect.Request[v1.DeleteEdgesRequest]) (*connect.Response[v1.DeleteEdgesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.DeleteEdges is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) DeleteEdgeContribution(context.Context, *connect.Request[v1.DeleteEdgeContributionRequest]) (*connect.Response[v1.DeleteEdgeContributionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.DeleteEdgeContribution is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) DeleteEdgeContributions(context.Context, *connect.Request[v1.DeleteEdgeContributionsRequest]) (*connect.Response[v1.DeleteEdgeContributionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.DeleteEdgeContributions is not implemented"))
 }
 
 func (UnimplementedLanternServiceHandler) DeleteEdgesByPrefix(context.Context, *connect.Request[v1.DeleteEdgesByPrefixRequest]) (*connect.Response[v1.DeleteEdgesByPrefixResponse], error) {

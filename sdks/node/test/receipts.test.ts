@@ -89,6 +89,10 @@ type StoredOriginalResult =
       value: boolean;
     }
   | {
+      case: "deleteEdgeContributionExisted";
+      value: boolean;
+    }
+  | {
       case: "addEdgeEffectiveWeight";
       value: number;
     };
@@ -122,6 +126,7 @@ class ReceiptTransportFake {
       PbReceiptMutationKind.DELETE_VERTEX,
       PbReceiptMutationKind.DELETE_EDGE,
       PbReceiptMutationKind.ADD_EDGE,
+      PbReceiptMutationKind.DELETE_EDGE_CONTRIBUTION,
     ],
   };
   capabilityUnavailable = false;
@@ -131,6 +136,8 @@ class ReceiptTransportFake {
   dropNextVertexDeleteResponse = false;
   dropNextAddResponse = false;
   malformedDeleteResponse = false;
+  dropNextContributionDeleteResponse = false;
+  malformedContributionDeleteResponse?: "length" | "count";
   malformedPutResponse = false;
   malformedVertexDeleteResponse = false;
   malformedAddResponse = false;
@@ -146,6 +153,7 @@ class ReceiptTransportFake {
   putCalls = 0;
   vertexDeleteCalls = 0;
   deleteCalls = 0;
+  contributionDeleteCalls = 0;
   addCalls = 0;
   mutationCount = 0;
   statusCalls = 0;
@@ -153,6 +161,7 @@ class ReceiptTransportFake {
   readonly vertices = new Map<string, string>();
   readonly edges = new Set<string>();
   readonly edgeWeights = new Map<string, number>();
+  readonly contributions = new Set<string>();
   readonly receipts = new Map<string, StoredReceipt>();
   readonly statusOverrides = new Map<string, "notYetObserved" | "noLongerProvable">();
   lastPutVertexJson: string[] = [];
@@ -161,6 +170,10 @@ class ReceiptTransportFake {
 
   private edgeKey(tail: string, head: string): string {
     return `${tail}\u0000${head}`;
+  }
+
+  contributionKey(tail: string, head: string, id: Uint8Array): string {
+    return `${this.edgeKey(tail, head)}\u0000${hex(id)}`;
   }
 
   addEdge(tail: string, head: string, weight = 1): void {
@@ -530,6 +543,56 @@ class ReceiptTransportFake {
               existed,
             };
           },
+          deleteEdgeContributions: (request, context) => {
+            this.contributionDeleteCalls++;
+            this.authorizationHeaders.push(context.requestHeader.get("Authorization"));
+            if (this.rotateGenerationBeforeDelete) {
+              this.rotateGenerationBeforeDelete = false;
+              this.capability.endpoint!.generation = filled(16, 0x99);
+              throw new ConnectError("receipt generation changed", Code.FailedPrecondition);
+            }
+            const receiptContext = request.receiptContext;
+            if (!receiptContext) {
+              throw new ConnectError("receipt context required by fake", Code.InvalidArgument);
+            }
+            const intents = request.contributions.map(
+              (ref) =>
+                `deleteEdgeContribution:${this.contributionKey(ref.tail, ref.head, ref.contribId)}`,
+            );
+            this.validateReceiptIntents(receiptContext, intents);
+            const existed = request.contributions.map((ref, index) => {
+              const operationId = receiptContext.operationIds[index]!;
+              const prior = this.receipts.get(hex(operationId));
+              if (prior) {
+                if (prior.originalResult.case !== "deleteEdgeContributionExisted") {
+                  throw new ConnectError("receipt result family conflict", Code.InvalidArgument);
+                }
+                return prior.originalResult.value;
+              }
+              const original = this.contributions.delete(
+                this.contributionKey(ref.tail, ref.head, ref.contribId),
+              );
+              this.storeReceipt(
+                receiptContext,
+                index,
+                request.contributions.length,
+                intents[index]!,
+                { case: "deleteEdgeContributionExisted", value: original },
+              );
+              return original;
+            });
+            if (this.dropNextContributionDeleteResponse) {
+              this.dropNextContributionDeleteResponse = false;
+              throw new ConnectError("injected committed response loss", Code.Unavailable);
+            }
+            if (this.malformedContributionDeleteResponse === "length") {
+              return { deleted: 0, existed: existed.slice(1) };
+            }
+            if (this.malformedContributionDeleteResponse === "count") {
+              return { deleted: 0, existed };
+            }
+            return { deleted: existed.filter(Boolean).length, existed };
+          },
         });
       },
       token
@@ -675,7 +738,13 @@ describe("receipt capability and continuity", () => {
     const client = Lantern.withTransport(fake.transport());
     await expect(client.getReceiptCapability()).resolves.toMatchObject({
       enabled: true,
-      supportedMutations: ["putVertex", "deleteVertex", "deleteEdge", "addEdge"],
+      supportedMutations: [
+        "putVertex",
+        "deleteVertex",
+        "deleteEdge",
+        "addEdge",
+        "deleteEdgeContribution",
+      ],
     });
 
     for (const supportedMutations of [
@@ -1526,6 +1595,145 @@ describe("receipt Edge Delete", () => {
     );
     expect(fake.hasEdge(edges[0]!.tail, edges[0]!.head)).toBe(false);
     expect(fake.mutationCount).toBe(itemCount);
+  });
+});
+
+describe("receipt contribution Delete (#1529)", () => {
+  const id = filled(24, 0x73);
+
+  test("maps original indexed results, duplicate triples, and singular facade", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    fake.contributions.add(fake.contributionKey("a", "b", id));
+    const context = await contextFor(client, 3, 0x31);
+    const result = await client.deleteEdgeContributionsWithReceipt(
+      [
+        { tail: "a", head: "b", contribId: id },
+        { tail: "a", head: "b", contribId: id },
+        { tail: "missing", head: "b", contribId: id },
+      ],
+      context,
+    );
+    expect(result.deleted).toBe(1);
+    expect(result.results.map(({ existed }) => existed)).toEqual([true, false, false]);
+    expect(result.results.map(({ operationId }) => operationId)).toEqual(context.operationIds);
+    expect(result.results[0]?.contribId).toEqual(id);
+    expect(context.operationIds[0]).toHaveLength(98);
+    expect(fake.contributions.has(fake.contributionKey("a", "b", id))).toBe(false);
+    expect(
+      await client.deleteEdgeContributionWithReceipt(
+        "a",
+        "b",
+        id,
+        await contextFor(client, 1, 0x41),
+      ),
+    ).toMatchObject({ tail: "a", head: "b", existed: false });
+    expect(fake.contributionDeleteCalls).toBe(2);
+  });
+
+  test("rejects invalid refs, empty or misaligned receipt context before network", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0x51);
+    fake.capabilityCalls = 0;
+    for (const invalid of [new Uint8Array(24), filled(49, 1), filled(23, 1)]) {
+      await expect(
+        client.deleteEdgeContributionsWithReceipt(
+          [{ tail: "a", head: "b", contribId: invalid }],
+          context,
+        ),
+      ).rejects.toThrow(InvalidArgumentError);
+    }
+    await expect(client.deleteEdgeContributionsWithReceipt([], context)).rejects.toThrow(
+      InvalidArgumentError,
+    );
+    await expect(
+      client.deleteEdgeContributionsWithReceipt(
+        [
+          { tail: "a", head: "b", contribId: id },
+          { tail: "c", head: "d", contribId: id },
+        ],
+        context,
+      ),
+    ).rejects.toThrow(/operation IDs for 2 items/);
+    expect(fake.capabilityCalls).toBe(0);
+    expect(fake.contributionDeleteCalls).toBe(0);
+  });
+
+  test("recovers exact true/false results after response loss without reapplying", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const inputId = new Uint8Array(id);
+    fake.contributions.add(fake.contributionKey("a", "b", inputId));
+    const context = await contextFor(client, 2, 0x61);
+    fake.dropNextContributionDeleteResponse = true;
+    let caught: unknown;
+    try {
+      await client.deleteEdgeContributionsWithReceipt(
+        [
+          { tail: "a", head: "b", contribId: inputId },
+          { tail: "missing", head: "b", contribId: inputId },
+        ],
+        context,
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ReceiptMutationUncertainError);
+    const uncertain = caught as ReceiptMutationUncertainError;
+    expect(uncertain.mutation.kind).toBe("deleteEdgeContribution");
+    if (uncertain.mutation.kind !== "deleteEdgeContribution") throw new Error();
+    inputId[0] = 0xff;
+    expect(uncertain.mutation.contributions[0]?.contribId).toEqual(id);
+    expect(fake.mutationCount).toBe(2);
+
+    const replay = await client.deleteEdgeContributionsWithReceipt(
+      uncertain.mutation.contributions,
+      uncertain.context,
+    );
+    expect(replay.results.map((result) => result.existed)).toEqual([true, false]);
+    expect(fake.mutationCount).toBe(2);
+    for (const codec of ["binary", "json"] as const) {
+      fake.responseCodec = codec;
+      const statuses = await client.getReceiptStatuses(context.operationIds);
+      expect(
+        statuses.map((status) =>
+          status.state === "confirmed" ? status.receipt.originalResult : status.state,
+        ),
+      ).toEqual([
+        { kind: "deleteEdgeContribution", existed: true },
+        { kind: "deleteEdgeContribution", existed: false },
+      ]);
+    }
+  });
+
+  test("fails closed on capability change and treats malformed replies as uncertain", async () => {
+    const fake = new ReceiptTransportFake();
+    const client = Lantern.withTransport(fake.transport());
+    const context = await contextFor(client, 1, 0x71);
+    fake.capability.supportedMutations = [PbReceiptMutationKind.DELETE_EDGE];
+    await expect(
+      client.deleteEdgeContributionWithReceipt("a", "b", id, context),
+    ).rejects.toMatchObject({
+      reason: "mutationUnsupported",
+      mutationKind: "deleteEdgeContribution",
+    });
+    expect(fake.contributionDeleteCalls).toBe(0);
+    fake.capability.supportedMutations = [PbReceiptMutationKind.DELETE_EDGE_CONTRIBUTION];
+    fake.rotateGenerationBeforeDelete = true;
+    await expect(
+      client.deleteEdgeContributionWithReceipt("a", "b", id, context),
+    ).rejects.toBeInstanceOf(ReceiptReconciliationError);
+    expect(fake.contributionDeleteCalls).toBe(1);
+
+    for (const malformed of ["length", "count"] as const) {
+      fake.contributions.add(fake.contributionKey("a", "b", id));
+      fake.malformedContributionDeleteResponse = malformed;
+      const nextContext = await contextFor(client, 1, malformed === "length" ? 0x91 : 0xa1);
+      await expect(
+        client.deleteEdgeContributionWithReceipt("a", "b", id, nextContext),
+      ).rejects.toBeInstanceOf(ReceiptMutationUncertainError);
+    }
   });
 });
 

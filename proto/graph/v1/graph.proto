@@ -646,6 +646,39 @@ message DeleteEdgeResponse {
   bool existed = 1;
 }
 
+// An additive contribution is identified by its directed edge and its
+// nonzero 24-byte ContribID. The ID is not a receipt operation ID.
+message EdgeContributionKey {
+  string tail = 1;
+  string head = 2;
+  bytes contrib_id = 3;
+}
+
+message DeleteEdgeContributionRequest {
+  string tail = 1;
+  string head = 2;
+  bytes contrib_id = 3;
+  MutationReceiptContext receipt_context = 4;
+}
+
+message DeleteEdgeContributionResponse {
+  // True only when a live contribution with this identity was removed.
+  bool existed = 1;
+}
+
+message DeleteEdgeContributionsRequest {
+  repeated EdgeContributionKey contributions = 1;
+  // When present, operation_ids must align with contributions. An absent
+  // context requests an online write without a durable result receipt.
+  MutationReceiptContext receipt_context = 2;
+}
+
+message DeleteEdgeContributionsResponse {
+  int32 deleted = 1;
+  // One observation per input position, including duplicates and misses.
+  repeated bool existed = 2;
+}
+
 // EdgeKey identifies an edge by its (tail, head) pair without weight.
 message EdgeKey {
   string tail = 1;
@@ -1153,6 +1186,7 @@ enum ReceiptMutationKind {
   RECEIPT_MUTATION_KIND_DELETE_VERTEX = 2;
   RECEIPT_MUTATION_KIND_DELETE_EDGE = 3;
   RECEIPT_MUTATION_KIND_ADD_EDGE = 4;
+  RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION = 5;
 }
 
 message GetReceiptCapabilityResponse {
@@ -1185,6 +1219,7 @@ message ReceiptResult {
     PutOutcome put_vertex_outcome = 2;
     bool delete_vertex_existed = 3;
     float add_edge_effective_weight = 4;
+    bool delete_edge_contribution_existed = 5;
   }
 }
 
@@ -1326,6 +1361,14 @@ service LanternService {
 
   // DeleteEdges removes several edges in one round trip.
   rpc DeleteEdges(DeleteEdgesRequest) returns (DeleteEdgesResponse);
+
+  // DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+  // It is a thin facade over DeleteEdgeContributions.
+  rpc DeleteEdgeContribution(DeleteEdgeContributionRequest) returns (DeleteEdgeContributionResponse);
+
+  // DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+  // missing rows still install an absolute D4 remove-wins tombstone.
+  rpc DeleteEdgeContributions(DeleteEdgeContributionsRequest) returns (DeleteEdgeContributionsResponse);
 
   // DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
   // starts with `tail_prefix` AND whose head key starts with `head_prefix`.

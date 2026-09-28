@@ -91,9 +91,16 @@ type SnapshotEdgeTombstone[S comparable] struct {
 	Expiration time.Time
 }
 
+type SnapshotEdgeContributionTombstone[S comparable] struct {
+	EdgeContributionKey[S]
+	HLC        hlc.Timestamp
+	Expiration time.Time
+}
+
 type TombstoneSnapshot[S comparable] struct {
-	Vertices []SnapshotVertexTombstone[S]
-	Edges    []SnapshotEdgeTombstone[S]
+	Vertices          []SnapshotVertexTombstone[S]
+	Edges             []SnapshotEdgeTombstone[S]
+	EdgeContributions []SnapshotEdgeContributionTombstone[S]
 }
 
 // ReplicationSnapshot is one causal point-in-time image for replication
@@ -156,8 +163,9 @@ func (c *GraphCache[S, T]) SnapshotReplication() ReplicationSnapshot[S, T] {
 
 func (c *GraphCache[S, T]) snapshotTombstonesRLocked(now time.Time) TombstoneSnapshot[S] {
 	out := TombstoneSnapshot[S]{
-		Vertices: make([]SnapshotVertexTombstone[S], 0, len(c.vertexTombstones)),
-		Edges:    make([]SnapshotEdgeTombstone[S], 0, len(c.edgeTombstones)),
+		Vertices:          make([]SnapshotVertexTombstone[S], 0, len(c.vertexTombstones)),
+		Edges:             make([]SnapshotEdgeTombstone[S], 0, len(c.edgeTombstones)),
+		EdgeContributions: make([]SnapshotEdgeContributionTombstone[S], 0, len(c.edgeContributionTombstones)),
 	}
 	for key, tombstone := range c.vertexTombstones {
 		if tombstone.expiration.IsZero() || !now.Before(tombstone.expiration) {
@@ -170,6 +178,14 @@ func (c *GraphCache[S, T]) snapshotTombstonesRLocked(now time.Time) TombstoneSna
 			continue
 		}
 		out.Edges = append(out.Edges, SnapshotEdgeTombstone[S]{Tail: key.Tail, Head: key.Head, HLC: tombstone.ts, Expiration: tombstone.expiration})
+	}
+	for key, tombstone := range c.edgeContributionTombstones {
+		if tombstone.expiration.IsZero() || !now.Before(tombstone.expiration) {
+			continue
+		}
+		out.EdgeContributions = append(out.EdgeContributions, SnapshotEdgeContributionTombstone[S]{
+			EdgeContributionKey: key, HLC: tombstone.ts, Expiration: tombstone.expiration,
+		})
 	}
 	return out
 }

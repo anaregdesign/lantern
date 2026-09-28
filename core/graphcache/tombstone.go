@@ -533,5 +533,11 @@ func (c *GraphCache[S, T]) sweepExpiredTombstonesLocked(now time.Time) {
 			c.clearEdgeTombstoneLocked(k.Tail, k.Head)
 		}
 	}
+	for k, t := range c.edgeContributionTombstones {
+		if !t.expiration.IsZero() && !now.Before(t.expiration) {
+			c.clearEdgeContributionTombstoneLocked(k)
+		}
+	}
 	c.edgeTombstoneDeadlines.shrink()
+	c.edgeContributionDeadlines.shrink()
 }

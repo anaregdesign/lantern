@@ -125,6 +125,26 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 		}
 		edgeTombstoneCount++
 	}
+	var edgeContributionTombstoneCount uint64
+	for _, tombstone := range tombstones.EdgeContributions {
+		if err := ctx.Err(); err != nil {
+			return ctxToConnect(err)
+		}
+		if tombstone.ContribID.IsZero() {
+			return fmt.Errorf("snapshot: edge contribution tombstone has a zero ContribID")
+		}
+		if err := stream.Send(&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeContributionTombstone{
+			EdgeContributionTombstone: &pb.SnapshotEdgeContributionTombstone{
+				Tail: tombstone.Tail, Head: tombstone.Head,
+				ContribId:  contribIDBytes(tombstone.ContribID),
+				Hlc:        hlcToProto(tombstone.HLC),
+				Expiration: timestamppb.New(tombstone.Expiration),
+			},
+		}}); err != nil {
+			return err
+		}
+		edgeContributionTombstoneCount++
+	}
 
 	var vertexCount uint64
 	vertices := graph.Vertices
@@ -213,12 +233,13 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 	footer := &pb.SnapshotResponse{
 		Entry: &pb.SnapshotResponse_Footer{
 			Footer: &pb.SnapshotFooter{
-				VertexCount:              vertexCount,
-				EdgeCount:                edgeCount,
-				VertexCausalBarrierCount: vertexBarrierCount,
-				EdgeCausalBarrierCount:   edgeBarrierCount,
-				VertexTombstoneCount:     vertexTombstoneCount,
-				EdgeTombstoneCount:       edgeTombstoneCount,
+				VertexCount:                    vertexCount,
+				EdgeCount:                      edgeCount,
+				VertexCausalBarrierCount:       vertexBarrierCount,
+				EdgeCausalBarrierCount:         edgeBarrierCount,
+				VertexTombstoneCount:           vertexTombstoneCount,
+				EdgeTombstoneCount:             edgeTombstoneCount,
+				EdgeContributionTombstoneCount: edgeContributionTombstoneCount,
 			},
 		},
 	}
@@ -492,12 +513,13 @@ func validateReceiptSnapshotGraphBody(
 	bounds receiptSnapshotCausalBounds,
 	requireCanonical bool,
 ) error {
-	var counts [6]uint64
+	var counts [7]uint64
 	phase := 0
 	vertexBarriers := make(map[string]hlc.Timestamp)
 	edgeBarriers := make(map[receiptSnapshotEdgeKey]hlc.Timestamp)
 	vertexTombstones := make(map[string]struct{})
 	edgeTombstones := make(map[receiptSnapshotEdgeKey]hlc.Timestamp)
+	edgeContributionTombstones := make(map[graphcache.EdgeContributionKey[string]]struct{})
 	vertices := make(map[string]struct{})
 	edges := make(map[receiptSnapshotEdgeKey]struct{})
 	var previousFrame *pb.SnapshotResponse
@@ -568,6 +590,25 @@ func validateReceiptSnapshotGraphBody(
 				return fmt.Errorf("edge causal barrier and tombstone overlap")
 			}
 			edgeTombstones[key] = stamp
+		case *pb.SnapshotResponse_EdgeContributionTombstone:
+			marker := entry.EdgeContributionTombstone
+			_, ok := bounds.parse(marker.GetHlc())
+			if marker == nil || marker.GetTail() == "" || marker.GetHead() == "" ||
+				len(marker.GetContribId()) != len(graphcache.ContribID{}) || !ok ||
+				!validReceiptSnapshotTombstoneExpiration(marker.GetExpiration()) {
+				return fmt.Errorf("invalid edge contribution tombstone")
+			}
+			key := graphcache.EdgeContributionKey[string]{
+				Tail: marker.GetTail(), Head: marker.GetHead(),
+				ContribID: contribIDFromBytes(marker.GetContribId()),
+			}
+			if key.ContribID.IsZero() {
+				return fmt.Errorf("zero edge contribution tombstone ContribID")
+			}
+			if _, exists := edgeContributionTombstones[key]; exists {
+				return fmt.Errorf("duplicate edge contribution tombstone")
+			}
+			edgeContributionTombstones[key] = struct{}{}
 		case *pb.SnapshotResponse_Vertex:
 			item := entry.Vertex
 			if item == nil || item.GetVertex() == nil || item.GetVertex().GetKey() == "" ||
@@ -608,6 +649,7 @@ func validateReceiptSnapshotGraphBody(
 			putFloor, err := validateReceiptSnapshotEdge(
 				item,
 				edgeTombstones[key],
+				edgeContributionTombstones,
 				bounds,
 				requireCanonical,
 			)
@@ -634,11 +676,12 @@ func validateReceiptSnapshotGraphBody(
 		}
 		counts[rank-1]++
 	}
-	if counts != [6]uint64{
+	if counts != [7]uint64{
 		footer.GetVertexCausalBarrierCount(),
 		footer.GetEdgeCausalBarrierCount(),
 		footer.GetVertexTombstoneCount(),
 		footer.GetEdgeTombstoneCount(),
+		footer.GetEdgeContributionTombstoneCount(),
 		footer.GetVertexCount(),
 		footer.GetEdgeCount(),
 	} {
@@ -702,6 +745,8 @@ func validReceiptSnapshotFrameOneofs(frame *pb.SnapshotResponse) bool {
 		return entry.VertexTombstone != nil
 	case *pb.SnapshotResponse_EdgeTombstone:
 		return entry.EdgeTombstone != nil
+	case *pb.SnapshotResponse_EdgeContributionTombstone:
+		return entry.EdgeContributionTombstone != nil
 	case *pb.SnapshotResponse_Vertex:
 		return entry.Vertex != nil &&
 			(entry.Vertex.Vertex == nil || !nilOneofWrapper(entry.Vertex.Vertex.GetValue()))
@@ -717,6 +762,7 @@ func validReceiptSnapshotFrameOneofs(frame *pb.SnapshotResponse) bool {
 func validateReceiptSnapshotEdge(
 	edge *pb.SnapshotEdge,
 	tombstone hlc.Timestamp,
+	contributionTombstones map[graphcache.EdgeContributionKey[string]]struct{},
 	bounds receiptSnapshotCausalBounds,
 	requireCanonical bool,
 ) (hlc.Timestamp, error) {
@@ -777,6 +823,11 @@ func validateReceiptSnapshotEdge(
 			if _, exists := seenAdds[id]; exists {
 				return hlc.Timestamp{}, fmt.Errorf("duplicate live edge Add ContribID")
 			}
+			if _, exists := contributionTombstones[graphcache.EdgeContributionKey[string]{
+				Tail: edge.GetTail(), Head: edge.GetHead(), ContribID: graphcache.ContribID(id),
+			}]; exists {
+				return hlc.Timestamp{}, fmt.Errorf("live edge Add and contribution tombstone overlap")
+			}
 			seenAdds[id] = struct{}{}
 			addHLC, ok := bounds.parse(contribution.GetHlc())
 			if !ok || (putFloor != (hlc.Timestamp{}) && !putFloor.Less(addHLC)) {
@@ -802,10 +853,12 @@ func snapshotGraphFrameRank(frame *pb.SnapshotResponse) int {
 		return 3
 	case *pb.SnapshotResponse_EdgeTombstone:
 		return 4
-	case *pb.SnapshotResponse_Vertex:
+	case *pb.SnapshotResponse_EdgeContributionTombstone:
 		return 5
-	case *pb.SnapshotResponse_Edge:
+	case *pb.SnapshotResponse_Vertex:
 		return 6
+	case *pb.SnapshotResponse_Edge:
+		return 7
 	default:
 		return 0
 	}
@@ -821,7 +874,16 @@ func compareReceiptSnapshotGraphFrames(left, right *pb.SnapshotResponse) int {
 	if compared := strings.Compare(leftFirst, rightFirst); compared != 0 {
 		return compared
 	}
-	return strings.Compare(leftSecond, rightSecond)
+	if compared := strings.Compare(leftSecond, rightSecond); compared != 0 {
+		return compared
+	}
+	if left.GetEdgeContributionTombstone() != nil {
+		return bytes.Compare(
+			left.GetEdgeContributionTombstone().GetContribId(),
+			right.GetEdgeContributionTombstone().GetContribId(),
+		)
+	}
+	return 0
 }
 
 func receiptSnapshotGraphFrameIdentity(frame *pb.SnapshotResponse) (string, string) {
@@ -834,6 +896,8 @@ func receiptSnapshotGraphFrameIdentity(frame *pb.SnapshotResponse) (string, stri
 		return frame.GetVertexTombstone().GetKey(), ""
 	case frame.GetEdgeTombstone() != nil:
 		return frame.GetEdgeTombstone().GetTail(), frame.GetEdgeTombstone().GetHead()
+	case frame.GetEdgeContributionTombstone() != nil:
+		return frame.GetEdgeContributionTombstone().GetTail(), frame.GetEdgeContributionTombstone().GetHead()
 	case frame.GetVertex() != nil:
 		return frame.GetVertex().GetVertex().GetKey(), ""
 	case frame.GetEdge() != nil:
@@ -878,6 +942,8 @@ func receiptSnapshotKind(kind mutationreceipt.Kind) (pb.SnapshotReceiptKind, err
 		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX, nil
 	case mutationreceipt.DeleteEdge:
 		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE, nil
+	case mutationreceipt.DeleteEdgeContribution:
+		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION, nil
 	default:
 		return pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_UNSPECIFIED,
 			fmt.Errorf("receipt Snapshot has unknown receipt kind %d", kind)
@@ -896,6 +962,8 @@ func receiptKindFromSnapshot(kind pb.SnapshotReceiptKind) (mutationreceipt.Kind,
 		return mutationreceipt.DeleteVertex, nil
 	case pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE:
 		return mutationreceipt.DeleteEdge, nil
+	case pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION:
+		return mutationreceipt.DeleteEdgeContribution, nil
 	default:
 		return 0, fmt.Errorf("receipt Snapshot has unknown receipt kind %d", kind)
 	}

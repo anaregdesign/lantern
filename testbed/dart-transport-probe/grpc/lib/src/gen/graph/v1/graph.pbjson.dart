@@ -198,6 +198,7 @@ const ReceiptMutationKind$json = {
     {'1': 'RECEIPT_MUTATION_KIND_DELETE_VERTEX', '2': 2},
     {'1': 'RECEIPT_MUTATION_KIND_DELETE_EDGE', '2': 3},
     {'1': 'RECEIPT_MUTATION_KIND_ADD_EDGE', '2': 4},
+    {'1': 'RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION', '2': 5},
   ],
 };
 
@@ -206,7 +207,8 @@ final $typed_data.Uint8List receiptMutationKindDescriptor = $convert.base64Decod
     'ChNSZWNlaXB0TXV0YXRpb25LaW5kEiUKIVJFQ0VJUFRfTVVUQVRJT05fS0lORF9VTlNQRUNJRk'
     'lFRBAAEiQKIFJFQ0VJUFRfTVVUQVRJT05fS0lORF9QVVRfVkVSVEVYEAESJwojUkVDRUlQVF9N'
     'VVRBVElPTl9LSU5EX0RFTEVURV9WRVJURVgQAhIlCiFSRUNFSVBUX01VVEFUSU9OX0tJTkRfRE'
-    'VMRVRFX0VER0UQAxIiCh5SRUNFSVBUX01VVEFUSU9OX0tJTkRfQUREX0VER0UQBA==');
+    'VMRVRFX0VER0UQAxIiCh5SRUNFSVBUX01VVEFUSU9OX0tJTkRfQUREX0VER0UQBBIyCi5SRUNF'
+    'SVBUX01VVEFUSU9OX0tJTkRfREVMRVRFX0VER0VfQ09OVFJJQlVUSU9OEAU=');
 
 @$core.Deprecated('Use mutationReceiptStateDescriptor instead')
 const MutationReceiptState$json = {
@@ -1197,6 +1199,106 @@ const DeleteEdgeResponse$json = {
 final $typed_data.Uint8List deleteEdgeResponseDescriptor =
     $convert.base64Decode(
         'ChJEZWxldGVFZGdlUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3RlZA==');
+
+@$core.Deprecated('Use edgeContributionKeyDescriptor instead')
+const EdgeContributionKey$json = {
+  '1': 'EdgeContributionKey',
+  '2': [
+    {'1': 'tail', '3': 1, '4': 1, '5': 9, '10': 'tail'},
+    {'1': 'head', '3': 2, '4': 1, '5': 9, '10': 'head'},
+    {'1': 'contrib_id', '3': 3, '4': 1, '5': 12, '10': 'contribId'},
+  ],
+};
+
+/// Descriptor for `EdgeContributionKey`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List edgeContributionKeyDescriptor = $convert.base64Decode(
+    'ChNFZGdlQ29udHJpYnV0aW9uS2V5EhIKBHRhaWwYASABKAlSBHRhaWwSEgoEaGVhZBgCIAEoCV'
+    'IEaGVhZBIdCgpjb250cmliX2lkGAMgASgMUgljb250cmliSWQ=');
+
+@$core.Deprecated('Use deleteEdgeContributionRequestDescriptor instead')
+const DeleteEdgeContributionRequest$json = {
+  '1': 'DeleteEdgeContributionRequest',
+  '2': [
+    {'1': 'tail', '3': 1, '4': 1, '5': 9, '10': 'tail'},
+    {'1': 'head', '3': 2, '4': 1, '5': 9, '10': 'head'},
+    {'1': 'contrib_id', '3': 3, '4': 1, '5': 12, '10': 'contribId'},
+    {
+      '1': 'receipt_context',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
+  ],
+};
+
+/// Descriptor for `DeleteEdgeContributionRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List deleteEdgeContributionRequestDescriptor = $convert.base64Decode(
+    'Ch1EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVxdWVzdBISCgR0YWlsGAEgASgJUgR0YWlsEhIKBG'
+    'hlYWQYAiABKAlSBGhlYWQSHQoKY29udHJpYl9pZBgDIAEoDFIJY29udHJpYklkEkkKD3JlY2Vp'
+    'cHRfY29udGV4dBgEIAEoCzIgLmdyYXBoLnYxLk11dGF0aW9uUmVjZWlwdENvbnRleHRSDnJlY2'
+    'VpcHRDb250ZXh0');
+
+@$core.Deprecated('Use deleteEdgeContributionResponseDescriptor instead')
+const DeleteEdgeContributionResponse$json = {
+  '1': 'DeleteEdgeContributionResponse',
+  '2': [
+    {'1': 'existed', '3': 1, '4': 1, '5': 8, '10': 'existed'},
+  ],
+};
+
+/// Descriptor for `DeleteEdgeContributionResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List deleteEdgeContributionResponseDescriptor =
+    $convert.base64Decode(
+        'Ch5EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3'
+        'RlZA==');
+
+@$core.Deprecated('Use deleteEdgeContributionsRequestDescriptor instead')
+const DeleteEdgeContributionsRequest$json = {
+  '1': 'DeleteEdgeContributionsRequest',
+  '2': [
+    {
+      '1': 'contributions',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.EdgeContributionKey',
+      '10': 'contributions'
+    },
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
+  ],
+};
+
+/// Descriptor for `DeleteEdgeContributionsRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List deleteEdgeContributionsRequestDescriptor =
+    $convert.base64Decode(
+        'Ch5EZWxldGVFZGdlQ29udHJpYnV0aW9uc1JlcXVlc3QSQwoNY29udHJpYnV0aW9ucxgBIAMoCz'
+        'IdLmdyYXBoLnYxLkVkZ2VDb250cmlidXRpb25LZXlSDWNvbnRyaWJ1dGlvbnMSSQoPcmVjZWlw'
+        'dF9jb250ZXh0GAIgASgLMiAuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0Q29udGV4dFIOcmVjZW'
+        'lwdENvbnRleHQ=');
+
+@$core.Deprecated('Use deleteEdgeContributionsResponseDescriptor instead')
+const DeleteEdgeContributionsResponse$json = {
+  '1': 'DeleteEdgeContributionsResponse',
+  '2': [
+    {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
+    {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
+  ],
+};
+
+/// Descriptor for `DeleteEdgeContributionsResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List deleteEdgeContributionsResponseDescriptor =
+    $convert.base64Decode(
+        'Ch9EZWxldGVFZGdlQ29udHJpYnV0aW9uc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbG'
+        'V0ZWQSGAoHZXhpc3RlZBgCIAMoCFIHZXhpc3RlZA==');
 
 @$core.Deprecated('Use edgeKeyDescriptor instead')
 const EdgeKey$json = {
@@ -2198,6 +2300,14 @@ const ReceiptResult$json = {
       '9': 0,
       '10': 'addEdgeEffectiveWeight'
     },
+    {
+      '1': 'delete_edge_contribution_existed',
+      '3': 5,
+      '4': 1,
+      '5': 8,
+      '9': 0,
+      '10': 'deleteEdgeContributionExisted'
+    },
   ],
   '8': [
     {'1': 'result'},
@@ -2210,7 +2320,9 @@ final $typed_data.Uint8List receiptResultDescriptor = $convert.base64Decode(
     'RnZUV4aXN0ZWQSRAoScHV0X3ZlcnRleF9vdXRjb21lGAIgASgOMhQuZ3JhcGgudjEuUHV0T3V0'
     'Y29tZUgAUhBwdXRWZXJ0ZXhPdXRjb21lEjQKFWRlbGV0ZV92ZXJ0ZXhfZXhpc3RlZBgDIAEoCE'
     'gAUhNkZWxldGVWZXJ0ZXhFeGlzdGVkEjsKGWFkZF9lZGdlX2VmZmVjdGl2ZV93ZWlnaHQYBCAB'
-    'KAJIAFIWYWRkRWRnZUVmZmVjdGl2ZVdlaWdodEIICgZyZXN1bHQ=');
+    'KAJIAFIWYWRkRWRnZUVmZmVjdGl2ZVdlaWdodBJJCiBkZWxldGVfZWRnZV9jb250cmlidXRpb2'
+    '5fZXhpc3RlZBgFIAEoCEgAUh1kZWxldGVFZGdlQ29udHJpYnV0aW9uRXhpc3RlZEIICgZyZXN1'
+    'bHQ=');
 
 @$core.Deprecated('Use mutationReceiptDescriptor instead')
 const MutationReceipt$json = {

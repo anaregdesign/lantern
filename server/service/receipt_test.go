@@ -192,6 +192,7 @@ func TestReceiptReadSurfaceTriStateAndAlignment(t *testing.T) {
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
 		}) {
 		t.Fatalf("capability = %+v, %v", capability, err)
 	}
@@ -259,6 +260,20 @@ func TestReceiptStatusProtoRendersCanonicalMutationResults(t *testing.T) {
 			check: func(result *pb.ReceiptResult) bool {
 				_, ok := result.GetResult().(*pb.ReceiptResult_DeleteEdgeExisted)
 				return ok && !result.GetDeleteEdgeExisted()
+			},
+		},
+		{
+			name: "contribution delete present false", kind: mutationreceipt.DeleteEdgeContribution, result: 0,
+			check: func(result *pb.ReceiptResult) bool {
+				_, ok := result.GetResult().(*pb.ReceiptResult_DeleteEdgeContributionExisted)
+				return ok && !result.GetDeleteEdgeContributionExisted()
+			},
+		},
+		{
+			name: "contribution delete true", kind: mutationreceipt.DeleteEdgeContribution, result: 1,
+			check: func(result *pb.ReceiptResult) bool {
+				_, ok := result.GetResult().(*pb.ReceiptResult_DeleteEdgeContributionExisted)
+				return ok && result.GetDeleteEdgeContributionExisted()
 			},
 		},
 	}

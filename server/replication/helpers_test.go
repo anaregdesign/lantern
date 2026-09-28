@@ -63,12 +63,13 @@ func (i *scriptedSnapshotInstaller) Install(_ context.Context, stream SnapshotSt
 		}
 		if footer := owned.GetFooter(); footer != nil {
 			counts = SnapshotGraphCounts{
-				Vertices:             footer.GetVertexCount(),
-				Edges:                footer.GetEdgeCount(),
-				VertexCausalBarriers: footer.GetVertexCausalBarrierCount(),
-				EdgeCausalBarriers:   footer.GetEdgeCausalBarrierCount(),
-				VertexTombstones:     footer.GetVertexTombstoneCount(),
-				EdgeTombstones:       footer.GetEdgeTombstoneCount(),
+				Vertices:                   footer.GetVertexCount(),
+				Edges:                      footer.GetEdgeCount(),
+				VertexCausalBarriers:       footer.GetVertexCausalBarrierCount(),
+				EdgeCausalBarriers:         footer.GetEdgeCausalBarrierCount(),
+				VertexTombstones:           footer.GetVertexTombstoneCount(),
+				EdgeTombstones:             footer.GetEdgeTombstoneCount(),
+				EdgeContributionTombstones: footer.GetEdgeContributionTombstoneCount(),
 			}
 		}
 	}

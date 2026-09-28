@@ -286,6 +286,10 @@ func TestRequestRetryable(t *testing.T) {
 		if requestRetryable(&pb.DeleteEdgesRequest{ReceiptContext: context}) {
 			t.Error("receipt-bearing DeleteEdges must bypass generic unary retry")
 		}
+		if requestRetryable(&pb.DeleteEdgeContributionRequest{ReceiptContext: context}) ||
+			requestRetryable(&pb.DeleteEdgeContributionsRequest{ReceiptContext: context}) {
+			t.Error("receipt-bearing contribution Delete must bypass generic unary retry")
+		}
 		if requestRetryable(&pb.AddEdgeRequest{
 			ContribId:      contrib,
 			ReceiptContext: context,
@@ -333,6 +337,8 @@ func TestRequestRetryable(t *testing.T) {
 			{"DeleteVertices", &pb.DeleteVerticesRequest{Keys: []string{"a"}}},
 			{"DeleteEdge", &pb.DeleteEdgeRequest{Tail: "a", Head: "b"}},
 			{"DeleteEdges", &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "a", Head: "b"}}}},
+			{"DeleteEdgeContribution", &pb.DeleteEdgeContributionRequest{Tail: "a", Head: "b", ContribId: contrib}},
+			{"DeleteEdgeContributions", &pb.DeleteEdgeContributionsRequest{Contributions: []*pb.EdgeContributionKey{{Tail: "a", Head: "b", ContribId: contrib}}}},
 			{"DeleteVerticesByPrefix capped", &pb.DeleteVerticesByPrefixRequest{Prefix: "a", Limit: 1}},
 			{"DeleteVerticesByPrefix dry run", &pb.DeleteVerticesByPrefixRequest{Prefix: "a", DryRun: true}},
 			{"DeleteEdgesByPrefix capped", &pb.DeleteEdgesByPrefixRequest{TailPrefix: "a", Limit: 1}},
@@ -356,11 +362,12 @@ func TestRetryableMethod(t *testing.T) {
 		{"GetVertex", true},
 		{"PutVertices", true},
 		{"PutEdge", true},
-		{"PutVerticesWithReceipt", true},         // pinned endpoint
-		{"PutVerticesIfAbsentWithReceipt", true}, // pinned endpoint
-		{"DeleteVerticesWithReceipt", true},      // pinned endpoint
-		{"DeleteEdgesWithReceipt", true},         // pinned endpoint
-		{"AddEdgesWithReceipt", true},            // pinned endpoint
+		{"PutVerticesWithReceipt", true},             // pinned endpoint
+		{"PutVerticesIfAbsentWithReceipt", true},     // pinned endpoint
+		{"DeleteVerticesWithReceipt", true},          // pinned endpoint
+		{"DeleteEdgesWithReceipt", true},             // pinned endpoint
+		{"DeleteEdgeContributionsWithReceipt", true}, // pinned endpoint
+		{"AddEdgesWithReceipt", true},                // pinned endpoint
 		{"GetReceiptStatuses", true},
 		{"PutVertexIfAbsent", false},
 		{"PutVerticesIfAbsent", false},
@@ -368,6 +375,9 @@ func TestRetryableMethod(t *testing.T) {
 		{"DeleteVertices", false},
 		{"DeleteEdge", false},
 		{"DeleteEdges", false},
+		{"DeleteEdgeContribution", false},
+		{"DeleteEdgeContributions", false},
+		{"AddEdgesWithIDs", false},
 		{"DeleteVerticesByPrefix", false},
 		{"DeleteEdgesByPrefix", false},
 		{"AddEdge", false},
