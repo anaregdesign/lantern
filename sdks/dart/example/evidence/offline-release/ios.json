@@ -1,33 +1,28 @@
 {
-  "schema": 1,
-  "kind": "physical_offline_release_evidence",
-  "repository": "anaregdesign/lantern",
-  "testedCommit": "3c6567381818d349b43a14f1f2fc3cf99fddd53a",
-  "recordedAt": "2026-09-25T00:39:06Z",
-  "physicalDevice": true,
-  "contentFree": true,
-  "cleanCheckout": true,
-  "toolchain": {
-    "flutter": "3.44.6",
-    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
-    "dart": "3.12.2"
-  },
   "application": {
+    "binarySha256": "bb840e50b0863c616e75e54a6f35f0f8d26155ec94f8429cefbf19d9dc642caf",
     "packageId": "com.anaregdesign.lanternExample",
-    "target": "integration_test/mobile_smoke_test.dart",
-    "binarySha256": "173cfb1e3d0f35816f7504f14b174dc15911c89c28f8d16eeddae1d18f173a52"
+    "target": "integration_test/mobile_smoke_test.dart"
   },
+  "cleanCheckout": true,
+  "contentFree": true,
+  "kind": "physical_offline_release_evidence",
+  "limitations": [],
+  "network": {
+    "authenticated": true,
+    "platformTrustedTls": true,
+    "topology": "private LAN public-CA HTTPS gateway to one synthetic responder",
+    "transport": "Connect/HTTPS"
+  },
+  "physicalDevice": true,
   "platform": {
     "kind": "physical-ios",
     "model": "iPhone 16 Pro",
     "os": "iOS 26.7"
   },
-  "network": {
-    "transport": "Connect/HTTPS",
-    "topology": "Temporary public-CA HTTPS tunnel to local authenticated server and synthetic-token BFF",
-    "authenticated": true,
-    "platformTrustedTls": true
-  },
+  "recordedAt": "2026-09-28T03:43:27.854117Z",
+  "repository": "anaregdesign/lantern",
+  "result": "passed",
   "scenarios": [
     "authoritative_server_expiry",
     "ios_local_network_privacy_denial_retry",
@@ -45,6 +40,11 @@
     "watch_cleanup",
     "wipe_before_send"
   ],
-  "result": "passed",
-  "limitations": []
+  "schema": 1,
+  "testedCommit": "3716d7052ac77eefbf05825e81e64cc603f16287",
+  "toolchain": {
+    "dart": "3.12.2",
+    "flutter": "3.44.6",
+    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6"
+  }
 }

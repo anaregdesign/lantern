@@ -1,33 +1,28 @@
 {
-  "schema": 1,
-  "kind": "physical_offline_identity_cdc_evidence",
-  "repository": "anaregdesign/lantern",
-  "testedCommit": "3c6567381818d349b43a14f1f2fc3cf99fddd53a",
-  "recordedAt": "2026-09-25T00:39:06Z",
-  "physicalDevice": true,
-  "contentFree": true,
-  "cleanCheckout": true,
-  "toolchain": {
-    "flutter": "3.44.6",
-    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
-    "dart": "3.12.2"
-  },
   "application": {
+    "binarySha256": "f08f2993db61157163b25e8f598e04b03024f60a60bb44e46e8021f672089032",
     "packageId": "com.anaregdesign.lanternExample",
-    "target": "integration_test/physical_identity_cdc_test.dart",
-    "binarySha256": "67426e3cf12cc9511b4e2052d6c9ef184821389a9e2b3ea4ef0bb8b40ab6ac3e"
+    "target": "integration_test/physical_identity_cdc_test.dart"
   },
+  "cleanCheckout": true,
+  "contentFree": true,
+  "kind": "physical_offline_identity_cdc_evidence",
+  "limitations": [],
+  "network": {
+    "authenticated": true,
+    "platformTrustedTls": true,
+    "topology": "private LAN public-CA HTTPS gateway to one synthetic responder",
+    "transport": "Connect/HTTPS"
+  },
+  "physicalDevice": true,
   "platform": {
     "kind": "physical-ios",
     "model": "iPhone 16 Pro",
     "os": "iOS 26.7"
   },
-  "network": {
-    "transport": "Connect/HTTPS",
-    "topology": "Temporary public-CA HTTPS tunnel to local authenticated server and synthetic-token BFF",
-    "authenticated": true,
-    "platformTrustedTls": true
-  },
+  "recordedAt": "2026-09-28T03:43:38.956616Z",
+  "repository": "anaregdesign/lantern",
+  "result": "passed",
   "scenarios": [
     "identity_cancellation",
     "identity_checkpoint_revalidation",
@@ -40,6 +35,11 @@
     "identity_same_responder",
     "identity_unknown_survives_sqlite_reopen"
   ],
-  "result": "passed",
-  "limitations": []
+  "schema": 1,
+  "testedCommit": "3716d7052ac77eefbf05825e81e64cc603f16287",
+  "toolchain": {
+    "dart": "3.12.2",
+    "flutter": "3.44.6",
+    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6"
+  }
 }
