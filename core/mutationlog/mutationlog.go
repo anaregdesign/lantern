@@ -184,6 +184,7 @@ type subscription struct {
 	// startSeq is the first Seq the dispatcher may deliver. Earlier entries
 	// belong to retained replay/catch-up windows and must not be duplicated.
 	startSeq uint64
+	filter   func(Entry) bool
 	gapped   bool // set when a fan-out drop turned into a gap
 }
 
@@ -416,6 +417,9 @@ func (l *Log) fanout(entry Entry) {
 		if entry.Seq < sub.startSeq {
 			continue
 		}
+		if sub.filter != nil && !sub.filter(entry) {
+			continue
+		}
 		select {
 		case sub.ch <- entry:
 		default:
@@ -449,6 +453,16 @@ func (l *Log) fanout(entry Entry) {
 // the channel as a gap. Once live, slow consumers remain subject to the
 // SubscriberBuffer limit and drop rather than blocking writers.
 func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
+	return l.SubscribeFiltered(fromSeq, nil)
+}
+
+// SubscribeFiltered applies filter before retained replay and live fan-out,
+// so excluded entries cannot fill a live subscriber's outbound buffer.
+// A nil filter includes every entry. The filter must be non-blocking and safe
+// to invoke from the dispatcher; it must not call back into this Log. Even
+// filtered entries advance the log-local replay position, and eviction still
+// closes a subscriber whose replay tail cannot be proven.
+func (l *Log) SubscribeFiltered(fromSeq uint64, filter func(Entry) bool) (<-chan Entry, func() error, error) {
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
@@ -478,6 +492,7 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 	live := &subscription{
 		ch:       make(chan Entry, l.subBuf),
 		startSeq: l.lastSeq + 1,
+		filter:   filter,
 	}
 	out := make(chan Entry)
 	done := make(chan struct{})
@@ -495,6 +510,9 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 		defer close(out)
 		for {
 			for _, e := range replay {
+				if filter != nil && !filter(e) {
+					continue
+				}
 				select {
 				case out <- e:
 				case <-done:

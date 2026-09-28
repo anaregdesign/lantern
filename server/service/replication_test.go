@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -471,6 +472,174 @@ func TestLanternReplicationService_SlowLiveSubscriberCanResumeRetainedTail(t *te
 	case <-resumeDone:
 	case <-ctx.Done():
 		t.Fatal("resumed stream did not stop")
+	}
+}
+
+func TestLanternReplicationService_CursorCoveredEntriesDoNotOverflowLiveSubscriber(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		projection pb.SubscribeProjection
+		seq        func(*pb.SubscribeResponse) uint64
+	}{
+		{
+			name: "full", projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION,
+			seq: func(frame *pb.SubscribeResponse) uint64 { return frame.GetMutation().GetSeq() },
+		},
+		{
+			name: "identity", projection: pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+			seq: func(frame *pb.SubscribeResponse) uint64 { return frame.GetIdentityChunk().GetSeq() },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dropped := make(chan string, 1)
+			log := mutationlog.New(mutationlog.Options{
+				Capacity: 64, SubscriberBuffer: 1,
+				OnDrop: func(cause string) {
+					select {
+					case dropped <- cause:
+					default:
+					}
+				},
+			})
+			localID, remoteID := hlc.NodeID{0x48}, hlc.NodeID{0x49}
+			clock := hlc.New(localID, hlc.Options{})
+			remoteClock := hlc.New(remoteID, hlc.Options{})
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			runtime, err := NewGraphOnlyServingRuntime(cache, log, clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = runtime.Close() })
+			primary := runtime.NewLanternService(nil)
+			replication, err := runtime.NewLanternReplicationService(primary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.CertifyInstallationWithReplicationSendLimit(primary, replication, 0); err != nil {
+				t.Fatal(err)
+			}
+			start := &replicationSubscribeStartMetrics{started: make(chan struct{})}
+			replication.WithMetrics(start)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			release := make(chan struct{})
+			t.Cleanup(func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			})
+			sender := &replicationSubscribeRecorder{
+				frames: make(chan *pb.SubscribeResponse, 2), entered: make(chan struct{}), release: release,
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- replication.Subscribe(ctx, &pb.SubscribeRequest{
+					Projection: tc.projection,
+					FromSeqPerOrigin: map[string]uint64{
+						hex.EncodeToString(localID[:]):  math.MaxUint64,
+						hex.EncodeToString(remoteID[:]): 1,
+					},
+				}, sender)
+			}()
+			select {
+			case <-start.started:
+			case <-ctx.Done():
+				t.Fatal("filtered subscriber did not register")
+			}
+			applyRemote := func(seq uint64) {
+				t.Helper()
+				stamp := remoteClock.Now()
+				if err := primary.ApplyMutation(ctx, &pb.Mutation{
+					Origin: remoteID[:], Seq: seq, Hlc: hlcToProto(stamp),
+					Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+						Vertex: &pb.Vertex{Key: fmt.Sprintf("remote-%d", seq)},
+					}}},
+				}); err != nil {
+					t.Fatalf("ApplyMutation(%d): %v", seq, err)
+				}
+			}
+			applyRemote(1)
+			select {
+			case <-sender.entered:
+			case <-ctx.Done():
+				t.Fatal("remote mutation did not block the sender")
+			}
+			for i := 0; i < 12; i++ {
+				if _, err := primary.PutVertex(ctx, &pb.PutVertexRequest{
+					Vertex: &pb.Vertex{Key: fmt.Sprintf("covered-%d", i)},
+				}); err != nil {
+					t.Fatalf("covered PutVertex(%d): %v", i, err)
+				}
+			}
+			applyRemote(2)
+			close(release)
+			for want := uint64(1); want <= 2; want++ {
+				select {
+				case frame := <-sender.frames:
+					if got := tc.seq(frame); got != want {
+						t.Fatalf("remote seq = %d, want %d", got, want)
+					}
+				case err := <-done:
+					t.Fatalf("filtered stream ended before remote seq %d: %v", want, err)
+				case <-ctx.Done():
+					t.Fatal("filtered stream did not deliver remote mutation")
+				}
+			}
+			select {
+			case cause := <-dropped:
+				t.Fatalf("covered mutations overflowed live buffer: %s", cause)
+			default:
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("filtered subscriber did not stop")
+			}
+		})
+	}
+}
+
+func TestLanternReplicationService_CursorEntryFilterFailsClosed(t *testing.T) {
+	origin, other := hlc.NodeID{0x48}, hlc.NodeID{0x49}
+	cursor := map[string]uint64{hex.EncodeToString(origin[:]): math.MaxUint64}
+	svc := &LanternReplicationService{replicationFrameCertified: true}
+	filter := svc.cursorEntryFilter(cursor)
+	if filter == nil {
+		t.Fatal("certified graph-only cursor did not install an early filter")
+	}
+	regular := &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "included"},
+	}}}
+	for _, tc := range []struct {
+		name     string
+		mutation *pb.Mutation
+		keep     bool
+	}{
+		{"covered", &pb.Mutation{Origin: origin[:], Seq: 1, Hlc: &pb.HLCTimestamp{NodeId: origin[:]}, Op: regular}, false},
+		{"cursor boundary", &pb.Mutation{Origin: origin[:], Seq: math.MaxUint64, Hlc: &pb.HLCTimestamp{NodeId: origin[:]}, Op: regular}, true},
+		{"missing operation", &pb.Mutation{Origin: origin[:], Seq: 1, Hlc: &pb.HLCTimestamp{NodeId: origin[:]}}, true},
+		{"empty operation", &pb.Mutation{Origin: origin[:], Seq: 1, Hlc: &pb.HLCTimestamp{NodeId: origin[:]}, Op: &pb.MutationOp{}}, true},
+		{"mismatched stamp", &pb.Mutation{Origin: origin[:], Seq: 1, Hlc: &pb.HLCTimestamp{NodeId: other[:]}, Op: regular}, true},
+		{"receipt envelope", &pb.Mutation{Origin: origin[:], Seq: 1, Hlc: &pb.HLCTimestamp{NodeId: origin[:]},
+			Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeAdd{}}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := filter(mutationlog.Entry{Op: tc.mutation}); got != tc.keep {
+				t.Fatalf("early filter kept entry = %t, want %t", got, tc.keep)
+			}
+		})
+	}
+	svc.receiptSnapshotRequired = true
+	if svc.cursorEntryFilter(cursor) != nil {
+		t.Fatal("receipt-WAL stream installed an unproven early filter")
+	}
+	svc.receiptSnapshotRequired = false
+	svc.replicationFrameCertified = false
+	if svc.cursorEntryFilter(cursor) != nil {
+		t.Fatal("uncertified stream installed an unproven early filter")
 	}
 }
 

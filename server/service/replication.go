@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -105,6 +106,31 @@ func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
 		return true, err
 	default:
 		return false, nil
+	}
+}
+
+// cursorEntryFilter rejects proven already-covered graph-only mutations
+// before they occupy the log's live subscriber buffer. An untrusted or
+// receipt-bearing entry stays on the ordinary validation path.
+func (s *LanternReplicationService) cursorEntryFilter(cursor map[string]uint64) func(mutationlog.Entry) bool {
+	if !s.replicationFrameCertified || s.receiptSnapshotRequired || len(cursor) == 0 {
+		return nil
+	}
+	return func(entry mutationlog.Entry) bool {
+		m, ok := graphMutationFromLog(entry.Op)
+		if !ok || m.GetSeq() == 0 || len(m.GetOrigin()) != 16 ||
+			m.GetHlc() == nil || !bytes.Equal(m.GetHlc().GetNodeId(), m.GetOrigin()) ||
+			m.GetOp() == nil || m.GetOp().GetOp() == nil {
+			return true
+		}
+		want, present := cursor[hex.EncodeToString(m.GetOrigin())]
+		if !present || m.GetSeq() >= want {
+			return true
+		}
+		if receipt, _ := validateSubscribeReceiptEnvelope(m); receipt {
+			return true
+		}
+		return false
 	}
 }
 
@@ -323,7 +349,7 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				}
 			}
 		}
-		ch, cancel, openErr = s.log.Subscribe(fromLocalSeq)
+		ch, cancel, openErr = s.log.SubscribeFiltered(fromLocalSeq, s.cursorEntryFilter(cursor))
 	}
 	if hasCut {
 		if err := cut.withReplicationSubscribeCut(register); err != nil {

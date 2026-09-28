@@ -557,8 +557,11 @@ fault, the Pump requests that its own origin be filtered from that Subscribe
 stream. A cold session started before the first local write reopens when it
 receives a committed self-echo, so the next PeerStatus check can prove the
 prefix and enable source-side filtering without leaving an unfiltered stream
-open indefinitely. This planned `self_echo_upgrade` reconnect is not a
-Snapshot repair. Receipt-WAL mode retains the full stream. The input-side
+open indefinitely. On a certified graph-only responder, cursor-covered
+non-receipt mutations are excluded before retained replay and live subscriber
+buffering; they still count toward the local log position and retained-origin
+gap proof. Receipt-WAL mode retains the full stream. This planned
+`self_echo_upgrade` reconnect is not a Snapshot repair. The input-side
 self-echo guard remains defence-in-depth; if a peer reports local-origin history
 ahead of a restarted receiver, or sends such a frame after status, the Pump
 repairs it by verified Snapshot, not by discarding those frames. Equal
