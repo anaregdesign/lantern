@@ -2128,6 +2128,20 @@ func TestPeerPump_ActiveLocalSnapshotDefersCompetingRepairOnRealWire(t *testing.
 			}
 			finish(verified)
 			released = true
+			if !verified {
+				// Private cache visibility can precede public Snapshot publication.
+				deadline := time.Now().Add(5 * time.Second)
+				for metrics.snapshots.Load() == 0 && time.Now().Before(deadline) {
+					select {
+					case <-ctx.Done():
+						t.Fatal("failed local install did not trigger verified Snapshot repair")
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+				if metrics.snapshots.Load() == 0 {
+					t.Fatal("failed local install did not trigger verified Snapshot repair")
+				}
+			}
 			if !waitForVertex(t, receiver.cache, key, 5*time.Second) {
 				t.Fatal("receiver did not apply source mutation after install")
 			}
@@ -2135,11 +2149,7 @@ func TestPeerPump_ActiveLocalSnapshotDefersCompetingRepairOnRealWire(t *testing.
 			if err != nil || resp.Msg.GetVertex().GetString_() != "value" {
 				t.Fatalf("verified source value after retry = (%v, %v)", resp, err)
 			}
-			if !verified {
-				if metrics.snapshots.Load() == 0 {
-					t.Fatal("failed local install did not trigger verified Snapshot repair")
-				}
-			} else if metrics.snapshots.Load() != 0 {
+			if verified && metrics.snapshots.Load() != 0 {
 				t.Fatalf("verified local install triggered redundant Snapshot: %d", metrics.snapshots.Load())
 			}
 		})
