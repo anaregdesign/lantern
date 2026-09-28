@@ -71,6 +71,7 @@ def validate_private_result(
     record = _read_object(record_path, "physical evidence record")
     if (
         set(marker) != FINAL_KEYS
+        or type(marker["schema"]) is not int
         or marker["schema"] != 1
         or marker["kind"] != MARKER_KINDS[suite]
         or marker["contentFree"] is not True

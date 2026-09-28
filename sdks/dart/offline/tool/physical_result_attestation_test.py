@@ -77,6 +77,12 @@ class PhysicalResultAttestationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "qualified final pass"):
             self.validate()
 
+    def test_boolean_schema_cannot_stand_in_for_version_one(self):
+        self.marker_data["schema"] = True
+        self.save()
+        with self.assertRaisesRegex(ValueError, "qualified final pass"):
+            self.validate()
+
     def test_signed_bytes_and_public_record_must_match_device(self):
         self.binary.write_bytes(b"different signed build")
         with self.assertRaisesRegex(ValueError, "signed build bytes differ"):
