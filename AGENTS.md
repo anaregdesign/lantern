@@ -143,7 +143,7 @@ Release workflows publish artifacts only. Project-managed GKE deployment is reti
   covering the happy path plus at least one failure/edge contract; perf-relevant
   hot paths also join a bench scenario in
   `testbed/bench/scenarios/` (the release-sweep scenarios carry `perf_gate:`
-  throughput/latency floors enforced by the blocking nightly — sizing and
+  throughput/latency floors checked by the manual benchmark workflow — sizing and
   re-baselining rules in [testbed/bench/README.md](testbed/bench/README.md)). Bench
   scenario templates are schema-checked against the proto surface by
   `testbed/bench/scenarios_gate_test.go` at ordinary root `go test ./...` time, so a

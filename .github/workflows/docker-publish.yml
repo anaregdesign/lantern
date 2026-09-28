@@ -274,9 +274,9 @@ jobs:
     # failure or harness hiccup must not prevent a release from shipping
     # (the deliberate design of #256, #394). This full profiling sweep is
     # separate from the short blocking search-qualification job above.
-    # Scheduled lifecycle/perf ENFORCEMENT also lives in
-    # the nightly blocking run (.github/workflows/bench-nightly.yml), which
-    # runs this same sweep WITHOUT continue-on-error (#716, #1063).
+    # On-demand lifecycle/perf qualification also lives in
+    # .github/workflows/bench-nightly.yml, which runs this same sweep
+    # WITHOUT continue-on-error (#716, #1063).
     name: Release-time benchmark
     needs: verify
     runs-on: ubuntu-latest

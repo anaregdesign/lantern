@@ -17,7 +17,7 @@
 #                     Those artifacts (24 pprof + 12 prom curls per scenario, up
 #                     to 60s/30s each) are throughput/diagnostic extras the gate
 #                     never reads, yet they dominate per-scenario wall-time. The
-#                     nightly leak gate sets this so the un-truncated sweep fits a
+#                     manual qualification sets this so the un-truncated sweep fits a
 #                     sane CI timeout; the advisory release bench leaves it unset.
 #
 # Exits 0 if the leak gate verdict is "pass" AND declared metric, semantic,
@@ -238,7 +238,7 @@ fi
 
 # A receipt run pins one content-addressed image before Compose starts, then
 # proves all three running project services used exactly that image and source
-# commit before warmup and again after the verdict. The nightly passes the
+# commit before warmup and again after the verdict. Manual qualification passes the
 # same expected ID to all four separate fresh-WAL invocations.
 receipt_image_ref="${LANTERN_IMAGE:-}"
 receipt_image_id=""
@@ -1005,7 +1005,7 @@ log "metric gate verdict: $metric_verdict"
 # Optional per-scenario floors over the steady-phase producers (#935). Same
 # enforcement model as the leak gate: a scenario without a `perf_gate:` block
 # is skipped; when present, the verdict lands in perf_gate.json and folds into
-# the exit code — the blocking nightly (bench-nightly.yml) thereby enforces it
+# the exit code — the manual qualification (bench-nightly.yml) thereby enforces it
 # while the release-time bench stays advisory (continue-on-error, #256/#394).
 #
 # Aggregation matches the release summary table (testbed/bench/release): rps is

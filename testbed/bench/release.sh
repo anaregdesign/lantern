@@ -86,7 +86,7 @@ done < "$SCENARIO_LIST"
 # (~25-26 min including isolated cluster lifecycles; see release-scenarios.txt
 # and #1097) headroom to finish, so it only trips when a runner is abnormally
 # slow or the scenario set grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable
-# (the nightly blocking job in bench-nightly.yml does exactly that so no leak
+# (the manual qualification job in bench-nightly.yml does exactly that so no leak
 # can hide behind a truncated sweep).
 BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1620}"
 
