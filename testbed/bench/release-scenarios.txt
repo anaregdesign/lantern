@@ -6,11 +6,10 @@
 # `continue-on-error` (non-blocking) so a profiling hiccup or slow runner can
 # never block a release (the deliberate design of #256, #394). Root tags have
 # a separate short blocking search_qualification job (#1063). The SAME sweep
-# ALSO runs nightly via `.github/workflows/bench-nightly.yml` WITHOUT
-# continue-on-error and with RELEASE_BENCH_BUDGET_SECONDS=0 (no truncation), so
-# a leak, metric, semantic, or perf-gate breach (each scenario carries the
-# relevant blocks — see testbed/bench/README.md, #716/#935/#1063) fails
-# a nightly check there rather than merely warning in an advisory artifact.
+# can also be run on demand via `.github/workflows/bench-nightly.yml` WITHOUT
+# continue-on-error and with RELEASE_BENCH_BUDGET_SECONDS=0 (no truncation).
+# A leak, metric, semantic, or perf-gate breach then fails that requested
+# qualification, rather than merely warning in the release artifact.
 # Rather than run ~16 single-call scenarios (which paid per-scenario fixed overhead — warmup +
 # pre/post runtime+pprof snapshots + cooldown + Prometheus range queries +
 # report render — for each call path), the sweep is compacted to SEVEN
@@ -45,13 +44,13 @@
 #     pprof/prom artifacts), self-bounded by RELEASE_BENCH_BUDGET_SECONDS
 #     (default 1620s = 27 min) so it truncates gracefully — it only ever reaches
 #     ~3 scenarios, which is fine because it is advisory/non-blocking.
-#   - nightly leak gate: runs LEAK_GATE_ONLY=1 (run.sh skips pprof + Prometheus,
+#   - manual qualification: runs LEAK_GATE_ONLY=1 (run.sh skips pprof + Prometheus,
 #     keeping only the runtime snapshots the verdict reads) and
 #     RELEASE_BENCH_BUDGET_SECONDS=0 (un-truncated). Dropping capture returns the
 #     sweep to ~phase time (~23 min) + image build/setup, ~35-40 min total, so
 #     the blocking gate runs ALL seven scenarios within its timeout.
 # See issues #571, #573, #708, #716, and #727. If you add or lengthen a
-# scenario, bump the release budget and the nightly timeout-minutes in lockstep.
+# scenario, review the release budget and manual-workflow timeout together.
 #
 # release.sh self-bounds the sweep via RELEASE_BENCH_BUDGET_SECONDS and always
 # aggregates whatever ran (appending a `## Truncated` note), so an over-budget

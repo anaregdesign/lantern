@@ -34,14 +34,27 @@ producer-performance gates, and renders a Markdown report.
 > qualification above. See issues [#256], [#262], [#573], [#708], [#1063],
 > [#1097].
 >
-> **Receipt qualification is nightly-only.** `bench-nightly.yml` runs four
+> **Receipt qualification is on demand.** `bench-nightly.yml` runs four
 > sequential fresh-WAL, three-replica scenarios from one pinned image after
 > the canonical sweep: conditional Vertex Put, absent Vertex Delete, absent
 > Edge Delete, and contribution-keyed Edge Add. None is in
 > `release-scenarios.txt`. Historical Edge-only synthetic-parent runs support
 > provisional thresholds, **not final merged-stack evidence**; the four-family
 > host qualification on a quiet exact integrated image is still required
-> ([#1399]). Each nightly scenario is blocking.
+> ([#1399]). Each manually requested scenario is blocking.
+
+The workflow retains its historical filename but has no schedule. Run it
+manually before a production rollout or while investigating a performance
+regression:
+
+```bash
+gh workflow run bench-nightly.yml --ref <commit-or-branch>
+```
+
+An empty `diagnostic_scenario` runs the full seven-scenario sweep followed by
+the four receipt scenarios. Specify a scenario stem to diagnose one case; the
+workflow then summarizes bounded ghz error reasons without uploading request
+payloads. Ordinary PR CI remains focused on deterministic tests.
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
@@ -283,7 +296,7 @@ receipt-less Edge Delete, 14.271 ms/op for admitted receipt Edge Delete
 (+4.777 ms, +50.3%), and 5.065 ms/op for confirmed receipt lookup. These
 host-only numbers quantify only that synthetic-parent Edge path; the
 verified real-wire
-nightly scenarios own enforceable thresholds. **No final four-family quiet-host
+manual qualification scenarios own enforceable thresholds. **No final four-family quiet-host
 measurements exist yet.** Neither the historical direct timings nor Compose
 runs qualify the final integrated receipt/SDK stack; fresh uncontended
 exact-image measurements are required for #1399.
@@ -315,10 +328,10 @@ exact-image measurements are required for #1399.
 | `replication_apply_churn.yaml` | replicated write churn; asserts `lantern_vertex_hlc_entries` returns to baseline (#700, #705) |
 | `edge_contrib_idempotent.yaml` | AddEdge/AddEdges with repeated ContribIDs; verifies at-most-once dedup stays bounded (#706) |
 | `mixed_edge_reset_add.yaml` | on-demand three-replica Put/Delete/Add churn on bounded edge identities; measures reset-aware contribution cost (#1203) |
-| `receipt_vertex_put_admission_lookup.yaml` | nightly-only conditional Vertex Put receipt admission plus same-operation typed lookup |
-| `receipt_vertex_delete_admission_lookup.yaml` | nightly-only absent Vertex Delete receipt admission plus same-operation typed lookup |
-| `receipt_admission_lookup.yaml` | nightly-only absent Edge Delete receipt admission plus same-operation typed lookup (#1442) |
-| `receipt_edge_add_admission_lookup.yaml` | nightly-only finite-source, contribution-keyed Edge Add receipt admission plus bit-exact typed lookup |
+| `receipt_vertex_put_admission_lookup.yaml` | on-demand conditional Vertex Put receipt admission plus same-operation typed lookup |
+| `receipt_vertex_delete_admission_lookup.yaml` | on-demand absent Vertex Delete receipt admission plus same-operation typed lookup |
+| `receipt_admission_lookup.yaml` | on-demand absent Edge Delete receipt admission plus same-operation typed lookup (#1442) |
+| `receipt_edge_add_admission_lookup.yaml` | on-demand finite-source, contribution-keyed Edge Add receipt admission plus bit-exact typed lookup |
 | `backup_under_load.yaml`  | BackupSnapshot concurrent with sustained writes — on-demand only, not in release sweep (#707) |
 | `broad_illuminate.yaml` | Six named traversal producers over a verified 64-way/3-hop walk and planted dense communities; preflight rejects a collapsed topology (#994) |
 
@@ -349,11 +362,11 @@ Every ghz `data_template` is schema-checked at ordinary `go test ./...` time by
 `testbed/bench/scenarios_gate_test.go`: it renders each template with
 ghz-style data and protojson-unmarshals the result against the request
 message resolved from the `call` name, so a proto change that orphans a
-scenario fails the schema PR instead of the next nightly (#934). If you
+scenario fails the schema PR instead of a later manual benchmark (#934). If you
 retire or rename a wire field, migrate every scenario that sends it in the
 same PR. The receipt driver's template-less calls still resolve against the
 wire descriptors, and a dedicated contract test pins its driver, two RPCs,
-capacity, bounded phases, perf gates, fresh-cluster restriction, nightly
+capacity, bounded phases, perf gates, fresh-cluster restriction, manual-workflow
 wiring, image provenance, sequential fresh-WAL scheduling, and release-list
 exclusion for all four families.
 
@@ -380,8 +393,8 @@ Every key is individually optional — gate only the metrics that are stable
 for the scenario. The aggregation matches the release summary table
 (`testbed/bench/release`), the verdict lands in `perf_gate.json`, and a
 `fail` folds into run.sh's exit code exactly like the leak gate: the
-blocking nightly (`bench-nightly.yml`) enforces it, the release-time bench
-stays advisory (`continue-on-error`, #256/#394).
+manual qualification (`bench-nightly.yml`) enforces it when requested. The
+release-time bench stays advisory (`continue-on-error`, #256/#394).
 
 For a fan-out scenario, `perf_gate.producers` may define the same thresholds
 per named `target.calls[]` producer:
@@ -480,7 +493,7 @@ count, and verdict—never query text, prefixes, keys, or values.
 
 Sizing rules (all seven release scenarios carry a block sized this way):
 
-- Floors are **ratchet floors with ≥2x headroom** over the worst nightly
+- Floors are **ratchet floors with ≥2x headroom** over the worst hosted
   baseline — they exist to catch step-change regressions (accidental O(n²),
   lock convoy, a dropped fan-out), NOT single-digit-% drift, which shared
   `ubuntu-latest` runners cannot resolve. Do not tighten them to "just below
@@ -492,7 +505,7 @@ Sizing rules (all seven release scenarios carry a block sized this way):
 - **Re-baseline after changing a scenario's mix.** Adding/removing a
   `target.calls` entry re-splits RPS for entries without an explicit `rps` and
   always shifts the offered mix; drop the affected ceilings in the same PR and
-  restore them (from fresh nightly numbers, with headroom) after a few green
+  restore them (from fresh hosted measurements, with headroom) after a few green
   nightlies.
 - When a perf floor legitimately moves (accepted throughput/latency
   trade-off), adjust it **in the same PR** and say so in the PR body — same
@@ -554,11 +567,11 @@ testbed/bench/out/<scenario>/<ts>/
 The full sweep needs multi-minute steady phases, a 10-minute soak, pprof and
 Prometheus capture, a healthy Docker daemon, and stable host conditions. It is
 therefore advisory at release time and blocking only in the untruncated
-nightly. Root tags additionally run the deliberately short, tolerant
+manual qualification. Root tags additionally run the deliberately short, tolerant
 `search_qualification` scenario: deterministic semantic and lifecycle
 failures block, while loose throughput/p99 ratchets reject only step changes
 and tolerate normal hosted-runner jitter. Receipt admission/lookup is also
-blocking nightly, but remains outside the release sweep until hosted-runner
+blocking on demand, but remains outside the release sweep until hosted-runner
 history supports a release-safe threshold.
 
 [ghz]: https://ghz.sh/
