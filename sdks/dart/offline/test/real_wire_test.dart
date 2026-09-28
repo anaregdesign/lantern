@@ -1666,11 +1666,23 @@ void main() {
         operation.operationId,
       );
       expect(partialStatus!.confirmedCount, 100);
+      // The current claim settles before drain stops. Later due items stay
+      // locally committed for the next explicit foreground drain after restart.
+      final retryScheduledCount = partialStatus.items
+          .where((item) => item.state == OfflineWriteState.retryScheduled)
+          .length;
+      expect(retryScheduledCount, inInclusiveRange(1, 32));
       expect(
         partialStatus.items.where(
-          (item) => item.state == OfflineWriteState.retryScheduled,
+          (item) => item.state == OfflineWriteState.locallyCommitted,
         ),
-        hasLength(901),
+        hasLength(901 - retryScheduledCount),
+      );
+      expect(
+        partialStatus.items.where(
+          (item) => item.state == OfflineWriteState.sending,
+        ),
+        isEmpty,
       );
 
       final snapshot = await store.exportSnapshot();

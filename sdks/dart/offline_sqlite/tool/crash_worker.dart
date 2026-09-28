@@ -263,7 +263,12 @@ Future<void> _crashReceipt(String path) async {
               4,
     );
 
-    _require(await repository.drain(_receiptPartition) == 0);
+    // A foreground drain now stops after its claimed batch schedules a
+    // retry. This fixture claims one item at a time, so start a fresh drain
+    // for each of the four independent committed-response losses.
+    for (var index = 0; index < prepared.length; index++) {
+      _require(await repository.drain(_receiptPartition) == 0);
+    }
     final unresolved = await store.transaction(
       (transaction) => transaction.outbox(_receiptPartition),
     );
