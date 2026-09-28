@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 func testIdentityMutation(seq uint64, op *pb.MutationOp) *pb.Mutation {
@@ -271,6 +272,9 @@ func TestIdentitySubscribe_SlowSenderGaps(t *testing.T) {
 	case err := <-done:
 		if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
 			t.Fatalf("slow identity stream error = %v", err)
+		}
+		if transient, detailErr := replicationstatus.IsTransientGap(err); detailErr != nil || !transient {
+			t.Fatalf("slow identity gap = %v, transient=%t, detailErr=%v", err, transient, detailErr)
 		}
 	case <-ctx.Done():
 		t.Fatal("slow identity stream did not end")

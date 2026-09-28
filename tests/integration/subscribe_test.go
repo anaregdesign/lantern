@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,14 +22,255 @@ import (
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func requireReplicationGapReason(t *testing.T, err error, want string) {
+	t.Helper()
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("gap status = %v, want FailedPrecondition", err)
+	}
+	var gap *connect.Error
+	if !errors.As(err, &gap) {
+		t.Fatalf("gap is not a Connect error: %v", err)
+	}
+	var got string
+	for _, detail := range gap.Details() {
+		if detail.Type() != "google.rpc.ErrorInfo" {
+			continue
+		}
+		value, decodeErr := detail.Value()
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		info, ok := value.(*errdetails.ErrorInfo)
+		if !ok {
+			t.Fatalf("gap detail has type %T", value)
+		}
+		if info.GetDomain() == "github.com/anaregdesign/lantern" {
+			got = info.GetReason()
+		}
+	}
+	if got != want {
+		t.Fatalf("gap reason = %q, want %q (status %v)", got, want, err)
+	}
+}
+
+type heldFirstReplicationSender struct {
+	stream *connect.ServerStream[pb.SubscribeResponse]
+	hold   func()
+}
+
+func (s *heldFirstReplicationSender) Send(frame *pb.SubscribeResponse) error {
+	s.hold()
+	return s.stream.Send(frame)
+}
+
+type heldFirstReplicationHandler struct {
+	graphv1connect.LanternReplicationServiceHandler
+	rep     *service.LanternReplicationService
+	once    sync.Once
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (h *heldFirstReplicationHandler) Subscribe(
+	ctx context.Context, req *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse],
+) error {
+	return h.rep.Subscribe(ctx, req.Msg, &heldFirstReplicationSender{
+		stream: stream,
+		hold: func() {
+			h.once.Do(func() {
+				close(h.entered)
+				<-h.release
+			})
+		},
+	})
+}
 
 type subscribeCutMetrics struct{ started chan struct{} }
 
 func (m *subscribeCutMetrics) OnSubscribeStarted()       { close(m.started) }
 func (m *subscribeCutMetrics) OnSubscribeEnded()         {}
 func (m *subscribeCutMetrics) OnSubscribeDropped(string) {}
+
+func TestSubscribe_RealWireLiveOverflowResumesFromCommittedCursor(t *testing.T) {
+	dropped := make(chan string, 1)
+	log := mutationlog.New(mutationlog.Options{
+		Capacity: 16, SubscriberBuffer: 1,
+		OnDrop: func(cause string) {
+			select {
+			case dropped <- cause:
+			default:
+			}
+		},
+	})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x49}
+	clock := hlc.New(origin, hlc.Options{})
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
+	started := &subscribeCutMetrics{started: make(chan struct{})}
+	rep := service.NewLanternReplicationService(log, cache, clock).WithOriginStates(svc).WithMetrics(started)
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	held := &heldFirstReplicationHandler{
+		LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(rep),
+		rep:                              rep, entered: make(chan struct{}), release: release,
+	}
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternServiceHandler(service.NewLanternServiceConnectHandler(svc)))
+	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(held))
+	srv := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protocols
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cli := newReplicationRawClient(t, srv.URL)
+	writer := newConnectClientFor(t, srv.URL)
+	subscription := make(chan struct {
+		stream *connect.ServerStreamForClient[pb.SubscribeResponse]
+		err    error
+	}, 1)
+	go func() {
+		stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+		subscription <- struct {
+			stream *connect.ServerStreamForClient[pb.SubscribeResponse]
+			err    error
+		}{stream, err}
+	}()
+	select {
+	case <-started.started:
+	case <-ctx.Done():
+		t.Fatal("full Subscribe did not register")
+	}
+	if _, err := writer.PutVertex(ctx, "slow-1", "value", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-held.entered:
+	case <-ctx.Done():
+		t.Fatal("server did not reach the blocked send")
+	}
+	for i := 2; i <= 4; i++ {
+		if _, err := writer.PutVertex(ctx, fmt.Sprintf("slow-%d", i), "value", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case cause := <-dropped:
+		if cause != mutationlog.DropCauseBufferFull {
+			t.Fatalf("subscriber drop = %q, want buffer_full", cause)
+		}
+	case <-ctx.Done():
+		t.Fatal("live subscriber did not overflow")
+	}
+	if first, ok := log.FirstSeq(); !ok || first != 1 {
+		t.Fatalf("retained log first seq = (%d, %t), want 1", first, ok)
+	}
+	close(release)
+	var stream *connect.ServerStreamForClient[pb.SubscribeResponse]
+	select {
+	case result := <-subscription:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		stream = result.stream
+	case <-ctx.Done():
+		t.Fatal("Subscribe did not return after the first frame")
+	}
+	defer func() { _ = stream.Close() }()
+	var received uint64
+	for stream.Receive() {
+		mutation := stream.Msg().GetMutation()
+		if mutation.GetSeq() != received+1 {
+			t.Fatalf("pre-gap seq = %d, want %d", mutation.GetSeq(), received+1)
+		}
+		received++
+	}
+	requireReplicationGapReason(t, stream.Err(), "SUBSCRIBER_STREAM_CLOSED")
+	if received == 0 || received >= 4 {
+		t.Fatalf("pre-gap frames = %d, want some but not all four", received)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rep.WithMetrics(nil)
+	resumed, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		FromSeqPerOrigin: map[string]uint64{hex.EncodeToString(origin[:]): received + 1},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resumed.Close() }()
+	for received < 4 {
+		if !resumed.Receive() {
+			t.Fatalf("retained-tail resume stopped at seq %d: %v", received, resumed.Err())
+		}
+		received++
+		if got := resumed.Msg().GetMutation().GetSeq(); got != received {
+			t.Fatalf("resumed origin seq = %d, want %d", got, received)
+		}
+	}
+}
+
+func TestSubscribe_RealWirePublicationFaultDefersUntilRepair(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0x4A}, hlc.Options{})
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	svc := service.NewLanternService(cache).WithReplication(log, clock, nil)
+	rep := service.NewLanternReplicationService(log, cache, clock).WithOriginStates(svc)
+	srv := newConnectTestServer(t, svc, rep)
+	cli := newReplicationRawClient(t, srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			finish(false)
+		}
+	}()
+	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{}))
+	if err == nil {
+		if stream.Receive() {
+			t.Fatalf("Subscribe sent a mutation during publication fault: %+v", stream.Msg())
+		}
+		err = stream.Err()
+		_ = stream.Close()
+	}
+	requireReplicationGapReason(t, err, "PUBLICATION_FAULT")
+	finish(true)
+	finished = true
+	writer := newConnectClientFor(t, srv.url)
+	if _, err := writer.PutVertex(ctx, "repaired", "value", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{FromLocalSeq: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resumed.Close() }()
+	if !resumed.Receive() || resumed.Msg().GetMutation().GetSeq() != 1 {
+		t.Fatalf("Subscribe after repair = %+v, err=%v", resumed.Msg(), resumed.Err())
+	}
+}
 
 // The local append callback runs after the log dispatch and origin advance,
 // but before the enclosing graph publication cut ends. Neither the full CDC
@@ -414,6 +658,7 @@ func TestSubscribe_RealWireRetainedVectorAndSnapshotTail(t *testing.T) {
 		if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
 			t.Fatalf("stale vector %v returned %v, want gapped FailedPrecondition", req.GetFromSeqPerOrigin(), err)
 		}
+		requireReplicationGapReason(t, err, "")
 	}
 
 	for seq := uint64(1); seq <= 4; seq++ {

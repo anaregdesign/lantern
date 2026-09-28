@@ -11,6 +11,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 func TestAntiEntropyUsesInjectedSnapshotInstallerAndResumes(t *testing.T) {
@@ -113,6 +114,42 @@ func TestAntiEntropyCatchUpUsesCommittedOriginVector(t *testing.T) {
 	subscribes, snapshots = peer.requests()
 	if len(subscribes) != 1 || len(snapshots) != 0 {
 		t.Fatalf("cursor capture failure opened a stream or Snapshot: (%d, %d)", len(subscribes), len(snapshots))
+	}
+}
+
+func TestAntiEntropyTransientPeerGapWaitsForCommittedRetry(t *testing.T) {
+	origin := hlc.NodeID{0x47}
+	key := hex.EncodeToString(origin[:])
+	for _, reason := range []string{
+		replicationstatus.ReasonSubscriberStreamClosed,
+		replicationstatus.ReasonPublicationFault,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			peer := &installerTestPeer{
+				selfOrigin: origin, originSeq: 5,
+				firstSubscribeErr: replicationstatus.TransientGap(reason, errors.New("gapped")),
+			}
+			server := startInstallerTestPeer(t, peer)
+			state := &cursorTestState{fixedLocalState: fixedLocalState{seq: 2}, cursor: map[string]uint64{key: 2}}
+			driver := NewAntiEntropy(AntiEntropyConfig{
+				HTTPClient: defaultH2CClient(), SubscribeTimeout: time.Second,
+			}, state, state, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			driver.tickPeer(ctx, server.URL)
+			subscribes, snapshots := peer.requests()
+			if len(subscribes) != 1 || len(snapshots) != 0 || subscribes[0].GetFromSeqPerOrigin()[key] != 3 {
+				t.Fatalf("transient tick: subscribes=%+v snapshots=%+v", subscribes, snapshots)
+			}
+			state.cursor = map[string]uint64{key: 4}
+			driver.tickPeer(ctx, server.URL)
+			subscribes, snapshots = peer.requests()
+			if len(subscribes) != 2 || len(snapshots) != 0 ||
+				subscribes[1].GetFromSeqPerOrigin()[key] != 4 {
+				t.Fatalf("retry: subscribes=%+v snapshots=%+v, want origin 4 without Snapshot", subscribes, snapshots)
+			}
+		})
 	}
 }
 

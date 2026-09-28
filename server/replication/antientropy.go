@@ -18,9 +18,9 @@ package replication
 // gaps must be healed by talking to the originating node, which is
 // outside the scope of one peer's mutation log), the driver opens
 // a bounded Subscribe(from_seq_per_origin = local_for_peer + 1) and applies
-// up to the peer-reported target seq. FailedPrecondition triggers
-// a Snapshot replay; later ticks retain that responder's local cutoff so
-// Subscribe can resume the live tail without re-requesting an evicted prefix.
+// up to the peer-reported target seq. Missing retained history triggers a
+// Snapshot; transient buffer or publication faults defer to the next tick,
+// which resumes from the committed origin vector.
 //
 // LANTERN_ANTI_ENTROPY_INTERVAL controls the tick cadence. The
 // default 30s is a deliberate compromise: short enough that a
@@ -41,6 +41,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 
 	"connectrpc.com/connect"
 )
@@ -392,6 +393,13 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 	}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+			transient, classifyErr := replicationstatus.IsTransientGap(err)
+			if classifyErr != nil {
+				return 0, classifyErr
+			}
+			if transient {
+				return 0, err
+			}
 			return 0, a.snapshotAfterGap(ctx, addr, err)
 		}
 		return 0, err
@@ -424,6 +432,13 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		return applied, nil
 	}
 	if connect.CodeOf(recvErr) == connect.CodeFailedPrecondition {
+		transient, classifyErr := replicationstatus.IsTransientGap(recvErr)
+		if classifyErr != nil {
+			return applied, classifyErr
+		}
+		if transient {
+			return applied, recvErr
+		}
 		return applied, a.snapshotAfterGap(ctx, addr, recvErr)
 	}
 	// Deadline-exceeded from the subscribe timeout is expected

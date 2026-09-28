@@ -26,6 +26,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 type receiptIncompatiblePeer struct {
@@ -176,6 +177,90 @@ func TestPumpReconnectUsesCommittedOriginVector(t *testing.T) {
 	subscribes, snapshots = peer.requests()
 	if len(subscribes) != 1 || len(snapshots) != 0 {
 		t.Fatalf("cursor capture failure opened a stream or Snapshot: (%d, %d)", len(subscribes), len(snapshots))
+	}
+}
+
+type disconnectRecordingMetrics struct {
+	nopMetrics
+	reasons []string
+}
+
+func (m *disconnectRecordingMetrics) OnPumpDisconnect(_ string, reason string) {
+	m.reasons = append(m.reasons, reason)
+}
+
+func TestPumpTransientPeerGapReconnectsWithoutSnapshot(t *testing.T) {
+	origin := hlc.NodeID{0x45}
+	key := hex.EncodeToString(origin[:])
+	for _, reason := range []string{
+		replicationstatus.ReasonSubscriberStreamClosed,
+		replicationstatus.ReasonPublicationFault,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			peer := &installerTestPeer{
+				firstSubscribeErr: replicationstatus.TransientGap(reason, errors.New("gapped")),
+				subscribeMutation: &pb.Mutation{Origin: origin[:], Seq: 6},
+			}
+			server := startInstallerTestPeer(t, peer)
+			state := &cursorTestState{cursor: map[string]uint64{key: 6}}
+			metrics := &disconnectRecordingMetrics{}
+			pump := NewPump(Config{HTTPClient: defaultH2CClient(), Metrics: metrics}, state, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			if err := pump.session(ctx, server.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("transient peer gap = %v, want FailedPrecondition", err)
+			}
+			subscribes, snapshots := peer.requests()
+			if len(subscribes) != 1 || len(snapshots) != 0 || subscribes[0].GetFromSeqPerOrigin()[key] != 6 {
+				t.Fatalf("first Subscribe = %+v, Snapshots = %+v", subscribes, snapshots)
+			}
+			state.cursor = map[string]uint64{key: 7}
+			if err := pump.session(ctx, server.URL); err != nil {
+				t.Fatalf("reconnect from committed cursor: %v", err)
+			}
+			subscribes, snapshots = peer.requests()
+			if len(subscribes) != 2 || len(snapshots) != 0 ||
+				subscribes[1].GetFromSeqPerOrigin()[key] != 7 || subscribes[1].GetFromLocalSeq() != 0 {
+				t.Fatalf("reconnect = %+v, Snapshots = %+v, want origin 7 without Snapshot", subscribes, snapshots)
+			}
+			if !slices.Equal(metrics.reasons, []string{"subscribe_failed", "clean"}) {
+				t.Fatalf("disconnect metrics = %v, want failure followed by clean", metrics.reasons)
+			}
+		})
+	}
+}
+
+type publicationFaultOnceApplier struct{ calls int }
+
+func (a *publicationFaultOnceApplier) ApplyMutation(context.Context, *pb.Mutation) error {
+	a.calls++
+	if a.calls == 1 {
+		return replicationstatus.TransientGap(replicationstatus.ReasonPublicationFault, errors.New("local publication failed"))
+	}
+	return nil
+}
+
+func TestPumpLocalPublicationFaultStillInstallsSnapshot(t *testing.T) {
+	origin := hlc.NodeID{0x46}
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		subscribeMutation: &pb.Mutation{Origin: origin[:], Seq: 1},
+	}
+	server := startInstallerTestPeer(t, peer)
+	installer := &scriptedSnapshotInstaller{required: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+	apply := &publicationFaultOnceApplier{}
+	pump := NewPump(Config{HTTPClient: defaultH2CClient(), SnapshotInstaller: installer}, apply, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := pump.session(ctx, server.URL); err != nil {
+		t.Fatalf("local publication repair: %v", err)
+	}
+	subscribes, snapshots := peer.requests()
+	if len(subscribes) != 2 || len(snapshots) != 1 || installer.installCount() != 1 || apply.calls != 2 {
+		t.Fatalf("local fault recovery: subscribes=%d snapshots=%d installs=%d applies=%d",
+			len(subscribes), len(snapshots), installer.installCount(), apply.calls)
 	}
 }
 

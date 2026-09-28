@@ -601,14 +601,35 @@ Back-pressure and publication faults: server terminates the stream with
 requested responder-local replay position or an undelivered replay tail,
 (b) the bounded **live** subscriber buffer overflows after retained replay
 has caught up, or (c) a local or remote mutation changed the graph but its log
-append failed. The fault also rejects new Subscribe/Snapshot attempts until
-repair, and closes every stream from the previous generation even if repair
-completes quickly. After repair the consumer must re-bootstrap via
-`Snapshot` and resume `Subscribe` with the
-`cutoff_seq_per_origin` and `cutoff_local_seq` returned by `SnapshotHeader`.
-Writes that arrive while replay is being forwarded are caught up from the
-retained ring before the live subscriber is registered; a small live buffer
-alone does not make a retained replay gap.
+append failed. A publication fault rejects new Subscribe/Snapshot attempts
+until repair, and closes every stream from the previous generation even if
+repair completes quickly.
+
+The status carries a fixed `google.rpc.ErrorInfo` detail (domain
+`github.com/anaregdesign/lantern`) for two conditions that do **not** by
+themselves prove missing history: `SUBSCRIBER_STREAM_CLOSED` when the log
+subscriber closes (a live-buffer overrun, a replay tail evicted during
+forwarding, or shutdown) and `PUBLICATION_FAULT` when this responder cannot
+currently publish or serve a consistent snapshot. The peer Pump backs off
+and reconnects from its **committed per-origin cursor** for those two
+peer-side reasons; anti-entropy defers to its next tick. A publication
+fault may require a verified repair of the affected node before retries can
+succeed. In particular, a local publication fault returned by
+`ApplyMutation` still requires the receiver to install a Snapshot from a
+healthy peer. Neither error detail permits skipping an origin or advancing
+a cursor without applying its mutation. Since a closed stream alone cannot
+distinguish buffer overflow from an evicted replay tail, the next
+per-origin cursor validation must prove the retained history before replay.
+
+A proven retained-ring/origin gap is still an unannotated
+`FAILED_PRECONDITION`: the receiver installs `Snapshot`, then resumes
+`Subscribe` with the `cutoff_seq_per_origin` and `cutoff_local_seq` from
+`SnapshotHeader`. Unknown or missing reasons retain this safe Snapshot
+fallback; consumers do not parse error text. A transient reconnect can
+discover that history was evicted in the meantime and then take this
+Snapshot path. Writes arriving while replay is being forwarded are caught
+up from the retained ring before the live subscriber is registered; a small
+live buffer alone does not make a retained replay gap.
 
 Handler implementation notes (issue #180):
 
@@ -617,9 +638,9 @@ Handler implementation notes (issue #180):
   alongside `LanternService` and shares the same `*mutationlog.Log` as
   the write path.
 - The handler maps `mutationlog.ErrGapped` to `codes.FailedPrecondition`
-  with the reason `"gapped"`, both at subscribe time (initial check) and
-  when the in-flight channel is closed by the log's slow-subscriber
-  eviction. This matches the wire contract above.
+  with the message `"gapped"` at subscribe time; only a live-channel
+  overflow carries the typed transient reason. Both keep the existing
+  `FAILED_PRECONDITION` status for other clients.
 - The handler forwards the buffered `*pb.Mutation` with its originating
   writer's `Mutation.Seq` intact. A relay's replica-local `entry.Seq` is a
   separate transport cursor and must never overwrite the portable origin seq.
@@ -648,7 +669,8 @@ it registers a live log subscriber at `last_local_seq + 1` and captures that
 vector. It then releases the gate and sends the checkpoint as the first frame;
 the registered tail buffers later mutations. Reading `OriginStates()` before
 or after an independent `Log.Subscribe` would leave a skip window. The
-subscriber buffer is finite; overflow ends the stream as `gapped`. A bootstrap
+subscriber buffer is finite; overflow ends the stream as `gapped` with
+the same `SUBSCRIBER_STREAM_CLOSED` error detail. A bootstrap
 checkpoint reports this responder's state, not a cluster-wide consensus
 barrier or a proof that another replica has caught up.
 

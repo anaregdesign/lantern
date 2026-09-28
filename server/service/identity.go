@@ -13,6 +13,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 const (
@@ -171,7 +172,8 @@ func (s *LanternReplicationService) subscribeIdentity(ctx context.Context, req *
 			}
 			if !open {
 				s.metrics.OnSubscribeDropped("gapped")
-				return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped: identity subscriber fell behind"))
+				return replicationstatus.TransientGap(replicationstatus.ReasonSubscriberStreamClosed,
+					errors.New("gapped: identity subscriber stream closed; reconnect from committed cursor"))
 			}
 			m, ok := graphMutationFromLog(entry.Op)
 			if !ok {

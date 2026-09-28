@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 // Sender is the slim, transport-agnostic surface Subscribe and
@@ -387,10 +388,12 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			default:
 			}
 			if !ok {
-				// Slow subscriber: log closed our channel mid-stream.
+				// A closed channel may be a live-buffer overflow or a replay
+				// tail evicted while forwarding. The next cursor validation
+				// determines whether Snapshot is actually required.
 				s.metrics.OnSubscribeDropped("gapped")
-				return connect.NewError(connect.CodeFailedPrecondition,
-					errors.New("gapped: subscriber fell behind; snapshot and resubscribe"))
+				return replicationstatus.TransientGap(replicationstatus.ReasonSubscriberStreamClosed,
+					errors.New("gapped: subscriber stream closed; reconnect from committed cursor"))
 			}
 			frame, err := subscribeMutationFrame(entry.Op)
 			if err != nil {

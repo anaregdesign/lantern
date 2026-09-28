@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
+	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -158,7 +159,7 @@ func (s *LanternService) commitReplicatedReceipt(
 }
 
 func publicationGapError() error {
-	return connect.NewError(connect.CodeFailedPrecondition,
+	return replicationstatus.TransientGap(replicationstatus.ReasonPublicationFault,
 		errors.New("gapped: mutation publication or Snapshot install requires repair before reading, subscribing, or taking a snapshot"))
 }
 

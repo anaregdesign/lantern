@@ -103,6 +103,8 @@ type installerTestPeer struct {
 	selfOrigin        hlc.NodeID
 	originSeq         uint64
 	gapFirstSubscribe bool
+	firstSubscribeErr error
+	subscribeMutation *pb.Mutation
 	subscribeRequests []*pb.SubscribeRequest
 	snapshotRequests  []*pb.SnapshotRequest
 }
@@ -129,7 +131,7 @@ func (p *installerTestPeer) PeerStatus(
 func (p *installerTestPeer) Subscribe(
 	_ context.Context,
 	req *connect.Request[pb.SubscribeRequest],
-	_ *connect.ServerStream[pb.SubscribeResponse],
+	stream *connect.ServerStream[pb.SubscribeResponse],
 ) error {
 	p.mu.Lock()
 	p.subscribeRequests = append(
@@ -141,6 +143,16 @@ func (p *installerTestPeer) Subscribe(
 	p.mu.Unlock()
 	if gap {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped"))
+	}
+	if p.subscribeMutation != nil {
+		if err := stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{
+			Mutation: proto.Clone(p.subscribeMutation).(*pb.Mutation),
+		}}); err != nil {
+			return err
+		}
+	}
+	if call == 1 && p.firstSubscribeErr != nil {
+		return p.firstSubscribeErr
 	}
 	return nil
 }
