@@ -494,6 +494,14 @@ number rather than force-moving the tag.
   only upstream pin that forces a re-tag. The container hosts the SPA on Caddy and does
   not reverse-proxy the Lantern listener — the browser calls the gateway directly, so the
   server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
+- `sdks/node/vX.Y.Z` triggers the two-runtime real-wire `node-sdk.yml` gate and npm
+  trusted publishing with provenance. Before creating an exact-title GitHub Release,
+  dispatch the read-only `node-registry-audit.yml` on the default branch with the
+  immutable tag and the tagged publish job's SHA-1. It downloads the *actual* npm
+  archive using a fresh cache, checks both registry digests against that publish,
+  and verifies npm's signed provenance binds the archive to the tag, workflow, and
+  source commit. An npm publish log alone, or a local registry cache, is not proof
+  the public artifact is available.
 - `sdks/rust/vX.Y.Z` must match the `sdks/rust/Cargo.toml` package version and
   an exact `## X.Y.Z` heading in `sdks/rust/CHANGELOG.md`. The prepared
   `0.1.0` heading is not evidence of publication. `rust-release.yml` verifies

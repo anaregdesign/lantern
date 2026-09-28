@@ -1,0 +1,133 @@
+name: Node SDK registry audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing immutable sdks/node/vX.Y.Z tag'
+        required: true
+        type: string
+      published_shasum:
+        description: 'SHA-1 printed by the tagged npm publish job'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable source and release inputs
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          PUBLISHED_SHASUM: ${{ inputs.published_shasum }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^sdks/node/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$PUBLISHED_SHASUM" =~ ^[0-9a-f]{40}$ ]]
+          version="${RELEASE_TAG#sdks/node/v}"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')" = \
+            "$(git rev-parse "refs/tags/$RELEASE_TAG")"
+          test "$(node -p 'require("./sdks/node/package.json").version')" = "$version"
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_CACHE=$RUNNER_TEMP/node-registry-audit-cache" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install current npm provenance verifier
+        run: npm install -g npm@latest
+      - name: Download and verify actual registry archive
+        env:
+          PUBLISHED_SHASUM: ${{ inputs.published_shasum }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/node-registry-audit"
+          mkdir -p "$dir"
+          npm view "lantern-sdk@$PACKAGE_VERSION" version --json \
+            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/version.json"
+          jq -e --arg version "$PACKAGE_VERSION" '. == $version' "$dir/version.json" >/dev/null
+          npm view "lantern-sdk@$PACKAGE_VERSION" dist --json \
+            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/dist.json"
+          npm pack "lantern-sdk@$PACKAGE_VERSION" --json --pack-destination "$dir" \
+            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/pack.json"
+          REGISTRY_AUDIT_DIR="$dir" node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const dir = process.env.REGISTRY_AUDIT_DIR;
+          const dist = JSON.parse(readFileSync(join(dir, 'dist.json')));
+          const packs = JSON.parse(readFileSync(join(dir, 'pack.json')));
+          assert.equal(packs.length, 1);
+          const [pack] = packs;
+          assert.equal(pack.name, 'lantern-sdk');
+          assert.equal(pack.version, process.env.PACKAGE_VERSION);
+          assert.equal(pack.filename, `lantern-sdk-${pack.version}.tgz`);
+          assert.equal(new URL(dist.tarball).host, 'registry.npmjs.org');
+          assert.ok(dist.attestations?.url, 'published provenance is missing');
+          const archive = readFileSync(join(dir, pack.filename));
+          const sha1 = createHash('sha1').update(archive).digest('hex');
+          const sha512 = createHash('sha512').update(archive).digest();
+          assert.equal(sha1, process.env.PUBLISHED_SHASUM);
+          assert.equal(sha1, dist.shasum);
+          assert.equal(`sha512-${sha512.toString('base64')}`, dist.integrity);
+          assert.equal(pack.shasum, sha1);
+          assert.equal(pack.integrity, dist.integrity);
+          console.log(`Registry archive matches tagged publish: ${pack.name}@${pack.version} SHA-1 ${sha1}`);
+          NODE
+      - name: Verify signed registry provenance and source
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/node-registry-audit"
+          mkdir -p "$dir/install"
+          npm install --prefix "$dir/install" --ignore-scripts --no-audit \
+            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 \
+            "lantern-sdk@$PACKAGE_VERSION"
+          npm audit signatures --prefix "$dir/install" --json --include-attestations \
+            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/signatures.json"
+          REGISTRY_AUDIT_DIR="$dir" node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const dir = process.env.REGISTRY_AUDIT_DIR;
+          const archive = readFileSync(join(dir, `lantern-sdk-${process.env.PACKAGE_VERSION}.tgz`));
+          const digest = createHash('sha512').update(archive).digest('hex');
+          const audit = JSON.parse(readFileSync(join(dir, 'signatures.json')));
+          const verified = (audit.verified ?? []).filter(
+            item => item.name === 'lantern-sdk' && item.version === process.env.PACKAGE_VERSION,
+          );
+          assert.equal(verified.length, 1, 'npm did not verify this package signature');
+          const statements = [];
+          const visit = value => {
+            if (value === null || typeof value !== 'object') return;
+            if (typeof value.dsseEnvelope?.payload === 'string') {
+              statements.push(JSON.parse(Buffer.from(value.dsseEnvelope.payload, 'base64').toString()));
+            }
+            for (const child of Object.values(value)) visit(child);
+          };
+          visit(verified[0]);
+          assert.ok(statements.some(statement =>
+            statement.subject?.some(subject => subject.digest?.sha512 === digest) &&
+            JSON.stringify(statement.predicate).includes('https://github.com/anaregdesign/lantern') &&
+            JSON.stringify(statement.predicate).includes('node-sdk.yml') &&
+            JSON.stringify(statement.predicate).includes(process.env.RELEASE_TAG) &&
+            JSON.stringify(statement.predicate).includes(process.env.TAG_SHA),
+          ), 'verified provenance does not bind this archive to the tagged repository workflow and commit');
+          console.log(`Verified npm provenance for ${process.env.RELEASE_TAG} at ${process.env.TAG_SHA}`);
+          NODE
