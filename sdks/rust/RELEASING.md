@@ -51,8 +51,10 @@ does not substitute for this full tag matrix.
 Only after all six lanes pass, preflight audits locked dependencies with
 warnings denied (including unmaintained crates), builds the tagged `.crate`
 with `cargo package --locked`, checks its license, version, source and
-generated-code identity, and tests the unpacked archive independently of
-the Go workspace, root proto, and system `protoc`.
+generated-code identity, verifies its **packaged** README links to the
+published crates.io crate without prepublication claims, and tests the
+unpacked archive independently of the Go workspace, root proto, and
+system `protoc`.
 Before artifact upload or the registry decision, tag-time preflight also runs
 `cargo publish --dry-run --locked --package lantern-client` in a fresh target
 directory, then independently reruns `cargo package` in another fresh target

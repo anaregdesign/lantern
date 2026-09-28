@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.3.0
+
+- Add true, single-endpoint server-streaming `Subscribe`: checkpoint-first
+  identity invalidation and portable next-expected per-origin resume, explicit
+  full-mutation mode with all 21 graph/receipt arms, typed gaps and category-7
+  contribution invalidation. Streams use verified TLS/mTLS and per-open bearer
+  auth with independent idle/lifetime budgets; they never retry.
+- Add graph-only prefix-induced `BackupSnapshot`, bounded protobuf or Rust
+  NDJSON archive writers, a separately persisted SHA-256/count manifest, and
+  preflight-checked, two-pass Vertex-before-Edge public-Put restore with
+  partial-progress reporting. Nonfinite folded weights and elapsed deadlines
+  fail before any writes instead of being silently dropped.
+- Add authenticated singleton/HA production-wire CDC and backup/restore
+  conformance, receipt-WAL envelope fixtures, cancellation and malformed-frame
+  tests, and a secure opt-in CDC/backup example.
+- Correct the published-crate README wording and guard packaged README text
+  against stale prepublication claims.
+
 ## 0.2.0
 
 - Add typed singular and plural deletion of one caller-known edge contribution
