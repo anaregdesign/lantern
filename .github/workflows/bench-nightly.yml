@@ -32,6 +32,10 @@ on:
         description: 'Optional mutation log capacity for the diagnostic scenario'
         required: false
         type: string
+      diagnostic_subscriber_buffer:
+        description: 'Optional subscriber buffer for the diagnostic scenario (default 512)'
+        required: false
+        type: string
 
 # A new manual run supersedes an in-flight one rather than queueing a second
 # 3-replica compose stack on a fresh runner.
@@ -60,6 +64,22 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+      - name: Validate diagnostic request
+        env:
+          DIAGNOSTIC_SCENARIO: ${{ inputs.diagnostic_scenario }}
+          DIAGNOSTIC_LOG_CAPACITY: ${{ inputs.diagnostic_log_capacity }}
+          DIAGNOSTIC_SUBSCRIBER_BUFFER: ${{ inputs.diagnostic_subscriber_buffer }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DIAGNOSTIC_SCENARIO" ]]; then
+            [[ -z "$DIAGNOSTIC_LOG_CAPACITY" && -z "$DIAGNOSTIC_SUBSCRIBER_BUFFER" ]] ||
+              { echo 'diagnostic overrides require diagnostic_scenario' >&2; exit 1; }
+          fi
+          if [[ -n "$DIAGNOSTIC_SUBSCRIBER_BUFFER" ]]; then
+            [[ "$DIAGNOSTIC_SUBSCRIBER_BUFFER" =~ ^[1-9][0-9]{0,5}$ ]] &&
+              (( DIAGNOSTIC_SUBSCRIBER_BUFFER <= 100000 )) ||
+              { echo 'diagnostic_subscriber_buffer must be an integer from 1 to 100000' >&2; exit 1; }
+          fi
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -157,6 +177,7 @@ jobs:
           KEEP_UP: ${{ (inputs.diagnostic_scenario == 'broad_rw' || inputs.diagnostic_scenario == 'broad_mutate') && '1' || '0' }}
           DIAGNOSTIC_SCENARIO: ${{ inputs.diagnostic_scenario }}
           LANTERN_BENCH_MUTATION_LOG_CAPACITY: ${{ inputs.diagnostic_log_capacity }}
+          LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER: ${{ inputs.diagnostic_subscriber_buffer }}
         run: ./testbed/bench/run.sh "$DIAGNOSTIC_SCENARIO"
       - name: Summarize diagnostic RPC errors
         if: always() && inputs.diagnostic_scenario != '' && steps.diagnostic.outcome != 'skipped'

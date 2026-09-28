@@ -1606,6 +1606,55 @@ func TestManualQualificationRetainsFanOutRepairDiagnostics(t *testing.T) {
 	if !strings.Contains(keepUp, "broad_rw") || !strings.Contains(keepUp, "broad_mutate") {
 		t.Errorf("diagnostic KEEP_UP does not retain both fan-out clusters: %q", keepUp)
 	}
+	if _, ok := steps["Run manual leak-gate sweep (blocking)"].Env["LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER"]; ok {
+		t.Error("full qualification must not receive the diagnostic subscriber buffer override")
+	}
+	diagnostic := steps["Run one diagnostic scenario"]
+	if got := diagnostic.Env["LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER"]; got != "${{ inputs.diagnostic_subscriber_buffer }}" {
+		t.Errorf("diagnostic subscriber buffer input = %q", got)
+	}
+	validate := steps["Validate diagnostic request"]
+	if validate.Env["DIAGNOSTIC_SUBSCRIBER_BUFFER"] != "${{ inputs.diagnostic_subscriber_buffer }}" ||
+		!strings.Contains(validate.Run, "diagnostic_subscriber_buffer must be an integer from 1 to 100000") ||
+		!strings.Contains(validate.Run, "diagnostic overrides require diagnostic_scenario") ||
+		!strings.Contains(string(raw), "diagnostic_subscriber_buffer:") {
+		t.Error("diagnostic subscriber buffer must be explicitly requested and validated")
+	}
+	for _, tt := range []struct {
+		name, scenario, logCapacity, buffer, wantError string
+	}{
+		{name: "canonical sweep"},
+		{name: "diagnostic", scenario: "broad_mutate", buffer: "8192"},
+		{name: "zero buffer", scenario: "broad_mutate", buffer: "0", wantError: "must be an integer"},
+		{name: "non-numeric buffer", scenario: "broad_mutate", buffer: "8x", wantError: "must be an integer"},
+		{name: "oversized buffer", scenario: "broad_mutate", buffer: "100001", wantError: "must be an integer"},
+		{name: "full sweep buffer override", buffer: "8192", wantError: "require diagnostic_scenario"},
+		{name: "full sweep capacity override", logCapacity: "100000", wantError: "require diagnostic_scenario"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("bash", "-c", validate.Run)
+			cmd.Env = append(os.Environ(),
+				"DIAGNOSTIC_SCENARIO="+tt.scenario,
+				"DIAGNOSTIC_LOG_CAPACITY="+tt.logCapacity,
+				"DIAGNOSTIC_SUBSCRIBER_BUFFER="+tt.buffer)
+			output, err := cmd.CombinedOutput()
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("valid diagnostic request failed: %v: %s", err, output)
+				}
+			} else if err == nil || !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("invalid diagnostic request = %v: %s; want %q", err, output, tt.wantError)
+			}
+		})
+	}
+	compose, err := os.ReadFile("compose.override.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compose), "  LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER:\n") ||
+		!strings.Contains(string(compose), `LANTERN_MUTATION_LOG_CAPACITY: "${LANTERN_BENCH_MUTATION_LOG_CAPACITY:-10000}"`) {
+		t.Error("the canonical sweep must keep the server subscriber-buffer default and 10k mutation log")
+	}
 	peerLogs := steps["Summarize diagnostic peer repairs"].Run
 	for _, clause := range []string{"first_count", "matches <= 80", "matches - 159", "peer_repair_events", "replication pump: peer transition"} {
 		if !strings.Contains(peerLogs, clause) {

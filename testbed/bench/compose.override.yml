@@ -29,6 +29,9 @@ x-lantern-bench-env: &lantern-bench-env
   # while keeping legitimate ring retention well under the leak_gate
   # heap budget. See issue #254.
   LANTERN_MUTATION_LOG_CAPACITY: "${LANTERN_BENCH_MUTATION_LOG_CAPACITY:-10000}"
+  # Inherit only when explicitly set by a diagnostic; otherwise keep the
+  # server default, including future default changes.
+  LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER:
   # Per-scenario cluster TTL / GC tick. run.sh exports the LANTERN_BENCH_*
   # host vars from a scenario's optional `cluster:` block; both fall back to
   # the canonical 3600/60 when unset, so scenarios without a `cluster:` block
