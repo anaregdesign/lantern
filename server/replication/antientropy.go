@@ -392,7 +392,7 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 	}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-			return 0, a.snapshotFrom(ctx, addr)
+			return 0, a.snapshotAfterGap(ctx, addr, err)
 		}
 		return 0, err
 	}
@@ -424,7 +424,7 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		return applied, nil
 	}
 	if connect.CodeOf(recvErr) == connect.CodeFailedPrecondition {
-		return applied, a.snapshotFrom(ctx, addr)
+		return applied, a.snapshotAfterGap(ctx, addr, recvErr)
 	}
 	// Deadline-exceeded from the subscribe timeout is expected
 	// when the catch-up window is shorter than the gap — surface as
@@ -434,6 +434,12 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		return applied, nil
 	}
 	return applied, recvErr
+}
+
+func (a *AntiEntropy) snapshotAfterGap(ctx context.Context, addr string, reason error) error {
+	a.cfg.Logger.Info("anti-entropy: Subscribe gapped, requesting Snapshot",
+		slog.String("peer", addr), slog.Any("err", reason))
+	return a.snapshotFrom(ctx, addr)
 }
 
 // snapshotFrom delegates a full peer Snapshot to the selected installer.

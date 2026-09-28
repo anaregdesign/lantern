@@ -1182,7 +1182,8 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 		// and loop through snapshots indefinitely.
 		log.Info("replication pump: peer transition",
 			slog.String("transition", "snapshot_start"),
-			slog.String("reason", "gapped"))
+			slog.String("reason", "gapped"),
+			slog.Any("err", err))
 		header, sErr := p.snapshot(ctx, addr)
 		if sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")

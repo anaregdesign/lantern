@@ -54,8 +54,12 @@ gh workflow run bench-nightly.yml --ref <commit-or-branch>
 
 An empty `diagnostic_scenario` runs the full eight-scenario sweep followed by
 the four receipt scenarios. Specify a scenario stem to diagnose one case; the
-workflow then summarizes bounded ghz error reasons without uploading request
-payloads. Ordinary PR CI remains focused on deterministic tests.
+workflow waits up to three minutes for a low-load runner after its image build,
+then summarizes bounded ghz error reasons. For `broad_rw` it also prints the
+last 160 peer-repair lifecycle events per replica (including Subscribe gap
+reasons and Snapshot failures) before teardown; no request payloads are
+uploaded. A diagnostic is not a substitute for the full qualification. Ordinary
+PR CI remains focused on deterministic tests.
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
