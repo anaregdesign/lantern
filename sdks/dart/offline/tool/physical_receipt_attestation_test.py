@@ -336,6 +336,10 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
                 calls.append(command)
                 if command == ["adb", "-d", "shell", "getprop", "ro.kernel.qemu"]:
                     return b"0\n"
+                self.assertEqual(
+                    command[:6],
+                    ["adb", "-d", "shell", "-T", "run-as", attestation.PACKAGE_IDS["android"]],
+                )
                 if command[-2] == "cat":
                     path = command[-1]
                     if path in files and path not in unreadable:
@@ -380,6 +384,36 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
         fake, _ = capture_for({code_path: b"x" * (attestation.MAX_EVIDENCE_BYTES + 1)})
         with patch.object(attestation, "_bounded_command_stdout", side_effect=fake), self.assertRaisesRegex(ValueError, "oversized"):
             attestation.capture_device_marker("android")
+
+    def test_android_capture_ignores_exec_out_false_success_for_missing_fallback(self):
+        marker = b'{"kind":"physical_receipt_attestation"}\n'
+        fake_adb = self.directory / "adb"
+        fake_adb.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "args = sys.argv[1:]\n"
+            "if args == ['-d', 'shell', 'getprop', 'ro.kernel.qemu']:\n"
+            "    sys.stdout.buffer.write(b'0\\n')\n"
+            "elif args[:2] == ['-d', 'exec-out']:\n"
+            "    if args[-2] == 'cat' and args[-1].startswith('code_cache/'):\n"
+            "        sys.stdout.buffer.write(b'{\"kind\":\"physical_receipt_attestation\"}\\n')\n"
+            "    else:\n"
+            "        sys.stdout.buffer.write(b'cat: No such file or directory\\n')\n"
+            "elif args[:3] == ['-d', 'shell', '-T']:\n"
+            "    if args[-2] == 'cat' and args[-1].startswith('code_cache/'):\n"
+            "        sys.stdout.buffer.write(b'{\"kind\":\"physical_receipt_attestation\"}\\n')\n"
+            "    elif args[-2] == 'cat':\n"
+            "        sys.stdout.buffer.write(b'cat: No such file or directory\\n')\n"
+            "        sys.exit(1)\n"
+            "    elif args[-2] != '-c':\n"
+            "        sys.exit(2)\n"
+            "else:\n"
+            "    sys.exit(2)\n"
+        )
+        fake_adb.chmod(0o755)
+        path = f"{self.directory}:{attestation.os.environ['PATH']}"
+        with patch.dict(attestation.os.environ, {"PATH": path}):
+            self.assertEqual(attestation.capture_device_marker("android"), marker)
 
     def test_device_stdout_is_bounded_and_timeout_reaps_the_child(self):
         command = [sys.executable, "-c", "import sys; print('ready')"]
