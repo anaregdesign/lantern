@@ -64,7 +64,12 @@ uploaded. The full manual sweep retains the generated
 `broad_rw` and `broad_mutate` ghz/runtime summaries for post-failure error
 attribution without changing scenario traffic, gate thresholds, or the
 per-scenario Compose teardown. A diagnostic is not a substitute for the full
-qualification. Ordinary PR CI remains focused on deterministic tests.
+qualification. `diagnostic_log_capacity` and `diagnostic_subscriber_buffer`
+override only the named diagnostic run (the full sweep retains the canonical
+10,000-entry ring and the server's subscriber-buffer default, currently 512);
+the latter accepts an integer from 1 to 100,000. Ordinary PR CI remains
+focused on deterministic tests. Supplying a diagnostic override without
+`diagnostic_scenario` fails before a full sweep starts.
 
 [#256]: https://github.com/anaregdesign/lantern/issues/256
 [#262]: https://github.com/anaregdesign/lantern/issues/262
