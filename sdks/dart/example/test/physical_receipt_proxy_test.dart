@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -95,39 +96,62 @@ void main() {
     },
   );
 
-  test(
-    'token connection retries socket failures within a fixed bound',
-    () async {
-      var attempts = 0;
-      final waits = <Duration>[];
-      final connection = await retryReceiptTokenConnect(() async {
-        attempts++;
-        if (attempts < 3) throw const SocketException('transient');
-        return 'connected';
-      }, pause: (duration) async => waits.add(duration));
-      expect(connection, 'connected');
-      expect(attempts, 3);
-      expect(waits, [
-        const Duration(milliseconds: 500),
-        const Duration(seconds: 1),
-      ]);
+  test('token request recovers after more than three DNS failures', () async {
+    var attempts = 0;
+    final waits = <Duration>[];
+    final connection = await retryReceiptTokenConnect(() async {
+      attempts++;
+      if (attempts < 5) {
+        // The open step may succeed while the response step sees a reset.
+        throw const SocketException('transient DNS recovery');
+      }
+      return 'connected';
+    }, pause: (duration) async => waits.add(duration));
+    expect(connection, 'connected');
+    expect(attempts, 5);
+    expect(waits, [
+      const Duration(milliseconds: 500),
+      const Duration(seconds: 1),
+      const Duration(milliseconds: 1500),
+      const Duration(seconds: 2),
+    ]);
+  });
 
-      attempts = 0;
-      await expectLater(
-        retryReceiptTokenConnect(() async {
+  test('persistent token socket failure has an attempt bound', () async {
+    var attempts = 0;
+    await expectLater(
+      retryReceiptTokenConnect(
+        () async {
           attempts++;
           throw const SocketException('persistent');
-        }, pause: (_) async {}),
-        throwsA(isA<SocketException>()),
-      );
-      expect(attempts, 3);
-    },
-  );
+        },
+        pause: (_) async {},
+        maxAttempts: 4,
+      ),
+      throwsA(isA<SocketException>()),
+    );
+    expect(attempts, 4);
+  });
+
+  test('token request cannot exceed its wall-clock bound', () async {
+    final never = Completer<void>();
+    final stopwatch = Stopwatch()..start();
+    await expectLater(
+      retryReceiptTokenConnect(
+        () => never.future,
+        recoveryWindow: const Duration(milliseconds: 30),
+      ),
+      throwsA(isA<TimeoutException>()),
+    );
+    expect(stopwatch.elapsed, lessThan(const Duration(seconds: 1)));
+  });
 
   test('token connection does not retry TLS or application failures', () async {
     for (final error in [
       HandshakeException('untrusted certificate'),
       StateError('invalid response'),
+      HttpException('non-200 response'),
+      const FormatException('invalid token body'),
     ]) {
       var attempts = 0;
       await expectLater(
