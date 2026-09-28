@@ -1603,6 +1603,150 @@ void main() {
       },
     );
 
+    test('zero jitter receipt retry resumes on the next drain', () async {
+      final clock = MutableClock(initial);
+      final remote = FakeOfflineRemote()
+        ..receiptStatusFailures.add(
+          failure(OfflineRemoteErrorKind.resourceExhausted),
+        )
+        ..receiptSendResults.add(const OfflineVertexDeleteReceiptResult(false));
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+        ),
+      );
+      addTearDown(repository.dispose);
+      final handle = await repository.deleteVertex(
+        partitionId: 'p',
+        key: 'missing',
+        operationId: 'zero-jitter-retry',
+      );
+      remote.receiptCalls.clear();
+
+      expect(await repository.drain('p'), 0);
+      expect(remote.receiptCalls, <String>['capability', 'status']);
+      expect(remote.receiptSendCalls, 0);
+      expect(
+        (await repository.getWriteStatus(
+          'p',
+          handle.operationId,
+        ))!.items.single.state,
+        OfflineWriteState.retryScheduled,
+      );
+
+      remote.receiptCalls.clear();
+      expect(await repository.drain('p'), 1);
+      expect(remote.receiptCalls, <String>[
+        'capability',
+        'status',
+        'capability',
+        'send',
+      ]);
+      expect(remote.receiptSendCalls, 1);
+      expect(
+        (await repository.getWriteStatus(
+          'p',
+          handle.operationId,
+        ))!.items.single.state,
+        OfflineWriteState.confirmed,
+      );
+    });
+
+    test('receipt retry settles its claimed batch before returning', () async {
+      final clock = MutableClock(initial);
+      final secondStatusStarted = Completer<void>();
+      final releaseSecondStatus = Completer<void>();
+      addTearDown(() {
+        if (!releaseSecondStatus.isCompleted) releaseSecondStatus.complete();
+      });
+      final remote = FakeOfflineRemote()
+        ..receiptStatusFailures.add(
+          failure(OfflineRemoteErrorKind.resourceExhausted),
+        )
+        ..beforeReceiptStatusReturn = (_) async {
+          if (!secondStatusStarted.isCompleted) secondStatusStarted.complete();
+          await releaseSecondStatus.future;
+        };
+      final repository = OfflineLanternRepository(
+        store: InMemoryOfflineStore(),
+        remote: remote,
+        config: OfflineConfig(
+          clock: clock.call,
+          idGenerator: testConfig(clock).idGenerator,
+          jitter: (_) => Duration.zero,
+          maxConcurrency: 2,
+          maxConcurrencyPerPartition: 2,
+        ),
+      );
+      addTearDown(repository.dispose);
+      final first = await repository.deleteVertex(
+        partitionId: 'p',
+        key: 'first',
+        operationId: 'first',
+      );
+      final second = await repository.deleteVertex(
+        partitionId: 'p',
+        key: 'second',
+        operationId: 'second',
+      );
+      final later = await repository.putVertex(
+        partitionId: 'p',
+        input: VertexInput(key: 'later', value: VertexValue.string('value')),
+      );
+      var drainCompleted = false;
+      final draining = repository.drain('p');
+      unawaited(draining.then((_) => drainCompleted = true));
+      await secondStatusStarted.future.timeout(const Duration(seconds: 2));
+      await Future<void>.delayed(Duration.zero);
+      expect(drainCompleted, isFalse);
+      releaseSecondStatus.complete();
+
+      expect(await draining, 1);
+      final firstState = (await repository.getWriteStatus(
+        'p',
+        first.operationId,
+      ))!.items.single.state;
+      final secondState = (await repository.getWriteStatus(
+        'p',
+        second.operationId,
+      ))!.items.single.state;
+      expect(
+        {firstState, secondState},
+        {OfflineWriteState.retryScheduled, OfflineWriteState.confirmed},
+      );
+      expect(remote.vertexPutCalls, 0);
+      expect(
+        (await repository.getWriteStatus(
+          'p',
+          later.operationId,
+        ))!.items.single.state,
+        OfflineWriteState.locallyCommitted,
+      );
+
+      remote.receiptCalls.clear();
+      expect(await repository.drain('p'), 2);
+      expect(remote.receiptCalls, contains('status'));
+      expect(remote.receiptCalls, contains('send'));
+      expect(
+        remote.receiptCalls.indexOf('status'),
+        lessThan(remote.receiptCalls.indexOf('send')),
+      );
+      expect(remote.vertexPutCalls, 1);
+      for (final operation in [first, second, later]) {
+        expect(
+          (await repository.getWriteStatus(
+            'p',
+            operation.operationId,
+          ))!.items.single.state,
+          OfflineWriteState.confirmed,
+        );
+      }
+    });
+
     test('lost proof and changed continuity or support never resend', () async {
       for (final scenario in <String>[
         'no-longer-provable',

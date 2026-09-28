@@ -942,7 +942,8 @@ final class OfflineLanternRepository {
     final owner = config.idGenerator();
     var confirmed = 0;
     var pausedForAuth = false;
-    while (!pausedForAuth) {
+    var retryScheduled = false;
+    while (!pausedForAuth && !retryScheduled) {
       _throwIfCanceled(cancellation);
       final authEpoch = runtime.authEpoch;
       await _expireOrAgeOut(partitionId);
@@ -1017,6 +1018,9 @@ final class OfflineLanternRepository {
       for (final outcome in outcomes) {
         confirmed += outcome.confirmed ? 1 : 0;
         pausedForAuth = pausedForAuth || outcome.pausedForAuth;
+        // A zero jitter delay can make the same record due immediately. Leave
+        // its next attempt to a later replay invocation.
+        retryScheduled = retryScheduled || outcome.retryScheduled;
       }
     }
     return confirmed;

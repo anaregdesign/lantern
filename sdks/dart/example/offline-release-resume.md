@@ -102,6 +102,19 @@ flutter test --no-pub integration_test/physical_identity_cdc_test.dart \
   --dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true
 ```
 
+The `flutter test` commands are useful during setup. For the **release** smoke
+and CDC records, build each target as a signed profile app from the frozen
+commit, install it on the physical device, and launch it with the compile-time
+`--dart-define=LANTERN_PHYSICAL_QUALIFICATION=true` flag. Also pass the same
+private endpoint defines (and `LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true` for
+CDC). The flag makes the final on-device `passed/complete` marker hash the
+installed Android APK or iOS `App.framework/App` executable through the native
+MethodChannel. If the installed binary cannot be inspected, the marker becomes
+`failed/attestation` and the test fails. Ordinary debug and simulator runs omit
+this flag; their markers are useful diagnostics but cannot prove installed
+release bytes. The CDC `running/live_invalidation` checkpoint marker never
+contains a binary hash.
+
 The mobile smoke must observe all ten online/offline/SQLite scenarios in the
 release gate, including pending Put close/reopen, original TTL, expired-before-
 replay rejection, durable logout wipe, and partition isolation. The API matrix
@@ -118,6 +131,24 @@ for `mobile_smoke_test.dart` **before** another integration-test target rebuilds
 or replaces it. Keep the path and hash in private notes until the evidence
 record is written. Do the same for the dedicated CDC target; its installed
 binary and on-device result marker must be verified independently.
+
+For each qualified smoke/CDC run, copy the final marker to the private evidence
+directory and compare it with the exact signed build and public record before
+replacing the app with another target:
+
+```bash
+python3 sdks/dart/offline/tool/physical_result_attestation.py \
+  --marker <private-on-device-marker-copy> \
+  --record <matching-offline-release-record.json> \
+  --built-binary <signed-apk-or-App.framework/App> \
+  --platform <android-or-ios> --suite <smoke-or-cdc> \
+  --launched-after <UTC-launch-timestamp>
+```
+
+Use the command from the repository root. It requires a fresh final pass,
+matches the marker's native package/hash to the record, and compares that hash
+with the signed build bytes. The four private smoke/CDC markers stay outside
+the eight-file public release evidence commit.
 
 Run `integration_test/untrusted_tls_test.dart` against a **separate**, reachable
 self-signed or hostname-mismatched TLS listener. Require

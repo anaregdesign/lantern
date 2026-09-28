@@ -608,10 +608,12 @@ void main() {
       final enqueueNow = DateTime.now().toUtc();
       final config = OfflineConfig(
         clock: () => enqueueNow,
-        jitter: (ceiling) => ceiling,
+        // All four dropped responses must remain pending after one drain,
+        // even when their next attempt is immediately due.
+        jitter: (_) => Duration.zero,
         baseRetryDelay: const Duration(seconds: 1),
-        maxConcurrency: 1,
-        maxConcurrencyPerPartition: 1,
+        maxConcurrency: 4,
+        maxConcurrencyPerPartition: 4,
       );
       final repository = OfflineLanternRepository(
         store: store,
@@ -984,7 +986,11 @@ void main() {
             ),
           ];
 
-      expect(await repository.drain(partitionId), 0);
+      // Each one-item claim ends its drain after the committed response is
+      // lost. Start a new foreground drain to dispatch the next operation.
+      for (var index = 0; index < cases.length; index++) {
+        expect(await repository.drain(partitionId), 0);
+      }
       final pending = await store.transaction(
         (transaction) => transaction.outbox(partitionId),
       );
@@ -1664,11 +1670,23 @@ void main() {
         operation.operationId,
       );
       expect(partialStatus!.confirmedCount, 100);
+      // The current claim settles before drain stops. Later due items stay
+      // locally committed for the next explicit foreground drain after restart.
+      final retryScheduledCount = partialStatus.items
+          .where((item) => item.state == OfflineWriteState.retryScheduled)
+          .length;
+      expect(retryScheduledCount, inInclusiveRange(1, 32));
       expect(
         partialStatus.items.where(
-          (item) => item.state == OfflineWriteState.retryScheduled,
+          (item) => item.state == OfflineWriteState.locallyCommitted,
         ),
-        hasLength(901),
+        hasLength(901 - retryScheduledCount),
+      );
+      expect(
+        partialStatus.items.where(
+          (item) => item.state == OfflineWriteState.sending,
+        ),
+        isEmpty,
       );
 
       final snapshot = await store.exportSnapshot();
