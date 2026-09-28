@@ -222,7 +222,9 @@ def capture_device_marker(platform, device_id=None):
             markers = []
             for directory in ("code_cache", "cache"):
                 path = f"{directory}/lantern-receipt-attestation.json"
-                prefix = ["adb", "-d", "exec-out", "run-as", PACKAGE_IDS["android"]]
+                # shell -T preserves raw bytes and propagates the remote exit status.
+                # exec-out can report success for a missing run-as path on devices.
+                prefix = ["adb", "-d", "shell", "-T", "run-as", PACKAGE_IDS["android"]]
                 try:
                     captured = _bounded_command_stdout(
                         [*prefix, "cat", path], timeout=30,
