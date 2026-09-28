@@ -440,6 +440,31 @@ and end-of-run transport error remains in that unchanged unexpected-error
 budget. `perf_gate.json` and `report.md` retain raw, expected-lifecycle, and
 unexpected counts so a green verdict remains diagnosable.
 
+#### Publication under saturation (`publication_gate:` block)
+
+Some release scenarios exhaust the mutation-log retention window while 3
+replicas handle concurrent writes and scans. The server rejects a read that
+overlaps graph publication, or a request during Snapshot repair, to avoid an
+inconsistent result. Those two **exact** gRPC errors may be declared as a
+separate bounded class:
+
+```yaml
+publication_gate:
+  max_ratio: 0.35
+  producers:
+    producer-6: 0.55
+```
+
+The gate cross-checks each error-message count against its matching gRPC status
+count. Only those exact reasons leave the unchanged `perf_gate.max_non_ok_ratio`
+budget; unknown `FailedPrecondition`, `Unavailable`, and transport errors remain
+unexpected. Both aggregate and producer ratios must meet their ceilings.
+After cooldown, every declared replica must answer `GetServerStatus`.
+`broad_mutate` also requires a successful `BackupSnapshot` stream. Missing or
+malformed ghz evidence fails closed. The ceilings are based on the #1505
+hosted diagnosis; a higher frequency fails the nightly gate even when every
+error has the expected reason.
+
 ### Lifecycle metric gate (`metric_gate:` block)
 
 `metric_gate.metrics` compares each replica's unlabeled gauge in the pre/post

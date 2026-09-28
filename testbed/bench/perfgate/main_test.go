@@ -166,6 +166,51 @@ perf_gate:
 	}
 }
 
+func TestEvaluatePublicationErrorsAreExactBoundedAndRecoverable(t *testing.T) {
+	dir := t.TempDir()
+	scenario := filepath.Join(dir, "scenario.yaml")
+	writeText(t, scenario, `target:
+  endpoints: ["localhost:6380"]
+  calls: [{ name: reader, call: graph.v1.LanternService/GetVertices }]
+perf_gate:
+  max_non_ok_ratio: 0.02
+publication_gate:
+  max_ratio: 0.20
+`)
+	path := filepath.Join(dir, "ghz_steady_0_localhost_6380.json")
+	statuses := map[string]int{"OK": 79, "FailedPrecondition": 10, "Unavailable": 11}
+	for _, tc := range []struct {
+		name       string
+		errors     map[string]int
+		want       string
+		unexpected int64
+	}{
+		{"bounded exact reasons", map[string]int{publicationGapMessage: 10, publicationReadMessage: 10, "rpc error: code = Unavailable desc = peer down": 1}, "pass", 1},
+		{"frequency exceeds bound", map[string]int{publicationGapMessage: 10, publicationReadMessage: 11}, "fail", 0},
+		{"unknown reason stays unexpected", map[string]int{publicationGapMessage: 10, "rpc error: code = Unavailable desc = peer down": 11}, "fail", 11},
+		{"matching status exceeded", map[string]int{publicationGapMessage: 11, publicationReadMessage: 10}, "fail", 21},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeGhzErrors(t, path, 100, 10, statuses, tc.errors)
+			report, err := evaluate(scenario, dir, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Verdict != tc.want || report.Observed.UnexpectedNonOKTotal != tc.unexpected {
+				t.Fatalf("report = %+v, want %s with %d unexpected", report, tc.want, tc.unexpected)
+			}
+		})
+	}
+	writeGhzErrors(t, path, 100, 10, statuses, nil)
+	if report, err := evaluate(scenario, dir, "", ""); err != nil || report.Verdict != "fail" {
+		t.Fatalf("missing error distribution must fail closed: report=%+v err=%v", report, err)
+	}
+	writeGhzErrors(t, path, 100, 10, map[string]int{"OK": 100}, nil)
+	if report, err := evaluate(scenario, dir, "", ""); err != nil || report.Verdict != "pass" {
+		t.Fatalf("all-OK producer may omit error distribution: report=%+v err=%v", report, err)
+	}
+}
+
 func TestLoadProducerSummaryRequiresCompleteStatusDistribution(t *testing.T) {
 	dir := t.TempDir()
 	writeGhz(t, filepath.Join(dir, "ghz_steady_0_localhost_6380.json"), 100, 10, map[string]int{
@@ -425,7 +470,12 @@ func seriesFor(phrase bool, value float64) snapshotSeries {
 
 func writeGhz(t *testing.T, path string, count uint64, rps float64, statuses map[string]int) {
 	t.Helper()
-	summary := ghzSummary{Count: count, RPS: rps, StatusCodeDistribution: statuses}
+	writeGhzErrors(t, path, count, rps, statuses, nil)
+}
+
+func writeGhzErrors(t *testing.T, path string, count uint64, rps float64, statuses, reasons map[string]int) {
+	t.Helper()
+	summary := ghzSummary{Count: count, RPS: rps, StatusCodeDistribution: statuses, ErrorDistribution: reasons}
 	p99 := int64(10_000_000)
 	summary.LatencyDistribution = append(summary.LatencyDistribution, struct {
 		Percentage int    `json:"percentage"`

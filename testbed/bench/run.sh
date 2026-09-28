@@ -869,6 +869,44 @@ steady_end_epoch="$(date -u +%s)"
 log "cooldown: ${cooldown}"
 sleep "${cooldown%s}"
 
+# A declared publication gate allows only bounded, exact transient errors
+# during saturation. Every replica must serve a committed status again after
+# load stops, so a permanently faulted Snapshot cannot qualify.
+publication_recovery_verdict="skipped"
+publication_gate_count="$(yq -r '.publication_gate // {} | length' "$SCENARIO_FILE")"
+if [[ "$publication_gate_count" != "0" && "$publication_gate_count" != "null" ]]; then
+  publication_recovery_verdict="pass"
+  for ep in "${endpoints[@]}"; do
+    recovered=0
+    for attempt in $(seq 1 10); do
+      if curl --fail --silent --show-error --max-time 2 \
+        -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
+        --data '{}' "http://${ep}/graph.v1.LanternService/GetServerStatus" >/dev/null 2>&1; then
+        recovered=1
+        break
+      fi
+      sleep 1
+    done
+    if (( recovered == 0 )); then
+      publication_recovery_verdict="fail"
+      log "publication recovery: ${ep} remained unavailable after cooldown"
+    fi
+  done
+  recovery_backup_prefix="$(yq -r '.publication_gate.recovery_backup_prefix // ""' "$SCENARIO_FILE")"
+  if [[ -n "$recovery_backup_prefix" ]]; then
+    backup_report="$OUTDIR/publication_recovery_backup.json"
+    if ! ghz --insecure --call graph.v1.LanternService/BackupSnapshot \
+      -n 1 -c 1 --format json \
+      -d "$(jq -nc --arg prefix "$recovery_backup_prefix" '{vertexPrefix:$prefix}')" \
+      -o "$backup_report" "${endpoints[0]}" >/dev/null 2>&1 ||
+      [[ "$(jq -r '.statusCodeDistribution.OK // 0' "$backup_report" 2>/dev/null)" != "1" ]]; then
+      publication_recovery_verdict="fail"
+      log "publication recovery: post-cooldown BackupSnapshot did not complete"
+    fi
+  fi
+  log "publication recovery verdict: ${publication_recovery_verdict}"
+fi
+
 # ----- POST snapshot ---------------------------------------------------------
 if [[ "$semantic_kind" == "search" ]]; then
   log "semantic gate: verify every replica after cooldown"
@@ -1057,5 +1095,9 @@ if [[ "$receipt_driver" == "1" ]]; then
   verify_receipt_peer_tls "$OUTDIR/peer_tls_post.json" "$OUTDIR/peer_tls_pre.json"
 fi
 render_report
+if [[ "$publication_recovery_verdict" != "skipped" ]]; then
+  printf '\n**Post-cooldown publication recovery:** `%s` (GetServerStatus on every declared replica).\n' \
+    "$publication_recovery_verdict" >> "$OUTDIR/report.md"
+fi
 
-if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$producer_failed" == "0" ]]; then exit 0; else exit 1; fi
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$publication_recovery_verdict" != "fail" && "$producer_failed" == "0" ]]; then exit 0; else exit 1; fi

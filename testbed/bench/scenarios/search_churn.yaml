@@ -198,3 +198,12 @@ lifecycle_gate:
       metric_labels: { mode: min_should, phrase: "no", fuzziness: "0", prefix_terms: "no", prefix_present: "no" }
     broad_phrase:
       metric_labels: { mode: server, phrase: "yes", fuzziness: "0", prefix_terms: "no", prefix_present: "no" }
+# The publication gate is independent of the typed Search index lifecycle.
+# The writer and prefix_fuzzy_cap_overflow paths had the highest exact transient
+# ratios in the #1505 hosted diagnostic; they retain explicit per-producer caps.
+publication_gate:
+  max_ratio: 0.70
+  producers:
+    writer: 0.85
+    fuzzy_1: 0.85
+    prefix_fuzzy_cap_overflow: 0.96
