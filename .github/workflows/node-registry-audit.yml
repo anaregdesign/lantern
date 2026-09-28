@@ -56,11 +56,20 @@ jobs:
           mkdir -p "$dir"
           npm view "lantern-sdk@$PACKAGE_VERSION" version --json \
             --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/version.json"
-          jq -e --arg version "$PACKAGE_VERSION" '. == $version' "$dir/version.json" >/dev/null
+          jq -e --arg version "$PACKAGE_VERSION" '
+            . == $version or (type == "array" and length == 1 and .[0] == $version)
+          ' "$dir/version.json" >/dev/null || {
+            echo "::error::Registry version metadata does not match $PACKAGE_VERSION"
+            jq -c 'if type == "array" then map(type) else type end' "$dir/version.json"
+            exit 1
+          }
+          echo "Exact registry version confirmed"
           npm view "lantern-sdk@$PACKAGE_VERSION" dist --json \
             --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/dist.json"
+          echo "Registry distribution metadata retrieved"
           npm pack "lantern-sdk@$PACKAGE_VERSION" --json --pack-destination "$dir" \
             --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/pack.json"
+          echo "Public npm tarball downloaded"
           REGISTRY_AUDIT_DIR="$dir" node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { createHash } from 'node:crypto';
