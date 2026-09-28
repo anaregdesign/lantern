@@ -986,7 +986,11 @@ void main() {
             ),
           ];
 
-      expect(await repository.drain(partitionId), 0);
+      // Each one-item claim ends its drain after the committed response is
+      // lost. Start a new foreground drain to dispatch the next operation.
+      for (var index = 0; index < cases.length; index++) {
+        expect(await repository.drain(partitionId), 0);
+      }
       final pending = await store.transaction(
         (transaction) => transaction.outbox(partitionId),
       );
