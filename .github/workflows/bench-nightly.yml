@@ -96,18 +96,17 @@ jobs:
           image_id="$(docker image inspect --format '{{.Id}}' lantern:local)"
           [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           echo "RECEIPT_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
-      - name: Record diagnostic qualification host
-        if: inputs.diagnostic_scenario != ''
+      - name: Verify qualification host and source
         run: |
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] ||
-            { echo 'diagnostic checkout differs from requested source' >&2; exit 1; }
+            { echo 'qualification checkout differs from requested source' >&2; exit 1; }
           running_containers="$(docker ps -q)"
           [[ -z "$running_containers" ]] ||
-            { echo 'diagnostic runner is not free of existing containers' >&2; exit 1; }
+            { echo 'qualification runner is not free of existing containers' >&2; exit 1; }
           image_commit="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' lantern:local | sed -n 's/^LANTERN_COMMIT=//p')"
           [[ "$image_commit" == "$GITHUB_SHA" ]] ||
-            { echo 'diagnostic image differs from requested source' >&2; exit 1; }
+            { echo 'qualification image differs from requested source' >&2; exit 1; }
           cpus="$(nproc)"
           for attempt in $(seq 1 19); do
             load="$(awk '{print $1}' /proc/loadavg)"
@@ -115,7 +114,7 @@ jobs:
               break
             fi
             if [[ "$attempt" -eq 19 ]]; then
-              echo "diagnostic runner remained busy after 180s: 1m load=$load cpus=$cpus" >&2
+              echo "qualification runner remained busy after 180s: 1m load=$load cpus=$cpus" >&2
               exit 1
             fi
             sleep 10
