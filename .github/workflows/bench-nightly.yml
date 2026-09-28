@@ -26,7 +26,12 @@ on:
     # 18:00 UTC daily — off-peak for the maintainers and well clear of the
     # release pipeline. Scheduled runs always use the default branch (main).
     - cron: '0 18 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      diagnostic_scenario:
+        description: 'Run one canonical scenario for diagnosis (leave empty for the full gate)'
+        required: false
+        type: string
 
 # A new nightly supersedes an in-flight one rather than queueing a second
 # 3-replica compose stack on a fresh runner.
@@ -92,6 +97,7 @@ jobs:
           [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           echo "RECEIPT_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
       - name: Run nightly leak-gate sweep (blocking)
+        if: inputs.diagnostic_scenario == ''
         env:
           TAG: nightly
           COMMIT: ${{ github.sha }}
@@ -110,7 +116,32 @@ jobs:
         # No continue-on-error: a non-zero exit (any scenario's leak gate failed,
         # or a harness/setup error) fails this required nightly check.
         run: ./testbed/bench/release.sh --out bench-report.md
+      - name: Run one diagnostic scenario
+        if: inputs.diagnostic_scenario != ''
+        env:
+          LANTERN_IMAGE: lantern:local
+          LEAK_GATE_ONLY: '1'
+          DIAGNOSTIC_SCENARIO: ${{ inputs.diagnostic_scenario }}
+        run: ./testbed/bench/run.sh "$DIAGNOSTIC_SCENARIO"
+      - name: Summarize diagnostic RPC errors
+        if: always() && inputs.diagnostic_scenario != ''
+        run: |
+          set -euo pipefail
+          find testbed/bench/out -name 'ghz_steady_*.json' -print0 | sort -z | while IFS= read -r -d '' file; do
+            echo "$(basename "$file")"
+            jq -r '
+              (.errorDistribution // {}) | to_entries | map({
+                count: .value,
+                reason: (if (.key | contains("graph publication changed during read")) then "publication_changed_during_read"
+                         elif (.key | contains("mutation publication or Snapshot install requires repair")) then "publication_or_snapshot_gap"
+                         elif (.key | contains("Snapshot install already in progress")) then "snapshot_install_in_progress"
+                         elif (.key | contains("local mutation publication repair")) then "local_publication_repair"
+                         else "other" end)
+              }) | group_by(.reason)[] | "  \(.[0].reason): \(map(.count) | add)"
+            ' "$file"
+          done
       - name: Run four receipt admission and lookup gates (blocking)
+        if: inputs.diagnostic_scenario == ''
         env:
           LANTERN_IMAGE: lantern:local
           EXPECTED_LANTERN_IMAGE_ID: ${{ env.RECEIPT_IMAGE_ID }}
