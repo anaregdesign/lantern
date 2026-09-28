@@ -54,19 +54,13 @@ jobs:
           set -euo pipefail
           dir="$RUNNER_TEMP/node-registry-audit"
           mkdir -p "$dir"
-          npm view "lantern-sdk@$PACKAGE_VERSION" version --json \
-            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/version.json"
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 60 \
+            -H 'Cache-Control: no-cache' \
+            "https://registry.npmjs.org/lantern-sdk/$PACKAGE_VERSION" > "$dir/metadata.json"
           jq -e --arg version "$PACKAGE_VERSION" '
-            . == $version or (type == "array" and length == 1 and .[0] == $version)
-          ' "$dir/version.json" >/dev/null || {
-            echo "::error::Registry version metadata does not match $PACKAGE_VERSION"
-            jq -c 'if type == "array" then map(type) else type end' "$dir/version.json"
-            exit 1
-          }
-          echo "Exact registry version confirmed"
-          npm view "lantern-sdk@$PACKAGE_VERSION" dist --json \
-            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/dist.json"
-          echo "Registry distribution metadata retrieved"
+            .name == "lantern-sdk" and .version == $version and (.dist | type == "object")
+          ' "$dir/metadata.json" >/dev/null
+          echo "Exact registry version and distribution metadata confirmed"
           npm pack "lantern-sdk@$PACKAGE_VERSION" --json --pack-destination "$dir" \
             --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 > "$dir/pack.json"
           echo "Public npm tarball downloaded"
@@ -78,7 +72,7 @@ jobs:
           import { join } from 'node:path';
 
           const dir = process.env.REGISTRY_AUDIT_DIR;
-          const dist = JSON.parse(readFileSync(join(dir, 'dist.json')));
+          const { dist } = JSON.parse(readFileSync(join(dir, 'metadata.json')));
           const archiveName = `lantern-sdk-${process.env.PACKAGE_VERSION}.tgz`;
           const archivePath = join(dir, archiveName);
           const manifest = JSON.parse(execFileSync('tar', ['-xOzf', archivePath, 'package/package.json']));
