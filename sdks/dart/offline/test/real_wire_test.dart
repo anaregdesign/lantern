@@ -608,10 +608,12 @@ void main() {
       final enqueueNow = DateTime.now().toUtc();
       final config = OfflineConfig(
         clock: () => enqueueNow,
-        jitter: (ceiling) => ceiling,
+        // All four dropped responses must remain pending after one drain,
+        // even when their next attempt is immediately due.
+        jitter: (_) => Duration.zero,
         baseRetryDelay: const Duration(seconds: 1),
-        maxConcurrency: 1,
-        maxConcurrencyPerPartition: 1,
+        maxConcurrency: 4,
+        maxConcurrencyPerPartition: 4,
       );
       final repository = OfflineLanternRepository(
         store: store,
