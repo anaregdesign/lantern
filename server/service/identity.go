@@ -128,7 +128,7 @@ func (s *LanternReplicationService) subscribeIdentity(ctx context.Context, req *
 				fromLocal = retained[0].Seq
 			}
 		}
-		ch, cancel, openErr = s.log.Subscribe(fromLocal)
+		ch, cancel, openErr = s.log.SubscribeFiltered(fromLocal, s.cursorEntryFilter(cursor))
 	})
 	if cutErr != nil {
 		s.metrics.OnSubscribeDropped("gapped")

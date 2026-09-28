@@ -1044,6 +1044,93 @@ func (m *coldSelfEchoIntegrationMetrics) OnPumpSnapshotReplayed(string, uint64, 
 	m.snapshots.Add(1)
 }
 
+func TestCertifiedSubscribeFiltersCoveredOriginsAndRejectsMissingTailOverH2C(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	node := newCertifiedPumpNode(t, hlc.NodeID{0x78}, 2<<20, 0)
+	remoteID := hlc.NodeID{0x79}
+	remoteClock := hlc.New(remoteID, hlc.Options{})
+	putLocal := func(key string) {
+		t.Helper()
+		if _, err := node.sdk.PutVertex(ctx, key, "value", time.Minute); err != nil {
+			t.Fatalf("local PutVertex(%s): %v", key, err)
+		}
+	}
+	putRemote := func(seq uint64) {
+		t.Helper()
+		stamp := remoteClock.Now()
+		if err := node.svc.ApplyMutation(ctx, &pb.Mutation{
+			Origin: remoteID[:], Seq: seq,
+			Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, Logical: stamp.Logical, NodeId: remoteID[:]},
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: fmt.Sprintf("remote-%d", seq)},
+			}}},
+		}); err != nil {
+			t.Fatalf("remote ApplyMutation(%d): %v", seq, err)
+		}
+	}
+	putLocal("local-1")
+	putRemote(1)
+	putLocal("local-2")
+	putRemote(2)
+
+	cursor := map[string]uint64{
+		hex.EncodeToString(node.nodeID[:]): math.MaxUint64,
+		hex.EncodeToString(remoteID[:]):    1,
+	}
+	replication := newReplicationRawClient(t, node.url)
+	for _, projection := range []pb.SubscribeProjection{
+		pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION,
+		pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+	} {
+		stream, err := replication.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+			Projection: projection, FromSeqPerOrigin: cursor,
+		}))
+		if err != nil {
+			t.Fatalf("Subscribe(%s): %v", projection, err)
+		}
+		for want := uint64(1); want <= 2; want++ {
+			if !stream.Receive() {
+				t.Fatalf("Subscribe(%s) remote seq %d: %v", projection, want, stream.Err())
+			}
+			frame := stream.Msg()
+			var origin []byte
+			var seq uint64
+			if projection == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY {
+				origin, seq = frame.GetIdentityChunk().GetOrigin(), frame.GetIdentityChunk().GetSeq()
+			} else {
+				origin, seq = frame.GetMutation().GetOrigin(), frame.GetMutation().GetSeq()
+			}
+			if !bytes.Equal(origin, remoteID[:]) || seq != want {
+				t.Fatalf("Subscribe(%s) frame = %v, want remote seq %d", projection, frame, want)
+			}
+		}
+		_ = stream.Close()
+	}
+
+	for i := 0; i < 16; i++ {
+		putLocal(fmt.Sprintf("evict-%d", i))
+	}
+	for _, projection := range []pb.SubscribeProjection{
+		pb.SubscribeProjection_SUBSCRIBE_PROJECTION_FULL_MUTATION,
+		pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY,
+	} {
+		stream, err := replication.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+			Projection: projection, FromSeqPerOrigin: cursor,
+		}))
+		if err == nil {
+			if stream.Receive() {
+				t.Fatalf("Subscribe(%s) streamed across missing remote history", projection)
+			}
+			err = stream.Err()
+			_ = stream.Close()
+		}
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("Subscribe(%s) evicted remote tail = %v, want FailedPrecondition", projection, err)
+		}
+	}
+}
+
 func TestPeerPumpColdSelfEchoReopensFilteredStreamOverH2C(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -87,6 +87,102 @@ func TestSubscribeReplaysAndStreams(t *testing.T) {
 	}
 }
 
+func TestSubscribeFiltered(t *testing.T) {
+	t.Run("replay and live", func(t *testing.T) {
+		l := New(Options{Capacity: 16, SubscriberBuffer: 1})
+		t.Cleanup(func() { _ = l.Close() })
+		for _, value := range []int{0, 1, 0} {
+			if _, err := l.Append(value, ts(1)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ch, cancel, err := l.SubscribeFiltered(1, func(e Entry) bool { return e.Op.(int) != 0 })
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cancel()
+		select {
+		case entry := <-ch:
+			if entry.Seq != 2 {
+				t.Fatalf("first filtered entry seq = %d, want 2", entry.Seq)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("filtered replay did not deliver seq 2")
+		}
+		for _, value := range []int{0, 2} {
+			if _, err := l.Append(value, ts(2)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		select {
+		case entry := <-ch:
+			if entry.Seq != 5 {
+				t.Fatalf("live filtered entry seq = %d, want 5", entry.Seq)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("filtered live tail did not deliver seq 5")
+		}
+	})
+
+	t.Run("excluded live entries do not overflow", func(t *testing.T) {
+		dropped := make(chan string, 1)
+		l := New(Options{
+			Capacity: 32, SubscriberBuffer: 1,
+			OnDrop: func(cause string) {
+				select {
+				case dropped <- cause:
+				default:
+				}
+			},
+		})
+		t.Cleanup(func() { _ = l.Close() })
+		ch, cancel, err := l.SubscribeFiltered(1, func(e Entry) bool { return e.Op.(int) != 0 })
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cancel()
+		if _, err := l.Append(1, ts(1)); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 12; i++ {
+			if _, err := l.Append(0, ts(2)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := l.Append(2, ts(3)); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []uint64{1, 14} {
+			select {
+			case entry, open := <-ch:
+				if !open || entry.Seq != want {
+					t.Fatalf("entry = %+v (open=%t), want seq %d", entry, open, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("timed out waiting for included seq %d", want)
+			}
+		}
+		select {
+		case cause := <-dropped:
+			t.Fatalf("filtered entries overflowed live buffer: %s", cause)
+		default:
+		}
+	})
+
+	t.Run("evicted prefix still gaps", func(t *testing.T) {
+		l := New(Options{Capacity: 2})
+		t.Cleanup(func() { _ = l.Close() })
+		for _, value := range []int{0, 1, 2} {
+			if _, err := l.Append(value, ts(1)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, _, err := l.SubscribeFiltered(1, func(e Entry) bool { return e.Op.(int) != 0 }); !errors.Is(err, ErrGapped) {
+			t.Fatalf("filtered truncated history = %v, want ErrGapped", err)
+		}
+	})
+}
+
 // TestSubscribeReplayExceedsBufferDoesNotGap is the regression test for #812.
 // A replay window larger than SubscriberBuffer must not be mistaken for a
 // slow subscriber: before the fix, Subscribe loaded the replay straight into
