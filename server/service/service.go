@@ -883,13 +883,13 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		alpha, epsilon := resolvePPRParams(ppr.GetRestartProb(), ppr.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphRead(func() error {
+		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
 			g, err = s.cache.PersonalizedPageRankWithWorkBudgetContext(ctx, request.GetSeed(), topN, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return nil
-		}); viewErr != nil {
+			return err
+		}); viewErr != nil && !errors.Is(viewErr, err) {
 			return nil, viewErr
 		}
 		traversalDur = time.Since(traversalStart)
@@ -920,13 +920,13 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		alpha, epsilon := resolvePPRParams(comm.GetRestartProb(), comm.GetEpsilon())
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphRead(func() error {
+		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
 			g, expirations, err = s.cache.LocalCommunityWithWorkBudgetContext(ctx, request.GetSeed(), maxSize, alpha, epsilon, coreWeighting, keep, s.traversalWorkBudget)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return nil
-		}); viewErr != nil {
+			return err
+		}); viewErr != nil && !errors.Is(viewErr, err) {
 			return nil, viewErr
 		}
 		traversalDur = time.Since(traversalStart)
@@ -986,13 +986,13 @@ func (s *LanternService) Illuminate(ctx context.Context, request *pb.IlluminateR
 		selectSmallest := objective == pb.Objective_OBJECTIVE_MINIMIZE
 		phase = "traversal"
 		traversalStart := time.Now()
-		if viewErr := s.withPublicGraphRead(func() error {
+		if viewErr := s.withPublicGraphReadRetry(ctx, func() error {
 			g, expirations, err = s.cache.NeighborWithExpirationsContext(ctx, request.GetSeed(), int(bfs.GetStep()), int(bfs.GetFanOut()), coreWeighting, selectSmallest, keep)
 			if err == nil {
 				detachTraversalVertices(g)
 			}
-			return nil
-		}); viewErr != nil {
+			return err
+		}); viewErr != nil && !errors.Is(viewErr, err) {
 			return nil, viewErr
 		}
 		traversalDur = time.Since(traversalStart)
@@ -1078,7 +1078,9 @@ func (s *LanternService) GetVertices(ctx context.Context, request *pb.GetVertice
 	resp := &pb.GetVerticesResponse{
 		Vertices: make([]*pb.Vertex, 0, len(keys)),
 	}
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
+		resp.Vertices = resp.Vertices[:0]
+		resp.Missing = resp.Missing[:0]
 		for _, k := range keys {
 			v, ok := s.cache.GetVertex(k)
 			if !ok {
@@ -1604,7 +1606,9 @@ func (s *LanternService) GetEdges(ctx context.Context, request *pb.GetEdgesReque
 	for i, k := range in {
 		keys[i] = graphcache.EdgeKey[string]{Tail: k.GetTail(), Head: k.GetHead()}
 	}
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
+		resp.Edges = resp.Edges[:0]
+		resp.Missing = resp.Missing[:0]
 		details := s.cache.GetEdgeDetails(keys)
 		if len(details) != len(keys) {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("edge batch read returned %d results for %d keys", len(details), len(keys)))

@@ -34,8 +34,8 @@ import (
 // every edge bucket in the graph — O(E_total), independent of how narrow the
 // prefix is. The core ranker releases its own graph read lock after capturing
 // incident buckets. This handler holds the Snapshot-admission latch during
-// ranking and checks the publication generation afterward; unrelated local
-// writes can proceed, but an overlapping publication invalidates the result.
+// ranking and retries boundedly on an overlapping publication; unrelated
+// local writes can proceed without making a mixed result visible.
 // Direct GraphCache writes still bypass that check: prefer a narrow prefix
 // and treat IN/BOTH totals on a large, actively-written graph as advisory.
 func (s *LanternService) TopVerticesByDegree(ctx context.Context, in *pb.TopVerticesByDegreeRequest) (*pb.TopVerticesByDegreeResponse, error) {
@@ -53,7 +53,7 @@ func (s *LanternService) TopVerticesByDegree(ctx context.Context, in *pb.TopVert
 
 	dir := degreeDirection(in.GetDirection())
 	var ranked []graphcache.DegreeEntry[string]
-	if err := s.withPublicGraphRead(func() error {
+	if err := s.withPublicGraphReadRetry(ctx, func() error {
 		ranked = s.cache.TopVerticesByDegree(in.GetPrefix(), int(k), dir, in.GetWeighted())
 		return nil
 	}); err != nil {

@@ -144,6 +144,68 @@ func TestLanternService_CommittedViewFailsClosed(t *testing.T) {
 	}
 }
 
+func TestLanternService_PublicGraphReadRetryIsBoundedAndFaultAware(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(newFakeBackend()).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
+	ctx := context.Background()
+	attempts := 0
+	if err := svc.withPublicGraphReadRetry(ctx, func() error {
+		attempts++
+		if attempts == 1 {
+			svc.replicationCutMu.Lock()
+			svc.replicationCutMu.Unlock()
+		}
+		return nil
+	}); err != nil || attempts != 2 {
+		t.Fatalf("one overlapping publication = %v, attempts=%d; want stable retry", err, attempts)
+	}
+
+	attempts = 0
+	err := svc.withPublicGraphReadRetry(ctx, func() error {
+		attempts++
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		return nil
+	})
+	if connect.CodeOf(err) != connect.CodeUnavailable || attempts != 3 {
+		t.Fatalf("continuous publications = %v, attempts=%d; want bounded Unavailable", err, attempts)
+	}
+	captureErr := errors.New("capture failed")
+	attempts = 0
+	err = svc.withPublicGraphReadRetry(ctx, func() error {
+		attempts++
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		return captureErr
+	})
+	if !errors.Is(err, captureErr) || attempts != 1 {
+		t.Fatalf("failed capture = %v, attempts=%d; want original failure without retry", err, attempts)
+	}
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	attempts = 0
+	err = svc.withPublicGraphReadRetry(cancelledCtx, func() error {
+		attempts++
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		cancel()
+		return nil
+	})
+	if connect.CodeOf(err) != connect.CodeCanceled || attempts != 1 {
+		t.Fatalf("cancelled retry = %v, attempts=%d; want immediate Canceled", err, attempts)
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish(false)
+	attempts = 0
+	err = svc.withPublicGraphReadRetry(ctx, func() error { attempts++; return nil })
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || attempts != 0 {
+		t.Fatalf("faulted retry = %v, attempts=%d; want fail-closed without capture", err, attempts)
+	}
+}
+
 type heldVertexReadBackend struct {
 	Backend
 	entered chan struct{}

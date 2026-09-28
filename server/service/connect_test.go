@@ -415,7 +415,7 @@ func (b *blockingVertexReadBackend) GetVertex(key string) (*pb.Vertex, bool) {
 	return b.Backend.GetVertex(key)
 }
 
-func TestConnectAdapter_GetVerticesBatchDoesNotBlockPublication(t *testing.T) {
+func TestConnectAdapter_GetVerticesBatchRetriesWithoutBlockingPublication(t *testing.T) {
 	log := mutationlog.New(mutationlog.Options{})
 	defer func() { _ = log.Close() }()
 	backend := &blockingVertexReadBackend{
@@ -430,10 +430,14 @@ func TestConnectAdapter_GetVerticesBatchDoesNotBlockPublication(t *testing.T) {
 	}()
 	svc := NewLanternService(backend).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
 	handler := NewLanternServiceConnectHandler(svc)
-	readDone := make(chan error, 1)
+	type readResult struct {
+		response *connect.Response[pb.GetVerticesResponse]
+		err      error
+	}
+	readDone := make(chan readResult, 1)
 	go func() {
-		_, err := handler.GetVertices(context.Background(), connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"a", "b"}}))
-		readDone <- err
+		response, err := handler.GetVertices(context.Background(), connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"a", "b"}}))
+		readDone <- readResult{response, err}
 	}()
 	<-backend.entered
 	writerDone := make(chan struct{})
@@ -449,9 +453,12 @@ func TestConnectAdapter_GetVerticesBatchDoesNotBlockPublication(t *testing.T) {
 	}
 	close(backend.release)
 	select {
-	case err := <-readDone:
-		if connect.CodeOf(err) != connect.CodeUnavailable {
-			t.Fatalf("overlapping batch read = %v, want retryable Unavailable", err)
+	case result := <-readDone:
+		if result.err != nil || result.response == nil ||
+			len(result.response.Msg.GetVertices()) != 0 ||
+			len(result.response.Msg.GetMissing()) != 2 ||
+			result.response.Msg.GetMissing()[0] != "a" || result.response.Msg.GetMissing()[1] != "b" {
+			t.Fatalf("retried batch read = %+v, %v; want each missing key once", result.response, result.err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("plural read did not finish")
@@ -465,12 +472,16 @@ type blockingPrefixCountBackend struct {
 }
 
 func (b *blockingPrefixCountBackend) CountByPrefix(prefix string) int {
-	close(b.entered)
-	<-b.release
+	select {
+	case <-b.entered:
+	default:
+		close(b.entered)
+		<-b.release
+	}
 	return b.Backend.CountByPrefix(prefix)
 }
 
-func TestConnectAdapter_PrefixCountDoesNotBlockPublication(t *testing.T) {
+func TestConnectAdapter_PrefixCountRetriesWithoutBlockingPublication(t *testing.T) {
 	cases := []struct {
 		name string
 		read func(graphv1connect.LanternServiceHandler) error
@@ -517,8 +528,8 @@ func TestConnectAdapter_PrefixCountDoesNotBlockPublication(t *testing.T) {
 			close(backend.release)
 			select {
 			case err := <-readDone:
-				if connect.CodeOf(err) != connect.CodeUnavailable {
-					t.Fatalf("overlapping prefix count = %v, want retryable Unavailable", err)
+				if err != nil {
+					t.Fatalf("retried prefix count: %v", err)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("prefix count did not finish")

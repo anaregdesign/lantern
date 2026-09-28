@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,6 +143,79 @@ func TestSnapshotInstallFaultGatesLoglessGraphReadsOnRealWire(t *testing.T) {
 	}
 	finish(true)
 	checkReads("recovered", false)
+}
+
+type blockedWireVertexRead struct {
+	service.Backend
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (b *blockedWireVertexRead) GetVertex(key string) (*pb.Vertex, bool) {
+	if b.calls.Add(1) == 1 {
+		close(b.entered)
+		<-b.release
+	}
+	return b.Backend.GetVertex(key)
+}
+
+func TestGraphReadRetriesOverlappingPublicationOnRealWire(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	backend := &blockedWireVertexRead{
+		Backend: cache, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-backend.release:
+		default:
+			close(backend.release)
+		}
+	}()
+	log := mutationlog.New(mutationlog.Options{})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := service.NewLanternService(backend).WithReplication(log, hlc.New(hlc.NodeID{0x31}, hlc.Options{}), nil)
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "cut", Value: &pb.Vertex_String_{String_: "before"}},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	type readResult struct {
+		response *connect.Response[pb.GetVerticesResponse]
+		err      error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		response, err := raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"cut", "missing"}}))
+		readDone <- readResult{response, err}
+	}()
+	select {
+	case <-backend.entered:
+	case <-ctx.Done():
+		t.Fatal("graph read did not reach the blocked capture")
+	}
+	if _, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{
+		Vertex: &pb.Vertex{Key: "cut", Value: &pb.Vertex_String_{String_: "after"}},
+	})); err != nil {
+		t.Fatalf("publication stalled behind graph read: %v", err)
+	}
+	close(backend.release)
+	select {
+	case result := <-readDone:
+		if result.err != nil || result.response == nil ||
+			len(result.response.Msg.GetVertices()) != 1 ||
+			result.response.Msg.GetVertices()[0].GetString_() != "after" ||
+			len(result.response.Msg.GetMissing()) != 1 || result.response.Msg.GetMissing()[0] != "missing" ||
+			backend.calls.Load() < 3 {
+			t.Fatalf("retried wire read = %+v, err=%v, calls=%d", result.response, result.err, backend.calls.Load())
+		}
+	case <-ctx.Done():
+		t.Fatal("graph read did not complete after publication")
+	}
 }
 
 // TestSnapshotFormatNegotiation_RealConnectWire pins both sides of the

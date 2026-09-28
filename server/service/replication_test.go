@@ -283,6 +283,86 @@ func TestLanternReplicationService_SubscribeWaitsForDispatchedEntryCutWithoutHol
 	<-subscribeDone
 }
 
+func TestLanternReplicationService_SubscribeReplayOverlapsWritesWithoutGap(t *testing.T) {
+	const (
+		initial = 16
+		appends = 20
+	)
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 64, SubscriberBuffer: 2})
+	t.Cleanup(func() { _ = log.Close() })
+	clock := hlc.New(hlc.NodeID{0x07}, hlc.Options{})
+	svc := NewLanternService(cache).WithReplication(log, clock, nil)
+	for i := 1; i <= initial; i++ {
+		if _, err := svc.PutVertex(context.Background(), &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: fmt.Sprintf("replay-%d", i), Value: &pb.Vertex_String_{String_: "value"}},
+		}); err != nil {
+			t.Fatalf("initial PutVertex %d: %v", i, err)
+		}
+	}
+	metrics := &replicationSubscribeStartMetrics{started: make(chan struct{})}
+	replication := NewLanternReplicationService(log, cache, clock).WithOriginStates(svc).WithMetrics(metrics)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sendRelease := make(chan struct{})
+	defer func() {
+		select {
+		case <-sendRelease:
+		default:
+			close(sendRelease)
+		}
+	}()
+	recorder := &replicationSubscribeRecorder{
+		frames:  make(chan *pb.SubscribeResponse, initial+appends),
+		entered: make(chan struct{}),
+		release: sendRelease,
+	}
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- replication.Subscribe(ctx, &pb.SubscribeRequest{FromLocalSeq: 1}, recorder)
+	}()
+	select {
+	case <-metrics.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not register")
+	}
+	select {
+	case <-recorder.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not reach the first replay frame")
+	}
+
+	for i := initial + 1; i <= initial+appends; i++ {
+		if _, err := svc.PutVertex(context.Background(), &pb.PutVertexRequest{
+			Vertex: &pb.Vertex{Key: fmt.Sprintf("replay-%d", i), Value: &pb.Vertex_String_{String_: "value"}},
+		}); err != nil {
+			t.Fatalf("concurrent PutVertex %d: %v", i, err)
+		}
+	}
+	if first, _ := log.FirstSeq(); first != 1 {
+		t.Fatalf("retained log first seq = %d, want 1", first)
+	}
+	close(sendRelease)
+	for i := 1; i <= initial+appends; i++ {
+		select {
+		case frame := <-recorder.frames:
+			if mutation := frame.GetMutation(); mutation.GetSeq() != uint64(i) {
+				t.Fatalf("replay frame %d = %+v", i, mutation)
+			}
+		case err := <-subscribeDone:
+			t.Fatalf("Subscribe gapped at frame %d while tail was retained: %v", i, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out replaying frame %d", i)
+		}
+	}
+	cancel()
+	select {
+	case <-subscribeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not stop after cancel")
+	}
+}
+
 func TestLanternReplicationService_SubscribeAndPeerStatusRejectSnapshotFault(t *testing.T) {
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
 	log := mutationlog.New(mutationlog.Options{Capacity: 8, SubscriberBuffer: 8})

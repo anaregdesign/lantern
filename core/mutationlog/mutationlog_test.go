@@ -2,7 +2,9 @@ package mutationlog
 
 import (
 	"errors"
+	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,6 +142,183 @@ func TestSubscribeReplayExceedsBufferDoesNotGap(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout on live entry after large replay")
+	}
+}
+
+func TestSubscribeReplayCatchesUpWithoutFillingLiveBuffer(t *testing.T) {
+	const (
+		initial = 16
+		appends = 20
+	)
+	var dropped atomic.Int32
+	l := New(Options{
+		Capacity: 64, SubscriberBuffer: 2,
+		OnDrop: func(string) { dropped.Add(1) },
+	})
+	defer l.Close()
+	for i := 1; i <= initial; i++ {
+		if _, err := l.Append(i, ts(int64(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ch, cancel, err := l.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	l.subsMu.Lock()
+	registered := len(l.subscribers)
+	l.subsMu.Unlock()
+	if registered != 0 {
+		t.Fatalf("live subscriber registered during replay: %d", registered)
+	}
+
+	// The forwarder is blocked delivering the first replay entry while
+	// more than SubscriberBuffer new entries are appended.
+	for i := initial + 1; i <= initial+appends; i++ {
+		if _, err := l.Append(i, ts(int64(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 1; i <= initial+appends; i++ {
+		select {
+		case entry, ok := <-ch:
+			if !ok || entry.Seq != uint64(i) {
+				t.Fatalf("entry %d = %+v (open=%v)", i, entry, ok)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out catching up at seq %d", i)
+		}
+	}
+	if got := dropped.Load(); got != 0 {
+		t.Fatalf("retained replay dropped %d live entries", got)
+	}
+	if _, err := l.Append(initial+appends+1, ts(initial+appends+1)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case entry, ok := <-ch:
+		if !ok || entry.Seq != initial+appends+1 {
+			t.Fatalf("live entry = %+v (open=%v)", entry, ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out receiving live entry after catch-up")
+	}
+}
+
+func TestSubscribeReplayClosesOnActualTailEviction(t *testing.T) {
+	l := New(Options{Capacity: 12, SubscriberBuffer: 2})
+	defer l.Close()
+	for i := 1; i <= 8; i++ {
+		if _, err := l.Append(i, ts(int64(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ch, cancel, err := l.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	for i := 9; i <= 21; i++ {
+		if _, err := l.Append(i, ts(int64(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first, _ := l.FirstSeq(); first != 10 {
+		t.Fatalf("ring first seq = %d, want 10 (missing seq 9)", first)
+	}
+	for i := 1; i <= 8; i++ {
+		select {
+		case entry, ok := <-ch:
+			if !ok || entry.Seq != uint64(i) {
+				t.Fatalf("replay %d = %+v (open=%v)", i, entry, ok)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out replaying seq %d", i)
+		}
+	}
+	select {
+	case entry, ok := <-ch:
+		if ok {
+			t.Fatalf("replayed past evicted seq 9: %+v", entry)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("evicted tail did not close the stream")
+	}
+}
+
+func TestSubscribeCancelDuringReplayDoesNotRegisterLate(t *testing.T) {
+	l := New(Options{Capacity: 32, SubscriberBuffer: 2})
+	defer l.Close()
+	for i := 1; i <= 8; i++ {
+		if _, err := l.Append(i, ts(int64(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ch, cancel, err := l.Subscribe(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cancel(); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case _, ok := <-ch:
+			if ok {
+				continue
+			}
+			l.subsMu.Lock()
+			registered := len(l.subscribers)
+			l.subsMu.Unlock()
+			if registered != 0 {
+				t.Fatalf("cancelled replay registered %d live subscribers", registered)
+			}
+			return
+		case <-time.After(2 * time.Second):
+			t.Fatal("cancelled replay did not close")
+		}
+	}
+}
+
+func TestSubscribeReplayAtSequenceLimitDoesNotRepeat(t *testing.T) {
+	l := New(Options{Capacity: 4, SubscriberBuffer: 2})
+	l.mu.Lock()
+	l.lastSeq = math.MaxUint64 - 1
+	l.firstSeq = math.MaxUint64
+	l.hasEntries = true
+	l.mu.Unlock()
+	if _, err := l.Append("last", ts(1)); err != nil {
+		t.Fatal(err)
+	}
+	ch, cancel, err := l.Subscribe(math.MaxUint64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	select {
+	case entry, ok := <-ch:
+		if !ok || entry.Seq != math.MaxUint64 {
+			t.Fatalf("last entry = %+v (open=%v)", entry, ok)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("last entry not replayed")
+	}
+	select {
+	case entry, ok := <-ch:
+		t.Fatalf("last entry was repeated or stream ended early: %+v (open=%v)", entry, ok)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("stream delivered an entry after log close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream did not stop after log close")
 	}
 }
 

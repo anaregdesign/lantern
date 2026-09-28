@@ -148,13 +148,16 @@ func TestSubscribeAndPeerStatus_RealWireWaitForPublicationCut(t *testing.T) {
 	}
 }
 
-// TestSubscribe_E2E_100Writes wires a real LanternService +
+// TestSubscribe_E2E_ReplayOverlapsWrites wires a real LanternService +
 // LanternReplicationService through the Connect-on-h2c httptest
-// harness, drives 100 PutVertex writes through the SDK, and asserts
-// the subscriber sees all 100 mutations in strict Seq order with
-// PutVertices payloads intact. Acceptance criterion for issue #180.
-func TestSubscribe_E2E_100Writes(t *testing.T) {
-	const N = 100
+// harness. More than the tiny live buffer's worth of writes arrive
+// while retained replay is blocked; the subscriber must receive every
+// mutation in order and then continue with the live tail.
+func TestSubscribe_E2E_ReplayOverlapsWrites(t *testing.T) {
+	const (
+		N     = 100
+		extra = 20
+	)
 
 	vi := provider.NewValidationInterceptor(provider.ValidationLimits{
 		MaxKeyLen:         256,
@@ -163,7 +166,7 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 		IlluminateMaxK:    256,
 	})
 
-	log := mutationlog.New(mutationlog.Options{Capacity: 4 * N, SubscriberBuffer: 4 * N})
+	log := mutationlog.New(mutationlog.Options{Capacity: 4 * N, SubscriberBuffer: 2})
 	t.Cleanup(func() { _ = log.Close() })
 	clock := hlc.New(hlc.NodeID{0xAA, 0xBB}, hlc.Options{})
 
@@ -183,8 +186,8 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Issue writes first so Subscribe can replay them from the
-	// in-memory ring. SubscriberBuffer is sized to fit all entries.
+	// Issue writes first so Subscribe replays far more than its tiny live
+	// buffer from the retained ring.
 	for i := 0; i < N; i++ {
 		if _, err := l.PutVertex(ctx, "k-"+itoa(i), "v", time.Minute); err != nil {
 			t.Fatalf("PutVertex[%d]: %v", i, err)
@@ -197,8 +200,13 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stream.Close() })
 
+	for i := N; i < N+extra; i++ {
+		if _, err := l.PutVertex(ctx, "k-"+itoa(i), "v", time.Minute); err != nil {
+			t.Fatalf("overlapping PutVertex[%d]: %v", i, err)
+		}
+	}
 	var prev uint64
-	for i := 0; i < N; i++ {
+	for i := 0; i < N+extra; i++ {
 		if !stream.Receive() {
 			if streamErr := stream.Err(); streamErr != nil && !errors.Is(streamErr, io.EOF) {
 				t.Fatalf("Recv[%d]: %v", i, streamErr)
@@ -218,6 +226,18 @@ func TestSubscribe_E2E_100Writes(t *testing.T) {
 		if want := "k-" + itoa(i); pv.GetEntries()[0].GetLive().GetKey() != want {
 			t.Errorf("entry[%d] key=%q want %q", i, pv.GetEntries()[0].GetLive().GetKey(), want)
 		}
+	}
+	if _, err := l.PutVertex(ctx, "tail-after-replay", "v", time.Minute); err != nil {
+		t.Fatalf("PutVertex after replay: %v", err)
+	}
+	if !stream.Receive() {
+		t.Fatalf("stream ended before live tail: %v", stream.Err())
+	}
+	mutation := stream.Msg().GetMutation()
+	if mutation.GetSeq() != N+extra+1 || mutation.GetOp().GetReplicatedPutVertices() == nil ||
+		len(mutation.GetOp().GetReplicatedPutVertices().GetEntries()) != 1 ||
+		mutation.GetOp().GetReplicatedPutVertices().GetEntries()[0].GetLive().GetKey() != "tail-after-replay" {
+		t.Fatalf("live tail after replay = %+v", mutation)
 	}
 }
 

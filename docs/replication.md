@@ -598,13 +598,17 @@ limits in §8.3 remain independent and are not raised by this invariant.
 
 Back-pressure and publication faults: server terminates the stream with
 `FAILED_PRECONDITION` (`gapped`) if (a) the ring has been truncated below the
-requested responder-local replay position, (b) the consumer's send buffer
-overflows, or (c) a local or remote mutation changed the graph but its log
+requested responder-local replay position or an undelivered replay tail,
+(b) the bounded **live** subscriber buffer overflows after retained replay
+has caught up, or (c) a local or remote mutation changed the graph but its log
 append failed. The fault also rejects new Subscribe/Snapshot attempts until
 repair, and closes every stream from the previous generation even if repair
 completes quickly. After repair the consumer must re-bootstrap via
 `Snapshot` and resume `Subscribe` with the
 `cutoff_seq_per_origin` and `cutoff_local_seq` returned by `SnapshotHeader`.
+Writes that arrive while replay is being forwarded are caught up from the
+retained ring before the live subscriber is registered; a small live buffer
+alone does not make a retained replay gap.
 
 Handler implementation notes (issue #180):
 
@@ -726,11 +730,14 @@ cover it with the verified cutoff or append its retained WAL envelope above
 the cutoff without reapplying the graph effect. Outside Snapshot installation,
 ordinary peer retries still repair failed relay WAL appends.
 The ordinary publication cut is sampled before and after the graph-data
-capture, not held through a slow query; an overlapping local publication
-causes a retryable `UNAVAILABLE` instead of a mixed result. A publication
-after a complete detached capture cannot invalidate that immutable result
-while it is assembled and serialized. Only a complete, verified Snapshot
-retry clears the fault and makes the graph readable again.
+capture, not held through a slow query. Pure read-only captures retry at
+most twice after an overlapping local publication; continued overlap
+returns retryable `UNAVAILABLE`, never a mixed result. Non-repeatable
+cursor/session reads do not retry, and capture errors or Snapshot/publication
+faults fail closed. A publication after a complete detached capture cannot
+invalidate that immutable result while it is assembled and serialized.
+Only a complete, verified Snapshot retry clears the fault and makes the
+graph readable again.
 `GetReplicationStatus` remains available for diagnosis without reading the
 graph; direct in-process GraphCache access is outside this public-read gate.
 
