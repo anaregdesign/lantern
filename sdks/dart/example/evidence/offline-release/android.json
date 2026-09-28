@@ -1,33 +1,28 @@
 {
-  "schema": 1,
-  "kind": "physical_offline_release_evidence",
-  "repository": "anaregdesign/lantern",
-  "testedCommit": "3c6567381818d349b43a14f1f2fc3cf99fddd53a",
-  "recordedAt": "2026-09-25T00:39:06Z",
-  "physicalDevice": true,
-  "contentFree": true,
-  "cleanCheckout": true,
-  "toolchain": {
-    "flutter": "3.44.6",
-    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
-    "dart": "3.12.2"
-  },
   "application": {
+    "binarySha256": "4c24b51d2c4f10474f905c0a7f3687830ac90cee65191b978f93dfa6cf0d0cf3",
     "packageId": "com.anaregdesign.lantern_example",
-    "target": "integration_test/mobile_smoke_test.dart",
-    "binarySha256": "5b5c1277032d1478d0d8c8b17c9b114f27cd6dd12ed1aefd0794b815e100107e"
+    "target": "integration_test/mobile_smoke_test.dart"
   },
+  "cleanCheckout": true,
+  "contentFree": true,
+  "kind": "physical_offline_release_evidence",
+  "limitations": [],
+  "network": {
+    "authenticated": true,
+    "platformTrustedTls": true,
+    "topology": "private LAN public-CA HTTPS gateway to one synthetic responder",
+    "transport": "Connect/HTTPS"
+  },
+  "physicalDevice": true,
   "platform": {
     "kind": "physical-android",
     "model": "Pixel 9a",
-    "os": "Android 17"
+    "os": "Android 17 (API 37)"
   },
-  "network": {
-    "transport": "Connect/HTTPS",
-    "topology": "Temporary public-CA HTTPS tunnel to local authenticated server and synthetic-token BFF",
-    "authenticated": true,
-    "platformTrustedTls": true
-  },
+  "recordedAt": "2026-09-28T03:41:16.566888Z",
+  "repository": "anaregdesign/lantern",
+  "result": "passed",
   "scenarios": [
     "android_doze_like_pause",
     "authoritative_server_expiry",
@@ -45,6 +40,11 @@
     "watch_cleanup",
     "wipe_before_send"
   ],
-  "result": "passed",
-  "limitations": []
+  "schema": 1,
+  "testedCommit": "3716d7052ac77eefbf05825e81e64cc603f16287",
+  "toolchain": {
+    "dart": "3.12.2",
+    "flutter": "3.44.6",
+    "flutterRevision": "ee80f08bbf97172ec030b8751ceab557177a34a6"
+  }
 }
