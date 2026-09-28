@@ -115,11 +115,33 @@ class ScopeTest(unittest.TestCase):
                 ),
             ):
                 ci_scope.main()
-            self.assertEqual(output.read_text(), "full=true\nmobile=true\n")
+            self.assertEqual(output.read_text(), "full=true\nmobile=true\nevidence_only=false\n")
             self.assertIn(
                 "Full Dart package matrix: True; Android/iOS native matrix: True",
                 summary.read_text(),
             )
+
+    def test_evidence_only_pr_skips_package_and_mobile_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            summary = Path(directory) / "summary"
+            env = {
+                "GITHUB_REF": "refs/pull/123/merge",
+                "GITHUB_EVENT_NAME": "pull_request",
+                "PR_BASE_SHA": "a" * 40,
+                "PR_HEAD_SHA": "b" * 40,
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(ci_scope, "git", return_value=b"a" * 40),
+                patch.object(ci_scope, "classify_range", return_value=(True, False)),
+                patch.object(ci_scope.evidence_only_pr, "classify_range", return_value=True),
+            ):
+                ci_scope.main()
+            self.assertEqual(output.read_text(), "full=false\nmobile=false\nevidence_only=true\n")
+            self.assertIn("evidence-only PR: True", summary.read_text())
 
     def test_go_directives_ignore_dependency_changes(self):
         old = "module example.com/test\n\ngo 1.27.0\n\nrequire example.com/a v1.0.0\n"

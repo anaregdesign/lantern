@@ -195,6 +195,53 @@ def validate_record(record, ci_record, platform, tested_sha, suite="smoke"):
         raise ValueError(f"{platform} tag CI manifest is invalid")
 
 
+def validate_pr_evidence(head_sha, tested_sha, evidence_dir=EVIDENCE_DIR):
+    """Check an evidence-only PR before its same-source release tag exists."""
+    source_identity(head_sha, tested_sha)
+    records = {}
+    for platform in ("android", "ios"):
+        for suite, contract in SUITES.items():
+            path = evidence_dir / f"{platform}{contract['suffix']}.json"
+            records[platform, suite] = load_receipt_record(path)
+            if records[platform, suite].get("testedCommit") != tested_sha:
+                raise ValueError(f"{platform} {suite} record differs from tested source")
+
+    for platform in ("android", "ios"):
+        smoke = records[platform, "smoke"]
+        # Tag CI supplies independent simulator toolchain and package claims.
+        # Here we check the records' own schema, suite, and cross-suite pairing;
+        # tag preflight still compares against its same-attempt CI manifests.
+        ci_record = {
+            "schema": 1,
+            "kind": "ci_mobile_revision_evidence",
+            "repository": "anaregdesign/lantern",
+            "contentFree": True,
+            "physicalDevice": False,
+            "ref": "refs/tags/sdks/dart/offline/v0.0.0",
+            "result": "passed",
+            "toolchain": smoke.get("toolchain"),
+            "application": {"packageId": smoke.get("application", {}).get("packageId")},
+        }
+        for suite in ("smoke", "cdc"):
+            validate_record(records[platform, suite], ci_record, platform, tested_sha, suite)
+        receipt_path = evidence_dir / f"{platform}-receipt.json"
+        validate_archived_receipt_evidence(
+            evidence_dir / f"{platform}-receipt-marker.json",
+            receipt_path,
+            tested_commit=tested_sha,
+            platform=platform,
+            required_scenarios=REQUIRED_RECEIPT_COMMON | {REQUIRED_RECEIPT_PLATFORM[platform]},
+        )
+        if records[platform, "receipt"]["application"]["packageId"] != (
+            ci_record["application"]["packageId"]
+        ):
+            raise ValueError(f"{platform} receipt package differs from smoke record")
+    if records["android", "smoke"]["toolchain"] != records["ios", "smoke"]["toolchain"]:
+        raise ValueError("physical platforms used different Flutter toolchains")
+    if records["android", "receipt"]["runId"] == records["ios", "receipt"]["runId"]:
+        raise ValueError("physical receipt platforms reused a run ID")
+
+
 def validate(tag_sha, evidence_dir, ci_dir, run_id, run_attempt):
     records = {}
     for platform in ("android", "ios"):

@@ -10,6 +10,8 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - "sdks/dart/example/evidence/offline-release/*.json"
   schedule:
     # Weekly Monday 06:00 UTC sweep so a stale main still gets a fresh
     # baseline even when no PRs land.

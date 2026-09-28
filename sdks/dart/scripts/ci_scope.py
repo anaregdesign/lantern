@@ -7,6 +7,11 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".github/scripts"))
+import evidence_only_pr
 
 
 PACKAGE_ONLY = {
@@ -103,6 +108,7 @@ def classify_range(base: str, head: str) -> tuple[bool, bool]:
 
 def main() -> None:
     github_ref = os.environ["GITHUB_REF"]
+    evidence_only = False
     if github_ref.startswith("refs/tags/"):
         full, mobile = classify([], release_tag=True)
     elif os.environ["GITHUB_EVENT_NAME"] == "pull_request":
@@ -111,6 +117,9 @@ def main() -> None:
         full, mobile = classify_range(
             git("merge-base", base, head).decode().strip(), head
         )
+        evidence_only = evidence_only_pr.classify_range(base, head)
+        if evidence_only:
+            full, mobile = False, False
     elif os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
         full, mobile = True, True
     else:
@@ -121,12 +130,16 @@ def main() -> None:
         else:
             full, mobile = classify_range(base, head)
 
-    output = f"full={str(full).lower()}\nmobile={str(mobile).lower()}\n"
+    output = (
+        f"full={str(full).lower()}\nmobile={str(mobile).lower()}\n"
+        f"evidence_only={str(evidence_only).lower()}\n"
+    )
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
         stream.write(output)
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
         stream.write(
-            f"Full Dart package matrix: {full}; Android/iOS native matrix: {mobile}\n"
+            f"Full Dart package matrix: {full}; Android/iOS native matrix: {mobile}; "
+            f"evidence-only PR: {evidence_only}\n"
         )
     print(output, end="")
 
