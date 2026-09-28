@@ -18,19 +18,55 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    name: Classify evidence-only PR
+    runs-on: ubuntu-latest
+    outputs:
+      evidence_only: ${{ steps.evidence.outputs.evidence_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Test evidence-only classifier
+        run: python3 -B -m unittest discover -s .github/scripts -p test_evidence_only_pr.py
+      - name: Classify PR
+        id: evidence
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -B .github/scripts/evidence_only_pr.py classify
+
   build:
     name: Build & Test
+    needs: scope
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.scope.outputs.evidence_only == 'true' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Require change classification
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+        run: test "$SCOPE_RESULT" = success
+
+      - name: Validate evidence-only PR
+        if: needs.scope.outputs.evidence_only == 'true'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -B .github/scripts/evidence_only_pr.py validate
 
       - name: Set up Go
+        if: needs.scope.outputs.evidence_only != 'true'
         uses: actions/setup-go@v7
         with:
           go-version: '1.27.0'
           check-latest: true
 
       - name: Verify formatting
+        if: needs.scope.outputs.evidence_only != 'true'
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -40,11 +76,13 @@ jobs:
           fi
 
       - name: Test Go SDK release verifier (no network)
+        if: needs.scope.outputs.evidence_only != 'true'
         run: python3 -m unittest discover -s .github/scripts -p 'test_verify_go_sdk_release.py'
 
       # Per-module loop. Each module is a separate go.mod; the root `./...`
       # does NOT recurse into core/, mcp/, pb/, sdks/go/, server/.
       - name: Vet (all modules)
+        if: needs.scope.outputs.evidence_only != 'true'
         run: |
           set -e
           for mod in . core mcp pb sdks/go server; do
@@ -54,6 +92,7 @@ jobs:
           done
 
       - name: Build (all modules)
+        if: needs.scope.outputs.evidence_only != 'true'
         run: |
           set -e
           for mod in . core mcp pb sdks/go server; do
@@ -63,6 +102,7 @@ jobs:
           done
 
       - name: Test (race + coverage, all modules)
+        if: needs.scope.outputs.evidence_only != 'true'
         run: |
           set -e
           mkdir -p coverage
@@ -83,6 +123,7 @@ jobs:
       # gocovmerge is the standard tool — see https://github.com/wadey/gocovmerge.
       # Refs #295.
       - name: Merge per-module coverage
+        if: needs.scope.outputs.evidence_only != 'true'
         run: |
           go install github.com/wadey/gocovmerge@latest
           gocovmerge coverage/*.out > coverage/merged.out
@@ -99,6 +140,7 @@ jobs:
       # denominator -- hence per-module floors over the merged total. Reuses the
       # per-module profiles from the test step; no extra dependency. Refs #717.
       - name: Enforce coverage floors
+        if: needs.scope.outputs.evidence_only != 'true'
         run: |
           set -euo pipefail
           # slug:floor% -- keep in sync with CONTRIBUTING.md "Coverage floor".
@@ -130,7 +172,7 @@ jobs:
       # failure that still produced partial profiles) -- it is the primary
       # debugging aid when the gate trips.
       - name: Upload coverage artifact
-        if: always()
+        if: always() && needs.scope.outputs.evidence_only != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage
@@ -141,6 +183,8 @@ jobs:
 
   receipt-backup-windows:
     name: Receipt backup (Windows)
+    needs: scope
+    if: needs.scope.outputs.evidence_only != 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -157,14 +201,25 @@ jobs:
 
   lint:
     name: Lint
+    needs: scope
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Require change classification
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+        run: test "$SCOPE_RESULT" = success
+      - name: Evidence-only status
+        if: needs.scope.outputs.evidence_only == 'true'
+        run: echo 'Physical evidence is validated by Build & Test.'
       - uses: actions/setup-go@v7
+        if: needs.scope.outputs.evidence_only != 'true'
         with:
           go-version: '1.27.0'
           check-latest: true
       - name: golangci-lint
+        if: needs.scope.outputs.evidence_only != 'true'
         uses: golangci/golangci-lint-action@v9
         with:
           # Pin to a concrete release so a fresh golangci-lint can't silently
@@ -175,21 +230,35 @@ jobs:
 
   proto:
     name: Proto (buf)
+    needs: scope
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Require change classification
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+        run: test "$SCOPE_RESULT" = success
+      - name: Evidence-only status
+        if: needs.scope.outputs.evidence_only == 'true'
+        run: echo 'Physical evidence is validated by Build & Test.'
       - uses: actions/setup-go@v7
+        if: needs.scope.outputs.evidence_only != 'true'
         with:
           go-version: '1.27.0'
           check-latest: true
       - uses: bufbuild/buf-setup-action@v1
+        if: needs.scope.outputs.evidence_only != 'true'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: buf format
+        if: needs.scope.outputs.evidence_only != 'true'
         run: buf format -d --exit-code
       - name: buf lint
+        if: needs.scope.outputs.evidence_only != 'true'
         run: buf lint
       - name: Generated code is up to date (wire + buf + envdoc)
+        if: needs.scope.outputs.evidence_only != 'true'
         env:
           GOWORK: 'off'
         run: |
@@ -205,19 +274,31 @@ jobs:
 
   govulncheck:
     name: govulncheck
+    needs: scope
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Require change classification
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+        run: test "$SCOPE_RESULT" = success
+      - name: Evidence-only status
+        if: needs.scope.outputs.evidence_only == 'true'
+        run: echo 'Physical evidence is validated by Build & Test.'
       - uses: actions/setup-go@v7
+        if: needs.scope.outputs.evidence_only != 'true'
         with:
           go-version: '1.27.0'
           check-latest: true
       - name: Install govulncheck
+        if: needs.scope.outputs.evidence_only != 'true'
         # v1.8.0 uses x/tools v0.50.0, which supports Go 1.27 and passes
         # analysis for all six workspace modules. The former v1.3.0 build
         # cannot parse Go 1.27 source, including standard-library code.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - name: Run govulncheck (all modules)
+        if: needs.scope.outputs.evidence_only != 'true'
         run: |
           set -e
           for mod in . core mcp pb sdks/go server; do
@@ -228,6 +309,8 @@ jobs:
 
   fuzz:
     name: Fuzz (smoke)
+    needs: scope
+    if: needs.scope.outputs.evidence_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

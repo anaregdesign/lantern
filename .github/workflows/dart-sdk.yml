@@ -85,6 +85,7 @@ jobs:
     outputs:
       full: ${{ steps.scope.outputs.full }}
       mobile: ${{ steps.scope.outputs.mobile }}
+      evidence_only: ${{ steps.scope.outputs.evidence_only }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -94,7 +95,9 @@ jobs:
       # wire. Package-quality and native-platform work are classified separately:
       # Go dependency and general-documentation changes do not need emulators.
       - name: Test gate scope classifier
-        run: python3 -B -m unittest discover -s sdks/dart/scripts -p ci_scope_test.py
+        run: |
+          python3 -B -m unittest discover -s sdks/dart/scripts -p ci_scope_test.py
+          python3 -B -m unittest discover -s .github/scripts -p test_evidence_only_pr.py
 
       - name: Select required gate scope
         id: scope
@@ -104,9 +107,25 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python3 -B sdks/dart/scripts/ci_scope.py
 
+  evidence-only:
+    name: Validate physical evidence PR
+    needs: changes
+    if: needs.changes.outputs.evidence_only == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Validate exact-source evidence and paired markers
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -B .github/scripts/evidence_only_pr.py validate
+
   test:
     name: Generate, analyze, and test
     needs: changes
+    if: needs.changes.outputs.evidence_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -367,6 +386,7 @@ jobs:
   offline-test:
     name: Offline package and real-wire replay
     needs: changes
+    if: needs.changes.outputs.evidence_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -536,6 +556,7 @@ jobs:
   offline-sqlite:
     name: SQLite adapter persistence and real-wire replay
     needs: changes
+    if: needs.changes.outputs.evidence_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -1108,7 +1129,7 @@ jobs:
   gate:
     name: Gate
     if: always()
-    needs: [changes, test, minimum-dart, offline-test, offline-minimum-dart, offline-sqlite, android, ios]
+    needs: [changes, evidence-only, test, minimum-dart, offline-test, offline-minimum-dart, offline-sqlite, android, ios]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -1116,7 +1137,9 @@ jobs:
         env:
           FULL: ${{ needs.changes.outputs.full }}
           MOBILE: ${{ needs.changes.outputs.mobile }}
+          EVIDENCE_ONLY: ${{ needs.changes.outputs.evidence_only }}
           CHANGES_RESULT: ${{ needs.changes.result }}
+          EVIDENCE_RESULT: ${{ needs['evidence-only'].result }}
           TEST_RESULT: ${{ needs.test.result }}
           MINIMUM_DART_RESULT: ${{ needs.minimum-dart.result }}
           OFFLINE_TEST_RESULT: ${{ needs.offline-test.result }}
@@ -1135,6 +1158,17 @@ jobs:
           }
 
           require_result changes "$CHANGES_RESULT" success
+          if [[ "$EVIDENCE_ONLY" == true ]]; then
+            require_result evidence-only "$EVIDENCE_RESULT" success
+            for result in "$TEST_RESULT" "$MINIMUM_DART_RESULT" "$OFFLINE_TEST_RESULT" \
+              "$OFFLINE_MINIMUM_DART_RESULT" "$OFFLINE_SQLITE_RESULT" \
+              "$ANDROID_RESULT" "$IOS_RESULT"; do
+              require_result unrelated "$result" skipped
+            done
+            echo 'Evidence-only PR: exact-source schema and marker pairs passed; package and native jobs skipped.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          require_result evidence-only "$EVIDENCE_RESULT" skipped
           require_result test "$TEST_RESULT" success
           require_result offline-test "$OFFLINE_TEST_RESULT" success
           require_result offline-sqlite "$OFFLINE_SQLITE_RESULT" success
