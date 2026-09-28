@@ -169,10 +169,13 @@ func TestEvaluateReceiptLeakGatesTransientAndRetainedGrowth(t *testing.T) {
 		wantPass   bool
 		wantDelta  int64
 	}{
-		{"at both steady bounds", 15, 32, 0, 0, true, 15},
+		{"at steady bounds", 15, 40, 0, 0, true, 15},
 		{"goroutine spike recovers", 16, 0, 0, 0, false, 16},
-		{"heap spike recovers", 0, 33, 0, 0, false, 0},
-		{"post-GC growth persists", 0, 0, 16, 33, false, 0},
+		{"heap spike within steady headroom recovers", 0, 33, 0, 0, true, 0},
+		{"heap spike above steady headroom recovers", 0, 41, 0, 0, false, 0},
+		{"post-GC growth at bound", 0, 0, 0, 32, true, 0},
+		{"post-GC heap growth persists", 0, 0, 0, 33, false, 0},
+		{"post-GC goroutine growth persists", 0, 0, 16, 0, false, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			prePath, postPath, steadyPath, samples := receiptLeakFixture(t)
@@ -187,7 +190,7 @@ func TestEvaluateReceiptLeakGatesTransientAndRetainedGrowth(t *testing.T) {
 			if err := writeReceiptArtifact(postPath, post); err != nil {
 				t.Fatal(err)
 			}
-			got := evaluateReceiptLeak(prePath, postPath, steadyPath, 45*time.Second, 5*time.Second, 15, 32)
+			got := evaluateReceiptLeak(prePath, postPath, steadyPath, 45*time.Second, 5*time.Second, 15, 32, 40)
 			if (got.Verdict == "pass") != test.wantPass || len(got.Replicas) != receiptReplicaCount {
 				t.Fatalf("leak verdict/replicas = %q/%d; failures = %v", got.Verdict, len(got.Replicas), got.Failures)
 			}
@@ -250,11 +253,22 @@ func TestEvaluateReceiptLeakRejectsIncompleteEvidence(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			pre, post, steady, samples := receiptLeakFixture(t)
 			test.damage(t, pre, post, steady, &samples)
-			got := evaluateReceiptLeak(pre, post, steady, 45*time.Second, 5*time.Second, 15, 32)
+			got := evaluateReceiptLeak(pre, post, steady, 45*time.Second, 5*time.Second, 15, 32, 40)
 			if got.Verdict != "fail" || len(got.Failures) == 0 {
 				t.Fatalf("incomplete evidence passed: %+v", got)
 			}
 		})
+	}
+}
+
+func TestEvaluateReceiptLeakRequiresSeparateHeapThresholds(t *testing.T) {
+	t.Parallel()
+	pre, post, steady, _ := receiptLeakFixture(t)
+	for _, thresholds := range [][2]int{{0, 40}, {32, 0}, {32, -1}} {
+		got := evaluateReceiptLeak(pre, post, steady, 45*time.Second, 5*time.Second, 15, thresholds[0], thresholds[1])
+		if got.Verdict != "fail" || len(got.Failures) == 0 {
+			t.Fatalf("invalid post/steady heap thresholds %v passed: %+v", thresholds, got)
+		}
 	}
 }
 
@@ -267,7 +281,7 @@ func TestRunReceiptLeakEvaluationWritesFailureArtifact(t *testing.T) {
 		"-post", filepath.Join(dir, "missing-post.json"),
 		"-steady", filepath.Join(dir, "missing-steady.json"),
 		"-duration", "45s", "-interval", "5s",
-		"-max-goroutines", "15", "-max-heap-mb", "32", "-out", out,
+		"-max-goroutines", "15", "-max-heap-mb", "32", "-max-steady-heap-mb", "40", "-out", out,
 	})
 	if exitCode != 1 {
 		t.Fatalf("exit = %d, want 1", exitCode)

@@ -16,9 +16,10 @@ func TestRenderReport_AllSectionsAndVerdict(t *testing.T) {
 		LeakGate: &LeakGate{
 			Verdict: "pass",
 			Thresholds: struct {
-				GoroutineMaxDelta   int `json:"goroutine_max_delta"`
-				HeapAllocMaxDeltaMB int `json:"heap_alloc_max_delta_mb"`
-				HeapInuseMaxDeltaMB int `json:"heap_inuse_max_delta_mb,omitempty"`
+				GoroutineMaxDelta         int `json:"goroutine_max_delta"`
+				HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
+				SteadyHeapAllocMaxDeltaMB int `json:"steady_heap_alloc_max_delta_mb"`
+				HeapInuseMaxDeltaMB       int `json:"heap_inuse_max_delta_mb,omitempty"`
 			}{GoroutineMaxDelta: 20, HeapAllocMaxDeltaMB: 32},
 			Replicas: []LeakGateReplica{{
 				Endpoint:      "localhost:9390",
@@ -169,6 +170,7 @@ func TestRenderReport_ShowsReceiptSteadyPeaks(t *testing.T) {
 	}
 	gate.Thresholds.GoroutineMaxDelta = 15
 	gate.Thresholds.HeapAllocMaxDeltaMB = 32
+	gate.Thresholds.SteadyHeapAllocMaxDeltaMB = 40
 	var buf bytes.Buffer
 	if err := RenderReport(&buf, Input{Scenario: "receipt_admission_lookup", LeakGate: gate}); err != nil {
 		t.Fatal(err)
@@ -176,6 +178,7 @@ func TestRenderReport_ShowsReceiptSteadyPeaks(t *testing.T) {
 	for _, want := range []string{
 		"**Leak gate verdict:** `fail`",
 		"9 complete three-replica `/metrics` rounds at nominal 5s intervals, without forced GC",
+		"Receipt unforced steady heap_alloc peak threshold: +40 MiB; post-GC live-set threshold: +32 MiB.",
 		"| `localhost:9391` | 56 (**+16**) | 133.0 (**+33.0**) |",
 		"localhost:9391 goroutine post/steady growth exceeds +15",
 	} {

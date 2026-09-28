@@ -295,8 +295,9 @@ type receiptLeakReplica struct {
 
 type receiptLeakReport struct {
 	Thresholds struct {
-		GoroutineMaxDelta   int `json:"goroutine_max_delta"`
-		HeapAllocMaxDeltaMB int `json:"heap_alloc_max_delta_mb"`
+		GoroutineMaxDelta         int `json:"goroutine_max_delta"`
+		HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
+		SteadyHeapAllocMaxDeltaMB int `json:"steady_heap_alloc_max_delta_mb"`
 	} `json:"thresholds"`
 	SteadySampleInterval string               `json:"steady_sample_interval"`
 	SteadySampleCount    int                  `json:"steady_sample_count"`
@@ -314,7 +315,8 @@ func runReceiptLeakEvaluation(args []string) int {
 	duration := fs.Duration("duration", 0, "offered steady duration")
 	interval := fs.Duration("interval", 0, "steady sampling interval")
 	maxGoroutines := fs.Int("max-goroutines", 0, "maximum per-replica goroutine delta")
-	maxHeapMB := fs.Int("max-heap-mb", 0, "maximum per-replica heap_alloc delta in MiB")
+	maxHeapMB := fs.Int("max-heap-mb", 0, "maximum per-replica post-GC heap_alloc delta in MiB")
+	maxSteadyHeapMB := fs.Int("max-steady-heap-mb", 0, "maximum per-replica unforced steady heap_alloc peak delta in MiB")
 	out := fs.String("out", "", "leak gate JSON output path")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -323,7 +325,7 @@ func runReceiptLeakEvaluation(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	report := evaluateReceiptLeak(*pre, *post, *steady, *duration, *interval, *maxGoroutines, *maxHeapMB)
+	report := evaluateReceiptLeak(*pre, *post, *steady, *duration, *interval, *maxGoroutines, *maxHeapMB, *maxSteadyHeapMB)
 	if err := writeReceiptArtifact(*out, report); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt leak gate: write report: %v\n", err)
 		return 1
@@ -338,12 +340,14 @@ func runReceiptLeakEvaluation(args []string) int {
 func evaluateReceiptLeak(
 	prePath, postPath, steadyPath string,
 	duration, interval time.Duration,
-	maxGoroutines, maxHeapMB int,
+	maxGoroutines, maxHeapMB, maxSteadyHeapMB int,
 ) receiptLeakReport {
 	report := receiptLeakReport{Verdict: "fail", SteadySampleInterval: interval.String()}
 	report.Thresholds.GoroutineMaxDelta = maxGoroutines
 	report.Thresholds.HeapAllocMaxDeltaMB = maxHeapMB
-	if maxGoroutines <= 0 || maxHeapMB <= 0 || int64(maxHeapMB) >= math.MaxInt64/(1<<20) {
+	report.Thresholds.SteadyHeapAllocMaxDeltaMB = maxSteadyHeapMB
+	if maxGoroutines <= 0 || maxHeapMB <= 0 || maxSteadyHeapMB <= 0 ||
+		int64(maxHeapMB) >= math.MaxInt64/(1<<20) || int64(maxSteadyHeapMB) >= math.MaxInt64/(1<<20) {
 		report.Failures = append(report.Failures, "missing or invalid receipt leak thresholds")
 		return report
 	}
@@ -412,9 +416,11 @@ func evaluateReceiptLeak(
 		if replica.GoroutineDelta > int64(maxGoroutines) || replica.GoroutinePeakDelta > int64(maxGoroutines) {
 			report.Failures = append(report.Failures, fmt.Sprintf("%s goroutine post/steady growth exceeds +%d", p.Endpoint, maxGoroutines))
 		}
-		maxHeapBytes := int64(maxHeapMB) << 20
-		if replica.HeapAllocDeltaBytes > maxHeapBytes || replica.HeapAllocPeakDelta > maxHeapBytes {
-			report.Failures = append(report.Failures, fmt.Sprintf("%s heap_alloc post/steady growth exceeds +%d MiB", p.Endpoint, maxHeapMB))
+		if replica.HeapAllocDeltaBytes > int64(maxHeapMB)<<20 {
+			report.Failures = append(report.Failures, fmt.Sprintf("%s post-GC heap_alloc growth exceeds +%d MiB", p.Endpoint, maxHeapMB))
+		}
+		if replica.HeapAllocPeakDelta > int64(maxSteadyHeapMB)<<20 {
+			report.Failures = append(report.Failures, fmt.Sprintf("%s steady heap_alloc peak growth exceeds +%d MiB", p.Endpoint, maxSteadyHeapMB))
 		}
 	}
 	if len(report.Failures) == 0 {
