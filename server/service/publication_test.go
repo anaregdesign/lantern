@@ -50,6 +50,9 @@ func (b *countingCapacityBackend) CapacityFootprint() (int, int) {
 
 func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T) {
 	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour))
+	if svc.SnapshotInstallActive() {
+		t.Fatal("fresh service reports an active Snapshot")
+	}
 	oldGeneration, faulted := svc.publicationStatus()
 	if faulted {
 		t.Fatal("fresh service started with a CDC gap")
@@ -57,6 +60,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 	finish, err := svc.BeginSnapshotInstall()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !svc.SnapshotInstallActive() {
+		t.Fatal("active Snapshot is not visible to the pump")
 	}
 	if _, err := svc.BeginSnapshotInstall(); connect.CodeOf(err) != connect.CodeUnavailable {
 		t.Fatalf("concurrent Snapshot install error = %v", err)
@@ -67,6 +73,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 		t.Fatal("Snapshot install did not gap existing CDC generation")
 	}
 	finish(false)
+	if svc.SnapshotInstallActive() {
+		t.Fatal("failed Snapshot still reports an active installer")
+	}
 	if _, faulted := svc.publicationStatus(); !faulted {
 		t.Fatal("failed Snapshot replay cleared its CDC gap")
 	}
@@ -75,6 +84,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 		t.Fatal(err)
 	}
 	retry(true)
+	if svc.SnapshotInstallActive() {
+		t.Fatal("verified Snapshot still reports an active installer")
+	}
 	newGeneration, faulted := svc.publicationStatus()
 	if faulted || newGeneration == oldGeneration {
 		t.Fatal("verified Snapshot replay did not create a healthy CDC generation")

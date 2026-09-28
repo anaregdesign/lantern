@@ -198,6 +198,17 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 	}, nil
 }
 
+// SnapshotInstallActive lets the replication pump defer a second Snapshot
+// while another installer is already repairing this receiver. A failed
+// install releases the lock but leaves the publication fault for repair.
+func (s *LanternService) SnapshotInstallActive() bool {
+	if !s.snapshotInstallMu.TryLock() {
+		return true
+	}
+	s.snapshotInstallMu.Unlock()
+	return false
+}
+
 func publicationChangedDuringReadError() error {
 	return connect.NewError(connect.CodeUnavailable,
 		errors.New("graph publication changed during read; retry"))

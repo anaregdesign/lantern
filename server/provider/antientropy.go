@@ -64,8 +64,8 @@ func NewAntiEntropyDriver(
 	logger *slog.Logger,
 	installer *SnapshotInstallerSelection,
 ) *replication.AntiEntropy {
-	_ = pump // forces wire to construct the pump before the driver
 	cfg := newAntiEntropyReplicationConfig(pc, resolver, rc, ac, peerTransport, svc, m, logger, installer)
+	cfg.Pump = pump
 	return replication.NewAntiEntropy(cfg, svc, svc, cache)
 }
 

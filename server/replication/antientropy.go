@@ -35,6 +35,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -108,6 +109,11 @@ type AntiEntropyConfig struct {
 	// tick will resume from where we stopped.
 	SubscribeTimeout time.Duration
 
+	// Pump, when present, owns the ongoing stream from the same peers.
+	// Anti-entropy defers a competing catch-up while that stream is
+	// recently active and the peer's origin watermark is advancing.
+	Pump *Pump
+
 	// GapWarnThreshold escalates the per-peer catch-up log from
 	// info to an additional warn when (peer_seq - local_seq)
 	// exceeds this many mutations. 0 disables the warn (the
@@ -152,6 +158,8 @@ type AntiEntropy struct {
 	installer   SnapshotInstaller
 	resumeMu    sync.Mutex
 	resumeLocal map[string]uint64
+	observedMu  sync.Mutex
+	observedSeq map[string]uint64
 }
 
 // NewAntiEntropy constructs the driver. local MUST be the same LanternService
@@ -183,6 +191,7 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 	return &AntiEntropy{
 		cfg: cfg, local: local, apply: apply, installer: installer,
 		resumeLocal: make(map[string]uint64),
+		observedSeq: make(map[string]uint64),
 	}
 }
 
@@ -231,6 +240,13 @@ func (a *AntiEntropy) tickAll(ctx context.Context) {
 		}
 		peers = resolved
 	}
+	a.observedMu.Lock()
+	for addr := range a.observedSeq {
+		if !slices.Contains(peers, addr) {
+			delete(a.observedSeq, addr)
+		}
+	}
+	a.observedMu.Unlock()
 	var wg sync.WaitGroup
 	for _, addr := range peers {
 		wg.Add(1)
@@ -327,6 +343,7 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 	}
 
 	localSeq := a.local.LocalSeq(peerNID)
+	pumpAdvancing := a.pumpAdvancing(addr, localSeq)
 	if localSeq >= target {
 		return
 	}
@@ -343,6 +360,11 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 			slog.Uint64("gap", gap),
 			slog.Uint64("threshold", a.cfg.GapWarnThreshold))
 	}
+	if pumpAdvancing {
+		log.Debug("anti-entropy: active pump is advancing peer origin",
+			slog.Uint64("local_seq", localSeq), slog.Uint64("peer_seq", target))
+		return
+	}
 
 	applied, err := a.catchUp(ctx, addr, cli, peerNID, localSeq+1, target)
 	if err != nil {
@@ -355,6 +377,26 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 	log.Info("anti-entropy: caught up",
 		slog.Uint64("applied", applied),
 		slog.Uint64("target_seq", target))
+}
+
+func (a *AntiEntropy) pumpAdvancing(addr string, localSeq uint64) bool {
+	if a.cfg.Pump == nil {
+		return false
+	}
+	a.observedMu.Lock()
+	previous, seen := a.observedSeq[addr]
+	a.observedSeq[addr] = localSeq
+	a.observedMu.Unlock()
+	if seen && localSeq <= previous {
+		return false
+	}
+	for _, peer := range a.cfg.Pump.Snapshot() {
+		if peer.Address == addr && !peer.LastEventAt.IsZero() &&
+			peer.State != PeerStateClosed && time.Since(peer.LastEventAt) < a.cfg.SubscribeTimeout {
+			return true
+		}
+	}
+	return false
 }
 
 // catchUp opens a bounded Subscribe stream and applies mutations

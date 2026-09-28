@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"maps"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +151,78 @@ func TestAntiEntropyTransientPeerGapWaitsForCommittedRetry(t *testing.T) {
 				t.Fatalf("retry: subscribes=%+v snapshots=%+v, want origin 4 without Snapshot", subscribes, snapshots)
 			}
 		})
+	}
+}
+
+type advancingLocalState struct{ seq atomic.Uint64 }
+
+func (s *advancingLocalState) LocalSeq(hlc.NodeID) uint64 { return s.seq.Load() }
+
+func TestAntiEntropyDefersToAdvancingPumpButRepairsStalledOrigin(t *testing.T) {
+	origin := hlc.NodeID{0x52}
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		selfOrigin:        origin,
+		originSeq:         10,
+		gapFirstSubscribe: true,
+	}
+	server := startInstallerTestPeer(t, peer)
+	pump := NewPump(Config{}, nil, nil)
+	pump.tracker.setState(server.URL, PeerStateStreaming)
+	pump.tracker.recordEvent(server.URL, 2, time.Now())
+	local := &advancingLocalState{}
+	local.seq.Store(2)
+	installer := &scriptedSnapshotInstaller{required: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+	driver := NewAntiEntropy(AntiEntropyConfig{
+		HTTPClient: defaultH2CClient(), SubscribeTimeout: time.Second,
+		Pump: pump, SnapshotInstaller: installer,
+	}, local, nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	driver.tickPeer(ctx, server.URL)
+	local.seq.Store(3)
+	pump.tracker.recordEvent(server.URL, 3, time.Now())
+	driver.tickPeer(ctx, server.URL)
+	subscribes, snapshots := peer.requests()
+	if len(subscribes) != 0 || len(snapshots) != 0 {
+		t.Fatalf("advancing pump triggered redundant repair: subscribes=%d snapshots=%d",
+			len(subscribes), len(snapshots))
+	}
+
+	pump.tracker.recordEvent(server.URL, 3, time.Now())
+	driver.tickPeer(ctx, server.URL)
+	subscribes, snapshots = peer.requests()
+	if len(subscribes) != 1 || len(snapshots) != 1 || installer.installCount() != 1 {
+		t.Fatalf("stalled origin did not Snapshot on proven gap: subscribes=%d snapshots=%d installs=%d",
+			len(subscribes), len(snapshots), installer.installCount())
+	}
+}
+
+func TestAntiEntropyStalePumpDoesNotDeferRepair(t *testing.T) {
+	origin := hlc.NodeID{0x53}
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		selfOrigin:        origin,
+		originSeq:         10,
+		gapFirstSubscribe: true,
+	}
+	server := startInstallerTestPeer(t, peer)
+	pump := NewPump(Config{}, nil, nil)
+	pump.tracker.recordEvent(server.URL, 2, time.Now().Add(-time.Minute))
+	local := &advancingLocalState{}
+	local.seq.Store(2)
+	installer := &scriptedSnapshotInstaller{required: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+	driver := NewAntiEntropy(AntiEntropyConfig{
+		HTTPClient: defaultH2CClient(), SubscribeTimeout: time.Second,
+		Pump: pump, SnapshotInstaller: installer,
+	}, local, nil, nil)
+
+	driver.tickPeer(t.Context(), server.URL)
+	subscribes, snapshots := peer.requests()
+	if len(subscribes) != 1 || len(snapshots) != 1 || installer.installCount() != 1 {
+		t.Fatalf("stale pump skipped required repair: subscribes=%d snapshots=%d installs=%d",
+			len(subscribes), len(snapshots), installer.installCount())
 	}
 }
 

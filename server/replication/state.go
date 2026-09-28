@@ -86,6 +86,15 @@ func (t *peerTracker) recordEvent(addr string, appliedSeq uint64, at time.Time) 
 	row.lastErr = ""
 }
 
+func (t *peerTracker) lastEvent(addr string) time.Time {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if row := t.peers[addr]; row != nil {
+		return row.lastEventAt
+	}
+	return time.Time{}
+}
+
 // recordError captures the most recent session error and transitions
 // the row to BACKOFF. The error string is what the admin UI will
 // show; truncation/redaction is the handler's concern, not the

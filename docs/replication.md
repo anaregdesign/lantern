@@ -620,6 +620,20 @@ healthy peer. Neither error detail permits skipping an origin or advancing
 a cursor without applying its mutation. Since a closed stream alone cannot
 distinguish buffer overflow from an evicted replay tail, the next
 per-origin cursor validation must prove the retained history before replay.
+After successfully applying a Subscribe frame, the Pump resets its bounded
+reconnect backoff; repeated transient closures cannot compound a delay despite
+forward progress. If a Snapshot is already installing locally, another Pump
+defers its own repair until that install completes. An interrupted install
+still requires a subsequent verified Snapshot, rather than silently reopening
+publication.
+
+Anti-entropy does not open a competing catch-up stream when the Pump has
+recently delivered frames from that peer and the peer origin's committed
+watermark is advancing between probes. Retained-ring eviction on a *second*
+stream does not prove that the active stream missed those mutations. If
+the peer origin stops advancing, the Pump becomes inactive, or its last
+delivery grows stale, anti-entropy resumes its normal Subscribe/Snapshot
+repair on the next tick; neither process skips missing mutations.
 
 A proven retained-ring/origin gap is still an unannotated
 `FAILED_PRECONDITION`: the receiver installs `Snapshot`, then resumes

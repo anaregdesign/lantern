@@ -1928,6 +1928,71 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	}
 }
 
+func TestPeerPump_ActiveLocalSnapshotDefersCompetingRepairOnRealWire(t *testing.T) {
+	for _, verified := range []bool{true, false} {
+		name := "verified install"
+		if !verified {
+			name = "failed install needs repair"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			source := newPumpNode(t, hlc.NodeID{0xA3})
+			receiver := newPumpNode(t, hlc.NodeID{0xA4})
+			key := fmt.Sprintf("installed-%t", verified)
+			if _, err := source.sdk.PutVertex(ctx, key, "value", time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			finish, err := receiver.svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			released := false
+			defer func() {
+				if !released {
+					finish(false)
+				}
+			}()
+			metrics := &observedSearchConfigMetrics{
+				gate: readiness.NewGate(100, true, nil), observations: make(chan bool, 1),
+			}
+			receiver.startPumpWithMetrics(ctx, t, []string{source.url}, metrics)
+			for {
+				rows := receiver.pump.Snapshot()
+				if len(rows) == 1 && rows[0].State == replication.PeerStateBackoff &&
+					strings.Contains(rows[0].LastError, "gapped") {
+					if strings.Contains(rows[0].LastError, "Snapshot install already in progress") ||
+						metrics.snapshots.Load() != 0 {
+						t.Fatalf("competing Snapshot during active install: %+v", rows[0])
+					}
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatalf("pump did not observe active local install: %+v", rows)
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+			finish(verified)
+			released = true
+			if !waitForVertex(t, receiver.cache, key, 5*time.Second) {
+				t.Fatal("receiver did not apply source mutation after install")
+			}
+			resp, err := receiver.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: key}))
+			if err != nil || resp.Msg.GetVertex().GetString_() != "value" {
+				t.Fatalf("verified source value after retry = (%v, %v)", resp, err)
+			}
+			if !verified {
+				if metrics.snapshots.Load() == 0 {
+					t.Fatal("failed local install did not trigger verified Snapshot repair")
+				}
+			} else if metrics.snapshots.Load() != 0 {
+				t.Fatalf("verified local install triggered redundant Snapshot: %d", metrics.snapshots.Load())
+			}
+		})
+	}
+}
+
 func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping three-node graph-only restore and relay")

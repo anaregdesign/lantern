@@ -264,6 +264,142 @@ func TestPumpLocalPublicationFaultStillInstallsSnapshot(t *testing.T) {
 	}
 }
 
+type activeSnapshotApplier struct {
+	active bool
+	calls  int
+}
+
+func (a *activeSnapshotApplier) ApplyMutation(context.Context, *pb.Mutation) error {
+	a.calls++
+	if a.active {
+		return replicationstatus.TransientGap(
+			replicationstatus.ReasonPublicationFault, errors.New("local Snapshot is installing"))
+	}
+	return nil
+}
+
+func (a *activeSnapshotApplier) SnapshotInstallActive() bool { return a.active }
+
+func TestPumpDefersLocalSnapshotRepairUntilInstallerFinishes(t *testing.T) {
+	origin := hlc.NodeID{0x48}
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		subscribeMutation: &pb.Mutation{Origin: origin[:], Seq: 1},
+	}
+	server := startInstallerTestPeer(t, peer)
+	installer := &scriptedSnapshotInstaller{required: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+	apply := &activeSnapshotApplier{active: true}
+	pump := NewPump(Config{HTTPClient: defaultH2CClient(), SnapshotInstaller: installer}, apply, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := pump.session(ctx, server.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("active local install = %v, want deferred FailedPrecondition", err)
+	}
+	subscribes, snapshots := peer.requests()
+	if len(subscribes) != 1 || len(snapshots) != 0 || installer.installCount() != 0 {
+		t.Fatalf("active install started competing Snapshot: subscribes=%d snapshots=%d installs=%d",
+			len(subscribes), len(snapshots), installer.installCount())
+	}
+	apply.active = false
+	if err := pump.session(ctx, server.URL); err != nil {
+		t.Fatalf("retry after verified install: %v", err)
+	}
+	subscribes, snapshots = peer.requests()
+	if len(subscribes) != 2 || len(snapshots) != 0 || apply.calls != 2 {
+		t.Fatalf("retry after verified install: subscribes=%d snapshots=%d applies=%d",
+			len(subscribes), len(snapshots), apply.calls)
+	}
+}
+
+type retryProgressPeer struct {
+	graphv1connect.UnimplementedLanternReplicationServiceHandler
+	attempts atomic.Int32
+}
+
+func (*retryProgressPeer) PeerStatus(context.Context, *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
+	return connect.NewResponse(&pb.PeerStatusResponse{
+		RequiredSnapshotFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}), nil
+}
+
+func (p *retryProgressPeer) Subscribe(
+	_ context.Context, _ *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse],
+) error {
+	if p.attempts.Add(1) == 3 {
+		if err := stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{
+			Mutation: &pb.Mutation{Origin: []byte{0x58}, Seq: 1},
+		}}); err != nil {
+			return err
+		}
+	}
+	return replicationstatus.TransientGap(
+		replicationstatus.ReasonSubscriberStreamClosed, errors.New("subscriber closed"))
+}
+
+type acceptingMutationApplier struct{}
+
+func (acceptingMutationApplier) ApplyMutation(context.Context, *pb.Mutation) error { return nil }
+
+type retryDisconnectMetrics struct {
+	nopMetrics
+	disconnected chan struct{}
+}
+
+func (m *retryDisconnectMetrics) OnPumpDisconnect(string, string) {
+	m.disconnected <- struct{}{}
+}
+
+func TestPumpReconnectBackoffResetsAfterAppliedFrame(t *testing.T) {
+	peer := &retryProgressPeer{}
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+	srv := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protocols
+	srv.Start()
+	defer srv.Close()
+
+	var logs bytes.Buffer
+	metrics := &retryDisconnectMetrics{disconnected: make(chan struct{}, 8)}
+	pump := NewPump(Config{
+		HTTPClient: defaultH2CClient(), BackoffMin: 5 * time.Millisecond,
+		BackoffMax: 80 * time.Millisecond, Metrics: metrics,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}, acceptingMutationApplier{}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		pump.runPeer(ctx, srv.URL)
+		close(done)
+	}()
+	for range 5 {
+		select {
+		case <-metrics.disconnected:
+		case <-ctx.Done():
+			t.Fatal("pump did not complete five reconnect attempts")
+		}
+	}
+	cancel()
+	<-done
+	var retries []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "replication pump: peer session error") {
+			retries = append(retries, line)
+		}
+	}
+	if len(retries) < 4 {
+		t.Fatalf("reconnect logs = %v, want four attempts", retries)
+	}
+	for i, want := range []string{"backoff=5ms", "backoff=10ms", "backoff=5ms", "backoff=10ms"} {
+		if !strings.Contains(retries[i], want) {
+			t.Fatalf("reconnect attempt %d: %s, want %s", i+1, retries[i], want)
+		}
+	}
+}
+
 func TestPumpInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testing.T) {
 	for _, tc := range []struct {
 		name           string

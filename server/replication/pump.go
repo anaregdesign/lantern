@@ -1078,6 +1078,7 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 
 	for ctx.Err() == nil {
 		p.tracker.setState(addr, PeerStateConnecting)
+		lastEvent := p.tracker.lastEvent(addr)
 		err := p.session(ctx, addr)
 		if err == nil {
 			// session ended cleanly (ctx cancelled mid-stream).
@@ -1085,6 +1086,9 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if p.tracker.lastEvent(addr).After(lastEvent) {
+			backoff = p.cfg.BackoffMin
 		}
 		p.tracker.recordError(addr, err)
 		log.Warn("replication pump: peer session error",
@@ -1189,6 +1193,9 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			if transient {
 				return disconnect(err)
 			}
+		}
+		if local, ok := p.apply.(interface{ SnapshotInstallActive() bool }); ok && local.SnapshotInstallActive() {
+			return disconnect(err)
 		}
 		// Gapped: snapshot, then resume after the snapshot cutoffs. Sending
 		// an empty cursor here would request the unavailable log prefix again
