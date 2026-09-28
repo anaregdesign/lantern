@@ -435,6 +435,61 @@ void main() {
         ),
       );
 
+      final newerServer = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptCapabilityRequest,
+              graph.GetReceiptCapabilityResponse
+            >(
+              LanternService.getReceiptCapability,
+              (request, context) => _capabilityResponse(
+                supportedMutations: const [
+                  graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_PUT_VERTEX,
+                  graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_VERTEX,
+                  graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE,
+                  graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_ADD_EDGE,
+                  graph
+                      .ReceiptMutationKind
+                      .RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
+                ],
+              ),
+            )
+            .build(),
+      );
+      final compatible =
+          await newerServer.getReceiptCapability() as ReceiptCapabilityEnabled;
+      expect(compatible.supportedMutations, {
+        ReceiptMutationKind.vertexPut,
+        ReceiptMutationKind.vertexDelete,
+        ReceiptMutationKind.edgeDelete,
+        ReceiptMutationKind.edgeAdd,
+      });
+
+      final repeatedUnsupported = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptCapabilityRequest,
+              graph.GetReceiptCapabilityResponse
+            >(
+              LanternService.getReceiptCapability,
+              (request, context) => _capabilityResponse(
+                supportedMutations: const [
+                  graph
+                      .ReceiptMutationKind
+                      .RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
+                  graph
+                      .ReceiptMutationKind
+                      .RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
+                ],
+              ),
+            )
+            .build(),
+      );
+      await expectLater(
+        repeatedUnsupported.getReceiptCapability(),
+        throwsA(isA<LanternInternalException>()),
+      );
+
       final serverInternal = _client(
         FakeTransportBuilder()
             .unary<

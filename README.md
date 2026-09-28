@@ -718,10 +718,14 @@ not restore their deleted-ID history; durable receipt whole-state backup
 retains it.
 
 Selective deletion emits a new identity-only CDC operation. Previously
-published Dart identity subscribers do not recognize it and fail closed;
-do not enable this operation in deployments serving those subscribers
-until the Dart read-side compatibility work in #1530 is released.
-Publishing these artifacts does not deploy a running cluster.
+published Dart identity subscribers reject that operation, and published Dart
+receipt clients reject the new advertised mutation family when querying
+`GetReceiptCapability` even before any contribution is deleted. Do not deploy
+the new server in environments relying on those clients until the compatible
+Dart read side in #1530 has been qualified and released. The checked-in Dart
+source recognizes the new capability without exposing the targeted Delete API
+or accepting its CDC events; it is not a published Dart release. Publishing
+these server and SDK artifacts does not deploy a running cluster.
 
 Put liveness is decided by one server application-time sample, not the
 caller's clock. A past expiration returns `EXPIRED` and acts as a delete-like

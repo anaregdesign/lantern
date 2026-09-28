@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"cmp"
 	"errors"
 	"reflect"
 	"slices"
@@ -133,7 +134,11 @@ func TestDeleteEdgeContributionStagesAndRestoresExactState(t *testing.T) {
 	tx.Apply()
 	tx.Abort()
 	tx.Abort()
-	if got := cache.SnapshotReplication(); !reflect.DeepEqual(got, before) {
+	got := cache.SnapshotReplication()
+	byKey := func(a, b SnapshotVertex[string, string]) int { return cmp.Compare(a.Key, b.Key) }
+	slices.SortFunc(got.Graph.Vertices, byKey)
+	slices.SortFunc(before.Graph.Vertices, byKey)
+	if !reflect.DeepEqual(got, before) {
 		t.Fatalf("aborted Delete changed replica snapshot: got=%+v want=%+v", got, before)
 	}
 	if stats := cache.CausalMetadataStats(); !reflect.DeepEqual(stats, statsBefore) {
