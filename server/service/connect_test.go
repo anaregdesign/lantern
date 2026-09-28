@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -358,50 +359,43 @@ func TestConnectAdapter_ReplicationDisabled(t *testing.T) {
 	}
 }
 
-func TestUnaryGraphReadOptimistic_InvalidatesOverlappingPublication(t *testing.T) {
+type postCaptureWriteMetrics struct {
+	noopHotPathMetrics
+	once  sync.Once
+	write func()
+}
+
+func (m *postCaptureWriteMetrics) OnGetVertices(int, int) { m.once.Do(m.write) }
+
+func TestConnectAdapter_PostCaptureWriteKeepsDetachedRead(t *testing.T) {
 	log := mutationlog.New(mutationlog.Options{})
 	defer func() { _ = log.Close() }()
+	ctx := context.Background()
 	svc := NewLanternService(newFakeBackend()).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	}()
-	readDone := make(chan error, 1)
-	go func() {
-		_, err := unaryGraphReadOptimistic(context.Background(), connect.NewRequest(&pb.GetVerticesRequest{}), svc,
-			func(context.Context, *pb.GetVerticesRequest) (*pb.GetVerticesResponse, error) {
-				close(entered)
-				<-release
-				return &pb.GetVerticesResponse{}, nil
-			})
-		readDone <- err
-	}()
-	<-entered
-	writerDone := make(chan struct{})
-	go func() {
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
-		close(writerDone)
-	}()
-	select {
-	case <-writerDone:
-		// An optimistic read does not hold the write gate while it computes.
-	case <-time.After(2 * time.Second):
-		t.Fatal("publication was blocked by the long read")
+	before := &pb.Vertex{Key: "k", Value: &pb.Vertex_String_{String_: "before"}}
+	if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: before}); err != nil {
+		t.Fatal(err)
 	}
-	close(release)
-	select {
-	case err := <-readDone:
-		if connect.CodeOf(err) != connect.CodeUnavailable {
-			t.Fatalf("overlapping read = %v, want retryable Unavailable", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("long read did not finish")
+	var writeErr error
+	svc.WithHotPathMetrics(&postCaptureWriteMetrics{write: func() {
+		_, writeErr = svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+			Key: "k", Value: &pb.Vertex_String_{String_: "after"},
+		}})
+	}})
+	handler := NewLanternServiceConnectHandler(svc)
+	read, err := handler.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"k"}}))
+	if writeErr != nil || err != nil {
+		t.Fatalf("write after detached capture = %v, GetVertices = %v", writeErr, err)
+	}
+	if len(read.Msg.GetVertices()) != 1 || read.Msg.GetVertices()[0].GetString_() != "before" {
+		t.Fatalf("post-capture publication altered detached read: %+v", read.Msg)
+	}
+	got, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetVertex().GetString_() != "after" {
+		t.Fatalf("latest committed value = %+v, want after", got.GetVertex())
 	}
 }
 

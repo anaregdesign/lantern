@@ -362,12 +362,9 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 // advances the selected format's publication cut) after which catchUp returns
 // — the next tick will re-probe.
 //
-// Under the leaderless Subscribe contract (#415), the peer's log
-// carries entries from every cluster origin. We narrow the request to
-// peerNID's own origin via a per-origin cursor so the server only
-// streams the entries we actually care about, avoiding wasted
-// bandwidth on cross-origin entries that this catch-up call would
-// drop anyway.
+// The responder may have retained mutations from other origins. Include our
+// complete committed vector so unrelated evictions do not force a Snapshot;
+// the peer's own origin still resumes from the compared watermark.
 //
 // Returns the number of mutations applied during this call.
 func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
@@ -375,6 +372,19 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 	defer cancel()
 
 	cursor := map[string]uint64{hex.EncodeToString(peerNID[:]): fromSeq}
+	if local, ok := a.local.(subscribeResumeCursorProvider); ok {
+		committed, err := local.SubscribeResumeCursor()
+		if err != nil {
+			return 0, err
+		}
+		for origin, next := range committed {
+			cursor[origin] = next
+		}
+		origin := hex.EncodeToString(peerNID[:])
+		if cursor[origin] < fromSeq {
+			cursor[origin] = fromSeq
+		}
+	}
 	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           a.snapshotResumeLocal(addr),

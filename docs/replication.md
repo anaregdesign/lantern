@@ -358,8 +358,10 @@ A completed Snapshot replay may advance the prefix past unavailable log
 entries because its graph image supplies the missing effects.
 
 Buffer size is `LANTERN_MUTATION_LOG_CAPACITY` (default 100,000). Overflow
-drops **oldest** entries; consumers that fall behind that far are forced to
-re-bootstrap via `Snapshot`. The capacity is published as
+drops **oldest** entries. Consumers whose needed per-origin entries were
+evicted must re-bootstrap via `Snapshot`; a portable origin vector may
+still resume without a Snapshot if every entry it needs is retained.
+The capacity is published as
 `lantern_mutation_log_capacity`; successful appends increment
 `lantern_mutation_log_entries_total`.
 
@@ -513,12 +515,19 @@ Consequence:
   dedupe by `(origin, seq)` on the client side; the server already
   does that work via the per-origin commit cursor.
 - A consumer that fails over from replica X to replica Y resumes by
-  sending the highest seq it has already observed FOR EACH origin in
+  sending the next seq it expects FOR EACH origin in
   `from_seq_per_origin`. The new replica delivers only entries with
   `mu.Seq >= cursor[origin]` for origins present in the cursor;
   origins absent from the cursor are delivered from the oldest
   retained entry (so a freshly-joined origin is picked up
-  automatically).
+  automatically). Under the same publication cut used to register the
+  live tail, full and identity-only Subscribe prove that each needed
+  origin-anchored entry through the published frontier is still retained.
+  A genuinely missing origin entry returns `FailedPrecondition` (`gapped`)
+  for Snapshot repair; evicting unrelated already-consumed entries does
+  not force a Snapshot. Pump reconnects and anti-entropy catch-up send
+  their complete committed local origin vectors; a cold node sends an
+  empty vector and Snapshot resume uses the verified header cutoffs.
 - `Mutation.Seq` is the originating writer's local seq, NOT the
   forwarding replica's local seq. This is preserved end-to-end: the
   Subscribe relay never overwrites `mu.Seq`, and the originating writer
@@ -716,10 +725,12 @@ remains owned: after complete frame validation, installer watermarks either
 cover it with the verified cutoff or append its retained WAL envelope above
 the cutoff without reapplying the graph effect. Outside Snapshot installation,
 ordinary peer retries still repair failed relay WAL appends.
-The ordinary publication cut is sampled before and after a graph-data read,
-not held through a slow query; an overlapping local publication causes a
-retryable `UNAVAILABLE` instead of a mixed result. Only a complete, verified
-Snapshot retry clears the fault and makes the graph readable again.
+The ordinary publication cut is sampled before and after the graph-data
+capture, not held through a slow query; an overlapping local publication
+causes a retryable `UNAVAILABLE` instead of a mixed result. A publication
+after a complete detached capture cannot invalidate that immutable result
+while it is assembled and serialized. Only a complete, verified Snapshot
+retry clears the fault and makes the graph readable again.
 `GetReplicationStatus` remains available for diagnosis without reading the
 graph; direct in-process GraphCache access is outside this public-read gate.
 

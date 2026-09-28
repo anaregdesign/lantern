@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -218,6 +219,118 @@ func TestLanternService_LocalSeqWaitsForLogPublication(t *testing.T) {
 	}
 	if seq := <-read; seq != 1 || log.Len() != 1 {
 		t.Fatalf("published origin seq %d, log entries %d; want 1/1", seq, log.Len())
+	}
+}
+
+func TestLanternService_SubscribeResumeCursorCommittedAndFaulted(t *testing.T) {
+	local, remote := hlc.NodeID{0x61}, hlc.NodeID{0x62}
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithReplication(log, hlc.New(local, hlc.Options{}), nil)
+	ctx := context.Background()
+	if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "local-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ApplyMutation(ctx, &pb.Mutation{Seq: 1, Origin: remote[:], Hlc: newHLC(1, remote),
+		Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "remote-1"}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := svc.SubscribeResumeCursor()
+	if err != nil || !maps.Equal(cursor, map[string]uint64{
+		hex.EncodeToString(local[:]): 2, hex.EncodeToString(remote[:]): 2,
+	}) {
+		t.Fatalf("committed cursor = (%v, %v), want both origins at 2", cursor, err)
+	}
+	if _, err := svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "local-2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if cursor[hex.EncodeToString(local[:])] != 2 {
+		t.Fatalf("previous cursor was not an owned snapshot: %v", cursor)
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.SubscribeResumeCursor(); err != nil || !maps.Equal(got, map[string]uint64{
+		hex.EncodeToString(local[:]): 3, hex.EncodeToString(remote[:]): 2,
+	}) {
+		t.Fatalf("internal recovery cursor during Snapshot install = (%v, %v)", got, err)
+	}
+	if _, err := svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "local-1"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("public read during Snapshot install = %v, want FailedPrecondition", err)
+	}
+	finish(true)
+	if got, err := svc.SubscribeResumeCursor(); err != nil || got[hex.EncodeToString(local[:])] != 3 {
+		t.Fatalf("cursor after verified Snapshot install = (%v, %v)", got, err)
+	}
+
+	exhausted := newTestService(t)
+	if err := exhausted.ApplySnapshotWatermarks(map[string]uint64{
+		hex.EncodeToString(remote[:]): math.MaxUint64,
+	}, hlc.Timestamp{WallNs: 1, NodeID: remote}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := exhausted.SubscribeResumeCursor(); connect.CodeOf(err) != connect.CodeResourceExhausted || got != nil {
+		t.Fatalf("exhausted origin cursor = (%v, %v), want ResourceExhausted", got, err)
+	}
+}
+
+func TestLanternService_SubscribeResumeCursorWaitsForPublication(t *testing.T) {
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	origin := hlc.NodeID{0x65}
+	appendEntered, appendRelease := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-appendRelease:
+		default:
+			close(appendRelease)
+		}
+	})
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)).
+		WithReplication(log, hlc.New(origin, hlc.Options{}), func() {
+			close(appendEntered)
+			<-appendRelease
+		})
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := svc.PutVertex(context.Background(), &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "staged"}})
+		writeDone <- err
+	}()
+	select {
+	case <-appendEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("write did not reach post-append publication")
+	}
+	type cursorResult struct {
+		cursor map[string]uint64
+		err    error
+	}
+	started, readDone := make(chan struct{}), make(chan cursorResult, 1)
+	go func() {
+		close(started)
+		cursor, err := svc.SubscribeResumeCursor()
+		readDone <- cursorResult{cursor, err}
+	}()
+	<-started
+	select {
+	case result := <-readDone:
+		t.Fatalf("internal cursor crossed staged publication: %+v", result)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(appendRelease)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-readDone:
+		if result.err != nil || result.cursor[hex.EncodeToString(origin[:])] != 2 {
+			t.Fatalf("committed cursor after publication = %+v", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("internal cursor did not finish after publication")
 	}
 }
 

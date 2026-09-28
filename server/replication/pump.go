@@ -5,7 +5,8 @@
 // and, in order:
 //
 //  1. Verifies PeerStatus search-config compatibility, then opens
-//     LanternReplicationService.Subscribe with an empty portable cursor.
+//     LanternReplicationService.Subscribe with the local committed origin
+//     vector (empty only for a cold node).
 //  2. If the server replies codes.FailedPrecondition (reason "gapped" —
 //     the canonical bootstrap signal from #180), opens
 //     LanternReplicationService.Snapshot, hands the complete stream to the
@@ -59,6 +60,13 @@ import (
 // peer-applied writes are not re-broadcast).
 type MutationApplier interface {
 	ApplyMutation(ctx context.Context, m *pb.Mutation) error
+}
+
+// subscribeResumeCursorProvider supplies a complete committed origin vector
+// when a pump reconnects. Narrow test appliers without it retain the legacy
+// empty-cursor path.
+type subscribeResumeCursorProvider interface {
+	SubscribeResumeCursor() (map[string]uint64, error)
 }
 
 // SnapshotApplier is the surface the default graph-only installer uses to
@@ -1146,7 +1154,14 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	log.Info("replication pump: peer transition",
 		slog.String("transition", "connect"))
 
-	err = p.subscribe(ctx, cli, addr, nil, 0)
+	var cursor map[string]uint64
+	if local, ok := p.apply.(subscribeResumeCursorProvider); ok {
+		cursor, err = local.SubscribeResumeCursor()
+		if err != nil {
+			return fmt.Errorf("local Subscribe resume cursor: %w", err)
+		}
+	}
+	err = p.subscribe(ctx, cli, addr, cursor, 0)
 	if err == nil {
 		p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 		log.Info("replication pump: peer transition",
@@ -1205,10 +1220,10 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 //
 // Under the leaderless Subscribe contract (#415), the peer's local log carries
 // mutations from every cluster origin, not just the peer's own writes. Ordinary
-// reconnects pass an empty cursor (= deliver every retained entry) and rely on
-// LanternService.ApplyMutation's per-origin watermark CAS for deduplication.
-// Snapshot recovery instead passes the header-derived cursor supplied by the
-// caller so the live tail starts after the point-in-time cut.
+// reconnects pass the local committed origin vector, so a peer can prove a
+// retained tail after ring eviction without an unnecessary Snapshot. Snapshot
+// recovery passes the header-derived cursor supplied by the caller so the live
+// tail starts after the point-in-time cut.
 func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64) error {
 	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
 		FromSeqPerOrigin:       cursor,

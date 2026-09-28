@@ -20,27 +20,27 @@ const (
 	maxIdentityFrameBytes = 1 << 20
 )
 
-func identityCursor(raw map[string]uint64) (map[string]uint64, error) {
+func parseOriginCursor(raw map[string]uint64) (map[string]uint64, error) {
 	cursor := make(map[string]uint64, len(raw))
 	for origin, next := range raw {
 		decoded, err := hex.DecodeString(origin)
 		if err != nil || len(decoded) != 16 || hex.EncodeToString(decoded) != origin || zeroNodeID(decoded) || next == 0 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid identity cursor origin/seq %q:%d", origin, next))
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid Subscribe cursor origin/seq %q:%d", origin, next))
 		}
 		cursor[origin] = next
 	}
 	return cursor, nil
 }
 
-// validateIdentityResume proves that every requested mutation through the
+// validateRetainedOriginResume proves that every requested mutation through the
 // responder's published frontier is still resident. A min-only ring check is
 // insufficient: verified Snapshot repair may jump an origin cutoff without
 // inserting the skipped entries in this replica's log.
-func validateIdentityResume(cursor, frontier map[string]uint64, retained []mutationlog.Entry) error {
+func validateRetainedOriginResume(cursor, frontier map[string]uint64, retained []mutationlog.Entry) error {
 	need := make(map[string]uint64)
 	for origin, last := range frontier {
 		if last == math.MaxUint64 {
-			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("identity cursor exhausted for origin %s", origin))
+			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("resume cursor exhausted for origin %s", origin))
 		}
 		want := cursor[origin]
 		if want == 0 {
@@ -53,7 +53,7 @@ func validateIdentityResume(cursor, frontier map[string]uint64, retained []mutat
 	for _, entry := range retained {
 		m, ok := graphMutationFromLog(entry.Op)
 		if !ok || len(m.GetOrigin()) != 16 || m.GetSeq() == 0 {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("identity subscription found malformed log entry %d", entry.Seq))
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("subscription found malformed log entry %d", entry.Seq))
 		}
 		origin := hex.EncodeToString(m.GetOrigin())
 		next, needed := need[origin]
@@ -90,7 +90,7 @@ func (s *LanternReplicationService) subscribeIdentity(ctx context.Context, req *
 	if req.GetBootstrap() && len(req.GetFromSeqPerOrigin()) != 0 {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("identity bootstrap requires an empty cursor"))
 	}
-	cursor, err := identityCursor(req.GetFromSeqPerOrigin())
+	cursor, err := parseOriginCursor(req.GetFromSeqPerOrigin())
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func (s *LanternReplicationService) subscribeIdentity(ctx context.Context, req *
 		fromLocal := lastLocal + 1
 		if !req.GetBootstrap() {
 			retained := s.log.RetainedEntries()
-			if err := validateIdentityResume(cursor, checkpoint, retained); err != nil {
+			if err := validateRetainedOriginResume(cursor, checkpoint, retained); err != nil {
 				openErr = err
 				return
 			}

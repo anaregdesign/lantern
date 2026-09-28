@@ -637,6 +637,24 @@ func (s *LanternService) OriginStates() []OriginState {
 	return s.origins.States()
 }
 
+// SubscribeResumeCursor captures the next expected sequence for every
+// committed origin under the publication cut. Unlike a public read, this
+// internal recovery cursor must remain available during a publication fault:
+// a Pump can only retry its unapplied log entry after reconnecting to a peer.
+func (s *LanternService) SubscribeResumeCursor() (map[string]uint64, error) {
+	cursor := make(map[string]uint64)
+	s.replicationCutMu.RLock()
+	defer s.replicationCutMu.RUnlock()
+	for _, state := range s.OriginStates() {
+		if state.LastSeq == ^uint64(0) {
+			return nil, connect.NewError(connect.CodeResourceExhausted,
+				fmt.Errorf("subscribe cursor exhausted for origin %x", state.Origin))
+		}
+		cursor[hex.EncodeToString(state.Origin[:])] = state.LastSeq + 1
+	}
+	return cursor, nil
+}
+
 // LocalSeq returns the contiguous committed per-origin cutoff (0 when the
 // origin has never been seen, or the tracker is unwired). Used by the
 // anti-entropy driver (#186) to compute its catch-up start seq. The receipt

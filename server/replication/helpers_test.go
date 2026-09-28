@@ -216,3 +216,15 @@ type fixedLocalState struct {
 func (s fixedLocalState) LocalSeq(hlc.NodeID) uint64 {
 	return s.seq
 }
+
+type cursorTestState struct {
+	fixedLocalState
+	cursor map[string]uint64
+	err    error
+}
+
+func (s *cursorTestState) SubscribeResumeCursor() (map[string]uint64, error) {
+	return s.cursor, s.err
+}
+
+func (*cursorTestState) ApplyMutation(context.Context, *pb.Mutation) error { return nil }

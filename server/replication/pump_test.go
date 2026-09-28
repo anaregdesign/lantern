@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +148,34 @@ func TestPumpUsesInjectedSnapshotInstaller(t *testing.T) {
 	}
 	if got := subscribes[1].GetFromLocalSeq(); got != 21 {
 		t.Fatalf("resumed local cursor = %d, want 21", got)
+	}
+}
+
+func TestPumpReconnectUsesCommittedOriginVector(t *testing.T) {
+	peer := &installerTestPeer{requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+	server := startInstallerTestPeer(t, peer)
+	state := &cursorTestState{cursor: map[string]uint64{"origin-a": 5, "origin-b": 9}}
+	pump := NewPump(Config{HTTPClient: defaultH2CClient()}, state, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := pump.session(ctx, server.URL); err != nil {
+		t.Fatalf("reconnect with committed vector: %v", err)
+	}
+	subscribes, snapshots := peer.requests()
+	if len(subscribes) != 1 || len(snapshots) != 0 ||
+		!maps.Equal(subscribes[0].GetFromSeqPerOrigin(), state.cursor) ||
+		subscribes[0].GetFromLocalSeq() != 0 {
+		t.Fatalf("ordinary reconnect = (%+v, %+v), want complete vector without Snapshot", subscribes, snapshots)
+	}
+
+	state.err = errors.New("committed cursor unavailable")
+	if err := pump.session(ctx, server.URL); !errors.Is(err, state.err) {
+		t.Fatalf("cursor capture error = %v, want %v", err, state.err)
+	}
+	subscribes, snapshots = peer.requests()
+	if len(subscribes) != 1 || len(snapshots) != 0 {
+		t.Fatalf("cursor capture failure opened a stream or Snapshot: (%d, %d)", len(subscribes), len(snapshots))
 	}
 }
 

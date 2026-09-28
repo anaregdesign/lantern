@@ -333,6 +333,118 @@ func TestSubscribe_PerOriginCursor_Skips(t *testing.T) {
 	}
 }
 
+func TestSubscribe_RealWireRetainedVectorAndSnapshotTail(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	local, remote := hlc.NodeID{0x71}, hlc.NodeID{0x72}
+	localKey, remoteKey := hex.EncodeToString(local[:]), hex.EncodeToString(remote[:])
+	node := newPumpNodeWithSearch(t, local, 4, true)
+	remoteClock := hlc.New(remote, hlc.Options{})
+	cli := newReplicationRawClient(t, node.url)
+	type observed struct {
+		origin string
+		seq    uint64
+	}
+	publishPair := func(seq uint64) {
+		t.Helper()
+		if _, err := node.raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+			Key: "local-" + itoa(int(seq)), Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+		}})); err != nil {
+			t.Fatalf("local PutVertex[%d]: %v", seq, err)
+		}
+		stamp := remoteClock.Now()
+		err := node.svc.ApplyMutation(ctx, &pb.Mutation{
+			Origin: remote[:], Seq: seq,
+			Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, Logical: stamp.Logical, NodeId: remote[:]},
+			Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
+				Vertex: &pb.Vertex{Key: "remote-" + itoa(int(seq)), Expiration: timestamppb.New(time.Now().Add(time.Hour))},
+			}}},
+		})
+		if err != nil {
+			t.Fatalf("remote ApplyMutation[%d]: %v", seq, err)
+		}
+	}
+	receive := func(req *pb.SubscribeRequest, want []observed) {
+		t.Helper()
+		stream, err := cli.Subscribe(ctx, connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+		defer func() { _ = stream.Close() }()
+		for i, expected := range want {
+			if !stream.Receive() {
+				t.Fatalf("mutation[%d]: stream ended: %v", i, stream.Err())
+			}
+			mutation := stream.Msg().GetMutation()
+			if got := (observed{origin: hex.EncodeToString(mutation.GetOrigin()), seq: mutation.GetSeq()}); got != expected {
+				t.Fatalf("mutation[%d] = %+v, want %+v", i, got, expected)
+			}
+		}
+	}
+	requireGap := func(req *pb.SubscribeRequest) {
+		t.Helper()
+		stream, err := cli.Subscribe(ctx, connect.NewRequest(req))
+		if err == nil {
+			defer func() { _ = stream.Close() }()
+			if stream.Receive() {
+				t.Fatalf("stale vector %v received mutation %+v", req.GetFromSeqPerOrigin(), stream.Msg().GetMutation())
+			}
+			err = stream.Err()
+		}
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "gapped") {
+			t.Fatalf("stale vector %v returned %v, want gapped FailedPrecondition", req.GetFromSeqPerOrigin(), err)
+		}
+	}
+
+	for seq := uint64(1); seq <= 4; seq++ {
+		publishPair(seq)
+	}
+	if first, ok := node.log.FirstSeq(); !ok || first != 5 {
+		t.Fatalf("ring eviction = (%d, %t), want local seq 5", first, ok)
+	}
+	receive(&pb.SubscribeRequest{FromSeqPerOrigin: map[string]uint64{localKey: 3, remoteKey: 3}}, []observed{
+		{localKey, 3}, {remoteKey, 3}, {localKey, 4}, {remoteKey, 4},
+	})
+	requireGap(&pb.SubscribeRequest{FromSeqPerOrigin: map[string]uint64{localKey: 2, remoteKey: 3}})
+	requireGap(&pb.SubscribeRequest{FromSeqPerOrigin: map[string]uint64{localKey: 3}}) // An absent origin must begin at sequence 1.
+
+	snapshot, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header *pb.SnapshotHeader
+	var footer bool
+	for snapshot.Receive() {
+		if frame := snapshot.Msg(); frame.GetHeader() != nil {
+			header = frame.GetHeader()
+		} else if frame.GetFooter() != nil {
+			footer = true
+		}
+	}
+	if err := snapshot.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if header == nil || !footer || header.GetCutoffLocalSeq() != 8 ||
+		header.GetCutoffSeqPerOrigin()[localKey] != 4 || header.GetCutoffSeqPerOrigin()[remoteKey] != 4 {
+		t.Fatalf("Snapshot cut = %+v, footer = %t", header, footer)
+	}
+	publishPair(5)
+	receive(&pb.SubscribeRequest{
+		FromLocalSeq:     header.GetCutoffLocalSeq() + 1,
+		FromSeqPerOrigin: map[string]uint64{localKey: 5, remoteKey: 5},
+	}, []observed{{localKey, 5}, {remoteKey, 5}})
+	if err := node.svc.ApplySnapshotWatermarks(map[string]uint64{remoteKey: 7}, remoteClock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	requireGap(&pb.SubscribeRequest{
+		FromLocalSeq:     11, // The local tail is present; the remote origin's 6..7 mutations are not.
+		FromSeqPerOrigin: map[string]uint64{localKey: 6, remoteKey: 6},
+	})
+}
+
 // TestSubscribeSDK_TypedCursorAndGap exercises the public Go SDK facade over
 // the real Connect/h2c handler. It pins both the typed per-origin cursor happy
 // path and the retained-log gap failure contract introduced by #1182.
