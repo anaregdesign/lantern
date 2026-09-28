@@ -921,6 +921,7 @@ g_thresh="$(yq -r '.leak_gate.goroutine_max_delta' "$SCENARIO_FILE")"
 # slots, so it is unreliable as a leak signal under sustained churn.
 h_thresh_mb="$(yq -r '.leak_gate.heap_alloc_max_delta_mb // .leak_gate.heap_inuse_max_delta_mb' "$SCENARIO_FILE")"
 if [[ "$receipt_driver" == "1" ]]; then
+  steady_h_thresh_mb="$(yq -r '.leak_gate.steady_heap_alloc_max_delta_mb' "$SCENARIO_FILE")"
   # Receipt sampling runs inside the steady driver, including with
   # LEAK_GATE_ONLY=1. Require all three unforced /metrics series in addition
   # to the existing post-warmup/post-cooldown GC live-set snapshots.
@@ -934,6 +935,7 @@ if [[ "$receipt_driver" == "1" ]]; then
       -interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")" \
       -max-goroutines "$g_thresh" \
       -max-heap-mb "$h_thresh_mb" \
+      -max-steady-heap-mb "$steady_h_thresh_mb" \
       -out "$OUTDIR/leak_gate.json"
   ); then
     log "receipt leak gate reported failure"

@@ -110,9 +110,10 @@ func testReceiptScenarioContract(t *testing.T, name, driver, admissionMethod str
 			} `yaml:"producers"`
 		} `yaml:"perf_gate"`
 		LeakGate struct {
-			GoroutineMaxDelta    int    `yaml:"goroutine_max_delta"`
-			HeapAllocMaxDeltaMB  int    `yaml:"heap_alloc_max_delta_mb"`
-			SteadySampleInterval string `yaml:"steady_sample_interval"`
+			GoroutineMaxDelta         int    `yaml:"goroutine_max_delta"`
+			HeapAllocMaxDeltaMB       int    `yaml:"heap_alloc_max_delta_mb"`
+			SteadyHeapAllocMaxDeltaMB int    `yaml:"steady_heap_alloc_max_delta_mb"`
+			SteadySampleInterval      string `yaml:"steady_sample_interval"`
 		} `yaml:"leak_gate"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -190,6 +191,9 @@ func testReceiptScenarioContract(t *testing.T, name, driver, admissionMethod str
 	}
 	if doc.LeakGate.HeapAllocMaxDeltaMB != 32 {
 		t.Errorf("leak_gate.heap_alloc_max_delta_mb = %d, want 32", doc.LeakGate.HeapAllocMaxDeltaMB)
+	}
+	if doc.LeakGate.SteadyHeapAllocMaxDeltaMB != 40 {
+		t.Errorf("leak_gate.steady_heap_alloc_max_delta_mb = %d, want 40", doc.LeakGate.SteadyHeapAllocMaxDeltaMB)
 	}
 	if doc.LeakGate.SteadySampleInterval != "5s" {
 		t.Errorf("leak_gate.steady_sample_interval = %q, want 5s", doc.LeakGate.SteadySampleInterval)
@@ -287,6 +291,7 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		`-duration "$steady_duration"`,
 		`-max-goroutines "$g_thresh"`,
 		`-max-heap-mb "$h_thresh_mb"`,
+		`-max-steady-heap-mb "$steady_h_thresh_mb"`,
 	} {
 		if !strings.Contains(string(runScript), contract) {
 			t.Errorf("run.sh missing receipt driver contract %q", contract)

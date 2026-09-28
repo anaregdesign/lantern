@@ -52,4 +52,5 @@ perf_gate:
 leak_gate:
   goroutine_max_delta: 15
   heap_alloc_max_delta_mb: 32
+  steady_heap_alloc_max_delta_mb: 40
   steady_sample_interval: 5s
