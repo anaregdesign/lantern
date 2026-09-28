@@ -548,11 +548,17 @@ replica is read-only and may not yet have converged. The identity-only CDC
 server and storage-neutral offline consumer are implemented under #1116;
 their production Dart package bridge and release qualification remain #1314.
 
-The internal peer pump uses the same RPC. Ordinary sessions start with an
-empty portable cursor and rely on `ApplyMutation`'s contiguous cursor to dedup
-duplicate hops; snapshot recovery resumes with both header-derived origin and
-same-responder local cursors. It still performs input-side self-echo
-suppression (`Mutation.Origin == local NodeID → drop`) as defence-in-depth.
+The internal peer pump uses the same RPC. Ordinary sessions resume from the
+local contiguous committed origin vector; snapshot recovery resumes with both
+header-derived origin and same-responder local cursors. In graph-only mode,
+if PeerStatus proves the peer's local-origin watermark does not exceed the
+receiver's nonempty committed prefix and the receiver has no publication
+fault, the Pump requests that its own origin be filtered from that Subscribe
+stream. Receipt-WAL mode retains the full stream. The input-side self-echo guard
+remains defence-in-depth; if a peer instead reports local-origin history
+ahead of a restarted receiver, or sends such a frame after status, the Pump
+repairs it by verified Snapshot, not by discarding those frames. Equal
+peer/local NodeIDs fail closed.
 
 **Full-mutation frame admission (#1440).** The canonical transport projection
 is the protobuf `SubscribeResponse` containing the mutation that `Subscribe`
@@ -767,11 +773,12 @@ the cutoff without reapplying the graph effect. Outside Snapshot installation,
 ordinary peer retries still repair failed relay WAL appends.
 The ordinary publication cut is sampled before and after the graph-data
 capture, not held through a slow query. Pure read-only captures retry at
-most twice after an overlapping local publication; continued overlap
-returns retryable `UNAVAILABLE`, never a mixed result. Non-repeatable
-cursor/session reads do not retry, and capture errors or Snapshot/publication
-faults fail closed. A publication after a complete detached capture cannot
-invalidate that immutable result while it is assembled and serialized.
+most twice after an overlapping local publication; continued healthy
+contention takes the shared publication cut for one final consistent
+capture instead of returning `UNAVAILABLE`. Non-repeatable cursor/session
+reads do not retry, and capture errors or Snapshot/publication faults fail
+closed. A publication after a complete detached capture cannot invalidate
+that immutable result while it is assembled and serialized.
 Only a complete, verified Snapshot retry clears the fault and makes the
 graph readable again.
 `GetReplicationStatus` remains available for diagnosis without reading the

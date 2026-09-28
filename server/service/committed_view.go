@@ -22,7 +22,8 @@ func (s *LanternService) withPublicGraphRead(capture func() error) error {
 
 // withPublicGraphReadRetry may repeat a read-only capture after an overlapping
 // publication. Callers must replace, not append to, their per-attempt result.
-// The bounded retries never turn a fault or repeated overlap into success.
+// If writes overlap all optimistic attempts, the final capture holds the
+// publication read cut instead of returning an error for healthy contention.
 func (s *LanternService) withPublicGraphReadRetry(ctx context.Context, capture func() error) error {
 	return s.withPublicGraphReadAttempts(ctx, 3, capture)
 }
@@ -49,6 +50,14 @@ func (s *LanternService) withPublicGraphReadAttempts(ctx context.Context, attemp
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
 		}
+	}
+	if attempts > 1 {
+		return s.withCommittedView(func() error {
+			if err := ctx.Err(); err != nil {
+				return ctxToConnect(err)
+			}
+			return capture()
+		})
 	}
 	return publicationChangedDuringReadError()
 }

@@ -144,7 +144,7 @@ func TestLanternService_CommittedViewFailsClosed(t *testing.T) {
 	}
 }
 
-func TestLanternService_PublicGraphReadRetryIsBoundedAndFaultAware(t *testing.T) {
+func TestLanternService_PublicGraphReadRetrySerializesAndFailsClosed(t *testing.T) {
 	log := mutationlog.New(mutationlog.Options{})
 	t.Cleanup(func() { _ = log.Close() })
 	svc := NewLanternService(newFakeBackend()).WithReplication(log, hlc.New(hlc.NodeID{1}, hlc.Options{}), nil)
@@ -164,12 +164,14 @@ func TestLanternService_PublicGraphReadRetryIsBoundedAndFaultAware(t *testing.T)
 	attempts = 0
 	err := svc.withPublicGraphReadRetry(ctx, func() error {
 		attempts++
-		svc.replicationCutMu.Lock()
-		svc.replicationCutMu.Unlock()
+		if attempts <= 3 {
+			svc.replicationCutMu.Lock()
+			svc.replicationCutMu.Unlock()
+		}
 		return nil
 	})
-	if connect.CodeOf(err) != connect.CodeUnavailable || attempts != 3 {
-		t.Fatalf("continuous publications = %v, attempts=%d; want bounded Unavailable", err, attempts)
+	if err != nil || attempts != 4 {
+		t.Fatalf("continuous publications = %v, attempts=%d; want one serialized capture", err, attempts)
 	}
 	captureErr := errors.New("capture failed")
 	attempts = 0
@@ -203,6 +205,64 @@ func TestLanternService_PublicGraphReadRetryIsBoundedAndFaultAware(t *testing.T)
 	err = svc.withPublicGraphReadRetry(ctx, func() error { attempts++; return nil })
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition || attempts != 0 {
 		t.Fatalf("faulted retry = %v, attempts=%d; want fail-closed without capture", err, attempts)
+	}
+}
+
+func TestLanternService_PublicGraphReadFallbackBlocksPublication(t *testing.T) {
+	svc := NewLanternService(newFakeBackend())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	attempts := 0
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- svc.withPublicGraphReadRetry(context.Background(), func() error {
+			attempts++
+			if attempts <= 3 {
+				svc.replicationCutMu.Lock()
+				svc.replicationCutMu.Unlock()
+			} else {
+				close(entered)
+				<-release
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serialized capture did not start")
+	}
+	writerDone := make(chan struct{})
+	go func() {
+		svc.replicationCutMu.Lock()
+		svc.replicationCutMu.Unlock()
+		close(writerDone)
+	}()
+	select {
+	case <-writerDone:
+		t.Fatal("publication entered during serialized graph read")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-readDone:
+		if err != nil || attempts != 4 {
+			t.Fatalf("serialized graph read = %v, attempts=%d", err, attempts)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serialized graph read did not finish")
+	}
+	select {
+	case <-writerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("publication remained blocked after graph read")
 	}
 }
 

@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -837,6 +838,86 @@ func TestWaitForWireEdgeRetriesPublicationChange(t *testing.T) {
 	}
 }
 
+type collidingReadBackend struct {
+	service.Backend
+	reads      atomic.Int32
+	collisions chan chan struct{}
+	done       <-chan struct{}
+}
+
+func (b *collidingReadBackend) GetVertex(key string) (*pb.Vertex, bool) {
+	if key == "contended-read" && b.reads.Add(1) <= 3 {
+		resume := make(chan struct{})
+		select {
+		case b.collisions <- resume:
+			select {
+			case <-resume:
+			case <-b.done:
+			}
+		case <-b.done:
+		}
+	}
+	return b.Backend.GetVertex(key)
+}
+
+func TestHAReadContentionFallsBackToCommittedWireCapture(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	log := mutationlog.New(mutationlog.Options{Capacity: 16})
+	t.Cleanup(func() { _ = log.Close() })
+	backend := &collidingReadBackend{
+		Backend:    graphcache.NewGraphCache[string, *pb.Vertex](time.Minute),
+		collisions: make(chan chan struct{}),
+		done:       ctx.Done(),
+	}
+	svc := service.NewLanternService(backend).
+		WithReplication(log, hlc.New(hlc.NodeID{0x75}, hlc.Options{}), nil)
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	writes := make(chan error, 1)
+	go func() {
+		for i, value := range []string{"first", "second", "third"} {
+			select {
+			case resume := <-backend.collisions:
+				_, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{
+					Vertex: &pb.Vertex{Key: "contended-read", Value: &pb.Vertex_String_{String_: value}},
+				}))
+				close(resume)
+				if err != nil {
+					writes <- fmt.Errorf("overlapping PutVertex %d: %w", i, err)
+					return
+				}
+			case <-ctx.Done():
+				writes <- ctx.Err()
+				return
+			}
+		}
+		writes <- nil
+	}()
+	response, err := raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "contended-read"}))
+	if err != nil {
+		t.Fatalf("committed h2c GetVertex: %v", err)
+	}
+	if response.Msg.GetVertex().GetString_() != "third" || backend.reads.Load() != 4 {
+		t.Fatalf("committed h2c GetVertex = (%v, %v), reads=%d; want third after 4 captures",
+			response, err, backend.reads.Load())
+	}
+	if err := <-writes; err != nil {
+		t.Fatal(err)
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{
+		Keys: []string{"contended-read"},
+	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		finish(false)
+		t.Fatalf("h2c read during Snapshot fault = %v, want FailedPrecondition", err)
+	}
+	finish(true)
+}
+
 // TestPeerPump_E2E_ThreeNodeConvergence wires three peers in a full
 // mesh (A↔B↔C) and asserts that a write to any one node is observed
 // on every other node within a short polling window. This exercises
@@ -928,6 +1009,78 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 		}
 	}
 	waitForSearchConvergence(t, ctx, "from", nil, a.raw, b.raw, c.raw)
+}
+
+func TestPeerPumpFiltersSelfEchoAndRepairsOwnHistoryAfterRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	a := newPumpNodeWithSearch(t, hlc.NodeID{0x76}, 1024, false)
+	b := newPumpNodeWithSearch(t, hlc.NodeID{0x77}, 1024, false)
+	if _, err := a.sdk.PutVertex(ctx, "own-before", "a1", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	bCtx, stopB := context.WithCancel(ctx)
+	defer stopB()
+	b.startPump(bCtx, t, []string{a.url})
+	if !waitForVertex(t, b.cache, "own-before", 3*time.Second) {
+		t.Fatal("B did not apply A's first write")
+	}
+	if _, err := b.sdk.PutVertex(ctx, "remote-before", "b1", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	aCtx, stopA := context.WithCancel(ctx)
+	defer stopA()
+	a.startPump(aCtx, t, []string{b.url})
+	if !waitForVertex(t, a.cache, "remote-before", 3*time.Second) {
+		t.Fatal("A did not attach to B's full-mutation stream")
+	}
+	if _, err := a.sdk.PutVertex(ctx, "own-after", "a2", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForVertex(t, b.cache, "own-after", 3*time.Second) {
+		t.Fatal("B did not apply A's second write")
+	}
+	if _, err := b.sdk.PutVertex(ctx, "remote-after", "b2", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForVertex(t, a.cache, "remote-after", 3*time.Second) {
+		t.Fatal("A did not receive B's write after its filtered self-echo")
+	}
+	for _, node := range []*pumpNode{a, b} {
+		if last, ok := waitForLogSeq(t, node.log, 4, 3*time.Second); !ok || last != 4 {
+			t.Fatalf("node %x retained %d entries (ok=%v), want 4 unique mutations", node.nodeID, last, ok)
+		}
+	}
+
+	// The same h2c endpoint must retain all origins for a CDC consumer,
+	// while a caller that already owns A's committed history may exclude it.
+	keyA, keyB := hex.EncodeToString(a.nodeID[:]), hex.EncodeToString(b.nodeID[:])
+	feed, err := newReplicationRawClient(t, b.url).Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		FromSeqPerOrigin: map[string]uint64{keyA: math.MaxUint64, keyB: 1},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for seq := uint64(1); seq <= 2; seq++ {
+		if !feed.Receive() || !bytes.Equal(feed.Msg().GetMutation().GetOrigin(), b.nodeID[:]) ||
+			feed.Msg().GetMutation().GetSeq() != seq {
+			t.Fatalf("filtered h2c Subscribe frame %d = %v (err=%v), want B origin", seq, feed.Msg(), feed.Err())
+		}
+	}
+	_ = feed.Close()
+
+	stopA()
+	stopB()
+	a.server.srv.Close()
+	restarted := newPumpNodeWithSearch(t, a.nodeID, 1024, false)
+	restarted.startPump(ctx, t, []string{b.url})
+	if !waitForVertex(t, restarted.cache, "own-after", 5*time.Second) ||
+		!waitForVertex(t, restarted.cache, "remote-after", 5*time.Second) {
+		t.Fatal("same-NodeID restart did not restore committed graph from peer Snapshot")
+	}
+	if got := restarted.svc.LocalSeq(a.nodeID); got != 2 {
+		t.Fatalf("restored local-origin cursor = %d, want 2", got)
+	}
 }
 
 // TestPeerPump_ReverseOriginSeqRelay exercises the Connect/h2c Subscribe path

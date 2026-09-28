@@ -209,6 +209,17 @@ func (s *LanternService) SnapshotInstallActive() bool {
 	return false
 }
 
+// CanSkipSelfEcho is true only when this graph-only replica has no unpublished
+// local mutation or repair fault. Receipt-WAL peers keep the full origin stream
+// so receipt evidence and durable recovery cannot be bypassed.
+func (s *LanternService) CanSkipSelfEcho(origin hlc.NodeID) bool {
+	s.replicationCutMu.RLock()
+	defer s.replicationCutMu.RUnlock()
+	return s.receiptStore == nil && s.clock != nil && s.clock.NodeID() == origin &&
+		s.origins != nil && s.origins.LocalSeq(origin) > 0 &&
+		s.publicationFaultCount == 0 && !s.receiptCommitFaulted && s.pendingLocalMutation == nil
+}
+
 func publicationChangedDuringReadError() error {
 	return connect.NewError(connect.CodeUnavailable,
 		errors.New("graph publication changed during read; retry"))

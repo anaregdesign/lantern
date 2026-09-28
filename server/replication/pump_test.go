@@ -180,6 +180,127 @@ func TestPumpReconnectUsesCommittedOriginVector(t *testing.T) {
 	}
 }
 
+type selfEchoCursorState struct {
+	*cursorTestState
+	safe bool
+}
+
+func (s *selfEchoCursorState) CanSkipSelfEcho(hlc.NodeID) bool { return s.safe }
+
+func TestPumpFiltersProvenGraphOnlySelfEchoAtSource(t *testing.T) {
+	own := hlc.NodeID{0x71}
+	remote := hlc.NodeID{0x72}
+	key := hex.EncodeToString(own[:])
+	for _, tc := range []struct {
+		name       string
+		safe       bool
+		receipt    bool
+		localNext  uint64
+		remoteLast uint64
+		want       uint64
+	}{
+		{"healthy_graph_only", true, false, 6, 5, math.MaxUint64},
+		{"local_publication_fault", false, false, 6, 5, 6},
+		{"receipt_WAL", true, true, 6, 5, 6},
+		{"peer_origin_ahead", true, false, 6, 6, 0},
+		{"cold_origin_not_yet_seen", true, false, 1, 0, 1},
+		{"cold_origin_missing_cursor", true, false, 0, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			format := pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+			if tc.receipt {
+				format = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
+			}
+			peer := &installerTestPeer{
+				requiredFormat: format,
+				selfOrigin:     remote,
+				extraOrigins: []*pb.OriginState{{
+					Origin: own[:], LastSeq: tc.remoteLast,
+				}},
+			}
+			srv := startInstallerTestPeer(t, peer)
+			committed := make(map[string]uint64)
+			if tc.localNext != 0 {
+				committed[key] = tc.localNext
+			}
+			state := &selfEchoCursorState{
+				cursorTestState: &cursorTestState{cursor: committed},
+				safe:            tc.safe,
+			}
+			installer := &scriptedSnapshotInstaller{required: format}
+			pump := NewPump(Config{
+				NodeID: own, HTTPClient: defaultH2CClient(), SnapshotInstaller: installer,
+			}, state, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			err := pump.session(ctx, srv.URL)
+			subscribes, snapshots := peer.requests()
+			if tc.want == 0 {
+				if connect.CodeOf(err) != connect.CodeFailedPrecondition ||
+					len(subscribes) != 0 || len(snapshots) != 1 || installer.installCount() != 1 {
+					t.Fatalf("missing own history = %v, subscribes=%d snapshots=%d installs=%d; want verified repair before Subscribe",
+						err, len(subscribes), len(snapshots), installer.installCount())
+				}
+			} else if err != nil || len(subscribes) != 1 || len(snapshots) != 0 ||
+				subscribes[0].GetFromSeqPerOrigin()[key] != tc.want {
+				t.Fatalf("self-origin Subscribe = %v, requests=%v, snapshots=%d; want origin cursor %d",
+					err, subscribes, len(snapshots), tc.want)
+			}
+			if state.cursor[key] != tc.localNext {
+				t.Fatalf("committed local cursor was mutated: %v", state.cursor)
+			}
+		})
+	}
+}
+
+func TestPumpRepairsOwnFrameAfterStalePeerStatus(t *testing.T) {
+	own := hlc.NodeID{0x74}
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		selfOrigin:        hlc.NodeID{0x75},
+		subscribeMutation: &pb.Mutation{Origin: own[:], Seq: 3},
+	}
+	srv := startInstallerTestPeer(t, peer)
+	state := &cursorTestState{
+		fixedLocalState: fixedLocalState{seq: 1},
+		cursor:          map[string]uint64{hex.EncodeToString(own[:]): 2},
+	}
+	installer := &scriptedSnapshotInstaller{required: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+	pump := NewPump(Config{
+		NodeID: own, HTTPClient: defaultH2CClient(), SnapshotInstaller: installer,
+	}, state, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pump.session(ctx, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("uncommitted local-origin frame = %v, want failed repair", err)
+	}
+	subscribes, snapshots := peer.requests()
+	if len(subscribes) != 2 || len(snapshots) != 1 || installer.installCount() != 1 {
+		t.Fatalf("stale status must trigger Snapshot before retry: subscribes=%d snapshots=%d installs=%d",
+			len(subscribes), len(snapshots), installer.installCount())
+	}
+}
+
+func TestPumpRejectsDuplicatePeerNodeID(t *testing.T) {
+	own := hlc.NodeID{0x73}
+	peer := &installerTestPeer{
+		requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		selfOrigin:     own,
+	}
+	srv := startInstallerTestPeer(t, peer)
+	state := &cursorTestState{cursor: map[string]uint64{hex.EncodeToString(own[:]): 1}}
+	pump := NewPump(Config{NodeID: own, HTTPClient: defaultH2CClient()}, state, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pump.session(ctx, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("duplicate NodeID = %v, want FailedPrecondition", err)
+	}
+	subscribes, snapshots := peer.requests()
+	if len(subscribes) != 0 || len(snapshots) != 0 {
+		t.Fatalf("duplicate NodeID opened Subscribe/Snapshot: %d/%d", len(subscribes), len(snapshots))
+	}
+}
+
 type disconnectRecordingMetrics struct {
 	nopMetrics
 	reasons []string

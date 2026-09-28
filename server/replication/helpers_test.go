@@ -102,6 +102,7 @@ type installerTestPeer struct {
 	frames            []*pb.SnapshotResponse
 	selfOrigin        hlc.NodeID
 	originSeq         uint64
+	extraOrigins      []*pb.OriginState
 	gapFirstSubscribe bool
 	firstSubscribeErr error
 	subscribeMutation *pb.Mutation
@@ -124,6 +125,9 @@ func (p *installerTestPeer) PeerStatus(
 				LastSeq: p.originSeq,
 			}}
 		}
+	}
+	for _, origin := range p.extraOrigins {
+		response.Origins = append(response.Origins, proto.Clone(origin).(*pb.OriginState))
 	}
 	return connect.NewResponse(response), nil
 }
