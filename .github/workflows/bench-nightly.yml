@@ -154,7 +154,7 @@ jobs:
         env:
           LANTERN_IMAGE: lantern:local
           LEAK_GATE_ONLY: '1'
-          KEEP_UP: ${{ inputs.diagnostic_scenario == 'broad_rw' && '1' || '0' }}
+          KEEP_UP: ${{ (inputs.diagnostic_scenario == 'broad_rw' || inputs.diagnostic_scenario == 'broad_mutate') && '1' || '0' }}
           DIAGNOSTIC_SCENARIO: ${{ inputs.diagnostic_scenario }}
           LANTERN_BENCH_MUTATION_LOG_CAPACITY: ${{ inputs.diagnostic_log_capacity }}
         run: ./testbed/bench/run.sh "$DIAGNOSTIC_SCENARIO"
@@ -176,7 +176,7 @@ jobs:
             ' "$file"
           done
       - name: Summarize diagnostic replication health
-        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
+        if: always() && (inputs.diagnostic_scenario == 'broad_rw' || inputs.diagnostic_scenario == 'broad_mutate') && steps.diagnostic.outcome != 'skipped'
         run: |
           set -euo pipefail
           for port in 9390 9391 9392; do
@@ -185,7 +185,7 @@ jobs:
               awk '$1 ~ /^lantern_(mutation_log_(entries_total|capacity|fill_ratio|evicted_total)|mutationlog_subscriber_dropped_total|subscribe_(active_streams|dropped_total)|replication_(applied_total|apply_total|dropped_total|lag_seq)|peer_connected|snapshot_replayed_total|anti_entropy_(cycles_total|gaps_found_total))(\{|$)/ {print}'
           done
       - name: Summarize diagnostic peer repairs
-        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
+        if: always() && (inputs.diagnostic_scenario == 'broad_rw' || inputs.diagnostic_scenario == 'broad_mutate') && steps.diagnostic.outcome != 'skipped'
         run: |
           set -euo pipefail
           for replica in lantern-0 lantern-1 lantern-2; do
@@ -195,19 +195,22 @@ jobs:
               -f testbed/bench/compose.override.yml \
               logs --no-color --since 10m "$replica" |
               awk '
-                /replication pump: peer transition|replication pump: peer session error|anti-entropy: Subscribe gapped|anti-entropy: catch-up failed|local mutation log append failed/ {
+                /replication pump: peer transition|replication pump: peer session error|anti-entropy: PeerStatus failed|anti-entropy: peer ahead, catching up|anti-entropy: Subscribe gapped|anti-entropy: catch-up failed|anti-entropy: caught up|local mutation log append failed/ {
                   matches++
-                  lines[matches % 160] = $0
+                  if (matches <= 80) first[matches] = $0
+                  last[matches % 160] = $0
                 }
                 END {
-                  printf "peer_repair_events=%d, showing last %d\n", matches, (matches < 160 ? matches : 160)
-                  first = matches > 160 ? matches - 159 : 1
-                  for (i = first; i <= matches; i++) print lines[i % 160]
+                  first_count = matches < 80 ? matches : 80
+                  last_start = matches > 240 ? matches - 159 : first_count + 1
+                  printf "peer_repair_events=%d, showing first %d and last %d\n", matches, first_count, matches - last_start + 1
+                  for (i = 1; i <= first_count; i++) print first[i]
+                  for (i = last_start; i <= matches; i++) print last[i % 160]
                 }
               '
           done
       - name: Stop diagnostic cluster
-        if: always() && inputs.diagnostic_scenario == 'broad_rw' && steps.diagnostic.outcome != 'skipped'
+        if: always() && (inputs.diagnostic_scenario == 'broad_rw' || inputs.diagnostic_scenario == 'broad_mutate') && steps.diagnostic.outcome != 'skipped'
         run: docker compose --project-name lantern-bench -f deploy/compose/docker-compose.yml -f testbed/bench/compose.override.yml down -v --remove-orphans
       - name: Run four receipt admission and lookup gates (blocking)
         if: inputs.diagnostic_scenario == ''

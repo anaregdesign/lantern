@@ -1561,6 +1561,59 @@ func TestManualQualificationRetainsProducerEvidence(t *testing.T) {
 	}
 }
 
+func TestManualQualificationRetainsFanOutRepairDiagnostics(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "bench-nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type diagnosticStep struct {
+		Name string            `yaml:"name"`
+		If   string            `yaml:"if"`
+		Env  map[string]string `yaml:"env"`
+		Run  string            `yaml:"run"`
+	}
+	var workflow struct {
+		Jobs struct {
+			LeakGate struct {
+				Steps []diagnosticStep `yaml:"steps"`
+			} `yaml:"leak-gate"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	steps := make(map[string]diagnosticStep)
+	for _, step := range workflow.Jobs.LeakGate.Steps {
+		steps[step.Name] = step
+	}
+	for _, name := range []string{
+		"Summarize diagnostic replication health",
+		"Summarize diagnostic peer repairs",
+		"Stop diagnostic cluster",
+	} {
+		step, ok := steps[name]
+		if !ok {
+			t.Errorf("missing diagnostic step %q", name)
+			continue
+		}
+		for _, clause := range []string{"always()", "broad_rw", "broad_mutate", "steps.diagnostic.outcome"} {
+			if !strings.Contains(step.If, clause) {
+				t.Errorf("%s condition missing %q", name, clause)
+			}
+		}
+	}
+	keepUp := steps["Run one diagnostic scenario"].Env["KEEP_UP"]
+	if !strings.Contains(keepUp, "broad_rw") || !strings.Contains(keepUp, "broad_mutate") {
+		t.Errorf("diagnostic KEEP_UP does not retain both fan-out clusters: %q", keepUp)
+	}
+	peerLogs := steps["Summarize diagnostic peer repairs"].Run
+	for _, clause := range []string{"first_count", "matches <= 80", "matches - 159", "peer_repair_events", "replication pump: peer transition"} {
+		if !strings.Contains(peerLogs, clause) {
+			t.Errorf("peer repair summary missing %q", clause)
+		}
+	}
+}
+
 func TestTTLChurnScenarioCausalBudgetContract(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("scenarios", "ttl_churn.yaml"))
 	if err != nil {
