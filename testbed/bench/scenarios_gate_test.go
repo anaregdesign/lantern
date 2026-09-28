@@ -1538,6 +1538,29 @@ func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
 	}
 }
 
+func TestManualQualificationRetainsProducerEvidence(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "bench-nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range []string{
+		`KEEP_OUT: "1"`,
+		"testbed/bench/out/broad_rw/",
+		"testbed/bench/out/broad_mutate/",
+	} {
+		if !strings.Contains(string(workflow), contract) {
+			t.Errorf("manual qualification does not retain failed producer evidence %q", contract)
+		}
+	}
+	releaseScript, err := os.ReadFile("release.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(releaseScript), `if [[ "${KEEP_OUT:-0}" != "1" ]]; then`) {
+		t.Error("release sweep no longer honors KEEP_OUT for scenario evidence")
+	}
+}
+
 func TestTTLChurnScenarioCausalBudgetContract(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("scenarios", "ttl_churn.yaml"))
 	if err != nil {

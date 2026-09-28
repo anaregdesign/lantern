@@ -19,9 +19,10 @@
 //     capped at BackoffMax.
 //
 // Self-echo suppression: a graph-only receiver with proven committed local
-// history asks the peer to omit its origin. Any self-origin frame received
-// beyond the local committed prefix requires Snapshot repair; already-owned
-// frames are dropped. Receipt-WAL streams retain the full origin history.
+// history asks the peer to omit its origin. A cold stream reopens once after
+// its first committed self-echo so subsequent frames are filtered at source.
+// Any self-origin frame beyond the local committed prefix requires Snapshot
+// repair. Receipt-WAL streams retain the full origin history.
 //
 // LANTERN_PEERS="" (the default) yields a no-op pump: Run returns
 // immediately and no goroutines are spawned. This is single-instance
@@ -1093,6 +1094,10 @@ func (p *Pump) runPeer(ctx context.Context, addr string) {
 		if ctx.Err() != nil {
 			return
 		}
+		if errors.Is(err, errSelfEchoUpgrade) {
+			backoff = p.cfg.BackoffMin
+			continue
+		}
 		if p.tracker.lastEvent(addr).After(lastEvent) {
 			backoff = p.cfg.BackoffMin
 		}
@@ -1257,6 +1262,13 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			return nil
 		}
 	}
+	if errors.Is(err, errSelfEchoUpgrade) {
+		p.cfg.Metrics.OnPumpDisconnect(addr, "self_echo_upgrade")
+		log.Info("replication pump: peer transition",
+			slog.String("transition", "disconnect"),
+			slog.String("reason", "self_echo_upgrade"))
+		return err
+	}
 	return disconnect(err)
 }
 
@@ -1266,6 +1278,8 @@ type peerSubscribeError struct{ err error }
 
 func (e *peerSubscribeError) Error() string { return e.err.Error() }
 func (e *peerSubscribeError) Unwrap() error { return e.err }
+
+var errSelfEchoUpgrade = errors.New("reopen Subscribe to filter committed self-origin frames")
 
 type selfEchoResumePlan struct {
 	skip          bool
@@ -1353,12 +1367,18 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 			continue
 		}
 		if p.isSelfEcho(mu) {
-			if local, ok := p.apply.(interface{ LocalSeq(hlc.NodeID) uint64 }); ok &&
-				mu.GetSeq() > local.LocalSeq(p.cfg.NodeID) {
+			local, hasLocalSeq := p.apply.(interface{ LocalSeq(hlc.NodeID) uint64 })
+			if hasLocalSeq && mu.GetSeq() > local.LocalSeq(p.cfg.NodeID) {
 				return connect.NewError(connect.CodeFailedPrecondition,
 					fmt.Errorf("gapped: peer sent uncommitted local-origin seq %d; Snapshot repair required", mu.GetSeq()))
 			}
 			p.cfg.Metrics.OnPumpDropSelfEcho(addr)
+			if !skipSelf && hasLocalSeq &&
+				p.installer.RequiredFormat() == pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
+				if safe, ok := p.apply.(selfEchoSkipProvider); ok && safe.CanSkipSelfEcho(p.cfg.NodeID) {
+					return errSelfEchoUpgrade
+				}
+			}
 			continue
 		}
 		if err := p.apply.ApplyMutation(ctx, mu); err != nil {

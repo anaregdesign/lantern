@@ -212,7 +212,7 @@ func (p *installerTestPeer) requests() ([]*pb.SubscribeRequest, []*pb.SnapshotRe
 	return subscribes, snapshots
 }
 
-func startInstallerTestPeer(t *testing.T, peer *installerTestPeer) *httptest.Server {
+func startInstallerTestPeer(t *testing.T, peer graphv1connect.LanternReplicationServiceHandler) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
