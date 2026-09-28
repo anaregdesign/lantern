@@ -73,7 +73,11 @@ func TestRunArgs_ContributionDeleteAndExplicitAdd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close Lantern client: %v", err)
+		}
+	}()
 	var output bytes.Buffer
 	svc := NewCLIService(conn, WithOutput(&output))
 	id := strings.Repeat("ab", client.ContribIDSize)
