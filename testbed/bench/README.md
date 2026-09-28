@@ -57,9 +57,10 @@ the four receipt scenarios. Both modes verify the exact checkout and image,
 require a fresh runner without existing containers, and wait up to three minutes
 for a low-load host before traffic begins. Specify a scenario stem to diagnose
 one case; the workflow then summarizes bounded ghz error reasons. For
-`broad_rw` it also prints the last 160 peer-repair lifecycle events per replica
-(including Subscribe gap reasons and Snapshot failures) before teardown; no
-request payloads are uploaded. The full manual sweep retains the generated
+`broad_rw` and `broad_mutate` it also prints replication health and the first
+80 plus last 160 peer-repair lifecycle events per replica (including Subscribe
+gap reasons and Snapshot failures) before teardown; no request payloads are
+uploaded. The full manual sweep retains the generated
 `broad_rw` and `broad_mutate` ghz/runtime summaries for post-failure error
 attribution without changing scenario traffic, gate thresholds, or the
 per-scenario Compose teardown. A diagnostic is not a substitute for the full
