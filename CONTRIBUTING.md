@@ -489,10 +489,12 @@ number rather than force-moving the tag.
   + cosign). The MCP server only imports `pb/` and `sdks/go/`, so a `sdks/go` bump is the
   only upstream pin that forces a re-tag.
 - `admin/vX.Y.Z` triggers `admin-publish.yml` (admin gates → multi-arch + cosign) →
-  `ghcr.io/anaregdesign/lantern-admin`. The admin SPA's only cross-module build-time
-  input is the `proto/` sources (consumed by `bun run codegen`), so a `pb/` bump is the
-  only upstream pin that forces a re-tag. The container hosts the SPA on Caddy and does
-  not reverse-proxy the Lantern listener — the browser calls the gateway directly, so the
+  `ghcr.io/anaregdesign/lantern-admin`. The admin SPA links the local
+  `sdks/node/` package through `file:../sdks/node`; the release workflow builds
+  that SDK from the tagged tree before building the SPA. A `pb/` change that
+  requires a new admin image must first flow through a published
+  `sdks/node/v*` release. The container hosts the SPA on Caddy and does not
+  reverse-proxy the Lantern listener — the browser calls the gateway directly, so the
   server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
 - `sdks/node/vX.Y.Z` triggers the two-runtime real-wire `node-sdk.yml` gate and npm
   trusted publishing with provenance. Before creating an exact-title GitHub Release,

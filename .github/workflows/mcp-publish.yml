@@ -137,7 +137,9 @@ jobs:
             echo "docker pull ${IMAGE}:${version}"
             echo '```'
             echo
-            echo "Configure your MCP client to launch \`docker run --rm -i -e LANTERN_ADDR=<host>:6380 ${IMAGE}:${version}\` and the server will expose six tools (remember_fact, recall_fact, forget, list_under, remember_relation, recall_related) for LLM agents to interact with Lantern's decaying-memory graph."
+            echo "Run the container on a trusted network with \`LANTERN_ADDR\` pointing to a reachable Lantern server. Connect MCP clients to its Streamable HTTP endpoint at \`http://localhost:6390/mcp\` after publishing port 6390. The MCP endpoint itself is unauthenticated; see [mcp/README.md](https://github.com/${REPO}/blob/${TAG}/mcp/README.md) for deployment guidance."
+            echo
+            echo "The ten working-context tools are \`announce\`, \`list_agents\`, \`track\`, \`whats_happening\`, \`claim\`, \`release\`, \`list_claims\`, \`post_note\`, \`context_stats\`, and \`ping\`. The former \`remember_*\` memory profile is not part of this release."
           } > "$notes_file"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --notes-file "$notes_file" --verify-tag
