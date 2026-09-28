@@ -132,6 +132,9 @@ jobs:
           COMMIT: ${{ github.sha }}
           RUNNER: linux/amd64 (ubuntu-latest)
           LANTERN_IMAGE: lantern:local
+          # Retain the small ghz/runtime summaries for failed producer
+          # attribution; the release script still tears down each cluster.
+          KEEP_OUT: "1"
           # Leak-gate-only: skip the pprof + Prometheus captures the leak verdict
           # never reads (they dominate per-scenario wall-time). This is what lets
           # the un-truncated sweep finish inside timeout-minutes. The advisory
@@ -230,6 +233,7 @@ jobs:
           path: |
             bench-report.md
             testbed/bench/out/broad_rw/
+            testbed/bench/out/broad_mutate/
             testbed/bench/out/edge_contrib_idempotent/
             testbed/bench/out/receipt_admission_lookup/
             testbed/bench/out/receipt_vertex_put_admission_lookup/

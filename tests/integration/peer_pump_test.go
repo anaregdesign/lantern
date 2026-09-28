@@ -1011,6 +1011,87 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 	waitForSearchConvergence(t, ctx, "from", nil, a.raw, b.raw, c.raw)
 }
 
+type coldSelfEchoIntegrationMetrics struct {
+	upgrades  chan struct{}
+	echoes    atomic.Int32
+	snapshots atomic.Int32
+}
+
+type coldStreamStartMetrics struct{ started chan struct{} }
+
+func (m *coldStreamStartMetrics) OnSubscribeStarted() {
+	select {
+	case m.started <- struct{}{}:
+	default:
+	}
+}
+func (*coldStreamStartMetrics) OnSubscribeEnded()         {}
+func (*coldStreamStartMetrics) OnSubscribeDropped(string) {}
+
+func (*coldSelfEchoIntegrationMetrics) OnPumpConnect(string)        {}
+func (*coldSelfEchoIntegrationMetrics) OnPumpApply(string)          {}
+func (*coldSelfEchoIntegrationMetrics) OnSearchConfig(string, bool) {}
+func (m *coldSelfEchoIntegrationMetrics) OnPumpDropSelfEcho(string) { m.echoes.Add(1) }
+func (m *coldSelfEchoIntegrationMetrics) OnPumpDisconnect(_ string, reason string) {
+	if reason == "self_echo_upgrade" {
+		select {
+		case m.upgrades <- struct{}{}:
+		default:
+		}
+	}
+}
+func (m *coldSelfEchoIntegrationMetrics) OnPumpSnapshotReplayed(string, uint64, uint64, time.Duration) {
+	m.snapshots.Add(1)
+}
+
+func TestPeerPumpColdSelfEchoReopensFilteredStreamOverH2C(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	aStreams := &coldStreamStartMetrics{started: make(chan struct{}, 1)}
+	bStreams := &coldStreamStartMetrics{started: make(chan struct{}, 1)}
+	a := newPumpNodeWithWALAndMetrics(t, hlc.NodeID{0x74}, 1024, false, nil, aStreams)
+	b := newPumpNodeWithWALAndMetrics(t, hlc.NodeID{0x75}, 1024, false, nil, bStreams)
+	metrics := &coldSelfEchoIntegrationMetrics{upgrades: make(chan struct{}, 1)}
+	a.startPumpWithMetrics(ctx, t, []string{b.url}, metrics)
+	b.startPump(ctx, t, []string{a.url})
+
+	for _, started := range []<-chan struct{}{aStreams.started, bStreams.started} {
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatal("cold bidirectional Subscribe streams were not established")
+		}
+	}
+	if _, err := a.sdk.PutVertex(ctx, "cold-own-first", "a1", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForVertex(t, b.cache, "cold-own-first", 3*time.Second) {
+		t.Fatal("B did not receive A's first write")
+	}
+	select {
+	case <-metrics.upgrades:
+	case <-ctx.Done():
+		t.Fatal("A did not reopen after its committed self-echo")
+	}
+	if metrics.echoes.Load() == 0 {
+		t.Fatal("A upgraded without receiving a self-echo")
+	}
+
+	if _, err := a.sdk.PutVertex(ctx, "cold-own-second", "a2", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.sdk.PutVertex(ctx, "cold-remote", "b1", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForVertex(t, b.cache, "cold-own-second", 3*time.Second) ||
+		!waitForVertex(t, a.cache, "cold-remote", 3*time.Second) {
+		t.Fatal("filtered stream did not preserve bidirectional writes")
+	}
+	if metrics.snapshots.Load() != 0 {
+		t.Fatal("committed self-echo incorrectly forced Snapshot repair")
+	}
+}
+
 func TestPeerPumpFiltersSelfEchoAndRepairsOwnHistoryAfterRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

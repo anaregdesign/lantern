@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -248,6 +249,161 @@ func TestPumpFiltersProvenGraphOnlySelfEchoAtSource(t *testing.T) {
 			}
 			if state.cursor[key] != tc.localNext {
 				t.Fatalf("committed local cursor was mutated: %v", state.cursor)
+			}
+		})
+	}
+}
+
+type coldSelfEchoState struct {
+	origin      hlc.NodeID
+	allowFilter bool
+	seq         atomic.Uint64
+	applied     atomic.Int32
+}
+
+func (s *coldSelfEchoState) SubscribeResumeCursor() (map[string]uint64, error) {
+	return map[string]uint64{hex.EncodeToString(s.origin[:]): s.seq.Load() + 1}, nil
+}
+
+func (s *coldSelfEchoState) LocalSeq(origin hlc.NodeID) uint64 {
+	if origin == s.origin {
+		return s.seq.Load()
+	}
+	return 0
+}
+
+func (s *coldSelfEchoState) CanSkipSelfEcho(origin hlc.NodeID) bool {
+	return s.allowFilter && origin == s.origin && s.seq.Load() != 0
+}
+
+func (s *coldSelfEchoState) ApplyMutation(context.Context, *pb.Mutation) error {
+	s.applied.Add(1)
+	return nil
+}
+
+type coldSelfEchoPeer struct {
+	graphv1connect.UnimplementedLanternReplicationServiceHandler
+	state    *coldSelfEchoState
+	remote   hlc.NodeID
+	format   pb.SnapshotFormat
+	mu       sync.Mutex
+	requests []*pb.SubscribeRequest
+	snapshot atomic.Int32
+}
+
+func (p *coldSelfEchoPeer) PeerStatus(context.Context, *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
+	response := &pb.PeerStatusResponse{
+		SelfOrigin:             p.remote[:],
+		RequiredSnapshotFormat: p.format,
+	}
+	if seq := p.state.seq.Load(); seq != 0 {
+		response.Origins = []*pb.OriginState{{Origin: p.state.origin[:], LastSeq: seq}}
+	}
+	return connect.NewResponse(response), nil
+}
+
+func (p *coldSelfEchoPeer) Subscribe(
+	_ context.Context, req *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse],
+) error {
+	p.mu.Lock()
+	p.requests = append(p.requests, proto.Clone(req.Msg).(*pb.SubscribeRequest))
+	attempt := len(p.requests)
+	p.mu.Unlock()
+	if attempt == 1 {
+		p.state.seq.Store(1)
+		return stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{
+			Mutation: &pb.Mutation{Origin: p.state.origin[:], Seq: 1},
+		}})
+	}
+	return stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{
+		Mutation: &pb.Mutation{Origin: p.remote[:], Seq: 1},
+	}})
+}
+
+func (p *coldSelfEchoPeer) Snapshot(context.Context, *connect.Request[pb.SnapshotRequest], *connect.ServerStream[pb.SnapshotResponse]) error {
+	p.snapshot.Add(1)
+	return connect.NewError(connect.CodeInternal, errors.New("cold self-echo must not trigger Snapshot"))
+}
+
+type coldSelfEchoMetrics struct {
+	nopMetrics
+	mu          sync.Mutex
+	disconnects []string
+	dropped     atomic.Int32
+}
+
+func (m *coldSelfEchoMetrics) OnPumpDisconnect(_ string, reason string) {
+	m.mu.Lock()
+	m.disconnects = append(m.disconnects, reason)
+	m.mu.Unlock()
+}
+
+func (m *coldSelfEchoMetrics) OnPumpDropSelfEcho(string) { m.dropped.Add(1) }
+
+func TestPumpColdSelfEchoUpgradesSourceFilterOnlyWhenSafe(t *testing.T) {
+	own := hlc.NodeID{0x71}
+	remote := hlc.NodeID{0x72}
+	key := hex.EncodeToString(own[:])
+	for _, tc := range []struct {
+		name        string
+		allowFilter bool
+		format      pb.SnapshotFormat
+		wantCursor  uint64
+		wantReasons []string
+		wantApplied int32
+	}{
+		{"graph only", true, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, math.MaxUint64, []string{"self_echo_upgrade", "clean"}, 1},
+		{"unproven prefix", false, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, 0, []string{"clean"}, 0},
+		{"receipt continuity", true, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT, 0, []string{"clean"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &coldSelfEchoState{origin: own, allowFilter: tc.allowFilter}
+			peer := &coldSelfEchoPeer{state: state, remote: remote, format: tc.format}
+			srv := startInstallerTestPeer(t, peer)
+			metrics := &coldSelfEchoMetrics{}
+			cfg := Config{
+				NodeID: own, HTTPClient: defaultH2CClient(), Metrics: metrics,
+				BackoffMin: 5 * time.Second,
+			}
+			if tc.format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
+				cfg.SnapshotInstaller = &scriptedSnapshotInstaller{required: tc.format}
+			}
+			pump := NewPump(cfg, state, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				pump.runPeer(ctx, srv.URL)
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("Pump did not finish; source-filter upgrade may have backed off")
+			}
+			peer.mu.Lock()
+			requests := append([]*pb.SubscribeRequest(nil), peer.requests...)
+			peer.mu.Unlock()
+			if len(requests) != len(tc.wantReasons) || len(requests) == 0 {
+				t.Fatalf("Subscribe attempts = %d, want %d", len(requests), len(tc.wantReasons))
+			}
+			if requests[0].GetFromSeqPerOrigin()[key] != 1 {
+				t.Fatalf("initial cursor = %v, want 1", requests[0].GetFromSeqPerOrigin())
+			}
+			if tc.wantCursor != 0 && requests[1].GetFromSeqPerOrigin()[key] != tc.wantCursor {
+				t.Fatalf("reopened cursor = %v, want source-side filter", requests[1].GetFromSeqPerOrigin())
+			}
+			if tc.format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT && !requests[0].GetAcceptReceiptEnvelopes() {
+				t.Fatal("receipt stream did not opt in to receipt envelopes")
+			}
+			metrics.mu.Lock()
+			reasons := append([]string(nil), metrics.disconnects...)
+			metrics.mu.Unlock()
+			if !slices.Equal(reasons, tc.wantReasons) || metrics.dropped.Load() != 1 ||
+				state.applied.Load() != tc.wantApplied || peer.snapshot.Load() != 0 {
+				t.Fatalf("disconnect=%v selfEcho=%d applied=%d snapshots=%d, want %v/1/%d/0",
+					reasons, metrics.dropped.Load(), state.applied.Load(), peer.snapshot.Load(),
+					tc.wantReasons, tc.wantApplied)
 			}
 		})
 	}

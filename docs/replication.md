@@ -554,8 +554,12 @@ header-derived origin and same-responder local cursors. In graph-only mode,
 if PeerStatus proves the peer's local-origin watermark does not exceed the
 receiver's nonempty committed prefix and the receiver has no publication
 fault, the Pump requests that its own origin be filtered from that Subscribe
-stream. Receipt-WAL mode retains the full stream. The input-side self-echo guard
-remains defence-in-depth; if a peer instead reports local-origin history
+stream. A cold session started before the first local write reopens when it
+receives a committed self-echo, so the next PeerStatus check can prove the
+prefix and enable source-side filtering without leaving an unfiltered stream
+open indefinitely. This planned `self_echo_upgrade` reconnect is not a
+Snapshot repair. Receipt-WAL mode retains the full stream. The input-side
+self-echo guard remains defence-in-depth; if a peer reports local-origin history
 ahead of a restarted receiver, or sends such a frame after status, the Pump
 repairs it by verified Snapshot, not by discarding those frames. Equal
 peer/local NodeIDs fail closed.
