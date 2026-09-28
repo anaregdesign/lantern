@@ -306,6 +306,7 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, capability) {
 			t.Fatalf("enabled capability = (%+v, %v), want %+v", got, err, capability)
 		}
+
 		fake.capability = &pb.GetReceiptCapabilityResponse{}
 		got, err = l.GetReceiptCapability(context.Background())
 		if err != nil || !reflect.DeepEqual(got, ReceiptCapability{}) {
@@ -521,4 +522,22 @@ func TestReceiptCapabilityAndStatus(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestReceiptStatusDecodesContributionDeleteFalseAsPresent(t *testing.T) {
+	capability := testReceiptCapability(0x52)
+	contextValue := testReceiptContextForMutation(t, capability, ReceiptMutationDeleteEdgeContribution, 1, 0x62)
+	id := contextValue.OperationIDs[0]
+	status := testConfirmedEdgeDeleteStatus(id, contextValue.GroupID, 0, 1, false)
+	status.Receipt.OriginalResult = &pb.ReceiptResult{
+		Result: &pb.ReceiptResult_DeleteEdgeContributionExisted{DeleteEdgeContributionExisted: false},
+	}
+	got, err := receiptStatusFromProto(id, status)
+	if err != nil || got.State != ReceiptConfirmed || got.Receipt == nil {
+		t.Fatalf("confirmed false status = (%+v, %v)", got, err)
+	}
+	original, ok := got.Receipt.OriginalResult.(ReceiptDeleteEdgeContributionResult)
+	if !ok || original.Existed || original.MutationKind() != ReceiptMutationDeleteEdgeContribution {
+		t.Fatalf("original false result = %#v", got.Receipt.OriginalResult)
+	}
 }

@@ -147,7 +147,7 @@ Semantics:
 | `WithHTTPClient(*http.Client)` | Override the default h2c client (for TLS, custom timeouts, OpenTelemetry transport wrapping, etc.). |
 | `WithConnectClientOption(...connect.ClientOption)` | Escape hatch for Connect-Go client options — interceptors, codec selection, compression, `connect.WithGRPC()`, `otelconnect.NewInterceptor()`. |
 | `WithDefaultTimeout(time.Duration)` | Per-call timeout applied when the caller's context has no deadline. `0` (default) disables. |
-| `WithBatchChunkSize(int)` | Override the chunk size used by `PutVertices`, `AddEdges`, `PutEdges`, `DeleteVertices`, `DeleteEdges`, `GetVertices`, `GetEdges`. Default `1000`. |
+| `WithBatchChunkSize(int)` | Override the chunk size used by `PutVertices`, `AddEdges`, `PutEdges`, `DeleteVertices`, `DeleteEdges`, `DeleteEdgeContributions`, `GetVertices`, `GetEdges`. Default `1000`. |
 
 Compression example:
 
@@ -234,8 +234,8 @@ design discussion.
 | Category | Singular | Plural |
 | --- | --- | --- |
 | Read   | `GetVertex` / `GetEdge` | `GetVertices` / `GetEdges` |
-| Write  | `PutVertex` / `PutVertexAt` / `PutVertexIfAbsent` / `PutVertexIfAbsentAt` / `AddEdge` / `AddEdgeAt` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `PutVerticesIfAbsent` / `AddEdges` / `PutEdges` |
-| Delete | `DeleteVertex` / `DeleteEdge` | `DeleteVertices` / `DeleteEdges` |
+| Write  | `PutVertex` / `PutVertexAt` / `PutVertexIfAbsent` / `PutVertexIfAbsentAt` / `AddEdge` / `AddEdgeAt` / `AddEdgeWithID` / `PutEdge` / `PutEdgeAt` | `PutVertices` / `PutVerticesIfAbsent` / `AddEdges` / `AddEdgesWithIDs` / `PutEdges` |
+| Delete | `DeleteVertex` / `DeleteEdge` / `DeleteEdgeContribution` | `DeleteVertices` / `DeleteEdges` / `DeleteEdgeContributions` |
 | Scan   | — | `ScanVertices`, `ScanVerticesAll`, `ScanVertexKeys`, `ScanVertexKeysAll`, `ScanEdges`, `ScanEdgesAll`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix`, `DeleteEdgesByPrefix` |
 | Search | `SearchVertices`, `SearchVerticesPage` | `SearchVerticesIter` |
 | Graph  | `Illuminate` | — |
@@ -267,22 +267,56 @@ iteration to release the server subscriber. SDK retries are disabled for these
 methods; callers own the durable cursor across reconnects and endpoint
 failover. Lantern currently has one deployment-wide graph security domain:
 identity prefixes are not tenant access controls.
+`IdentityOperationDeleteEdgeContribution` carries only an Edge `(tail, head)`
+cache invalidation; the stream never reveals which Add row was removed.
 
 `AddEdge` is **additive** (multiple calls add weight, each contribution
 carries its own TTL); `PutEdge` is **idempotent replace** (single weight,
 single TTL). See the in-line discussion in `example/main.go` for the
 semantic difference. A contribution ID deduplicates only while its graph
 contribution is retained; it does not recover the original effective weight
-after Delete. The checked-in Go SDK now offers separate opt-in
+after Delete. To remove just one Add row without disturbing other Adds or
+the Put base, persist a caller-known nonzero, 24-byte `ContribID` before Add,
+then use `DeleteEdgeContribution(ctx, tail, head, id)` or
+`DeleteEdgeContributions(ctx, []EdgeContributionRef{...})`. A receipt
+`OperationID` is **not** a `ContribID`: it is 49 bytes and cannot address an
+Add row.
+
+```go
+id, err := c.NewContribID()
+if err != nil { return err }
+// Persist id and the edge key before sending the Add.
+_, err = c.AddEdgeWithID(ctx, "a", "b", 3, 0, id)
+if err != nil { return err }
+existed, err := c.DeleteEdgeContribution(ctx, "a", "b", id)
+```
+
+`AddEdgesWithIDs` takes request-index-aligned IDs, while
+`DeleteEdgeContributions` returns an index-aligned `[]bool` and a true-result
+count; duplicate triples can report `[true, false]`. On chunk failure,
+`*BatchError.Written` and the results describe only the observed prefix.
+Do not automatically retry an ambiguous receipt-less Delete: a committed
+first attempt may return false if repeated. The checked-in Go SDK offers
+separate opt-in
 `PutVerticesWithReceipt`, `DeleteVerticesWithReceipt`,
-`DeleteEdgesWithReceipt`, and `AddEdgesWithReceipt` families, plus
+`DeleteEdgesWithReceipt`, `AddEdgesWithReceipt`, and
+`DeleteEdgeContributionsWithReceipt` families (plus singular facades), as well as
 `GetReceiptCapability`, typed `GetReceiptStatus`/`GetReceiptStatuses`, and
 `NewReceiptContext`. Persist the context, explicit Add contribution IDs,
 and exact intent before the first send; retry only after proving continuity
 with the same endpoint and generation. The existing methods remain
 receipt-less. Independently published `sdks/go/v0.25.1` pins `pb/v0.13.1`;
-both modules are available from the public Go proxy, so external consumers
-can resolve these opt-in APIs through that SDK release.
+its existing receipt families are available from the public Go proxy.
+Selective contribution Delete and `AddEdgeWithID` are source-only until a
+later Go SDK release. Confirmed receipt status for selective Delete reports
+the original `Existed` value, including false.
+Release the regenerated `pb/` module before tagging the next Go SDK, then
+pin the published pb tag in `sdks/go/go.mod`; the local workspace replacement
+does not make this new wire surface available to external consumers.
+Selective Delete fences the ID against delayed Add only while its D4
+tombstone is retained; use a **fresh ID** for each later Add rather than
+reusing the deleted one. A folded graph-only backup omits per-ID tombstones,
+so restoring it cannot prove this anti-resurrection bound across recovery.
 
 **Retry safety (#1468):** In v0.25.1, receipt-less Add and exact/prefix
 Delete take one attempt even when `WithRetry` or `NewLanternFailover` is

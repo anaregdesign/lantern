@@ -83,6 +83,50 @@ if (endpoint && token) {
           addStatus.state === "confirmed" ? addStatus.receipt.originalResult : addStatus.state,
         ).toEqual({ kind: "addEdge", effectiveWeight: 2 });
 
+        const selectedEdge = { tail: key, head: `${key}:selective` };
+        const selectedId = randomContribId();
+        await client.putEdge({ ...selectedEdge, weight: 2 });
+        await client.addEdgeWithReceipt(
+          { ...selectedEdge, weight: 1, contribId: selectedId },
+          mintReceiptOperationContext(capability, 1),
+        );
+        const selectedContext = mintReceiptOperationContext(capability, 2);
+        const selected = await client.deleteEdgeContributionsWithReceipt(
+          [
+            { ...selectedEdge, contribId: selectedId },
+            { ...selectedEdge, contribId: selectedId },
+          ],
+          selectedContext,
+        );
+        expect(selected.results.map((result) => result.existed)).toEqual([true, false]);
+        expect(selected.deleted).toBe(1);
+        expect((await client.getEdge(selectedEdge.tail, selectedEdge.head)).weight).toBe(2);
+        const selectedStatuses = await client.getReceiptStatuses(selectedContext.operationIds);
+        expect(
+          selectedStatuses.map((status) =>
+            status.state === "confirmed" ? status.receipt.originalResult : status.state,
+          ),
+        ).toEqual([
+          { kind: "deleteEdgeContribution", existed: true },
+          { kind: "deleteEdgeContribution", existed: false },
+        ]);
+        const plainId = randomContribId();
+        await client.addEdge({ ...selectedEdge, weight: 3, contribId: plainId });
+        expect(
+          await client.deleteEdgeContribution(selectedEdge.tail, selectedEdge.head, plainId),
+        ).toBe(true);
+        expect(
+          await client.deleteEdgeContribution(selectedEdge.tail, selectedEdge.head, plainId),
+        ).toBe(false);
+        expect((await client.getEdge(selectedEdge.tail, selectedEdge.head)).weight).toBe(2);
+        await expect(
+          client.deleteEdgeContribution(
+            selectedEdge.tail,
+            selectedEdge.head,
+            new Uint8Array(49).fill(1),
+          ),
+        ).rejects.toBeInstanceOf(InvalidArgumentError);
+
         const invalidContribContext = mintReceiptOperationContext(capability, 1);
         await expect(
           client.addEdgeWithReceipt(
@@ -148,18 +192,32 @@ if (endpoint && token) {
         ).toEqual({ kind: "addEdge", effectiveWeight: Number.NEGATIVE_INFINITY });
 
         let receiptOnly = false;
+        let selectiveInvalidation = false;
         for (let count = 0; count < 10_000; count++) {
           const next = await nextWithin(stream);
-          if (next.done) throw new Error("identity stream ended before receipt-only frame");
+          if (next.done) throw new Error("identity stream ended before selective Delete frame");
           if (next.value?.kind === "chunk" && next.value.operation === "receiptOnly") {
             expect(next.value.vertexKeys).toEqual([]);
             expect(next.value.edgeKeys).toEqual([]);
             expect(next.value.isLast).toBe(true);
             receiptOnly = true;
+          }
+          if (next.value?.kind === "chunk" && next.value.operation === "deleteEdgeContribution") {
+            expect(next.value.vertexKeys).toEqual([]);
+            if (
+              next.value.edgeKeys.some(
+                (edge) => edge.tail === selectedEdge.tail && edge.head === selectedEdge.head,
+              )
+            ) {
+              selectiveInvalidation = true;
+            }
+          }
+          if (receiptOnly && selectiveInvalidation) {
             break;
           }
         }
         expect(receiptOnly).toBe(true);
+        expect(selectiveInvalidation).toBe(true);
       } finally {
         await stream.return?.();
       }

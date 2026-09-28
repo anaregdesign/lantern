@@ -36,6 +36,36 @@ func cloneSnapshot(state Snapshot) Snapshot {
 	return state
 }
 
+func TestSnapshotEdgeContributionDeleteOriginalResultPresence(t *testing.T) {
+	s := testStore(t, 1, 1000)
+	item := testIntent(t, 1, testStart, GroupID{1}, 0, 1)
+	item.Kind = DeleteEdgeContribution
+	commitTestBatch(t, s, testStart, []Intent{item}, [][]byte{{0}})
+	state, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewFromSnapshot(Config{
+		Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 1, MaxBytes: 1000,
+	}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, receipt, err := restored.Lookup(item.ID, testStart)
+	if err != nil || status != Confirmed || !bytes.Equal(receipt.Result, []byte{0}) {
+		t.Fatalf("restored original false result = %v, %+v, %v", status, receipt, err)
+	}
+	for _, bad := range [][]byte{nil, {}, {2}} {
+		invalid := cloneSnapshot(state)
+		invalid.Receipts[0].Result = bad
+		if _, err := NewFromSnapshot(Config{
+			Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 1, MaxBytes: 1000,
+		}, invalid); !errors.Is(err, ErrInvalidSnapshot) {
+			t.Fatalf("restored absent/invalid original result %v = %v", bad, err)
+		}
+	}
+}
+
 func TestSnapshotRoundTripPreservesResultsIndexesAndClock(t *testing.T) {
 	config, state, first, second := snapshotFixture(t)
 	if state.Version != snapshotVersion || state.Epoch != config.Epoch ||

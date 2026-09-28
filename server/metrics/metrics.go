@@ -397,13 +397,16 @@ var (
 		"ReplicatedPutEdges",
 		"DeleteEdge",
 		"DeleteEdges",
+		"DeleteEdgeContribution",
+		"DeleteEdgeContributions",
+		"replicated_receipt_edge_contribution_delete",
 		"DeleteEdgesByPrefix",
 	}
 	// validationRejectReasons is the bounded reason set bumped on
 	// lantern_validation_rejected_total. Sources:
 	//   - ValidationInterceptor (server/provider/extra.go): empty_key,
 	//     key_too_long, empty_batch, batch_too_large, nil_item,
-	//     bad_weight, step_too_large, k_too_large
+	//     bad_weight, bad_contrib_id, step_too_large, k_too_large
 	//   - service.LanternService.validateExpiration: bad_ttl
 	//   - service prefix-scan cursor decode: bad_cursor
 	//   - service prefix-scan order-bound cursor check: order_mismatch
@@ -416,6 +419,7 @@ var (
 		"batch_too_large",
 		"nil_item",
 		"bad_weight",
+		"bad_contrib_id",
 		"step_too_large",
 		"k_too_large",
 		"bad_ttl",
@@ -766,7 +770,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}),
 		validationRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "lantern_validation_rejected_total",
-			Help: "Total requests rejected by server-side input validation, partitioned by reason (empty_key, key_too_long, empty_batch, batch_too_large, nil_item, bad_weight, step_too_large, k_too_large, bad_ttl, bad_cursor, capacity, empty_edge_prefix, order_mismatch, replication_frame). Counted before the handler runs or during service-layer admission.",
+			Help: "Total requests rejected by server-side input validation, partitioned by reason (empty_key, key_too_long, empty_batch, batch_too_large, nil_item, bad_weight, bad_contrib_id, step_too_large, k_too_large, bad_ttl, bad_cursor, capacity, empty_edge_prefix, order_mismatch, replication_frame). Counted before the handler runs or during service-layer admission.",
 		}, []string{"reason"}),
 		capacityLimit: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "lantern_capacity_limit",

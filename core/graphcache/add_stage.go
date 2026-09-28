@@ -42,7 +42,9 @@ func (c *GraphCache[S, T]) planStagedEdgeAddLocked(
 
 	for i, item := range items {
 		key := EdgeKey[S]{Tail: item.Tail, Head: item.Head}
-		if !c.edgeAddWriteAllowedLocked(item.Tail, item.Head, ts) {
+		if !c.edgeAddWriteAllowedLocked(item.Tail, item.Head, ts) ||
+			(!item.ContribID.IsZero() && c.edgeContributionTombstoneLockedAt(
+				EdgeContributionKey[S]{Tail: item.Tail, Head: item.Head, ContribID: item.ContribID}, now)) {
 			if cached, ok := rejectedEffective[key]; ok {
 				effective[i] = cached
 				continue

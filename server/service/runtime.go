@@ -622,6 +622,7 @@ func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
 		if primary.receiptStore != nil || primary.receiptRetiredCatalog != nil ||
 			primary.receiptEdgeAddCoordinator != nil ||
 			primary.receiptEdgeDeleteCoordinator != nil ||
+			primary.receiptEdgeContributionDeleteCoordinator != nil ||
 			primary.receiptVertexPutCoordinator != nil ||
 			primary.receiptVertexDeleteCoordinator != nil {
 			return errors.New("service: graph-only runtime installed receipt state")
@@ -671,6 +672,11 @@ func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
 		if coordinator == nil || coordinator.service != primary || coordinator.cache != r.graph ||
 			coordinator.store != r.receipt.store || coordinator.retired != r.receipt.retired {
 			return errors.New("service: durable receipt follower coordinator is not installed from the serving runtime")
+		}
+		contributionDelete := primary.receiptEdgeContributionDeleteCoordinator
+		if contributionDelete == nil || contributionDelete.service != primary ||
+			contributionDelete.cache != r.graph || contributionDelete.store != r.receipt.store {
+			return errors.New("service: durable receipt contribution Delete coordinator is not installed from the serving runtime")
 		}
 		edgeAdd := primary.receiptEdgeAddCoordinator
 		if edgeAdd == nil || edgeAdd.service != primary || edgeAdd.cache != r.graph ||

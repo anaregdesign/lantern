@@ -192,6 +192,24 @@ abstract final class LanternService {
     graphv1graph.DeleteEdgesResponse.new,
   );
 
+  /// DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+  /// It is a thin facade over DeleteEdgeContributions.
+  static const deleteEdgeContribution = connect.Spec(
+    '/$name/DeleteEdgeContribution',
+    connect.StreamType.unary,
+    graphv1graph.DeleteEdgeContributionRequest.new,
+    graphv1graph.DeleteEdgeContributionResponse.new,
+  );
+
+  /// DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+  /// missing rows still install an absolute D4 remove-wins tombstone.
+  static const deleteEdgeContributions = connect.Spec(
+    '/$name/DeleteEdgeContributions',
+    connect.StreamType.unary,
+    graphv1graph.DeleteEdgeContributionsRequest.new,
+    graphv1graph.DeleteEdgeContributionsResponse.new,
+  );
+
   /// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
   /// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
   /// At least one prefix must be non-empty. Pass `dry_run = true` to preview

@@ -35,10 +35,11 @@ The REPL accepts whitespace-delimited verbs:
   put vertex <key> <value> [ttl_seconds]
   delete vertex <key>
   get edge <tail> <head>
-  add edge <tail> <head> <weight> [ttl_seconds]
+  add edge <tail> <head> <weight> [ttl_seconds] [id=<48hex>]
   add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>
   put edge <tail> <head> <weight> [ttl_seconds]
   delete edge <tail> <head>
+  delete contribution <tail> <head> <48hex> [<tail> <head> <48hex> ...]
   scan vertices <prefix> [limit]
   scan edges <tail-prefix> [limit]
   keys <prefix> [limit]
@@ -149,8 +150,10 @@ EXAMPLE
 				fmt.Println("Usage: delete vertex <key: string>")
 			case errors.Is(err, service.ErrDeleteEdge):
 				fmt.Println("Usage: delete edge <tail: string> <head: string>")
+			case errors.Is(err, service.ErrDeleteContribution):
+				fmt.Println("Usage: delete contribution <tail: string> <head: string> <contrib_id_hex: 48 hex chars> [<tail> <head> <contrib_id_hex> ...]")
 			case errors.Is(err, service.ErrAddEdge):
-				fmt.Println("Usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>]")
+				fmt.Println("Usage: add edge <tail: string> <head: string> <weight: float> [<ttl_seconds: int>] [id=<contrib_id_hex>]")
 			case errors.Is(err, service.ErrAddDecayingEdge):
 				fmt.Println("Usage: add decaying-edge <tail: string> <head: string> <initial_weight: float> <ratio: float> <steps: int> <interval_seconds: int>")
 			case errors.Is(err, service.ErrScan):
@@ -168,7 +171,7 @@ EXAMPLE
 			case errors.Is(err, service.ErrInvalidVerb):
 				fmt.Println("Usage: { get | put | delete | add | scan | count | delete-prefix | keys | bfs | pagerank | community | help | exit } ...")
 			case errors.Is(err, service.ErrInvalidObjective):
-				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge } | add { edge | decaying-edge } | scan { vertices | edges } | count vertices | delete-prefix vertices | keys {...} | bfs {...} | pagerank {...} | community {...} } ...")
+				fmt.Println("{ get { vertex | edge } | put { vertex | edge } | delete { vertex | edge | contribution } | add { edge | decaying-edge } | scan { vertices | edges } | count vertices | delete-prefix vertices | keys {...} | bfs {...} | pagerank {...} | community {...} } ...")
 			case errors.Is(err, service.ErrConnection):
 				fmt.Println("server error")
 			default:

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"math"
@@ -517,11 +518,12 @@ func TestSnapshotClientsEnforceTransportLimitsBeforeInstall(t *testing.T) {
 // re-apply routed to, so applySnapshotEdge's LWW-vs-G-Set routing can be
 // asserted in isolation.
 type recordingApplier struct {
-	putEdges      []recordedEdge
-	derivedEdges  []recordedEdge
-	addEdges      []recordedEdge
-	vertexBarrier []recordedVertexBarrier
-	edgeBarrier   []recordedEdge
+	putEdges                 []recordedEdge
+	derivedEdges             []recordedEdge
+	addEdges                 []recordedEdge
+	vertexBarrier            []recordedVertexBarrier
+	edgeBarrier              []recordedEdge
+	contributionTombstoneErr error
 }
 
 type recordedVertexBarrier struct {
@@ -568,6 +570,9 @@ func (r *recordingApplier) ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.T
 
 func (r *recordingApplier) ApplySnapshotVertexTombstoneHLC(string, hlc.Timestamp, time.Time)       {}
 func (r *recordingApplier) ApplySnapshotEdgeTombstoneHLC(string, string, hlc.Timestamp, time.Time) {}
+func (r *recordingApplier) ApplySnapshotEdgeContributionTombstoneHLC(graphcache.EdgeContributionKey[string], hlc.Timestamp, time.Time) error {
+	return r.contributionTombstoneErr
+}
 
 type snapshotLifecycleMutationApplier struct {
 	events       *[]string
@@ -677,6 +682,167 @@ func graphInstallerLifecycleFrames() []*pb.SnapshotResponse {
 		{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{
 			VertexCount: 1,
 		}}},
+	}
+}
+
+func graphContributionTombstoneFrames() []*pb.SnapshotResponse {
+	origin := hlc.NodeID{0x41}
+	now := time.Now().UTC()
+	stamp := func(wall int64) *pb.HLCTimestamp {
+		return &pb.HLCTimestamp{WallNs: wall, NodeId: append([]byte(nil), origin[:]...)}
+	}
+	deadline := now.Add(2 * time.Hour)
+	deleted := graphcache.ContribID{0x21}
+	live := graphcache.ContribID{0x22}
+	return []*pb.SnapshotResponse{
+		{Entry: &pb.SnapshotResponse_Header{Header: &pb.SnapshotHeader{
+			Format: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			CutoffSeqPerOrigin: map[string]uint64{
+				hex.EncodeToString(origin[:]): 7,
+			},
+			CutoffHlc: stamp(now.UnixNano() + 1),
+		}}},
+		{Entry: &pb.SnapshotResponse_EdgeContributionTombstone{
+			EdgeContributionTombstone: &pb.SnapshotEdgeContributionTombstone{
+				Tail: "tail", Head: "head", ContribId: deleted[:],
+				Hlc: stamp(now.UnixNano()), Expiration: timestamppb.New(deadline),
+			},
+		}},
+		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{
+			Vertex: &pb.Vertex{Key: "head", Value: &pb.Vertex_Nil{Nil: true}},
+		}}},
+		{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{
+			Vertex: &pb.Vertex{Key: "tail", Value: &pb.Vertex_Nil{Nil: true}},
+		}}},
+		{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+			Tail: "tail", Head: "head",
+			Contributions: []*pb.SnapshotEdgeContribution{{
+				Weight: 3, ContribId: live[:],
+				Hlc:        stamp(now.UnixNano() + 1),
+				Expiration: timestamppb.New(deadline.Add(-time.Hour)),
+			}},
+		}}},
+		{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{
+			VertexCount: 2, EdgeCount: 1, EdgeContributionTombstoneCount: 1,
+		}}},
+	}
+}
+
+func TestGraphOnlySnapshotInstallerPreservesContributionRemoval(t *testing.T) {
+	frames := graphContributionTombstoneFrames()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	var events []string
+	applier := &snapshotLifecycleMutationApplier{events: &events}
+	result, err := installSnapshot(t.Context(),
+		newGraphOnlySnapshotInstaller(applier, cache),
+		&snapshotSliceStream{frames: frames},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Graph.EdgeContributionTombstones != 1 ||
+		result.Graph.Vertices != 2 || result.Graph.Edges != 1 ||
+		len(applier.finishes) != 1 || !applier.finishes[0] {
+		t.Fatalf("verified Snapshot counts = %+v", result.Graph)
+	}
+	marker := frames[1].GetEdgeContributionTombstone()
+	var id graphcache.ContribID
+	copy(id[:], marker.GetContribId())
+	tombstones := cache.SnapshotReplication().Tombstones.EdgeContributions
+	if len(tombstones) != 1 ||
+		tombstones[0].EdgeContributionKey != (graphcache.EdgeContributionKey[string]{
+			Tail: "tail", Head: "head", ContribID: id,
+		}) ||
+		!tombstones[0].Expiration.Equal(marker.GetExpiration().AsTime()) {
+		t.Fatalf("absolute D4 floor was not installed: %+v", tombstones)
+	}
+	edge := frames[4].GetEdge()
+	if weight, expiration, ok := cache.GetEdgeDetail("tail", "head"); !ok || weight != 3 ||
+		!expiration.Equal(edge.GetContributions()[0].GetExpiration().AsTime()) ||
+		expiration.Equal(tombstones[0].Expiration) {
+		t.Fatalf("live edge confused D4 deadline with data expiration: weight=%v, expiration=%v, live=%t", weight, expiration, ok)
+	}
+	if cache.AddEdgeWithExpirationContribHLC(
+		"tail", "head", 99, time.Now().Add(time.Hour), id,
+		hlc.Timestamp{WallNs: marker.GetHlc().GetWallNs() + 100, NodeID: tombstones[0].HLC.NodeID},
+	) {
+		t.Fatal("later replay resurrected an explicitly removed contribution")
+	}
+	if weight, _, _ := cache.GetEdgeDetail("tail", "head"); weight != 3 {
+		t.Fatalf("rejected Add changed surviving edge weight: %v", weight)
+	}
+}
+
+func TestGraphOnlySnapshotInstallerRejectsInvalidContributionRemoval(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func([]*pb.SnapshotResponse) []*pb.SnapshotResponse
+		want   string
+	}{
+		{"missing ID", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[1].GetEdgeContributionTombstone().ContribId = nil
+			return frames
+		}, "ContribID length"},
+		{"zero ID", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[1].GetEdgeContributionTombstone().ContribId = make([]byte, 24)
+			return frames
+		}, "zero edge contribution tombstone ContribID"},
+		{"absent origin", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[0].GetHeader().CutoffSeqPerOrigin = nil
+			return frames
+		}, "unknown origin"},
+		{"beyond cutoff", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[1].GetEdgeContributionTombstone().Hlc.WallNs += 2
+			return frames
+		}, "causal cutoff"},
+		{"missing deadline", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[1].GetEdgeContributionTombstone().Expiration = nil
+			return frames
+		}, "invalid Delete tombstone expiration"},
+		{"duplicate identity", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			copyOfMarker := proto.Clone(frames[1]).(*pb.SnapshotResponse)
+			frames[len(frames)-1].GetFooter().EdgeContributionTombstoneCount++
+			return slices.Insert(frames, 2, copyOfMarker)
+		}, "duplicate edge contribution tombstone"},
+		{"overlap with later live Add", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[4].GetEdge().Contributions[0].ContribId = append([]byte(nil), frames[1].GetEdgeContributionTombstone().GetContribId()...)
+			return frames
+		}, "live edge Add and contribution tombstone overlap"},
+		{"footer count mismatch", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[len(frames)-1].GetFooter().EdgeContributionTombstoneCount++
+			return frames
+		}, "footer count mismatch"},
+		{"tombstone after live vertex", func(frames []*pb.SnapshotResponse) []*pb.SnapshotResponse {
+			frames[1], frames[2] = frames[2], frames[1]
+			return frames
+		}, "out-of-order edge contribution tombstone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := tc.change(graphContributionTombstoneFrames())
+			var events []string
+			applier := &snapshotLifecycleMutationApplier{events: &events}
+			_, err := installSnapshot(t.Context(),
+				newGraphOnlySnapshotInstaller(applier, graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)),
+				&snapshotSliceStream{frames: frames},
+			)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("malformed Snapshot = %v, want %q", err, tc.want)
+			}
+			if len(applier.finishes) != 1 || applier.finishes[0] ||
+				applier.cutoffs != nil {
+				t.Fatalf("invalid Snapshot published a verified watermark: %+v", applier)
+			}
+		})
+	}
+
+	var events []string
+	applier := &snapshotLifecycleMutationApplier{events: &events}
+	snap := &recordingApplier{contributionTombstoneErr: errors.New("injected cache failure")}
+	_, err := installSnapshot(t.Context(), newGraphOnlySnapshotInstaller(applier, snap),
+		&snapshotSliceStream{frames: graphContributionTombstoneFrames()})
+	if err == nil || !strings.Contains(err.Error(), "injected cache failure") ||
+		len(applier.finishes) != 1 || applier.finishes[0] || applier.cutoffs != nil {
+		t.Fatalf("failed tombstone apply completed Snapshot: err=%v, applier=%+v", err, applier)
 	}
 }
 
@@ -1259,8 +1425,11 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 			VertexCount: v, EdgeCount: e,
 			VertexCausalBarrierCount: vb, EdgeCausalBarrierCount: eb,
 		}
-		if len(tombstones) == 2 {
+		if len(tombstones) >= 2 {
 			f.VertexTombstoneCount, f.EdgeTombstoneCount = tombstones[0], tombstones[1]
+		}
+		if len(tombstones) == 3 {
+			f.EdgeContributionTombstoneCount = tombstones[2]
 		}
 		return f
 	}
@@ -1278,6 +1447,7 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 			{"edge causal barrier", snapshotPhaseEdgeBarrier},
 			{"vertex tombstone", snapshotPhaseVertexTombstone},
 			{"edge tombstone", snapshotPhaseEdgeTombstone},
+			{"edge contribution tombstone", snapshotPhaseEdgeContributionTombstone},
 			{"vertex", snapshotPhaseVertex},
 			{"edge", snapshotPhaseEdge},
 		} {
@@ -1285,8 +1455,8 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		state.counts = snapshotReplayCounts{vertices: 1, edges: 2, vertexBarrier: 3, edgeBarrier: 4, vertexTombstone: 5, edgeTombstone: 6}
-		if err := state.acceptFooter(footer(1, 2, 3, 4, 5, 6)); err != nil {
+		state.counts = snapshotReplayCounts{vertices: 1, edges: 2, vertexBarrier: 3, edgeBarrier: 4, vertexTombstone: 5, edgeTombstone: 6, edgeContributionTombstone: 7}
+		if err := state.acceptFooter(footer(1, 2, 3, 4, 5, 6, 7)); err != nil {
 			t.Fatal(err)
 		}
 		if err := state.validateComplete(); err != nil {
@@ -1322,6 +1492,11 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 			_ = s.acceptBody("vertex", snapshotPhaseVertex)
 			return s.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone)
 		}},
+		{"contribution tombstone after live vertex", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptBody("vertex", snapshotPhaseVertex)
+			return s.acceptBody("edge contribution tombstone", snapshotPhaseEdgeContributionTombstone)
+		}},
 		{"edge tombstone before vertex tombstone", func(s *snapshotReplayState) error {
 			_ = s.acceptHeader(header)
 			_ = s.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone)
@@ -1343,6 +1518,13 @@ func TestSnapshotReplayStateFailClosed(t *testing.T) {
 			_ = s.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone)
 			s.counts.vertexTombstone = 1
 			_ = s.acceptFooter(footer(0, 0, 0, 0, 2, 0))
+			return s.validateComplete()
+		}},
+		{"truncated edge contribution tombstone count", func(s *snapshotReplayState) error {
+			_ = s.acceptHeader(header)
+			_ = s.acceptBody("edge contribution tombstone", snapshotPhaseEdgeContributionTombstone)
+			s.counts.edgeContributionTombstone = 1
+			_ = s.acceptFooter(footer(0, 0, 0, 0, 0, 0, 2))
 			return s.validateComplete()
 		}},
 	} {

@@ -63,6 +63,10 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $2.DeleteEdgeRequest request);
   $async.Future<$2.DeleteEdgesResponse> deleteEdges(
       $pb.ServerContext ctx, $2.DeleteEdgesRequest request);
+  $async.Future<$2.DeleteEdgeContributionResponse> deleteEdgeContribution(
+      $pb.ServerContext ctx, $2.DeleteEdgeContributionRequest request);
+  $async.Future<$2.DeleteEdgeContributionsResponse> deleteEdgeContributions(
+      $pb.ServerContext ctx, $2.DeleteEdgeContributionsRequest request);
   $async.Future<$2.DeleteEdgesByPrefixResponse> deleteEdgesByPrefix(
       $pb.ServerContext ctx, $2.DeleteEdgesByPrefixRequest request);
   $async.Future<$2.ScanEdgesResponse> scanEdges(
@@ -124,6 +128,10 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
         return $2.DeleteEdgeRequest();
       case 'DeleteEdges':
         return $2.DeleteEdgesRequest();
+      case 'DeleteEdgeContribution':
+        return $2.DeleteEdgeContributionRequest();
+      case 'DeleteEdgeContributions':
+        return $2.DeleteEdgeContributionsRequest();
       case 'DeleteEdgesByPrefix':
         return $2.DeleteEdgesByPrefixRequest();
       case 'ScanEdges':
@@ -193,6 +201,12 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
         return deleteEdge(ctx, request as $2.DeleteEdgeRequest);
       case 'DeleteEdges':
         return deleteEdges(ctx, request as $2.DeleteEdgesRequest);
+      case 'DeleteEdgeContribution':
+        return deleteEdgeContribution(
+            ctx, request as $2.DeleteEdgeContributionRequest);
+      case 'DeleteEdgeContributions':
+        return deleteEdgeContributions(
+            ctx, request as $2.DeleteEdgeContributionsRequest);
       case 'DeleteEdgesByPrefix':
         return deleteEdgesByPrefix(
             ctx, request as $2.DeleteEdgesByPrefixRequest);

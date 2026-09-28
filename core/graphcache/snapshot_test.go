@@ -45,6 +45,13 @@ func replayReplicationSnapshot(dst *GraphCache[string, string], snapshot Replica
 	for _, tombstone := range snapshot.Tombstones.Edges {
 		dst.ApplySnapshotEdgeTombstoneHLC(tombstone.Tail, tombstone.Head, tombstone.HLC, tombstone.Expiration)
 	}
+	for _, tombstone := range snapshot.Tombstones.EdgeContributions {
+		if err := dst.ApplySnapshotEdgeContributionTombstoneHLC(
+			tombstone.EdgeContributionKey, tombstone.HLC, tombstone.Expiration,
+		); err != nil {
+			panic(err)
+		}
+	}
 	for _, vertex := range snapshot.Graph.Vertices {
 		dst.PutVertexWithExpirationHLC(vertex.Key, vertex.Value, vertex.Expiration, vertex.HLC)
 	}

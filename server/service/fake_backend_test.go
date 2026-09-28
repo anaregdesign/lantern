@@ -915,6 +915,14 @@ func (f *fakeBackend) DeleteEdgesHLCDecisionsChecked(keys []graphcache.EdgeKey[s
 	return outcomes, accepted, nil
 }
 
+func (f *fakeBackend) DeleteEdgeContributionsHLCDecisions(keys []graphcache.EdgeContributionKey[string], _ hlc.Timestamp, _ time.Time) ([]bool, []int, error) {
+	return make([]bool, len(keys)), allAcceptedIndexes(len(keys)), nil
+}
+
+func (f *fakeBackend) DeleteEdgeContributionsHLCDecisionsChecked(keys []graphcache.EdgeContributionKey[string], ts hlc.Timestamp, expiration time.Time) ([]bool, []int, error) {
+	return f.DeleteEdgeContributionsHLCDecisions(keys, ts, expiration)
+}
+
 func (f *fakeBackend) DeleteByPrefixHLC(ctx context.Context, prefix string, limit uint32, _ hlc.Timestamp, _ time.Time) (int, error) {
 	lim := 0
 	if limit > 0 {

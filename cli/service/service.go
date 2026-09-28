@@ -14,27 +14,28 @@ import (
 )
 
 var (
-	ErrInvalidObjective = errors.New("invalid objective")
-	ErrInvalidVerb      = errors.New("invalid verb")
-	ErrNotImplemented   = errors.New("not implemented")
-	ErrGetVertex        = errors.New("get vertex error")
-	ErrGetEdge          = errors.New("get edge error")
-	ErrPutVertex        = errors.New("put vertex error")
-	ErrPutEdge          = errors.New("put edge error")
-	ErrDeleteVertex     = errors.New("delete vertex error")
-	ErrDeleteEdge       = errors.New("delete edge error")
-	ErrAddEdge          = errors.New("add edge error")
-	ErrAddDecayingEdge  = errors.New("add decaying-edge error")
-	ErrScan             = errors.New("scan error")
-	ErrCount            = errors.New("count error")
-	ErrDeletePrefix     = errors.New("delete-prefix error")
-	ErrKeys             = errors.New("keys error")
-	ErrSearch           = errors.New("search error")
-	ErrBFS              = errors.New("bfs error")
-	ErrPagerank         = errors.New("pagerank error")
-	ErrCommunity        = errors.New("community error")
-	ErrHelp             = errors.New("help error")
-	ErrConnection       = errors.New("connection error")
+	ErrInvalidObjective   = errors.New("invalid objective")
+	ErrInvalidVerb        = errors.New("invalid verb")
+	ErrNotImplemented     = errors.New("not implemented")
+	ErrGetVertex          = errors.New("get vertex error")
+	ErrGetEdge            = errors.New("get edge error")
+	ErrPutVertex          = errors.New("put vertex error")
+	ErrPutEdge            = errors.New("put edge error")
+	ErrDeleteVertex       = errors.New("delete vertex error")
+	ErrDeleteEdge         = errors.New("delete edge error")
+	ErrDeleteContribution = errors.New("delete contribution error")
+	ErrAddEdge            = errors.New("add edge error")
+	ErrAddDecayingEdge    = errors.New("add decaying-edge error")
+	ErrScan               = errors.New("scan error")
+	ErrCount              = errors.New("count error")
+	ErrDeletePrefix       = errors.New("delete-prefix error")
+	ErrKeys               = errors.New("keys error")
+	ErrSearch             = errors.New("search error")
+	ErrBFS                = errors.New("bfs error")
+	ErrPagerank           = errors.New("pagerank error")
+	ErrCommunity          = errors.New("community error")
+	ErrHelp               = errors.New("help error")
+	ErrConnection         = errors.New("connection error")
 )
 
 // runSource is the shared verb dispatcher behind both Run (a raw line from
@@ -101,12 +102,21 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				fmt.Printf("Error: %s\n", err)
 				return ErrAddEdge
 			}
-			effective, err := c.client.AddEdge(ctx, p.Tail, p.Head, p.Weight, p.TTL)
+			var effective float32
+			if p.ContribID == (client.ContribID{}) {
+				effective, err = c.client.AddEdge(ctx, p.Tail, p.Head, p.Weight, p.TTL)
+			} else {
+				effective, err = c.client.AddEdgeWithID(ctx, p.Tail, p.Head, p.Weight, p.TTL, p.ContribID)
+			}
 			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
 			}
-			fmt.Println(formatWriteEcho(fmt.Sprintf("add edge %q -> %q (weight %g, total %g)", p.Tail, p.Head, p.Weight, effective), p.TTL, time.Now()))
+			echo := fmt.Sprintf("add edge %q -> %q (weight %g, total %g)", p.Tail, p.Head, p.Weight, effective)
+			if p.ContribID != (client.ContribID{}) {
+				echo += " id=" + p.ContribID.String()
+			}
+			fmt.Println(formatWriteEcho(echo, p.TTL, time.Now()))
 			return nil
 		case "decaying-edge":
 			p, err := parser.AddDecayingEdgeParam(s)
@@ -189,7 +199,7 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 		}
 
 	case "delete":
-		obj, err := parser.Objective(s)
+		obj, err := parser.DeleteObjective(s)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 			return ErrInvalidObjective
@@ -239,6 +249,35 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				return ErrConnection
 			}
 			fmt.Printf("OK %d\n", n)
+			return nil
+		case "contribution":
+			p, err := parser.DeleteContributionParam(s)
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrDeleteContribution, err)
+			}
+			var existed []bool
+			var deleted int
+			if len(p.Refs) == 1 {
+				found, err := c.client.DeleteEdgeContribution(ctx, p.Refs[0].Tail, p.Refs[0].Head, p.Refs[0].ContribID)
+				if err != nil {
+					return fmt.Errorf("%w: %w", ErrConnection, err)
+				}
+				existed, deleted = []bool{found}, 0
+				if found {
+					deleted = 1
+				}
+			} else {
+				existed, deleted, err = c.client.DeleteEdgeContributions(ctx, p.Refs)
+				if err != nil {
+					return fmt.Errorf("%w: %w", ErrConnection, err)
+				}
+			}
+			if err := json.NewEncoder(c.out).Encode(struct {
+				Deleted int    `json:"deleted"`
+				Existed []bool `json:"existed"`
+			}{deleted, existed}); err != nil {
+				return fmt.Errorf("delete contribution output: %w", err)
+			}
 			return nil
 		default:
 			return ErrInvalidObjective

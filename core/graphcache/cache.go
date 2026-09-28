@@ -2,6 +2,7 @@ package graphcache
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/cache"
@@ -128,14 +129,22 @@ type GraphCache[S comparable, T any] struct {
 	// resurrecting freshly-deleted data. Tombstones are reaped on the
 	// regular GC tick (sweepExpiredTombstonesLocked); steady-state cost
 	// for non-replicated workloads is one nil check per write.
-	vertexTombstones              map[S]tombstoneEntry
-	edgeTombstones                map[EdgeKey[S]]tombstoneEntry
-	vertexTombstoneDeadlines      causalDeadlineHeap[S]
-	edgeTombstoneDeadlines        indexedCausalDeadlineHeap[EdgeKey[S]]
-	vertexTombstoneDeadlineBytes  uint64
-	edgeTombstoneDeadlineBytes    uint64
-	oldestVertexTombstoneDeadline time.Time
-	oldestEdgeTombstoneDeadline   time.Time
+	vertexTombstones           map[S]tombstoneEntry
+	edgeTombstones             map[EdgeKey[S]]tombstoneEntry
+	edgeContributionTombstones map[EdgeContributionKey[S]]tombstoneEntry
+	// Once a contribution floor exists, the non-HLC Add fast path must use
+	// the aggregate lock to consult it before appending to a live bucket.
+	contributionTombstonesPresent  atomic.Bool
+	vertexTombstoneDeadlines       causalDeadlineHeap[S]
+	edgeTombstoneDeadlines         indexedCausalDeadlineHeap[EdgeKey[S]]
+	edgeContributionDeadlines      indexedCausalDeadlineHeap[EdgeContributionKey[S]]
+	vertexTombstoneDeadlineBytes   uint64
+	edgeTombstoneDeadlineBytes     uint64
+	edgeContributionDeadlineBytes  uint64
+	edgeContributionTombstoneBytes uint64
+	oldestVertexTombstoneDeadline  time.Time
+	oldestEdgeTombstoneDeadline    time.Time
+	oldestEdgeContributionDeadline time.Time
 
 	// vertexCausalBarriers / edgeCausalBarriers retain the HLC of an
 	// accepted Put whose absolute expiration was already dead at the final

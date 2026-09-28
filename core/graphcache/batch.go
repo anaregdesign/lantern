@@ -59,6 +59,14 @@ type EdgeKey[S comparable] struct {
 	Head S
 }
 
+// EdgeContributionKey names one Add row rather than the entire edge. ContribID
+// must be nonzero; it is the Add identity, not a deletion operation ID.
+type EdgeContributionKey[S comparable] struct {
+	Tail      S
+	Head      S
+	ContribID ContribID
+}
+
 // PutOutcome is the storage-authoritative result for one Put item. It is
 // deliberately independent of protobuf so core remains a leaf module.
 type PutOutcome uint8
@@ -1071,7 +1079,9 @@ func (c *GraphCache[S, T]) addEdgesWithExpirationContribHLC(items []EdgeItem[S],
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, it := range items {
-		if !c.edgeAddWriteAllowedLocked(it.Tail, it.Head, ts) {
+		if !c.edgeAddWriteAllowedLocked(it.Tail, it.Head, ts) ||
+			(!it.ContribID.IsZero() && c.edgeContributionTombstoneLockedAt(
+				EdgeContributionKey[S]{Tail: it.Tail, Head: it.Head, ContribID: it.ContribID}, now)) {
 			// Fenced by a newer tombstone: this item applies nothing, but the
 			// edge may still hold live weight from another contribution. Report
 			// that real live sum, the same value the dedup no-op path returns.

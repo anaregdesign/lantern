@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -196,6 +197,38 @@ func receiptSnapshotCollectorFixture(
 			VertexCount: 2, EdgeCount: 1, ActiveReceiptCount: 1, OriginCount: 1,
 		}}},
 	}, policy
+}
+
+func receiptSnapshotCollectorFixtureWithContributionRemoval(
+	t *testing.T,
+) ([]*pb.SnapshotResponse, mutationreceipt.Config) {
+	t.Helper()
+	frames, policy := receiptSnapshotCollectorFixture(t)
+	return addCollectorContributionRemoval(t, frames), policy
+}
+
+func addCollectorContributionRemoval(
+	t *testing.T, frames []*pb.SnapshotResponse,
+) []*pb.SnapshotResponse {
+	t.Helper()
+	frames = cloneReceiptSnapshotCollectorFrames(frames)
+	removed := graphcache.ContribID{0x45}
+	marker := &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_EdgeContributionTombstone{
+			EdgeContributionTombstone: &pb.SnapshotEdgeContributionTombstone{
+				Tail: "tail", Head: "head", ContribId: removed[:],
+				Hlc:        proto.Clone(frames[0].GetHeader().GetCutoffHlc()).(*pb.HLCTimestamp),
+				Expiration: timestamppb.New(time.Now().Add(2 * time.Hour).UTC().Truncate(time.Millisecond)),
+			},
+		},
+	}
+	firstGraph := 1
+	for frames[firstGraph].GetReceipt() != nil {
+		firstGraph++
+	}
+	frames = append(frames[:firstGraph], append([]*pb.SnapshotResponse{marker}, frames[firstGraph:]...)...)
+	frames[len(frames)-1].GetFooter().EdgeContributionTombstoneCount++
+	return frames
 }
 
 func appendReceiptSnapshotTestRow(
@@ -459,6 +492,43 @@ func TestReceiptSnapshotCollectorReturnsCanonicalDetachedCandidate(t *testing.T)
 	}
 }
 
+func TestReceiptSnapshotCollectorStagesContributionRemoval(t *testing.T) {
+	frames, policy := receiptSnapshotCollectorFixtureWithContributionRemoval(t)
+	dir := t.TempDir()
+	collector := newReceiptSnapshotTestCollector(t, dir, policy, receiptSnapshotCollectorLimits())
+	candidate, err := collector.Collect(
+		t.Context(), &receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Close()
+	capture, err := candidate.installCapture(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := frames[2].GetEdgeContributionTombstone()
+	if len(capture.Graph) != 6 ||
+		!proto.Equal(capture.Graph[1].GetEdgeContributionTombstone(), marker) ||
+		capture.Graph[len(capture.Graph)-1].GetFooter().GetEdgeContributionTombstoneCount() != 1 {
+		t.Fatalf("candidate lost removal marker and count: %+v", capture.Graph)
+	}
+	staged := candidate.stage.graph.SnapshotReplication().Tombstones.EdgeContributions
+	if len(staged) != 1 || staged[0].ContribID != (graphcache.ContribID{0x45}) ||
+		!staged[0].Expiration.Equal(marker.GetExpiration().AsTime()) {
+		t.Fatalf("detached candidate lost per-ID D4 floor: %+v", staged)
+	}
+	if weight, _, ok := candidate.stage.graph.GetEdgeDetail("tail", "head"); !ok || weight != 1.5 {
+		t.Fatalf("staged survivor was removed: %v, %t", weight, ok)
+	}
+	if candidate.stage.graph.AddEdgeWithExpirationContribHLC(
+		"tail", "head", 9, time.Now().Add(time.Hour), graphcache.ContribID{0x45},
+		hlc.Timestamp{WallNs: staged[0].HLC.WallNs + 1, NodeID: staged[0].HLC.NodeID},
+	) {
+		t.Fatal("detached candidate allowed a replay of the removed ID")
+	}
+}
+
 func TestReceiptSnapshotCollectorCanonicalizesDecodedTransportMessages(t *testing.T) {
 	frames, policy := receiptSnapshotCollectorFixture(t)
 	dir := t.TempDir()
@@ -515,6 +585,7 @@ func TestReceiptSnapshotCollectorRetainsRetiredEvidence(t *testing.T) {
 
 func TestReceiptSnapshotCollectorAcceptsIndependentSectionMaxima(t *testing.T) {
 	frames, policy := receiptSnapshotCollectorFixtureWithRetired(t)
+	frames = addCollectorContributionRemoval(t, frames)
 	header := frames[0].GetHeader()
 	footer := frames[len(frames)-1].GetFooter()
 	graphFrames := footer.GetVertexCount() +
@@ -522,7 +593,8 @@ func TestReceiptSnapshotCollectorAcceptsIndependentSectionMaxima(t *testing.T) {
 		footer.GetVertexCausalBarrierCount() +
 		footer.GetEdgeCausalBarrierCount() +
 		footer.GetVertexTombstoneCount() +
-		footer.GetEdgeTombstoneCount()
+		footer.GetEdgeTombstoneCount() +
+		footer.GetEdgeContributionTombstoneCount()
 	limits := receiptSnapshotCollectorLimits()
 	limits.MaxActiveReceipts = footer.GetActiveReceiptCount()
 	limits.MaxRetiredEpochs = footer.GetRetiredEpochCount()
@@ -549,6 +621,25 @@ func TestReceiptSnapshotCollectorAcceptsIndependentSectionMaxima(t *testing.T) {
 	if candidate.Metadata().Header.GetCutoffLocalSeq() != header.GetCutoffLocalSeq() {
 		t.Fatal("exact independent maxima changed the accepted candidate")
 	}
+}
+
+func TestReceiptSnapshotCollectorLimitsCountContributionRemoval(t *testing.T) {
+	frames, policy := receiptSnapshotCollectorFixtureWithContributionRemoval(t)
+	limits := receiptSnapshotCollectorLimits()
+	limits.MaxGraphFrames = 3 // Two vertices and one edge leave no room for the D4 marker.
+	deriveReceiptSnapshotTestFrameLimit(&limits)
+	dir := t.TempDir()
+	collector := newReceiptSnapshotTestCollector(t, dir, policy, limits)
+	candidate, err := collector.Collect(
+		t.Context(), &receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err == nil || candidate != nil {
+		if candidate != nil {
+			_ = candidate.Close()
+		}
+		t.Fatalf("marker escaped graph frame limit: candidate=%p, err=%v", candidate, err)
+	}
+	assertReceiptSnapshotTempDirEmpty(t, dir)
 }
 
 func TestReceiptSnapshotCollectorRejectsMalformedStreamsWithoutArtifacts(t *testing.T) {

@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use prost_types::{Duration as ProtoDuration, Timestamp};
 
-use crate::{Edge, LanternError, Vertex, VertexValue};
+use crate::{ContribId, Edge, LanternError, Vertex, VertexValue};
 
 const TIMESTAMP_MIN: i64 = -62_135_596_800;
 const TIMESTAMP_MAX: i64 = 253_402_300_799;
@@ -174,6 +174,31 @@ impl EdgeRef {
         Self {
             tail: tail.into(),
             head: head.into(),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), LanternError> {
+        validate_key(&self.tail).map_err(LanternError::InvalidInput)?;
+        validate_key(&self.head).map_err(LanternError::InvalidInput)
+    }
+}
+
+/// Directed identity of one Add row, not a whole edge or a Put base.
+/// `ContribId` is exactly 24 nonzero bytes; receipt operation IDs are not
+/// interchangeable with it.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct EdgeContributionRef {
+    pub tail: String,
+    pub head: String,
+    pub contrib_id: ContribId,
+}
+
+impl EdgeContributionRef {
+    pub fn new(tail: impl Into<String>, head: impl Into<String>, contrib_id: ContribId) -> Self {
+        Self {
+            tail: tail.into(),
+            head: head.into(),
+            contrib_id,
         }
     }
 

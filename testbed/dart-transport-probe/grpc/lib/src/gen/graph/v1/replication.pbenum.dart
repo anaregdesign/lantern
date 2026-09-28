@@ -66,6 +66,12 @@ class IdentityOperation extends $pb.ProtobufEnum {
       IdentityOperation._(
           6, _omitEnumNames ? '' : 'IDENTITY_OPERATION_RECEIPT_ONLY');
 
+  /// Invalidate (tail, head); other Add or Put rows may still be live.
+  /// Identity-only delivery never reveals the target ContribID.
+  static const IdentityOperation IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION =
+      IdentityOperation._(7,
+          _omitEnumNames ? '' : 'IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION');
+
   static const $core.List<IdentityOperation> values = <IdentityOperation>[
     IDENTITY_OPERATION_UNSPECIFIED,
     IDENTITY_OPERATION_PUT_VERTEX,
@@ -74,10 +80,11 @@ class IdentityOperation extends $pb.ProtobufEnum {
     IDENTITY_OPERATION_PUT_EDGE,
     IDENTITY_OPERATION_DELETE_EDGE,
     IDENTITY_OPERATION_RECEIPT_ONLY,
+    IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION,
   ];
 
   static final $core.List<IdentityOperation?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 6);
+      $pb.ProtobufEnum.$_initByValueList(values, 7);
   static IdentityOperation? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
@@ -133,6 +140,12 @@ class SnapshotReceiptKind extends $pb.ProtobufEnum {
   static const SnapshotReceiptKind SNAPSHOT_RECEIPT_KIND_DELETE_EDGE =
       SnapshotReceiptKind._(
           5, _omitEnumNames ? '' : 'SNAPSHOT_RECEIPT_KIND_DELETE_EDGE');
+  static const SnapshotReceiptKind
+      SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION = SnapshotReceiptKind._(
+          6,
+          _omitEnumNames
+              ? ''
+              : 'SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION');
 
   static const $core.List<SnapshotReceiptKind> values = <SnapshotReceiptKind>[
     SNAPSHOT_RECEIPT_KIND_UNSPECIFIED,
@@ -141,10 +154,11 @@ class SnapshotReceiptKind extends $pb.ProtobufEnum {
     SNAPSHOT_RECEIPT_KIND_ADD_EDGE,
     SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX,
     SNAPSHOT_RECEIPT_KIND_DELETE_EDGE,
+    SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION,
   ];
 
   static final $core.List<SnapshotReceiptKind?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 5);
+      $pb.ProtobufEnum.$_initByValueList(values, 6);
   static SnapshotReceiptKind? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

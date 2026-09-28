@@ -93,6 +93,11 @@ func TestValidationInterceptor_RejectHookFiresPerReason(t *testing.T) {
 				{Tail: "a", Head: "b", Weight: float32(math.NaN())},
 			}})
 		}},
+		{"bad_contrib_id", "bad_contrib_id", func(t *testing.T, v *ValidationInterceptor) error {
+			return connectCallValidator(t, v, &pb.DeleteEdgeContributionRequest{
+				Tail: "a", Head: "b", ContribId: make([]byte, 24),
+			})
+		}},
 		{"step_too_large", "step_too_large", func(t *testing.T, v *ValidationInterceptor) error {
 			return connectCallValidator(t, v, &pb.IlluminateRequest{Seed: "s",
 				Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 99}}}) // > IlluminateMaxStep=3
@@ -199,6 +204,29 @@ func TestValidationInterceptorValidatesSingularAndPluralPutEdge(t *testing.T) {
 	connectCallValidatorOK(t, v, &pb.PutEdgesRequest{
 		Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: -math.MaxFloat32}},
 	})
+}
+
+func TestValidationInterceptorValidatesContributionDeletes(t *testing.T) {
+	v := NewValidationInterceptor(ValidationLimits{MaxKeyLen: 4, MaxBatchSize: 2})
+	id := bytes.Repeat([]byte{1}, 24)
+	key := &pb.EdgeContributionKey{Tail: "tail", Head: "head", ContribId: id}
+	connectCallValidatorOK(t, v, &pb.DeleteEdgeContributionRequest{
+		Tail: key.GetTail(), Head: key.GetHead(), ContribId: key.GetContribId(),
+	})
+	connectCallValidatorOK(t, v, &pb.DeleteEdgeContributionsRequest{
+		Contributions: []*pb.EdgeContributionKey{key, key},
+	})
+	for _, req := range []*pb.DeleteEdgeContributionsRequest{
+		{},
+		{Contributions: []*pb.EdgeContributionKey{nil}},
+		{Contributions: []*pb.EdgeContributionKey{key, key, key}},
+		{Contributions: []*pb.EdgeContributionKey{{Tail: "toolong", Head: "b", ContribId: id}}},
+		{Contributions: []*pb.EdgeContributionKey{{Tail: "a", Head: "b", ContribId: id[:23]}}},
+	} {
+		if err := connectCallValidator(t, v, req); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("invalid contribution Delete %v returned %v", req, err)
+		}
+	}
 }
 
 func TestValidationInterceptorReceiptStatusBatchUsesLowerEffectiveLimit(t *testing.T) {

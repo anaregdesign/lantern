@@ -5,13 +5,15 @@ use std::{
 };
 
 use crate::{
-    AddBatch, AddInput, BatchError, CallOptions, DeleteBatch, Edge, EdgeInput, EdgeRef, GetBatch,
-    LanternClient, LanternError, PreparedAdd, PutOutcome, Vertex, VertexInput,
+    AddBatch, AddInput, BatchError, CallOptions, DeleteBatch, Edge, EdgeContributionRef, EdgeInput,
+    EdgeRef, GetBatch, LanternClient, LanternError, PreparedAdd, PutOutcome, Vertex, VertexInput,
     batch::chunk_plan,
     generated::graph::v1::{
-        AddEdgesRequest, AddEdgesResponse, DeleteEdgesRequest, DeleteEdgesResponse,
-        DeleteVerticesRequest, DeleteVerticesResponse, EdgeKey, GetEdgesRequest, GetEdgesResponse,
-        GetVerticesRequest, GetVerticesResponse, PutEdgesRequest, PutVerticesRequest,
+        AddEdgesRequest, AddEdgesResponse, DeleteEdgeContributionsRequest,
+        DeleteEdgeContributionsResponse, DeleteEdgesRequest, DeleteEdgesResponse,
+        DeleteVerticesRequest, DeleteVerticesResponse, EdgeContributionKey, EdgeKey,
+        GetEdgesRequest, GetEdgesResponse, GetVerticesRequest, GetVerticesResponse,
+        PutEdgesRequest, PutVerticesRequest,
     },
     transport::RetryClass,
     value::{locally_expired, validate_key},
@@ -506,6 +508,93 @@ impl LanternClient {
         )
     }
 
+    /// Remove individual Add rows, preserving other contributions and any
+    /// Put base. Results are request-index aligned, including duplicate
+    /// triples and missing or expired IDs. No receipt-less response loss is
+    /// replayed automatically, even when a retry policy is configured.
+    pub async fn delete_edge_contributions<I>(
+        &self,
+        contributions: I,
+    ) -> Result<DeleteBatch, LanternError>
+    where
+        I: IntoIterator<Item = EdgeContributionRef>,
+    {
+        self.delete_edge_contributions_with_options(contributions, CallOptions::Default)
+            .await
+    }
+
+    pub async fn delete_edge_contributions_with_options<I>(
+        &self,
+        contributions: I,
+        options: CallOptions,
+    ) -> Result<DeleteBatch, LanternError>
+    where
+        I: IntoIterator<Item = EdgeContributionRef>,
+    {
+        let deadline = self.deadline_for(options)?;
+        let contributions = collect_bounded(contributions)?;
+        for contribution in &contributions {
+            contribution.validate()?;
+        }
+        let make = |range: Range<usize>| DeleteEdgeContributionsRequest {
+            contributions: contributions[range]
+                .iter()
+                .map(|ref_| EdgeContributionKey {
+                    tail: ref_.tail.clone(),
+                    head: ref_.head.clone(),
+                    contrib_id: ref_.contrib_id.as_bytes().to_vec(),
+                })
+                .collect(),
+            receipt_context: None,
+        };
+        let ranges = chunk_plan(
+            contributions.len(),
+            self.batch_chunk_size(),
+            self.encode_limit(),
+            make,
+        )?;
+        let mut existed = Vec::with_capacity(contributions.len());
+        let mut deleted = 0;
+        for range in ranges {
+            let response = self
+                .data_unary_at(
+                    make(range.clone()),
+                    deadline,
+                    RetryClass::Never,
+                    |svc, req| Box::pin(svc.delete_edge_contributions(req)),
+                )
+                .await
+                .map_err(|source| failed_chunk(range.start, source))?;
+            let chunk = validate_delete_contributions(range.len(), response)
+                .map_err(|source| failed_chunk(range.start, source))?;
+            deleted += chunk.deleted;
+            existed.extend(chunk.existed);
+        }
+        Ok(DeleteBatch { deleted, existed })
+    }
+
+    /// One-item facade over `delete_edge_contributions`; `delete_edge`
+    /// remains the separate whole-edge operation.
+    pub async fn delete_edge_contribution(
+        &self,
+        contribution: EdgeContributionRef,
+    ) -> Result<bool, LanternError> {
+        self.delete_edge_contribution_with_options(contribution, CallOptions::Default)
+            .await
+    }
+
+    pub async fn delete_edge_contribution_with_options(
+        &self,
+        contribution: EdgeContributionRef,
+        options: CallOptions,
+    ) -> Result<bool, LanternError> {
+        only(
+            self.delete_edge_contributions_with_options([contribution], options)
+                .await?
+                .existed,
+        )
+    }
+
     /// Resolve expiration and mint optional IDs exactly once before sending.
     /// The immutable snapshot lets callers retain IDs for manual decisions
     /// after an uncertain response; it is not a receipt/replay guarantee.
@@ -808,6 +897,13 @@ fn validate_delete_vertices(
 fn validate_delete_edges(
     expected: usize,
     response: DeleteEdgesResponse,
+) -> Result<DeleteBatch, LanternError> {
+    validate_delete(expected, response.deleted, response.existed)
+}
+
+fn validate_delete_contributions(
+    expected: usize,
+    response: DeleteEdgeContributionsResponse,
 ) -> Result<DeleteBatch, LanternError> {
     validate_delete(expected, response.deleted, response.existed)
 }

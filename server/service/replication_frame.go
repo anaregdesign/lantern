@@ -98,6 +98,11 @@ func maximalReplicationRelayEnvelope(op mutationlog.MutationOp) (mutationlog.Mut
 			return nil, errors.New("nil receipt Edge Delete envelope")
 		}
 		return maximalReceiptEdgeDeleteEnvelope(envelope), nil
+	case *edgeContributionDeleteReceiptEnvelope:
+		if envelope == nil {
+			return nil, errors.New("nil receipt contribution Delete envelope")
+		}
+		return maximalReceiptEdgeContributionDeleteEnvelope(envelope), nil
 	case *vertexDeleteReceiptEnvelope:
 		if envelope == nil {
 			return nil, errors.New("nil receipt Vertex Delete envelope")
@@ -138,6 +143,7 @@ func (s *LanternService) validateReplicationFrame(op mutationlog.MutationOp) err
 		if errors.As(err, &sizeErr) ||
 			errors.Is(err, errReceiptEdgeAddWireCapacity) ||
 			errors.Is(err, errReceiptEdgeDeleteWireCapacity) ||
+			errors.Is(err, errReceiptEdgeContributionDeleteWireCapacity) ||
 			errors.Is(err, errReceiptVertexDeleteWireCapacity) ||
 			errors.Is(err, errReceiptVertexPutWireCapacity) {
 			return s.replicationFrameCapacityError(err)

@@ -69,6 +69,14 @@ func graphDeleteRequestCount(m *pb.Mutation) (int, bool) {
 		if op != nil && op.DeleteEdges != nil {
 			return len(op.DeleteEdges.GetEdges()), true
 		}
+	case *pb.MutationOp_DeleteEdgeContribution:
+		if op != nil && op.DeleteEdgeContribution != nil {
+			return 1, true
+		}
+	case *pb.MutationOp_DeleteEdgeContributions:
+		if op != nil && op.DeleteEdgeContributions != nil {
+			return len(op.DeleteEdgeContributions.GetContributions()), true
+		}
 	}
 	return 0, false
 }
@@ -80,7 +88,8 @@ func isAnyGraphDelete(m *pb.Mutation) bool {
 	switch m.GetOp().GetOp().(type) {
 	case *pb.MutationOp_DeleteVertex, *pb.MutationOp_DeleteVertices,
 		*pb.MutationOp_DeleteVerticesByPrefix, *pb.MutationOp_DeleteEdge,
-		*pb.MutationOp_DeleteEdges, *pb.MutationOp_DeleteEdgesByPrefix:
+		*pb.MutationOp_DeleteEdges, *pb.MutationOp_DeleteEdgesByPrefix,
+		*pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
 		return true
 	default:
 		return false
@@ -111,6 +120,14 @@ func validateGenericGraphReceiptContext(m *pb.Mutation) error {
 		if op != nil && op.DeleteEdges != nil && op.DeleteEdges.GetReceiptContext() != nil {
 			return receiptWALUnionError("generic DeleteEdges cannot carry receipt context")
 		}
+	case *pb.MutationOp_DeleteEdgeContribution:
+		if op != nil && op.DeleteEdgeContribution != nil && op.DeleteEdgeContribution.GetReceiptContext() != nil {
+			return receiptWALUnionError("generic DeleteEdgeContribution cannot carry receipt context")
+		}
+	case *pb.MutationOp_DeleteEdgeContributions:
+		if op != nil && op.DeleteEdgeContributions != nil && op.DeleteEdgeContributions.GetReceiptContext() != nil {
+			return receiptWALUnionError("generic DeleteEdgeContributions cannot carry receipt context")
+		}
 	}
 	return nil
 }
@@ -128,6 +145,31 @@ func validateGraphDeleteEffectEnvelope(e *graphDeleteEffectEnvelope) error {
 	count, ok := graphDeleteRequestCount(e.Mutation)
 	if !ok {
 		return receiptWALUnionError("graph Delete effect requires an exact singular or plural Delete arm")
+	}
+	switch op := e.Mutation.GetOp().GetOp().(type) {
+	case *pb.MutationOp_DeleteEdgeContribution:
+		if op == nil || op.DeleteEdgeContribution == nil {
+			return receiptWALUnionError("nil DeleteEdgeContribution")
+		}
+		if _, err := edgeContributionKeysFromWire([]*pb.EdgeContributionKey{{
+			Tail: op.DeleteEdgeContribution.GetTail(), Head: op.DeleteEdgeContribution.GetHead(),
+			ContribId: op.DeleteEdgeContribution.GetContribId(),
+		}}); err != nil {
+			return receiptWALUnionError("invalid DeleteEdgeContribution: %v", err)
+		}
+		if e.Mutation.GetTombstoneExpiration() == nil {
+			return receiptWALUnionError("contribution Delete requires an absolute D4 deadline")
+		}
+	case *pb.MutationOp_DeleteEdgeContributions:
+		if op == nil || op.DeleteEdgeContributions == nil {
+			return receiptWALUnionError("nil DeleteEdgeContributions")
+		}
+		if _, err := edgeContributionKeysFromWire(op.DeleteEdgeContributions.GetContributions()); err != nil {
+			return receiptWALUnionError("invalid DeleteEdgeContributions: %v", err)
+		}
+		if e.Mutation.GetTombstoneExpiration() == nil {
+			return receiptWALUnionError("contribution Delete requires an absolute D4 deadline")
+		}
 	}
 	if len(e.AcceptedIndexes) > count {
 		return receiptWALUnionError("accepted Delete count exceeds request count")

@@ -32,16 +32,21 @@ type graphCacheWholeState[S comparable, T any] struct {
 	searchExtract             func(S, T) search.Document
 	searchPreappliedEvictions map[S]int
 
-	vertexHLC           map[S]hlc.Timestamp
-	vertexHLCHighWater  int
-	vertexTombstones    map[S]tombstoneEntry
-	edgeTombstones      map[EdgeKey[S]]tombstoneEntry
-	vertexDeadlines     causalDeadlineHeap[S]
-	edgeDeadlines       indexedCausalDeadlineHeap[EdgeKey[S]]
-	vertexDeadlineBytes uint64
-	edgeDeadlineBytes   uint64
-	oldestVertex        time.Time
-	oldestEdge          time.Time
+	vertexHLC                      map[S]hlc.Timestamp
+	vertexHLCHighWater             int
+	vertexTombstones               map[S]tombstoneEntry
+	edgeTombstones                 map[EdgeKey[S]]tombstoneEntry
+	edgeContributionTombstones     map[EdgeContributionKey[S]]tombstoneEntry
+	vertexDeadlines                causalDeadlineHeap[S]
+	edgeDeadlines                  indexedCausalDeadlineHeap[EdgeKey[S]]
+	edgeContributionDeadlines      indexedCausalDeadlineHeap[EdgeContributionKey[S]]
+	vertexDeadlineBytes            uint64
+	edgeDeadlineBytes              uint64
+	edgeContributionDeadlineBytes  uint64
+	edgeContributionTombstoneBytes uint64
+	oldestVertex                   time.Time
+	oldestEdge                     time.Time
+	oldestEdgeContribution         time.Time
 
 	vertexBarriers map[S]hlc.Timestamp
 	edgeBarriers   map[EdgeKey[S]]hlc.Timestamp
@@ -120,16 +125,21 @@ func (c *GraphCache[S, T]) wholeStateLocked() graphCacheWholeState[S, T] {
 		searchExtract:             c.searchExtract,
 		searchPreappliedEvictions: c.searchPreappliedEvictions,
 
-		vertexHLC:           c.vertexHLC,
-		vertexHLCHighWater:  c.vertexHLCHighWater,
-		vertexTombstones:    c.vertexTombstones,
-		edgeTombstones:      c.edgeTombstones,
-		vertexDeadlines:     c.vertexTombstoneDeadlines,
-		edgeDeadlines:       c.edgeTombstoneDeadlines,
-		vertexDeadlineBytes: c.vertexTombstoneDeadlineBytes,
-		edgeDeadlineBytes:   c.edgeTombstoneDeadlineBytes,
-		oldestVertex:        c.oldestVertexTombstoneDeadline,
-		oldestEdge:          c.oldestEdgeTombstoneDeadline,
+		vertexHLC:                      c.vertexHLC,
+		vertexHLCHighWater:             c.vertexHLCHighWater,
+		vertexTombstones:               c.vertexTombstones,
+		edgeTombstones:                 c.edgeTombstones,
+		edgeContributionTombstones:     c.edgeContributionTombstones,
+		vertexDeadlines:                c.vertexTombstoneDeadlines,
+		edgeDeadlines:                  c.edgeTombstoneDeadlines,
+		edgeContributionDeadlines:      c.edgeContributionDeadlines,
+		vertexDeadlineBytes:            c.vertexTombstoneDeadlineBytes,
+		edgeDeadlineBytes:              c.edgeTombstoneDeadlineBytes,
+		edgeContributionDeadlineBytes:  c.edgeContributionDeadlineBytes,
+		edgeContributionTombstoneBytes: c.edgeContributionTombstoneBytes,
+		oldestVertex:                   c.oldestVertexTombstoneDeadline,
+		oldestEdge:                     c.oldestEdgeTombstoneDeadline,
+		oldestEdgeContribution:         c.oldestEdgeContributionDeadline,
 
 		vertexBarriers: c.vertexCausalBarriers,
 		edgeBarriers:   c.edgeCausalBarriers,
@@ -165,12 +175,18 @@ func (c *GraphCache[S, T]) installWholeStateLocked(state graphCacheWholeState[S,
 	c.vertexHLCHighWater = state.vertexHLCHighWater
 	c.vertexTombstones = state.vertexTombstones
 	c.edgeTombstones = state.edgeTombstones
+	c.edgeContributionTombstones = state.edgeContributionTombstones
+	c.contributionTombstonesPresent.Store(len(state.edgeContributionTombstones) > 0)
 	c.vertexTombstoneDeadlines = state.vertexDeadlines
 	c.edgeTombstoneDeadlines = state.edgeDeadlines
+	c.edgeContributionDeadlines = state.edgeContributionDeadlines
 	c.vertexTombstoneDeadlineBytes = state.vertexDeadlineBytes
 	c.edgeTombstoneDeadlineBytes = state.edgeDeadlineBytes
+	c.edgeContributionDeadlineBytes = state.edgeContributionDeadlineBytes
+	c.edgeContributionTombstoneBytes = state.edgeContributionTombstoneBytes
 	c.oldestVertexTombstoneDeadline = state.oldestVertex
 	c.oldestEdgeTombstoneDeadline = state.oldestEdge
+	c.oldestEdgeContributionDeadline = state.oldestEdgeContribution
 
 	c.vertexCausalBarriers = state.vertexBarriers
 	c.edgeCausalBarriers = state.edgeBarriers

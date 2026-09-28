@@ -261,6 +261,29 @@ func (w *weight) retainAddsNewerThanLocked(ts hlc.Timestamp) {
 	w.needsSort = true
 }
 
+// removeContributionAt removes only the live Add row with the requested
+// identity. Re-folding from source rows preserves canonical float32 rounding.
+func (w *weight) removeContributionAt(id ContribID, now time.Time) (existed, empty bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLockedAt(now)
+	for i := 0; i < len(w.values); {
+		if w.values[i].contribID != id {
+			i++
+			continue
+		}
+		existed = true
+		copy(w.values[i:], w.values[i+1:])
+		w.values[len(w.values)-1] = weightValue{}
+		w.values = w.values[:len(w.values)-1]
+	}
+	if existed {
+		w.needsSort = true
+		w.flushLockedAt(now)
+	}
+	return existed, len(w.values) == 0
+}
+
 // lastPutTimestamp returns the causal floor carried by this bucket without
 // reconciling its TTL contributions. Accepted-expired Put uses it before
 // physically deleting a bucket, so a strictly older overwrite cannot erase a
@@ -865,21 +888,17 @@ func (c *edgeCache[S]) putWithExpiration(tail, head S, w float32, expiration tim
 // The caller MUST have pinned both ids (see dictionary.pinBoth) for the
 // duration of this call: addExistingContribByID does NOT hold GraphCache.mu,
 // so the pin is what prevents a concurrent DeleteEdge + vertex flush from
-// freeing and recycling an endpoint id mid-append. Structural reads of
-// c.tf are serialized against bucket create/delete by c.mu (the edgeCache
-// RWMutex); the subsequent weight append is serialized by the per-edge
-// weight lock. If the bucket is deleted between the RUnlock here and the
-// append, the append lands on a now-orphaned *weight and is harmlessly
-// discarded — the same benign race documented for addWithExpirationContrib.
+// freeing and recycling an endpoint id mid-append. The edgeCache read lock
+// covers both bucket lookup and append, so deleting a targeted contribution
+// cannot discard an unrelated concurrent Add.
 func (c *edgeCache[S]) addExistingContribByIDAt(tailID, headID vertexID, w float32, expiration time.Time, contribID ContribID, now time.Time) (applied bool, effective float32, ok bool) {
 	c.mu.RLock()
+	defer c.mu.RUnlock()
 	heads, hok := c.tf[tailID]
 	if !hok {
-		c.mu.RUnlock()
 		return false, 0, false
 	}
 	edge, eok := heads[headID]
-	c.mu.RUnlock()
 	if !eok {
 		return false, 0, false
 	}

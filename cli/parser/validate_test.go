@@ -1,6 +1,9 @@
 package parser
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // FuzzValidate fuzzes the CLI/REPL grammar dispatcher end-to-end: NewSource
 // tokenises arbitrary input, then Validate dispatches it. Neither may panic
@@ -17,9 +20,11 @@ func FuzzValidate(f *testing.F) {
 		"put vertex price 1234 type=int", "put vertex name 007 type=string",
 		"put edge alice bob 1.5", "put edge alice bob 1.5 60",
 		"add edge alice bob 1.0",
+		"add edge alice bob 1.0 id=" + strings.Repeat("ab", 24),
 		"add decaying-edge alice bob 16 0.5 5 1",
 		"delete vertex alice", "delete vertex alice bob carol",
 		"delete edge alice bob", "delete edge alice bob carol dave",
+		"delete contribution alice bob " + strings.Repeat("ab", 24),
 		"scan vertices users/", "scan vertices users/ 100 all=true",
 		"scan edges alice head=post:", "count vertices users/",
 		"delete-prefix vertices tmp/ confirm=yes",
@@ -42,6 +47,7 @@ func FuzzValidate(f *testing.F) {
 		`put vertex greeting "hello world`,
 		`put vertex greeting "bad \q escape"`,
 	}
+
 	for _, s := range seeds {
 		f.Add(s)
 	}
@@ -55,6 +61,30 @@ func FuzzValidate(f *testing.F) {
 			_, _ = Verb(s)
 		}
 	})
+}
+
+func TestValidate_DeleteContributionAndAddID(t *testing.T) {
+	id := strings.Repeat("ab", 24)
+	for _, input := range []string{
+		"delete contribution a b " + id,
+		"delete CONTRIBUTION a b " + id + " a b " + id,
+		"add edge a b 2 id=" + id,
+	} {
+		if err := Validate(input); err != nil {
+			t.Errorf("Validate(%q) = %v", input, err)
+		}
+	}
+	for _, input := range []string{
+		"delete contribution", "delete contribution a b",
+		"delete contribution a b " + strings.Repeat("00", 24),
+		"delete contribution a b " + strings.Repeat("ab", 49),
+		"delete contribution a b " + id + " a b",
+		"add edge a b 2 id=" + strings.Repeat("00", 24),
+	} {
+		if err := Validate(input); err == nil {
+			t.Errorf("Validate(%q) accepted invalid input", input)
+		}
+	}
 }
 
 // TestValidate_AddDecayingEdge covers the #952 decay verb through the

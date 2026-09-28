@@ -31,6 +31,47 @@ import { InvalidArgumentError } from "./errors.js";
 /** Wire length of a contrib ID, in bytes. Must match the server. */
 export const CONTRIB_ID_BYTES = 24;
 
+/** One selectable Add row. A Put base is never a contribution. */
+export interface EdgeContributionRef {
+  readonly tail: string;
+  readonly head: string;
+  readonly contribId: Uint8Array;
+}
+
+/** Validate and snapshot refs before sending; duplicate triples are allowed. */
+export function normalizeEdgeContributionRefs(
+  refs: readonly EdgeContributionRef[],
+  requireNonempty = false,
+): readonly EdgeContributionRef[] {
+  if (!Array.isArray(refs) || (requireNonempty && refs.length === 0) || refs.length > 0x7fff_ffff) {
+    throw new InvalidArgumentError("contribution Delete requires a valid, bounded list of refs");
+  }
+  return Object.freeze(
+    Array.from(refs, (ref: EdgeContributionRef, index: number) => {
+      if (
+        typeof ref !== "object" ||
+        ref === null ||
+        typeof ref.tail !== "string" ||
+        ref.tail.length === 0 ||
+        typeof ref.head !== "string" ||
+        ref.head.length === 0 ||
+        !(ref.contribId instanceof Uint8Array) ||
+        ref.contribId.length !== CONTRIB_ID_BYTES ||
+        !ref.contribId.some((byte) => byte !== 0)
+      ) {
+        throw new InvalidArgumentError(
+          `contributions[${index}] requires nonempty tail/head and a nonzero ${CONTRIB_ID_BYTES}-byte contribId`,
+        );
+      }
+      return Object.freeze({
+        tail: ref.tail,
+        head: ref.head,
+        contribId: new Uint8Array(ref.contribId),
+      });
+    }),
+  );
+}
+
 /** Length of the per-client nonce that occupies the id's high 16 bytes. */
 const NONCE_BYTES = 16;
 

@@ -12,9 +12,9 @@ use super::*;
 use crate::{
     RpcErrorKind, SearchDetails, SearchErrorReason, Vertex, VertexInput, VertexValue,
     generated::graph::v1::{
-        AddEdgeRequest, DeleteVertexRequest, GetServerStatusRequest, GetServerStatusResponse,
-        GetVertexRequest, GetVertexResponse, PutVertexRequest, PutVertexResponse,
-        SearchVerticesRequest, SearchVerticesResponse,
+        AddEdgeRequest, DeleteEdgeContributionsRequest, DeleteVertexRequest, EdgeContributionKey,
+        GetServerStatusRequest, GetServerStatusResponse, GetVertexRequest, GetVertexResponse,
+        PutVertexRequest, PutVertexResponse, SearchVerticesRequest, SearchVerticesResponse,
     },
     test_server::GoServer,
 };
@@ -307,6 +307,30 @@ async fn retry_only_unavailable_on_classified_methods_with_identical_payloads() 
         Err(LanternError::Rpc(_))
     ));
     assert_eq!(attempts(&payloads), 1);
+
+    let payloads = Arc::new(Mutex::new(Vec::new()));
+    let result = scripted(
+        &enabled,
+        DeleteEdgeContributionsRequest {
+            contributions: vec![EdgeContributionKey {
+                tail: "rust:tail".into(),
+                head: "rust:head".into(),
+                contrib_id: vec![1; 24],
+            }],
+            receipt_context: None,
+        },
+        RetryClass::Never,
+        vec![Code::Unavailable],
+        CallOptions::Default,
+        payloads.clone(),
+    )
+    .await;
+    assert!(matches!(result, Err(LanternError::Rpc(_))));
+    assert_eq!(
+        attempts(&payloads),
+        1,
+        "selective Delete cannot replay after response loss"
+    );
 
     for code in [
         Code::InvalidArgument,

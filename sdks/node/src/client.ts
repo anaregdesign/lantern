@@ -18,7 +18,7 @@
  * already owns the transport (e.g. an Electron renderer).
  *
  * Batch helpers (`putVertices`, `addEdges`, `putEdges`,
- * `deleteVertices`, `deleteEdges`) auto-chunk at
+ * `deleteVertices`, `deleteEdges`, `deleteEdgeContributions`) auto-chunk at
  * `ConnectOptions.batchChunkSize` (default 1000) and throw
  * `BatchError` with a fully observed `written` prefix on partial failure;
  * the failed chunk's original result may be unknown.
@@ -109,6 +109,33 @@ export interface EdgePutResult {
   outcome: PutOutcome;
 }
 
+/** Request-index-aligned observations of contributions removed by one call. */
+export interface EdgeContributionDeleteBatchResult {
+  readonly deleted: number;
+  readonly existed: readonly boolean[];
+}
+
+function checkedContributionDeleteResult(
+  response: { deleted: number; existed: readonly boolean[] },
+  expected: number,
+): EdgeContributionDeleteBatchResult {
+  if (
+    response.existed.length !== expected ||
+    response.existed.some((value) => typeof value !== "boolean")
+  ) {
+    throw new LanternError(
+      `server returned ${response.existed.length} contribution Delete outcomes for ${expected} items`,
+    );
+  }
+  const deleted = response.existed.filter(Boolean).length;
+  if (response.deleted !== deleted) {
+    throw new LanternError(
+      `server returned deleted=${response.deleted} for ${deleted} true contribution Delete outcomes`,
+    );
+  }
+  return { deleted, existed: response.existed };
+}
+
 function expirationFromJson(json: Record<string, unknown>): Date | null {
   const value = json.expiration;
   return typeof value === "string" ? new Date(value) : null;
@@ -144,7 +171,13 @@ import {
   type IncrementalSearch,
   type IncrementalSearchOptions,
 } from "./incremental-search.js";
-import { contribIdFrom, makeNonce, validateContribId } from "./contrib.js";
+import {
+  contribIdFrom,
+  makeNonce,
+  normalizeEdgeContributionRefs,
+  validateContribId,
+  type EdgeContributionRef,
+} from "./contrib.js";
 import { decayContributions, type DecayOptions } from "./decay.js";
 import {
   DEFAULT_RESTORE_CHUNK_SIZE,
@@ -175,6 +208,8 @@ import {
   type EdgeAddReceiptResult,
   type EdgeDeleteReceiptBatchResult,
   type EdgeDeleteReceiptResult,
+  type EdgeContributionDeleteReceiptBatchResult,
+  type EdgeContributionDeleteReceiptResult,
   type OperationID,
   type ReceiptCapability,
   type ReceiptMutationIntent,
@@ -1571,6 +1606,119 @@ export class Lantern {
     } catch (error) {
       throw await this.receiptMutationError(normalizedContext, mutation, error, signal);
     }
+  }
+
+  /**
+   * Remove exactly one Add row, leaving other contributions and any Put
+   * base intact. A missing or previously removed row returns false.
+   */
+  async deleteEdgeContribution(
+    tail: string,
+    head: string,
+    contribId: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const result = await this.deleteEdgeContributions([{ tail, head, contribId }], signal);
+    return result.existed[0]!;
+  }
+
+  /**
+   * Delete Add rows by directed edge and nonzero, 24-byte ContribID.
+   * Duplicate triples are observed in order (true, then false). Large
+   * batches auto-chunk; a failed chunk is not safe to retry blindly after
+   * response loss. `BatchError.written` counts fully observed prior chunks.
+   */
+  async deleteEdgeContributions(
+    refs: readonly EdgeContributionRef[],
+    signal?: AbortSignal,
+  ): Promise<EdgeContributionDeleteBatchResult> {
+    const contributions = normalizeEdgeContributionRefs(refs);
+    const existed: boolean[] = [];
+    let deleted = 0;
+    await this.runBatchWrite(contributions, async (chunk) => {
+      const response = await this.client.deleteEdgeContributions(
+        {
+          contributions: chunk.map((ref) => ({
+            tail: ref.tail,
+            head: ref.head,
+            contribId: new Uint8Array(ref.contribId),
+          })),
+        },
+        this.callOpts(signal),
+      );
+      const result = checkedContributionDeleteResult(response, chunk.length);
+      deleted += result.deleted;
+      existed.push(...result.existed);
+    });
+    return Object.freeze({ deleted, existed: Object.freeze(existed) });
+  }
+
+  /**
+   * Delete one unchunked logical batch with durable original-result proof.
+   * Persist the context and IDs before the first send; after response loss,
+   * replay only against the same certified endpoint and generation. The
+   * receipt operation IDs (49 bytes) are not contribution IDs (24 bytes).
+   */
+  async deleteEdgeContributionsWithReceipt(
+    refs: readonly EdgeContributionRef[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeContributionDeleteReceiptBatchResult> {
+    const contributions = normalizeEdgeContributionRefs(refs, true);
+    const normalizedContext = receiptContextForItemCount(context, contributions.length);
+    const mutation = Object.freeze({
+      kind: "deleteEdgeContribution",
+      contributions,
+    }) satisfies ReceiptMutationIntent;
+    await this.requireReceiptContinuity(normalizedContext, "deleteEdgeContribution", signal);
+
+    try {
+      const response = await this.client.deleteEdgeContributions(
+        {
+          contributions: contributions.map((ref) => ({
+            tail: ref.tail,
+            head: ref.head,
+            contribId: new Uint8Array(ref.contribId),
+          })),
+          receiptContext: receiptContextToWire(normalizedContext),
+        },
+        this.callOpts(signal),
+      );
+      const result = checkedContributionDeleteResult(response, contributions.length);
+      return Object.freeze({
+        context: normalizedContext,
+        deleted: result.deleted,
+        results: Object.freeze(
+          contributions.map((ref, index) =>
+            Object.freeze({
+              tail: ref.tail,
+              head: ref.head,
+              contribId: new Uint8Array(ref.contribId),
+              operationId: normalizedContext.operationIds[index]!,
+              existed: result.existed[index]!,
+            }),
+          ),
+        ),
+      });
+    } catch (error) {
+      throw await this.receiptMutationError(normalizedContext, mutation, error, signal);
+    }
+  }
+
+  /** Singular receipt facade over one contribution Delete batch. */
+  async deleteEdgeContributionWithReceipt(
+    tail: string,
+    head: string,
+    contribId: Uint8Array,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<EdgeContributionDeleteReceiptResult> {
+    const response = await this.deleteEdgeContributionsWithReceipt(
+      [{ tail, head, contribId }],
+      context,
+      signal,
+    );
+    return response.results[0]!;
   }
 
   async scanEdges(

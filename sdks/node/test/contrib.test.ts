@@ -9,7 +9,13 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { CONTRIB_ID_BYTES, contribIdFrom, makeNonce, validateContribId } from "../src/contrib.js";
+import {
+  CONTRIB_ID_BYTES,
+  contribIdFrom,
+  makeNonce,
+  normalizeEdgeContributionRefs,
+  validateContribId,
+} from "../src/contrib.js";
 import { InvalidArgumentError } from "../src/index.js";
 
 describe("contrib IDs (#895)", () => {
@@ -62,6 +68,33 @@ describe("contrib IDs (#895)", () => {
     expect(() => validateContribId(new Uint8Array(23))).toThrow(InvalidArgumentError);
     expect(() => validateContribId(new Uint8Array(25))).toThrow(InvalidArgumentError);
     expect(() => validateContribId(new Uint8Array(0))).toThrow(InvalidArgumentError);
+  });
+
+  test("selective Delete snapshots nonzero IDs and rejects malformed or sparse refs", () => {
+    const id = new Uint8Array(24).fill(7);
+    const refs = [
+      { tail: "t", head: "h", contribId: id },
+      { tail: "t", head: "h", contribId: id },
+    ];
+    const prepared = normalizeEdgeContributionRefs(refs, true);
+    id[0] = 8;
+    expect(prepared.map((ref) => ref.contribId[0])).toEqual([7, 7]);
+    expect(Object.isFrozen(prepared)).toBe(true);
+    for (const bad of [
+      { tail: "", head: "h", contribId: id },
+      { tail: "t", head: "", contribId: id },
+      { tail: "t", head: "h", contribId: new Uint8Array(24) },
+      { tail: "t", head: "h", contribId: new Uint8Array(49).fill(1) },
+      { tail: "t", head: "h", contribId: Array.from(id) },
+      null,
+    ]) {
+      expect(() => normalizeEdgeContributionRefs([bad] as never)).toThrow(InvalidArgumentError);
+    }
+    expect(() => normalizeEdgeContributionRefs(new Array(1) as never)).toThrow(
+      InvalidArgumentError,
+    );
+    expect(() => normalizeEdgeContributionRefs([], true)).toThrow(InvalidArgumentError);
+    expect(normalizeEdgeContributionRefs([])).toEqual([]);
   });
 
   test("golden vectors — byte-for-byte identical to the Go SDK and server (#922)", () => {

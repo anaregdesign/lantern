@@ -127,11 +127,14 @@ jobs:
             exit 1
           fi
           cargo package --no-verify --locked
+          version=$(cargo metadata --locked --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "lantern-client") | .version')
+          test -n "$version"
           staging="$RUNNER_TEMP/lantern-rust-package"
           mkdir -p "$staging"
-          tar -xzf target/package/lantern-client-0.1.0.crate -C "$staging"
+          tar -xzf "target/package/lantern-client-$version.crate" -C "$staging"
           (
-            cd "$staging/lantern-client-0.1.0"
+            cd "$staging/lantern-client-$version"
             test ! -e build.rs
             test ! -e xtask
             test ! -e proto

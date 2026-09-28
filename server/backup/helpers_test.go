@@ -10,9 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -73,6 +78,21 @@ func producerCapture(a wholeStateArchive) service.ReceiptWholeStateCapture {
 		Graph: a.Graph, Receipts: a.Receipts, Retired: retiredSnapshot,
 		Policy: a.Policy, Origins: a.Origins,
 	}
+}
+
+func addContributionTombstoneToArchive(a *wholeStateArchive, id graphcache.ContribID, deadline time.Time) {
+	cutoff := a.Graph[0].GetHeader().GetCutoffHlc()
+	frame := &pb.SnapshotResponse{
+		Entry: &pb.SnapshotResponse_EdgeContributionTombstone{
+			EdgeContributionTombstone: &pb.SnapshotEdgeContributionTombstone{
+				Tail: "tail", Head: "head", ContribId: append([]byte(nil), id[:]...),
+				Hlc:        proto.Clone(cutoff).(*pb.HLCTimestamp),
+				Expiration: timestamppb.New(deadline),
+			},
+		},
+	}
+	a.Graph = append(a.Graph[:1], append([]*pb.SnapshotResponse{frame}, a.Graph[1:]...)...)
+	a.Graph[len(a.Graph)-1].GetFooter().EdgeContributionTombstoneCount++
 }
 
 func producerRetiredSnapshot(

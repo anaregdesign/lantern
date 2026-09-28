@@ -471,9 +471,9 @@ ordinary batch writes auto-chunk, while opt-in receipt batches remain
 unsplit. The browser build (`lantern-sdk/web`) is what powers the
 [admin SPA](admin/). Full API:
 [sdks/node/README.md](sdks/node/README.md).
-The receipt APIs in merged Node 0.12.0 source are not in npm's current
-`lantern-sdk@0.11.0` `latest` package; see the SDK README for source-only
-receipt examples until a new npm archive is published and verified.
+The published Node 0.12.0 package includes the original receipt APIs;
+selective contribution deletion in this repository requires a newer SDK
+release. See the SDK README for the versioned contract.
 
 ### Dart / Flutter
 
@@ -669,6 +669,7 @@ whichever reads better at the call site.
 | `AddEdge` / `AddEdges` | **Append** weighted contributions (the additive model above); returns the post-accumulation live weight |
 | `PutEdge` / `PutEdges` | Idempotent replace under one write lock; returns the same index-aligned Put outcomes |
 | `DeleteEdge` / `DeleteEdges` | Remove edges outright |
+| `DeleteEdgeContribution` / `DeleteEdgeContributions` | Remove only one caller-known `(tail, head, ContribID)` Add row per item; preserve other Adds and the Put base. Exact nonzero 24-byte IDs are mandatory; even an absent target retains a D4-bounded remove-wins floor. |
 | `ScanVertices` / `ScanVertexKeys` / `ScanEdges` | Cursor-paginated prefix enumeration, ascending or descending via `order` (keys-only variant is wire-efficient; edge scans filter on tail and/or head prefix) |
 | `CountVerticesByPrefix` / `DeleteVerticesByPrefix` / `DeleteEdgesByPrefix` | Namespace count / capped bulk delete with `dry_run` (the edge variant removes the tail∩head intersection) |
 | `TopVerticesByDegree` | Rank the most-connected live vertices under a key prefix (out / in / both, optional `weighted`) — a read-only, point-in-time aggregate |
@@ -687,15 +688,17 @@ restored internally as a distinct derived aggregate for graph-only
 Snapshots, not accepted as a new public/peer source or receipt Snapshot
 contribution; `lantern-cli restore` does not bypass Put validation.
 
-Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge
-Add can opt into bounded, server-authoritative receipts through the sole
+Vertex Put, exact Vertex Delete, exact Edge Delete, contribution-keyed Edge
+Add, and targeted Edge contribution Delete can opt into bounded,
+server-authoritative receipts through the sole
 optional `MutationReceiptContext` on their plural requests; the singular RPCs
 are one-item facades. An authenticated client must first obtain an enabled
 `GetReceiptCapability`, then send one index-aligned 49-byte operation ID per
 item, one 16-byte logical-call ID, and that endpoint marker. Receipt-bearing
 Add also requires one explicit nonzero 24-byte contribution ID per item. An
 identical same-endpoint retry returns the original aligned `PutOutcome`, exact
-Delete `existed` boolean, or Add effective-weight result without executing
+Delete `existed` boolean (including a typed `false` for a missing target), or
+Add effective-weight result without executing
 again; a changed semantic intent fails before mutation. Read-only
 `GetReceiptStatus` / `GetReceiptStatuses` return exactly `CONFIRMED`,
 `NOT_YET_OBSERVED`, or `NO_LONGER_PROVABLE`. Omitting the context preserves
@@ -703,6 +706,26 @@ the receipt-less write path; Put Edge and prefix Delete are not
 receipt-enabled.
 The full identity, continuity, and retry contract is
 [ADR 0010](docs/decisions/0010-bounded-mutation-receipts.md).
+
+To retract an Add, persist its explicit `ContribID` **before** sending it;
+a client-generated ID only returned after an uncertain response is not a
+recoverable deletion target. Selective Delete is separate from the existing
+whole-edge command. It cannot target an unkeyed Add or the Put base, and a
+receipt-less retry after response loss may observe `existed=false` even when
+the first attempt succeeded. The per-ID protection against delayed Add is
+bounded by D4, not permanent. A graph-only `.lbk` folds Add rows and does
+not restore their deleted-ID history; durable receipt whole-state backup
+retains it.
+
+Selective deletion emits a new identity-only CDC operation. Previously
+published Dart identity subscribers reject that operation, and published Dart
+receipt clients reject the new advertised mutation family when querying
+`GetReceiptCapability` even before any contribution is deleted. Do not deploy
+the new server in environments relying on those clients until the compatible
+Dart read side in #1530 has been qualified and released. The checked-in Dart
+source recognizes the new capability without exposing the targeted Delete API
+or accepting its CDC events; it is not a published Dart release. Publishing
+these server and SDK artifacts does not deploy a running cluster.
 
 Put liveness is decided by one server application-time sample, not the
 caller's clock. A past expiration returns `EXPIRED` and acts as a delete-like
@@ -839,12 +862,12 @@ Everything is `LANTERN_*` env vars. The exhaustive, generated reference is
 | `LANTERN_PORT` | `6380` | RPC listen port (Connect / gRPC / gRPC-Web multiplexed) |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | Cache GC tick |
 | `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` | Conservative graph-admission soft caps over live entries plus retained Put barriers (`0` = unlimited). A live additive edge coexisting with a Put barrier can count twice; keeping born-expired Put barriers charged prevents a cap bypass. |
-| `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` / `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | `0` | Separate atomic local-origin budgets over the exact retained HA causal-identity union—live HLC floors, Put barriers, and Delete tombstones (`0` = unlimited). Replication apply stays convergent and may exceed the local budget. Pair both cap families with `GOMEMLIMIT`. |
+| `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` / `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | `0` | Separate atomic local-origin budgets over retained HA causal identities—live HLC floors, Put barriers, edge/vertex Delete tombstones, and individual targeted contribution-Delete floors (`0` = unlimited). Replication apply stays convergent and may exceed the local budget. Pair both cap families with `GOMEMLIMIT`. |
 | `LANTERN_AUTH_TOKENS` | _(unset)_ | Comma-separated bearer tokens arming data-plane auth; multiple entries allow zero-downtime rotation |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` / `LANTERN_TLS_CLIENT_CA_FILE` | _(unset)_ | TLS; the client CA enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | _(empty)_ | CORS allow-list for browser clients (the Admin needs its origin here) |
 | `LANTERN_BACKUP_*` | off | Periodic graph-only `.lbk` or durable three-member receipt-set production. Restore-on-start runs before serving; durable `restart` prefers a complete current WAL and uses backup only for eligible baseline-sidecar damage, while durable `fresh` requires a new epoch for total-cluster restore. |
-| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Receipt runtime selection: `fresh` creates (and can restore into) a new epoch; `restart` resumes an explicitly configured receipt WAL and narrowly repairs eligible baseline damage. Durable modes require a stable explicit `LANTERN_NODE_ID`; with configured bearer auth and full runtime certification they expose capability, three-state status, and optional receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add. |
+| `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Receipt runtime selection: `fresh` creates (and can restore into) a new epoch; `restart` resumes an explicitly configured receipt WAL and narrowly repairs eligible baseline damage. Durable modes require a stable explicit `LANTERN_NODE_ID`; with configured bearer auth and full runtime certification they expose capability, three-state status, and optional receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and targeted Edge contribution Delete. |
 | `LANTERN_RATE_LIMIT_RPS` | `0` | Global token-bucket rate limit |
 | `LANTERN_SCAN_DEFAULT_LIMIT` / `LANTERN_SCAN_MAX_LIMIT` | `1000` / `10000` | Page-size default and hard cap for the `Scan*` RPCs |
 | `LANTERN_ILLUMINATE_MAX_STEP` / `LANTERN_ILLUMINATE_MAX_K` | `16` / `1024` | Traversal depth / fan-out caps |
@@ -861,7 +884,8 @@ Protobuf timestamps are rejected, as is an explicitly supplied year-one zero
 time (which would otherwise be confused with omitted/permanent expiration).
 
 Receipt context is optional and canonical on `PutVertices`, exact
-`DeleteVertices`, exact `DeleteEdges`, and contribution-keyed `AddEdges`;
+`DeleteVertices`, exact `DeleteEdges`, contribution-keyed `AddEdges`,
+and targeted `DeleteEdgeContributions`;
 omitting it keeps the existing receipt-less online behavior. Their singular
 RPCs are one-item facades. Receipt-bearing Add requires every edge to carry an
 explicit nonzero 24-byte contribution ID and returns the original effective
@@ -926,8 +950,8 @@ dependency direction is a strict DAG:
 - **In-memory first.** Snapshot backup + restore-on-boot is built in, but
   graph-only mode has no WAL, so writes between snapshots are lost on crash.
   The opt-in durable receipt-WAL runtime adds WAL-backed continuity and
-  receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete, and
-  contribution-keyed Edge Add.
+  receipt-bearing Vertex Put, exact Vertex Delete, exact Edge Delete,
+  contribution-keyed Edge Add, and targeted Edge contribution Delete.
 - **HA, not sharding.** Leaderless full-replica replication is built in;
   the working set must still fit in one process's RAM.
 - **Auth is `requirepass`-tier.** Static bearer tokens and TLS/mTLS — no

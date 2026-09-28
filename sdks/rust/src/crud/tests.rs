@@ -190,12 +190,143 @@ fn outcome_vectors_and_counts_fail_closed_without_erasing_server_results() {
 }
 
 #[test]
+fn contribution_delete_validates_ids_keys_and_indexed_results() {
+    let id = ContribId::new([0x2a; 24]).unwrap();
+    assert!(matches!(
+        ContribId::new([0; 24]),
+        Err(LanternError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        ContribId::try_from(&[0x2a; 49][..]),
+        Err(LanternError::InvalidInput(_))
+    ));
+    assert!(
+        EdgeContributionRef::new("tail", "head", id)
+            .validate()
+            .is_ok()
+    );
+    assert!(matches!(
+        EdgeContributionRef::new("", "head", id).validate(),
+        Err(LanternError::InvalidInput(_))
+    ));
+    assert_eq!(
+        validate_delete_contributions(
+            3,
+            DeleteEdgeContributionsResponse {
+                deleted: 1,
+                existed: vec![true, false, false],
+            }
+        )
+        .unwrap(),
+        DeleteBatch {
+            deleted: 1,
+            existed: vec![true, false, false],
+        }
+    );
+    for (deleted, existed) in [
+        (0, vec![true]),
+        (1, vec![true, false]),
+        (2, vec![true, false, false]),
+        (-1, vec![true, false, false]),
+    ] {
+        assert!(matches!(
+            validate_delete_contributions(3, DeleteEdgeContributionsResponse { deleted, existed }),
+            Err(LanternError::Protocol(_))
+        ));
+    }
+}
+
+#[test]
 fn logical_bound_rejects_late_items_without_unbounded_collection() {
     assert!(matches!(
         collect_bounded(0..65_537),
         Err(LanternError::InvalidInput(_))
     ));
     assert_eq!(collect_bounded(0..65_536).unwrap().len(), 65_536);
+}
+
+#[tokio::test]
+#[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
+async fn real_wire_delete_selected_contributions_preserves_put_base() -> TestResult {
+    let mut server = GoServer::start(&[])?;
+    server.wait_for_listener()?;
+    let endpoint = format!("http://127.0.0.1:{}", server.port());
+    let client = LanternClient::builder(&endpoint)
+        .batch_chunk_size(2)?
+        .retry(crate::RetryPolicy::Unavailable { max_attempts: 3 })?
+        .connect()
+        .await?;
+    let tail = "rust:contrib:tail";
+    let head = "rust:contrib:head";
+    client
+        .put_vertices([VertexInput::nil(tail), VertexInput::nil(head)])
+        .await?;
+    client.put_edge(EdgeInput::new(tail, head, 2.0)).await?;
+    let first = ContribId::new([0x23; 24])?;
+    let second = ContribId::new([0x42; 24])?;
+    let prepared = client.prepare_add([
+        AddInput::new(EdgeInput::new(tail, head, 1.0)).with_contrib_id(first),
+        AddInput::new(EdgeInput::new(tail, head, 2.0)).with_contrib_id(second),
+    ])?;
+    assert_eq!(
+        client
+            .add_prepared_edges(&prepared)
+            .await?
+            .effective_weights,
+        [3.0, 5.0]
+    );
+
+    let ref_first = EdgeContributionRef::new(tail, head, first);
+    let result = client
+        .delete_edge_contributions([
+            ref_first.clone(),
+            ref_first.clone(),
+            EdgeContributionRef::new("missing", head, second),
+            EdgeContributionRef::new(tail, head, second),
+        ])
+        .await?;
+    assert_eq!(result.deleted, 2);
+    assert_eq!(result.existed, [true, false, false, true]);
+    assert_eq!(client.get_edge(tail, head).await?.weight, 2.0);
+    assert!(!client.delete_edge_contribution(ref_first.clone()).await?);
+    assert!(matches!(
+        client
+            .delete_edge_contributions([EdgeContributionRef::new("", head, first)])
+            .await,
+        Err(LanternError::InvalidInput(_))
+    ));
+    let repeated = client
+        .add_edge(AddInput::new(EdgeInput::new(tail, head, 1.0)).with_contrib_id(first))
+        .await?;
+    assert_eq!(repeated, 2.0);
+    assert!(!client.delete_edge_contribution(ref_first).await?);
+
+    let fresh = ContribId::new([0x56; 24])?;
+    let fresh_ref = EdgeContributionRef::new(tail, head, fresh);
+    client
+        .add_edge(AddInput::new(EdgeInput::new(tail, head, 1.0)).with_contrib_id(fresh))
+        .await?;
+    assert!(client.delete_edge_contribution(fresh_ref).await?);
+    let expiring = ContribId::new([0x78; 24])?;
+    let expiring_ref = EdgeContributionRef::new(tail, head, expiring);
+    client
+        .add_edge(
+            AddInput::new(
+                EdgeInput::new(tail, head, 1.0)
+                    .with_expiration(Expiration::After(Duration::from_millis(80))),
+            )
+            .with_contrib_id(expiring),
+        )
+        .await?;
+    tokio::time::sleep(Duration::from_millis(130)).await;
+    assert!(!client.delete_edge_contribution(expiring_ref).await?);
+    assert_eq!(client.get_edge(tail, head).await?.weight, 2.0);
+    assert!(client.delete_edge(tail, head).await?);
+    assert!(matches!(
+        client.get_edge(tail, head).await,
+        Err(LanternError::NotFound)
+    ));
+    Ok(())
 }
 
 #[tokio::test]

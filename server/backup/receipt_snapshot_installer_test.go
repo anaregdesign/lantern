@@ -113,6 +113,56 @@ func TestReceiptSnapshotInstallerPublishesOnlyCompleteReceipt(t *testing.T) {
 	}
 }
 
+func TestReceiptSnapshotInstallerPublishesContributionRemoval(t *testing.T) {
+	frames, _ := receiptSnapshotCollectorFixtureWithContributionRemoval(t)
+	installer, runtime := newReceiptSnapshotInstallerFixture(
+		t, frames, receiptSnapshotCollectorLimits(),
+	)
+	result, err := installer.Install(
+		t.Context(), &receiptSnapshotTestStream{frames: frames, current: -1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Graph.EdgeContributionTombstones != 1 {
+		t.Fatalf("installed graph counts = %+v", result.Graph)
+	}
+	marker := runtime.GraphCache().SnapshotReplication().Tombstones.EdgeContributions
+	if len(marker) != 1 || marker[0].ContribID != (graphcache.ContribID{0x45}) {
+		t.Fatalf("published graph dropped per-ID floor: %+v", marker)
+	}
+	if got, _, ok := runtime.GraphCache().GetEdgeDetail("tail", "head"); !ok || got != 1.5 {
+		t.Fatalf("surviving Add after publication = %v, %t", got, ok)
+	}
+	if runtime.GraphCache().AddEdgeWithExpirationContribHLC(
+		"tail", "head", 9, time.Now().Add(time.Hour), marker[0].ContribID,
+		hlc.Timestamp{WallNs: marker[0].HLC.WallNs + 1, NodeID: marker[0].HLC.NodeID},
+	) {
+		t.Fatal("published graph allowed a replay of the removed ID")
+	}
+}
+
+func TestReceiptSnapshotInstallerRejectsMissingContributionRemovalCount(t *testing.T) {
+	valid, _ := receiptSnapshotCollectorFixtureWithContributionRemoval(t)
+	installer, runtime := newReceiptSnapshotInstallerFixture(
+		t, valid, receiptSnapshotCollectorLimits(),
+	)
+	invalid := cloneReceiptSnapshotCollectorFrames(valid)
+	invalid[len(invalid)-1].GetFooter().EdgeContributionTombstoneCount = 0
+	result, err := installer.Install(
+		t.Context(), &receiptSnapshotTestStream{frames: invalid, current: -1},
+	)
+	if err == nil || result.Header != nil {
+		t.Fatalf("incorrect marker count published graph: %+v, %v", result, err)
+	}
+	if len(runtime.GraphCache().SnapshotReplication().Tombstones.EdgeContributions) != 0 {
+		t.Fatal("rejected Snapshot published a per-ID floor")
+	}
+	if length, _, evicted := runtime.MutationLogStats(); length != 0 || evicted != 0 {
+		t.Fatalf("rejected Snapshot changed log = len %d evicted %d", length, evicted)
+	}
+}
+
 func TestReceiptSnapshotInstallerPublishesCanonicalEmptyOriginCut(t *testing.T) {
 	valid, _ := receiptSnapshotCollectorFixture(t)
 	header := cloneReceiptSnapshotCollectorFrames(valid[:1])[0]

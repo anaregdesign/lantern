@@ -214,7 +214,7 @@ final class ReceiptCapabilityEnabled extends ReceiptCapability {
   /// The local injected-clock time when the response was observed.
   final DateTime observedAt;
 
-  /// Mutation families currently enabled at this endpoint.
+  /// Mutation families enabled at this endpoint and supported by this SDK.
   final Set<ReceiptMutationKind> supportedMutations;
 
   /// Whether [mutation] is currently enabled at this endpoint.
@@ -1307,6 +1307,18 @@ Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
   final mutations = <ReceiptMutationKind>{};
   var previousValue = 0;
   for (final value in values) {
+    if (value.value <= previousValue) {
+      throw _internalSdkException(
+        'receipt capability mutation families are not strictly ascending',
+      );
+    }
+    previousValue = value.value;
+    if (value ==
+        $graph
+            .ReceiptMutationKind
+            .RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION) {
+      continue;
+    }
     final mutation = switch (value) {
       $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_PUT_VERTEX =>
         ReceiptMutationKind.vertexPut,
@@ -1320,12 +1332,11 @@ Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
         'receipt capability advertised an unknown mutation family',
       ),
     };
-    if (value.value <= previousValue || !mutations.add(mutation)) {
+    if (!mutations.add(mutation)) {
       throw _internalSdkException(
         'receipt capability mutation families are not strictly ascending',
       );
     }
-    previousValue = value.value;
   }
   return Set<ReceiptMutationKind>.unmodifiable(mutations);
 }
@@ -1557,6 +1568,10 @@ MutationReceipt _mutationReceiptFromProto(
           result.addEdgeEffectiveWeight,
           'receipt Edge Add effective weight',
         ),
+      );
+    case $graph.ReceiptResult_Result.deleteEdgeContributionExisted:
+      throw _internalSdkException(
+        'targeted Edge contribution Delete receipts are not supported by this SDK',
       );
     case $graph.ReceiptResult_Result.notSet:
       throw _internalSdkException(

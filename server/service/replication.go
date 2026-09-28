@@ -92,6 +92,9 @@ func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
 		_, err := acceptedReceiptEdgeDeleteKeys(m)
 		return true, err
+	case *pb.MutationOp_ReplicatedReceiptEdgeContributionDelete:
+		_, err := acceptedReceiptEdgeContributionDeleteKeys(m)
+		return true, err
 	case *pb.MutationOp_ReplicatedReceiptVertexPut:
 		_, err := acceptedReceiptVertexPutKeys(m)
 		return true, err

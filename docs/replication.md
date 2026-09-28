@@ -124,6 +124,18 @@ whether re-applying an already-seen mutation is a no-op.
 | `PutEdge(s)` | LWW reset on `(tail, head)` | The greatest Put/Delete HLC is the reset floor. The Put supplies one base value and keeps every Add whose HLC is strictly greater than its own. Higher HLC wins; the origin ID is part of the HLC tiebreak. |
 | `DeleteVertex(es)` | Tombstone (LWW) | A tombstone is itself an entry with HLC. Any `Put*` / `Add*` whose HLC < tombstone HLC is dropped. Tombstone TTL = D4. |
 | `DeleteEdge(s)` | Tombstone (LWW reset) on `(tail, head)` | Removes the base value and every Add at or before its HLC while preserving later Adds. The floor is retained for D4, including when later Adds make the edge live. |
+| `DeleteEdgeContribution(s)` | D4-bounded remove-wins set on `(tail, head, ContribID)` | Removes only the identified live Add row, never the Put base or a different Add ID. An accepted missing/duplicate target still retains its own D4 floor, so a delayed Add with that ID is suppressed while the floor lives; `existed` is true only at the request position that removed a live row. |
+
+The targeted API is separate from whole-edge `DeleteEdge(s)`; an omitted or
+zero ID must fail validation rather than silently widening a Delete. It
+requires replication/HLC and positive D4 retention; without those guarantees
+the server fails with `FAILED_PRECONDITION`. Each item requires nonempty
+endpoints and an exactly 24-byte nonzero ID. Plural responses are
+request-index-aligned (including duplicate/missing IDs), with `deleted` equal
+to the count of true `existed` entries. Source rows, including signed and
+zero-weight live rows, are re-folded in canonical order after removal; a
+zero-sum bucket can retain Add ID evidence. Expiration of a row alone does
+not create a synthetic Delete mutation or CDC notification.
 
 An origin samples one absolute D4 deadline for each exact Delete batch and
 publishes it as `Mutation.tombstone_expiration` alongside the HLC and victim
@@ -179,9 +191,12 @@ Put/Delete histories. Receipt-bearing Add binds each explicit `ContribID` to
 one operation ID and semantic intent under bounded retention, rejecting reuse
 under another intent even after a later Delete removes the graph contribution.
 Receipt-less Add only deduplicates retained graph contributions: conflicting
-reuse of an explicit ID remains outside its contract, and a cross-Delete retry
-cannot recover the original result. Receipt status may converge to other
-replicas, but no cross-endpoint exactly-once execution is promised.
+reuse of an explicit ID remains outside its contract. A targeted Delete fences
+the matching ID even when the original Add has not reached this replica, but
+does not promise indefinite replay suppression after D4. A receipt-less retry
+of either Add or Delete after an uncertain response cannot recover the
+original result. Receipt status may converge to other replicas, but no
+cross-endpoint exactly-once execution is promised.
 
 Reads (`GetVertex(es)`, `GetEdge(s)`, `Illuminate`, `SearchVertices`) are
 local-only — they never block on peers and never read-repair. Read-after-write
@@ -296,7 +311,12 @@ across distinct intents; conflicting reuse is outside that contract. In
 certified receipt-bearing Add, a conflicting `ContribID`/operation binding
 fails before commit while receipt evidence is retained, even after a graph
 Delete. A receipt-less retry after that Delete cannot prove the original
-result.
+result. A caller wishing to retract one row must persist its explicit
+`ContribID` before sending the Add (or have otherwise durably recorded the
+actual ID); an untracked/synthesized ID and the Put base cannot be selected
+through `DeleteEdgeContribution(s)`. There is no per-contribution listing or
+global ID lookup. The target ID is distinct from the Delete's own receipt
+operation ID; deleting a row does not erase an existing Add receipt.
 
 ## 7. Mutation log
 
@@ -379,6 +399,8 @@ message MutationOp {
     ReplicatedReceiptVertexPut     replicated_receipt_vertex_put = 16;
     ReplicatedReceiptVertexDelete  replicated_receipt_vertex_delete = 17;
     ReplicatedReceiptEdgeAdd       replicated_receipt_edge_add = 18;
+    DeleteEdgeContributionsRequest delete_edge_contributions = 19;
+    ReplicatedReceiptEdgeContributionDelete replicated_receipt_edge_contribution_delete = 20;
   }
 }
 
@@ -440,9 +462,12 @@ Deviations from the §7 conceptual sketch (recorded as part of #178):
   reclassifying the origin's accepted-expired decision. `CONDITION_NOT_MET`
   and `SUPERSEDED` items made no committed state transition, so they are not
   replicated. If no item committed, no mutation is logged.
-- Receipt-bearing Vertex Put, exact Vertex/Edge Delete, and explicit-ContribID
-  Edge Add use their own result- and identity-preserving `ReplicatedReceipt*`
+- Receipt-bearing Vertex Put, exact Vertex/Edge Delete, explicit-ContribID
+  Edge Add, and targeted Edge contribution Delete use their own result- and
+  identity-preserving `ReplicatedReceipt*`
   arms instead of nesting a receipt context in a generic graph mutation.
+  An accepted graph-only targeted Delete publishes the original triple and
+  accepted indexes, including absent targets, with one absolute D4 deadline.
   No-op receipts still consume an origin sequence; raw graph arms carrying a
   receipt context fail closed.
 - A receiver applies all ordered authoritative entries under one graph-cache
@@ -646,6 +671,13 @@ identity whose LWW write lost; it may never omit an identity that changed.
 Identity-only ProtoJSON (including browser/Node consumers) remains
 value-free: it never projects receipt bodies, contribution IDs, or weights,
 and its marker is not permission to retry an uncertain mutation.
+`DELETE_EDGE_CONTRIBUTION` invalidates the affected `(tail, head)` pair,
+including an accepted missing-ID floor, but does not assert that the entire
+edge disappeared. The consumer re-reads the effective edge if needed; neither
+the target ID nor its expiration is present in the identity frame. A
+receipt-only targeted Delete uses the same zero-key final marker as other
+no-graph-effect receipt calls. Natural TTL expiry emits no synthetic
+identity-only frame.
 
 The stream is deployment-scoped. Current bearer auth protects one graph and
 does not define tenant principals or ACLs. Prefix filtering, if later added,
@@ -740,6 +772,7 @@ message SnapshotResponse {
     SnapshotVertexTombstone vertex_tombstone = 7;
     SnapshotEdgeTombstone edge_tombstone = 8;
     SnapshotReceipt receipt = 9;
+    SnapshotEdgeContributionTombstone edge_contribution_tombstone = 10;
   }
 }
 
@@ -766,6 +799,7 @@ message SnapshotFooter {
   uint64 origin_count = 8;
   uint64 retired_epoch_count = 9;
   uint64 retired_receipt_count = 10;
+  uint64 edge_contribution_tombstone_count = 11;
 }
 
 enum SnapshotReceiptKind {
@@ -775,6 +809,7 @@ enum SnapshotReceiptKind {
   SNAPSHOT_RECEIPT_KIND_ADD_EDGE = 3;
   SNAPSHOT_RECEIPT_KIND_DELETE_VERTEX = 4;
   SNAPSHOT_RECEIPT_KIND_DELETE_EDGE = 5;
+  SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION = 6;
 }
 
 message SnapshotReceiptContribution {
@@ -804,6 +839,14 @@ message SnapshotEdgeTombstone {
   string head = 2;
   HLCTimestamp hlc = 3;
   google.protobuf.Timestamp expiration = 4; // original absolute D4 deadline
+}
+
+message SnapshotEdgeContributionTombstone {
+  string tail = 1;
+  string head = 2;
+  bytes contrib_id = 3; // nonzero 24-byte target
+  HLCTimestamp hlc = 4;
+  google.protobuf.Timestamp expiration = 5; // original absolute D4 deadline
 }
 
 message SnapshotEdge {
@@ -844,7 +887,8 @@ Framing contract:
   receipt-less full Subscribe before checking the retained ring, and rejects every
   graph-only Snapshot request. An opt-in receipt producer exists, but it must
   be configured with the exact service-owned atomic capture source and policy.
-  Generic `AddEdge`/`AddEdges` and `DeleteEdge`/`DeleteEdges` mutation arms
+  Generic `AddEdge`/`AddEdges`, `DeleteEdge`/`DeleteEdges`, and
+  `DeleteEdgeContributions` mutation arms
   reject a nested receipt context before queue, graph apply, or graph-effect
   WAL encoding; receipt replication must use the dedicated evidence-preserving
   arms.
@@ -863,7 +907,7 @@ Framing contract:
   generation, and resume cutoff publish as one cut. Cancellation, corruption,
   truncation, capacity, epoch/policy mismatch, and format downgrade failures
   publish nothing. Snapshot installation alone does not enable public receipt
-  writes or status; the production provider activates all four certified
+  writes or status; the production provider activates all five certified
   mutation families only after the exact runtime, recovery, replication,
   Snapshot, and backup state is certified and bearer auth is configured.
   Production bounds are 8 MiB per frame, 512 MiB per complete wire/canonical
@@ -899,11 +943,12 @@ Framing contract:
   intent, deadline, exact original result bytes, and Add contribution
   metadata. An empty retired catalog, zero active rows, and a receipt-only
   graph cut are valid.
-- The **footer** is always the last frame. It reports ten separate actually
+- The **footer** is always the last frame. It reports eleven separate actually
   streamed counts: live vertices, live edges, vertex causal barriers, edge
   causal barriers, vertex Delete tombstones, edge Delete tombstones, active
-  receipt rows, origin rows, retired epochs, and retired receipt rows. Pump and
-  anti-entropy consumers reject count mismatches, duplicate/missing
+  receipt rows, origin rows, retired epochs, retired receipt rows, and active
+  per-contribution Delete tombstones. Pump and anti-entropy consumers reject
+  count mismatches, duplicate/missing
   header/footer frames, or any out-of-order body frame before advancing resume
   watermarks.
 - Before sending the header, the receipt producer owns the complete detached
@@ -934,12 +979,18 @@ Framing contract:
   dedicated causal-barrier seams that create no vertex, endpoint, edge bucket,
   or Search document. Sending barriers first preserves an older retained floor
   when the same identity also has a newer live value.
-- Active D4 Delete tombstones follow causal barriers and precede live entries.
+- Active D4 Delete tombstones, including the keyed contribution floors, follow
+  causal barriers and precede live entries.
   Their frames carry the original absolute expiration, so bootstrap and a
   repeated Snapshot do not start a new D4 window. Expired frames in transit
   count toward the footer but install no floor. Missing/invalid HLC or
   expiration, a truncated stream, and reordered frames fail closed before
-  resume watermarks advance. Replay follows the existing remote-apply rule:
+  resume watermarks advance. A keyed floor must precede an edge's live Add
+  rows in either Snapshot format and must survive relay, receipt whole-state
+  backup/restore, and gap repair.
+  Graph-only `.lbk` instead folds contributions and does **not** preserve the
+  original IDs or deleted-ID history; it cannot prove a past selective Delete
+  after restore. Replay follows the existing remote-apply rule:
   it may exceed a locally configured causal budget rather than diverging from
   a peer that already committed the Delete.
 - Ordinary Snapshot edges preserve **per-contribution decomposition**:
@@ -1035,7 +1086,8 @@ Implementation notes:
   the exact runtime, primary service, replication service, backup source, and
   recovery evidence are certified and bearer authentication is configured.
   Its public mutation families are optional receipt-bearing Vertex Put, exact
-  Vertex Delete, exact Edge Delete, and contribution-keyed Edge Add;
+  Vertex Delete, exact Edge Delete, contribution-keyed Edge Add, and targeted
+  Edge contribution Delete;
   capability and singular/plural status share the same committed view. A
   faulted, recovering, closed, auth-disabled, or uncertified runtime omits
   receipt identity and fails closed. Restart
@@ -1082,6 +1134,13 @@ Retention and memory:
   overlap means a Put barrier is charged to both the conservative legacy cap
   and the complete causal budget; moving it to a tombstone frees only the
   legacy live/barrier slot.
+- Each retained `(tail, head, ContribID)` Delete floor consumes an additional
+  Edge causal slot and a separately accounted deadline/byte record, even
+  when its edge is absent or another Add keeps that pair live. Repeating the
+  same ID reuses its slot. Local plural Deletes reserve the complete set
+  atomically before changing graph/log state; a receiver importing committed
+  remote effects may exceed its own budget. GC removes expired keyed floors
+  and releases their capacity without extending their deadline on replay.
 - A local Put or Delete that needs a new causal identity beyond its per-kind
   budget fails with `RESOURCE_EXHAUSTED` before graph, causal state, or the
   mutation log changes. A write replacing an already-accounted identity still
@@ -1211,8 +1270,11 @@ Lantern is **AP** in CAP terms. During a partition:
   replica. Cursor sessions and signing keys are endpoint-local; failover must
   discard a continuation and restart from page one.
 - For an edge identity with an Add-only history, `AddEdge*` writes on both
-  sides combine by G-Set union when the partition heals. No contribution is
-  lost.
+  sides combine by G-Set union when the partition heals. A targeted
+  `DeleteEdgeContribution(s)` removes only its `(tail, head, ContribID)` row,
+  even when that row's Add arrives after the Delete; the accepted per-ID D4
+  floor must reach the lagging side before expiry. Other Add IDs and Put bases
+  are untouched.
 - For Put-only LWW/barrier histories, `Put*` writes converge to the higher-HLC
   outcome. The losing side's live value or accepted-expired floor is silently
   superseded — this is intentional LWW semantics.

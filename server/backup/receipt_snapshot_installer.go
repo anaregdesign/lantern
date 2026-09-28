@@ -121,12 +121,13 @@ func (i *ReceiptSnapshotInstaller) Install(
 	footer := capture.Graph[len(capture.Graph)-1].GetFooter()
 	result.Header = metadata.Header
 	result.Graph = replication.SnapshotGraphCounts{
-		Vertices:             footer.GetVertexCount(),
-		Edges:                footer.GetEdgeCount(),
-		VertexCausalBarriers: footer.GetVertexCausalBarrierCount(),
-		EdgeCausalBarriers:   footer.GetEdgeCausalBarrierCount(),
-		VertexTombstones:     footer.GetVertexTombstoneCount(),
-		EdgeTombstones:       footer.GetEdgeTombstoneCount(),
+		Vertices:                   footer.GetVertexCount(),
+		Edges:                      footer.GetEdgeCount(),
+		VertexCausalBarriers:       footer.GetVertexCausalBarrierCount(),
+		EdgeCausalBarriers:         footer.GetEdgeCausalBarrierCount(),
+		VertexTombstones:           footer.GetVertexTombstoneCount(),
+		EdgeTombstones:             footer.GetEdgeTombstoneCount(),
+		EdgeContributionTombstones: footer.GetEdgeContributionTombstoneCount(),
 	}
 	return result, nil
 }

@@ -12,8 +12,8 @@
 # qualification, rather than merely warning in the release artifact.
 # Rather than run ~16 single-call scenarios (which paid per-scenario fixed overhead — warmup +
 # pre/post runtime+pprof snapshots + cooldown + Prometheus range queries +
-# report render — for each call path), the sweep is compacted to SEVEN
-# scenarios, THREE of which fan out across many call paths inside a single
+# report render — for each call path), the sweep is compacted to EIGHT
+# scenarios, FOUR of which fan out across many call paths inside a single
 # steady window (see the `target.calls` fan-out rule in run.sh). This keeps
 # broad coverage while cutting wall-time roughly 5x vs individual scenarios.
 # See issues #573 and #716.
@@ -32,8 +32,9 @@
 # Wall-time decomposes into two parts. The scenario PHASE time is deterministic
 # (ghz runs each phase for exactly its -z duration): broad_rw 150s +
 # broad_illuminate 150s + broad_mutate 165s + ttl_churn 210s +
-# many_subscribers 180s + search_churn 210s + replication_apply_churn 300s
-# = ~23 min total. On top of that, EACH scenario pays per-scenario CAPTURE
+# many_subscribers 180s + search_churn 210s + replication_apply_churn 300s +
+# edge_contrib_idempotent 210s = ~26.5 min total. On top of that, EACH
+# scenario pays per-scenario CAPTURE
 # overhead — two pprof snapshots (24 curls, up to 60s each) + Prometheus
 # range queries (up to 30s each) — which on a contended ubuntu-latest runner
 # adds ~5-10 min/scenario, so the FULL-capture sweep runs ~55-65 min, not the
@@ -47,25 +48,23 @@
 #   - manual qualification: runs LEAK_GATE_ONLY=1 (run.sh skips pprof + Prometheus,
 #     keeping only the runtime snapshots the verdict reads) and
 #     RELEASE_BENCH_BUDGET_SECONDS=0 (un-truncated). Dropping capture returns the
-#     sweep to ~phase time (~23 min) + image build/setup, ~35-40 min total, so
-#     the blocking gate runs ALL seven scenarios within its timeout.
-# See issues #571, #573, #708, #716, and #727. If you add or lengthen a
-# scenario, review the release budget and manual-workflow timeout together.
+#     sweep to ~phase time (~26.5 min) + image build/setup, ~40-45 min total, so
+#     the full qualification runs all eight scenarios within its timeout.
+# See issues #571, #573, #708, #716, and #727. Review the release budget and
+# qualification timeout together when adding or lengthening a scenario.
 #
 # release.sh self-bounds the sweep via RELEASE_BENCH_BUDGET_SECONDS and always
 # aggregates whatever ran (appending a `## Truncated` note), so an over-budget
 # runner still yields a partial report instead of an empty one.
 #
-# If you add a scenario here, keep it self-contained: the release driver
-# reuses ONE compose stack across all entries, so a scenario that mutates
-# global server config or leaves a wedged stream behind will pollute every
-# subsequent scenario's leak gate. Prefer adding a new `*.yaml` over
-# reusing an existing one with side effects.
+# If you add a scenario here, keep its keyspace and gates bounded. The release
+# driver gives each scenario a fresh Compose lifecycle; a new `*.yaml` also
+# avoids re-splitting the producers' measured RPS in an existing scenario.
 #
 # The heavier single-call scenarios (write_heavy, read_heavy, mixed_rw,
 # batch_put_vertices, scan_prefix, addedge_contention, illuminate*,
 # replication_soak, chaos_kill_replica, smoke_*, prefix_surface,
-# edge_contrib_idempotent, backup_under_load) remain in scenarios/ and stay
+# backup_under_load) remain in scenarios/ and stay
 # runnable on demand via `run.sh <stem>` for deep dives — they are simply not
 # part of the compact release gate.
 #
@@ -90,6 +89,11 @@ broad_illuminate
 # fan-out, #716) — the write RPCs broad_rw omits. Self-contained m-* keyspace
 # (disjoint from broad_rw), so its position in the sweep is not load-bearing.
 broad_mutate
+
+# bounded keyed Add and contribution Delete (singular/plural) over hot edge
+# pairs, with independent throughput/latency/error floors and D4 leak checks
+# without changing broad_mutate's 9-way per-producer baseline (#1528).
+edge_contrib_idempotent
 
 # TTL expiry / eviction plumbing under sustained write churn
 ttl_churn

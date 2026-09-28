@@ -56,6 +56,11 @@ func receiptWALEnvelopeInfo(op mutationlog.MutationOp) (receiptWALEnvelopeMetada
 			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
 			policy: value.PolicyFingerprint, receipts: value.Receipts,
 		}, true
+	case *edgeContributionDeleteReceiptEnvelope:
+		return receiptWALEnvelopeMetadata{
+			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
+			policy: value.PolicyFingerprint, receipts: value.Receipts,
+		}, true
 	case *vertexPutReceiptEnvelope:
 		return receiptWALEnvelopeMetadata{
 			origin: value.Origin, originSeq: value.OriginSeq, epoch: value.Epoch,
@@ -263,6 +268,19 @@ func replayReceiptEnvelopeGraph(
 		if !slices.Equal(tx.Result().Accepted, value.Accepted) {
 			tx.Abort()
 			return fmt.Errorf("%w: accepted Edge Delete projection drift", errReceiptWALUnion)
+		}
+		tx.Commit()
+		return nil
+	case *edgeContributionDeleteReceiptEnvelope:
+		tx, err := graph.BeginReplicatedEdgeContributionDelete(
+			value.OriginalKeys, value.HLC, value.TombstoneExpiration,
+		)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(tx.Result().Accepted, value.Accepted) {
+			tx.Abort()
+			return fmt.Errorf("%w: accepted contribution Delete projection drift", errReceiptWALUnion)
 		}
 		tx.Commit()
 		return nil
@@ -541,6 +559,7 @@ func emptyReceiptWALRecoveryGraph(graph *graphcache.GraphCache[string, *pb.Verte
 	snapshot := graph.SnapshotReplication()
 	return len(snapshot.Barriers.Vertices) == 0 && len(snapshot.Barriers.Edges) == 0 &&
 		len(snapshot.Tombstones.Vertices) == 0 && len(snapshot.Tombstones.Edges) == 0 &&
+		len(snapshot.Tombstones.EdgeContributions) == 0 &&
 		len(snapshot.Graph.Vertices) == 0 && len(snapshot.Graph.Edges) == 0
 }
 
@@ -774,6 +793,29 @@ func replayGraphDeleteEffect(graph *graphcache.GraphCache[string, *pb.Vertex], e
 		} else {
 			graph.DeleteEdges(keys)
 			replayed = allAcceptedIndexes(len(keys))
+		}
+	case *pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
+		var wireKeys []*pb.EdgeContributionKey
+		switch value := op.(type) {
+		case *pb.MutationOp_DeleteEdgeContribution:
+			wireKeys = []*pb.EdgeContributionKey{{
+				Tail: value.DeleteEdgeContribution.GetTail(), Head: value.DeleteEdgeContribution.GetHead(),
+				ContribId: value.DeleteEdgeContribution.GetContribId(),
+			}}
+		case *pb.MutationOp_DeleteEdgeContributions:
+			wireKeys = value.DeleteEdgeContributions.GetContributions()
+		}
+		original, err := edgeContributionKeysFromWire(wireKeys)
+		if err != nil {
+			return receiptWALUnionError("graph contribution Delete identity: %v", err)
+		}
+		keys := make([]graphcache.EdgeContributionKey[string], len(effect.AcceptedIndexes))
+		for i, index := range effect.AcceptedIndexes {
+			keys[i] = original[index]
+		}
+		_, replayed, err = graph.DeleteEdgeContributionsHLCDecisions(keys, ts, deadline)
+		if err != nil {
+			return receiptWALUnionError("graph contribution Delete replay: %v", err)
 		}
 	default:
 		return receiptWALUnionError("graph Delete effect has unsupported replay arm %T", op)

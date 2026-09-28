@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	client "github.com/anaregdesign/lantern/sdks/go"
 )
 
 var (
@@ -32,6 +34,8 @@ var (
 		"vertex",
 		"edge",
 	}
+
+	DeleteObjectives = []string{"vertex", "edge", "contribution"}
 
 	// ScanObjectives are the plural-form objectives accepted by the
 	// `scan` verb. They intentionally do NOT overlap with `Objectives`
@@ -203,6 +207,10 @@ func Verb(s *Source) (string, error) {
 
 func Objective(s *Source) (string, error) {
 	return AnyOf(s, Objectives)
+}
+
+func DeleteObjective(s *Source) (string, error) {
+	return AnyOf(s, DeleteObjectives)
 }
 
 func ScanObjective(s *Source) (string, error) {
@@ -398,16 +406,32 @@ func AddEdgeParam(s *Source) (*AddEdge, error) {
 	if m.Weight, err = Float32(s); err != nil {
 		return nil, err
 	}
-	if err := EOF(s); err == nil {
-		// Omitted ttl_seconds ⇒ permanent (no decay); see PutVertexParam (#523).
-		m.TTL = 0
-		return m, nil
-	}
-	if m.TTL, err = Duration(s); err != nil {
-		return nil, err
-	}
-	if err := EOF(s); err != nil {
-		return nil, err
+	ttlSet, idSet := false, false
+	for s.HasNext() {
+		token, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		if key, hexID, ok := strings.Cut(token, "="); ok {
+			if !strings.EqualFold(key, "id") || idSet {
+				return nil, fmt.Errorf("add edge: unexpected option %q", token)
+			}
+			m.ContribID, err = client.ParseContribID(hexID)
+			if err != nil {
+				return nil, fmt.Errorf("add edge id: %w", err)
+			}
+			idSet = true
+			continue
+		}
+		if ttlSet {
+			return nil, fmt.Errorf("add edge: unexpected token %q", token)
+		}
+		seconds, err := strconv.Atoi(token)
+		if err != nil {
+			return nil, fmt.Errorf("add edge ttl_seconds: %w", err)
+		}
+		m.TTL = time.Duration(seconds) * time.Second
+		ttlSet = true
 	}
 	return m, nil
 }
@@ -486,6 +510,39 @@ func DeleteEdgeParam(s *Source) (*DeleteEdge, error) {
 		m.Pairs = append(m.Pairs, EdgePair{Tail: tail, Head: head})
 	}
 	if len(m.Pairs) == 0 {
+		return nil, ErrNotFound
+	}
+	return m, nil
+}
+
+// DeleteContributionParam parses one or more directed-edge/ContribID triples.
+// SDK-owned validation rejects an all-zero ID and any width other than 24
+// bytes (a receipt operation ID is 49 bytes and cannot name a contribution).
+func DeleteContributionParam(s *Source) (*DeleteContribution, error) {
+	m := &DeleteContribution{}
+	for s.HasNext() {
+		tail, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		head, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		hexID, err := String(s)
+		if err != nil {
+			return nil, err
+		}
+		if tail == "" || head == "" {
+			return nil, ErrNotFound
+		}
+		id, err := client.ParseContribID(hexID)
+		if err != nil {
+			return nil, fmt.Errorf("delete contribution id: %w", err)
+		}
+		m.Refs = append(m.Refs, client.EdgeContributionRef{Tail: tail, Head: head, ContribID: id})
+	}
+	if len(m.Refs) == 0 {
 		return nil, ErrNotFound
 	}
 	return m, nil

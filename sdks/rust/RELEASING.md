@@ -4,6 +4,8 @@
 its own `sdks/rust/vX.Y.Z` tag cadence, independent of the Go, Dart, and Node
 releases. This is a maintainer procedure for an **owner-authorized future
 release**, not authorization to tag, publish, or create a GitHub Release now.
+`0.1.0` was published and verified through the owner-held bootstrap; later
+versions must use the protected, tag-driven OIDC path below.
 See [Issue #1381](https://github.com/anaregdesign/lantern/issues/1381),
 the [release workflow](../../.github/workflows/rust-release.yml), and the
 [contributor quality gate](../../CONTRIBUTING.md#standalone-rust-sdk-gate).
@@ -72,16 +74,13 @@ distinguish an absent crate, its first and only published version, and later
 versions. It does **not** assume `0.1.0` is necessarily the first version.
 Incomplete or inconsistent registry responses fail closed.
 
-## First publication: crate owner only
+## First publication: historical owner-only bootstrap
 
-The first version (currently planned as `0.1.0`) **cannot** use crates.io
-trusted publishing before the crate exists. The owner performs a one-time
-manual publish from the verified immutable tag with **owner-held credentials**,
-never a registry token in CI or the repository. If `0.1.0` cannot be published
-from its immutable tag, prepare, review, and qualify a new commit and version
-(for example `0.1.1`) with a new immutable tag; that version may be the
-owner-held first publication. Never move the old tag or republish its version.
-Once any version is published, do not manually publish another version.
+The first version (`0.1.0`) was published by the owner from a verified
+immutable tag using owner-held credentials: crates.io cannot use trusted
+publishing before a crate exists. The steps below document that completed
+bootstrap for audit; **do not repeat them for later versions**. Never move
+the old tag, republish a version, or manually publish a subsequent release.
 
 1. With the authorized tag pushed, inspect its **Rust SDK Release** run. All
    six conformance lanes, the advisory audit, packaging, archive inspection,
@@ -102,7 +101,7 @@ Once any version is published, do not manually publish another version.
 
    ```bash
    set -euo pipefail
-   tag=sdks/rust/v0.1.0 # replace with the approved first-publication tag
+   tag=sdks/rust/v0.1.0 # historical first-publication tag
    version=${tag#sdks/rust/v}
    ci_archive="/path/to/downloaded/lantern-client-$version.crate"
    expected_sha='<SHA-256 from this Actions run summary>'

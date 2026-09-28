@@ -71,6 +71,8 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		receiptEnvelope, receiptErr = decodeReceiptEdgeAddMutation(m)
 	case *pb.MutationOp_ReplicatedReceiptEdgeDelete:
 		receiptEnvelope, receiptErr = decodeReceiptEdgeDeleteMutation(m)
+	case *pb.MutationOp_ReplicatedReceiptEdgeContributionDelete:
+		receiptEnvelope, receiptErr = decodeReceiptEdgeContributionDeleteMutation(m)
 	case *pb.MutationOp_ReplicatedReceiptVertexPut:
 		receiptEnvelope, receiptErr = decodeReceiptVertexPutMutation(m)
 	case *pb.MutationOp_ReplicatedReceiptVertexDelete:
@@ -535,6 +537,38 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, e
 			return graphApplyResult{opName: "DeleteEdges", walOp: effect}, nil
 		}
 
+	case *pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
+		var wireKeys []*pb.EdgeContributionKey
+		switch entry := m.GetOp().GetOp().(type) {
+		case *pb.MutationOp_DeleteEdgeContribution:
+			wireKeys = []*pb.EdgeContributionKey{{
+				Tail:      entry.DeleteEdgeContribution.GetTail(),
+				Head:      entry.DeleteEdgeContribution.GetHead(),
+				ContribId: entry.DeleteEdgeContribution.GetContribId(),
+			}}
+		case *pb.MutationOp_DeleteEdgeContributions:
+			wireKeys = entry.DeleteEdgeContributions.GetContributions()
+		}
+		keys, err := edgeContributionKeysFromWire(wireKeys)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
+		}
+		if !useTomb {
+			return graphApplyResult{}, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("replication contribution Delete requires D4 tombstone retention"))
+		}
+		_, accepted, err := s.cache.DeleteEdgeContributionsHLCDecisions(keys, ts, tombExp)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
+		}
+		effect, err := newGraphDeleteEffectEnvelope(m, accepted)
+		if err != nil {
+			return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication Delete evidence: %w", err))
+		}
+		if _, ok := op.(*pb.MutationOp_DeleteEdgeContribution); ok {
+			return graphApplyResult{opName: "DeleteEdgeContribution", walOp: effect}, nil
+		}
+		return graphApplyResult{opName: "DeleteEdgeContributions", walOp: effect}, nil
 	}
 
 	return graphApplyResult{opName: opName}, nil
@@ -575,6 +609,11 @@ func mutationTombstoneExpiration(m *pb.Mutation, retentionEnabled bool) (time.Ti
 	case *pb.MutationOp_DeleteVertex, *pb.MutationOp_DeleteVertices,
 		*pb.MutationOp_DeleteEdge, *pb.MutationOp_DeleteEdges:
 		deleting = true
+	case *pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
+		deleting = true
+		if !retentionEnabled {
+			return time.Time{}, fmt.Errorf("contribution Delete requires D4 tombstone retention")
+		}
 	}
 	stamp := m.GetTombstoneExpiration()
 	if !deleting {

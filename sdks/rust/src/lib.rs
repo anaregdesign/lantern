@@ -51,7 +51,7 @@ pub use transport::{
 pub use traversal::{
     BfsOptions, CommunityOptions, Graph, GraphEdge, PprOptions, TraversalFamily, TraversalOptions,
 };
-pub use value::{EdgeInput, EdgeRef, Expiration, VertexInput, VertexKind};
+pub use value::{EdgeContributionRef, EdgeInput, EdgeRef, Expiration, VertexInput, VertexKind};
 
 #[cfg(test)]
 mod smoke;

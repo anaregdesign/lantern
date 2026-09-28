@@ -234,6 +234,26 @@ describe("identity-only CDC facade", () => {
     }
   });
 
+  test("contribution Delete invalidates the edge key only", () => {
+    const decoded = decodeIdentityFrame(
+      chunk({
+        operation: IdentityOperation.DELETE_EDGE_CONTRIBUTION,
+        vertexKeys: [],
+        edgeKeys: [{ tail: "t", head: "h" }],
+      }),
+    );
+    expect(decoded.kind).toBe("chunk");
+    if (decoded.kind !== "chunk") throw new Error();
+    expect(decoded.operation).toBe("deleteEdgeContribution");
+    expect(decoded.edgeKeys).toEqual([{ tail: "t", head: "h" }]);
+    expect(decoded.vertexKeys).toEqual([]);
+    expect(() =>
+      decodeIdentityFrame(
+        chunk({ operation: IdentityOperation.DELETE_EDGE_CONTRIBUTION, vertexKeys: ["v"] }),
+      ),
+    ).toThrow(LanternError);
+  });
+
   test("bootstrap and resume use identity projection, preserve high-bit uint64, and skip the unary timeout", async () => {
     let request: SubscribeRequest | undefined;
     let timeoutMs: number | undefined = -1;

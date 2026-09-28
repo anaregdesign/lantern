@@ -14,9 +14,11 @@ import (
 //	lantern-cli delete vertex <key>
 //	lantern-cli get    edge   <tail> <head>
 //	lantern-cli add    edge   <tail> <head> <weight> [ttl_seconds]
+//	lantern-cli add    edge   <tail> <head> <weight> [ttl_seconds] [id=<48hex>]
 //	lantern-cli add    decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>
 //	lantern-cli put    edge   <tail> <head> <weight> [ttl_seconds]
 //	lantern-cli delete edge   <tail> <head>
+//	lantern-cli delete contribution <tail> <head> <48hex> [<tail> <head> <48hex>...]
 //	lantern-cli scan   vertices <prefix> [limit]
 //	lantern-cli scan   edges    <tail-prefix> [limit]
 //	lantern-cli search <query> [limit=<n>] [mode=server|any|all|min-should] [...]
@@ -87,11 +89,11 @@ put edge REPLACES the weight (idempotent); use "add edge" to accumulate.`,
 }
 
 var grammarAddCmd = &cobra.Command{
-	Use:   "add { edge <tail> <head> <weight> [ttl_seconds] | decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds> }",
+	Use:   "add { edge <tail> <head> <weight> [ttl_seconds] [id=<48hex>] | decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds> }",
 	Short: "Additive edge write: sum weight onto (tail,head), optionally decaying (REPL grammar)",
 	Long: `Accumulate an edge weight using the same verb-first grammar as the REPL:
 
-  lantern-cli add edge <tail> <head> <weight> [ttl_seconds]
+  lantern-cli add edge <tail> <head> <weight> [ttl_seconds] [id=<48hex>]
   lantern-cli add decaying-edge <tail> <head> <initial_weight> <ratio> <steps> <interval_seconds>
 
 add edge is ADDITIVE: repeated calls on the same (tail, head) pair sum their
@@ -100,6 +102,15 @@ Use "put edge" when the weight is a measured property to replace wholesale.
 
 The optional trailing ttl_seconds is a positional integer (the REPL form);
 omit it for a permanent (no-decay) edge.
+To remove just this Add row later, generate and persist a nonzero 24-byte
+(48-hex-character) ID before sending, then pass id=<hex>. Example:
+  lantern-cli add edge a b 1 id=123456789012345678901234123456789012345678901234
+  lantern-cli delete contribution a b 123456789012345678901234123456789012345678901234
+The ID is not a 49-byte receipt operation ID. After response loss, neither a
+receipt-less Add nor a selective Delete can recover its original result.
+A deleted ID is fenced against delayed Add only while its D4 tombstone is
+retained: use a fresh ID for a new Add. Folded graph-only backups do not
+preserve per-ID tombstones after restore.
 
 add decaying-edge writes a geometric decay staircase entirely client-side (no
 server support): the edge's contributed weight starts at <initial_weight> and
@@ -115,17 +126,22 @@ tombstone-TTL horizon or the whole write is rejected.`,
 }
 
 var grammarDeleteCmd = &cobra.Command{
-	Use:   "delete { vertex <key> [<key>...] | edge <tail> <head> [<tail> <head>...] }",
-	Short: "Delete vertices or edges (REPL grammar)",
-	Long: `Delete vertices or edges using the same verb-first grammar as the REPL:
+	Use:   "delete { vertex <key> [<key>...] | edge <tail> <head> [<tail> <head>...] | contribution <tail> <head> <48hex> [<tail> <head> <48hex>...] }",
+	Short: "Delete vertices, edges, or individual Add contributions (REPL grammar)",
+	Long: `Delete vertices, edges, or Add contributions using the same verb-first grammar as the REPL:
 
   lantern-cli delete vertex <key> [<key> ...]
   lantern-cli delete edge <tail> <head> [<tail> <head> ...]
+  lantern-cli delete contribution <tail> <head> <48hex> [<tail> <head> <48hex> ...]
 
 One key/pair deletes a single target; supplying more than one routes to the
 batched DeleteVertices / DeleteEdges RPC and prints "OK <n>" with the count
 actually removed. To delete every vertex under a key prefix, use
-"delete-prefix vertices".`,
+"delete-prefix vertices". Contribution Delete removes only the named Add
+row, not any Put base or other Adds. Its ID must be a nonzero 24-byte
+ContribID, not a 49-byte receipt operation ID. Unlike whole-edge Delete,
+it prints {"deleted":N,"existed":[true,false,...]} in request order, including
+duplicates and misses. Response loss leaves receipt-less results uncertain.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGrammarLine(cmd, "delete", args)
 	},

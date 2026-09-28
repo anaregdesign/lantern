@@ -495,6 +495,12 @@ void main() {
     expect(RetryRegistry.classifications.keys.toSet(), containsAll(generated));
     expect(RetryRegistry.classify('FutureUnknownMethod'), RpcRetryClass.never);
     expect(RetryRegistry.classify('DeleteVertex'), RpcRetryClass.never);
+    for (final method in [
+      'DeleteEdgeContribution',
+      'DeleteEdgeContributions',
+    ]) {
+      expect(RetryRegistry.classify(method), RpcRetryClass.never);
+    }
     for (final method in ['AddEdge', 'AddEdges', 'AddDecayingEdge']) {
       expect(
         RetryRegistry.classify(method),

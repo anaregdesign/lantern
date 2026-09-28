@@ -62,7 +62,13 @@ export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
 }
 
 export { Lantern } from "./client.js";
-export type { EdgePutResult, LanternArgs, PutOutcome, VertexPutResult } from "./client.js";
+export type {
+  EdgeContributionDeleteBatchResult,
+  EdgePutResult,
+  LanternArgs,
+  PutOutcome,
+  VertexPutResult,
+} from "./client.js";
 export { IdentityNextCursor } from "./changes.js";
 export type {
   IdentityCheckpointFrame,
@@ -91,6 +97,7 @@ export {
   SearchIndexHealth,
 } from "./gen/graph/v1/graph_pb.js";
 export { CONTRIB_ID_BYTES } from "./contrib.js";
+export type { EdgeContributionRef } from "./contrib.js";
 export { MAX_DECAY_STEPS, decayContributions, halfLifeDecay } from "./decay.js";
 export type { DecayOptions } from "./decay.js";
 export {
@@ -135,6 +142,8 @@ export type {
   EdgeAddReceiptResult,
   EdgeDeleteReceiptBatchResult,
   EdgeDeleteReceiptResult,
+  EdgeContributionDeleteReceiptBatchResult,
+  EdgeContributionDeleteReceiptResult,
   EnabledReceiptCapability,
   GroupID,
   OperationID,

@@ -99,7 +99,11 @@ func (s *ReceiptWholeStateSource) belongsTo(replication *LanternReplicationServi
 		s.owner.runtime == replication.runtime &&
 		runtimeSlotMatches &&
 		s.owner.receiptStore == s.store &&
-		s.owner.receiptRetiredCatalog == s.retired
+		s.owner.receiptRetiredCatalog == s.retired &&
+		s.owner.receiptEdgeContributionDeleteCoordinator != nil &&
+		s.owner.receiptEdgeContributionDeleteCoordinator.service == s.owner &&
+		s.owner.receiptEdgeContributionDeleteCoordinator.cache == s.cache &&
+		s.owner.receiptEdgeContributionDeleteCoordinator.store == s.store
 }
 
 // NewReceiptWholeStateSource exposes only the coordinator's detached capture,
@@ -127,6 +131,9 @@ func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store)
 		return nil, err
 	}
 	if _, err := newEdgeAddReceiptCoordinator(s, store); err != nil {
+		return nil, err
+	}
+	if _, err := newEdgeContributionDeleteReceiptCoordinator(s, store); err != nil {
 		return nil, err
 	}
 	return &ReceiptWholeStateSource{

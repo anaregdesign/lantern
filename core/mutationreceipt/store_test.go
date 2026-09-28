@@ -85,6 +85,87 @@ func committedTestReceipts(intents []Intent, results [][]byte, retention time.Du
 	return receipts
 }
 
+func TestStoreEdgeContributionDeleteRetainsPresentFalseAndAddBinding(t *testing.T) {
+	s := testStore(t, 3, 1000)
+	target := ContribID{9}
+	add := testIntent(t, 1, testStart, GroupID{1}, 0, 1)
+	add.Kind, add.HasContrib, add.ContribID = AddEdge, true, target
+	commitTestBatch(t, s, testStart, []Intent{add}, [][]byte{{1, 2, 3, 4}})
+
+	deletion := testIntent(t, 2, testStart, GroupID{2}, 0, 1)
+	deletion.Kind = DeleteEdgeContribution
+	deletion.Digest = IntentDigest([]byte("tail/head/target-9"))
+	tx, err := s.Begin(testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if class, _, err := tx.Classify([]Intent{deletion}); err != nil || class != Fresh {
+		tx.Abort()
+		t.Fatalf("classification with Add's target ID = %v, %v", class, err)
+	}
+	for _, bad := range [][]byte{nil, {}, {2}} {
+		if err := tx.Reserve([][]byte{bad}); !errors.Is(err, ErrInvalidBatch) {
+			tx.Abort()
+			t.Fatalf("invalid original result %v = %v", bad, err)
+		}
+	}
+	if err := tx.Reserve([][]byte{{0}}); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	if err := tx.ReplaceReservedResults([][]byte{{2}}); !errors.Is(err, ErrInvalidBatch) {
+		tx.Abort()
+		t.Fatalf("invalid replacement result = %v", err)
+	}
+	if err := tx.Stage(); err != nil {
+		tx.Abort()
+		t.Fatal(err)
+	}
+	tx.Commit()
+
+	tx, err = s.Begin(testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, receipts, err := tx.Classify([]Intent{deletion})
+	tx.Abort()
+	if err != nil || class != Duplicate || len(receipts) != 1 ||
+		!bytes.Equal(receipts[0].Result, []byte{0}) {
+		t.Fatalf("original false result missing on retry: %v, %+v, %v", class, receipts, err)
+	}
+	changed := deletion
+	changed.Digest = IntentDigest([]byte("tail/head/other-target"))
+	tx, err = s.Begin(testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = tx.Classify([]Intent{changed})
+	tx.Abort()
+	if !errors.Is(err, ErrIntentConflict) {
+		t.Fatalf("changed target digest = %v, want conflict", err)
+	}
+	if status, receipt, err := s.Lookup(add.ID, testStart); err != nil || status != Confirmed ||
+		receipt.ContribID != target {
+		t.Fatalf("deletion changed Add reverse binding: %v, %+v, %v", status, receipt, err)
+	}
+}
+
+func TestStoreEdgeContributionDeleteCommittedResultsRequirePresence(t *testing.T) {
+	s := testStore(t, 1, 1000)
+	item := testIntent(t, 1, testStart, GroupID{1}, 0, 1)
+	item.Kind = DeleteEdgeContribution
+	for _, bad := range [][]byte{nil, {}, {2}} {
+		rows := committedTestReceipts([]Intent{item}, [][]byte{bad}, time.Hour)
+		if err := s.ValidateCommitted(rows, testStart.UnixMilli()); !errors.Is(err, ErrInvalidBatch) {
+			t.Fatalf("committed absent/invalid original result %v = %v", bad, err)
+		}
+	}
+	rows := committedTestReceipts([]Intent{item}, [][]byte{{0}}, time.Hour)
+	if err := s.ValidateCommitted(rows, testStart.UnixMilli()); err != nil {
+		t.Fatalf("committed present-false result = %v", err)
+	}
+}
+
 func TestStoreReplaceReservedResults(t *testing.T) {
 	s := testStore(t, 2, 1000)
 	group := GroupID{0x44}

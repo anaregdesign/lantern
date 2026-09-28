@@ -13,7 +13,7 @@
  * underlying ConnectError as `cause`.
  *
  * BatchError is thrown by batch helpers (putVertices, addEdges, putEdges,
- * deleteVertices, deleteEdges) on partial-write failure; its `written`
+ * deleteVertices, deleteEdges, deleteEdgeContributions) on partial-write failure; its `written`
  * field reports the input-prefix length whose responses were fully observed
  * before the failing chunk. The remaining `inputs.slice(err.written)` are
  * uncertain, not automatically safe to replay: a failed chunk may have

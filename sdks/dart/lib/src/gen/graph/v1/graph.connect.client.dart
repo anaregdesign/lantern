@@ -400,6 +400,44 @@ extension type LanternServiceClient (connect.Transport _transport) {
     );
   }
 
+  /// DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+  /// It is a thin facade over DeleteEdgeContributions.
+  Future<graphv1graph.DeleteEdgeContributionResponse> deleteEdgeContribution(
+    graphv1graph.DeleteEdgeContributionRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.deleteEdgeContribution,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  /// DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+  /// missing rows still install an absolute D4 remove-wins tombstone.
+  Future<graphv1graph.DeleteEdgeContributionsResponse> deleteEdgeContributions(
+    graphv1graph.DeleteEdgeContributionsRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.deleteEdgeContributions,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   /// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
   /// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
   /// At least one prefix must be non-empty. Pass `dry_run = true` to preview

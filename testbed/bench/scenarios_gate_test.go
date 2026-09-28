@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"text/template"
@@ -63,6 +64,196 @@ type scenarioDoc struct {
 		DataTemplate string         `yaml:"data_template"`
 		Consumers    []scenarioCall `yaml:"consumers"`
 	} `yaml:"subscribe"`
+}
+
+func TestContributionDeleteReleaseScenarioContract(t *testing.T) {
+	const name = "edge_contrib_idempotent"
+	raw, err := os.ReadFile(filepath.Join("scenarios", name+".yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Name   string `yaml:"name"`
+		Phases struct {
+			Warmup struct {
+				RPS int `yaml:"rps"`
+			} `yaml:"warmup"`
+			Steady struct {
+				Duration string `yaml:"duration"`
+				RPS      int    `yaml:"rps"`
+			} `yaml:"steady"`
+			Cooldown string `yaml:"cooldown"`
+		} `yaml:"phases"`
+		Target struct {
+			Endpoints []string       `yaml:"endpoints"`
+			Calls     []scenarioCall `yaml:"calls"`
+		} `yaml:"target"`
+		LeakGate struct {
+			GoroutineMaxDelta   int `yaml:"goroutine_max_delta"`
+			HeapAllocMaxDeltaMB int `yaml:"heap_alloc_max_delta_mb"`
+		} `yaml:"leak_gate"`
+		PerfGate struct {
+			MinSteadyRPSTotal *float64 `yaml:"min_steady_rps_total"`
+			MaxP99MS          *float64 `yaml:"max_p99_ms"`
+			MaxNonOKRatio     *float64 `yaml:"max_non_ok_ratio"`
+			Producers         map[string]struct {
+				MinSteadyRPS  *float64 `yaml:"min_steady_rps"`
+				MaxP99MS      *float64 `yaml:"max_p99_ms"`
+				MaxNonOKRatio *float64 `yaml:"max_non_ok_ratio"`
+			} `yaml:"producers"`
+		} `yaml:"perf_gate"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Name != name || len(doc.Target.Endpoints) != 3 ||
+		doc.Phases.Warmup.RPS != 100 || doc.Phases.Steady.RPS != 400 ||
+		doc.Phases.Steady.Duration != "2m" || doc.Phases.Cooldown != "60s" {
+		t.Fatalf("contribution release workload changed: %+v", doc)
+	}
+	if doc.LeakGate.GoroutineMaxDelta != 20 || doc.LeakGate.HeapAllocMaxDeltaMB != 24 {
+		t.Errorf("contribution leak limits changed: %+v", doc.LeakGate)
+	}
+	checkFloor := func(label string, value *float64, want float64) {
+		t.Helper()
+		if value == nil || *value != want {
+			t.Errorf("%s = %v, want %g", label, value, want)
+		}
+	}
+	checkFloor("aggregate rps", doc.PerfGate.MinSteadyRPSTotal, 150)
+	checkFloor("aggregate p99", doc.PerfGate.MaxP99MS, 500)
+	checkFloor("aggregate non-OK", doc.PerfGate.MaxNonOKRatio, 0.02)
+	want := []struct{ name, method, idSpace string }{
+		{"add_singular", "AddEdge", "200"},
+		{"add_plural", "AddEdges", "40"},
+		{"delete_singular", "DeleteEdgeContribution", "200"},
+		{"delete_plural", "DeleteEdgeContributions", "40"},
+	}
+	if len(doc.Target.Calls) != len(want) || len(doc.PerfGate.Producers) != len(want) {
+		t.Fatalf("contribution producers = %d, gates = %d, want %d",
+			len(doc.Target.Calls), len(doc.PerfGate.Producers), len(want))
+	}
+	offered := 0
+	for i, expected := range want {
+		call := doc.Target.Calls[i]
+		if call.Name != expected.name ||
+			call.Call != "graph.v1.LanternService/"+expected.method || call.RPS != 100 ||
+			!strings.Contains(call.DataTemplate, "printf `%024d`") ||
+			!strings.Contains(call.DataTemplate, "mod .RequestNumber "+expected.idSpace) {
+			t.Errorf("producer[%d] lost its fixed RPC/RPS/bounded 24-byte ID: %+v", i, call)
+		}
+		offered += call.RPS
+		gate, ok := doc.PerfGate.Producers[call.Name]
+		if !ok {
+			t.Errorf("producer %s has no independent performance gate", call.Name)
+			continue
+		}
+		checkFloor(call.Name+" rps", gate.MinSteadyRPS, 35)
+		checkFloor(call.Name+" p99", gate.MaxP99MS, 500)
+		checkFloor(call.Name+" non-OK", gate.MaxNonOKRatio, 0.02)
+	}
+	if offered != doc.Phases.Steady.RPS {
+		t.Errorf("offered producer RPS = %d, steady RPS = %d", offered, doc.Phases.Steady.RPS)
+	}
+	for _, requestNumber := range []int64{0, 121, 987654321} {
+		rows := make(map[string][]contributionScenarioRow, len(doc.Target.Calls))
+		for _, call := range doc.Target.Calls {
+			rows[call.Name] = renderContributionScenarioRows(t, call, requestNumber)
+		}
+		if !slices.Equal(rows["add_singular"], rows["delete_singular"]) ||
+			!slices.Equal(rows["add_plural"], rows["delete_plural"]) {
+			t.Errorf("Add and Delete target different pairs or IDs at request %d: %+v", requestNumber, rows)
+		}
+	}
+	release, err := os.ReadFile("release-scenarios.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(release), "\n") {
+		if strings.TrimSpace(strings.SplitN(line, "#", 2)[0]) == name {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("contribution scenario appears %d times in release sweep, want exactly one", count)
+	}
+}
+
+type contributionScenarioRow struct {
+	tail, head, id string
+}
+
+func renderContributionScenarioRows(t *testing.T, call scenarioCall, requestNumber int64) []contributionScenarioRow {
+	t.Helper()
+	tmpl, err := template.New(call.Name).Funcs(ghzFuncs()).Parse(call.DataTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered strings.Builder
+	if err := tmpl.Execute(&rendered, ghzTemplateData{RequestNumber: requestNumber}); err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Edge *struct {
+			Tail, Head string
+		}
+		Edges []struct {
+			Tail, Head string
+		}
+		Tail, Head    string
+		ContribID     string   `json:"contribId"`
+		ContribIDs    []string `json:"contribIds"`
+		Contributions []struct {
+			Tail, Head string
+			ContribID  string `json:"contribId"`
+		}
+	}
+	if err := json.Unmarshal([]byte(rendered.String()), &request); err != nil {
+		t.Fatal(err)
+	}
+	var rows []contributionScenarioRow
+	switch call.Name {
+	case "add_singular":
+		if request.Edge != nil {
+			rows = append(rows, contributionScenarioRow{request.Edge.Tail, request.Edge.Head, request.ContribID})
+		}
+	case "add_plural":
+		if len(request.Edges) != 3 || len(request.ContribIDs) != len(request.Edges) {
+			t.Fatalf("%s generated %d edges and %d IDs", call.Name, len(request.Edges), len(request.ContribIDs))
+		}
+		for i, edge := range request.Edges {
+			rows = append(rows, contributionScenarioRow{edge.Tail, edge.Head, request.ContribIDs[i]})
+		}
+	case "delete_singular":
+		rows = append(rows, contributionScenarioRow{request.Tail, request.Head, request.ContribID})
+	case "delete_plural":
+		for _, item := range request.Contributions {
+			rows = append(rows, contributionScenarioRow{item.Tail, item.Head, item.ContribID})
+		}
+		if len(rows) != 3 {
+			t.Fatalf("%s generated %d keys, want 3", call.Name, len(rows))
+		}
+	default:
+		t.Fatalf("unexpected contribution producer %q", call.Name)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("%s generated no contribution keys", call.Name)
+	}
+	for i, row := range rows {
+		id, err := base64.StdEncoding.DecodeString(row.id)
+		if err != nil {
+			t.Fatalf("%s[%d]: invalid base64 ID: %v", call.Name, i, err)
+		}
+		nonzero := false
+		for _, b := range id {
+			nonzero = nonzero || b != 0
+		}
+		if row.tail == "" || row.head == "" || len(id) != 24 || !nonzero {
+			t.Errorf("%s[%d]: invalid pair or 24-byte nonzero ID: %+v", call.Name, i, row)
+		}
+	}
+	return rows
 }
 
 func testReceiptScenarioContract(t *testing.T, name, driver, admissionMethod string) {

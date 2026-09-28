@@ -3568,6 +3568,391 @@ class DeleteEdgeResponse extends $pb.GeneratedMessage {
   void clearExisted() => $_clearField(1);
 }
 
+/// An additive contribution is identified by its directed edge and its
+/// nonzero 24-byte ContribID. The ID is not a receipt operation ID.
+class EdgeContributionKey extends $pb.GeneratedMessage {
+  factory EdgeContributionKey({
+    $core.String? tail,
+    $core.String? head,
+    $core.List<$core.int>? contribId,
+  }) {
+    final result = create();
+    if (tail != null) result.tail = tail;
+    if (head != null) result.head = head;
+    if (contribId != null) result.contribId = contribId;
+    return result;
+  }
+
+  EdgeContributionKey._();
+
+  factory EdgeContributionKey.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory EdgeContributionKey.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'EdgeContributionKey',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'tail')
+    ..aOS(2, _omitFieldNames ? '' : 'head')
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'contribId', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeContributionKey clone() => EdgeContributionKey()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeContributionKey copyWith(void Function(EdgeContributionKey) updates) =>
+      super.copyWith((message) => updates(message as EdgeContributionKey))
+          as EdgeContributionKey;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static EdgeContributionKey create() => EdgeContributionKey._();
+  @$core.override
+  EdgeContributionKey createEmptyInstance() => create();
+  static $pb.PbList<EdgeContributionKey> createRepeated() =>
+      $pb.PbList<EdgeContributionKey>();
+  @$core.pragma('dart2js:noInline')
+  static EdgeContributionKey getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<EdgeContributionKey>(create);
+  static EdgeContributionKey? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get tail => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set tail($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTail() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTail() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get head => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set head($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHead() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHead() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get contribId => $_getN(2);
+  @$pb.TagNumber(3)
+  set contribId($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasContribId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearContribId() => $_clearField(3);
+}
+
+class DeleteEdgeContributionRequest extends $pb.GeneratedMessage {
+  factory DeleteEdgeContributionRequest({
+    $core.String? tail,
+    $core.String? head,
+    $core.List<$core.int>? contribId,
+    MutationReceiptContext? receiptContext,
+  }) {
+    final result = create();
+    if (tail != null) result.tail = tail;
+    if (head != null) result.head = head;
+    if (contribId != null) result.contribId = contribId;
+    if (receiptContext != null) result.receiptContext = receiptContext;
+    return result;
+  }
+
+  DeleteEdgeContributionRequest._();
+
+  factory DeleteEdgeContributionRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory DeleteEdgeContributionRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'DeleteEdgeContributionRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'tail')
+    ..aOS(2, _omitFieldNames ? '' : 'head')
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'contribId', $pb.PbFieldType.OY)
+    ..aOM<MutationReceiptContext>(4, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionRequest clone() =>
+      DeleteEdgeContributionRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionRequest copyWith(
+          void Function(DeleteEdgeContributionRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as DeleteEdgeContributionRequest))
+          as DeleteEdgeContributionRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionRequest create() =>
+      DeleteEdgeContributionRequest._();
+  @$core.override
+  DeleteEdgeContributionRequest createEmptyInstance() => create();
+  static $pb.PbList<DeleteEdgeContributionRequest> createRepeated() =>
+      $pb.PbList<DeleteEdgeContributionRequest>();
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<DeleteEdgeContributionRequest>(create);
+  static DeleteEdgeContributionRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get tail => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set tail($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTail() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTail() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get head => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set head($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHead() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHead() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get contribId => $_getN(2);
+  @$pb.TagNumber(3)
+  set contribId($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasContribId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearContribId() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  MutationReceiptContext get receiptContext => $_getN(3);
+  @$pb.TagNumber(4)
+  set receiptContext(MutationReceiptContext value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasReceiptContext() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearReceiptContext() => $_clearField(4);
+  @$pb.TagNumber(4)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(3);
+}
+
+class DeleteEdgeContributionResponse extends $pb.GeneratedMessage {
+  factory DeleteEdgeContributionResponse({
+    $core.bool? existed,
+  }) {
+    final result = create();
+    if (existed != null) result.existed = existed;
+    return result;
+  }
+
+  DeleteEdgeContributionResponse._();
+
+  factory DeleteEdgeContributionResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory DeleteEdgeContributionResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'DeleteEdgeContributionResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOB(1, _omitFieldNames ? '' : 'existed')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionResponse clone() =>
+      DeleteEdgeContributionResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionResponse copyWith(
+          void Function(DeleteEdgeContributionResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as DeleteEdgeContributionResponse))
+          as DeleteEdgeContributionResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionResponse create() =>
+      DeleteEdgeContributionResponse._();
+  @$core.override
+  DeleteEdgeContributionResponse createEmptyInstance() => create();
+  static $pb.PbList<DeleteEdgeContributionResponse> createRepeated() =>
+      $pb.PbList<DeleteEdgeContributionResponse>();
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<DeleteEdgeContributionResponse>(create);
+  static DeleteEdgeContributionResponse? _defaultInstance;
+
+  /// True only when a live contribution with this identity was removed.
+  @$pb.TagNumber(1)
+  $core.bool get existed => $_getBF(0);
+  @$pb.TagNumber(1)
+  set existed($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasExisted() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearExisted() => $_clearField(1);
+}
+
+class DeleteEdgeContributionsRequest extends $pb.GeneratedMessage {
+  factory DeleteEdgeContributionsRequest({
+    $core.Iterable<EdgeContributionKey>? contributions,
+    MutationReceiptContext? receiptContext,
+  }) {
+    final result = create();
+    if (contributions != null) result.contributions.addAll(contributions);
+    if (receiptContext != null) result.receiptContext = receiptContext;
+    return result;
+  }
+
+  DeleteEdgeContributionsRequest._();
+
+  factory DeleteEdgeContributionsRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory DeleteEdgeContributionsRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'DeleteEdgeContributionsRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pc<EdgeContributionKey>(
+        1, _omitFieldNames ? '' : 'contributions', $pb.PbFieldType.PM,
+        subBuilder: EdgeContributionKey.create)
+    ..aOM<MutationReceiptContext>(2, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionsRequest clone() =>
+      DeleteEdgeContributionsRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionsRequest copyWith(
+          void Function(DeleteEdgeContributionsRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as DeleteEdgeContributionsRequest))
+          as DeleteEdgeContributionsRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionsRequest create() =>
+      DeleteEdgeContributionsRequest._();
+  @$core.override
+  DeleteEdgeContributionsRequest createEmptyInstance() => create();
+  static $pb.PbList<DeleteEdgeContributionsRequest> createRepeated() =>
+      $pb.PbList<DeleteEdgeContributionsRequest>();
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionsRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<DeleteEdgeContributionsRequest>(create);
+  static DeleteEdgeContributionsRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<EdgeContributionKey> get contributions => $_getList(0);
+
+  /// When present, operation_ids must align with contributions. An absent
+  /// context requests an online write without a durable result receipt.
+  @$pb.TagNumber(2)
+  MutationReceiptContext get receiptContext => $_getN(1);
+  @$pb.TagNumber(2)
+  set receiptContext(MutationReceiptContext value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceiptContext() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceiptContext() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(1);
+}
+
+class DeleteEdgeContributionsResponse extends $pb.GeneratedMessage {
+  factory DeleteEdgeContributionsResponse({
+    $core.int? deleted,
+    $core.Iterable<$core.bool>? existed,
+  }) {
+    final result = create();
+    if (deleted != null) result.deleted = deleted;
+    if (existed != null) result.existed.addAll(existed);
+    return result;
+  }
+
+  DeleteEdgeContributionsResponse._();
+
+  factory DeleteEdgeContributionsResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory DeleteEdgeContributionsResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'DeleteEdgeContributionsResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'deleted', $pb.PbFieldType.O3)
+    ..p<$core.bool>(2, _omitFieldNames ? '' : 'existed', $pb.PbFieldType.KB)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionsResponse clone() =>
+      DeleteEdgeContributionsResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  DeleteEdgeContributionsResponse copyWith(
+          void Function(DeleteEdgeContributionsResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as DeleteEdgeContributionsResponse))
+          as DeleteEdgeContributionsResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionsResponse create() =>
+      DeleteEdgeContributionsResponse._();
+  @$core.override
+  DeleteEdgeContributionsResponse createEmptyInstance() => create();
+  static $pb.PbList<DeleteEdgeContributionsResponse> createRepeated() =>
+      $pb.PbList<DeleteEdgeContributionsResponse>();
+  @$core.pragma('dart2js:noInline')
+  static DeleteEdgeContributionsResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<DeleteEdgeContributionsResponse>(
+          create);
+  static DeleteEdgeContributionsResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get deleted => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set deleted($core.int value) => $_setSignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasDeleted() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearDeleted() => $_clearField(1);
+
+  /// One observation per input position, including duplicates and misses.
+  @$pb.TagNumber(2)
+  $pb.PbList<$core.bool> get existed => $_getList(1);
+}
+
 /// EdgeKey identifies an edge by its (tail, head) pair without weight.
 class EdgeKey extends $pb.GeneratedMessage {
   factory EdgeKey({
@@ -6827,6 +7212,7 @@ enum ReceiptResult_Result {
   putVertexOutcome,
   deleteVertexExisted,
   addEdgeEffectiveWeight,
+  deleteEdgeContributionExisted,
   notSet
 }
 
@@ -6839,6 +7225,7 @@ class ReceiptResult extends $pb.GeneratedMessage {
     PutOutcome? putVertexOutcome,
     $core.bool? deleteVertexExisted,
     $core.double? addEdgeEffectiveWeight,
+    $core.bool? deleteEdgeContributionExisted,
   }) {
     final result = create();
     if (deleteEdgeExisted != null) result.deleteEdgeExisted = deleteEdgeExisted;
@@ -6847,6 +7234,8 @@ class ReceiptResult extends $pb.GeneratedMessage {
       result.deleteVertexExisted = deleteVertexExisted;
     if (addEdgeEffectiveWeight != null)
       result.addEdgeEffectiveWeight = addEdgeEffectiveWeight;
+    if (deleteEdgeContributionExisted != null)
+      result.deleteEdgeContributionExisted = deleteEdgeContributionExisted;
     return result;
   }
 
@@ -6865,13 +7254,14 @@ class ReceiptResult extends $pb.GeneratedMessage {
     2: ReceiptResult_Result.putVertexOutcome,
     3: ReceiptResult_Result.deleteVertexExisted,
     4: ReceiptResult_Result.addEdgeEffectiveWeight,
+    5: ReceiptResult_Result.deleteEdgeContributionExisted,
     0: ReceiptResult_Result.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'ReceiptResult',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4])
+    ..oo(0, [1, 2, 3, 4, 5])
     ..aOB(1, _omitFieldNames ? '' : 'deleteEdgeExisted')
     ..e<PutOutcome>(
         2, _omitFieldNames ? '' : 'putVertexOutcome', $pb.PbFieldType.OE,
@@ -6881,6 +7271,7 @@ class ReceiptResult extends $pb.GeneratedMessage {
     ..aOB(3, _omitFieldNames ? '' : 'deleteVertexExisted')
     ..a<$core.double>(
         4, _omitFieldNames ? '' : 'addEdgeEffectiveWeight', $pb.PbFieldType.OF)
+    ..aOB(5, _omitFieldNames ? '' : 'deleteEdgeContributionExisted')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -6943,6 +7334,15 @@ class ReceiptResult extends $pb.GeneratedMessage {
   $core.bool hasAddEdgeEffectiveWeight() => $_has(3);
   @$pb.TagNumber(4)
   void clearAddEdgeEffectiveWeight() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.bool get deleteEdgeContributionExisted => $_getBF(4);
+  @$pb.TagNumber(5)
+  set deleteEdgeContributionExisted($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDeleteEdgeContributionExisted() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDeleteEdgeContributionExisted() => $_clearField(5);
 }
 
 /// MutationReceipt is one request-index-aligned item from an atomic logical
@@ -7699,6 +8099,24 @@ class LanternServiceApi {
           $pb.ClientContext? ctx, DeleteEdgesRequest request) =>
       _client.invoke<DeleteEdgesResponse>(
           ctx, 'LanternService', 'DeleteEdges', request, DeleteEdgesResponse());
+
+  /// DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+  /// It is a thin facade over DeleteEdgeContributions.
+  $async.Future<DeleteEdgeContributionResponse> deleteEdgeContribution(
+          $pb.ClientContext? ctx, DeleteEdgeContributionRequest request) =>
+      _client.invoke<DeleteEdgeContributionResponse>(ctx, 'LanternService',
+          'DeleteEdgeContribution', request, DeleteEdgeContributionResponse());
+
+  /// DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+  /// missing rows still install an absolute D4 remove-wins tombstone.
+  $async.Future<DeleteEdgeContributionsResponse> deleteEdgeContributions(
+          $pb.ClientContext? ctx, DeleteEdgeContributionsRequest request) =>
+      _client.invoke<DeleteEdgeContributionsResponse>(
+          ctx,
+          'LanternService',
+          'DeleteEdgeContributions',
+          request,
+          DeleteEdgeContributionsResponse());
 
   /// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
   /// starts with `tail_prefix` AND whose head key starts with `head_prefix`.

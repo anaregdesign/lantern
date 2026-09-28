@@ -34,12 +34,13 @@ var ErrIncompleteIdentityMutation = errors.New("incomplete identity mutation")
 type IdentityOperation = pb.IdentityOperation
 
 const (
-	IdentityPutVertex    = pb.IdentityOperation_IDENTITY_OPERATION_PUT_VERTEX
-	IdentityDeleteVertex = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_VERTEX
-	IdentityAddEdge      = pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE
-	IdentityPutEdge      = pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE
-	IdentityDeleteEdge   = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
-	IdentityReceiptOnly  = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+	IdentityPutVertex              = pb.IdentityOperation_IDENTITY_OPERATION_PUT_VERTEX
+	IdentityDeleteVertex           = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_VERTEX
+	IdentityAddEdge                = pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE
+	IdentityPutEdge                = pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE
+	IdentityDeleteEdge             = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE
+	IdentityReceiptOnly            = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+	IdentityDeleteEdgeContribution = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION
 )
 
 // IdentityChange is either an *IdentityCheckpoint or an *IdentityChunk.
@@ -176,7 +177,7 @@ func parseIdentityChunk(wire *pb.IdentityChunk) (*IdentityChunk, error) {
 		if len(wire.GetEdgeKeys()) != 0 {
 			return nil, fmt.Errorf("%w: vertex chunk contains Edge keys", ErrInvalidIdentityEvent)
 		}
-	case IdentityAddEdge, IdentityPutEdge, IdentityDeleteEdge:
+	case IdentityAddEdge, IdentityPutEdge, IdentityDeleteEdge, IdentityDeleteEdgeContribution:
 		if len(wire.GetVertexKeys()) != 0 {
 			return nil, fmt.Errorf("%w: Edge chunk contains Vertex keys", ErrInvalidIdentityEvent)
 		}

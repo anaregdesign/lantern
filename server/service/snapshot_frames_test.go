@@ -30,6 +30,8 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 	origin := hlc.NodeID{0x51}
 	stamp := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: origin}
 	expiration := time.Now().Add(time.Hour)
+	dataExpiration := expiration.Add(-time.Minute)
+	deletedID := graphcache.ContribID{3}
 	cut := replicationSnapshotCut{
 		cutoffPerOrigin: map[string]uint64{hex.EncodeToString(origin[:]): 4},
 		cutoffHLC:       stamp,
@@ -41,6 +43,12 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 		tombstones: graphcache.TombstoneSnapshot[string]{
 			Vertices: []graphcache.SnapshotVertexTombstone[string]{{Key: "gone", HLC: stamp, Expiration: expiration}},
 			Edges:    []graphcache.SnapshotEdgeTombstone[string]{{Tail: "gone-tail", Head: "gone-head", HLC: stamp, Expiration: expiration}},
+			EdgeContributions: []graphcache.SnapshotEdgeContributionTombstone[string]{{
+				EdgeContributionKey: graphcache.EdgeContributionKey[string]{
+					Tail: "tail", Head: "head", ContribID: deletedID,
+				},
+				HLC: stamp, Expiration: expiration,
+			}},
 		},
 		graph: graphcache.GraphSnapshot[string, *pb.Vertex]{
 			Vertices: []graphcache.SnapshotVertex[string, *pb.Vertex]{
@@ -48,7 +56,7 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 				{Key: "head"},
 			},
 			Edges: []graphcache.SnapshotEdge[string]{{Tail: "tail", Head: "head", Contributions: []graphcache.SnapshotContribution{
-				{Weight: 2, Expiration: expiration, ContribID: graphcache.ContribID{1}, HLC: stamp},
+				{Weight: 2, Expiration: dataExpiration, ContribID: graphcache.ContribID{1}, HLC: stamp},
 				{Weight: 3, ContribID: graphcache.ContribID{2}, HLC: stamp},
 			}}},
 		},
@@ -57,8 +65,8 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 	if err := sendSnapshotFrames(context.Background(), cut, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, graphOnly); err != nil {
 		t.Fatal(err)
 	}
-	if len(graphOnly.frames) != 9 {
-		t.Fatalf("graph-only frame count = %d, want 9", len(graphOnly.frames))
+	if len(graphOnly.frames) != 10 {
+		t.Fatalf("graph-only frame count = %d, want 10", len(graphOnly.frames))
 	}
 	header := graphOnly.frames[0].GetHeader()
 	footer := graphOnly.frames[len(graphOnly.frames)-1].GetFooter()
@@ -66,6 +74,7 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 		header.GetCutoffSeqPerOrigin()[hex.EncodeToString(origin[:])] != 4 || footer.GetVertexCount() != 2 ||
 		footer.GetEdgeCount() != 1 || footer.GetVertexCausalBarrierCount() != 1 || footer.GetEdgeCausalBarrierCount() != 1 ||
 		footer.GetVertexTombstoneCount() != 1 || footer.GetEdgeTombstoneCount() != 1 ||
+		footer.GetEdgeContributionTombstoneCount() != 1 ||
 		header.GetReceiptMetadata() != nil || footer.GetActiveReceiptCount() != 0 ||
 		footer.GetRetiredEpochCount() != 0 || footer.GetRetiredReceiptCount() != 0 ||
 		footer.GetOriginCount() != 0 {
@@ -73,12 +82,19 @@ func TestSendSnapshotFramesPreservesGraphOnlyProjection(t *testing.T) {
 	}
 	if graphOnly.frames[1].GetVertexCausalBarrier() == nil || graphOnly.frames[2].GetEdgeCausalBarrier() == nil ||
 		graphOnly.frames[3].GetVertexTombstone() == nil || graphOnly.frames[4].GetEdgeTombstone() == nil ||
-		graphOnly.frames[5].GetVertex() == nil || graphOnly.frames[6].GetVertex().GetVertex().GetNil() != true ||
-		graphOnly.frames[7].GetEdge() == nil || graphOnly.frames[8].GetFooter() == nil {
+		graphOnly.frames[5].GetEdgeContributionTombstone() == nil ||
+		graphOnly.frames[6].GetVertex() == nil || graphOnly.frames[7].GetVertex().GetVertex().GetNil() != true ||
+		graphOnly.frames[8].GetEdge() == nil || graphOnly.frames[9].GetFooter() == nil {
 		t.Fatalf("graph-only frame order or nil endpoint changed: %+v", graphOnly.frames)
 	}
-	contributions := graphOnly.frames[7].GetEdge().GetContributions()
-	if len(contributions) != 2 || contributions[0].GetExpiration() == nil ||
+	marker := graphOnly.frames[5].GetEdgeContributionTombstone()
+	if !bytes.Equal(marker.GetContribId(), deletedID[:]) ||
+		!marker.GetExpiration().AsTime().Equal(expiration) {
+		t.Fatalf("tombstone lost full identity or absolute D4 deadline: %+v", marker)
+	}
+	contributions := graphOnly.frames[8].GetEdge().GetContributions()
+	if len(contributions) != 2 || !contributions[0].GetExpiration().AsTime().Equal(dataExpiration) ||
+		contributions[0].GetExpiration().AsTime().Equal(marker.GetExpiration().AsTime()) ||
 		contributions[1].GetExpiration() != nil {
 		t.Fatalf("graph-only contribution expirations = %+v", contributions)
 	}
@@ -176,6 +192,24 @@ func TestSendSnapshotFramesDerivedAggregate(t *testing.T) {
 				t.Fatalf("malformed captured aggregate emitted %d frames, err=%v", len(sink.frames), err)
 			}
 		})
+	}
+}
+
+func TestSendSnapshotFramesRejectsZeroContributionTombstoneID(t *testing.T) {
+	sink := &snapshotFrameSink{}
+	err := sendSnapshotFrames(context.Background(), replicationSnapshotCut{
+		tombstones: graphcache.TombstoneSnapshot[string]{
+			EdgeContributions: []graphcache.SnapshotEdgeContributionTombstone[string]{{
+				EdgeContributionKey: graphcache.EdgeContributionKey[string]{
+					Tail: "tail", Head: "head",
+				},
+				Expiration: time.Now().Add(time.Hour),
+			}},
+		},
+	}, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, sink)
+	if err == nil || !strings.Contains(err.Error(), "zero ContribID") ||
+		len(sink.frames) != 1 || sink.frames[0].GetHeader() == nil {
+		t.Fatalf("zero tombstone ID streamed as a complete Snapshot: frames=%v, err=%v", sink.frames, err)
 	}
 }
 
@@ -515,6 +549,185 @@ func TestReceiptSnapshotCanonicalizesGraphOrderAndRejectsReordering(t *testing.T
 		receiptSnapshotTestCatalogConfig(capture),
 	); err == nil {
 		t.Fatal("noncanonical graph order was accepted")
+	}
+}
+
+func receiptSnapshotContributionTombstoneCapture(t *testing.T) (ReceiptWholeStateCapture, mutationreceipt.Config) {
+	t.Helper()
+	capture, policy := receiptSnapshotTestCapture(t, true, true)
+	stamp := capture.Graph[0].GetHeader().GetCutoffHlc()
+	deadline := timestamppb.New(time.Now().Add(3 * time.Hour))
+	ids := []graphcache.ContribID{{1}, {3}}
+	for _, id := range ids {
+		capture.Graph = insertReceiptSnapshotFrames(capture.Graph, 1,
+			&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_EdgeContributionTombstone{
+				EdgeContributionTombstone: &pb.SnapshotEdgeContributionTombstone{
+					Tail: "live", Head: "live",
+					ContribId:  append([]byte(nil), id[:]...),
+					Hlc:        proto.Clone(stamp).(*pb.HLCTimestamp),
+					Expiration: proto.Clone(deadline).(*timestamppb.Timestamp),
+				},
+			}},
+		)
+		capture.Graph[len(capture.Graph)-1].GetFooter().EdgeContributionTombstoneCount++
+	}
+	liveID := graphcache.ContribID{2}
+	capture.Graph = insertReceiptSnapshotFrames(capture.Graph, len(capture.Graph)-1,
+		&pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Edge{Edge: &pb.SnapshotEdge{
+			Tail: "live", Head: "live", Contributions: []*pb.SnapshotEdgeContribution{{
+				Weight: 4, ContribId: liveID[:],
+				Hlc:        proto.Clone(stamp).(*pb.HLCTimestamp),
+				Expiration: timestamppb.New(deadline.AsTime().Add(-time.Hour)),
+			}},
+		}}},
+	)
+	capture.Graph[len(capture.Graph)-1].GetFooter().EdgeCount++
+	return capture, policy
+}
+
+func TestReceiptSnapshotContributionTombstonesCanonicalAndLossless(t *testing.T) {
+	capture, policy := receiptSnapshotContributionTombstoneCapture(t)
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 7 || frames[1].GetReceipt() == nil ||
+		frames[2].GetEdgeContributionTombstone() == nil ||
+		frames[3].GetEdgeContributionTombstone() == nil ||
+		frames[4].GetVertex() == nil || frames[5].GetEdge() == nil ||
+		frames[6].GetFooter().GetEdgeContributionTombstoneCount() != 2 {
+		t.Fatalf("receipt/tombstone/vertex/edge/footer framing = %+v", frames)
+	}
+	if frames[2].GetEdgeContributionTombstone().GetContribId()[0] != 1 ||
+		frames[3].GetEdgeContributionTombstone().GetContribId()[0] != 3 {
+		t.Fatalf("per-ID tombstones are not sorted by the full triple: %+v", frames[2:4])
+	}
+	decoded, err := DecodeReceiptSnapshotFrames(frames, policy, receiptSnapshotTestCatalogConfig(capture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Graph) != 6 ||
+		decoded.Graph[len(decoded.Graph)-1].GetFooter().GetEdgeContributionTombstoneCount() != 2 {
+		t.Fatalf("decoded graph lost per-ID tombstone count: %+v", decoded.Graph)
+	}
+	deadline := decoded.Graph[1].GetEdgeContributionTombstone().GetExpiration().AsTime()
+	dataExpiration := decoded.Graph[4].GetEdge().GetContributions()[0].GetExpiration().AsTime()
+	if !deadline.After(dataExpiration) ||
+		!proto.Equal(decoded.Graph[1], frames[2]) || !proto.Equal(decoded.Graph[2], frames[3]) {
+		t.Fatalf("D4 deadline confused with edge data expiration or identity: %v, %v", deadline, dataExpiration)
+	}
+
+	reordered := cloneReceiptSnapshotFrames(frames)
+	reordered[2], reordered[3] = reordered[3], reordered[2]
+	if _, err := DecodeReceiptSnapshotFrames(reordered, policy, receiptSnapshotTestCatalogConfig(capture)); err == nil ||
+		!strings.Contains(err.Error(), "strict canonical order") {
+		t.Fatalf("unsorted per-ID tombstones accepted: %v", err)
+	}
+}
+
+func TestReceiptSnapshotRejectsMalformedContributionTombstones(t *testing.T) {
+	capture, policy := receiptSnapshotContributionTombstoneCapture(t)
+	valid, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func([]*pb.SnapshotResponse)
+		want   string
+	}{
+		{"missing ID", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().ContribId = nil
+		}, "invalid edge contribution tombstone"},
+		{"short ID", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().ContribId = []byte{1}
+		}, "invalid edge contribution tombstone"},
+		{"zero ID", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().ContribId = make([]byte, 24)
+		}, "zero edge contribution tombstone ContribID"},
+		{"missing HLC", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().Hlc = nil
+		}, "invalid edge contribution tombstone"},
+		{"unknown origin", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().Hlc.NodeId[0]++
+		}, "invalid edge contribution tombstone"},
+		{"beyond cutoff", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().Hlc.WallNs++
+		}, "invalid edge contribution tombstone"},
+		{"beyond origin frontier", func(frames []*pb.SnapshotResponse) {
+			frames[0].GetHeader().GetReceiptMetadata().OriginCutoffs[0].LastHlc.WallNs--
+		}, "invalid edge contribution tombstone"},
+		{"missing D4 deadline", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().Expiration = nil
+		}, "invalid edge contribution tombstone"},
+		{"invalid D4 deadline", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().Expiration = &timestamppb.Timestamp{Seconds: 253402300800}
+		}, "invalid edge contribution tombstone"},
+		{"zero D4 deadline", func(frames []*pb.SnapshotResponse) {
+			frames[2].GetEdgeContributionTombstone().Expiration = timestamppb.New(time.Unix(0, 0))
+		}, "invalid edge contribution tombstone"},
+		{"footer count mismatch", func(frames []*pb.SnapshotResponse) {
+			frames[len(frames)-1].GetFooter().EdgeContributionTombstoneCount++
+		}, "footer count mismatch"},
+		{"live Add overlaps older tombstone", func(frames []*pb.SnapshotResponse) {
+			id := frames[5].GetEdge().GetContributions()[0].GetContribId()
+			frames[2].GetEdgeContributionTombstone().ContribId = append([]byte(nil), id...)
+			frames[2].GetEdgeContributionTombstone().Hlc.WallNs--
+		}, "live edge Add and contribution tombstone overlap"},
+		{"tombstone after vertex", func(frames []*pb.SnapshotResponse) {
+			frames[3], frames[4] = frames[4], frames[3]
+		}, "malformed or reordered"},
+		{"nil tombstone oneof", func(frames []*pb.SnapshotResponse) {
+			frames[2].Entry = &pb.SnapshotResponse_EdgeContributionTombstone{}
+		}, "nil or unknown oneof"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := cloneReceiptSnapshotFrames(valid)
+			tc.mutate(frames)
+			if _, err := DecodeReceiptSnapshotFrames(
+				frames, policy, receiptSnapshotTestCatalogConfig(capture),
+			); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("invalid per-ID tombstone accepted or wrong error: %v, want %q", err, tc.want)
+			}
+		})
+	}
+	duplicate := cloneReceiptSnapshotFrames(capture.Graph)
+	markers := []*pb.SnapshotEdgeContributionTombstone{}
+	for _, frame := range duplicate {
+		if marker := frame.GetEdgeContributionTombstone(); marker != nil {
+			markers = append(markers, marker)
+		}
+	}
+	markers[1].ContribId = append([]byte(nil), markers[0].GetContribId()...)
+	if err := ValidateReceiptSnapshotGraphCapture(duplicate, capture.Origins); err == nil ||
+		!strings.Contains(err.Error(), "duplicate edge contribution tombstone") {
+		t.Fatalf("duplicate IDs under same edge accepted by unordered archive validator: %v", err)
+	}
+}
+
+func TestReceiptSnapshotDeleteContributionReceiptPreservesFalse(t *testing.T) {
+	capture, policy := receiptSnapshotTestCapture(t, true, false)
+	row := &capture.Receipts.Receipts[0]
+	row.Kind = mutationreceipt.DeleteEdgeContribution
+	row.Result = []byte{0}
+	row.HasContrib = false
+	row.ContribID = mutationreceipt.ContribID{}
+	frames, err := PrepareReceiptSnapshotFrames(capture, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frames[1].GetReceipt().GetKind() != pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE_CONTRIBUTION ||
+		frames[1].GetReceipt().GetContribution() != nil ||
+		!bytes.Equal(frames[1].GetReceipt().GetOriginalResult(), []byte{0}) {
+		t.Fatalf("Delete contribution no-op receipt changed: %+v", frames[1].GetReceipt())
+	}
+	decoded, err := DecodeReceiptSnapshotFrames(frames, policy, receiptSnapshotTestCatalogConfig(capture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded.Receipts.Receipts[0]; got.Kind != mutationreceipt.DeleteEdgeContribution ||
+		got.HasContrib || !bytes.Equal(got.Result, []byte{0}) {
+		t.Fatalf("Delete contribution no-op result disappeared: %+v", got)
 	}
 }
 

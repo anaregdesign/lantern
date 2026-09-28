@@ -168,6 +168,56 @@ func TestReceiptArchiveProducerUsesOneCombinedDetachedCut(t *testing.T) {
 	}
 }
 
+func TestReceiptArchiveProducerCapturesContributionRemoval(t *testing.T) {
+	f := newReceiptArchiveFixture(t, nil)
+	removed := graphcache.ContribID{0x42}
+	resp, err := f.service.DeleteEdgeContributions(t.Context(), &pb.DeleteEdgeContributionsRequest{
+		Contributions: []*pb.EdgeContributionKey{{
+			Tail: "tail", Head: "head", ContribId: removed[:],
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetDeleted() != 0 || len(resp.GetExisted()) != 1 || resp.GetExisted()[0] {
+		t.Fatalf("absent contribution deletion = %+v", resp)
+	}
+	product, err := produceReceiptWholeStateArchive(t.Context(), f.backupSource, f.policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, _ := product.bytes()
+	archive := decodedProducerArchive(t, raw)
+	var marker *pb.SnapshotEdgeContributionTombstone
+	for _, frame := range archive.Graph {
+		if got := frame.GetEdgeContributionTombstone(); got != nil {
+			marker = got
+		}
+	}
+	if marker == nil || !bytes.Equal(marker.GetContribId(), removed[:]) ||
+		marker.GetTail() != "tail" || marker.GetHead() != "head" ||
+		archive.Graph[len(archive.Graph)-1].GetFooter().GetEdgeContributionTombstoneCount() != 1 {
+		t.Fatalf("independent receipt archive dropped removal floor: %+v", archive.Graph)
+	}
+	stage, err := stageReceiptWholeStateArchive(
+		t.Context(), bytes.NewReader(raw), f.policy, time.Hour, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tombstones := stage.graph.SnapshotReplication().Tombstones.EdgeContributions
+	if len(tombstones) != 1 || tombstones[0].ContribID != removed ||
+		!tombstones[0].Expiration.Equal(marker.GetExpiration().AsTime()) {
+		t.Fatalf("independent archive restore lost absolute D4 floor: %+v", tombstones)
+	}
+	if stage.graph.AddEdgeWithExpirationContribHLC(
+		"tail", "head", 100, time.Now().Add(time.Hour), removed,
+		hlc.Timestamp{WallNs: tombstones[0].HLC.WallNs + 1, NodeID: tombstones[0].HLC.NodeID},
+	) {
+		t.Fatal("restored removal floor allowed a delayed Add")
+	}
+}
+
 func TestReceiptArchiveProducerFailsWithoutPartialProduct(t *testing.T) {
 	a := wholeStateArchiveFixture(t)
 	for _, tc := range []struct {

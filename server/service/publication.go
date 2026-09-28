@@ -61,6 +61,12 @@ func (s *LanternService) validateReplicatedReceiptEnvelope(envelope receiptMutat
 				fmt.Errorf("receipt-bearing Edge Delete replication apply is not enabled"))
 		}
 		return s.receiptEdgeDeleteCoordinator.validateReplicatedEnvelope(value)
+	case *edgeContributionDeleteReceiptEnvelope:
+		if s.receiptEdgeContributionDeleteCoordinator == nil {
+			return connect.NewError(connect.CodeUnimplemented,
+				fmt.Errorf("receipt-bearing contribution Delete replication apply is not enabled"))
+		}
+		return s.receiptEdgeContributionDeleteCoordinator.validateReplicatedEnvelope(value)
 	case *vertexPutReceiptEnvelope:
 		if s.receiptVertexPutCoordinator == nil {
 			return connect.NewError(connect.CodeUnimplemented,
@@ -88,6 +94,9 @@ func sameReceiptMutationIntent(left, right receiptMutationEnvelope) bool {
 	case *edgeDeleteReceiptEnvelope:
 		other, ok := right.(*edgeDeleteReceiptEnvelope)
 		return ok && sameReceiptEdgeDeleteIntent(value, other)
+	case *edgeContributionDeleteReceiptEnvelope:
+		other, ok := right.(*edgeContributionDeleteReceiptEnvelope)
+		return ok && sameReceiptEdgeContributionDeleteIntent(value, other)
 	case *vertexPutReceiptEnvelope:
 		other, ok := right.(*vertexPutReceiptEnvelope)
 		return ok && sameReceiptVertexPutIntent(value, other)
@@ -121,6 +130,13 @@ func (s *LanternService) commitReplicatedReceipt(
 		}
 		return "replicated_receipt_edge_delete",
 			s.receiptEdgeDeleteCoordinator.commitReplicated(ctx, origin, seq, ts, pending)
+	case *edgeContributionDeleteReceiptEnvelope:
+		if s.receiptEdgeContributionDeleteCoordinator == nil {
+			return "", connect.NewError(connect.CodeInternal,
+				fmt.Errorf("receipt-bearing contribution Delete coordinator became unavailable"))
+		}
+		return "replicated_receipt_edge_contribution_delete",
+			s.receiptEdgeContributionDeleteCoordinator.commitReplicated(ctx, origin, seq, ts, pending)
 	case *vertexPutReceiptEnvelope:
 		if s.receiptVertexPutCoordinator == nil {
 			return "", connect.NewError(connect.CodeInternal,
@@ -678,6 +694,21 @@ func (s *LanternService) validateDurableGraphMutationPreflight(m *pb.Mutation) e
 			}
 		}
 		return nil
+	case *pb.MutationOp_DeleteEdgeContribution:
+		if op == nil || op.DeleteEdgeContribution == nil {
+			return errors.New("DeleteEdgeContribution request is nil")
+		}
+		_, err := edgeContributionKeysFromWire([]*pb.EdgeContributionKey{{
+			Tail: op.DeleteEdgeContribution.GetTail(), Head: op.DeleteEdgeContribution.GetHead(),
+			ContribId: op.DeleteEdgeContribution.GetContribId(),
+		}})
+		return err
+	case *pb.MutationOp_DeleteEdgeContributions:
+		if op == nil || op.DeleteEdgeContributions == nil {
+			return errors.New("DeleteEdgeContributions request is nil")
+		}
+		_, err := edgeContributionKeysFromWire(op.DeleteEdgeContributions.GetContributions())
+		return err
 	default:
 		return errors.New("unsupported durable graph mutation")
 	}

@@ -4746,6 +4746,7 @@ func TestPublicVertexReceipts_RealConnectWire(t *testing.T) {
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
 			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE,
+			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
 		}) {
 			t.Fatalf("supported receipt mutations = %v", capability.GetSupportedMutations())
 		}

@@ -102,6 +102,8 @@ final class RetryRegistry {
     'PutEdges': RpcRetryClass.stablePut,
     'DeleteEdge': RpcRetryClass.never,
     'DeleteEdges': RpcRetryClass.never,
+    'DeleteEdgeContribution': RpcRetryClass.never,
+    'DeleteEdgeContributions': RpcRetryClass.never,
     'DeleteEdgesByPrefix': RpcRetryClass.never,
     'ScanEdges': RpcRetryClass.read,
     'GetServerStatus': RpcRetryClass.read,

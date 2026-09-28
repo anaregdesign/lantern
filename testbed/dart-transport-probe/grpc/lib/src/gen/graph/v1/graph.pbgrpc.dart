@@ -217,6 +217,28 @@ class LanternServiceClient extends $grpc.Client {
     return $createUnaryCall(_$deleteEdges, request, options: options);
   }
 
+  /// DeleteEdgeContribution removes exactly one Add row, not the whole edge.
+  /// It is a thin facade over DeleteEdgeContributions.
+  $grpc.ResponseFuture<$0.DeleteEdgeContributionResponse>
+      deleteEdgeContribution(
+    $0.DeleteEdgeContributionRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$deleteEdgeContribution, request,
+        options: options);
+  }
+
+  /// DeleteEdgeContributions removes Add rows by (tail, head, ContribID);
+  /// missing rows still install an absolute D4 remove-wins tombstone.
+  $grpc.ResponseFuture<$0.DeleteEdgeContributionsResponse>
+      deleteEdgeContributions(
+    $0.DeleteEdgeContributionsRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$deleteEdgeContributions, request,
+        options: options);
+  }
+
   /// DeleteEdgesByPrefix deletes up to `limit` live edges whose tail key
   /// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
   /// At least one prefix must be non-empty. Pass `dry_run = true` to preview
@@ -412,6 +434,17 @@ class LanternServiceClient extends $grpc.Client {
           '/graph.v1.LanternService/DeleteEdges',
           ($0.DeleteEdgesRequest value) => value.writeToBuffer(),
           $0.DeleteEdgesResponse.fromBuffer);
+  static final _$deleteEdgeContribution = $grpc.ClientMethod<
+          $0.DeleteEdgeContributionRequest, $0.DeleteEdgeContributionResponse>(
+      '/graph.v1.LanternService/DeleteEdgeContribution',
+      ($0.DeleteEdgeContributionRequest value) => value.writeToBuffer(),
+      $0.DeleteEdgeContributionResponse.fromBuffer);
+  static final _$deleteEdgeContributions = $grpc.ClientMethod<
+          $0.DeleteEdgeContributionsRequest,
+          $0.DeleteEdgeContributionsResponse>(
+      '/graph.v1.LanternService/DeleteEdgeContributions',
+      ($0.DeleteEdgeContributionsRequest value) => value.writeToBuffer(),
+      $0.DeleteEdgeContributionsResponse.fromBuffer);
   static final _$deleteEdgesByPrefix = $grpc.ClientMethod<
           $0.DeleteEdgesByPrefixRequest, $0.DeleteEdgesByPrefixResponse>(
       '/graph.v1.LanternService/DeleteEdgesByPrefix',
@@ -628,6 +661,24 @@ abstract class LanternServiceBase extends $grpc.Service {
             ($core.List<$core.int> value) =>
                 $0.DeleteEdgesRequest.fromBuffer(value),
             ($0.DeleteEdgesResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.DeleteEdgeContributionRequest,
+            $0.DeleteEdgeContributionResponse>(
+        'DeleteEdgeContribution',
+        deleteEdgeContribution_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.DeleteEdgeContributionRequest.fromBuffer(value),
+        ($0.DeleteEdgeContributionResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.DeleteEdgeContributionsRequest,
+            $0.DeleteEdgeContributionsResponse>(
+        'DeleteEdgeContributions',
+        deleteEdgeContributions_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.DeleteEdgeContributionsRequest.fromBuffer(value),
+        ($0.DeleteEdgeContributionsResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.DeleteEdgesByPrefixRequest,
             $0.DeleteEdgesByPrefixResponse>(
         'DeleteEdgesByPrefix',
@@ -875,6 +926,24 @@ abstract class LanternServiceBase extends $grpc.Service {
 
   $async.Future<$0.DeleteEdgesResponse> deleteEdges(
       $grpc.ServiceCall call, $0.DeleteEdgesRequest request);
+
+  $async.Future<$0.DeleteEdgeContributionResponse> deleteEdgeContribution_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.DeleteEdgeContributionRequest> $request) async {
+    return deleteEdgeContribution($call, await $request);
+  }
+
+  $async.Future<$0.DeleteEdgeContributionResponse> deleteEdgeContribution(
+      $grpc.ServiceCall call, $0.DeleteEdgeContributionRequest request);
+
+  $async.Future<$0.DeleteEdgeContributionsResponse> deleteEdgeContributions_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.DeleteEdgeContributionsRequest> $request) async {
+    return deleteEdgeContributions($call, await $request);
+  }
+
+  $async.Future<$0.DeleteEdgeContributionsResponse> deleteEdgeContributions(
+      $grpc.ServiceCall call, $0.DeleteEdgeContributionsRequest request);
 
   $async.Future<$0.DeleteEdgesByPrefixResponse> deleteEdgesByPrefix_Pre(
       $grpc.ServiceCall $call,
