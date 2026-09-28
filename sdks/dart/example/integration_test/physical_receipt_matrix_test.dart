@@ -838,7 +838,11 @@ Future<String> _verifyCommittedLoss(
       beforeSend.map((record) => record.receipt?.state),
       everyElement(OfflineReceiptReconciliationState.statusRequired),
     );
-    expect(await repository.drain(_partition), 0);
+    // Each one-item claim ends its foreground drain after the committed
+    // response is lost. Explicitly start the next queued operation.
+    for (var index = 0; index < beforeSend.length; index++) {
+      expect(await repository.drain(_partition), 0);
+    }
     final checked = observedRemote.checkedOperations;
     if (checked.length != 4 ||
         !checked.containsAll(keys.responseLossOperations)) {
