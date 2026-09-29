@@ -141,18 +141,8 @@ func TestSubscribeFiltered(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer cancel()
-		if _, err := l.Append(1, ts(1)); err != nil {
-			t.Fatal(err)
-		}
-		for i := 0; i < 12; i++ {
-			if _, err := l.Append(0, ts(2)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := l.Append(2, ts(3)); err != nil {
-			t.Fatal(err)
-		}
-		for _, want := range []uint64{1, 14} {
+		readIncluded := func(want uint64) {
+			t.Helper()
 			select {
 			case entry, open := <-ch:
 				if !open || entry.Seq != want {
@@ -162,6 +152,19 @@ func TestSubscribeFiltered(t *testing.T) {
 				t.Fatalf("timed out waiting for included seq %d", want)
 			}
 		}
+		if _, err := l.Append(1, ts(1)); err != nil {
+			t.Fatal(err)
+		}
+		readIncluded(1)
+		for i := 0; i < 12; i++ {
+			if _, err := l.Append(0, ts(2)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := l.Append(2, ts(3)); err != nil {
+			t.Fatal(err)
+		}
+		readIncluded(14)
 		select {
 		case cause := <-dropped:
 			t.Fatalf("filtered entries overflowed live buffer: %s", cause)
