@@ -1,0 +1,7 @@
+services:
+  lantern-0:
+    cpuset: "${LANTERN_BENCH_CPUSET:?set LANTERN_BENCH_CPUSET for local qualification}"
+  lantern-1:
+    cpuset: "${LANTERN_BENCH_CPUSET:?set LANTERN_BENCH_CPUSET for local qualification}"
+  lantern-2:
+    cpuset: "${LANTERN_BENCH_CPUSET:?set LANTERN_BENCH_CPUSET for local qualification}"

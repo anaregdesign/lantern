@@ -1,9 +1,9 @@
-// Package main is the release-time bench aggregator.
+// Package main is the local pre-tag bench aggregator.
 //
 // It consumes the per-scenario artifacts produced by testbed/bench/run.sh
 // (one run directory per scenario, containing its configured gate JSON,
 // ghz_*.json, and a pre-rendered report.md) and emits a single fixed-format
-// Markdown document suitable for appending to a GitHub Release body.
+// Markdown document retained with the exact-source qualification artifacts.
 //
 // The output schema is intentionally stable across releases so that
 // readers can diff bench numbers tag-over-tag without parsing pain:
@@ -294,9 +294,9 @@ func (e *errWriter) printf(format string, args ...any) {
 }
 
 // parseScenarioArgs accepts repeated `name=dir` arguments and returns
-// scenarios in the order given (CI cares about ordering so the table is
+// scenarios in the order given (readers compare rows across runs, so the table is
 // reproducible). An empty `dir` indicates the scenario did not produce
-// artifacts (CI passes `name=` for those).
+// artifacts (release.sh passes `name=` for those).
 func parseScenarioArgs(args []string) ([]scenarioInput, error) {
 	out := make([]scenarioInput, 0, len(args))
 	seen := map[string]bool{}

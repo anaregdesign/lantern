@@ -322,9 +322,11 @@ of that surface ships, **in the same PR**:
 2. **Bench coverage for perf-relevant paths.** A change on a hot path (reads,
    writes, scans, traversals, streams) joins an existing scenario fan-out in
    `testbed/bench/scenarios/` or gets a new scenario. The release-sweep scenarios
-   carry `perf_gate:` floors (min steady rps / max p99 / max non-OK ratio) enforced
-   by the on-demand qualification workflow (`bench-nightly.yml`); sizing and re-baselining rules
-   live in [testbed/bench/README.md](testbed/bench/README.md). Perf floors are a
+   carry `perf_gate:` floors (min steady rps / max p99 / max non-OK ratio)
+   enforced in local, exact-source pre-tag qualification. The optional
+   `bench-nightly.yml` is a hosted-platform diagnostic, not release evidence.
+   Sizing, host qualification, and re-baselining rules live in
+   [testbed/bench/README.md](testbed/bench/README.md). Perf floors are a
    ratchet like the coverage floors: when a PR legitimately moves one (an accepted
    performance trade-off), adjust the floor in the same PR and say so in the PR
    body.
@@ -453,17 +455,24 @@ Tag order matters because each downstream module pins its upstream tag:
    and never move a tag to repair it. There is no SDK artifact to push.
 4. Bump the matching `require`/`replace` lines in the root `go.mod` to the freshly-tagged
    versions.
-5. Root `vX.Y.Z` — triggers `docker-publish.yml`. Before any multi-arch image or GitHub
+5. Before tagging the reviewed root commit, run the untruncated eight-scenario
+   sweep and four independent fresh-WAL receipt families locally on one
+   exact-source image. Retain the source SHA, image ID, platform, host/CPU
+   conditions, per-scenario verdicts, and raw artifact hashes in the release
+   tracking Issue. A passing local Linux/arm64 result does not certify
+   Linux/amd64; disclose any known failed platform result and leave its
+   production-readiness Issue open. Do not substitute an earlier branch run,
+   skip a scenario, cherry-pick a passing run, or relax gates to publish.
+   The procedure is in [testbed/bench/README.md](testbed/bench/README.md).
+6. Root `vX.Y.Z` — triggers `docker-publish.yml`. Before any multi-arch image or GitHub
    Release can publish, the tagged SHA must pass the short blocking Search qualification:
    request-boundary tests, production real-h2c semantics, HA convergence, and the fresh
    three-replica `search_qualification` scenario. Its artifact records the tag, full SHA,
    and an explicit pass/fail/skipped status for every stage and scenario; any non-success
-   blocks the image and GoReleaser jobs. The workflow separately runs the full
-   release-time bench sweep and splices its report into the notes. That profiling bench
-   remains **non-blocking**: if it fails
-   or is cancelled the release still uses a placeholder bench section (the `release`
-   job's `needs:` deliberately excludes `bench`, because Actions treats `cancelled` as
-   neither success nor failure).
+   blocks the image and GoReleaser jobs. The tag workflow does **not** run the
+   long benchmark: release notes point to the platform-scoped local evidence
+   recorded before tagging. Deterministic PR CI and the short Search gate
+   remain blocking.
 
 The root release also builds the `lantern` (server) and `lantern-cli` binaries via
 GoReleaser and pushes Homebrew casks to

@@ -29,11 +29,14 @@ the [release workflow](../../.github/workflows/rust-release.yml), and the
 3. Run the applicable repository quality gates and review the
    [Rust PR workflow](../../.github/workflows/rust-sdk.yml). **Once, immediately
    before authorizing the frozen release candidate**, run the applicable
-   pre-release performance/benchmark qualification and retain its results
+   pre-release performance/benchmark qualification **locally** and retain
+   the source SHA, image ID, host/platform, verdicts, and artifact hashes
    against that exact commit; use the
    [bench policy](../../testbed/bench/README.md) for relevant server/hot-path
-   scenarios. Do not run performance repeatedly during preparation or assume
-   the tag workflow runs it. A changed candidate needs fresh qualification.
+   scenarios. Do not claim a local arm64 result certifies amd64, reuse an
+   optional hosted diagnostic as release evidence, run performance repeatedly
+   during preparation, or assume the tag workflow runs it. A changed candidate
+   needs fresh qualification and still requires new crate-owner approval.
 
 The [release workflow](../../.github/workflows/rust-release.yml) runs **only**
 on pushed `sdks/rust/v*.*.*` tags and rejects any tag that is not exactly

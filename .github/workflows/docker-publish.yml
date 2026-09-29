@@ -266,76 +266,6 @@ jobs:
         run: |
           echo "$TAGS" | xargs -I {} cosign sign --yes {}@${DIGEST}
 
-  bench:
-    # Release-time benchmark sweep. Runs the compact scenario set
-    # listed in testbed/bench/release-scenarios.txt against a freshly-built
-    # local image and uploads a fixed-format bench-report.md for the release
-    # job to splice into the release notes. Non-blocking: a lifecycle/perf
-    # failure or harness hiccup must not prevent a release from shipping
-    # (the deliberate design of #256, #394). This full profiling sweep is
-    # separate from the short blocking search-qualification job above.
-    # On-demand lifecycle/perf qualification also lives in
-    # .github/workflows/bench-nightly.yml, which runs this same sweep
-    # WITHOUT continue-on-error (#716, #1063).
-    name: Release-time benchmark
-    needs: verify
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    # The compact sweep is ~25-26 min including the isolated per-scenario
-    # cluster lifecycles (see release-scenarios.txt and #1097).
-    # release.sh self-bounds via RELEASE_BENCH_BUDGET_SECONDS (default 27 min) and
-    # always aggregates a report before returning, so this `timeout-minutes` is
-    # only a hard backstop — sized above the budget plus one scenario's worst-case
-    # overshoot plus job overhead (checkout + Go + ghz/yq + docker build + compose)
-    # so the script's graceful cutoff fires first and the report is never discarded
-    # by a mid-loop cancellation. See issues #571, #573, #708, and #1097.
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27.0'
-          check-latest: true
-      - name: Install bench prerequisites (ghz, yq)
-        run: |
-          set -euo pipefail
-          GHZ_VERSION="0.121.0"
-          curl -fsSL -o /tmp/ghz.tgz \
-            "https://github.com/bojand/ghz/releases/download/v${GHZ_VERSION}/ghz-linux-x86_64.tar.gz"
-          sudo tar -xzf /tmp/ghz.tgz -C /usr/local/bin ghz
-          sudo chmod +x /usr/local/bin/ghz
-          ghz --version
-          YQ_VERSION="v4.45.4"
-          sudo curl -fsSL -o /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
-      - name: Build lantern:local image
-        run: |
-          docker build \
-            --build-arg VERSION=${{ github.ref_name }} \
-            --build-arg COMMIT=${{ github.sha }} \
-            -t lantern:local .
-      - name: Run release bench sweep
-        env:
-          TAG: ${{ github.ref_name }}
-          COMMIT: ${{ github.sha }}
-          RUNNER: linux/amd64 (ubuntu-latest)
-          LANTERN_IMAGE: lantern:local
-        run: ./testbed/bench/release.sh --out bench-report.md
-      - name: Upload bench report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: bench-report
-          path: bench-report.md
-          if-no-files-found: warn
-          retention-days: 30
-
   binaries:
     name: Build CLI + server binaries
     # GoReleaser may also publish Homebrew casks, so it shares the blocking
@@ -386,12 +316,6 @@ jobs:
 
   release:
     name: GitHub Release
-    # bench is intentionally NOT in `needs:`. Per #394, a bench-job cancellation
-    # (e.g. via `timeout-minutes`) does not count as success-or-failure and
-    # would skip this job, even though bench is `continue-on-error: true`.
-    # The release-notes step below tolerates a missing bench report via
-    # `download-artifact … continue-on-error: true`, so coupling them
-    # structurally only adds gating risk.
     needs: [build, binaries]
     runs-on: ubuntu-latest
     permissions:
@@ -406,12 +330,6 @@ jobs:
         with:
           name: cli-binaries
           path: dist
-      - name: Download bench report
-        uses: actions/download-artifact@v8
-        continue-on-error: true
-        with:
-          name: bench-report
-          path: bench
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -461,17 +379,13 @@ jobs:
             echo "tar -xzf lantern-cli.tar.gz && ./lantern-cli version"
             echo '```'
             echo
-            # Splice in the release-time benchmark report if the bench job
-            # produced one. The bench job is non-blocking (continue-on-error)
-            # so a missing artifact is normal — fall back to a placeholder
-            # rather than aborting the release. Issue #256.
-            if [[ -s bench/bench-report.md ]]; then
-              cat bench/bench-report.md
-            else
-              echo "## Lantern benchmark — ${TAG}"
-              echo
-              echo "_Bench job did not produce a report for this release; see the workflow run for details._"
-            fi
+            echo "## Performance evidence"
+            echo
+            echo "Long-running benchmarks are qualified locally before tagging on a declared"
+            echo "host and exact source/image. See the release-tracking issue for platform-scoped"
+            echo "results, artifact hashes, and known risks. The short Search qualification in"
+            echo "this workflow remains a separate blocking correctness gate."
+            echo "Procedure: https://github.com/${REPO}/blob/${TAG}/testbed/bench/README.md#local-pre-tag-qualification"
             echo
             echo "$auto"
           } > "$notes_file"

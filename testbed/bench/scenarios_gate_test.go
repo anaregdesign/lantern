@@ -1473,6 +1473,20 @@ func TestSearchReleaseQualificationIsBlocking(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := string(releaseWorkflow)
+	var workflow struct {
+		Jobs map[string]any `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(releaseWorkflow, &workflow); err != nil {
+		t.Fatalf("parse root release workflow: %v", err)
+	}
+	if _, ok := workflow.Jobs["bench"]; ok {
+		t.Error("root tags must not schedule a long hosted benchmark")
+	}
+	for _, job := range []string{"verify", "search-qualification", "build", "binaries", "release"} {
+		if _, ok := workflow.Jobs[job]; !ok {
+			t.Errorf("root release workflow lost job %q", job)
+		}
+	}
 	for _, contract := range []string{
 		"search-qualification:",
 		"go test ./server/service -run",
@@ -1485,6 +1499,24 @@ func TestSearchReleaseQualificationIsBlocking(t *testing.T) {
 	} {
 		if !strings.Contains(release, contract) {
 			t.Errorf("release workflow missing blocking contract %q", contract)
+		}
+	}
+	for _, forbidden := range []string{
+		"  bench:",
+		"Run release bench sweep",
+		"Download bench report",
+		"bench/bench-report.md",
+	} {
+		if strings.Contains(release, forbidden) {
+			t.Errorf("tag workflow must not use hosted full-sweep evidence %q", forbidden)
+		}
+	}
+	for _, contract := range []string{
+		"## Performance evidence",
+		"testbed/bench/README.md#local-pre-tag-qualification",
+	} {
+		if !strings.Contains(release, contract) {
+			t.Errorf("release notes missing local-evidence contract %q", contract)
 		}
 	}
 
@@ -1535,6 +1567,31 @@ func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
 	}
 	if composeDown < 0 {
 		t.Error("run.sh must remove scenario volumes during cleanup")
+	}
+	if !strings.Contains(run, `if [[ -n "${LANTERN_BENCH_CPUSET:-}" ]]; then`) ||
+		!strings.Contains(run, `COMPOSE_FILES+=(-f "$HERE/compose.cpuset.yml")`) {
+		t.Error("local CPU pin must be opt-in and use the same Compose lifecycle")
+	}
+
+	overlay, err := os.ReadFile("compose.cpuset.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cpuset struct {
+		Services map[string]struct {
+			CPUSet string `yaml:"cpuset"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(overlay, &cpuset); err != nil {
+		t.Fatal(err)
+	}
+	if len(cpuset.Services) != 3 {
+		t.Errorf("local CPU overlay has %d replicas, want 3", len(cpuset.Services))
+	}
+	for _, replica := range []string{"lantern-0", "lantern-1", "lantern-2"} {
+		if cpuset.Services[replica].CPUSet != "${LANTERN_BENCH_CPUSET:?set LANTERN_BENCH_CPUSET for local qualification}" {
+			t.Errorf("replica %s does not use the shared required local CPU set", replica)
+		}
 	}
 }
 

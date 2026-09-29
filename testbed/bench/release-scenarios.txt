@@ -1,15 +1,13 @@
-# Scenarios executed by testbed/bench/release.sh at release time.
+# Scenarios executed by testbed/bench/release.sh for local pre-tag qualification.
 # One scenario stem per line (matches testbed/bench/scenarios/<stem>.yaml).
 # Lines starting with `#` and blank lines are ignored.
 #
-# This is the canonical release-time signal. The release bench job is
-# `continue-on-error` (non-blocking) so a profiling hiccup or slow runner can
-# never block a release (the deliberate design of #256, #394). Root tags have
-# a separate short blocking search_qualification job (#1063). The SAME sweep
-# can also be run on demand via `.github/workflows/bench-nightly.yml` WITHOUT
-# continue-on-error and with RELEASE_BENCH_BUDGET_SECONDS=0 (no truncation).
-# A leak, metric, semantic, or perf-gate breach then fails that requested
-# qualification, rather than merely warning in the release artifact.
+# This is the canonical performance sweep for an exact-source local run. Set
+# RELEASE_BENCH_BUDGET_SECONDS=0 and LEAK_GATE_ONLY=1, retain all eight
+# per-scenario artifacts, and run the separate four fresh-WAL receipt families
+# on the same image before a root tag. The optional bench-nightly.yml runs it
+# for hosted-platform diagnosis but is not release performance evidence.
+# Root tags still have a separate short blocking search_qualification (#1063).
 # Rather than run ~16 single-call scenarios (which paid per-scenario fixed overhead — warmup +
 # pre/post runtime+pprof snapshots + cooldown + Prometheus range queries +
 # report render — for each call path), the sweep is compacted to EIGHT
@@ -40,18 +38,12 @@
 # adds ~5-10 min/scenario, so the FULL-capture sweep runs ~55-65 min, not the
 # ~25 min an earlier revision of this comment assumed (see #727).
 #
-# Two consumers, two regimes:
-#   - release-time bench: full capture (the throughput report needs the
-#     pprof/prom artifacts), self-bounded by RELEASE_BENCH_BUDGET_SECONDS
-#     (default 1620s = 27 min) so it truncates gracefully — it only ever reaches
-#     ~3 scenarios, which is fine because it is advisory/non-blocking.
-#   - manual qualification: runs LEAK_GATE_ONLY=1 (run.sh skips pprof + Prometheus,
-#     keeping only the runtime snapshots the verdict reads) and
-#     RELEASE_BENCH_BUDGET_SECONDS=0 (un-truncated). Dropping capture returns the
-#     sweep to ~phase time (~26.5 min) + image build/setup, ~40-45 min total, so
-#     the full qualification runs all eight scenarios within its timeout.
-# See issues #571, #573, #708, #716, and #727. Review the release budget and
-# qualification timeout together when adding or lengthening a scenario.
+# Local qualification and optional hosted diagnostics use LEAK_GATE_ONLY=1
+# (skip pprof/Prometheus captures the verdict does not read) and
+# RELEASE_BENCH_BUDGET_SECONDS=0 (untruncated). The sweep then takes ~phase
+# time (~26.5 min) plus setup. The default 1620s budget is for exploratory
+# runs only: a truncated report, even with exit 0, never qualifies a release.
+# See issues #571, #573, #708, #716, and #727.
 #
 # release.sh self-bounds the sweep via RELEASE_BENCH_BUDGET_SECONDS and always
 # aggregates whatever ran (appending a `## Truncated` note), so an over-budget
