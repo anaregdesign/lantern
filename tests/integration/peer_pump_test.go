@@ -1012,9 +1012,10 @@ func TestPeerPump_E2E_ThreeNodeConvergence(t *testing.T) {
 }
 
 type coldSelfEchoIntegrationMetrics struct {
-	upgrades  chan struct{}
-	echoes    atomic.Int32
-	snapshots atomic.Int32
+	upgrades         chan struct{}
+	snapshotReplayed chan struct{}
+	echoes           atomic.Int32
+	snapshots        atomic.Int32
 }
 
 type coldStreamStartMetrics struct{ started chan struct{} }
@@ -1042,6 +1043,10 @@ func (m *coldSelfEchoIntegrationMetrics) OnPumpDisconnect(_ string, reason strin
 }
 func (m *coldSelfEchoIntegrationMetrics) OnPumpSnapshotReplayed(string, uint64, uint64, time.Duration) {
 	m.snapshots.Add(1)
+	select {
+	case m.snapshotReplayed <- struct{}{}:
+	default:
+	}
 }
 
 func TestCertifiedSubscribeFiltersCoveredOriginsAndRejectsMissingTailOverH2C(t *testing.T) {
@@ -1241,14 +1246,22 @@ func TestPeerPumpFiltersSelfEchoAndRepairsOwnHistoryAfterRestart(t *testing.T) {
 	stopB()
 	a.server.srv.Close()
 	restarted := newPumpNodeWithSearch(t, a.nodeID, 1024, false)
-	restarted.startPump(ctx, t, []string{b.url})
+	if got := restarted.svc.LocalSeq(a.nodeID); got != 0 {
+		t.Fatalf("fresh same-NodeID replica has local-origin cursor %d, want 0", got)
+	}
+	replayed := make(chan struct{}, 1)
+	restarted.startPumpWithMetrics(ctx, t, []string{b.url}, &coldSelfEchoIntegrationMetrics{
+		snapshotReplayed: replayed,
+	})
+	// Snapshot graph frames precede their origin watermark; wait for verified completion.
+	select {
+	case <-replayed:
+	case <-ctx.Done():
+		t.Fatalf("same-NodeID restart did not complete peer Snapshot: %v", ctx.Err())
+	}
 	if !waitForVertex(t, restarted.cache, "own-after", 5*time.Second) ||
 		!waitForVertex(t, restarted.cache, "remote-after", 5*time.Second) {
 		t.Fatal("same-NodeID restart did not restore committed graph from peer Snapshot")
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && restarted.svc.LocalSeq(a.nodeID) < 2 {
-		time.Sleep(10 * time.Millisecond)
 	}
 	if got := restarted.svc.LocalSeq(a.nodeID); got != 2 {
 		t.Fatalf("restored local-origin cursor = %d, want 2", got)
