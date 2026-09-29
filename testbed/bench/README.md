@@ -223,8 +223,17 @@ for scenario in receipt_vertex_put_admission_lookup \
 done
 
 # release.sh's exit 0 alone does not establish that an exploratory budget
-# completed all eight scenarios. Require one artifact set per named scenario.
-test "$(grep -Ec '^\| `[^`]+` \| `pass` \|' "$EVIDENCE_DIR/bench-report.md")" -eq 8
+# completed all eight scenarios. Its detailed producer tables also contain
+# pass rows, so validate only the eight scenario rows in the Summary section.
+awk -F '|' '
+  /^## Summary$/ { in_summary=1; next }
+  in_summary && /^## / { exit }
+  in_summary && /^\| `/ {
+    rows++
+    if ($3 != " `pass` " || $6 != " `pass` ") failed=1
+  }
+  END { exit (rows == 8 && !failed ? 0 : 1) }
+' "$EVIDENCE_DIR/bench-report.md"
 ! grep -Fq '## Truncated' "$EVIDENCE_DIR/bench-report.md"
 while IFS= read -r scenario; do
   case "$scenario" in ''|\#*) continue ;; esac

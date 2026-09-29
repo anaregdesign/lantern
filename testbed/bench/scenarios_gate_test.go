@@ -1603,6 +1603,54 @@ func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
 	}
 }
 
+func TestLocalPreTagSummaryGate(t *testing.T) {
+	procedure, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, found := strings.Cut(string(procedure), "awk -F '|' '\n")
+	if !found {
+		t.Fatal("local qualification is missing its Summary gate")
+	}
+	program, _, found := strings.Cut(after, "\n' \"$EVIDENCE_DIR/bench-report.md\"")
+	if !found {
+		t.Fatal("local qualification Summary gate is incomplete")
+	}
+
+	for _, tc := range []struct {
+		name       string
+		rows       int
+		leak, perf string
+		wantPass   bool
+	}{
+		{name: "complete with producer details", rows: 8, leak: "pass", perf: "pass", wantPass: true},
+		{name: "partial sweep", rows: 7, leak: "pass", perf: "pass"},
+		{name: "extra scenario", rows: 9, leak: "pass", perf: "pass"},
+		{name: "failed leak gate", rows: 8, leak: "fail", perf: "pass"},
+		{name: "failed perf gate", rows: 8, leak: "pass", perf: "fail"},
+		{name: "missing summary", leak: "pass", perf: "pass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var report strings.Builder
+			if tc.rows > 0 {
+				report.WriteString("## Summary\n\n| scenario | leak gate | metric gate | semantic gate | perf gate |\n")
+				for i := range tc.rows {
+					fmt.Fprintf(&report, "| `scenario-%d` | `%s` | `-` | `-` | `%s` |\n", i, tc.leak, tc.perf)
+				}
+			}
+			report.WriteString("\n## broad_rw\n| `producer-0` | `pass` | 1000.0 | 10.0 |\n")
+			path := filepath.Join(t.TempDir(), "bench-report.md")
+			if err := os.WriteFile(path, []byte(report.String()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := exec.Command("awk", "-F", "|", program, path).CombinedOutput()
+			if (err == nil) != tc.wantPass {
+				t.Fatalf("Summary gate error = %v, output = %q, want pass = %t", err, output, tc.wantPass)
+			}
+		})
+	}
+}
+
 func TestManualQualificationRetainsProducerEvidence(t *testing.T) {
 	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "bench-nightly.yml"))
 	if err != nil {
