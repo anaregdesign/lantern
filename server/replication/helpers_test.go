@@ -105,6 +105,7 @@ type installerTestPeer struct {
 	extraOrigins      []*pb.OriginState
 	gapFirstSubscribe bool
 	firstSubscribeErr error
+	resumeFloor       map[string]uint64
 	subscribeMutation *pb.Mutation
 	subscribeRequests []*pb.SubscribeRequest
 	snapshotRequests  []*pb.SnapshotRequest
@@ -147,6 +148,13 @@ func (p *installerTestPeer) Subscribe(
 	p.mu.Unlock()
 	if gap {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped"))
+	}
+	if call > 1 {
+		for origin, next := range p.resumeFloor {
+			if req.Msg.GetFromSeqPerOrigin()[origin] < next {
+				return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped: committed origin cursor was not used after Snapshot"))
+			}
+		}
 	}
 	if p.subscribeMutation != nil {
 		if err := stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{

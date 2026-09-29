@@ -2249,6 +2249,160 @@ func TestPeerPump_GapRecoverySnapshot(t *testing.T) {
 	}
 }
 
+// A peer can advance an origin after capturing its Snapshot while the
+// receiver already has that origin from another peer. The resumed stream
+// must not request a prefix that the receiver has committed and the source
+// has since evicted.
+func TestPeerPump_SnapshotResumesFromLatestCommittedOriginOverH2C(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	source := newPumpNodeWithSearch(t, hlc.NodeID{0xA1}, 4, true)
+	other := newPumpNodeWithSearch(t, hlc.NodeID{0xA3}, 64, true)
+	receiver := newPumpNode(t, hlc.NodeID{0xA2})
+	for i := 0; i < 8; i++ {
+		if _, err := other.sdk.PutVertex(ctx, fmt.Sprintf("other-%d", i), "value", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receiver.startPump(ctx, t, []string{other.url})
+	waitForOrigin := func(node *pumpNode, want uint64) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for node.svc.LocalSeq(other.nodeID) < want && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if got := node.svc.LocalSeq(other.nodeID); got != want {
+			t.Fatalf("origin on node %x = %d, want %d", node.nodeID, got, want)
+		}
+	}
+	waitForOrigin(receiver, 8)
+
+	for i := 0; i < 16; i++ {
+		if _, err := source.sdk.PutVertex(ctx, fmt.Sprintf("source-%d", i), "value", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upstream := newReplicationRawClient(t, source.url)
+	assertGap := func(cursor map[string]uint64) {
+		t.Helper()
+		tail, err := upstream.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+			FromSeqPerOrigin: cursor,
+		}))
+		if err == nil {
+			if tail.Receive() {
+				t.Fatal("Subscribe delivered a mutation despite missing retained history")
+			}
+			err = tail.Err()
+			_ = tail.Close()
+		}
+		if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition ||
+			!strings.Contains(err.Error(), "gapped: origin") {
+			t.Fatalf("Subscribe(%v) = %v, want a real retained-origin gap", cursor, err)
+		}
+	}
+	assertGap(map[string]uint64{hex.EncodeToString(other.nodeID[:]): 9})
+	snapshot, err := upstream.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames []*pb.SnapshotResponse
+	for snapshot.Receive() {
+		frames = append(frames, proto.Clone(snapshot.Msg()).(*pb.SnapshotResponse))
+	}
+	if err := snapshot.Err(); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) < 2 || frames[0].GetHeader() == nil ||
+		frames[0].GetHeader().GetCutoffSeqPerOrigin()[hex.EncodeToString(other.nodeID[:])] != 0 {
+		t.Fatal("source Snapshot unexpectedly included the other origin")
+	}
+
+	headerSent := make(chan struct{}, 1)
+	releaseBody := make(chan struct{})
+	resumed := make(chan *pb.SubscribeRequest, 1)
+	peer := &scriptedGraphSnapshotPeer{frames: frames}
+	peer.afterSend = func(ctx context.Context, frame *pb.SnapshotResponse) error {
+		if frame.GetHeader() == nil {
+			return nil
+		}
+		select {
+		case headerSent <- struct{}{}:
+		default:
+		}
+		select {
+		case <-releaseBody:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	peer.afterFirstSubscribe = func(ctx context.Context, req *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse]) error {
+		select {
+		case resumed <- proto.Clone(req.Msg).(*pb.SubscribeRequest):
+		default:
+		}
+		tail, err := upstream.Subscribe(ctx, connect.NewRequest(req.Msg))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tail.Close() }()
+		for tail.Receive() {
+			if err := stream.Send(proto.Clone(tail.Msg()).(*pb.SubscribeResponse)); err != nil {
+				return err
+			}
+		}
+		return tail.Err()
+	}
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+	proxy := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	proxy.Config.Protocols = protocols
+	proxy.Start()
+	t.Cleanup(proxy.Close)
+
+	receiver.startPump(ctx, t, []string{proxy.URL})
+	select {
+	case <-headerSent:
+	case <-ctx.Done():
+		t.Fatal("receiver did not request a Snapshot after missing source history")
+	}
+	source.startPump(ctx, t, []string{other.url})
+	waitForOrigin(source, 8)
+	assertGap(map[string]uint64{hex.EncodeToString(source.nodeID[:]): 17})
+	close(releaseBody)
+
+	select {
+	case request := <-resumed:
+		cursor := request.GetFromSeqPerOrigin()
+		if got := cursor[hex.EncodeToString(other.nodeID[:])]; got != 9 {
+			t.Fatalf("resumed other-origin cursor = %d, want committed next seq 9", got)
+		}
+		if got := cursor[hex.EncodeToString(source.nodeID[:])]; got != 17 {
+			t.Fatalf("resumed source-origin cursor = %d, want Snapshot next seq 17", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("receiver did not resume after Snapshot")
+	}
+	if _, err := source.sdk.PutVertex(ctx, "post-snapshot-live-tail", "value", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForVertex(t, receiver.cache, "post-snapshot-live-tail", 3*time.Second) ||
+		!waitForVertex(t, receiver.cache, "other-7", 3*time.Second) {
+		t.Fatal("receiver lost a committed origin or failed to consume the live tail")
+	}
+	if got := peer.snapshotCalls.Load(); got != 1 {
+		t.Fatalf("Snapshot requests = %d, want exactly one after retained-vector resume", got)
+	}
+}
+
 func TestPeerPump_ActiveLocalSnapshotDefersCompetingRepairOnRealWire(t *testing.T) {
 	for _, verified := range []bool{true, false} {
 		name := "verified install"
@@ -2637,9 +2791,11 @@ func TestPeerPump_SnapshotCarriesDeleteTombstones(t *testing.T) {
 
 type scriptedGraphSnapshotPeer struct {
 	graphv1connect.UnimplementedLanternReplicationServiceHandler
-	frames         []*pb.SnapshotResponse
-	afterSend      func(context.Context, *pb.SnapshotResponse) error
-	subscribeCalls atomic.Int32
+	frames              []*pb.SnapshotResponse
+	afterSend           func(context.Context, *pb.SnapshotResponse) error
+	afterFirstSubscribe func(context.Context, *connect.Request[pb.SubscribeRequest], *connect.ServerStream[pb.SubscribeResponse]) error
+	subscribeCalls      atomic.Int32
+	snapshotCalls       atomic.Int32
 }
 
 func (*scriptedGraphSnapshotPeer) PeerStatus(context.Context, *connect.Request[pb.PeerStatusRequest]) (*connect.Response[pb.PeerStatusResponse], error) {
@@ -2648,15 +2804,19 @@ func (*scriptedGraphSnapshotPeer) PeerStatus(context.Context, *connect.Request[p
 	}), nil
 }
 
-func (p *scriptedGraphSnapshotPeer) Subscribe(ctx context.Context, _ *connect.Request[pb.SubscribeRequest], _ *connect.ServerStream[pb.SubscribeResponse]) error {
+func (p *scriptedGraphSnapshotPeer) Subscribe(ctx context.Context, req *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse]) error {
 	if p.subscribeCalls.Add(1) == 1 {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("gapped"))
+	}
+	if p.afterFirstSubscribe != nil {
+		return p.afterFirstSubscribe(ctx, req, stream)
 	}
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 func (p *scriptedGraphSnapshotPeer) Snapshot(ctx context.Context, _ *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	p.snapshotCalls.Add(1)
 	for _, frame := range p.frames {
 		if err := stream.Send(frame); err != nil {
 			return err

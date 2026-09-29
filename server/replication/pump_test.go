@@ -153,6 +153,47 @@ func TestPumpUsesInjectedSnapshotInstaller(t *testing.T) {
 	}
 }
 
+func TestPumpSnapshotResumeUsesCommittedOriginVector(t *testing.T) {
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		gapFirstSubscribe: true,
+		header: &pb.SnapshotHeader{
+			Format:             pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			CutoffSeqPerOrigin: map[string]uint64{"origin-a": 7, "origin-b": 12},
+			CutoffLocalSeq:     20,
+		},
+		resumeFloor: map[string]uint64{"origin-a": 30, "origin-b": 13, "origin-c": 2},
+	}
+	server := startInstallerTestPeer(t, peer)
+	state := &cursorTestState{cursor: map[string]uint64{
+		"origin-a": 30,
+		"origin-b": 9,
+		"origin-c": 2,
+	}}
+	installer := &scriptedSnapshotInstaller{required: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+	pump := NewPump(Config{
+		HTTPClient:        defaultH2CClient(),
+		SnapshotInstaller: installer,
+	}, state, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := pump.session(ctx, server.URL); err != nil {
+		t.Fatalf("session after Snapshot with advanced local origin: %v", err)
+	}
+	subscribes, snapshots := peer.requests()
+	if len(snapshots) != 1 || len(subscribes) != 2 {
+		t.Fatalf("requests: %d Snapshots, %d Subscribes; want one Snapshot and one retry", len(snapshots), len(subscribes))
+	}
+	want := map[string]uint64{"origin-a": 30, "origin-b": 13, "origin-c": 2}
+	if got := subscribes[1].GetFromSeqPerOrigin(); !maps.Equal(got, want) {
+		t.Fatalf("post-Snapshot origin cursor = %v, want %v", got, want)
+	}
+	if got := subscribes[1].GetFromLocalSeq(); got != 21 {
+		t.Fatalf("post-Snapshot local cursor = %d, want 21", got)
+	}
+}
+
 func TestPumpReconnectUsesCommittedOriginVector(t *testing.T) {
 	peer := &installerTestPeer{requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
 	server := startInstallerTestPeer(t, peer)
