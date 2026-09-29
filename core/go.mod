@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.28.0
 	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.30.0
+	golang.org/x/sys v0.48.0
 	golang.org/x/text v0.42.0
 )
 
