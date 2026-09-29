@@ -199,7 +199,7 @@ docker compose -f deploy/compose/docker-compose.yml \
 # the sample; do not stop someone else's workload automatically.
 quiet=0
 for _ in {1..18}; do
-  vm_load="$(docker run --rm "$LANTERN_IMAGE" awk '{print $1}' /proc/loadavg)"
+  vm_load="$(docker run --rm --entrypoint awk "$LANTERN_IMAGE" '{print $1}' /proc/loadavg)"
   if awk -v load="$vm_load" 'BEGIN { exit !(load < 2) }'; then
     quiet=1
     break

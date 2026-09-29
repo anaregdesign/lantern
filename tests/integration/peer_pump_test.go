@@ -1246,6 +1246,10 @@ func TestPeerPumpFiltersSelfEchoAndRepairsOwnHistoryAfterRestart(t *testing.T) {
 		!waitForVertex(t, restarted.cache, "remote-after", 5*time.Second) {
 		t.Fatal("same-NodeID restart did not restore committed graph from peer Snapshot")
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && restarted.svc.LocalSeq(a.nodeID) < 2 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if got := restarted.svc.LocalSeq(a.nodeID); got != 2 {
 		t.Fatalf("restored local-origin cursor = %d, want 2", got)
 	}
