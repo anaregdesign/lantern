@@ -1076,8 +1076,8 @@ func (p *Pump) Run(ctx context.Context) error {
 // BackoffMax) and retries until ctx is cancelled.
 //
 // Ordinary reconnects capture the committed per-origin cursor. After a
-// verified Snapshot, the pump resumes from its header cutoffs so it does not
-// request the same unavailable log prefix again.
+// verified Snapshot, the pump resumes from the later of its header cutoffs
+// and the local committed cursor so it does not request unavailable history.
 func (p *Pump) runPeer(ctx context.Context, addr string) {
 	log := p.cfg.Logger.With(slog.String("peer", addr))
 	defer p.tracker.removePeer(addr)
@@ -1243,6 +1243,16 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			if cursorErr != nil {
 				return disconnect(fmt.Errorf("local Subscribe cursor after Snapshot: %w", cursorErr))
 			}
+			// Another peer may already have committed an origin beyond this
+			// Snapshot's cutoff; do not request its evicted prefix again.
+			if resume.origins == nil {
+				resume.origins = make(map[string]uint64, len(fresh))
+			}
+			for origin, next := range fresh {
+				if next > resume.origins[origin] {
+					resume.origins[origin] = next
+				}
+			}
 			own, planErr := p.selfEchoResume(status.Msg, fresh)
 			if planErr != nil {
 				return disconnect(fmt.Errorf("peer origin status after Snapshot: %w", planErr))
@@ -1342,8 +1352,8 @@ func (p *Pump) selfEchoResume(status *pb.PeerStatusResponse, cursor map[string]u
 // mutations from every cluster origin, not just the peer's own writes. Ordinary
 // reconnects pass the local committed origin vector, so a peer can prove a
 // retained tail after ring eviction without an unnecessary Snapshot. Snapshot
-// recovery passes the header-derived cursor supplied by the caller so the live
-// tail starts after the point-in-time cut.
+// recovery passes the later of the header-derived and committed origin cursors
+// so the live tail starts after the latest verified local cut.
 func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64, skipSelf bool) error {
 	if skipSelf {
 		// The origin cannot advance beyond this cursor; only a proven

@@ -42,11 +42,12 @@ is required for either reads or writes.
 3. **Snapshot + tail bootstrap.** A new pod calls `Snapshot` against any peer
    to seed its in-memory state. `SnapshotHeader.cutoff_seq_per_origin`
    carries the per-origin watermark the snapshot was materialised against;
-   the bootstrapping peer resumes by opening `Subscribe(from_seq_per_origin
-   = {origin: seq + 1 for each (origin, seq) in cutoff_seq_per_origin},
-   from_local_seq = cutoff_local_seq + 1)` against the same responder, so the
-   snapshot and live tail stitch without gap or overlap while portable
-   per-origin cursors still detect an evicted replay window. See #415
+   the bootstrapping peer resumes against the same responder with
+   `from_seq_per_origin` set to the later of each snapshot cutoff plus one
+   and the receiver's locally committed next sequence (when available);
+   `from_local_seq` remains the responder's snapshot cutoff plus one.
+   The retained-origin proof detects a genuinely evicted tail rather than
+   silently skipping it. See #415
    (Reading B) and the wire types in §8.2/§8.3.
 4. **Readiness gates traffic.** `/healthz/ready` returns `NOT_SERVING`
    whenever replication lag exceeds `LANTERN_MAX_REPLICATION_LAG` or an
@@ -527,7 +528,8 @@ Consequence:
   for Snapshot repair; evicting unrelated already-consumed entries does
   not force a Snapshot. Pump reconnects and anti-entropy catch-up send
   their complete committed local origin vectors; a cold node sends an
-  empty vector and Snapshot resume uses the verified header cutoffs.
+  empty vector and Snapshot resume uses the later of verified header
+  cutoffs and locally committed origin cursors.
 - `Mutation.Seq` is the originating writer's local seq, NOT the
   forwarding replica's local seq. This is preserved end-to-end: the
   Subscribe relay never overwrites `mu.Seq`, and the originating writer
@@ -549,8 +551,9 @@ server and storage-neutral offline consumer are implemented under #1116;
 their production Dart package bridge and release qualification remain #1314.
 
 The internal peer pump uses the same RPC. Ordinary sessions resume from the
-local contiguous committed origin vector; snapshot recovery resumes with both
-header-derived origin and same-responder local cursors. In graph-only mode,
+local contiguous committed origin vector; snapshot recovery resumes with the
+later of the header-derived and locally committed origin cursors, plus the
+same-responder local cursor. In graph-only mode,
 if PeerStatus proves the peer's local-origin watermark does not exceed the
 receiver's nonempty committed prefix and the receiver has no publication
 fault, the Pump requests that its own origin be filtered from that Subscribe

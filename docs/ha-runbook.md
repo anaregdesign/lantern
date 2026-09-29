@@ -71,8 +71,9 @@ Triggered when `LANTERN_PEER_DISCOVERY=dns` **or** when
   for any peer exceeds `LANTERN_MAX_REPLICATION_LAG`, so load
   balancers drain the pod.
 - Bootstrap = `Snapshot` against the first responding peer, then tail
-  `Subscribe` from the responder-local log position and each origin's
-  contiguous cutoff plus one. These are separate cursors.
+  `Subscribe` from the responder-local log position and the later of each
+  snapshot origin cutoff plus one and its locally committed next sequence.
+  These are separate cursors; a truly evicted tail still requires repair.
   See RFC §[9](replication.md#9-bootstrap-flow).
 
 Use one of the §3 topologies to deliver this mode.
@@ -805,9 +806,14 @@ receipt install; diagnose the proof failure before serving.
 
 Symptom: `lantern_subscribe_dropped_total{reason="gapped"}`
 increments; the server replies `FailedPrecondition` (reason
-`gapped`) and the affected peer logs a `replication pump: peer
-transition` line with `transition="snapshot_start" reason="gapped"`,
-then re-snapshots on its own. No manual action needed.
+`gapped`). A closed live subscriber buffer first reconnects from the
+receiver's committed per-origin cursor; if that history is still retained,
+there is **no** Snapshot. A genuinely evicted origin prefix logs a
+`replication pump: peer transition` with `transition="snapshot_start"
+reason="gapped"` and triggers automatic Snapshot repair. After a verified
+Snapshot, the pump resumes from the later of the header and locally
+committed origin cutoffs; a tail evicted during the install can still
+require another repair.
 
 An edge-only working set is valid Snapshot input: endpoint vertices created
 implicitly by `PutEdge*` / `AddEdge*` are carried as concrete nil-valued
