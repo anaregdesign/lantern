@@ -14,7 +14,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
-	github.com/prometheus/common v0.70.1
+	github.com/prometheus/common v0.71.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688
