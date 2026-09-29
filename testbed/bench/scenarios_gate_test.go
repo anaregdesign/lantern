@@ -1593,6 +1593,14 @@ func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
 			t.Errorf("replica %s does not use the shared required local CPU set", replica)
 		}
 	}
+
+	procedure, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(procedure), `docker run --rm --entrypoint awk "$LANTERN_IMAGE"`) {
+		t.Error("Docker VM load preflight must override the server ENTRYPOINT")
+	}
 }
 
 func TestManualQualificationRetainsProducerEvidence(t *testing.T) {
