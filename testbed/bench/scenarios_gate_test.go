@@ -1514,6 +1514,7 @@ func TestSearchReleaseQualificationIsBlocking(t *testing.T) {
 	for _, contract := range []string{
 		"## Performance evidence",
 		"testbed/bench/README.md#local-pre-tag-qualification",
+		"one chosen local environment (ARM or x86)",
 	} {
 		if !strings.Contains(release, contract) {
 			t.Errorf("release notes missing local-evidence contract %q", contract)
@@ -1607,6 +1608,9 @@ func TestLocalPreTagSummaryGate(t *testing.T) {
 	procedure, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(procedure), "One complete passing run on a chosen suitable") {
+		t.Error("local qualification must require a complete pass on one chosen environment")
 	}
 	_, after, found := strings.Cut(string(procedure), "awk -F '|' '\n")
 	if !found {

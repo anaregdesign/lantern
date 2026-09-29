@@ -381,10 +381,11 @@ jobs:
             echo
             echo "## Performance evidence"
             echo
-            echo "Long-running benchmarks are qualified locally before tagging on a declared"
-            echo "host and exact source/image. See the release-tracking issue for platform-scoped"
-            echo "results, artifact hashes, and known risks. The short Search qualification in"
-            echo "this workflow remains a separate blocking correctness gate."
+            echo "The complete 8+4 local load qualification passes before tagging on an exact"
+            echo "source/image and one chosen local environment (ARM or x86), not both."
+            echo "See the release-tracking issue for platform-scoped results, artifact hashes,"
+            echo "and known hosted failures; neither platform has an implied production SLO."
+            echo "The short Search qualification remains a separate blocking correctness gate."
             echo "Procedure: https://github.com/${REPO}/blob/${TAG}/testbed/bench/README.md#local-pre-tag-qualification"
             echo
             echo "$auto"

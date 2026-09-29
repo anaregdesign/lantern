@@ -1017,6 +1017,28 @@ If the counts agree, replication is working. If they don't agree
 within a few seconds, check `lantern_replication_lag_seq` and walk
 [§9.3](#93-pod-stuck-not_serving-after-restart).
 
+### 12.1 Production rollout go/no-go
+
+A passing smoke test, signed multi-arch image, or beta release does not establish
+production availability on either architecture. The beta pre-tag gate is one
+complete, exact-source local 8+4 pass on a chosen environment, not a mandatory
+ARM-and-x86 comparison ([bench policy](../testbed/bench/README.md#local-pre-tag-qualification)).
+
+Before a production HA rollout, record the target topology, server/SDK versions,
+architecture, workload, resource and network budget, acceptable fail-closed
+responses and client retry behavior, and explicit availability and latency
+objectives. Qualify that exact deployment and source under representative
+sustained load, including peer lag, Snapshot repair and rolling updates; retain
+per-producer status/latency, server/replication metrics, gate verdicts and raw
+evidence. An unmet objective is a **no-go** until the product or harness cause
+is understood and corrected; do not discard failed runs or relax thresholds.
+The previous GitHub Actions-hosted Linux/amd64 benchmark failures are real
+observations, but neither an x86-specific defect nor runner noise has been
+established ([#1531](https://github.com/anaregdesign/lantern/issues/1531)).
+Where existing Dart clients are deployed, complete the separate physical-device
+qualification in [#1530](https://github.com/anaregdesign/lantern/issues/1530)
+before upgrading their server.
+
 ---
 
 ## 13. Where to file issues
