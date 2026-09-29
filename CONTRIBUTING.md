@@ -457,11 +457,14 @@ Tag order matters because each downstream module pins its upstream tag:
    versions.
 5. Before tagging the reviewed root commit, run the untruncated eight-scenario
    sweep and four independent fresh-WAL receipt families locally on one
-   exact-source image. Retain the source SHA, image ID, platform, host/CPU
-   conditions, per-scenario verdicts, and raw artifact hashes in the release
-   tracking Issue. A passing local Linux/arm64 result does not certify
-   Linux/amd64; disclose any known failed platform result and leave its
-   production-readiness Issue open. Do not substitute an earlier branch run,
+   exact-source image. One complete pass on a chosen suitable environment
+   (ARM or x86) is mandatory; a second-architecture run is not. Retain the
+   source SHA, image ID, platform, host/CPU conditions, per-scenario verdicts,
+   and raw artifact hashes in the release tracking Issue. Disclose known
+   failed hosted runs without treating them as proof of an architecture-specific
+   defect; one local pass does not establish a production SLO on either
+   architecture. Track production readiness separately. Do not substitute an
+   earlier branch run, erase a genuine failed gate by switching environments,
    skip a scenario, cherry-pick a passing run, or relax gates to publish.
    The procedure is in [testbed/bench/README.md](testbed/bench/README.md).
 6. Root `vX.Y.Z` — triggers `docker-publish.yml`. Before any multi-arch image or GitHub

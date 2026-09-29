@@ -33,10 +33,13 @@ the [release workflow](../../.github/workflows/rust-release.yml), and the
    the source SHA, image ID, host/platform, verdicts, and artifact hashes
    against that exact commit; use the
    [bench policy](../../testbed/bench/README.md) for relevant server/hot-path
-   scenarios. Do not claim a local arm64 result certifies amd64, reuse an
-   optional hosted diagnostic as release evidence, run performance repeatedly
-   during preparation, or assume the tag workflow runs it. A changed candidate
-   needs fresh qualification and still requires new crate-owner approval.
+   scenarios. One suitable local environment (ARM or x86) suffices; a second
+   architecture is not required. Do not claim a local arm64 result certifies
+   amd64 production performance, erase a genuine failed gate by changing
+   platforms, reuse an optional hosted diagnostic as release evidence, run
+   performance repeatedly during preparation, or assume the tag workflow
+   runs it. A changed candidate needs fresh qualification and still requires
+   new crate-owner approval.
 
 The [release workflow](../../.github/workflows/rust-release.yml) runs **only**
 on pushed `sdks/rust/v*.*.*` tags and rejects any tag that is not exactly

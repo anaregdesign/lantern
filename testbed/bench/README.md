@@ -16,7 +16,8 @@ producer-performance gates, and renders a Markdown report.
 >
 > **Pre-tag performance evidence is local.** On the exact reviewed source,
 > run `./testbed/bench/release.sh` plus four separate fresh-WAL receipt
-> scenarios before tagging. Each
+> scenarios before tagging. One complete passing run on a chosen suitable
+> environment (ARM or x86) is required, not one run on each architecture. Each
 > scenario owns a fresh Compose lifecycle so data, retained high-water state,
 > and scenario-specific cluster env cannot leak into its successor (#1097). To
 > keep wall-time bounded without losing coverage, the sweep is eight
@@ -132,6 +133,11 @@ done
 ```
 
 ## Local pre-tag qualification
+
+Choose one quiet local environment (ARM or x86) for the complete eight-plus-four
+qualification on the reviewed source. A second architecture is not a beta
+release gate; retain genuine failed gate results rather than switching hosts
+to hide them. Platform-specific production SLOs require separate evidence.
 
 Use a quiet, dedicated host with a recorded Docker engine/VM budget. The
 example pins all three replicas to the **same four Docker CPUs** while the
@@ -283,9 +289,10 @@ aggregate report, all 12 per-scenario raw artifact trees, console logs,
 host conditions, manifest and frozen source. Retain the originals durably;
 record the hash of `SHA256SUMS`, the source SHA/image ID, generator placement,
 platform, CPU/memory budget, all 12 verdicts, and any contradictory
-hosted-platform result in the release-tracking Issue. A passing local arm64
-result **does not resolve** a known x64 HA gap or authorize production
-deployment on x64.
+hosted-platform result in the release-tracking Issue. The failed GitHub
+Actions-hosted Linux/amd64 run is an observed hosted benchmark failure, not
+proof of an x86-only defect or merely runner noise. A passing local run on
+one platform does not establish production availability on either platform.
 
 The exit code folds together the leak gate and any declared metric, semantic,
 and perf gates (`0` = all pass, `1` = at least one failed). Unless `KEEP_UP=1`,

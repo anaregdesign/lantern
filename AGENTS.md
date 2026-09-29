@@ -143,8 +143,9 @@ Release workflows publish artifacts only. Project-managed GKE deployment is reti
   covering the happy path plus at least one failure/edge contract; perf-relevant
   hot paths also join a bench scenario in
   `testbed/bench/scenarios/` (the release-sweep scenarios carry `perf_gate:`
-  floors checked by local exact-source pre-tag qualification; the manual hosted
-  workflow is diagnostic only — sizing and re-baselining rules in
+  floors checked by local exact-source pre-tag qualification on one chosen
+  environment (ARM or x86), not both; the manual hosted workflow is diagnostic
+  only — sizing and re-baselining rules in
   [testbed/bench/README.md](testbed/bench/README.md)). Bench
   scenario templates are schema-checked against the proto surface by
   `testbed/bench/scenarios_gate_test.go` at ordinary root `go test ./...` time, so a
