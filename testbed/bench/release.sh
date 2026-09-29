@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# release.sh — release-time bench driver.
+# release.sh — local pre-tag bench driver.
 #
 # Runs every scenario listed in testbed/bench/release-scenarios.txt against a
-# fresh Compose stack and produces ONE aggregated bench-report.md in the fixed
-# format expected by the release workflow.
+# fresh Compose stack and produces one aggregated bench-report.md.
 #
 # Usage:
 #   ./testbed/bench/release.sh [--out PATH]
@@ -14,14 +13,13 @@
 #   RUNNER                       runner platform string (default: `uname -s/uname -m`, lowercased)
 #   LANTERN_IMAGE                image to run (default: lantern:local — must exist locally)
 #   KEEP_OUT=1                   do not delete the per-scenario `out/` tree afterwards
-#   RELEASE_BENCH_BUDGET_SECONDS wall-clock budget for the scenario sweep (default: 1620).
-#                                Once exhausted, the remaining scenarios are skipped, the
-#                                report is aggregated from whatever ran (with a `## Truncated`
-#                                note appended), and the script still exits 0. Set to 0 to
-#                                disable the budget and always run every scenario.
+#   RELEASE_BENCH_BUDGET_SECONDS wall-clock budget for exploratory sweeps (default: 1620).
+#                                Once exhausted, remaining scenarios are skipped and
+#                                reported as truncated. Set to 0 for pre-tag qualification;
+#                                a partial run, even with exit 0, never qualifies.
 #
 # Exit codes:
-#   0  every scenario that RAN passed its leak gate (the sweep may have been
+#   0  every scenario that RAN passed its configured gates (the sweep may have been
 #      truncated by the wall-clock budget — truncation alone is not a failure)
 #   1  the aggregator ran but at least one scenario that ran failed or fail-gated
 #   2  setup error (missing tools, missing image, etc.)
@@ -31,12 +29,10 @@
 #     vertices, search high-water state, and scenario-owned cluster overrides
 #     from leaking across measurements while keeping one aggregated report.
 #   - We DO NOT abort on a single scenario failure — the aggregator marks
-#     missing scenarios as `(failed)` rows and the workflow surfaces the
-#     overall verdict via this script's exit code.
-#   - We self-bound the sweep via RELEASE_BENCH_BUDGET_SECONDS so the report is
-#     always aggregated and uploaded *before* the CI job's hard `timeout-minutes`
-#     can cancel us mid-loop (which would discard the report entirely). The job
-#     timeout is the backstop; this budget is the graceful cutoff.
+#     missing scenarios as `(failed)` rows and this script's exit code reports
+#     the overall verdict.
+#   - The default budget bounds exploratory sweeps. Pre-tag qualification and
+#     the optional hosted diagnostic set it to 0 to require all eight entries.
 
 set -euo pipefail
 
@@ -78,16 +74,9 @@ done < "$SCENARIO_LIST"
 
 [[ ${#scenarios[@]} -gt 0 ]] || die "no scenarios in $SCENARIO_LIST"
 
-# Wall-clock budget for the scenario sweep. The release workflow caps the whole
-# job via `timeout-minutes`; this budget is the *graceful* cutoff that lets us
-# aggregate a partial report and exit cleanly BEFORE the runner hard-kills the
-# job (which would discard the report entirely, leaving the release notes with a
-# placeholder). The default (1620s = 27 min) leaves the compact canonical sweep
-# (~25-26 min including isolated cluster lifecycles; see release-scenarios.txt
-# and #1097) headroom to finish, so it only trips when a runner is abnormally
-# slow or the scenario set grows. Set RELEASE_BENCH_BUDGET_SECONDS=0 to disable
-# (the manual qualification job in bench-nightly.yml does exactly that so no leak
-# can hide behind a truncated sweep).
+# Exploratory runs may cut off after the default 1620s, producing an explicitly
+# truncated report. Pre-tag qualification must set the budget to 0: a partial
+# report can return exit 0 but never qualifies a release.
 BUDGET_SECONDS="${RELEASE_BENCH_BUDGET_SECONDS:-1620}"
 
 log "release-bench: tag=$TAG commit=$COMMIT_SHORT runner=$RUNNER captured=$CAPTURED"
@@ -167,7 +156,7 @@ go run "$HERE/release" \
 
 # If the budget truncated the sweep, the aggregated report only covers the
 # scenarios that ran. Append an honest note listing what was skipped so readers
-# of the release notes know the sweep was partial (and why).
+# know the sweep was partial (and why).
 if [[ ${#skipped[@]} -gt 0 ]]; then
   log "sweep truncated: ${#skipped[@]} scenario(s) skipped: ${skipped[*]}"
   {

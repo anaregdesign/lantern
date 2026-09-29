@@ -1,15 +1,13 @@
-name: Bench (manual qualification)
+name: Bench (optional host diagnostics)
 
-# On-demand leak + metric + semantic + perf gate. Runs the same compact scenario sweep as
-# the release-time bench (testbed/bench/release-scenarios.txt) against a
-# freshly-built lantern:local image, but — unlike the release bench, which is
-# deliberately `continue-on-error` so a hiccup can never block shipping
-# (#256, #394) — this job has NO continue-on-error. release.sh exits non-zero
-# when any scenario's goroutine/heap leak gate, lifecycle metric gate,
+# Optional hosted-runner diagnostic, not release performance evidence (#1556).
+# Runs the canonical scenario sweep (testbed/bench/release-scenarios.txt) against a
+# freshly-built lantern:local image. This optional job has NO continue-on-error:
+# release.sh exits non-zero when any scenario's goroutine/heap leak gate, lifecycle metric gate,
 # semantic probe, or perf floor trips. Per-producer Search gates prevent fast
 # Put traffic from hiding a slow Search family, so a correctness, retention,
 # or step-change performance regression fails this
-# manually requested qualification rather than merely warning in an advisory artifact.
+# manually requested diagnostic so failures remain visible, not silently accepted.
 # This is the enforcement half of #716 (leaks), #935 (perf floors), and #1063
 # (Search qualification).
 #
@@ -45,7 +43,7 @@ concurrency:
 
 jobs:
   leak-gate:
-    name: Manual benchmark qualification
+    name: Optional hosted benchmark diagnostic
     runs-on: ubuntu-latest
     # Sizing (see #727): with full pprof + Prometheus capture the un-truncated
     # sweep ran ~55-65 min on current ubuntu-latest runners — ~2.5x the stale
@@ -157,9 +155,8 @@ jobs:
           KEEP_OUT: "1"
           # Leak-gate-only: skip the pprof + Prometheus captures the leak verdict
           # never reads (they dominate per-scenario wall-time). This is what lets
-          # the un-truncated sweep finish inside timeout-minutes. The advisory
-          # release-time bench omits this and keeps full capture for its
-          # throughput report. See #727.
+          # the un-truncated sweep finish inside timeout-minutes. An exploratory
+          # local profiling run can omit it to retain profiles. See #727.
           LEAK_GATE_ONLY: "1"
           # Disable the graceful truncation budget so every scenario runs and a
           # leak in a tail scenario cannot be silently skipped. The job

@@ -10,15 +10,17 @@
 # Environment knobs:
 #   KEEP_UP=1         do not `compose down` at end (handy for debugging)
 #   SKIP_UP=1         assume the cluster is already running; skip compose up
+#   LANTERN_BENCH_CPUSET=0-3  pin the three replicas to one shared local CPU set;
+#                     the load generator must be pinned separately on Linux
 #   PPROF_CPU=1       also capture a 30s CPU profile per replica post-steady
 #   PROM_URL          override Prometheus URL (default http://localhost:9091)
 #   LEAK_GATE_ONLY=1  skip the pprof captures + Prometheus range queries and keep
 #                     only the runtime snapshots that feed the leak-gate verdict.
 #                     Those artifacts (24 pprof + 12 prom curls per scenario, up
 #                     to 60s/30s each) are throughput/diagnostic extras the gate
-#                     never reads, yet they dominate per-scenario wall-time. The
-#                     manual qualification sets this so the un-truncated sweep fits a
-#                     sane CI timeout; the advisory release bench leaves it unset.
+#                     never reads, yet they dominate per-scenario wall-time.
+#                     Pre-tag qualification uses this for an untruncated sweep;
+#                     omit it when profiling interactively.
 #
 # Exits 0 if the leak gate verdict is "pass" AND declared metric, semantic,
 # and perf gates pass; exits 1
@@ -38,6 +40,9 @@ COMPOSE_FILES=(
   -f "$REPO_ROOT/deploy/compose/docker-compose.yml"
   -f "$HERE/compose.override.yml"
 )
+if [[ -n "${LANTERN_BENCH_CPUSET:-}" ]]; then
+  COMPOSE_FILES+=(-f "$HERE/compose.cpuset.yml")
+fi
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"
 PROM_URL="${PROM_URL:-http://localhost:9091}"
 COMPOSE_STARTED=0
@@ -1007,8 +1012,7 @@ log "metric gate verdict: $metric_verdict"
 # Optional per-scenario floors over the steady-phase producers (#935). Same
 # enforcement model as the leak gate: a scenario without a `perf_gate:` block
 # is skipped; when present, the verdict lands in perf_gate.json and folds into
-# the exit code — the manual qualification (bench-nightly.yml) thereby enforces it
-# while the release-time bench stays advisory (continue-on-error, #256/#394).
+# the exit code for local qualification and optional hosted diagnostics.
 #
 # Aggregation matches the release summary table (testbed/bench/release): rps is
 # the producer sum and p99 is the producer maximum. Ordinarily non-OK is the

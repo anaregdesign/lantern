@@ -14,9 +14,9 @@ producer-performance gates, and renders a Markdown report.
 > Release publication. Its bounded artifact records the tag, full commit SHA,
 > every stage status, and the scenario report.
 >
-> **Release CI runs a compact canonical sweep.** On every `vX.Y.Z` tag
-> push, the `Release` workflow runs `./testbed/bench/release.sh` — a
-> driver that sweeps the scenarios listed in `release-scenarios.txt`. Each
+> **Pre-tag performance evidence is local.** On the exact reviewed source,
+> run `./testbed/bench/release.sh` plus four separate fresh-WAL receipt
+> scenarios before tagging. Each
 > scenario owns a fresh Compose lifecycle so data, retained high-water state,
 > and scenario-specific cluster env cannot leak into its successor (#1097). To
 > keep wall-time bounded without losing coverage, the sweep is eight
@@ -29,31 +29,33 @@ producer-performance gates, and renders a Markdown report.
 > `many_subscribers`, `search_churn` (index decay
 > / thread-safety under churn, #703), and `replication_apply_churn`
 > (vertexHLC map regression gate, #700 / #705). It produces a
-> fixed-format `bench-report.md` that is spliced into the GitHub Release
-> notes. This full profiling sweep remains `continue-on-error`, so a noisy
-> runner cannot block a release; it is separate from the short blocking Search
-> qualification above. See issues [#256], [#262], [#573], [#708], [#1063],
-> [#1097].
+> fixed-format `bench-report.md`. Record the source SHA, image ID, exact
+> platform/CPU conditions, all gate verdicts and artifact hashes on the
+> release-tracking Issue. The release workflow no longer runs a long CI
+> benchmark or splices its noisy result into the notes. The short, blocking
+> Search qualification above is a deterministic release conformance gate,
+> not a substitute for local performance evidence. See issues [#256],
+> [#262], [#573], [#708], [#1063], [#1097], [#1556].
 >
-> **Receipt qualification is on demand.** `bench-nightly.yml` runs four
-> sequential fresh-WAL, three-replica scenarios from one pinned image after
-> the canonical sweep: conditional Vertex Put, absent Vertex Delete, absent
-> Edge Delete, and contribution-keyed Edge Add. None is in
+> **Receipt qualification uses the same local image.** Run four sequential
+> fresh-WAL, three-replica scenarios after the canonical sweep: conditional
+> Vertex Put, absent Vertex Delete, absent Edge Delete, and contribution-keyed
+> Edge Add. None is in
 > `release-scenarios.txt`. Historical Edge-only synthetic-parent runs support
 > provisional thresholds, **not final merged-stack evidence**; the four-family
-> host qualification on a quiet exact integrated image is still required
-> ([#1399]). Each manually requested scenario is blocking.
+> host qualification on a quiet exact integrated image remains required
+> ([#1399]). A failed, missing, or truncated family does not qualify.
 
-The workflow retains its historical filename but has no schedule. Run it
-manually before a production rollout or while investigating a performance
-regression:
+`bench-nightly.yml` retains its historical filename but has no schedule.
+Use it only to investigate hosted-platform failures, not as the authority
+for release performance:
 
 ```bash
 gh workflow run bench-nightly.yml --ref <commit-or-branch>
 ```
 
 An empty `diagnostic_scenario` runs the full eight-scenario sweep followed by
-the four receipt scenarios. Both modes verify the exact checkout and image,
+the four receipt scenarios. Both modes verify the checkout and image,
 require a fresh runner without existing containers, and wait up to three minutes
 for a low-load host before traffic begins. Specify a scenario stem to diagnose
 one case; the workflow then summarizes bounded ghz error reasons. For
@@ -63,8 +65,9 @@ gap reasons and Snapshot failures) before teardown; no request payloads are
 uploaded. The full manual sweep retains the generated
 `broad_rw` and `broad_mutate` ghz/runtime summaries for post-failure error
 attribution without changing scenario traffic, gate thresholds, or the
-per-scenario Compose teardown. A diagnostic is not a substitute for the full
-qualification. `diagnostic_log_capacity` and `diagnostic_subscriber_buffer`
+per-scenario Compose teardown. A hosted diagnostic (even a full green sweep)
+is not a substitute for local pre-tag qualification.
+`diagnostic_log_capacity` and `diagnostic_subscriber_buffer`
 override only the named diagnostic run (the full sweep retains the canonical
 10,000-entry ring and the server's subscriber-buffer default, currently 512);
 the latter accepts an integer from 1 to 100,000. Ordinary PR CI remains
@@ -79,6 +82,7 @@ focused on deterministic tests. Supplying a diagnostic override without
 [#1097]: https://github.com/anaregdesign/lantern/issues/1097
 [#1399]: https://github.com/anaregdesign/lantern/issues/1399
 [#1442]: https://github.com/anaregdesign/lantern/issues/1442
+[#1556]: https://github.com/anaregdesign/lantern/issues/1556
 
 ## Prerequisites
 
@@ -126,6 +130,153 @@ for scenario in receipt_vertex_put_admission_lookup \
   ./testbed/bench/run.sh "$scenario"
 done
 ```
+
+## Local pre-tag qualification
+
+Use a quiet, dedicated host with a recorded Docker engine/VM budget. The
+example pins all three replicas to the **same four Docker CPUs** while the
+load generator runs on the host. On macOS, `ghz`/Go therefore use host CPUs
+outside the Linux/arm64 Docker VM; this is a platform-scoped result, **not**
+a Linux/amd64 four-CPU result. On Linux, pin the load generator to the same
+CPU set (for example, run the commands with `taskset -c 0-3`). Record where
+the generator actually ran, and never compare throughput across different
+host/VM budgets as if they were the same baseline. The current numeric
+`perf_gate:` floors and traffic mix must remain unchanged; any future
+platform-specific re-baseline needs a separate reviewed change with
+multiple comparable local measurements.
+
+Freeze a **reviewed final source SHA** into a separate directory so
+uncommitted work, including device-project changes, cannot enter the image,
+benchmark drivers, or reports. Choose a durable evidence directory; do not
+run from a preliminary branch and substitute its report for the final tag.
+All commands below run from the repository root unless noted.
+
+```bash
+set -euo pipefail
+SOURCE_SHA="$(git rev-parse HEAD)"
+EVIDENCE_PARENT="$HOME/lantern-bench-evidence"
+mkdir -p "$EVIDENCE_PARENT"
+EVIDENCE_DIR="$(mktemp -d "$EVIDENCE_PARENT/run.XXXXXX")"
+mkdir -p "$EVIDENCE_DIR/source"
+git archive "$SOURCE_SHA" | tar -xf - -C "$EVIDENCE_DIR/source"
+cd "$EVIDENCE_DIR/source"
+
+# Do not run alongside other containers or a busy VM. Record the host, VM,
+# installed generator versions, and exact budget before starting traffic.
+test -z "$(docker ps --quiet)"
+{
+  printf 'source_sha=%s\n' "$SOURCE_SHA"
+  uname -srm
+  uptime
+  docker info --format 'engine={{.ServerVersion}} os={{.OSType}} arch={{.Architecture}} cpus={{.NCPU}} memory={{.MemTotal}}'
+  docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+  ghz --version
+  yq --version
+  go version
+} | tee "$EVIDENCE_DIR/host.txt"
+
+docker build --build-arg VERSION=local-qualification \
+  --build-arg COMMIT="$SOURCE_SHA" -t lantern:local-qualification .
+export LANTERN_IMAGE=lantern:local-qualification
+export EXPECTED_LANTERN_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$LANTERN_IMAGE")"
+export EXPECTED_LANTERN_COMMIT="$SOURCE_SHA"
+docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$LANTERN_IMAGE" |
+  grep -Fx "LANTERN_COMMIT=$SOURCE_SHA"
+printf 'image_id=%s\n' "$EXPECTED_LANTERN_IMAGE_ID" | tee -a "$EVIDENCE_DIR/host.txt"
+
+# The optional Compose overlay pins every replica to the same four CPUs.
+# On macOS the host generator is NOT in that Docker CPU set; state this
+# limitation on the tracking Issue. Use the same exact image for all 12 runs.
+export LANTERN_BENCH_CPUSET=0-3
+docker compose -f deploy/compose/docker-compose.yml \
+  -f testbed/bench/compose.override.yml \
+  -f testbed/bench/compose.cpuset.yml config --format json |
+  jq -e '.services as $services |
+    all(["lantern-0","lantern-1","lantern-2"][]; $services[.].cpuset == "0-3")' >/dev/null
+
+# Wait for the Docker VM's one-minute load to fall below half of the four
+# allocated CPUs. A busy host or another running container disqualifies
+# the sample; do not stop someone else's workload automatically.
+quiet=0
+for _ in {1..18}; do
+  vm_load="$(docker run --rm "$LANTERN_IMAGE" awk '{print $1}' /proc/loadavg)"
+  if awk -v load="$vm_load" 'BEGIN { exit !(load < 2) }'; then
+    quiet=1
+    break
+  fi
+  sleep 10
+done
+printf 'docker_vm_load_1m=%s\n' "$vm_load" | tee -a "$EVIDENCE_DIR/host.txt"
+test "$quiet" -eq 1 && test -z "$(docker ps --quiet)"
+export COMPOSE_PROJECT_NAME=lantern-bench-local
+export KEEP_OUT=1 LEAK_GATE_ONLY=1 RELEASE_BENCH_BUDGET_SECONDS=0
+export TAG=local-qualification COMMIT="$SOURCE_SHA"
+./testbed/bench/release.sh --out "$EVIDENCE_DIR/bench-report.md" |
+  tee "$EVIDENCE_DIR/canonical.log"
+
+# Each run.sh invocation starts a fresh Compose cluster and WAL. A failed
+# command stops the qualification; keep its raw files for diagnosis.
+for scenario in receipt_vertex_put_admission_lookup \
+  receipt_vertex_delete_admission_lookup receipt_admission_lookup \
+  receipt_edge_add_admission_lookup; do
+  ./testbed/bench/run.sh "$scenario" | tee "$EVIDENCE_DIR/$scenario.log"
+done
+
+# release.sh's exit 0 alone does not establish that an exploratory budget
+# completed all eight scenarios. Require one artifact set per named scenario.
+test "$(grep -Ec '^\| `[^`]+` \| `pass` \|' "$EVIDENCE_DIR/bench-report.md")" -eq 8
+! grep -Fq '## Truncated' "$EVIDENCE_DIR/bench-report.md"
+while IFS= read -r scenario; do
+  case "$scenario" in ''|\#*) continue ;; esac
+  runs=(testbed/bench/out/"$scenario"/*)
+  test "${#runs[@]}" -eq 1 && test -f "${runs[0]}/report.md"
+  for gate in leak_gate perf_gate; do
+    jq -e '.verdict == "pass"' "${runs[0]}/${gate}.json" >/dev/null
+  done
+done < testbed/bench/release-scenarios.txt
+for scenario in receipt_vertex_put_admission_lookup \
+  receipt_vertex_delete_admission_lookup receipt_admission_lookup \
+  receipt_edge_add_admission_lookup; do
+  runs=(testbed/bench/out/"$scenario"/*)
+  test "${#runs[@]}" -eq 1 && test -f "${runs[0]}/report.md"
+  for gate in leak_gate perf_gate; do
+    jq -e '.verdict == "pass"' "${runs[0]}/${gate}.json" >/dev/null
+  done
+done
+test "$(docker image inspect --format '{{.Id}}' "$LANTERN_IMAGE")" = "$EXPECTED_LANTERN_IMAGE_ID"
+
+# Write a success manifest only after all 12 gates passed. Keep the raw
+# evidence private; put only hashes and aggregate verdicts on public Issues.
+jq -n --arg sha "$SOURCE_SHA" --arg image "$EXPECTED_LANTERN_IMAGE_ID" \
+  --arg host "$(uname -srm)" \
+  --arg container "$(docker info --format '{{.OSType}}/{{.Architecture}}')" \
+  --argjson vm_memory_bytes "$(docker info --format '{{.MemTotal}}')" \
+  --arg cpuset "$LANTERN_BENCH_CPUSET" --arg generator "native host: $(command -v ghz)" \
+  '{source_sha:$sha,image_id:$image,host:$host,container_platform:$container,
+    docker_vm_memory_bytes:$vm_memory_bytes,shared_replica_cpuset:$cpuset,
+    generator_placement:$generator,canonical_scenarios:8,receipt_families:4,
+    verdict:"pass",raw_artifact_hashes:"SHA256SUMS"}' > "$EVIDENCE_DIR/manifest.json"
+if command -v shasum >/dev/null 2>&1; then
+  hash=(shasum -a 256)
+else
+  hash=(sha256sum)
+fi
+find "$EVIDENCE_DIR" -type f ! -name SHA256SUMS -print0 |
+  xargs -0 "${hash[@]}" | sort -k2 > "$EVIDENCE_DIR/SHA256SUMS"
+"${hash[@]}" "$EVIDENCE_DIR/SHA256SUMS"
+```
+
+Run these commands under `set -euo pipefail` so a failed gate cannot be hidden
+by `tee`; if any command fails, preserve the failed artifacts but **do not
+tag**. The `run.sh` exit status also enforces the admission/lookup counts and
+any configured semantic/metric gates. The `SHA256SUMS` list covers the
+aggregate report, all 12 per-scenario raw artifact trees, console logs,
+host conditions, manifest and frozen source. Retain the originals durably;
+record the hash of `SHA256SUMS`, the source SHA/image ID, generator placement,
+platform, CPU/memory budget, all 12 verdicts, and any contradictory
+hosted-platform result in the release-tracking Issue. A passing local arm64
+result **does not resolve** a known x64 HA gap or authorize production
+deployment on x64.
 
 The exit code folds together the leak gate and any declared metric, semantic,
 and perf gates (`0` = all pass, `1` = at least one failed). Unless `KEEP_UP=1`,
@@ -412,9 +563,9 @@ perf_gate:
 Every key is individually optional — gate only the metrics that are stable
 for the scenario. The aggregation matches the release summary table
 (`testbed/bench/release`), the verdict lands in `perf_gate.json`, and a
-`fail` folds into run.sh's exit code exactly like the leak gate: the
-manual qualification (`bench-nightly.yml`) enforces it when requested. The
-release-time bench stays advisory (`continue-on-error`, #256/#394).
+`fail` folds into run.sh's exit code exactly like the leak gate. Local
+pre-tag qualification enforces it; optional hosted diagnostics use the
+same thresholds but do not decide release acceptance.
 
 For a fan-out scenario, `perf_gate.producers` may define the same thresholds
 per named `target.calls[]` producer:
@@ -513,11 +664,11 @@ count, and verdict—never query text, prefixes, keys, or values.
 
 Sizing rules (all eight release scenarios carry a block sized this way):
 
-- Floors are **ratchet floors with ≥2x headroom** over the worst hosted
-  baseline — they exist to catch step-change regressions (accidental O(n²),
-  lock convoy, a dropped fan-out), NOT single-digit-% drift, which shared
-  `ubuntu-latest` runners cannot resolve. Do not tighten them to "just below
-  last night's number".
+- The existing floors have **≥2x headroom** over their historical hosted
+  baseline — they catch step-change regressions (accidental O(n²), lock
+  convoy, a dropped fan-out), NOT single-digit-% drift. Keep them unchanged
+  for the first declared local profile; do not transplant a single local
+  result to another platform or tighten a floor to "just below last run".
 - **Gate p99 only where it is stable.** Scenarios whose offered load
   deliberately saturates the runner (`broad_rw`, `broad_mutate`) have
   queue-depth p99 — observed varying 7x night-over-night — so they gate rps
@@ -525,8 +676,8 @@ Sizing rules (all eight release scenarios carry a block sized this way):
 - **Re-baseline after changing a scenario's mix.** Adding/removing a
   `target.calls` entry re-splits RPS for entries without an explicit `rps` and
   always shifts the offered mix; drop the affected ceilings in the same PR and
-  restore them (from fresh hosted measurements, with headroom) after a few green
-  nightlies.
+  restore them from multiple controlled local measurements on the
+  declared platform, with headroom and a reviewed comparison.
 - When a perf floor legitimately moves (accepted throughput/latency
   trade-off), adjust it **in the same PR** and say so in the PR body — same
   contract as the coverage-floor ratchet in CONTRIBUTING.md.
@@ -582,17 +733,16 @@ testbed/bench/out/<scenario>/<ts>/
    `lantern_subscription_dropped_total` and
    `lantern_subscription_queue_depth_bucket` queries in `prom/`.
 
-## Why blocking qualifications stay bounded
+## Why CI keeps only the short Search gate
 
-The full sweep needs multi-minute steady phases, a 10-minute soak, pprof and
-Prometheus capture, a healthy Docker daemon, and stable host conditions. It is
-therefore advisory at release time and blocking only in the untruncated
-manual qualification. Root tags additionally run the deliberately short, tolerant
+The full sweep needs multi-minute steady phases, a healthy Docker daemon and
+stable host conditions. Qualify it locally before tagging, with no truncation;
+the root tag workflow does not run it. Root tags still run the short
 `search_qualification` scenario: deterministic semantic and lifecycle
 failures block, while loose throughput/p99 ratchets reject only step changes
-and tolerate normal hosted-runner jitter. Receipt admission/lookup is also
-blocking on demand, but remains outside the release sweep until hosted-runner
-history supports a release-safe threshold.
+and tolerate normal hosted-runner jitter. Four receipt admission/lookup
+families stay separate from the eight canonical scenarios and are qualified
+locally on the same exact image.
 
 [ghz]: https://ghz.sh/
 [yq]: https://github.com/mikefarah/yq
