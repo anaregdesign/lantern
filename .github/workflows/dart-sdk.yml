@@ -30,6 +30,7 @@ on:
       - "testdata/search/**"
       - "tests/integration/dart_offline_sqlite_test.dart"
       - "tests/integration/dart_identity_offline_sqlite_test.dart"
+      - "tests/integration/dart_contribution_delete_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
@@ -62,6 +63,7 @@ on:
       - "testdata/search/**"
       - "tests/integration/dart_offline_sqlite_test.dart"
       - "tests/integration/dart_identity_offline_sqlite_test.dart"
+      - "tests/integration/dart_contribution_delete_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
@@ -198,7 +200,9 @@ jobs:
           exit 1
 
       - name: Test parent publication safeguards
-        run: python3 -B -m unittest discover -s scripts -p release_test.py
+        run: |
+          python3 -B -m unittest discover -s scripts -p release_test.py
+          python3 -B -m unittest discover -s scripts -p physical_contribution_release_gate_test.py
 
       - name: Resolve dependencies
         # The Flutter example resolves in the blocking Android job. Keeping it
@@ -232,7 +236,9 @@ jobs:
           LANTERN_DART_SEARCH_POSITIONS_DISABLED_ENDPOINT: http://127.0.0.1:6382
           LANTERN_DART_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
           LANTERN_DART_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
-        run: dart test test/real_wire_test.dart
+        run: |
+          dart test test/real_wire_test.dart
+          dart test ../../tests/integration/dart_contribution_delete_test.dart
 
       - name: Receipt real-wire test
         timeout-minutes: 5
@@ -245,8 +251,8 @@ jobs:
             LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6384 \
             LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             dart test \
-              --name '^receipt Vertex and Edge mutations reconcile over real h2c$' \
-              test/real_wire_test.dart
+              --name '^(receipt Vertex and Edge mutations reconcile over real h2c|contribution .*)$' \
+              test/real_wire_test.dart ../../tests/integration/dart_contribution_delete_test.dart
 
       - name: Build API documentation
         if: needs.changes.outputs.full == 'true'
@@ -1228,6 +1234,7 @@ jobs:
           test "$(awk '$1 == "name:" { print $2; exit }' sdks/dart/pubspec.yaml)" = lantern_client
           test "$(awk '$1 == "version:" { print $2; exit }' sdks/dart/pubspec.yaml)" = "$version"
           grep -Fx "## $version" sdks/dart/CHANGELOG.md
+          python3 -B sdks/dart/scripts/physical_contribution_release_gate.py --tag "$TAG"
 
           artifact_root="$RUNNER_TEMP/lantern-client-release"
           source_dir="$artifact_root/source"

@@ -79,6 +79,10 @@ enum IdentityOperation {
 
   /// A committed receipt envelope without an accepted graph identity.
   receiptOnly,
+
+  /// One Add contribution was deleted; invalidate and re-fetch the edge pair.
+  /// The frame carries neither the contribution ID nor its expiration.
+  deleteEdgeContribution,
 }
 
 /// The original mutation's Hybrid Logical Clock coordinate.
@@ -366,6 +370,7 @@ IdentityChunkFrame _decodeIdentityChunk(
     4 => IdentityOperation.putEdge,
     5 => IdentityOperation.deleteEdge,
     6 => IdentityOperation.receiptOnly,
+    7 => IdentityOperation.deleteEdgeContribution,
     _ => throw _internalSdkException('identity chunk has unknown operation'),
   };
   if (operation == IdentityOperation.receiptOnly &&
@@ -382,7 +387,8 @@ IdentityChunkFrame _decodeIdentityChunk(
     IdentityOperation.deleteVertex => raw.edgeKeys.isNotEmpty,
     IdentityOperation.addEdge ||
     IdentityOperation.putEdge ||
-    IdentityOperation.deleteEdge => raw.vertexKeys.isNotEmpty,
+    IdentityOperation.deleteEdge ||
+    IdentityOperation.deleteEdgeContribution => raw.vertexKeys.isNotEmpty,
     IdentityOperation.receiptOnly =>
       raw.vertexKeys.isNotEmpty || raw.edgeKeys.isNotEmpty,
   }) {

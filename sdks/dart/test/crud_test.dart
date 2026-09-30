@@ -700,6 +700,151 @@ void main() {
       throwsA(isA<LanternInvalidArgumentException>()),
     );
   });
+  group('contribution Delete', () {
+    EdgeContributionRef ref(int id, {String head = 'h'}) => EdgeContributionRef(
+      tail: 't',
+      head: head,
+      contribId: Uint8List(24)..[23] = id,
+    );
+    test('copies IDs and rejects malformed identities before dispatch', () {
+      final bytes = Uint8List(24)..[23] = 1;
+      final target = EdgeContributionRef(
+        tail: 't',
+        head: 'h',
+        contribId: bytes,
+      );
+      bytes[23] = 2;
+      target.contribId[23] = 3;
+      expect(target.contribId[23], 1);
+      for (final bytes in [Uint8List(23), Uint8List(25), Uint8List(24)]) {
+        expect(
+          () => EdgeContributionRef(tail: 't', head: 'h', contribId: bytes),
+          throwsA(isA<LanternInvalidArgumentException>()),
+        );
+      }
+      expect(
+        () => EdgeContributionRef(
+          tail: '',
+          head: 'h',
+          contribId: target.contribId,
+        ),
+        throwsA(isA<LanternInvalidArgumentException>()),
+      );
+    });
+    test(
+      'plural chunks preserve duplicate, missing and wrong-pair indices',
+      () async {
+        final requests = <graph.DeleteEdgeContributionsRequest>[];
+        final live = <String>{'h:1', 'h:2'};
+        final client = _client(
+          FakeTransportBuilder().unary<
+            graph.DeleteEdgeContributionsRequest,
+            graph.DeleteEdgeContributionsResponse
+          >(LanternService.deleteEdgeContributions, (request, context) {
+            requests.add(request);
+            expect(request.hasReceiptContext(), isFalse);
+            final existed = request.contributions
+                .map((key) => live.remove('${key.head}:${key.contribId.last}'))
+                .toList();
+            return graph.DeleteEdgeContributionsResponse(
+              existed: existed,
+              deleted: existed.where((value) => value).length,
+            );
+          }).build(),
+        );
+        addTearDown(client.close);
+        final result = await client.deleteEdgeContributions([
+          ref(1),
+          ref(1),
+          ref(3),
+          ref(2, head: 'other'),
+          ref(2),
+        ], batchSize: 2);
+        expect(result.existed, [true, false, false, false, true]);
+        expect(result.deleted, 2);
+        expect(requests.map((request) => request.contributions.length), [
+          2,
+          2,
+          1,
+        ]);
+        expect(() => result.existed[0] = false, throwsUnsupportedError);
+        expect(await client.deleteEdgeContribution(ref(1)), isFalse);
+      },
+    );
+    test(
+      'unknown or malformed chunk is never retried and counts observed inputs',
+      () async {
+        var calls = 0;
+        final client = LanternClient.connect(
+          Uri.parse('https://example.test'),
+          retryPolicy: const RetryPolicy(maxAttempts: 3),
+          transport:
+              FakeTransportBuilder().unary<
+                graph.DeleteEdgeContributionsRequest,
+                graph.DeleteEdgeContributionsResponse
+              >(LanternService.deleteEdgeContributions, (request, context) {
+                calls++;
+                if (calls == 2) {
+                  throw connect.ConnectException(
+                    connect.Code.unavailable,
+                    'lost',
+                  );
+                }
+                return graph.DeleteEdgeContributionsResponse(
+                  existed: [false, false],
+                );
+              }).build(),
+        );
+        addTearDown(client.close);
+        await expectLater(
+          client.deleteEdgeContributions([
+            ref(1),
+            ref(2),
+            ref(3),
+          ], batchSize: 2),
+          throwsA(
+            isA<BatchException>().having(
+              (error) => error.committed,
+              'committed',
+              2,
+            ),
+          ),
+        );
+        expect(calls, 2);
+        for (final response in [
+          graph.DeleteEdgeContributionsResponse(existed: []),
+          graph.DeleteEdgeContributionsResponse(existed: [true], deleted: 0),
+          graph.DeleteEdgeContributionsResponse(existed: [false], deleted: -1),
+        ]) {
+          final malformed = _client(
+            FakeTransportBuilder()
+                .unary<
+                  graph.DeleteEdgeContributionsRequest,
+                  graph.DeleteEdgeContributionsResponse
+                >(
+                  LanternService.deleteEdgeContributions,
+                  (request, context) => response,
+                )
+                .build(),
+          );
+          addTearDown(malformed.close);
+          await expectLater(
+            malformed.deleteEdgeContribution(ref(1)),
+            throwsA(isA<LanternInternalException>()),
+          );
+        }
+        expect((await client.deleteEdgeContributions([])).existed, isEmpty);
+        await expectLater(
+          client.deleteEdgeContributions([ref(1)], batchSize: 0),
+          throwsA(isA<LanternInvalidArgumentException>()),
+        );
+        await expectLater(
+          client.deleteEdgeContributions(List.filled(65537, ref(1))),
+          throwsA(isA<LanternInvalidArgumentException>()),
+        );
+      },
+    );
+  });
 }
 
 LanternClient _client(connect.Transport transport) => LanternClient.connect(

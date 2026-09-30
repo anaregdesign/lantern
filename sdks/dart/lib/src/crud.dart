@@ -466,6 +466,60 @@ extension LanternCrud on LanternClient {
     return deleted;
   }
 
+  /// Removes one live Add contribution, preserving other rows and the Put base.
+  Future<bool> deleteEdgeContribution(
+    EdgeContributionRef contribution, {
+    LanternCallOptions? options,
+  }) async => (await deleteEdgeContributions([
+    contribution,
+  ], options: options)).existed.single;
+
+  /// Removes caller-known Add rows in bounded, plural-canonical chunks.
+  ///
+  /// Duplicate, missing and expired IDs retain their request positions. This
+  /// operation uses the server's D4-bounded removal contract; it cannot remove
+  /// a Put base. A plain Delete is never automatically replayed after response
+  /// loss. [BatchException.committed] counts fully observed input positions,
+  /// including false observations; the failed chunk may already have executed.
+  Future<DeleteEdgeContributionsResult> deleteEdgeContributions(
+    Iterable<EdgeContributionRef> contributions, {
+    int batchSize = defaultBatchSize,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    final input = List<EdgeContributionRef>.unmodifiable(contributions);
+    _validateBatch(input.length, batchSize);
+    final keys = _edgeContributionKeys(input);
+    final callOptions = _freezeCallOptions(options);
+    final existed = <bool>[];
+    for (var offset = 0; offset < input.length; offset += batchSize) {
+      try {
+        _throwIfCanceled(callOptions?.cancellation);
+        final end = _chunkEnd(offset, batchSize, input.length);
+        final request = $graph.DeleteEdgeContributionsRequest(
+          contributions: keys.sublist(offset, end),
+        );
+        final response = await _invoke(
+          'DeleteEdgeContributions',
+          callOptions,
+          (raw, headers, signal, onHeader, onTrailer) =>
+              raw.deleteEdgeContributions(
+                request,
+                headers: headers,
+                signal: signal,
+                onHeader: onHeader,
+                onTrailer: onTrailer,
+              ),
+        );
+        _validateContributionDeleteResponse(end - offset, response);
+        existed.addAll(response.existed);
+      } on Exception catch (error) {
+        _throwBatchOrCause(existed.length, error);
+      }
+    }
+    return DeleteEdgeContributionsResult._(existed);
+  }
+
   Future<T> _invoke<T>(
     String method,
     LanternCallOptions? options,
@@ -556,13 +610,41 @@ List<bool> _initialLiveness(List<DateTime?> expirations, DateTime sampledAt) =>
 List<int>? _validatedContribId(EdgeInput edge) {
   final value = edge._contribId;
   if (value == null) return null;
+  return _validatedContributionBytes(value);
+}
+
+Uint8List _validatedContributionBytes(Uint8List value) {
   if (value.length != 24) {
     throw _invalidArgumentException('contribId must be exactly 24 bytes');
   }
   if (!value.any((byte) => byte != 0)) {
     throw _invalidArgumentException('contribId must not be all zero');
   }
-  return List<int>.from(value);
+  return Uint8List.fromList(value);
+}
+
+List<$graph.EdgeContributionKey> _edgeContributionKeys(
+  List<EdgeContributionRef> contributions,
+) => contributions
+    .map(
+      (ref) => $graph.EdgeContributionKey(
+        tail: ref.tail,
+        head: ref.head,
+        contribId: ref.contribId,
+      ),
+    )
+    .toList(growable: false);
+
+void _validateContributionDeleteResponse(
+  int count,
+  $graph.DeleteEdgeContributionsResponse response,
+) {
+  if (response.existed.length != count ||
+      response.deleted != response.existed.where((value) => value).length) {
+    throw _internalSdkException(
+      'server returned misaligned contribution Delete observations or count',
+    );
+  }
 }
 
 Never _throwBatchOrCause(int committed, Exception cause) {

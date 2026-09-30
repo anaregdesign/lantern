@@ -439,7 +439,16 @@ final class LanternClientOfflineRemote
           ),
           policy: OfflineReceiptPolicy.fromCapability(capability),
           serverNow: capability.serverNow,
-          supportedMutations: capability.supportedMutations,
+          supportedMutations: capability.supportedMutations
+              .where(
+                const <ReceiptMutationKind>{
+                  ReceiptMutationKind.vertexPut,
+                  ReceiptMutationKind.vertexDelete,
+                  ReceiptMutationKind.edgeDelete,
+                  ReceiptMutationKind.edgeAdd,
+                }.contains,
+              )
+              .toSet(),
         ),
       };
     } on OfflineException {
@@ -460,21 +469,19 @@ final class LanternClientOfflineRemote
         options: LanternCallOptions(cancellation: cancellation, retry: false),
       );
       final receipt = status.receipt;
-      final result = switch (receipt) {
-        VertexPutReceipt(:final outcome) => OfflineVertexPutReceiptResult(
-          outcome,
-        ),
-        VertexDeleteReceipt(:final existed) => OfflineVertexDeleteReceiptResult(
-          existed,
-        ),
-        EdgeDeleteReceipt(:final existed) => OfflineEdgeDeleteReceiptResult(
-          existed,
-        ),
-        EdgeAddReceipt(:final effectiveWeight) => OfflineEdgeAddReceiptResult(
-          effectiveWeight,
-        ),
-        null => null,
-      };
+      OfflineReceiptResult? result;
+      if (receipt is VertexPutReceipt) {
+        result = OfflineVertexPutReceiptResult(receipt.outcome);
+      } else if (receipt is VertexDeleteReceipt) {
+        result = OfflineVertexDeleteReceiptResult(receipt.existed);
+      } else if (receipt is EdgeDeleteReceipt) {
+        result = OfflineEdgeDeleteReceiptResult(receipt.existed);
+      } else if (receipt is EdgeAddReceipt) {
+        result = OfflineEdgeAddReceiptResult(receipt.effectiveWeight);
+      } else if (receipt != null) {
+        // New online families require a separately qualified offline intent.
+        throw const OfflineRemoteProtocolException();
+      }
       return OfflineReceiptStatus(
         operationId: status.operationId,
         state: status.state,

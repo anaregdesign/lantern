@@ -463,6 +463,7 @@ void main() {
         ReceiptMutationKind.vertexDelete,
         ReceiptMutationKind.edgeDelete,
         ReceiptMutationKind.edgeAdd,
+        ReceiptMutationKind.edgeContributionDelete,
       });
 
       final repeatedUnsupported = _client(
@@ -685,7 +686,7 @@ void main() {
       ),
     );
 
-    final unsupportedContributionDelete = _client(
+    final contributionDelete = _client(
       FakeTransportBuilder()
           .unary<
             graph.GetReceiptStatusesRequest,
@@ -705,15 +706,14 @@ void main() {
           )
           .build(),
     );
-    await expectLater(
-      unsupportedContributionDelete.getReceiptStatus(id),
-      throwsA(
-        isA<LanternInternalException>().having(
-          (error) => error.isSdkProtocolViolation,
-          'isSdkProtocolViolation',
-          isTrue,
-        ),
-      ),
+    final contributionStatus = await contributionDelete.getReceiptStatus(id);
+    expect(contributionStatus.state, ReceiptStatusState.confirmed);
+    final contributionReceipt =
+        contributionStatus.receipt! as EdgeContributionDeleteReceipt;
+    expect(contributionReceipt.existed, isFalse);
+    expect(
+      contributionReceipt.mutation,
+      ReceiptMutationKind.edgeContributionDelete,
     );
 
     for (final retention in [
@@ -1934,6 +1934,245 @@ void main() {
       }
     },
   );
+  group('receipt contribution Delete', () {
+    EdgeContributionRef ref() =>
+        EdgeContributionRef(tail: 't', head: 'h', contribId: _bytes(24, 1));
+    ReceiptContext context(int count) => _receiptContext(
+      count: count,
+      mutation: ReceiptMutationKind.edgeContributionDelete,
+    );
+    graph.GetReceiptCapabilityResponse capable({
+      int epoch = 1,
+      int node = 2,
+      int generation = 3,
+    }) => _capabilityResponse(
+      epoch: epoch,
+      node: node,
+      generation: generation,
+      supportedMutations: const [
+        graph
+            .ReceiptMutationKind
+            .RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
+      ],
+    );
+
+    test(
+      'plural facade preserves duplicate false results and validates contexts',
+      () async {
+        final requests = <graph.DeleteEdgeContributionsRequest>[];
+        final client = _client(
+          FakeTransportBuilder().unary<
+            graph.DeleteEdgeContributionsRequest,
+            graph.DeleteEdgeContributionsResponse
+          >(LanternService.deleteEdgeContributions, (request, _) {
+            requests.add(request);
+            return graph.DeleteEdgeContributionsResponse(
+              existed: request.contributions.length == 2
+                  ? [true, false]
+                  : [false],
+              deleted: request.contributions.length == 2 ? 1 : 0,
+            );
+          }).build(),
+        );
+        addTearDown(client.close);
+        final ctx = context(2);
+        final results = await client.deleteEdgeContributionsWithReceipt([
+          ref(),
+          ref(),
+        ], context: ctx);
+        expect(results.map((result) => result.existed), [true, false]);
+        expect(results.map((result) => result.operationId), ctx.operationIds);
+        expect(
+          requests.single.receiptContext.operationIds,
+          ctx.operationIds.map((id) => id.bytes),
+        );
+        expect(
+          (await client.deleteEdgeContributionWithReceipt(
+            ref(),
+            context: context(1),
+          )).existed,
+          isFalse,
+        );
+        for (final invalid in [_receiptContext(count: 1), context(2)]) {
+          await expectLater(
+            client.deleteEdgeContributionWithReceipt(ref(), context: invalid),
+            throwsA(isA<LanternInvalidArgumentException>()),
+          );
+        }
+        expect(requests.length, 2);
+      },
+    );
+
+    test('binary status keeps distinct true and false originals', () async {
+      final ids = [
+        _operationId(epoch: 1, random: 1),
+        _operationId(epoch: 1, random: 2),
+      ];
+      final client = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptStatusesRequest,
+              graph.GetReceiptStatusesResponse
+            >(
+              LanternService.getReceiptStatuses,
+              (request, _) => graph.GetReceiptStatusesResponse(
+                statuses: [
+                  for (var index = 0; index < 2; index++)
+                    _confirmedStatus(
+                      ids[index],
+                      result: graph.ReceiptResult(
+                        deleteEdgeContributionExisted: index == 0,
+                      ),
+                    ),
+                ],
+              ),
+            )
+            .build(),
+      );
+      addTearDown(client.close);
+      final statuses = await client.getReceiptStatuses(ids);
+      expect(
+        statuses.map(
+          (status) =>
+              (status.receipt! as EdgeContributionDeleteReceipt).existed,
+        ),
+        [true, false],
+      );
+      expect(
+        statuses.every(
+          (status) =>
+              status.receipt!.mutation ==
+              ReceiptMutationKind.edgeContributionDelete,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+      'lost response retries only identical request on continuous endpoint',
+      () async {
+        final requests = <List<int>>[];
+        final client = _client(
+          FakeTransportBuilder()
+              .unary<
+                graph.DeleteEdgeContributionsRequest,
+                graph.DeleteEdgeContributionsResponse
+              >(LanternService.deleteEdgeContributions, (request, _) {
+                requests.add(request.writeToBuffer());
+                if (requests.length == 1) {
+                  throw connect.ConnectException(
+                    connect.Code.unavailable,
+                    'lost',
+                  );
+                }
+                return graph.DeleteEdgeContributionsResponse(
+                  existed: [true],
+                  deleted: 1,
+                );
+              })
+              .unary<
+                graph.GetReceiptCapabilityRequest,
+                graph.GetReceiptCapabilityResponse
+              >(LanternService.getReceiptCapability, (_, _) => capable())
+              .build(),
+          retryPolicy: _fastRetry,
+        );
+        addTearDown(client.close);
+        final result = await client.deleteEdgeContributionWithReceipt(
+          ref(),
+          context: context(1),
+        );
+        expect(result.existed, isTrue);
+        expect(requests.length, 2);
+        expect(requests[1], requests[0]);
+      },
+    );
+
+    test(
+      'changed endpoint, capability or epoch never resends uncertain Delete',
+      () async {
+        for (final (capability, reason) in [
+          (
+            capable(epoch: 9),
+            ReceiptReconciliationReason.deploymentEpochChanged,
+          ),
+          (capable(node: 9), ReceiptReconciliationReason.nodeChanged),
+          (
+            capable(generation: 9),
+            ReceiptReconciliationReason.generationChanged,
+          ),
+          (
+            _capabilityResponse(),
+            ReceiptReconciliationReason.mutationUnavailable,
+          ),
+          (
+            graph.GetReceiptCapabilityResponse(),
+            ReceiptReconciliationReason.capabilityDisabled,
+          ),
+        ]) {
+          var calls = 0;
+          final ctx = context(1);
+          final client = _client(
+            FakeTransportBuilder()
+                .unary<
+                  graph.DeleteEdgeContributionsRequest,
+                  graph.DeleteEdgeContributionsResponse
+                >(LanternService.deleteEdgeContributions, (_, _) {
+                  calls++;
+                  throw connect.ConnectException(
+                    connect.Code.unavailable,
+                    'lost',
+                  );
+                })
+                .unary<
+                  graph.GetReceiptCapabilityRequest,
+                  graph.GetReceiptCapabilityResponse
+                >(LanternService.getReceiptCapability, (_, _) => capability)
+                .build(),
+            retryPolicy: _fastRetry,
+          );
+          addTearDown(client.close);
+          await expectLater(
+            client.deleteEdgeContributionWithReceipt(ref(), context: ctx),
+            throwsA(
+              isA<ReceiptReconciliationException>()
+                  .having((error) => error.reason, 'reason', reason)
+                  .having((error) => error.context, 'context', same(ctx)),
+            ),
+          );
+          expect(calls, 1);
+        }
+      },
+    );
+
+    test('malformed success requires status reconciliation', () async {
+      for (final response in [
+        graph.DeleteEdgeContributionsResponse(),
+        graph.DeleteEdgeContributionsResponse(existed: [true], deleted: 0),
+        graph.DeleteEdgeContributionsResponse(existed: [false], deleted: 1),
+      ]) {
+        final client = _client(
+          FakeTransportBuilder()
+              .unary<
+                graph.DeleteEdgeContributionsRequest,
+                graph.DeleteEdgeContributionsResponse
+              >(LanternService.deleteEdgeContributions, (_, _) => response)
+              .build(),
+        );
+        addTearDown(client.close);
+        await expectLater(
+          client.deleteEdgeContributionWithReceipt(ref(), context: context(1)),
+          throwsA(
+            isA<ReceiptReconciliationException>().having(
+              (error) => error.reason,
+              'reason',
+              ReceiptReconciliationReason.outcomeUnknown,
+            ),
+          ),
+        );
+      }
+    });
+  });
 }
 
 const RetryPolicy _fastRetry = RetryPolicy(

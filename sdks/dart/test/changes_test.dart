@@ -539,4 +539,56 @@ void main() {
     await subscription.cancel();
     await source.close();
   });
+
+  test(
+    'contribution Delete projects a distinct affected-edge invalidation',
+    () async {
+      final frame = _chunk(
+        operation: replication
+            .IdentityOperation
+            .IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION,
+        vertexKeys: const [],
+        edgeKeys: [graph.EdgeKey(tail: 't', head: 'h')],
+      );
+      final client = _client(
+        FakeTransportBuilder()
+            .server<
+              replication.SubscribeRequest,
+              replication.SubscribeResponse
+            >(
+              replication_spec.LanternReplicationService.subscribe,
+              (_, _) => Stream.value(frame),
+            )
+            .build(),
+      );
+      addTearDown(client.close);
+      final decoded =
+          await client.subscribeIdentity().first as IdentityChunkFrame;
+      expect(decoded.operation, IdentityOperation.deleteEdgeContribution);
+      expect(decoded.edgeKeys, const [EdgeRef('t', 'h')]);
+      expect(decoded.vertexKeys, isEmpty);
+      final bad = _client(
+        FakeTransportBuilder()
+            .server<
+              replication.SubscribeRequest,
+              replication.SubscribeResponse
+            >(
+              replication_spec.LanternReplicationService.subscribe,
+              (_, _) => Stream.value(
+                _chunk(
+                  operation: replication
+                      .IdentityOperation
+                      .IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION,
+                ),
+              ),
+            )
+            .build(),
+      );
+      addTearDown(bad.close);
+      await expectLater(
+        bad.subscribeIdentity().toList(),
+        throwsA(isA<LanternInternalException>()),
+      );
+    },
+  );
 }
