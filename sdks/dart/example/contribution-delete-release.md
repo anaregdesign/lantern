@@ -37,6 +37,9 @@ only `DeleteEdgeContributions`. Give each platform/build a fresh 32-hex
 addresses/tokens/config outside Git and record the immutable server image or
 binary hash. Preflight reachability, 401 without auth and successful authorized
 RPC, synthetic state and physical device identity before each run.
+The born-expired seed uses a fixed past UTC timestamp and verifies its effective
+weight before Delete. A device-relative one-second offset is insufficient when
+device and server clocks differ; application TTL timestamps remain caller-owned.
 
 Build once and install the exact signed profile APK or Runner.app. Launch the
 app and wait for its content-free `lantern-contribution-phase.json` to say

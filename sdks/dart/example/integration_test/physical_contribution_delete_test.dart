@@ -204,7 +204,7 @@ void main() {
         await direct.putEdge(
           EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
         );
-        await direct.addEdges([
+        final seeded = await direct.addEdges([
           EdgeInput(
             tail: edge.tail,
             head: edge.head,
@@ -222,11 +222,12 @@ void main() {
             head: edge.head,
             weight: 7,
             contribId: ref(3).contribId,
-            expiresAt: DateTime.now().toUtc().subtract(
-              const Duration(seconds: 1),
-            ),
+            // An expired fixture must stay expired despite device clock skew.
+            expiresAt: DateTime.utc(2000),
           ),
         ]);
+        expect(seeded.effectiveWeights, [3, 6, 6]);
+        expect((await direct.getEdge(edge)).weight, 6);
         final ready = Completer<void>();
         final invalidation = Completer<IdentityChunkFrame>();
         final subscription = direct
