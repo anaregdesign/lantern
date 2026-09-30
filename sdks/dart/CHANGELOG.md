@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.4.0
+
+- Add plural-canonical targeted Edge contribution Delete and receipt-bearing
+  facades with nonzero 24-byte caller-owned IDs, aligned duplicate/missing
+  results, and strict response validation. Whole-edge Delete stays separate.
+- Decode distinct contribution Delete receipt originals and identity CDC
+  operation 7; invalidate and re-fetch the affected Edge. Uncertain results
+  never authorize a blind cross-endpoint retry.
+- Require same-source signed Android/iPhone response-loss, real SIGKILL/relaunch,
+  installed-binary evidence and exact archive verification before publication.
+- Existing offline outbox codecs do not support contribution Delete. Their
+  adapters reject unknown receipt results instead of treating them as Edge Delete.
+
 ## 0.3.3
 
 - Honor SDK deadlines and caller cancellation while a native HTTP connection

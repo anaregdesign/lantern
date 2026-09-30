@@ -286,6 +286,48 @@ final class EdgeRef {
   int get hashCode => Object.hash(tail, head);
 }
 
+/// Immutable identity of one caller-known additive Edge contribution.
+///
+/// Persist the same [contribId] supplied to [EdgeInput] before Add. Generated
+/// IDs and folded graph-only backups cannot recover an old contribution ID.
+final class EdgeContributionRef {
+  /// Creates an identity with nonempty endpoints and a nonzero 24-byte ID.
+  EdgeContributionRef({
+    required this.tail,
+    required this.head,
+    required Uint8List contribId,
+  }) : _contribId = _validatedContributionBytes(contribId) {
+    if (tail.isEmpty || head.isEmpty) {
+      throw _invalidArgumentException(
+        'contribution identity requires nonempty tail and head',
+      );
+    }
+  }
+
+  /// Tail vertex key.
+  final String tail;
+
+  /// Head vertex key.
+  final String head;
+
+  final Uint8List _contribId;
+
+  /// A defensive copy of the caller-owned contribution ID.
+  Uint8List get contribId => Uint8List.fromList(_contribId);
+}
+
+/// Index-aligned observations from a contribution Delete logical call.
+final class DeleteEdgeContributionsResult {
+  DeleteEdgeContributionsResult._(Iterable<bool> existed)
+    : existed = List<bool>.unmodifiable(existed);
+
+  /// One observation per request position, including duplicates and misses.
+  final List<bool> existed;
+
+  /// Number of live contributions removed, equal to the true observations.
+  int get deleted => existed.where((value) => value).length;
+}
+
 /// Input for additive or idempotent edge writes.
 final class EdgeInput {
   /// Creates an edge write.

@@ -171,6 +171,9 @@ enum ReceiptMutationKind {
 
   /// Contribution-keyed Edge Add with exact effective-weight results.
   edgeAdd,
+
+  /// Exact-result Delete of one caller-known Add contribution.
+  edgeContributionDelete,
 }
 
 /// Capability information returned by [LanternReceipts.getReceiptCapability].
@@ -398,6 +401,22 @@ final class EdgeAddReceipt extends MutationReceipt {
   final double effectiveWeight;
 }
 
+/// An exact retained contribution Delete receipt, distinct from whole-edge Delete.
+final class EdgeContributionDeleteReceipt extends MutationReceipt {
+  EdgeContributionDeleteReceipt._({
+    required super.operationId,
+    required super.groupId,
+    required super.itemIndex,
+    required super.itemCount,
+    required super.intentSha256,
+    required super.deadline,
+    required this.existed,
+  }) : super._(mutation: ReceiptMutationKind.edgeContributionDelete);
+
+  /// Whether the selected live contribution existed at its original deletion.
+  final bool existed;
+}
+
 /// A read-only receipt status aligned to one requested operation ID.
 final class ReceiptStatus {
   const ReceiptStatus._({
@@ -488,6 +507,24 @@ final class ReceiptEdgeDeleteResult {
   final ReceiptOperationId operationId;
 
   /// Whether the edge existed when the server deleted it.
+  final bool existed;
+}
+
+/// An index-aligned original result from receipt-bearing contribution Delete.
+final class ReceiptEdgeContributionDeleteResult {
+  const ReceiptEdgeContributionDeleteResult._({
+    required this.contribution,
+    required this.operationId,
+    required this.existed,
+  });
+
+  /// The caller-owned contribution identity.
+  final EdgeContributionRef contribution;
+
+  /// The stable operation ID used for this request position.
+  final ReceiptOperationId operationId;
+
+  /// Whether the selected live contribution originally existed.
   final bool existed;
 }
 
@@ -1095,6 +1132,76 @@ extension LanternReceipts on LanternClient {
     );
   }
 
+  /// Deletes contributions with persisted receipt identities and original results.
+  ///
+  /// Sends one atomic, unchunked logical call. Persist [contributions] and
+  /// [context] before dispatch. An uncertain result requires status lookup;
+  /// `notYetObserved` and `noLongerProvable` never authorize a blind retry on
+  /// another endpoint. Automatic retries prove epoch/node/generation continuity
+  /// and reuse the exact original request. Other contributions and Put bases
+  /// retain the server's D4-bounded removal semantics.
+  Future<List<ReceiptEdgeContributionDeleteResult>>
+  deleteEdgeContributionsWithReceipt(
+    Iterable<EdgeContributionRef> contributions, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    final input = List<EdgeContributionRef>.unmodifiable(contributions);
+    _validateReceiptMutationCall(
+      context: context,
+      expectedMutation: ReceiptMutationKind.edgeContributionDelete,
+      itemCount: input.length,
+      label: 'Edge contribution Delete',
+    );
+    final request = $graph.DeleteEdgeContributionsRequest(
+      contributions: _edgeContributionKeys(input),
+      receiptContext: _receiptContextToProto(context),
+    );
+    final response = await _invokeReceiptMutation(
+      method: 'DeleteEdgeContributionsWithReceipt',
+      context: context,
+      options: _freezeCallOptions(options),
+      call: (raw, headers, signal, onHeader, onTrailer) =>
+          raw.deleteEdgeContributions(
+            request,
+            headers: headers,
+            signal: signal,
+            onHeader: onHeader,
+            onTrailer: onTrailer,
+          ),
+    );
+    try {
+      _validateContributionDeleteResponse(input.length, response);
+    } on LanternException catch (error) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Edge contribution Delete',
+        detail: 'misaligned existence observations or deleted count',
+        cause: error,
+      );
+    }
+    return List<ReceiptEdgeContributionDeleteResult>.unmodifiable([
+      for (var index = 0; index < input.length; index++)
+        ReceiptEdgeContributionDeleteResult._(
+          contribution: input[index],
+          operationId: context.operationIds[index],
+          existed: response.existed[index],
+        ),
+    ]);
+  }
+
+  /// One-item facade over plural [deleteEdgeContributionsWithReceipt].
+  Future<ReceiptEdgeContributionDeleteResult> deleteEdgeContributionWithReceipt(
+    EdgeContributionRef contribution, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async => (await deleteEdgeContributionsWithReceipt(
+    [contribution],
+    context: context,
+    options: options,
+  )).single;
+
   /// Deletes one edge by forwarding to plural [deleteEdgesWithReceipt].
   Future<ReceiptEdgeDeleteResult> deleteEdgeWithReceipt(
     EdgeRef edge, {
@@ -1298,7 +1405,8 @@ int _receiptMutationItemLimit(ReceiptMutationKind mutation) =>
       ReceiptMutationKind.vertexPut ||
       ReceiptMutationKind.vertexDelete ||
       ReceiptMutationKind.edgeAdd => _receiptMutationBatchSize,
-      ReceiptMutationKind.edgeDelete => LanternCrud.maxBatchSize,
+      ReceiptMutationKind.edgeDelete ||
+      ReceiptMutationKind.edgeContributionDelete => LanternCrud.maxBatchSize,
     };
 
 Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
@@ -1313,12 +1421,6 @@ Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
       );
     }
     previousValue = value.value;
-    if (value ==
-        $graph
-            .ReceiptMutationKind
-            .RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION) {
-      continue;
-    }
     final mutation = switch (value) {
       $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_PUT_VERTEX =>
         ReceiptMutationKind.vertexPut,
@@ -1328,6 +1430,10 @@ Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
         ReceiptMutationKind.edgeDelete,
       $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_ADD_EDGE =>
         ReceiptMutationKind.edgeAdd,
+      $graph
+          .ReceiptMutationKind
+          .RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION =>
+        ReceiptMutationKind.edgeContributionDelete,
       _ => throw _internalSdkException(
         'receipt capability advertised an unknown mutation family',
       ),
@@ -1570,8 +1676,18 @@ MutationReceipt _mutationReceiptFromProto(
         ),
       );
     case $graph.ReceiptResult_Result.deleteEdgeContributionExisted:
-      throw _internalSdkException(
-        'targeted Edge contribution Delete receipts are not supported by this SDK',
+      _validateReceiptItemLimit(
+        value.itemCount,
+        ReceiptMutationKind.edgeContributionDelete,
+      );
+      return EdgeContributionDeleteReceipt._(
+        operationId: operationId,
+        groupId: groupId,
+        itemIndex: value.itemIndex,
+        itemCount: value.itemCount,
+        intentSha256: intentSha256,
+        deadline: deadline,
+        existed: result.deleteEdgeContributionExisted,
       );
     case $graph.ReceiptResult_Result.notSet:
       throw _internalSdkException(

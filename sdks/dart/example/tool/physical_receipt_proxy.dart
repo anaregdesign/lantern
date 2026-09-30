@@ -11,11 +11,6 @@ const _mutationRpcs = <String>{
   'DeleteEdges',
   'AddEdges',
 };
-const _allowedRpcs = <String>{
-  'GetReceiptCapability',
-  'GetReceiptStatuses',
-  ..._mutationRpcs,
-};
 const _controlPath = '/_receipt_matrix_status';
 const _handoffEvent = 'AwaitingSigkill';
 const _servicePath = '/graph.v1.LanternService/';
@@ -47,6 +42,9 @@ Future<void> main() async {
       server,
       config.upstream,
       config.token,
+      mutationRpcs: Platform.environment['LANTERN_CONTRIBUTION_PROXY'] == 'true'
+          ? const {'DeleteEdgeContributions'}
+          : _mutationRpcs,
     );
     ProcessSignal.sigint.watch().listen((_) => unawaited(proxy.close()));
     ProcessSignal.sigterm.watch().listen((_) => unawaited(proxy.close()));
@@ -133,8 +131,16 @@ final class ReceiptResponseDropProxy {
   ReceiptResponseDropProxy(
     HttpServer server,
     this._upstream,
-    this._controlToken,
-  ) : _server = server {
+    this._controlToken, {
+    Set<String> mutationRpcs = _mutationRpcs,
+  }) : _server = server,
+       _dropMutations = Set<String>.unmodifiable(mutationRpcs) {
+    if (_dropMutations.isEmpty ||
+        _dropMutations.any(
+          (rpc) => !{..._mutationRpcs, 'DeleteEdgeContributions'}.contains(rpc),
+        )) {
+      throw ArgumentError('invalid receipt proxy mutation matrix');
+    }
     _http.autoUncompress = false;
     _server.listen(
       (request) => unawaited(_handle(request)),
@@ -147,6 +153,7 @@ final class ReceiptResponseDropProxy {
   final HttpServer _server;
   final Uri _upstream;
   final String _controlToken;
+  final Set<String> _dropMutations;
   final HttpClient _http = HttpClient();
   final Completer<void> _done = Completer<void>();
   final Map<String, int> _forwarded = {};
@@ -174,7 +181,11 @@ final class ReceiptResponseDropProxy {
         uri.hasQuery ||
         uri.hasFragment ||
         !uri.path.startsWith(_servicePath) ||
-        !_allowedRpcs.contains(uri.path.substring(_servicePath.length))) {
+        !{
+          'GetReceiptCapability',
+          'GetReceiptStatuses',
+          ..._dropMutations,
+        }.contains(uri.path.substring(_servicePath.length))) {
       request.response.statusCode = HttpStatus.badRequest;
       await request.response.close();
       return;
@@ -198,7 +209,7 @@ final class ReceiptResponseDropProxy {
       upstreamRequest.add(payload);
       final upstreamResponse = await upstreamRequest.close();
       final response = await _bounded(upstreamResponse);
-      if (_mutationRpcs.contains(rpc) &&
+      if (_dropMutations.contains(rpc) &&
           (_dropped[rpc] ?? 0) == 0 &&
           upstreamResponse.statusCode == HttpStatus.ok) {
         _dropped[rpc] = 1;
@@ -234,10 +245,10 @@ final class ReceiptResponseDropProxy {
     if (request.method == 'POST') {
       if (_trace.contains(_handoffEvent) ||
           _failures != 0 ||
-          _mutationRpcs.any(
+          _dropMutations.any(
             (rpc) => _forwarded[rpc] != 1 || _dropped[rpc] != 1,
           ) ||
-          (_forwarded['GetReceiptStatuses'] ?? 0) < _mutationRpcs.length ||
+          (_forwarded['GetReceiptStatuses'] ?? 0) < _dropMutations.length ||
           _trace.length >= _maxTraceEntries) {
         request.response.statusCode = HttpStatus.conflict;
       } else {

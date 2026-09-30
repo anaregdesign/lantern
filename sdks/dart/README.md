@@ -134,6 +134,36 @@ its contribution IDs are stamped for live deduplication; the plain decaying
 call is not automatically retried, and IDs cannot recover an original result
 after Delete or expiry.
 
+
+## Targeted contribution Delete
+
+The 0.4.0 candidate adds `deleteEdgeContribution(s)` and
+`deleteEdgeContribution(s)WithReceipt`. Persist the nonzero 24-byte caller-owned
+`EdgeInput.contribId` before Add and construct `EdgeContributionRef` from the
+same `(tail, head, contribId)`. Plain plural Delete returns immutable
+`DeleteEdgeContributionsResult.existed` observations aligned with every input,
+including duplicate/missing/expired IDs, and a matching `deleted` count. A failed
+chunk is ambiguous; `BatchException.committed` counts only fully observed input
+positions and plain Delete is never automatically retried.
+
+Other Add rows and any Put base survive targeted Delete. Removal has the
+[D4 boundary](https://github.com/anaregdesign/lantern/blob/main/docs/replication.md),
+not an eternal tombstone, and folded graph-only backups do not recover old
+contribution identities. Receipt-bearing calls use one atomic unchunked request
+and return `ReceiptEdgeContributionDeleteResult`; status exposes a distinct
+`EdgeContributionDeleteReceipt` preserving original `false` and `true` results.
+Persist the exact target and context before send. A lost response requires
+read-only status reconciliation; `notYetObserved` and `noLongerProvable` never
+permit a blind retry on another endpoint.
+
+Identity CDC operation `deleteEdgeContribution` names only its affected edge
+pair. Invalidate and re-fetch that Edge; do not interpret it as whole-edge Delete.
+Natural TTL expiry does not synthesize a CDC event. Existing offline outboxes
+leave this family unsupported and fail closed; their codec/intent and release
+are separately scoped. The [release procedure](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/example/contribution-delete-release.md)
+requires one frozen revision on signed physical Android and iPhone before the
+independent parent tag and hosted archive verification.
+
 ## Bounded online mutation receipts
 
 Receipt-bearing Vertex Put, exact Vertex Delete, Edge Delete, and

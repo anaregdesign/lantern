@@ -12,3 +12,4 @@ offline_sqlite/
 scripts/release*.py
 scripts/ci_scope*.py
 scripts/__pycache__/
+scripts/physical_contribution_release_gate*.py

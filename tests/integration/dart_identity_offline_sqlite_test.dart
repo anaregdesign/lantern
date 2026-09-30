@@ -1,6 +1,7 @@
 // Run from sdks/dart/offline_sqlite with Flutter test against real h2c servers.
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
@@ -91,6 +92,61 @@ void main() {
       expect(vector.sequences, isNotEmpty);
       cancellation.cancel();
       await stopped;
+    },
+    skip: singleEndpoint == null ? 'real h2c endpoint unavailable' : false,
+  );
+
+  test(
+    'production offline adapter gaps on unsupported contribution Delete CDC',
+    () async {
+      final client = _client(Uri.parse(singleEndpoint!));
+      addTearDown(client.close);
+      final prefix =
+          'identity-contribution-${DateTime.now().microsecondsSinceEpoch}';
+      final edge = EdgeRef('$prefix-t', '$prefix-h');
+      final contribution = EdgeContributionRef(
+        tail: edge.tail,
+        head: edge.head,
+        contribId: Uint8List(24)..[23] = 1,
+      );
+      await client.putEdge(
+        EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
+      );
+      await client.addEdge(
+        EdgeInput(
+          tail: edge.tail,
+          head: edge.head,
+          weight: 2,
+          contribId: contribution.contribId,
+        ),
+      );
+      final cancellation = LanternCancellationToken();
+      final session = await LanternClientIdentitySource(
+        client,
+      ).open(bootstrap: true, nextExpected: {}, cancellation: cancellation);
+      addTearDown(session.close);
+      final ready = Completer<void>();
+      final gap = Completer<Object>();
+      final subscription = session.events.listen(
+        (event) {
+          if (event is OfflineIdentityCheckpoint && !ready.isCompleted) {
+            ready.complete();
+          }
+          expect(event, isNot(isA<OfflineIdentityChunk>()));
+        },
+        onError: (Object error) {
+          if (!gap.isCompleted) gap.complete(error);
+        },
+      );
+      addTearDown(subscription.cancel);
+      await ready.future.timeout(const Duration(seconds: 10));
+      expect(await client.deleteEdgeContribution(contribution), isTrue);
+      expect(
+        await gap.future.timeout(const Duration(seconds: 10)),
+        isA<OfflineChangeGapException>(),
+      );
+      expect((await client.getEdge(edge)).weight, 1);
+      await client.deleteEdge(edge);
     },
     skip: singleEndpoint == null ? 'real h2c endpoint unavailable' : false,
   );
@@ -577,6 +633,8 @@ final class _WireSession implements OfflineIdentitySession {
                         OfflineIdentityOperation.deleteEdge,
                       IdentityOperation.receiptOnly =>
                         OfflineIdentityOperation.receiptOnly,
+                      IdentityOperation.deleteEdgeContribution =>
+                        throw const OfflineChangeGapException(),
                     },
                     chunkIndex: frame.chunkIndex,
                     isLast: frame.isLast,

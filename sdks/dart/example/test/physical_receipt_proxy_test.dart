@@ -426,6 +426,61 @@ void main() {
     expect(trace.dropped['PutVertices'], 1);
   });
 
+  test(
+    'contribution-only proxy drops its committed response and rejects other mutations',
+    () async {
+      var committed = 0;
+      final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      upstream.listen((request) async {
+        await request.drain<void>();
+        committed++;
+        request.response.add([1]);
+        await request.response.close();
+      });
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final proxy = ReceiptResponseDropProxy(
+        server,
+        Uri.parse('http://127.0.0.1:${upstream.port}'),
+        'synthetic-test-token',
+        mutationRpcs: const {'DeleteEdgeContributions'},
+      );
+      final http = HttpClient();
+      addTearDown(() async {
+        http.close(force: true);
+        await proxy.close();
+        await upstream.close(force: true);
+      });
+      final base = Uri.parse('http://127.0.0.1:${server.port}');
+      final request = await http.postUrl(
+        base.resolve('/graph.v1.LanternService/DeleteEdgeContributions'),
+      );
+      Object? dropped;
+      try {
+        await (await request.close()).drain<void>();
+      } catch (error) {
+        dropped = error;
+      }
+      expect(dropped, isNotNull);
+      expect(committed, 1);
+      final rejected = await http.postUrl(
+        base.resolve('/graph.v1.LanternService/DeleteEdges'),
+      );
+      expect((await rejected.close()).statusCode, HttpStatus.badRequest);
+      expect(committed, 1);
+      final control = await http.getUrl(
+        base.resolve('/_receipt_matrix_status'),
+      );
+      control.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer synthetic-test-token',
+      );
+      final trace =
+          jsonDecode(await utf8.decodeStream(await control.close())) as Map;
+      expect((trace['dropped'] as Map)['DeleteEdgeContributions'], 1);
+      expect((trace['forwarded'] as Map)['DeleteEdgeContributions'], 1);
+    },
+  );
+
   test('private proxy configuration refuses nonlocal plaintext upstream', () {
     final base = {
       'listenHost': '127.0.0.1',

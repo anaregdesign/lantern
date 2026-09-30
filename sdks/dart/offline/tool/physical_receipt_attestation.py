@@ -18,6 +18,7 @@ REPOSITORY = "anaregdesign/lantern"
 MARKER_KIND = "physical_receipt_attestation"
 RECORD_KIND = "physical_offline_receipt_evidence"
 RECEIPT_TARGET = "integration_test/physical_receipt_matrix_test.dart"
+CONTRIBUTION_TARGET = "integration_test/physical_contribution_delete_test.dart"
 PACKAGE_IDS = {
     "android": "com.anaregdesign.lantern_example",
     "ios": "com.anaregdesign.lanternExample",
@@ -282,6 +283,7 @@ def validate_archived_receipt_evidence(
     run_id=None,
     run_started_at=None,
     now=None,
+    target=RECEIPT_TARGET,
 ):
     """Check a content-free phased marker/record pair in an evidence-only tag.
 
@@ -289,6 +291,7 @@ def validate_archived_receipt_evidence(
     """
     if (
         not isinstance(tested_commit, str) or not HEX40.fullmatch(tested_commit)
+        or target not in {RECEIPT_TARGET, CONTRIBUTION_TARGET}
         or platform not in PACKAGE_IDS
         or not isinstance(required_scenarios, (set, frozenset))
         or not required_scenarios
@@ -316,7 +319,7 @@ def validate_archived_receipt_evidence(
         or marker["phase"] != "complete"
         or type(record["schema"]) is not int
         or record["schema"] != 1
-        or record["kind"] != RECORD_KIND
+        or record["kind"] != (RECORD_KIND if target == RECEIPT_TARGET else "physical_edge_contribution_delete_evidence")
         or record["repository"] != REPOSITORY
         or record["contentFree"] is not True
         or record["physicalDevice"] is not True
@@ -331,8 +334,8 @@ def validate_archived_receipt_evidence(
     if (
         marker["testedCommit"] != tested_commit
         or record["testedCommit"] != tested_commit
-        or marker["target"] != RECEIPT_TARGET
-        or application["target"] != RECEIPT_TARGET
+        or marker["target"] != target
+        or application["target"] != target
         or marker["platform"] != platform
         or record["platform"] != {"kind": f"physical-{platform}"}
         or marker["packageId"] != PACKAGE_IDS[platform]
@@ -447,11 +450,11 @@ def validate_receipt_attestation(
         raise ValueError("host run start is in the future")
 
     built_digest = _built_digest(Path(built_binary_path), platform)
-    if target == RECEIPT_TARGET:
+    if target in {RECEIPT_TARGET, CONTRIBUTION_TARGET}:
         archived_digest = validate_archived_receipt_evidence(
             marker_path, record_path, tested_commit=tested_commit,
             platform=platform, required_scenarios=required_scenarios,
-            run_id=run_id, run_started_at=run_started_at, now=checked_at,
+            run_id=run_id, run_started_at=run_started_at, now=checked_at, target=target,
         )
         if archived_digest != built_digest:
             raise ValueError("receipt installed and host-built binary hashes differ")

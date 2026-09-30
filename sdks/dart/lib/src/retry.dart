@@ -119,6 +119,8 @@ final class RetryRegistry {
     'DeleteVerticesWithReceipt': RpcRetryClass.receiptMutation,
     'DeleteEdgeWithReceipt': RpcRetryClass.receiptMutation,
     'DeleteEdgesWithReceipt': RpcRetryClass.receiptMutation,
+    'DeleteEdgeContributionWithReceipt': RpcRetryClass.receiptMutation,
+    'DeleteEdgeContributionsWithReceipt': RpcRetryClass.receiptMutation,
     'BackupSnapshot': RpcRetryClass.stream,
     // High-level facades whose result semantics differ from their shared wire
     // request or whose operation expands into AddEdges.

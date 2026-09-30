@@ -518,6 +518,23 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
             capture.assert_not_called()
         self.assertEqual(rejected.exception.code, 2)
 
+    def test_contribution_target_requires_its_own_restart_identity(self):
+        marker, record, scenarios = self.final_fixture()
+        marker["target"] = attestation.CONTRIBUTION_TARGET
+        record["application"]["target"] = attestation.CONTRIBUTION_TARGET
+        record["kind"] = "physical_edge_contribution_delete_evidence"
+        self.validate(marker, record, target=attestation.CONTRIBUTION_TARGET,
+                      required_scenarios=scenarios)
+        record["kind"] = attestation.RECORD_KIND
+        with self.assertRaises(ValueError):
+            self.validate(marker, record, target=attestation.CONTRIBUTION_TARGET,
+                          required_scenarios=scenarios)
+        record["kind"] = "physical_edge_contribution_delete_evidence"
+        marker["restart"]["processChanged"] = False
+        with self.assertRaises(ValueError):
+            self.validate(marker, record, target=attestation.CONTRIBUTION_TARGET,
+                          required_scenarios=scenarios)
+
     def test_physical_restart_pair_requires_exact_installed_bytes_on_both_phones(self):
         for platform in ("android", "ios"):
             with self.subTest(platform=platform):
