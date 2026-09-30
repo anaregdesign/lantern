@@ -50,9 +50,7 @@ void main() {
           head: edge.head,
           weight: 7,
           contribId: ref(3).contribId,
-          expiresAt: DateTime.now().toUtc().subtract(
-            const Duration(seconds: 1),
-          ),
+          expiresAt: DateTime.utc(2000),
         ),
       );
       expect((await client.getEdge(edge)).weight, 6);
@@ -70,6 +68,48 @@ void main() {
       expect((await client.getEdge(edge)).weight, 1);
       expect(await client.deleteEdge(edge), isTrue);
       expect(await client.deleteEdgeContribution(ref(2)), isFalse);
+    },
+    skip: endpointValue == null ? 'real wire endpoint is required' : false,
+  );
+
+  test(
+    'batched expired fixture stays expired with an ahead client clock',
+    () async {
+      final endpoint = Uri.parse(endpointValue!);
+      final client = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+        token: token,
+        clock: () => DateTime.now().toUtc().add(const Duration(minutes: 5)),
+      );
+      addTearDown(client.close);
+      final edge = EdgeRef('$prefix-clock-t', '$prefix-clock-h');
+      final refs = [
+        for (var id = 1; id <= 3; id++)
+          EdgeContributionRef(
+            tail: edge.tail,
+            head: edge.head,
+            contribId: Uint8List(24)..[23] = id,
+          ),
+      ];
+      addTearDown(() => client.deleteEdge(edge));
+      await client.putEdge(
+        EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
+      );
+      final seeded = await client.addEdges([
+        for (final (index, weight) in [(0, 2.0), (1, 3.0), (2, 7.0)])
+          EdgeInput(
+            tail: edge.tail,
+            head: edge.head,
+            weight: weight,
+            contribId: refs[index].contribId,
+            expiresAt: index == 2 ? DateTime.utc(2000) : null,
+          ),
+      ]);
+      expect(seeded.effectiveWeights, [3, 6, 6]);
+      expect((await client.getEdge(edge)).weight, 6);
+      expect(await client.deleteEdgeContribution(refs[2]), isFalse);
+      expect((await client.getEdge(edge)).weight, 6);
     },
     skip: endpointValue == null ? 'real wire endpoint is required' : false,
   );
