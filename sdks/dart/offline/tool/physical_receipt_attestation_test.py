@@ -345,8 +345,8 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
                     if path in files and path not in unreadable:
                         return files[path]
                     raise subprocess.CalledProcessError(1, command)
-                if command[-2] == "-c" and command[-1].startswith("test ! -e "):
-                    path = command[-1].removeprefix("test ! -e ")
+                if command[-4:-1] == ["test", "!", "-e"]:
+                    path = command[-1]
                     if path not in files:
                         return b""
                     raise subprocess.CalledProcessError(1, command)
@@ -385,12 +385,22 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
         with patch.object(attestation, "_bounded_command_stdout", side_effect=fake), self.assertRaisesRegex(ValueError, "oversized"):
             attestation.capture_device_marker("android")
 
-    def test_android_capture_ignores_exec_out_false_success_for_missing_fallback(self):
+    def test_android_capture_preserves_absence_probe_through_adb_remote_shell(self):
         marker = b'{"kind":"physical_receipt_attestation"}\n'
+        (self.directory / "code_cache").mkdir()
+        (self.directory / "code_cache/lantern-receipt-attestation.json").write_bytes(marker)
+        fake_run_as = self.directory / "run-as"
+        fake_run_as.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "os.execvp(sys.argv[2], sys.argv[2:])\n"
+        )
+        fake_run_as.chmod(0o755)
         fake_adb = self.directory / "adb"
         fake_adb.write_text(
             "#!/usr/bin/env python3\n"
-            "import sys\n"
+            "import subprocess, sys\n"
+            "from pathlib import Path\n"
             "args = sys.argv[1:]\n"
             "if args == ['-d', 'shell', 'getprop', 'ro.kernel.qemu']:\n"
             "    sys.stdout.buffer.write(b'0\\n')\n"
@@ -400,13 +410,10 @@ class PhysicalReceiptAttestationTest(unittest.TestCase):
             "    else:\n"
             "        sys.stdout.buffer.write(b'cat: No such file or directory\\n')\n"
             "elif args[:3] == ['-d', 'shell', '-T']:\n"
-            "    if args[-2] == 'cat' and args[-1].startswith('code_cache/'):\n"
-            "        sys.stdout.buffer.write(b'{\"kind\":\"physical_receipt_attestation\"}\\n')\n"
-            "    elif args[-2] == 'cat':\n"
-            "        sys.stdout.buffer.write(b'cat: No such file or directory\\n')\n"
-            "        sys.exit(1)\n"
-            "    elif args[-2] != '-c':\n"
-            "        sys.exit(2)\n"
+            "    # ADB forwards a flattened command to the remote shell.\n"
+            "    result = subprocess.run(['/bin/sh', '-c', ' '.join(args[3:])],\n"
+            "                            cwd=Path(__file__).parent)\n"
+            "    sys.exit(result.returncode)\n"
             "else:\n"
             "    sys.exit(2)\n"
         )

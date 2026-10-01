@@ -235,7 +235,7 @@ def capture_device_marker(platform, device_id=None):
                     # A failed read is acceptable only when the file is absent,
                     # not when run-as or file access failed.
                     _bounded_command_stdout(
-                        [*prefix, "sh", "-c", f"test ! -e {path}"],
+                        [*prefix, "test", "!", "-e", path],
                         timeout=15, limit=MAX_DEVICE_PROBE_BYTES,
                         label="Android receipt marker path probe",
                     )
