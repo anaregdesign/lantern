@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".github/scripts"))
 import evidence_only_pr
+import ci_docs
 
 
 PACKAGE_ONLY = {
@@ -34,6 +35,8 @@ MOBILE_EXACT = {
     "docs/decisions/0001-dart-mobile-transport.md",
     "docs/decisions/0002-dart-offline-repository-contract.md",
     ".github/workflows/dart-sdk.yml",
+    ".github/scripts/ci_docs.py",
+    ".github/scripts/test_ci_docs.py",
 }
 GO_DIRECTIVE = re.compile(r"^\s*(go|toolchain)\s+(\S+)\s*(?://.*)?$", re.MULTILINE)
 
@@ -69,6 +72,8 @@ def classify(
     """Return (full package-quality gate, Android/iOS native gate)."""
     if release_tag:
         return True, True
+    if not toolchain_changed and ci_docs.documentation_only(paths):
+        return False, False
     mobile = toolchain_changed or any(
         is_dart_mobile_path(path) or path.startswith("proto/") or path in MOBILE_EXACT
         for path in paths
@@ -110,6 +115,10 @@ def classify_range(base: str, head: str) -> tuple[bool, bool]:
 def main() -> None:
     github_ref = os.environ["GITHUB_REF"]
     evidence_only = False
+    docs_only, revisions = ci_docs.classify(dict(os.environ))
+    if docs_only:
+        assert revisions is not None
+        ci_docs.validate(revisions)
     if github_ref.startswith("refs/tags/"):
         full, mobile = classify([], release_tag=True)
     elif os.environ["GITHUB_EVENT_NAME"] == "pull_request":
@@ -134,13 +143,14 @@ def main() -> None:
     output = (
         f"full={str(full).lower()}\nmobile={str(mobile).lower()}\n"
         f"evidence_only={str(evidence_only).lower()}\n"
+        f"docs_only={str(docs_only).lower()}\n"
     )
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
         stream.write(output)
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
         stream.write(
             f"Full Dart package matrix: {full}; Android/iOS native matrix: {mobile}; "
-            f"evidence-only PR: {evidence_only}\n"
+            f"evidence-only PR: {evidence_only}; docs-only changes: {docs_only}\n"
         )
     print(output, end="")
 

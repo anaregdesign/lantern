@@ -17,6 +17,12 @@ on:
       - 'docs/rust-sdk-v0.1-contract.md'
       - '.github/workflows/rust-sdk.yml'
       - '.github/workflows/rust-release.yml'
+      - "!core/*.md"
+      - "!pb/*.md"
+      - "!sdks/rust/*.md"
+      - "!server/*.md"
+      - "docs/decisions/0011-native-rust-sdk.md"
+      - "docs/rust-sdk-v0.1-contract.md"
   pull_request:
     paths:
       - 'sdks/rust/**'
@@ -32,6 +38,12 @@ on:
       - 'docs/rust-sdk-v0.1-contract.md'
       - '.github/workflows/rust-sdk.yml'
       - '.github/workflows/rust-release.yml'
+      - "!core/*.md"
+      - "!pb/*.md"
+      - "!sdks/rust/*.md"
+      - "!server/*.md"
+      - "docs/decisions/0011-native-rust-sdk.md"
+      - "docs/rust-sdk-v0.1-contract.md"
 
 permissions:
   contents: read

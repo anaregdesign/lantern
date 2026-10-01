@@ -110,16 +110,16 @@ class ReleaseConditionsTest(unittest.TestCase):
 class ScopeTest(unittest.TestCase):
     def test_path_table(self):
         cases = {
-            "documentation": (["AGENTS.md", "README.md"], False, (True, False)),
+            "documentation": (["AGENTS.md", "README.md"], False, (False, False)),
             "Dart package documentation": (
                 ["sdks/dart/README.md"],
                 False,
-                (True, False),
+                (False, False),
             ),
             "Flutter example documentation": (
                 ["sdks/dart/example/physical-device-smoke.md"],
                 False,
-                (True, False),
+                (False, False),
             ),
             "physical evidence": (
                 ["sdks/dart/example/evidence/2026-09-24/ios.json"],
@@ -189,6 +189,36 @@ class ScopeTest(unittest.TestCase):
 
     def test_release_tag_requires_both_gates(self):
         self.assertEqual(ci_scope.classify([], release_tag=True), (True, True))
+        self.assertEqual(ci_scope.classify(["README.md"], release_tag=True), (True, True))
+
+    def test_mixed_docs_source_and_shared_classifier_require_owning_gates(self):
+        self.assertEqual(ci_scope.classify(["README.md", "sdks/dart/lib/src/client.dart"]),
+                         (True, True))
+        self.assertEqual(ci_scope.classify([".github/scripts/ci_docs.py"]), (True, True))
+        self.assertEqual(ci_scope.classify(["docs/decisions/0002-dart-offline-repository-contract.md"]),
+                         (True, True))
+
+    def test_documentation_gate_checks_actual_results_and_classification_failure(self):
+        workflow = Path(__file__).resolve().parents[3] / '.github/workflows/dart-sdk.yml'
+        gate = workflow.read_text().split('  gate:\n')[1].split('  release-preflight:\n')[0]
+        script = gate.split('        run: |\n')[1]
+        script = '\n'.join(line[10:] for line in script.splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            env = os.environ.copy()
+            env.update(FULL='false', MOBILE='false', EVIDENCE_ONLY='false',
+                       DOCS_ONLY='true', DOCS_RESULT='success', CHANGES_RESULT='success',
+                       GITHUB_STEP_SUMMARY=str(Path(directory) / 'summary'))
+            for name in ('EVIDENCE_RESULT', 'TEST_RESULT', 'MINIMUM_DART_RESULT',
+                         'OFFLINE_TEST_RESULT', 'OFFLINE_MINIMUM_DART_RESULT',
+                         'OFFLINE_SQLITE_RESULT', 'ANDROID_RESULT', 'IOS_RESULT'):
+                env[name] = 'skipped'
+            self.assertEqual(subprocess.run(['bash', '-c', script], env=env,
+                                           capture_output=True).returncode, 0)
+            for name in ('CHANGES_RESULT', 'DOCS_RESULT', 'TEST_RESULT', 'IOS_RESULT'):
+                for result in ('failure', 'cancelled'):
+                    failed = dict(env, **{name: result})
+                    self.assertNotEqual(subprocess.run(['bash', '-c', script], env=failed,
+                                                       capture_output=True).returncode, 0)
 
     def test_workflow_dispatch_requires_both_gates_without_push_range(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -212,7 +242,7 @@ class ScopeTest(unittest.TestCase):
                 ),
             ):
                 ci_scope.main()
-            self.assertEqual(output.read_text(), "full=true\nmobile=true\nevidence_only=false\n")
+            self.assertEqual(output.read_text(), "full=true\nmobile=true\nevidence_only=false\ndocs_only=false\n")
             self.assertIn(
                 "Full Dart package matrix: True; Android/iOS native matrix: True",
                 summary.read_text(),
@@ -235,9 +265,10 @@ class ScopeTest(unittest.TestCase):
                 patch.object(ci_scope, "git", return_value=b"a" * 40),
                 patch.object(ci_scope, "classify_range", return_value=(True, False)),
                 patch.object(ci_scope.evidence_only_pr, "classify_range", return_value=True),
+                patch.object(ci_scope.ci_docs, "classify", return_value=(False, None)),
             ):
                 ci_scope.main()
-            self.assertEqual(output.read_text(), "full=false\nmobile=false\nevidence_only=true\n")
+            self.assertEqual(output.read_text(), "full=false\nmobile=false\nevidence_only=true\ndocs_only=false\n")
             self.assertIn("evidence-only PR: True", summary.read_text())
 
     def test_go_directives_ignore_dependency_changes(self):
