@@ -516,11 +516,12 @@ response.
 The in-memory reference snapshot is test infrastructure, not a production
 durability claim; the separately versioned SQLite adapter remains #1163.
 
-### Rust (unpublished native SDK)
+### Rust
 
 [`sdks/rust/`](sdks/rust/) is a standalone Cargo crate, `lantern-client`
 (`lantern_client` in Rust), targeting native Tokio applications on Linux,
-macOS, and Windows. It is **not yet published**. The public single-endpoint
+macOS, and Windows. The published crate is available on
+[crates.io](https://crates.io/crates/lantern-client). The public single-endpoint
 client supports native-root-verified HTTPS, optional private CA/mTLS,
 per-attempt bearer auth, auth-exempt gRPC Health, exact-value/TTL Vertex and
 Edge CRUD, bounded scan/search/prefix operations, typed BFS/PPR/community
