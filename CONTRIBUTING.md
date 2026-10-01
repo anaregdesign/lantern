@@ -166,10 +166,10 @@ decision and also runs the package at its declared minimum Dart floor. The workf
 routes backend/search-only changes through the current-Dart unit and real-wire gates.
 The separately tested `full` scope adds minimum Dart and package-quality checks for
 Dart SDK, proto, codegen/toolchain, workflow, release-tag, root Go dependency, and
-release-contract documentation changes. The `mobile` scope requires Android and iOS
+canonical native-toolchain/SDK-contract documentation changes. The `mobile` scope requires Android and iOS
 for Dart/Flutter, proto/codegen, mobile transport/release-contract, workflow,
 release-tag, and Go language/toolchain directive changes; ordinary Go dependency
-or general documentation changes skip native jobs. The stable `Gate` job checks
+changes skip native jobs. Ordinary prose-only changes skip package and native jobs. The stable `Gate` job checks
 both decisions independently. The experimental
 `sdks/dart/offline/` child runs from its own working directory at minimum/current
 Dart, including fresh-process canonical snapshot tests and real-server
@@ -236,6 +236,32 @@ buffering their remaining contents. The artifact finalizer reserves space for
 classification and phase metadata, then shares its 2 MiB / 32-file budget
 across useful diagnostic tails from both attempts instead of dropping the
 artifact when logs are noisy.
+
+## Documentation-only CI routing
+
+The Go workflow stays enabled on every PR/main push so required contexts never
+remain pending because of a workflow path filter. Its shared
+[prose classifier](.github/scripts/ci_docs.py) accepts root instructions,
+Markdown under `docs/`, and Markdown directly in known module/documentation
+directories. `Build & Test` validates text/whitespace and runs the inexpensive
+CI/release-contract tests; Lint, Proto, vulnerability, Windows and Fuzz jobs
+skip before a runner starts. A failed classifier still fails `Build & Test`.
+
+Dart, Node, Rust, Admin, the transport probe and CodeQL use conservative ordered
+path exclusions to avoid starting for ordinary README/CHANGELOG changes.
+Dart instruction/process-doc changes use a cheap contract check and `Gate`.
+Mixed source changes, fixtures, unknown paths, workflow/config changes,
+generated `docs/env.md`, and the canonical Dart/Rust SDK/toolchain contracts
+retain their owning checks. Tags ignore path filters; release qualification,
+manual full sweeps and weekly CodeQL analysis are unchanged. The exact eight-file
+physical-evidence PR validation remains separate from prose classification.
+
+GitHub-managed Code Quality has no path-filter setting. Its automatic analysis
+is disabled for this repository; checked-in CodeQL security analysis and the
+language-specific Lint/static-analysis gates remain enabled. The repository's
+required contexts stay `Build & Test`, `Lint`, `Proto (buf)` and `govulncheck`;
+job-level skips satisfy GitHub's required-check contract. This hosted routing
+does not change the mandatory local pre-push gate above.
 
 ## Standalone Rust SDK gate
 

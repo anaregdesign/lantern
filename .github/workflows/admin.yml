@@ -8,12 +8,16 @@ on:
       - 'sdks/node/**'
       - 'proto/**'
       - '.github/workflows/admin.yml'
+      - "!admin/*.md"
+      - "!sdks/node/*.md"
   pull_request:
     paths:
       - 'admin/**'
       - 'sdks/node/**'
       - 'proto/**'
       - '.github/workflows/admin.yml'
+      - "!admin/*.md"
+      - "!sdks/node/*.md"
 
 defaults:
   run:

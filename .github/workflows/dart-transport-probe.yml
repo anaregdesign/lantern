@@ -8,6 +8,8 @@ on:
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "proto/**"
       - "testbed/dart-transport-probe/**"
+      - "!testbed/dart-transport-probe/*.md"
+      - "docs/decisions/0001-dart-mobile-transport.md"
   workflow_dispatch:
 
 concurrency:

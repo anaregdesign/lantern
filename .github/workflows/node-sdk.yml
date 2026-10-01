@@ -12,6 +12,8 @@ on:
       - 'server/**'
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
+      - "!sdks/node/*.md"
+      - "!server/*.md"
     tags:
       - 'sdks/node/v*'
   pull_request:
@@ -24,6 +26,8 @@ on:
       - 'server/**'
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
+      - "!sdks/node/*.md"
+      - "!server/*.md"
   workflow_dispatch:
 
 defaults:
