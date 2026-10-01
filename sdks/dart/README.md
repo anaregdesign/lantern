@@ -137,7 +137,7 @@ after Delete or expiry.
 
 ## Targeted contribution Delete
 
-The 0.4.0 candidate adds `deleteEdgeContribution(s)` and
+The 0.4.1 candidate adds `deleteEdgeContribution(s)` and
 `deleteEdgeContribution(s)WithReceipt`. Persist the nonzero 24-byte caller-owned
 `EdgeInput.contribId` before Add and construct `EdgeContributionRef` from the
 same `(tail, head, contribId)`. Plain plural Delete returns immutable

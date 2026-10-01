@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-## 0.4.0
+## 0.4.1
+
+- Keep release preflight and protected publication reachable after deliberately
+  skipped optional CI jobs, while requiring a successful direct Gate/preflight
+  and blocking canceled runs. The `0.4.0` tag passed its Gate but did not publish.
 
 - Add plural-canonical targeted Edge contribution Delete and receipt-bearing
   facades with nonzero 24-byte caller-owned IDs, aligned duplicate/missing
@@ -14,6 +18,12 @@
   installed-binary evidence and exact archive verification before publication.
 - Existing offline outbox codecs do not support contribution Delete. Their
   adapters reject unknown receipt results instead of treating them as Edge Delete.
+
+## 0.4.0 (unpublished)
+
+- The immutable tag passed package/native gates and physical qualification, but
+  implicit job-status propagation skipped release preflight and publication.
+  No pub.dev package or GitHub Release was created; use `0.4.1`.
 
 ## 0.3.3
 

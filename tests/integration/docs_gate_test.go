@@ -222,7 +222,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"release-preflight": {
 			needs:       []string{"gate"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v')",
+			condition:   "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}",
 			contracts: []string{
 				`[[ "$TAG" =~ ^sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
 				`test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`,
@@ -244,7 +244,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"publish": {
 			needs:       []string{"release-preflight"},
 			permissions: map[string]string{"contents": "read", "id-token": "write"},
-			condition:   "needs.release-preflight.outputs.publish_required == 'true'",
+			condition:   "${{ !cancelled() && needs['release-preflight'].result == 'success' && needs['release-preflight'].outputs.publish_required == 'true' }}",
 			contracts: []string{
 				`echo "$ARCHIVE_SHA256  $archive" | sha256sum --check --strict`,
 				`dart pub publish --force --from-archive="$archive"`,
@@ -269,7 +269,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"offline-release-preflight": {
 			needs:       []string{"gate"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')",
+			condition:   "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
 			contracts: []string{
 				`[[ "$TAG" =~ ^sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
 				`test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"`,
@@ -289,7 +289,7 @@ func TestDartPublishingContractGate(t *testing.T) {
 		"publish-offline": {
 			needs:       []string{"offline-release-preflight"},
 			permissions: map[string]string{"contents": "read", "id-token": "write"},
-			condition:   "needs.offline-release-preflight.outputs.publish_required == 'true'",
+			condition:   "${{ !cancelled() && needs['offline-release-preflight'].result == 'success' && needs['offline-release-preflight'].outputs.publish_required == 'true' }}",
 			contracts: []string{
 				`echo "$ARCHIVE_SHA256  $archive" | sha256sum --check --strict`,
 				`dart pub publish --force --from-archive="$archive"`,
@@ -442,8 +442,8 @@ func TestSDKManualDispatchGate(t *testing.T) {
 			file: ".github/workflows/dart-sdk.yml",
 			tags: []string{"sdks/dart/v*.*.*", "sdks/dart/offline/v*.*.*"},
 			releaseGuards: map[string]string{
-				"release-preflight":         "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v')",
-				"offline-release-preflight": "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')",
+				"release-preflight":         "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}",
+				"offline-release-preflight": "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
 			},
 		},
 		{
@@ -486,7 +486,7 @@ func TestSDKManualDispatchGate(t *testing.T) {
 			}
 			for name, guard := range test.releaseGuards {
 				job, ok := workflow.Jobs[name]
-				if !ok || job.If != guard {
+				if !ok || strings.Join(strings.Fields(job.If), " ") != guard {
 					t.Errorf("%s release entry guard = %q; want %q", name, job.If, guard)
 				}
 			}
