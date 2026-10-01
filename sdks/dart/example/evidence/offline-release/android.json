@@ -1,6 +1,6 @@
 {
   "application": {
-    "binarySha256": "4c24b51d2c4f10474f905c0a7f3687830ac90cee65191b978f93dfa6cf0d0cf3",
+    "binarySha256": "62ad7a357e36dfb50d87e945b96c0b1182292615850b1cfa7bf6452264d0048d",
     "packageId": "com.anaregdesign.lantern_example",
     "target": "integration_test/mobile_smoke_test.dart"
   },
@@ -20,7 +20,7 @@
     "model": "Pixel 9a",
     "os": "Android 17 (API 37)"
   },
-  "recordedAt": "2026-09-28T03:41:16.566888Z",
+  "recordedAt": "2026-10-01T08:15:33.727248Z",
   "repository": "anaregdesign/lantern",
   "result": "passed",
   "scenarios": [
@@ -41,7 +41,7 @@
     "wipe_before_send"
   ],
   "schema": 1,
-  "testedCommit": "3716d7052ac77eefbf05825e81e64cc603f16287",
+  "testedCommit": "52eaa8f3037ec13c6e7443ff4c5c6b74415cc7ae",
   "toolchain": {
     "dart": "3.12.2",
     "flutter": "3.44.6",

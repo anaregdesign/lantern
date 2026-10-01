@@ -1,1 +1,42 @@
-{"schema":1,"kind":"physical_offline_receipt_evidence","repository":"anaregdesign/lantern","contentFree":true,"physicalDevice":true,"testedCommit":"3716d7052ac77eefbf05825e81e64cc603f16287","runId":"72c31ce080a0743f565f90e32ad464df","runStartedAt":"2026-09-28T02:31:59.842396Z","recordedAt":"2026-09-28T02:41:16.856468Z","platform":{"kind":"physical-ios"},"application":{"packageId":"com.anaregdesign.lanternExample","target":"integration_test/physical_receipt_matrix_test.dart","binarySha256":"a1c92200b36d54ac7427492eac01249da75ab2a30bc08551b1707baf4ea18c8a"},"network":{"transport":"Connect/HTTPS","authenticated":true,"platformTrustedTls":true,"fault":"committed-response-socket-drop"},"scenarios":["ios_local_network_privacy_denial_retry","receipt_authenticated_trusted_tls","receipt_committed_response_loss","receipt_conditional_put_exact","receipt_contribution_add_after_delete","receipt_edge_delete_exact","receipt_nonfinite_derived_float32","receipt_radio_foreground_recovery","receipt_real_sigkill_sqlite_reopen","receipt_relaunch_status_first_no_resend","receipt_untrusted_tls_rejected","receipt_vertex_delete_exact"],"result":"passed"}
+{
+  "schema": 1,
+  "kind": "physical_offline_receipt_evidence",
+  "repository": "anaregdesign/lantern",
+  "contentFree": true,
+  "physicalDevice": true,
+  "testedCommit": "52eaa8f3037ec13c6e7443ff4c5c6b74415cc7ae",
+  "runId": "272e0330d458e9a2e2c26d0c5f9663a6",
+  "runStartedAt": "2026-10-01T08:17:50.455525Z",
+  "recordedAt": "2026-10-01T08:22:09.046893Z",
+  "platform": {
+    "kind": "physical-ios"
+  },
+  "application": {
+    "packageId": "com.anaregdesign.lanternExample",
+    "target": "integration_test/physical_receipt_matrix_test.dart",
+    "binarySha256": "c0fcb73aff21ca2826984da3d768dc7bb37fbc26a23b5f2dd082b196d6fc7ac3"
+  },
+  "network": {
+    "transport": "Connect/HTTPS",
+    "authenticated": true,
+    "platformTrustedTls": true,
+    "fault": "committed-response-socket-drop"
+  },
+  "scenarios": [
+    "ios_local_network_privacy_denial_retry",
+    "receipt_authenticated_trusted_tls",
+    "receipt_committed_response_loss",
+    "receipt_conditional_put_exact",
+    "receipt_contribution_add_after_delete",
+    "receipt_edge_contribution_delete_exact",
+    "receipt_edge_contribution_delete_restart",
+    "receipt_edge_delete_exact",
+    "receipt_nonfinite_derived_float32",
+    "receipt_radio_foreground_recovery",
+    "receipt_real_sigkill_sqlite_reopen",
+    "receipt_relaunch_status_first_no_resend",
+    "receipt_untrusted_tls_rejected",
+    "receipt_vertex_delete_exact"
+  ],
+  "result": "passed"
+}
