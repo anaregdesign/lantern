@@ -40,6 +40,8 @@ RPC, synthetic state and physical device identity before each run.
 The born-expired seed uses a fixed past UTC timestamp and verifies its effective
 weight before Delete. A device-relative one-second offset is insufficient when
 device and server clocks differ; application TTL timestamps remain caller-owned.
+Identity CDC preserves repeated edge pairs for duplicate request positions;
+the fixture verifies both invalidations and re-fetches the effective edge.
 
 Build once and install the exact signed profile APK or Runner.app. Launch the
 app and wait for its content-free `lantern-contribution-phase.json` to say

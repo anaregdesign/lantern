@@ -243,7 +243,7 @@ void main() {
   );
 
   test(
-    'contribution receipt CDC invalidates only its affected edge pair',
+    'contribution CDC preserves duplicate pair invalidations',
     () async {
       final endpoint = Uri.parse(receiptValue!);
       final client = LanternClient.connect(
@@ -291,12 +291,14 @@ void main() {
           );
       addTearDown(subscription.cancel);
       await ready.future.timeout(const Duration(seconds: 10));
-      expect(await client.deleteEdgeContribution(ref), isTrue);
+      final result = await client.deleteEdgeContributions([ref, ref]);
+      expect(result.existed, [true, false]);
+      expect(result.deleted, 1);
       final frame = await invalidation.future.timeout(
         const Duration(seconds: 10),
       );
       expect(frame.vertexKeys, isEmpty);
-      expect(frame.edgeKeys, [edge]);
+      expect(frame.edgeKeys, [edge, edge]);
       expect((await client.getEdge(edge)).weight, 1);
       await subscription.cancel();
       expect(await client.deleteEdge(edge), isTrue);
