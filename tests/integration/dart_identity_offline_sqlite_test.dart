@@ -14,6 +14,8 @@ void main() {
 
   final singleEndpoint =
       Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
+  final receiptEndpoint = Platform.environment['LANTERN_DART_RECEIPT_ENDPOINT'];
+  final receiptToken = Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
   final gapEndpoint =
       Platform.environment['LANTERN_DART_IDENTITY_GAP_ENDPOINT'];
   final clusterEndpoints = Platform
@@ -97,58 +99,183 @@ void main() {
   );
 
   test(
-    'production offline adapter gaps on unsupported contribution Delete CDC',
+    'production offline contribution Delete replays through SQLite and CDC',
     () async {
-      final client = _client(Uri.parse(singleEndpoint!));
+      final endpoint = Uri.parse(receiptEndpoint!);
+      final client = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+        token: receiptToken,
+      );
       addTearDown(client.close);
       final prefix =
           'identity-contribution-${DateTime.now().microsecondsSinceEpoch}';
       final edge = EdgeRef('$prefix-t', '$prefix-h');
-      final contribution = EdgeContributionRef(
+      EdgeContributionRef target(int id) => EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 1,
+        contribId: Uint8List(24)..[23] = id,
       );
       await client.putEdge(
         EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
       );
-      await client.addEdge(
+      await client.addEdges([
         EdgeInput(
           tail: edge.tail,
           head: edge.head,
           weight: 2,
-          contribId: contribution.contribId,
+          contribId: target(1).contribId,
+        ),
+        EdgeInput(
+          tail: edge.tail,
+          head: edge.head,
+          weight: 3,
+          contribId: target(2).contribId,
+        ),
+        EdgeInput(
+          tail: edge.tail,
+          head: edge.head,
+          weight: 7,
+          contribId: target(3).contribId,
+          expiresAt: DateTime.utc(2000),
+        ),
+      ]);
+      final fixture = await _SqliteFixture.open();
+      addTearDown(fixture.close);
+      var repository = fixture.repository(client);
+      await repository.readEdge(
+        'wire',
+        edge,
+        policy: OfflineReadPolicy.serverOnly,
+      );
+      final operation = await repository.deleteEdgeContributions(
+        partitionId: 'wire',
+        contributions: [target(1), target(1), target(9), target(3)],
+        operationId: 'targeted-contribution',
+      );
+      final before = await fixture.store.transaction(
+        (tx) async => await tx.outbox('wire'),
+      );
+      final pending = await repository.readEdge(
+        'wire',
+        edge,
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect(pending.value!.weight, 6);
+      expect(pending.hasPendingWrites, isTrue);
+      await repository.dispose();
+      await fixture.reopen();
+      repository = fixture.repository(client);
+      addTearDown(() => repository.dispose());
+      final reopened = await fixture.store.transaction(
+        (tx) async => await tx.outbox('wire'),
+      );
+      expect(
+        reopened.map((item) => item.receipt!.operationId),
+        before.map((item) => item.receipt!.operationId),
+      );
+      expect(
+        reopened.map(
+          (item) => (item.intent as OfflineDeleteEdgeContributionIntent)
+              .contribution
+              .contribId,
+        ),
+        before.map(
+          (item) => (item.intent as OfflineDeleteEdgeContributionIntent)
+              .contribution
+              .contribId,
         ),
       );
-      final cancellation = LanternCancellationToken();
-      final session = await LanternClientIdentitySource(
-        client,
-      ).open(bootstrap: true, nextExpected: {}, cancellation: cancellation);
-      addTearDown(session.close);
-      final ready = Completer<void>();
-      final gap = Completer<Object>();
-      final subscription = session.events.listen(
-        (event) {
-          if (event is OfflineIdentityCheckpoint && !ready.isCompleted) {
-            ready.complete();
-          }
-          expect(event, isNot(isA<OfflineIdentityChunk>()));
-        },
-        onError: (Object error) {
-          if (!gap.isCompleted) gap.complete(error);
-        },
+      expect(await repository.drain('wire'), 4);
+      final status = await repository.getWriteStatus(
+        'wire',
+        operation.operationId,
       );
-      addTearDown(subscription.cancel);
-      await ready.future.timeout(const Duration(seconds: 10));
-      expect(await client.deleteEdgeContribution(contribution), isTrue);
       expect(
-        await gap.future.timeout(const Duration(seconds: 10)),
-        isA<OfflineChangeGapException>(),
+        status!.items.map(
+          (item) =>
+              (item.receiptResult as OfflineEdgeContributionDeleteReceiptResult)
+                  .existed,
+        ),
+        [true, false, false, false],
       );
-      expect((await client.getEdge(edge)).weight, 1);
+      expect((await repository.readEdge('wire', edge)).value!.weight, 4);
+      final cancellation = LanternCancellationToken();
+      final run = repository.consumeIdentityChanges(
+        'wire',
+        source: LanternClientIdentitySource(client),
+        cancellation: cancellation,
+      );
+      final stopped = expectLater(
+        run,
+        throwsA(isA<OfflineCanceledException>()),
+      );
+      addTearDown(cancellation.cancel);
+      try {
+        await _waitUntil(
+          () async => (await fixture.store.transaction(
+            (tx) => tx.changeCursor('wire'),
+          )).sequences.isNotEmpty,
+        );
+        await client.deleteEdgeContributions([target(2), target(2)]);
+        await _waitUntil(
+          () async =>
+              (await repository.readEdge(
+                'wire',
+                edge,
+                policy: OfflineReadPolicy.cacheOnly,
+              )).state ==
+              OfflineReadState.unknown,
+        );
+        expect(
+          (await repository.readEdge(
+            'wire',
+            edge,
+            policy: OfflineReadPolicy.serverOnly,
+          )).value!.weight,
+          1,
+        );
+      } finally {
+        cancellation.cancel();
+        await stopped;
+      }
+      final cursor = await fixture.store.transaction(
+        (tx) => tx.changeCursor('wire'),
+      );
+      await repository.dispose();
+      await fixture.reopen();
+      repository = fixture.repository(client);
+      expect(
+        (await fixture.store.transaction(
+          (tx) => tx.changeCursor('wire'),
+        )).sequences,
+        cursor.sequences,
+      );
+      final retained = await repository.getWriteStatus(
+        'wire',
+        operation.operationId,
+      );
+      expect(
+        retained!.items.map(
+          (item) =>
+              (item.receiptResult as OfflineEdgeContributionDeleteReceiptResult)
+                  .existed,
+        ),
+        [true, false, false, false],
+      );
+      expect(
+        (await repository.readEdge(
+          'wire',
+          edge,
+          policy: OfflineReadPolicy.cacheOnly,
+        )).value!.weight,
+        1,
+      );
       await client.deleteEdge(edge);
     },
-    skip: singleEndpoint == null ? 'real h2c endpoint unavailable' : false,
+    skip: receiptEndpoint == null
+        ? 'authenticated receipt endpoint unavailable'
+        : false,
   );
 
   test(
@@ -634,7 +761,7 @@ final class _WireSession implements OfflineIdentitySession {
                       IdentityOperation.receiptOnly =>
                         OfflineIdentityOperation.receiptOnly,
                       IdentityOperation.deleteEdgeContribution =>
-                        throw const OfflineChangeGapException(),
+                        OfflineIdentityOperation.deleteEdgeContribution,
                     },
                     chunkIndex: frame.chunkIndex,
                     isLast: frame.isLast,

@@ -322,6 +322,9 @@ enum OfflineOperationCategory {
   /// A receipt-bearing exact edge deletion.
   deleteEdge,
 
+  /// A receipt-bearing deletion of one explicit Edge contribution.
+  deleteEdgeContribution,
+
   /// An idempotent edge replacement.
   putEdge,
 
@@ -453,6 +456,34 @@ final class OfflinePutEdgeIntent extends OfflineIntent {
 
   @override
   DateTime? get expiration => edge.expiration;
+}
+
+/// A persisted receipt-bearing deletion of one caller-owned contribution ID.
+///
+/// Its ordering key is the complete edge pair, preserving FIFO with Put, Add,
+/// and whole-edge Delete. A folded effective weight cannot predict its result.
+final class OfflineDeleteEdgeContributionIntent extends OfflineIntent {
+  /// Copies one validated, nonzero 24-byte contribution identity.
+  OfflineDeleteEdgeContributionIntent(EdgeContributionRef contribution)
+    : contribution = EdgeContributionRef(
+        tail: contribution.tail,
+        head: contribution.head,
+        contribId: contribution.contribId,
+      );
+
+  /// Immutable identity with defensively copied contribution bytes.
+  final EdgeContributionRef contribution;
+
+  @override
+  OfflineOperationCategory get category =>
+      OfflineOperationCategory.deleteEdgeContribution;
+
+  @override
+  OfflineEntityKey get key =>
+      OfflineEntityKey.edge(contribution.tail, contribution.head);
+
+  @override
+  DateTime? get expiration => null;
 }
 
 /// A persisted receipt-bearing contribution-keyed edge addition.
@@ -739,6 +770,8 @@ final class OfflineOutboxRecord {
       OfflinePutVertexIfAbsentIntent() => ReceiptMutationKind.vertexPut,
       OfflineDeleteVertexIntent() => ReceiptMutationKind.vertexDelete,
       OfflineDeleteEdgeIntent() => ReceiptMutationKind.edgeDelete,
+      OfflineDeleteEdgeContributionIntent() =>
+        ReceiptMutationKind.edgeContributionDelete,
       OfflineReceiptAddEdgeIntent() => ReceiptMutationKind.edgeAdd,
       _ => null,
     };
@@ -983,6 +1016,16 @@ final class OfflineEdgeDeleteReceiptResult extends OfflineReceiptResult {
   const OfflineEdgeDeleteReceiptResult(this.existed);
 
   /// Whether the edge existed at the original operation.
+  final bool existed;
+}
+
+/// Original result of targeted Edge contribution Delete, distinct from Edge Delete.
+final class OfflineEdgeContributionDeleteReceiptResult
+    extends OfflineReceiptResult {
+  /// Retains the server-authoritative original boolean, including false.
+  const OfflineEdgeContributionDeleteReceiptResult(this.existed);
+
+  /// Whether the exact contribution existed at the original operation.
   final bool existed;
 }
 
@@ -1620,6 +1663,8 @@ OfflineIntent copyOfflineIntent(OfflineIntent intent) => switch (intent) {
     vertexKey,
   ),
   OfflineDeleteEdgeIntent(:final edge) => OfflineDeleteEdgeIntent(edge),
+  OfflineDeleteEdgeContributionIntent(:final contribution) =>
+    OfflineDeleteEdgeContributionIntent(contribution),
   OfflinePutEdgeIntent(:final edge) => OfflinePutEdgeIntent(edge),
   OfflineReceiptAddEdgeIntent(:final edge, :final contributionId) =>
     OfflineReceiptAddEdgeIntent(edge, contributionId),

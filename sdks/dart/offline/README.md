@@ -11,13 +11,16 @@ The initial independent `0.2.0` release under
 physical Android/iOS matrix and a one-time interactive OAuth publication.
 The published `0.3.0` identity CDC bridge is tracked under
 [#1314](https://github.com/anaregdesign/lantern/issues/1314) and depends on
-hosted `lantern_client 0.3.0`. The `0.4.0` receipt release candidate under
-[#1398](https://github.com/anaregdesign/lantern/issues/1398) and
-[#1115](https://github.com/anaregdesign/lantern/issues/1115) requires hosted
-`lantern_client ^0.3.3`. The maintained Flutter example and unpublished SQLite
-adapter use local path overrides for development. `0.4.0` remains release
-preparation, not a published or physically qualified package; the private
-pub.dev offline OIDC binding also requires package-admin verification.
+hosted `lantern_client 0.3.0`. The receipt-bearing `0.4.0` release uses hosted
+`lantern_client ^0.3.3` and was published after the final source, performance,
+Android/iPhone, OIDC, and archive gates in
+[#1399](https://github.com/anaregdesign/lantern/issues/1399).
+The `0.5.0` contribution Delete candidate uses hosted `lantern_client ^0.4.1`;
+its new qualification and publication are tracked separately in
+[#1586](https://github.com/anaregdesign/lantern/issues/1586). The maintained
+Flutter example and unpublished SQLite adapter use local path overrides for
+development. The private offline OIDC binding requires package-admin
+verification before a later release tag.
 
 It is pure Dart and deliberately does **not** bundle SQLite, Flutter,
 connectivity, secure storage, state management, scheduling, or encryption. An
@@ -64,6 +67,33 @@ IDs, persist them with receipt evidence, and retain each exact original
 effective weight, including signed infinity and semantic NaN if returned by
 Lantern. Add inputs remain finite. Capped prefix Delete remains outside the
 durable API.
+
+`deleteEdgeContribution`/`deleteEdgeContributions` accept exact
+`EdgeContributionRef` values, including a caller-owned nonzero 24-byte ID.
+They use a distinct durable intent and receipt result, preserving each original
+`existed` boolean, including `false`, after response loss and process restart.
+Duplicate references retain their request indexes and execute in per-edge FIFO
+order. A plural enqueue commits atomically; each item has its own receipt group.
+
+```dart
+final deletion = await repository.deleteEdgeContributions(
+  partitionId: 'signed-in-user',
+  contributions: [
+    EdgeContributionRef(tail: 'alice', head: 'bob', contribId: contributionId),
+  ],
+);
+await repository.probeAndDrain('signed-in-user');
+final result = await repository.getWriteStatus(
+  'signed-in-user',
+  deletion.operationId,
+);
+```
+
+While a contribution Delete is pending, a cached edge keeps its confirmed
+weight with `hasPendingWrites=true`; the repository cannot infer the remaining
+weight locally. Receipt confirmation and a contribution Delete CDC event
+invalidate that cache. An ordinary server read then fetches the authoritative
+remaining edge. Deleting a contribution never becomes a whole-edge Delete.
 
 Per-item handle streams are process-local conveniences. `getWriteStatus` and
 `watchWrite` read a content-free durable operation aggregate, preserve mixed
@@ -328,7 +358,8 @@ Application configuration must guarantee that routing property. The client
 acquires its configured credentials at each RPC call.
 
 The `0.3.0` CDC bridge requires hosted `lantern_client 0.3.0` with
-`subscribeIdentity`; the `0.4.0` receipt candidate requires hosted
+`subscribeIdentity`; the published `0.4.0` receipt release requires hosted
 `lantern_client ^0.3.3` for receipt APIs and single-attempt receipt-less
-Add. The initial offline `0.2.0` package stays on its published parent
-constraint.
+Add. The `0.5.0` candidate requires hosted `lantern_client ^0.4.1` for targeted
+contribution Delete and its typed identity CDC event. Earlier published versions
+retain their original parent constraints.

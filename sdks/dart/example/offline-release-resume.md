@@ -5,9 +5,10 @@ The first `0.2.0` publication in
 [#1162](https://github.com/anaregdesign/lantern/issues/1162) is complete. The
 published `0.3.0` identity CDC release added a dedicated CDC test and
 evidence record on each physical platform; it remains legacy Put-only. The
-receipt-bearing `0.4.0` source candidate additionally requires a distinct
-two-launch receipt target and paired on-device markers. Source version
-`0.4.0` is not a hosted release or physical qualification.
+receipt-bearing `0.4.0` release completed the distinct two-launch receipt
+target and paired on-device markers in #1399 and is hosted on pub.dev. The
+`0.5.0` contribution Delete candidate (#1586) requires fresh smoke, CDC,
+and receipt records on its own final source; 0.4.0 evidence cannot qualify it.
 
 The existing [physical-device smoke guide](physical-device-smoke.md) defines the
 evidence schema and historical observations. Earlier h2c or simulator results
@@ -186,12 +187,12 @@ Commit **only** those eight content-free records/markers (and an optional
 adjacent README) as the immediate child of the exact tested code commit.
 The offline tag points to this evidence-only child; preflight checks all
 eight paths, both distinct receipt run IDs, same-attempt smoke/CDC CI
-manifests, and absence of changed code. The parent `lantern_client 0.3.3`
-is hosted on pub.dev. Offline `0.3.0` is already published and cannot be
-reused for the receipt-bearing source;
-the example's offline `^0.4.0` dependency and lock describe the candidate,
-not a published package. Do not retarget that dependency to the hosted
-Put-only `0.3.0`, tag, or publish until both actual physical receipt runs,
+manifests, and absence of changed code. The parent `lantern_client 0.4.1`
+is hosted on pub.dev. Offline `0.4.0` is already published and cannot be
+reused for this contribution Delete release. The example's offline `^0.5.0`
+dependency and lock describe the new candidate. Each platform must pass
+15 smoke, 11 CDC, and 14 receipt scenarios. Do not tag or publish until both
+actual physical receipt runs,
 verified local copies held through tag CI and hosted archive equality, and
 every release gate are complete. If release is not finished within 30 days of
 capture, discard the local copies and repeat the physical runs with fresh

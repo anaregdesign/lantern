@@ -259,6 +259,7 @@ OfflineReceiptCapabilityEnabled offlineReceiptCapability({
     ReceiptMutationKind.vertexDelete,
     ReceiptMutationKind.edgeDelete,
     ReceiptMutationKind.edgeAdd,
+    ReceiptMutationKind.edgeContributionDelete,
   },
 }) => OfflineReceiptCapabilityEnabled(
   endpoint: ReceiptEndpoint(
@@ -321,6 +322,8 @@ OfflineReceiptResult _defaultReceiptResult(OfflineIntent intent) =>
         true,
       ),
       OfflineDeleteEdgeIntent() => const OfflineEdgeDeleteReceiptResult(true),
+      OfflineDeleteEdgeContributionIntent() =>
+        const OfflineEdgeContributionDeleteReceiptResult(true),
       OfflineReceiptAddEdgeIntent(:final edge) => OfflineEdgeAddReceiptResult(
         edge.weight,
       ),

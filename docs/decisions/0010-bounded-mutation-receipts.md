@@ -6,11 +6,12 @@
 
 ## Context and boundary
 
-The hosted `lantern_client_offline` 0.3.0 outbox admits unconditional Put
-only. Merged 0.4.0 source separately implements receipt-backed conditional
-Vertex Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add, but
-is not a published or qualified receipt release. Final #1399 gates remain
-open; online Go, Node, and Dart receipt APIs are merged in source.
+Published `lantern_client_offline` 0.4.0 implements receipt-backed conditional
+Vertex Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add and
+completed final #1399 performance, physical, and publication gates. The 0.5.0
+candidate adds targeted contribution Delete with hosted parent ^0.4.1;
+#1586 owns its independent final-source, device, and publication gates.
+Online Go, Node, and Dart receipt APIs are merged in source.
 A stable Add contribution ID does not recover the original result after a
 response is lost and a later Delete removes the contribution. A receipt must
 record the server's **original per-item result**, including a no-op, before a
@@ -1063,25 +1064,25 @@ tests. Targeted contribution Delete adds its separate receipt/WAL, replica,
 Snapshot, backup/restore, and status acceptance in #1528.
 Put Edge and prefix Delete remain outside this receipt context. Online Go,
 Node, and Dart receipt APIs are merged in source; the hosted
-`lantern_client 0.3.2` online archive passed exact-content verification.
+`lantern_client 0.4.1` online archive passed exact-content verification.
 Independently published `sdks/go/v0.25.1` pins public `pb/v0.13.1`; root
 and MCP pin v0.25.1. It includes #1468's one-attempt policy for receipt-less
 Add and exact/prefix Delete, unlike older v0.25.0. A single attempt does
 not recover an ambiguous receipt-less result; prefix Delete has no receipt
 path. Node receipt APIs are in merged 0.12.0 source, not npm's current
 0.11.0 `latest` package.
-Merged offline 0.4.0 source implements the original four receipt families,
-not targeted contribution Delete (deferred with Dart #1530); no
-receipt-bearing offline release has been published or qualified. Its
-`lantern_client: ^0.3.2` constraint selects the hosted parent; verify
-isolated resolution of the offline candidate archive against that published
-parent without path overrides before publishing. Final #1399 release
-evidence remains open, including performance and physical qualification.
-#1449's generic capture preparation is merged, not physical receipt proof;
-legacy `unsupported_add` records remain terminal.
+Published offline 0.4.0 implements the original four receipt families and uses
+hosted `lantern_client ^0.3.3`; its final #1399 gates, including performance,
+physical qualification, OIDC publication, and archive equality, completed.
+Targeted contribution Delete is available in hosted online Dart 0.4.1 (#1530).
+Offline 0.5.0 adds its durable intent, exact original boolean result, and CDC
+mapping with hosted parent `^0.4.1`; #1586 owns new exact-source, resource,
+Android/iPhone, and publication gates. Resolve that candidate archive against
+the hosted parent without path overrides. Legacy `unsupported_add` records
+remain terminal.
 
-The #1399 performance gate is prospective, not satisfied by the #1467
-preparatory driver: run four separate, sequential, fresh-WAL three-node
+The original #1399 performance contract was completed for 0.4.0; the #1467
+preparatory driver alone was insufficient. That contract requires four separate, sequential, fresh-WAL three-node
 real Connect/HTTPS scenarios with verified peer and client TLS on the
 **same immutable final image digest**,
 one each for conditional Vertex Put, exact Vertex Delete, exact Edge Delete,

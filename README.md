@@ -490,25 +490,23 @@ token providers, deadlines, cancellation, bounded retry, typed failures,
 and auth-exempt gRPC Health-v1 probing). See
 [sdks/dart/README.md](sdks/dart/README.md) for the current supported surface.
 Opt-in bounded mutation receipts are available in the hosted
-`lantern_client 0.3.3` package; its published archive passed exact-content
+`lantern_client 0.4.1` package, including targeted contribution Delete; its
+published archive passed exact-content
 verification. This online release does not qualify an offline receipt release.
 
 [`lantern_client_offline`](sdks/dart/offline/) is an experimental,
 opt-in pure-Dart Repository layer for Firebase-like cached snapshots, locally
 committed Put overlays, and explicit foreground replay. It injects the
 transactional store, never persists credentials, and never serves past Lantern
-TTL. The hosted offline 0.3.0 durable mutation surface is Put-only; experimental
-legacy Add records migrate to inspectable terminal `unsupported_add` dead
-letters and are never replayed. Merged offline 0.4.0 source separately
-implements receipt-backed conditional Vertex Put, exact Vertex/Edge Delete,
-and explicit-ID Edge Add with status-first reconciliation for any possibly
-dispatched ID; these source changes do not qualify an offline release.
-Existing direct-online Add methods and the CLI remain receipt-less; the
-checked-in Go/Node/Dart online SDKs offer separate opt-in receipt APIs. No
-receipt-bearing `lantern_client_offline` 0.4.0 release has been published
-or qualified; final #1399 release gates, including measured performance
-and physical evidence, remain required. #1449's capture preparation is
-merged, but it is not on-device receipt evidence.
+TTL. Published offline 0.4.0 implements receipt-backed conditional Vertex Put,
+exact Vertex/Edge Delete, and explicit-ID Edge Add with status-first
+reconciliation for any possibly dispatched ID. Its final performance,
+Android/iPhone, OIDC, and archive gates completed in #1399. The 0.5.0 candidate
+adds targeted contribution Delete with hosted parent `^0.4.1`; #1586 owns its
+new exact-source, physical, and publication gates. Experimental legacy Add
+records still migrate to terminal `unsupported_add` dead letters and are
+never replayed. Existing direct-online Add methods and the CLI remain
+receipt-less; online SDKs offer separate opt-in receipt APIs.
 Its reusable Store conformance gate covers atomic graph commits, collision and
 lease CAS behavior, generation/wipe isolation, bounded notifications and
 capacity, same-limit reopen, and canonical state transition in a fresh Dart VM.

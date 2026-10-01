@@ -3,7 +3,8 @@
 /// The public surface is pure Dart. Applications own persistent-store adapters,
 /// encryption, signed-in partitions, and foreground scheduling. Durable
 /// receipt reconciliation covers finalized Vertex PutIfAbsent, exact
-/// Vertex/Edge Delete, and contribution-keyed Edge Add families; legacy Add
+/// Vertex/Edge Delete, targeted Edge contribution Delete, and contribution-keyed
+/// Edge Add families; legacy Add
 /// records are decoded solely for fail-closed terminal migration and
 /// authorized inspection.
 library;

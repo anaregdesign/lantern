@@ -113,6 +113,8 @@ final class OfflineCodec {
       );
     } on OfflineArgumentException {
       throw const OfflineCodecException();
+    } on LanternInvalidArgumentException {
+      throw const OfflineCodecException();
     }
   }
 
@@ -507,6 +509,19 @@ Map<String, Object?> _intentToMap(OfflineIntent intent) => switch (intent) {
     'entity': _entityToMap(edge),
     'contributionId': null,
   },
+  OfflineDeleteEdgeContributionIntent(:final contribution) => <String, Object?>{
+    'kind': 'deleteEdgeContribution',
+    'entity': <String, Object?>{
+      'kind': 'edge',
+      'key': null,
+      'value': null,
+      'expiration': null,
+      'tail': contribution.tail,
+      'head': contribution.head,
+      'weight': null,
+    },
+    'contributionId': _base64UrlNoPadding(contribution.contribId),
+  },
   OfflineReceiptAddEdgeIntent(:final edge, :final contributionId) =>
     <String, Object?>{
       'kind': 'receiptAddEdge',
@@ -564,6 +579,19 @@ OfflineIntent _intentFromMap(Map<String, Object?> value) {
             entityMap['weight'] == null =>
       OfflineDeleteEdgeIntent(
         EdgeRef(_nonEmpty(entityMap['tail']), _nonEmpty(entityMap['head'])),
+      ),
+    'deleteEdgeContribution'
+        when entityMap['kind'] == 'edge' &&
+            entityMap['key'] == null &&
+            entityMap['value'] == null &&
+            entityMap['expiration'] == null &&
+            entityMap['weight'] == null =>
+      OfflineDeleteEdgeContributionIntent(
+        EdgeContributionRef(
+          tail: _nonEmpty(entityMap['tail']),
+          head: _nonEmpty(entityMap['head']),
+          contribId: _base64(value['contributionId'], length: 24),
+        ),
       ),
     'putEdge' when value['contributionId'] == null => () {
       final key = OfflineEntityKey.edge(
@@ -721,6 +749,13 @@ Map<String, Object?> _receiptResultToMap(OfflineReceiptResult result) =>
         'existed': null,
         'effectiveWeight': _floatBits(effectiveWeight, 4, allowNonFinite: true),
       },
+      OfflineEdgeContributionDeleteReceiptResult(:final existed) =>
+        <String, Object?>{
+          'kind': 'edgeContributionDelete',
+          'outcome': null,
+          'existed': existed,
+          'effectiveWeight': null,
+        },
     };
 
 OfflineReceiptResult _receiptResultFromMap(Map<String, Object?> value) {
@@ -740,6 +775,9 @@ OfflineReceiptResult _receiptResultFromMap(Map<String, Object?> value) {
     'edgeDelete'
         when value['outcome'] == null && value['effectiveWeight'] == null =>
       OfflineEdgeDeleteReceiptResult(_bool(value['existed'])),
+    'edgeContributionDelete'
+        when value['outcome'] == null && value['effectiveWeight'] == null =>
+      OfflineEdgeContributionDeleteReceiptResult(_bool(value['existed'])),
     'edgeAdd' when value['outcome'] == null && value['existed'] == null =>
       OfflineEdgeAddReceiptResult(
         _floatFromBits(
@@ -1033,6 +1071,7 @@ ReceiptMutationKind _receiptMutation(String value) => switch (value) {
   'vertexDelete' => ReceiptMutationKind.vertexDelete,
   'edgeDelete' => ReceiptMutationKind.edgeDelete,
   'edgeAdd' => ReceiptMutationKind.edgeAdd,
+  'edgeContributionDelete' => ReceiptMutationKind.edgeContributionDelete,
   _ => throw const OfflineCodecException(),
 };
 

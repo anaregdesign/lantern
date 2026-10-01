@@ -173,6 +173,7 @@ Future<void> _crashReceipt(String path) async {
         ReceiptMutationKind.vertexDelete,
         ReceiptMutationKind.edgeDelete,
         ReceiptMutationKind.edgeAdd,
+        ReceiptMutationKind.edgeContributionDelete,
       }.every(capability.supports),
     );
 
@@ -183,6 +184,11 @@ Future<void> _crashReceipt(String path) async {
     // Per-key FIFO would hold Add behind an ambiguous Delete of that same edge.
     final deleteEdge = EdgeRef('${prefix}delete-tail', '${prefix}delete-head');
     final addEdge = EdgeRef('${prefix}add-tail', '${prefix}add-head');
+    final contribution = EdgeContributionRef(
+      tail: '${prefix}contribution-tail',
+      head: '${prefix}contribution-head',
+      contribId: Uint8List(24)..[23] = 2,
+    );
     _require(
       await direct.putVertex(
             VertexInput(key: putKey, value: VertexValue.string('original')),
@@ -211,6 +217,25 @@ Future<void> _crashReceipt(String path) async {
     _require(await direct.deleteEdge(addEdge));
     await _requireEdgeMissing(direct, addEdge);
 
+    await direct.putEdge(
+      EdgeInput(tail: contribution.tail, head: contribution.head, weight: 1),
+    );
+    await direct.addEdge(
+      EdgeInput(
+        tail: contribution.tail,
+        head: contribution.head,
+        weight: 2,
+        contribId: contribution.contribId,
+      ),
+    );
+    await direct.addEdge(
+      EdgeInput(
+        tail: contribution.tail,
+        head: contribution.head,
+        weight: 3,
+        contribId: Uint8List(24)..[23] = 3,
+      ),
+    );
     await repository.putVertexIfAbsent(
       partitionId: _receiptPartition,
       operationId: '${prefix}put',
@@ -236,11 +261,16 @@ Future<void> _crashReceipt(String path) async {
         contribId: Uint8List(24)..[23] = 1,
       ),
     );
+    await repository.deleteEdgeContribution(
+      partitionId: _receiptPartition,
+      operationId: '${prefix}contribution-delete',
+      contribution: contribution,
+    );
     final prepared = await store.transaction(
       (transaction) => transaction.outbox(_receiptPartition),
     );
     _require(
-      prepared.length == 4 &&
+      prepared.length == 5 &&
           prepared.every(
             (record) =>
                 record.receipt != null &&
@@ -256,16 +286,16 @@ Future<void> _crashReceipt(String path) async {
                   .map((record) => record.receipt!.operationId)
                   .toSet()
                   .length ==
-              4 &&
+              5 &&
           prepared.map((record) => record.receipt!.groupId).toSet().length ==
-              4 &&
+              5 &&
           prepared.map((record) => record.receipt!.mutation).toSet().length ==
-              4,
+              5,
     );
 
     // A foreground drain now stops after its claimed batch schedules a
     // retry. This fixture claims one item at a time, so start a fresh drain
-    // for each of the four independent committed-response losses.
+    // for each of the five independent committed-response losses.
     for (var index = 0; index < prepared.length; index++) {
       _require(await repository.drain(_receiptPartition) == 0);
     }
@@ -273,7 +303,7 @@ Future<void> _crashReceipt(String path) async {
       (transaction) => transaction.outbox(_receiptPartition),
     );
     _require(
-      unresolved.length == 4 &&
+      unresolved.length == 5 &&
           unresolved.every(
             (record) =>
                 record.state == OfflineOutboxState.enqueued &&
@@ -325,7 +355,7 @@ Future<void> _verifyReceipt(String path) async {
       (transaction) => transaction.outbox(_receiptPartition),
     );
     _require(
-      pending.length == 4 &&
+      pending.length == 5 &&
           pending.every(
             (record) =>
                 record.receipt != null &&
@@ -346,7 +376,7 @@ Future<void> _verifyReceipt(String path) async {
       );
     }
 
-    _require(await repository.drain(_receiptPartition) == 4);
+    _require(await repository.drain(_receiptPartition) == 5);
     for (final record in pending) {
       final status = await repository.getWriteStatus(
         _receiptPartition,
@@ -380,6 +410,11 @@ Future<void> _verifyReceipt(String path) async {
           OfflineEdgeAddReceiptResult(effectiveWeight: 4.0),
         ) =>
           true,
+        (
+          OfflineDeleteEdgeContributionIntent(),
+          OfflineEdgeContributionDeleteReceiptResult(existed: true),
+        ) =>
+          true,
         _ => false,
       });
     }
@@ -404,6 +439,16 @@ Future<void> _verifyReceipt(String path) async {
         .map((record) => record.intent)
         .whereType<OfflineReceiptAddEdgeIntent>()
         .single;
+    final targeted = pending
+        .map((record) => record.intent)
+        .whereType<OfflineDeleteEdgeContributionIntent>()
+        .single;
+    _require(
+      (await direct.getEdge(
+            EdgeRef(targeted.contribution.tail, targeted.contribution.head),
+          )).weight ==
+          4,
+    );
     final original = (await direct.getVertex(put.vertex.key)).value;
     _require(original is StringValue && original.value == 'original');
     await _requireVertexMissing(direct, deletedVertex.vertexKey);

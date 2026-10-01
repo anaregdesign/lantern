@@ -45,6 +45,9 @@ enum OfflineIdentityOperation {
   /// Edge Delete, including exact capped-prefix victims.
   deleteEdge,
 
+  /// Targeted contribution Delete invalidates the remaining effective Edge.
+  deleteEdgeContribution,
+
   /// A committed receipt envelope without a graph invalidation.
   receiptOnly,
 }

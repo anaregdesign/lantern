@@ -10,6 +10,7 @@ const _mutationRpcs = <String>{
   'DeleteVertices',
   'DeleteEdges',
   'AddEdges',
+  'DeleteEdgeContributions',
 };
 const _controlPath = '/_receipt_matrix_status';
 const _handoffEvent = 'AwaitingSigkill';

@@ -22,6 +22,7 @@ const _receiptMutations = <String>[
   'DeleteVertices',
   'DeleteEdges',
   'AddEdges',
+  'DeleteEdgeContributions',
 ];
 
 /// Runs real SIGKILL/reopen boundaries and prints only aggregate case counts.

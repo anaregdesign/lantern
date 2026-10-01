@@ -8,9 +8,9 @@ import release_contract
 
 
 PUBSPEC = b"""name: lantern_client_offline
-version: 0.4.0
+version: 0.5.0
 dependencies:
-  lantern_client: ^0.3.3
+  lantern_client: ^0.4.1
 dev_dependencies:
   test: 1.31.2
 """
@@ -36,7 +36,7 @@ class ReleaseContractTest(unittest.TestCase):
 
     def check(self, files=None):
         archive_file(self.archive, files or self.files)
-        release_contract.validate(self.archive, "0.4.0", "0.3.3")
+        release_contract.validate(self.archive, "0.5.0", "0.4.1")
 
     def test_storage_neutral_archive_passes(self):
         self.check()
@@ -48,7 +48,7 @@ class ReleaseContractTest(unittest.TestCase):
 
     def test_path_and_platform_runtime_dependencies_are_rejected(self):
         for pubspec in (
-            PUBSPEC.replace(b"^0.3.3", b"\n    path: .."),
+            PUBSPEC.replace(b"^0.4.1", b"\n    path: .."),
             PUBSPEC.replace(b"dev_dependencies:", b"  sqflite: ^2.4.4\ndev_dependencies:"),
             PUBSPEC.replace(b"dev_dependencies:", b"  sqflite2: ^2.4.4\ndev_dependencies:"),
         ):
@@ -57,12 +57,12 @@ class ReleaseContractTest(unittest.TestCase):
 
     def test_wrong_version_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "version"):
-            self.check(self.files | {"pubspec.yaml": PUBSPEC.replace(b"0.4.0", b"0.1.0", 1)})
+            self.check(self.files | {"pubspec.yaml": PUBSPEC.replace(b"0.5.0", b"0.1.0", 1)})
 
     def test_old_hosted_parent_is_rejected(self):
-        for parent in (b"^0.3.2", b"^0.3.1", b"^0.3.0"):
+        for parent in (b"^0.4.0", b"^0.3.3", b"^0.3.0"):
             with self.subTest(parent=parent), self.assertRaisesRegex(ValueError, "storage-neutral"):
-                self.check(self.files | {"pubspec.yaml": PUBSPEC.replace(b"^0.3.3", parent)})
+                self.check(self.files | {"pubspec.yaml": PUBSPEC.replace(b"^0.4.1", parent)})
 
 
 if __name__ == "__main__":

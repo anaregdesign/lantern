@@ -212,6 +212,7 @@ void main() {
         'DeleteVertices',
         'DeleteEdges',
         'AddEdges',
+        'DeleteEdgeContributions',
       ];
       for (final mutation in mutations) {
         await send('GetReceiptStatuses');
@@ -247,12 +248,13 @@ void main() {
         for (final mutation in mutations) mutation: 1,
       });
       expect(status['forwarded'], {
-        'GetReceiptStatuses': 8,
+        'GetReceiptStatuses': 10,
         for (final mutation in mutations) mutation: 1,
       });
       expect(status['trace'], [
         for (final mutation in mutations) ...['GetReceiptStatuses', mutation],
         'AwaitingSigkill',
+        'GetReceiptStatuses',
         'GetReceiptStatuses',
         'GetReceiptStatuses',
         'GetReceiptStatuses',
@@ -515,6 +517,7 @@ void main() {
       'DeleteVertices',
       'DeleteEdges',
       'AddEdges',
+      'DeleteEdgeContributions',
     ];
     final initial = [
       for (final mutation in mutations) ...['GetReceiptStatuses', mutation],
@@ -522,7 +525,7 @@ void main() {
     Map<String, Object> snapshot(List<String> events) => {
       'schema': 1,
       'forwarded': {
-        'GetReceiptStatuses': 8,
+        'GetReceiptStatuses': 10,
         for (final mutation in mutations) mutation: 1,
       },
       'dropped': {for (final mutation in mutations) mutation: 1},
@@ -534,7 +537,7 @@ void main() {
     final recovered = snapshot([
       ...initial,
       'AwaitingSigkill',
-      ...List.filled(4, 'GetReceiptStatuses'),
+      ...List.filled(5, 'GetReceiptStatuses'),
     ]);
     ReceiptProxyTrace.parse(recovered).assertRecoveredWithoutResend();
 

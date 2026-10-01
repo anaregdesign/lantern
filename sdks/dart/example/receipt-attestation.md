@@ -1,9 +1,11 @@
-# Receipt-only physical matrix (release-enforced, not yet qualified)
+# Receipt physical matrix for offline 0.5.0
 
 The dedicated `integration_test/physical_receipt_matrix_test.dart` target,
-the fixed 12-ID per-platform matrix in `support/receipt_scenarios.dart`,
-and the paired-marker release check are source implementations for #1399/#1449.
-They do **not** qualify Android or iPhone until the exact frozen commit is
+the fixed 14-ID per-platform matrix in `support/receipt_scenarios.dart`,
+and the paired-marker release check implement #1586. Offline 0.4.0 completed
+its earlier 12-ID matrix and publication in #1399; those records cannot
+qualify this contribution Delete release. The new targets qualify Android
+and iPhone only after the exact frozen commit is
 run on both physical devices and its signed originals are retained in the
 private local capture described below. The existing smoke/CDC results and the
 binary probe below cannot substitute for a receipt run. Do not tag or
@@ -18,12 +20,12 @@ human custody review are not required for this solo, unused-beta release.
 scenarios are constants in source, not operator-supplied. The first launch
 calls `prepareForRestart`, executes each pre-kill assertion under
 `verifyScenario`, and writes an atomic **running / awaiting_sigkill** marker
-plus a private, bounded SQLite-directory restart journal. The four queued
+plus a private, bounded SQLite-directory restart journal. The five queued
 receipt families must start with durable `mayHaveDispatched=false`; immediately
 before each real mutation RPC, the SQLite outbox must already hold
 `mayHaveDispatched=true`. After each committed response is lost, the target
 checks the durable true flag and status-required state, then stores a
-canonical SHA-256 of all four post-drop logical/record, receipt operation,
+canonical SHA-256 of all five post-drop logical/record, receipt operation,
 mutation, and group associations in the **private journal only**. Provisional
 pre-send receipt IDs may change safely before dispatch; the comparison is
 against the post-drop identities, not the initial queue snapshot. The first
@@ -37,8 +39,8 @@ The second launch calls `resumeAfterRestart`. It requires the original
 canonical marker and journal, exact commit/target/run/platform/package,
 the same installed SHA-256 and completed pre-kill scenario set, a different
 process ID, and a valid UTC handoff. It reopens the file-backed SQLite store
-and checks the four pending ambiguous writes before sending anything. It
-requires all four durable dispatch flags to remain true and compares the
+and checks the five pending ambiguous writes before sending anything. It
+requires all five durable dispatch flags to remain true and compares the
 reopened SQLite identities to the private journal digest before any status
 lookup or drain. It then performs status-first reconciliation, checks **no
 mutation resend** across the proxy's sealed kill boundary, asserts persisted
@@ -91,7 +93,7 @@ of #1449; get a serial device slot before attempting one.
 
 Obtain the exclusive device/host slot. Freeze **one clean code commit** after
 the offline receipt fix and source checks. Prepare a receipt-certified durable
-WAL responder (not graph-only) with all four mutations enabled, a retention
+WAL responder (not graph-only) with all five mutations enabled, a retention
 window **greater than four hours**, and adequate receipt caps. Its endpoint
 must remain stable across both launches. Make its API and runtime-token BFF
 device-reachable over platform-trusted HTTPS. Provide a separately reachable
@@ -104,7 +106,7 @@ outside the repository. Its six keys are `listenHost`, `listenPort`,
 `certificateChain`, `privateKey`, `upstream`, and `controlToken`. The proxy
 control token must be the token that the runtime BFF issues to this app. The proxy
 must be reachable over trusted HTTPS from the phone; it forwards only
-receipt capability/status and the four receipt mutations, consumes the
+receipt capability/status and the five receipt mutations, consumes the
 upstream success before dropping each mutation's downstream socket once,
 and exposes an authenticated, content-free count/order trace. The app fetches
 its token at runtime from the BFF. Put all addresses, credentials, device IDs,

@@ -125,6 +125,7 @@ Future<String> _prepareForKill(
   await _verifyVertexDelete(run, direct, repository, keys);
   await _verifyEdgeDelete(run, direct, repository, keys);
   await _verifyContributionAdd(run, direct, repository, store, keys);
+  await _verifyContributionDelete(run, direct, repository, keys);
   await _verifyOverflow(direct, repository, keys);
   await _verifyRadioRecovery(run, direct, repository, keys, actions);
   if (Platform.isAndroid) {
@@ -198,7 +199,7 @@ Future<void> _verifyAfterKill(
     final pending = await store.transaction(
       (transaction) => transaction.outbox(_partition),
     );
-    expect(pending, hasLength(4));
+    expect(pending, hasLength(5));
     expect(pending.map((record) => record.attemptCount), everyElement(1));
     expect(
       pending.map((record) => record.receipt?.state),
@@ -223,7 +224,7 @@ Future<void> _verifyAfterKill(
     // Fetch the fixture token outside the SDK's eight-second RPC deadline;
     // the first receipt RPC remains the status lookup inside drain().
     await fixture.token();
-    expect(await repository.drain(_partition), 4);
+    expect(await repository.drain(_partition), 5);
     final trace = await fixture.proxyTrace();
     trace.assertRecoveredWithoutResend();
     await _expectResult<OfflineVertexPutReceiptResult>(
@@ -256,6 +257,37 @@ Future<void> _verifyAfterKill(
       isEmpty,
     );
   });
+
+  await run.verifyScenario(
+    'receipt_edge_contribution_delete_restart',
+    () async {
+      await _expectResult<OfflineEdgeContributionDeleteReceiptResult>(
+        repository,
+        keys.operation('lost_contribution_delete'),
+        (result) => expect(result.existed, isTrue),
+      );
+      expect(
+        (await direct.getEdge(keys.edge('lost_contribution_delete'))).weight,
+        4,
+      );
+      final original = await repository.getWriteStatus(
+        _partition,
+        keys.operation('contribution_delete'),
+      );
+      expect(
+        original!.items.map(
+          (item) =>
+              (item.receiptResult as OfflineEdgeContributionDeleteReceiptResult)
+                  .existed,
+        ),
+        [true, false, false, false, false],
+      );
+      expect(
+        (await direct.getEdge(keys.edge('contribution_delete'))).weight,
+        4,
+      );
+    },
+  );
 
   await run.verifyScenario('receipt_nonfinite_derived_float32', () async {
     await _expectResult<OfflineEdgeAddReceiptResult>(
@@ -741,6 +773,98 @@ Future<void> _verifyAndroidIdle(
   }
 });
 
+Future<void> _verifyContributionDelete(
+  ReceiptAttestation run,
+  LanternClient direct,
+  OfflineLanternRepository repository,
+  _ReceiptKeys keys,
+) => run.verifyScenario('receipt_edge_contribution_delete_exact', () async {
+  final edge = keys.edge('contribution_delete');
+  EdgeContributionRef target(int id, {String? head}) => EdgeContributionRef(
+    tail: edge.tail,
+    head: head ?? edge.head,
+    contribId: _contribution(id),
+  );
+  await direct.putEdge(
+    EdgeInput(
+      tail: edge.tail,
+      head: edge.head,
+      weight: 1,
+      expiresIn: _expiresIn,
+    ),
+  );
+  await direct.addEdges([
+    EdgeInput(
+      tail: edge.tail,
+      head: edge.head,
+      weight: 2,
+      expiresIn: _expiresIn,
+      contribId: target(6).contribId,
+    ),
+    EdgeInput(
+      tail: edge.tail,
+      head: edge.head,
+      weight: 3,
+      expiresIn: _expiresIn,
+      contribId: target(7).contribId,
+    ),
+    EdgeInput(
+      tail: edge.tail,
+      head: edge.head,
+      weight: 7,
+      expiresAt: DateTime.utc(2000),
+      contribId: target(8).contribId,
+    ),
+  ]);
+  expect(
+    (await repository.readEdge(
+      _partition,
+      edge,
+      policy: OfflineReadPolicy.serverOnly,
+    )).value!.weight,
+    6,
+  );
+  final operation = await repository.deleteEdgeContributions(
+    partitionId: _partition,
+    operationId: keys.operation('contribution_delete'),
+    contributions: [
+      target(6),
+      target(6),
+      target(99),
+      target(8),
+      target(7, head: '${edge.head}:other'),
+    ],
+  );
+  final pending = await repository.readEdge(
+    _partition,
+    edge,
+    policy: OfflineReadPolicy.cacheOnly,
+  );
+  expect(pending.value!.weight, 6);
+  expect(pending.hasPendingWrites, isTrue);
+  expect(await repository.drain(_partition), 5);
+  final status = await repository.getWriteStatus(
+    _partition,
+    operation.operationId,
+  );
+  expect(
+    status!.items.map(
+      (item) =>
+          (item.receiptResult as OfflineEdgeContributionDeleteReceiptResult)
+              .existed,
+    ),
+    [true, false, false, false, false],
+  );
+  expect(
+    (await repository.readEdge(
+      _partition,
+      edge,
+      policy: OfflineReadPolicy.serverOnly,
+    )).value!.weight,
+    4,
+  );
+});
+
 Future<String> _verifyCommittedLoss(
   ReceiptAttestation run,
   PhysicalReceiptFixture fixture,
@@ -790,6 +914,31 @@ Future<String> _verifyCommittedLoss(
     expect(await direct.deleteEdge(keys.edge('lost_add')), isTrue);
     await _missingEdge(direct, keys.edge('lost_add'));
 
+    final targeted = keys.edge('lost_contribution_delete');
+    await direct.putEdge(
+      EdgeInput(
+        tail: targeted.tail,
+        head: targeted.head,
+        weight: 1,
+        expiresAt: expiration,
+      ),
+    );
+    await direct.addEdges([
+      EdgeInput(
+        tail: targeted.tail,
+        head: targeted.head,
+        weight: 2,
+        expiresAt: expiration,
+        contribId: _contribution(9),
+      ),
+      EdgeInput(
+        tail: targeted.tail,
+        head: targeted.head,
+        weight: 3,
+        expiresAt: expiration,
+        contribId: _contribution(10),
+      ),
+    ]);
     await repository.putVertexIfAbsent(
       partitionId: _partition,
       operationId: keys.operation('lost_put'),
@@ -820,18 +969,27 @@ Future<String> _verifyCommittedLoss(
         contribId: _contribution(5),
       ),
     );
+    await repository.deleteEdgeContribution(
+      partitionId: _partition,
+      operationId: keys.operation('lost_contribution_delete'),
+      contribution: EdgeContributionRef(
+        tail: targeted.tail,
+        head: targeted.head,
+        contribId: _contribution(9),
+      ),
+    );
     final beforeSend = await store.transaction(
       (transaction) => transaction.outbox(_partition),
     );
-    expect(beforeSend, hasLength(4));
+    expect(beforeSend, hasLength(5));
     final queued = beforeSend.map((record) => record.operationId).toSet();
-    if (queued.length != 4 ||
+    if (queued.length != 5 ||
         !queued.containsAll(keys.responseLossOperations)) {
       throw StateError('Physical receipt queue is incomplete');
     }
     expect(
       beforeSend.map((record) => record.receipt?.operationId).toSet().length,
-      4,
+      5,
     );
     expect(beforeSend.map((record) => record.attemptCount), everyElement(0));
     expect(
@@ -848,14 +1006,14 @@ Future<String> _verifyCommittedLoss(
       expect(await repository.drain(_partition), 0);
     }
     final checked = observedRemote.checkedOperations;
-    if (checked.length != 4 ||
+    if (checked.length != 5 ||
         !checked.containsAll(keys.responseLossOperations)) {
       throw StateError('Physical receipt dispatch guard missed a mutation');
     }
     final ambiguous = await store.transaction(
       (transaction) => transaction.outbox(_partition),
     );
-    expect(ambiguous, hasLength(4));
+    expect(ambiguous, hasLength(5));
     for (final record in ambiguous) {
       expect(record.attemptCount, 1);
       expect(record.diagnosticCode, 'receipt_response_unknown');
@@ -1007,21 +1165,26 @@ final class _ReceiptKeys {
     'delete_edge',
     'missing_edge',
     'contribution',
+    'contribution_delete',
     'overflow',
     'lost_edge_delete',
     'lost_add',
+    'lost_contribution_delete',
   ].map(edge);
   Iterable<String> get responseLossOperations => [
     'lost_put',
     'lost_vertex_delete',
     'lost_edge_delete',
     'lost_add',
+    'lost_contribution_delete',
   ].map(operation);
   Map<String, ReceiptMutationKind> get responseLossMutations => {
     operation('lost_put'): ReceiptMutationKind.vertexPut,
     operation('lost_vertex_delete'): ReceiptMutationKind.vertexDelete,
     operation('lost_edge_delete'): ReceiptMutationKind.edgeDelete,
     operation('lost_add'): ReceiptMutationKind.edgeAdd,
+    operation('lost_contribution_delete'):
+        ReceiptMutationKind.edgeContributionDelete,
   };
 }
 

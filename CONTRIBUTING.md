@@ -177,9 +177,10 @@ committed-response-loss replay. Android and iOS jobs upload content-free JSON
 manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
-record required before an offline release. The merged offline 0.4.0 source
-candidate declares a hosted `lantern_client: ^0.3.3` dependency and has an
-independent candidate archive gate; the parent `lantern_client` publish
+record required before an offline release. Published offline 0.4.0 uses hosted `lantern_client: ^0.3.3` and passed
+its independent receipt release gates in #1399. The 0.5.0 contribution
+Delete candidate uses hosted `lantern_client: ^0.4.1` and has a fresh
+independent archive and physical gate in #1586; the parent `lantern_client` publish
 archive continues to exclude `offline/` and `offline_sqlite/`. The maintained
 Flutter app under `sdks/dart/example/` is a repository integration fixture
 with local development overrides, so only its standalone online example is
@@ -562,12 +563,12 @@ number rather than force-moving the tag.
 
 **Offline first-publication history (#1162).** `lantern_client_offline 0.2.0`
 was first published from its exact tagged revision with one-time interactive
-OAuth; the identity CDC 0.3.0 release is also hosted. That bootstrap is
-complete, not a procedure for the receipt-bearing 0.4.0 candidate. Never
+OAuth; identity CDC 0.3.0 and receipt-bearing 0.4.0 are also hosted. That
+bootstrap is complete, not a procedure for later receipt-bearing candidates. Never
 repeat manual publication for a later version, reuse a published tag, or put
 a pub token in GitHub Secrets, CI, or the repository.
 
-**Dart publishing status.** The parent `lantern_client` 0.3.3 is published and
+**Dart publishing status.** The parent `lantern_client` 0.4.1 is published and
 its exact-tag archive has been verified. The one-time manual first publish completed with `0.1.0`,
 and pub.dev automated publishing is bound to repository `anaregdesign/lantern` and tag
 pattern `sdks/dart/v{{version}}`. Later releases are tag-driven only; do not run a
@@ -575,9 +576,10 @@ manual `dart pub publish`. Immediately before tagging, check
 `https://pub.dev/api/packages/lantern_client` and confirm the target version does not
 already exist. Never force-move a published Dart tag/version—bump patch.
 
-**Offline receipt release preparation (#1398/#1115/#1399).** Merged offline
-0.4.0 source requires hosted `lantern_client ^0.3.3`; it is not yet a
-published or qualified receipt release. The maintained Flutter example and
+**Offline receipt release preparation (#1586).** Published offline 0.4.0
+uses hosted `lantern_client ^0.3.3` and completed #1399. The 0.5.0 candidate
+adds targeted contribution Delete and requires hosted `lantern_client ^0.4.1`;
+its final-source, physical-device, and publication gates remain independent. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without
 a path override. Before tagging, confirm the target version and tag are
@@ -599,14 +601,17 @@ Merge all required source and release-contract docs before freezing one clean
 tested source commit. The
 [physical release runbook](sdks/dart/example/offline-release-resume.md)
 owns the receipt-specific Android/iOS evidence and exact-commit procedure;
-prior Put-only, CDC, or simulator records do not qualify 0.4.0. After both
+prior release, CDC, or simulator records do not qualify 0.5.0. After both
 physical platforms and all pre-tag gates pass, tag only the immediate
 evidence-only child of that frozen commit. Do not change code or release docs
-between the tested source commit and its tagged evidence child. The #1399
-[performance gate](docs/decisions/0010-bounded-mutation-receipts.md#dependencies-and-rollout)
+between the tested source commit and its tagged evidence child. The original
+#1399 [performance gate](docs/decisions/0010-bounded-mutation-receipts.md#dependencies-and-rollout)
 requires four separate, sequential, fresh-WAL family scenarios on the same
 immutable final image, not a simultaneous mixed-load run; a preparatory
-driver does not supply final measured acceptance. The offline tag's full
+driver does not supply final measured acceptance. That four-family gate was
+completed for 0.4.0; its evidence does not qualify new contribution Delete
+code. For #1586, retain the unchanged resource thresholds and add the fifth
+family to offline replay/resource qualification. The offline tag's full
 Gate, OIDC publication, and published-archive equality must pass before
 the exact-title GitHub Release. If publication fails, leave the tag and
 Issue open and create no Release; never move a published tag or version.
