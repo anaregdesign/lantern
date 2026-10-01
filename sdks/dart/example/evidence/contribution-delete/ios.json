@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "physical_edge_contribution_delete_evidence",
+  "repository": "anaregdesign/lantern",
+  "contentFree": true,
+  "physicalDevice": true,
+  "testedCommit": "7dbad8d90be0d8b01ec3760e88afc5a92b663840",
+  "runId": "0b2af1f47789ed14f38c16cb268dbd2e",
+  "runStartedAt": "2026-10-01T01:02:24Z",
+  "recordedAt": "2026-10-01T01:02:39Z",
+  "platform": {
+    "kind": "physical-ios"
+  },
+  "application": {
+    "packageId": "com.anaregdesign.lanternExample",
+    "target": "integration_test/physical_contribution_delete_test.dart",
+    "binarySha256": "40856f27fab0740d9835f46711a77f63c1e7acea3e83957faf57001289bc34e6"
+  },
+  "network": {
+    "transport": "Connect/HTTPS",
+    "authenticated": true,
+    "platformTrustedTls": true,
+    "fault": "committed-response-socket-drop"
+  },
+  "scenarios": [
+    "authenticated_https",
+    "committed_response_loss",
+    "dispatch_marker_before_send",
+    "identity_cdc_edge_refetch",
+    "indexed_duplicate_missing_expired",
+    "invalid_contribution_identity",
+    "no_mutation_resend_after_restart",
+    "original_true_false_replay",
+    "physical_sigkill_status_first",
+    "selective_delete_preserves_put_base",
+    "unsupported_offline_family"
+  ],
+  "result": "passed"
+}
