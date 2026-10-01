@@ -250,6 +250,11 @@ final class OfflineReceiptStatus {
         (ReceiptMutationKind.edgeDelete, OfflineEdgeDeleteReceiptResult()) =>
           true,
         (ReceiptMutationKind.edgeAdd, OfflineEdgeAddReceiptResult()) => true,
+        (
+          ReceiptMutationKind.edgeContributionDelete,
+          OfflineEdgeContributionDeleteReceiptResult(),
+        ) =>
+          true,
         _ => false,
       };
       if (itemIndex! < 0 ||
@@ -446,6 +451,7 @@ final class LanternClientOfflineRemote
                   ReceiptMutationKind.vertexDelete,
                   ReceiptMutationKind.edgeDelete,
                   ReceiptMutationKind.edgeAdd,
+                  ReceiptMutationKind.edgeContributionDelete,
                 }.contains,
               )
               .toSet(),
@@ -478,6 +484,8 @@ final class LanternClientOfflineRemote
         result = OfflineEdgeDeleteReceiptResult(receipt.existed);
       } else if (receipt is EdgeAddReceipt) {
         result = OfflineEdgeAddReceiptResult(receipt.effectiveWeight);
+      } else if (receipt is EdgeContributionDeleteReceipt) {
+        result = OfflineEdgeContributionDeleteReceiptResult(receipt.existed);
       } else if (receipt != null) {
         // New online families require a separately qualified offline intent.
         throw const OfflineRemoteProtocolException();
@@ -551,6 +559,14 @@ final class LanternClientOfflineRemote
               context: context,
               options: options,
             )).effectiveWeight,
+          ),
+        OfflineDeleteEdgeContributionIntent(:final contribution) =>
+          OfflineEdgeContributionDeleteReceiptResult(
+            (await client.deleteEdgeContributionWithReceipt(
+              contribution,
+              context: context,
+              options: options,
+            )).existed,
           ),
         _ => throw const OfflineUnsupportedOperationException(),
       };

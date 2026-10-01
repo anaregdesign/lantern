@@ -174,6 +174,68 @@ void main() {
     },
   );
 
+  test(
+    'contribution Delete and receipt-only chunks preserve typed identities',
+    () async {
+      final transport = FakeTransportBuilder()
+          .unary<
+            graph.GetReplicationStatusRequest,
+            graph.GetReplicationStatusResponse
+          >(
+            LanternService.getReplicationStatus,
+            (_, _) => graph.GetReplicationStatusResponse(nodeId: _responder),
+          )
+          .server<replication.SubscribeRequest, replication.SubscribeResponse>(
+            LanternReplicationService.subscribe,
+            (_, _) => Stream.fromIterable([
+              _chunk(
+                operation: replication
+                    .IdentityOperation
+                    .IDENTITY_OPERATION_DELETE_EDGE_CONTRIBUTION,
+                vertexKeys: const [],
+                edgeKeys: [
+                  graph.EdgeKey(tail: 'tail', head: 'head'),
+                  graph.EdgeKey(tail: 'tail', head: 'head'),
+                ],
+              ),
+              _chunk(
+                sequence: 2,
+                operation: replication
+                    .IdentityOperation
+                    .IDENTITY_OPERATION_RECEIPT_ONLY,
+                vertexKeys: const [],
+              ),
+            ]),
+          )
+          .build();
+      final client = LanternClient.connect(
+        Uri.parse('https://one-responder.test'),
+        transport: transport,
+      );
+      addTearDown(client.close);
+      final session = await LanternClientIdentitySource(client).open(
+        bootstrap: false,
+        nextExpected: {_responder: BigInt.one},
+        cancellation: LanternCancellationToken(),
+      );
+      addTearDown(session.close);
+      final chunks = (await session.events.take(2).toList())
+          .cast<OfflineIdentityChunk>();
+      expect(chunks, hasLength(2));
+      expect(
+        chunks.first.operation,
+        OfflineIdentityOperation.deleteEdgeContribution,
+      );
+      expect(chunks.first.keys, [
+        const OfflineEntityKey.edge('tail', 'head'),
+        const OfflineEntityKey.edge('tail', 'head'),
+      ]);
+      expect(chunks.last.operation, OfflineIdentityOperation.receiptOnly);
+      expect(chunks.last.sequence, BigInt.two);
+      expect(chunks.last.keys, isEmpty);
+    },
+  );
+
   test('responder switch during plural read fails closed', () async {
     var statusCalls = 0;
     final transport = FakeTransportBuilder()

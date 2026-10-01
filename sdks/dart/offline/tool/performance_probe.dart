@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
@@ -161,7 +162,9 @@ Future<void> main(List<String> arguments) async {
   await repository.dispose();
   disposeWatch.stop();
 
+  final contributionCodec = _contributionDeleteCodec(now, limits);
   final metrics = <String, Object?>{
+    'contributionDeleteCodec': contributionCodec,
     'schema': 1,
     'scenario': baseline['scenario'],
     'sampleCount': readMicros.length,
@@ -261,6 +264,125 @@ Future<void> main(List<String> arguments) async {
   } else {
     await File(outputPath).writeAsString('$encoded\n', flush: true);
   }
+}
+
+Map<String, int> _contributionDeleteCodec(
+  DateTime now,
+  Map<String, Object?> limits,
+) {
+  Uint8List bytes(int count, int value) =>
+      Uint8List.fromList(List.filled(count, value));
+  final epoch = ReceiptEpoch(bytes(16, 1));
+  final policy = OfflineReceiptPolicy(
+    deploymentEpoch: epoch,
+    retention: const Duration(hours: 24),
+    maxEntries: BigInt.from(2048),
+    maxBytes: BigInt.from(10 * 1024 * 1024),
+    fingerprint: bytes(32, 2),
+  );
+  final operationBytes = bytes(49, 3);
+  operationBytes[0] = 1;
+  operationBytes.setRange(1, 17, epoch.bytes);
+  ByteData.sublistView(
+    operationBytes,
+  ).setUint64(17, now.millisecondsSinceEpoch);
+  final endpoint = ReceiptEndpoint(
+    nodeId: bytes(16, 4),
+    generation: bytes(16, 5),
+  );
+  final watch = Stopwatch()..start();
+  var encodedBytes = 0;
+  const count = 1001;
+  final statuses = <OfflineWriteStatus>[];
+  for (var index = 0; index < count; index++) {
+    final id = Uint8List.fromList(operationBytes);
+    ByteData.sublistView(id).setUint64(41, index + 1);
+    final record = OfflineOutboxRecord(
+      recordId: 'record-$index',
+      operationId: 'codec',
+      itemIndex: index,
+      partitionId: 'codec',
+      intent: OfflineDeleteEdgeContributionIntent(
+        EdgeContributionRef(
+          tail: 'tail-$index',
+          head: 'head',
+          contribId: bytes(24, 6),
+        ),
+      ),
+      enqueuedAt: now,
+      ordinal: index + 1,
+      state: OfflineOutboxState.enqueued,
+      attemptCount: 0,
+      generation: 0,
+      receipt: OfflineReceiptEvidence(
+        operationId: ReceiptOperationId(id),
+        groupId: ReceiptGroupId(bytes(16, 7)),
+        endpoint: endpoint,
+        mutation: ReceiptMutationKind.edgeContributionDelete,
+        policy: policy,
+        itemIndex: 0,
+        itemCount: 1,
+        state: OfflineReceiptReconciliationState.statusRequired,
+        mayHaveDispatched: false,
+      ),
+    );
+    final encoded = OfflineCodec.encodeOutboxRecord(record);
+    encodedBytes += utf8.encode(encoded).length;
+    final decoded = OfflineCodec.decodeOutboxRecord(encoded);
+    _require(
+      OfflineCodec.encodeOutboxRecord(decoded) == encoded &&
+          decoded.intent is OfflineDeleteEdgeContributionIntent &&
+          !decoded.receipt!.mayHaveDispatched,
+      'contribution_delete_codec',
+    );
+    statuses.add(
+      OfflineWriteStatus(
+        recordId: record.recordId,
+        operationId: 'codec',
+        itemIndex: index,
+        state: OfflineWriteState.confirmed,
+        attemptCount: 1,
+        receiptResult: OfflineEdgeContributionDeleteReceiptResult(index.isEven),
+      ),
+    );
+  }
+  final operation = OfflineOperationRecord(
+    partitionId: 'codec',
+    generation: 0,
+    operationId: 'codec',
+    updatedAt: now,
+    terminalAt: now,
+    items: statuses,
+  );
+  final encoded = OfflineCodec.encodeOperationRecord(operation);
+  encodedBytes += utf8.encode(encoded).length;
+  final decoded = OfflineCodec.decodeOperationRecord(encoded);
+  _require(
+    decoded.items.length == count &&
+        decoded.items.every(
+          (item) =>
+              (item.receiptResult as OfflineEdgeContributionDeleteReceiptResult)
+                  .existed ==
+              item.itemIndex.isEven,
+        ),
+    'contribution_delete_original_results',
+  );
+  watch.stop();
+  _within(
+    watch.elapsedMilliseconds,
+    limits['recoveryMillis'],
+    'contribution_delete_codec_millis',
+  );
+  _within(
+    encodedBytes,
+    limits['snapshotBytes'],
+    'contribution_delete_codec_bytes',
+  );
+  return {
+    'records': count,
+    'millis': watch.elapsedMilliseconds,
+    'bytes': encodedBytes,
+  };
 }
 
 String? _outputPath(List<String> arguments) {

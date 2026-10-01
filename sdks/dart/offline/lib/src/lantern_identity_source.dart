@@ -287,8 +287,13 @@ OfflineIdentityOperation _mapIdentityOperation(IdentityOperation operation) {
   if (operation == IdentityOperation.deleteEdge) {
     return OfflineIdentityOperation.deleteEdge;
   }
-  // The hosted parent 0.3.0 predates receipt-only markers. Treat any newer
-  // operation as a cursor gap until both packages add a typed mapping.
+  if (operation == IdentityOperation.deleteEdgeContribution) {
+    return OfflineIdentityOperation.deleteEdgeContribution;
+  }
+  if (operation == IdentityOperation.receiptOnly) {
+    return OfflineIdentityOperation.receiptOnly;
+  }
+  // Unknown operations cannot advance a durable cursor silently.
   throw const OfflineChangeGapException();
 }
 

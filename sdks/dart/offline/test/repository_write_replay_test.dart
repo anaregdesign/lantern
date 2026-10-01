@@ -96,6 +96,250 @@ void main() {
   }
 
   group('receipt reconciliation', () {
+    for (final asynchronous in [false, true]) {
+      test(
+        'contribution Delete preserves pending weight, FIFO and duplicates (async: $asynchronous)',
+        () async {
+          final clock = MutableClock(initial);
+          final memory = InMemoryOfflineStore();
+          final OfflineStore store = asynchronous
+              ? DelayedOfflineStore(memory)
+              : memory;
+          const edge = EdgeRef('tail', 'head');
+          final remote = FakeOfflineRemote()
+            ..edges[edge] = Edge(
+              tail: edge.tail,
+              head: edge.head,
+              weight: 6,
+              expiration: null,
+            )
+            ..receiptSendResults.addAll(const [
+              OfflineEdgeContributionDeleteReceiptResult(true),
+              OfflineEdgeContributionDeleteReceiptResult(false),
+              OfflineEdgeContributionDeleteReceiptResult(false),
+            ]);
+          final repository = OfflineLanternRepository(
+            store: store,
+            remote: remote,
+            config: testConfig(clock),
+          );
+          addTearDown(repository.dispose);
+          await repository.readEdge(
+            'p',
+            edge,
+            policy: OfflineReadPolicy.serverOnly,
+          );
+          final bytes = testBytes(24, 1);
+          final target = EdgeContributionRef(
+            tail: edge.tail,
+            head: edge.head,
+            contribId: bytes,
+          );
+          final missing = EdgeContributionRef(
+            tail: edge.tail,
+            head: edge.head,
+            contribId: testBytes(24, 2),
+          );
+          final operation = await repository.deleteEdgeContributions(
+            partitionId: 'p',
+            contributions: [target, target, missing],
+            operationId: 'targeted',
+          );
+          bytes.fillRange(0, bytes.length, 0);
+          expect(operation.items.map((item) => item.itemIndex), [0, 1, 2]);
+          final records = await store.transaction(
+            (tx) async => await tx.outbox('p'),
+          );
+          expect(
+            records.map((item) => item.intent.category),
+            everyElement(OfflineOperationCategory.deleteEdgeContribution),
+          );
+          expect(
+            records.map((item) => item.receipt!.groupId).toSet(),
+            hasLength(3),
+          );
+          expect(records.map((item) => item.intent.key).toSet(), {
+            const OfflineEntityKey.edge('tail', 'head'),
+          });
+          expect(
+            (records.first.intent as OfflineDeleteEdgeContributionIntent)
+                .contribution
+                .contribId,
+            testBytes(24, 1),
+          );
+          final pending = await repository.readEdge(
+            'p',
+            edge,
+            policy: OfflineReadPolicy.cacheOnly,
+          );
+          expect(pending.value!.weight, 6);
+          expect(pending.hasPendingWrites, isTrue);
+          var next = 0;
+          remote.beforeReceiptSend = (context) async {
+            final current = await store.transaction(
+              (tx) async => await tx.getOutbox('p', records[next].recordId),
+            );
+            expect(current!.receipt!.mayHaveDispatched, isTrue);
+            expect(
+              context.operationIds.single,
+              records[next++].receipt!.operationId,
+            );
+            expect(
+              context.mutation,
+              ReceiptMutationKind.edgeContributionDelete,
+            );
+          };
+          expect(await repository.drain('p'), 3);
+          final status = await repository.getWriteStatus(
+            'p',
+            operation.operationId,
+          );
+          expect(
+            status!.items.map(
+              (item) =>
+                  (item.receiptResult
+                          as OfflineEdgeContributionDeleteReceiptResult)
+                      .existed,
+            ),
+            [true, false, false],
+          );
+          expect(
+            (await repository.readEdge(
+              'p',
+              edge,
+              policy: OfflineReadPolicy.cacheOnly,
+            )).state,
+            OfflineReadState.unknown,
+          );
+          remote.edges[edge] = Edge(
+            tail: edge.tail,
+            head: edge.head,
+            weight: 4,
+            expiration: null,
+          );
+          expect((await repository.readEdge('p', edge)).value!.weight, 4);
+        },
+      );
+    }
+
+    for (final existed in [true, false]) {
+      test(
+        'contribution Delete reopens and confirms original $existed without resend',
+        () async {
+          final clock = MutableClock(initial);
+          final store = InMemoryOfflineStore();
+          final remote = FakeOfflineRemote()
+            ..receiptSendResults.add(
+              OfflineEdgeContributionDeleteReceiptResult(existed),
+            )
+            ..receiptSendFailures.add(
+              failure(OfflineRemoteErrorKind.outcomeUnknown),
+            )
+            ..commitBeforeReceiptSendFailure = true;
+          final config = OfflineConfig(
+            clock: clock.call,
+            idGenerator: testConfig(clock).idGenerator,
+            jitter: (ceiling) => ceiling,
+            baseRetryDelay: const Duration(microseconds: 1),
+          );
+          final repository = OfflineLanternRepository(
+            store: store,
+            remote: remote,
+            config: config,
+          );
+          final handle = await repository.deleteEdgeContribution(
+            partitionId: 'p',
+            contribution: EdgeContributionRef(
+              tail: 'tail',
+              head: 'head',
+              contribId: testBytes(24, 1),
+            ),
+          );
+          final before = await store.transaction(
+            (tx) async => (await tx.outbox('p')).single,
+          );
+          expect(await repository.drain('p'), 0);
+          expect(remote.receiptSendCalls, 1);
+          await repository.dispose();
+          final reopened = InMemoryOfflineStore.fromSnapshot(
+            await store.exportSnapshot(),
+          );
+          final record = (await reopened.transaction(
+            (tx) async => await tx.outbox('p'),
+          )).single;
+          expect(record.receipt!.mayHaveDispatched, isTrue);
+          expect(record.receipt!.operationId, before.receipt!.operationId);
+          expect(record.receipt!.groupId, before.receipt!.groupId);
+          final restored = OfflineLanternRepository(
+            store: reopened,
+            remote: remote,
+            config: config,
+          );
+          addTearDown(restored.dispose);
+          clock.advance(const Duration(microseconds: 1));
+          remote.receiptCalls.clear();
+          expect(await restored.drain('p'), 1);
+          expect(remote.receiptCalls, ['status']);
+          expect(remote.receiptSendCalls, 1);
+          final status = await restored.getWriteStatus('p', handle.operationId);
+          expect(
+            (status!.items.single.receiptResult
+                    as OfflineEdgeContributionDeleteReceiptResult)
+                .existed,
+            existed,
+          );
+          expect(status.items.single.state, OfflineWriteState.confirmed);
+        },
+      );
+    }
+
+    test(
+      'contribution Delete rejects whole-edge result and unavailable family',
+      () async {
+        final clock = MutableClock(initial);
+        final store = InMemoryOfflineStore();
+        final remote = FakeOfflineRemote()
+          ..receiptSendResults.add(const OfflineEdgeDeleteReceiptResult(true));
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: remote,
+          config: testConfig(clock),
+        );
+        addTearDown(repository.dispose);
+        final target = EdgeContributionRef(
+          tail: 'tail',
+          head: 'head',
+          contribId: testBytes(24, 1),
+        );
+        final handle = await repository.deleteEdgeContribution(
+          partitionId: 'p',
+          contribution: target,
+        );
+        expect(await repository.drain('p'), 0);
+        final status = await repository.getWriteStatus('p', handle.operationId);
+        expect(status!.items.single.state, isNot(OfflineWriteState.confirmed));
+        expect(status.items.single.receiptResult, isNull);
+        remote.receiptCapability = offlineReceiptCapability(
+          supportedMutations: {ReceiptMutationKind.edgeDelete},
+        );
+        await expectLater(
+          repository.deleteEdgeContribution(
+            partitionId: 'other',
+            contribution: target,
+          ),
+          throwsA(isA<OfflineReceiptCapabilityException>()),
+        );
+        expect(await repository.listPending('other'), isEmpty);
+        await expectLater(
+          () => repository.deleteEdgeContributions(
+            partitionId: 'other',
+            contributions: [],
+          ),
+          throwsA(isA<OfflineArgumentException>()),
+        );
+      },
+    );
+
     test('preparation and status reject mixed receipt metadata', () async {
       final capability = offlineReceiptCapability();
       final operationId = testReceiptOperationId(
@@ -1747,113 +1991,134 @@ void main() {
       }
     });
 
-    test('lost proof and changed continuity or support never resend', () async {
-      for (final scenario in <String>[
-        'no-longer-provable',
-        'disabled',
-        'mutation',
-        'node',
-        'generation',
-        'epoch',
-        'retention',
-        'max-entries',
-        'max-bytes',
-        'fingerprint',
-      ]) {
-        final clock = MutableClock(initial);
-        final store = InMemoryOfflineStore();
-        final remote = FakeOfflineRemote();
-        final repository = OfflineLanternRepository(
-          store: store,
-          remote: remote,
-          config: testConfig(clock),
-        );
-        addTearDown(repository.dispose);
-        remote.edges[const EdgeRef('tail', 'head')] = Edge(
-          tail: 'tail',
-          head: 'head',
-          weight: 1,
-          expiration: null,
-        );
-        expect(
-          (await repository.readEdge(
-            scenario,
-            const EdgeRef('tail', 'head'),
-            policy: OfflineReadPolicy.serverOnly,
-          )).state,
-          OfflineReadState.fresh,
-        );
-        final handle = await repository.deleteEdge(
-          partitionId: scenario,
-          edge: const EdgeRef('tail', 'head'),
-          operationId: 'delete',
-        );
-        final record = await store.transaction(
-          (transaction) async => (await transaction.outbox(scenario)).single,
-        );
-        if (scenario == 'no-longer-provable') {
-          remote.receiptStatuses[record.receipt!.operationId] =
-              OfflineReceiptStatus(
-                operationId: record.receipt!.operationId,
-                state: ReceiptStatusState.noLongerProvable,
-              );
-        } else {
-          remote.receiptCapability = switch (scenario) {
-            'disabled' => const OfflineReceiptCapabilityDisabled(),
-            'mutation' => offlineReceiptCapability(
-              supportedMutations: const <ReceiptMutationKind>{
-                ReceiptMutationKind.vertexPut,
-                ReceiptMutationKind.vertexDelete,
-              },
-            ),
-            'node' => offlineReceiptCapability(node: 99),
-            'generation' => offlineReceiptCapability(generation: 99),
-            'epoch' => offlineReceiptCapability(epoch: 99),
-            'retention' => offlineReceiptCapability(
-              retention: const Duration(hours: 23),
-            ),
-            'max-entries' => offlineReceiptCapability(maxEntries: 2048),
-            'max-bytes' => offlineReceiptCapability(maxBytes: 2 * 1024 * 1024),
-            'fingerprint' => offlineReceiptCapability(fingerprint: 99),
-            _ => throw StateError('unknown continuity scenario'),
-          };
-        }
-        remote.receiptCalls.clear();
+    for (final contribution in [false, true]) {
+      test(
+        'lost proof and changed continuity or support never resend (contribution: $contribution)',
+        () async {
+          for (final scenario in <String>[
+            'no-longer-provable',
+            'disabled',
+            'mutation',
+            'node',
+            'generation',
+            'epoch',
+            'retention',
+            'max-entries',
+            'max-bytes',
+            'fingerprint',
+          ]) {
+            final clock = MutableClock(initial);
+            final store = InMemoryOfflineStore();
+            final remote = FakeOfflineRemote();
+            final repository = OfflineLanternRepository(
+              store: store,
+              remote: remote,
+              config: testConfig(clock),
+            );
+            addTearDown(repository.dispose);
+            remote.edges[const EdgeRef('tail', 'head')] = Edge(
+              tail: 'tail',
+              head: 'head',
+              weight: 1,
+              expiration: null,
+            );
+            expect(
+              (await repository.readEdge(
+                scenario,
+                const EdgeRef('tail', 'head'),
+                policy: OfflineReadPolicy.serverOnly,
+              )).state,
+              OfflineReadState.fresh,
+            );
+            final handle = contribution
+                ? await repository.deleteEdgeContribution(
+                    partitionId: scenario,
+                    contribution: EdgeContributionRef(
+                      tail: 'tail',
+                      head: 'head',
+                      contribId: testBytes(24, 3),
+                    ),
+                    operationId: 'delete',
+                  )
+                : await repository.deleteEdge(
+                    partitionId: scenario,
+                    edge: const EdgeRef('tail', 'head'),
+                    operationId: 'delete',
+                  );
+            final record = await store.transaction(
+              (transaction) async =>
+                  (await transaction.outbox(scenario)).single,
+            );
+            if (scenario == 'no-longer-provable') {
+              remote.receiptStatuses[record.receipt!.operationId] =
+                  OfflineReceiptStatus(
+                    operationId: record.receipt!.operationId,
+                    state: ReceiptStatusState.noLongerProvable,
+                  );
+            } else {
+              remote.receiptCapability = switch (scenario) {
+                'disabled' => const OfflineReceiptCapabilityDisabled(),
+                'mutation' => offlineReceiptCapability(
+                  supportedMutations: const <ReceiptMutationKind>{
+                    ReceiptMutationKind.vertexPut,
+                    ReceiptMutationKind.vertexDelete,
+                  },
+                ),
+                'node' => offlineReceiptCapability(node: 99),
+                'generation' => offlineReceiptCapability(generation: 99),
+                'epoch' => offlineReceiptCapability(epoch: 99),
+                'retention' => offlineReceiptCapability(
+                  retention: const Duration(hours: 23),
+                ),
+                'max-entries' => offlineReceiptCapability(maxEntries: 2048),
+                'max-bytes' => offlineReceiptCapability(
+                  maxBytes: 2 * 1024 * 1024,
+                ),
+                'fingerprint' => offlineReceiptCapability(fingerprint: 99),
+                _ => throw StateError('unknown continuity scenario'),
+              };
+            }
+            remote.receiptCalls.clear();
 
-        expect(await repository.drain(scenario), 0);
-        expect(remote.receiptSendCalls, 0);
-        expect(
-          remote.receiptCalls,
-          scenario == 'no-longer-provable'
-              ? <String>['capability', 'status']
-              : <String>['capability'],
-        );
-        final status = await repository.getWriteStatus(
-          scenario,
-          handle.operationId,
-        );
-        expect(status!.items.single.state, OfflineWriteState.outcomeUnknown);
-        expect(status.outcomeUnknownCount, 1);
-        expect(status.items.single.diagnosticCode, switch (scenario) {
-          'no-longer-provable' => 'receipt_no_longer_provable',
-          'disabled' => 'receipt_capability_disabled',
-          'mutation' => 'receipt_mutation_unavailable',
-          _ => 'receipt_continuity_changed',
-        });
-        expect(
-          (await repository.readEdge(
-            scenario,
-            const EdgeRef('tail', 'head'),
-            policy: OfflineReadPolicy.cacheOnly,
-          )).state,
-          OfflineReadState.unknown,
-        );
-        await expectLater(
-          repository.retryDeadLetter(scenario, handle.recordId),
-          throwsA(isA<OfflineUnsupportedOperationException>()),
-        );
-      }
-    });
+            expect(await repository.drain(scenario), 0);
+            expect(remote.receiptSendCalls, 0);
+            expect(
+              remote.receiptCalls,
+              scenario == 'no-longer-provable'
+                  ? <String>['capability', 'status']
+                  : <String>['capability'],
+            );
+            final status = await repository.getWriteStatus(
+              scenario,
+              handle.operationId,
+            );
+            expect(
+              status!.items.single.state,
+              OfflineWriteState.outcomeUnknown,
+            );
+            expect(status.outcomeUnknownCount, 1);
+            expect(status.items.single.diagnosticCode, switch (scenario) {
+              'no-longer-provable' => 'receipt_no_longer_provable',
+              'disabled' => 'receipt_capability_disabled',
+              'mutation' => 'receipt_mutation_unavailable',
+              _ => 'receipt_continuity_changed',
+            });
+            expect(
+              (await repository.readEdge(
+                scenario,
+                const EdgeRef('tail', 'head'),
+                policy: OfflineReadPolicy.cacheOnly,
+              )).state,
+              OfflineReadState.unknown,
+            );
+            await expectLater(
+              repository.retryDeadLetter(scenario, handle.recordId),
+              throwsA(isA<OfflineUnsupportedOperationException>()),
+            );
+          }
+        },
+      );
+    }
 
     test('auth rotation resumes status-first with the exact context', () async {
       final clock = MutableClock(initial);

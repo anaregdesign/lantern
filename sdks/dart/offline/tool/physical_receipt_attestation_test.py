@@ -24,6 +24,8 @@ FINAL_SCENARIOS = frozenset({
     "receipt_vertex_delete_exact",
     "receipt_edge_delete_exact",
     "receipt_contribution_add_after_delete",
+    "receipt_edge_contribution_delete_exact",
+    "receipt_edge_contribution_delete_restart",
     "receipt_nonfinite_derived_float32",
     "receipt_committed_response_loss",
     "receipt_real_sigkill_sqlite_reopen",

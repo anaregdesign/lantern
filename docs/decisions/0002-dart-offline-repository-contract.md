@@ -314,15 +314,18 @@ open and replay both fail closed: the item becomes terminal `deadLetter` with
 diagnostic `unsupported_add`, its attempt count is unchanged, no pending read
 overlay is produced, and the legacy `OfflineRemote` has no Add method.
 Authorized inspection and deletion remain available; generic retry returns
-`OfflineUnsupportedOperationException` instead of sending it. Merged #1398
-offline 0.4.0 source implements receipt-backed Add without upgrading these
-legacy records; release still requires receipt-based TTL, response-loss,
-restart, conformance, and physical-device qualification.
+`OfflineUnsupportedOperationException` instead of sending it. Published #1398/#1399 offline 0.4.0 implements receipt-backed Add without
+upgrading these legacy records and passed receipt-based TTL, response-loss,
+restart, conformance, performance, and physical-device qualification.
 
 The hosted offline 0.3.0 generic outbox excluded `PutIfAbsent` and
-singular/plural exact Delete outcomes. Merged offline 0.4.0 source handles
+singular/plural exact Delete outcomes. Published offline 0.4.0 handles
 conditional Vertex Put and exact Vertex/Edge Delete through distinct
-receipt-backed intents, not generic Put replay. Capped prefix Delete remains
+receipt-backed intents, not generic Put replay. Offline 0.5.0 adds a distinct
+contribution Delete intent keyed by the complete edge pair for FIFO, retaining
+the exact contribution ID and original `existed` receipt. Pending reads retain
+confirmed weight with a flag; confirmation and CDC invalidate the cache for
+authoritative server re-fetch. Capped prefix Delete remains
 excluded from both surfaces. For another unsupported application-specific
 operation, a workflow may place work in `ambiguous` only with a domain
 reconciliation screen/API. It can never turn an unknown outcome into
@@ -445,7 +448,7 @@ Repository disposal follows the same quiescence rule for every partition.
 | Cross-user/tenant data leak | Isolate application/gateway credentials and the storage/security domain; partition every local key/record; atomically wipe on logout/user switch; do not reuse a partition identifier. |
 | Device backup or file extraction | Application chooses encryption and platform key storage; document backup exclusion/rotation policy. |
 | Corrupt/tampered record | Authenticated storage where required, strict schema/length/range checks, quarantine/dead-letter without sending. |
-| Crash between network commit and local confirmation | The hosted 0.3.0 Put-only path replays to the same final state. Merged 0.4.0 source reconciles receipt-backed Add, conditional Put, and exact Delete by server-authoritative status before any retry; its receipt release remains gated. |
+| Crash between network commit and local confirmation | The hosted 0.3.0 Put-only path replays to the same final state. Published 0.4.0 reconciles receipt-backed Add, conditional Put, and exact Delete by server-authoritative status before any retry. The 0.5.0 contribution Delete candidate uses the same durable dispatch/status boundary and requires new release evidence in #1586. |
 | Crash during migration | Copy-on-write/versioned migration with transaction marker; old schema remains readable until commit or is quarantined. |
 | Disk exhaustion/queue flood | Per-partition/global byte and count caps, backpressure, bounded claims, read-cache eviction before outbox loss. |
 | Sensitive telemetry | Default metrics expose category, state, age bucket, attempts, counts, and error code only—never keys, values, graph content, IDs, or credentials. |
@@ -605,20 +608,17 @@ from an earlier scope, but none may add implicit persistence to
 4. [#1114](https://github.com/anaregdesign/lantern/issues/1114) is historical
    physical-device evidence for the online SDK and the earlier offline MVP. The
    Put-only offline 0.2.0 and identity CDC 0.3.0 releases are published; their
-   device evidence does not qualify receipt-bearing 0.4.0 source.
+   device evidence does not qualify later receipt-bearing source.
 5. [#1115](https://github.com/anaregdesign/lantern/issues/1115) specifies
    server-authoritative operation receipts for ambiguous response loss. The
    server now implements exact Edge Delete, conditional Vertex Put, exact
    Vertex Delete, and explicit-ContribID Edge Add (#1397). Online Go, Node,
-   and Dart receipt APIs are merged. The #1398 offline 0.4.0 source
-   implements those receipt-backed families, but its publication and final
-   gates (#1399) remain pending. The online `lantern_client 0.3.2` parent is
-   hosted and its published archive passed exact-content verification; merged
-   offline 0.4.0 source declares `lantern_client: ^0.3.2`. The hosted offline
-   0.3.0 release remains Put-only. Receipt-bearing 0.4.0 still needs
-   response-loss, restart, and physical-device qualification with isolated
-   resolution of its candidate archive against the hosted parent without
-   a path override.
+   and Dart receipt APIs are merged. The #1398 offline 0.4.0 release uses
+   hosted `lantern_client ^0.3.3` and completed final #1399 performance,
+   response-loss, restart, Android/iPhone, OIDC, and archive equality gates.
+   Offline 0.5.0 adds targeted contribution Delete with hosted parent
+   `^0.4.1`; #1586 requires independent exact-source and physical qualification
+   plus isolated archive resolution without a path override before publication.
 6. [#1116](https://github.com/anaregdesign/lantern/issues/1116) adds a
    client-facing revision/change stream for explicit Put, Add, Delete, prefix
    Delete, and HA-arrival invalidation. TTL expiration remains enforced locally
@@ -638,6 +638,5 @@ without taking ownership of application identity, encryption, UX, or OS
 lifecycle. It cannot silently change TTL, send a legacy Add, blindly replay
 ambiguous Deletes, or persist credentials; those are compatibility constraints
 for every offline-package version. Direct-online Add remains available in
-`lantern_client`; merged offline 0.4.0 source implements receipt-backed
-Add separately, while its release remains deferred until the final
-#1399 gates pass.
+`lantern_client`; published offline 0.4.0 implements receipt-backed Add
+separately. Targeted contribution Delete in 0.5.0 remains release-gated by #1586.

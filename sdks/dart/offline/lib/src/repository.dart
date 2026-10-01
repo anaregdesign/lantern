@@ -637,6 +637,52 @@ final class OfflineLanternRepository {
     );
   }
 
+  /// Durably enqueues one receipt-bearing targeted contribution deletion.
+  ///
+  /// The pending snapshot retains its confirmed weight with
+  /// [OfflineSnapshot.hasPendingWrites]; it does not infer a new weight or
+  /// whole-edge absence. Confirmation invalidates the cache for the next read.
+  Future<OfflineWriteHandle> deleteEdgeContribution({
+    required String partitionId,
+    required EdgeContributionRef contribution,
+    String? operationId,
+  }) async => (await deleteEdgeContributions(
+    partitionId: partitionId,
+    contributions: <EdgeContributionRef>[contribution],
+    operationId: operationId,
+  )).items.single;
+
+  /// Atomically enqueues targeted deletions in request-index order.
+  ///
+  /// Duplicate identities remain separate items and retain original true/false
+  /// results. Each durable item owns one receipt group and follows edge-pair FIFO.
+  Future<OfflineWriteOperation> deleteEdgeContributions({
+    required String partitionId,
+    required Iterable<EdgeContributionRef> contributions,
+    String? operationId,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    final items = contributions.toList(growable: false);
+    if (items.isEmpty || items.length > LanternCrud.maxBatchSize) {
+      throw const OfflineArgumentException();
+    }
+    final intents = items
+        .map((contribution) {
+          _validatePartitionAndKey(partitionId, contribution.tail);
+          final intent = OfflineDeleteEdgeContributionIntent(contribution);
+          return () => intent;
+        })
+        .toList(growable: false);
+    return _enqueueReceiptOperation(
+      partitionId,
+      intents,
+      mutation: ReceiptMutationKind.edgeContributionDelete,
+      now: config.clock().toUtc(),
+      operationId: operationId,
+    );
+  }
+
   /// Durably enqueues one receipt-bearing contribution-keyed edge addition.
   Future<OfflineWriteHandle> addEdge({
     required String partitionId,
@@ -2012,6 +2058,9 @@ final class OfflineLanternRepository {
             break;
           case OfflineDeleteEdgeIntent():
             break;
+          case OfflineDeleteEdgeContributionIntent():
+            // The remaining effective weight requires authoritative re-fetch.
+            break;
           case OfflinePutVertexIntent() ||
               OfflinePutVertexIfAbsentIntent() ||
               OfflineDeleteVertexIntent():
@@ -2203,6 +2252,8 @@ final class OfflineLanternRepository {
           OfflinePutVertexIfAbsentIntent() => ReceiptMutationKind.vertexPut,
           OfflineDeleteVertexIntent() => ReceiptMutationKind.vertexDelete,
           OfflineDeleteEdgeIntent() => ReceiptMutationKind.edgeDelete,
+          OfflineDeleteEdgeContributionIntent() =>
+            ReceiptMutationKind.edgeContributionDelete,
           OfflineReceiptAddEdgeIntent() => ReceiptMutationKind.edgeAdd,
           _ => null,
         };
@@ -2556,6 +2607,7 @@ final class OfflineLanternRepository {
         OfflinePutVertexIfAbsentIntent() ||
         OfflineDeleteVertexIntent() ||
         OfflineDeleteEdgeIntent() ||
+        OfflineDeleteEdgeContributionIntent() ||
         OfflineReceiptAddEdgeIntent() => throw StateError(
           'receipt intent reached the receipt-less replay switch',
         ),
@@ -3451,6 +3503,11 @@ final class OfflineLanternRepository {
         true,
       (OfflineDeleteVertexIntent(), OfflineVertexDeleteReceiptResult()) => true,
       (OfflineDeleteEdgeIntent(), OfflineEdgeDeleteReceiptResult()) => true,
+      (
+        OfflineDeleteEdgeContributionIntent(),
+        OfflineEdgeContributionDeleteReceiptResult(),
+      ) =>
+        true,
       (OfflineReceiptAddEdgeIntent(), OfflineEdgeAddReceiptResult()) => true,
       _ => false,
     };
@@ -4795,6 +4852,11 @@ final class OfflineLanternRepository {
     ) =>
       (effectiveWeight.isNaN && other.isNaN) ||
           _floatBitsEqual(effectiveWeight, other, 4),
+    (
+      OfflineEdgeContributionDeleteReceiptResult(:final existed),
+      OfflineEdgeContributionDeleteReceiptResult(existed: final other),
+    ) =>
+      existed == other,
     _ => false,
   };
 

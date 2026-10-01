@@ -11,6 +11,7 @@ const _receiptMutations = <String>{
   'DeleteVertices',
   'DeleteEdges',
   'AddEdges',
+  'DeleteEdgeContributions',
 };
 const _proxyControlPath = '/_receipt_matrix_status';
 const _proxyTraceLimit = 256;

@@ -441,7 +441,7 @@ the example above, plus `platform_trusted_tls`, `untrusted_tls_rejection`,
 `identity_live_edge_invalidation`, `identity_cursor_persisted`,
 `identity_unknown_survives_sqlite_reopen`,
 `identity_resume_live_invalidation`, `identity_partition_wipe`,
-`identity_same_responder`, `identity_runtime_token_refresh`, and
+`identity_same_responder`, `identity_runtime_token_refresh`, `identity_contribution_delete_refetch`, and
 `identity_cancellation`. Each record must describe actual observed passes,
 not planned work. Keep endpoints, IP addresses, certificates, tokens, device
 identifiers, and raw traces out of the files.
@@ -453,7 +453,7 @@ each platform: `integration_test/physical_receipt_matrix_test.dart`. Its
 The signed binary and two-process marker have their own run ID/hash and cannot
 be inferred from the smoke or CDC runs. Follow the
 [receipt attestation runbook](receipt-attestation.md) for the exact per-platform
-12-scenario matrix, trusted HTTPS response-drop fixture, actual SIGKILL/relaunch
+14-scenario matrix for offline 0.5.0, trusted HTTPS response-drop fixture, actual SIGKILL/relaunch
 protocol, capture-time installed-byte check, and private signed-original
 custody through release verification. Those operations have **not** been
 performed by the source change.

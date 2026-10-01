@@ -521,7 +521,7 @@ jobs:
           dart pub publish -C "$source_dir" --to-archive="$archive"
           version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.3.3
+            --archive "$archive" --version "$version" --parent-version 0.4.1
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)
@@ -660,9 +660,12 @@ jobs:
           LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6397
           LANTERN_DART_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6399
           LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS: http://127.0.0.1:6400,http://127.0.0.1:6401,http://127.0.0.1:6402
-        run: >-
-          flutter test --no-pub
-          ../../../tests/integration/dart_identity_offline_sqlite_test.dart
+        run: |
+          receipt_token="$(cat "$RUNNER_TEMP/lantern-sqlite-receipt/token")"
+          echo "::add-mask::$receipt_token"
+          LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6396 \
+            LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
+            flutter test --no-pub ../../../tests/integration/dart_identity_offline_sqlite_test.dart
 
       - name: Stop Lantern real-wire servers
         if: always()
@@ -1478,7 +1481,7 @@ jobs:
           (cd "$source_dir" && dart pub get --enforce-lockfile)
           dart pub publish -C "$source_dir" --to-archive="$archive"
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.3.3
+            --archive "$archive" --version "$version" --parent-version 0.4.1
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)

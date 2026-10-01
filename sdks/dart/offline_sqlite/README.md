@@ -52,7 +52,10 @@ rotating an account's credentials, as required by the offline core contract.
   PutIfAbsent and exact Vertex/Edge Delete preserve identity, endpoint/policy
   evidence, reconciliation state, and exact original results across reopen.
   Receipt-backed Edge Add also retains its explicit contribution ID and
-  original effective weight, including non-finite results. Legacy Add stays
+  original effective weight, including non-finite results. Targeted contribution
+  Delete retains its exact contribution ID and original `existed` boolean in
+  the core codec, including `false`. It uses existing SQL payload tables and
+  does not require another database schema migration. Legacy Add stays
   quarantined. Reopening preserves absolute expiration and retry deadlines;
   replay never extends TTL.
 - Unknown schemas, noncanonical records, damaged indexes, and inconsistent
@@ -106,6 +109,8 @@ dart run tool/performance_probe.dart
 LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6397 \
   flutter test --no-pub ../../../tests/integration/dart_offline_sqlite_test.dart
 LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6397 \
+LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6396 \
+LANTERN_DART_RECEIPT_TOKEN="$RECEIPT_TOKEN" \
 LANTERN_DART_IDENTITY_GAP_ENDPOINT=http://127.0.0.1:6399 \
 LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS=http://127.0.0.1:6400,http://127.0.0.1:6401,http://127.0.0.1:6402 \
   flutter test --no-pub ../../../tests/integration/dart_identity_offline_sqlite_test.dart
@@ -125,10 +130,10 @@ server and fails if either the endpoint or token is missing. CI starts a
 separate fixture with `testbed/scripts/dart_receipt_fixture.sh` and passes its
 temporary token to the test; the local command above expects `RECEIPT_TOKEN`
 to be set from that file. The graph-only server remains available for existing
-real-wire tests. A response-dropping proxy consumes four committed receipt
+real-wire tests. A response-dropping proxy consumes five committed receipt
 responses before the writer is SIGKILLed with SQLite open. A fresh process
 reopens the file, checks the original conditional Put, exact Deletes, and
-contribution-keyed Add-after-Delete results from status, and verifies that no
+contribution-keyed Add-after-Delete and targeted contribution Delete results from status, and verifies that no
 mutation was resent or the later-deleted Add edge resurrected. The existing
 eight crash scenarios and separate cross-process claim gate still run unchanged.
 The receipt-bearing Delete uses a different edge because an ambiguous

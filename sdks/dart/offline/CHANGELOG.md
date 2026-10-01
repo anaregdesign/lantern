@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0
+
+- Require hosted `lantern_client ^0.4.1` and add singular/plural targeted
+  contribution Delete through `EdgeContributionRef`.
+- Persist the exact contribution ID in a distinct receipt-backed intent and
+  retain each original `existed` result, including `false`. Atomic plural
+  enqueue preserves duplicate indexes and per-edge FIFO ordering.
+- Reconcile possibly dispatched Deletes by status after response loss or
+  restart, preserving receipt identity and never blindly resending.
+- Keep the confirmed edge weight visible with a pending flag until confirmation;
+  invalidate its cache on confirmation or contribution Delete CDC, then fetch
+  the authoritative remaining edge on a server read.
+- Extend SQLite real-wire/SIGKILL and Android/iPhone qualification targets to
+  the fifth receipt mutation family without introducing a platform dependency
+  into the offline core.
+
 ## 0.4.0
 
 - Require published `lantern_client ^0.3.3` for receipt-capable offline writes,

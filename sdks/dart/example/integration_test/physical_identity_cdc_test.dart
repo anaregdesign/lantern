@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:connectrpc/connect.dart' as connect;
 import 'package:flutter_test/flutter_test.dart';
@@ -354,6 +355,70 @@ void main() {
             checkedEdge.state == OfflineReadState.unknown;
       });
       expect((await client.getReplicationStatus()).nodeId, responder);
+      await result.recordPhase('contribution_delete_refetch');
+      expect(
+        (await repository.readEdge(
+          partition,
+          edge,
+          policy: OfflineReadPolicy.serverOnly,
+        )).value!.weight,
+        3,
+      );
+      final contribution = EdgeContributionRef(
+        tail: edge.tail,
+        head: edge.head,
+        contribId: Uint8List(24)..[23] = 11,
+      );
+      await client.addEdge(
+        EdgeInput(
+          tail: edge.tail,
+          head: edge.head,
+          weight: 2,
+          expiresIn: const Duration(minutes: 5),
+          contribId: contribution.contribId,
+        ),
+      );
+      await _waitUntil(
+        () async =>
+            (await repository.readEdge(
+              partition,
+              edge,
+              policy: OfflineReadPolicy.cacheOnly,
+            )).state ==
+            OfflineReadState.unknown,
+      );
+      expect(
+        (await repository.readEdge(
+          partition,
+          edge,
+          policy: OfflineReadPolicy.serverOnly,
+        )).value!.weight,
+        5,
+      );
+      expect(
+        (await client.deleteEdgeContributions([
+          contribution,
+          contribution,
+        ])).existed,
+        [true, false],
+      );
+      await _waitUntil(
+        () async =>
+            (await repository.readEdge(
+              partition,
+              edge,
+              policy: OfflineReadPolicy.cacheOnly,
+            )).state ==
+            OfflineReadState.unknown,
+      );
+      expect(
+        (await repository.readEdge(
+          partition,
+          edge,
+          policy: OfflineReadPolicy.serverOnly,
+        )).value!.weight,
+        3,
+      );
       await result.recordPhase('partition_wipe');
       await repository.wipePartition(partition);
       await secondStopped;
@@ -376,7 +441,7 @@ void main() {
       print(
         'IDENTITY_CDC_PASS checkpoint=true live_vertex=true live_edge=true '
         'durable_unknown=true resume=true wipe=true responder_stable=true '
-        'token_refresh=true',
+        'token_refresh=true contribution_delete_refetch=true',
       );
     },
   );

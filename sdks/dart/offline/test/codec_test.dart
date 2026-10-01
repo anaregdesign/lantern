@@ -12,6 +12,104 @@ void main() {
   final time = DateTime.utc(2026, 7, 22, 7, 2, 3, 4, 5);
 
   group('OfflineCodec', () {
+    test(
+      'targeted Delete keeps its ID and distinct original true/false codec',
+      () async {
+        final store = InMemoryOfflineStore();
+        final repository = OfflineLanternRepository(
+          store: store,
+          remote: FakeOfflineRemote(),
+          config: testConfig(MutableClock(time)),
+        );
+        addTearDown(repository.dispose);
+        final target = EdgeContributionRef(
+          tail: 'tail',
+          head: 'head',
+          contribId: testBytes(24, 3),
+        );
+        final operation = await repository.deleteEdgeContributions(
+          partitionId: 'p',
+          contributions: [target, target],
+        );
+        final record = await store.transaction(
+          (tx) async => (await tx.outbox('p')).first,
+        );
+        final encoded = OfflineCodec.encodeOutboxRecord(record);
+        final decoded = OfflineCodec.decodeOutboxRecord(encoded);
+        expect(OfflineCodec.encodeOutboxRecord(decoded), encoded);
+        expect(
+          (decoded.intent as OfflineDeleteEdgeContributionIntent)
+              .contribution
+              .contribId,
+          target.contribId,
+        );
+        final copy = (decoded.intent as OfflineDeleteEdgeContributionIntent)
+            .contribution
+            .contribId;
+        copy.fillRange(0, copy.length, 0);
+        expect(
+          (decoded.intent as OfflineDeleteEdgeContributionIntent)
+              .contribution
+              .contribId,
+          target.contribId,
+        );
+        expect(
+          decoded.receipt!.mutation,
+          ReceiptMutationKind.edgeContributionDelete,
+        );
+        final corrupt = jsonDecode(encoded) as Map<String, dynamic>;
+        for (final mutation in ['edgeDelete', 'unknown']) {
+          corrupt['receipt']['mutation'] = mutation;
+          expect(
+            () => OfflineCodec.decodeOutboxRecord(jsonEncode(corrupt)),
+            throwsA(isA<OfflineCodecException>()),
+          );
+        }
+        corrupt['receipt']['mutation'] = 'edgeContributionDelete';
+        for (final bytes in [Uint8List(24), Uint8List(23), Uint8List(25)]) {
+          corrupt['intent']['contributionId'] = base64UrlEncode(
+            bytes,
+          ).replaceAll('=', '');
+          expect(
+            () => OfflineCodec.decodeOutboxRecord(jsonEncode(corrupt)),
+            throwsA(isA<OfflineCodecException>()),
+          );
+        }
+        final aggregate = OfflineOperationRecord(
+          partitionId: 'p',
+          generation: 0,
+          operationId: operation.operationId,
+          updatedAt: time,
+          terminalAt: time,
+          items: [
+            for (var index = 0; index < 2; index++)
+              OfflineWriteStatus(
+                recordId: operation.items[index].recordId,
+                operationId: operation.operationId,
+                itemIndex: index,
+                state: OfflineWriteState.confirmed,
+                attemptCount: 1,
+                receiptResult: OfflineEdgeContributionDeleteReceiptResult(
+                  index == 0,
+                ),
+              ),
+          ],
+        );
+        final results = OfflineCodec.decodeOperationRecord(
+          OfflineCodec.encodeOperationRecord(aggregate),
+        );
+        expect(
+          results.items.map(
+            (item) =>
+                (item.receiptResult
+                        as OfflineEdgeContributionDeleteReceiptResult)
+                    .existed,
+          ),
+          [true, false],
+        );
+      },
+    );
+
     test('round trips every public VertexValue kind canonically', () {
       final values = <VertexValue>[
         VertexValue.float64(1.5),
