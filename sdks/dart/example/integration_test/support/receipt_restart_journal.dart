@@ -30,6 +30,7 @@ const _receiptMutations = <String>{
   'vertexDelete',
   'edgeDelete',
   'edgeAdd',
+  'edgeContributionDelete',
 };
 
 typedef ReceiptHandoffIdentity = ({
@@ -42,7 +43,8 @@ typedef ReceiptHandoffIdentity = ({
 
 String receiptIdentitySha256(Iterable<ReceiptHandoffIdentity> identities) {
   final items = identities.toList();
-  if (items.length != 4 ||
+  final requiredCount = _receiptMutations.length;
+  if (items.length != requiredCount ||
       items.any(
         (item) =>
             item.logicalOperationId.isEmpty ||
@@ -50,24 +52,25 @@ String receiptIdentitySha256(Iterable<ReceiptHandoffIdentity> identities) {
             item.receiptOperationId.length != 49 ||
             item.receiptGroupId.length != 16,
       ) ||
-      items.map((item) => item.logicalOperationId).toSet().length != 4 ||
-      items.map((item) => item.recordId).toSet().length != 4 ||
+      items.map((item) => item.logicalOperationId).toSet().length !=
+          requiredCount ||
+      items.map((item) => item.recordId).toSet().length != requiredCount ||
       items
               .map((item) => base64Url.encode(item.receiptOperationId))
               .toSet()
               .length !=
-          4 ||
+          requiredCount ||
       items
               .map((item) => base64Url.encode(item.receiptGroupId))
               .toSet()
               .length !=
-          4 ||
+          requiredCount ||
       items
           .map((item) => item.mutation)
           .toSet()
           .difference(_receiptMutations)
           .isNotEmpty ||
-      items.map((item) => item.mutation).toSet().length != 4) {
+      items.map((item) => item.mutation).toSet().length != requiredCount) {
     throw StateError('Invalid receipt identity handoff');
   }
   items.sort(

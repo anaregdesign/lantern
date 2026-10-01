@@ -11,7 +11,7 @@ const _commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _runId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const _target = 'integration_test/example_receipt_test.dart';
 final _identityDigest = sha256
-    .convert(utf8.encode('four receipt identities'))
+    .convert(utf8.encode('five receipt identities'))
     .toString();
 
 void main() {
@@ -72,9 +72,15 @@ void main() {
       jsonDecode(await marker.readAsString()) as Map<String, dynamic>;
 
   test('private identity digest is canonical and binds every receipt', () {
-    const mutations = ['vertexPut', 'vertexDelete', 'edgeDelete', 'edgeAdd'];
+    const mutations = [
+      'vertexPut',
+      'vertexDelete',
+      'edgeDelete',
+      'edgeAdd',
+      'edgeContributionDelete',
+    ];
     final identities = <ReceiptHandoffIdentity>[
-      for (var index = 0; index < 4; index++)
+      for (var index = 0; index < mutations.length; index++)
         (
           logicalOperationId: 'logical-$index',
           recordId: 'record-$index',
@@ -119,13 +125,40 @@ void main() {
       receiptGroupId: identities[1].receiptGroupId,
     );
     expect(receiptIdentitySha256(changedOperation), isNot(digest));
-    expect(() => receiptIdentitySha256(identities.take(3)), throwsStateError);
+    final changedContribution = List<ReceiptHandoffIdentity>.of(identities);
+    changedContribution[4] = (
+      logicalOperationId: identities[4].logicalOperationId,
+      recordId: identities[4].recordId,
+      mutation: identities[4].mutation,
+      receiptOperationId: List<int>.filled(49, 99),
+      receiptGroupId: identities[4].receiptGroupId,
+    );
+    expect(receiptIdentitySha256(changedContribution), isNot(digest));
+    for (var index = 0; index < identities.length; index++) {
+      final changedFamily = List<ReceiptHandoffIdentity>.of(identities);
+      final original = identities[index];
+      for (final mutation in [
+        'unknown',
+        identities[(index + 1) % 5].mutation,
+      ]) {
+        changedFamily[index] = (
+          logicalOperationId: original.logicalOperationId,
+          recordId: original.recordId,
+          mutation: mutation,
+          receiptOperationId: original.receiptOperationId,
+          receiptGroupId: original.receiptGroupId,
+        );
+        expect(() => receiptIdentitySha256(changedFamily), throwsStateError);
+      }
+    }
+    expect(() => receiptIdentitySha256(identities.take(4)), throwsStateError);
     expect(
       () => receiptIdentitySha256([
         identities[0],
         identities[0],
         identities[2],
         identities[3],
+        identities[4],
       ]),
       throwsStateError,
     );
