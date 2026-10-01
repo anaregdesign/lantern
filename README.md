@@ -4,58 +4,52 @@ Lantern is an in-memory database for **live relationships**: typed values live
 at keys, directed weighted edges connect them, and both can expire. Read a
 value, query its neighborhood, and search its content through the same API.
 
-## Try it locally
+## Try it in the Admin UI
 
-You need **Docker, curl, and a POSIX shell**. No checkout, build, or SDK install
-is required. Start a released server in one terminal:
-
-```sh
-docker run --rm --name lantern-demo \
-  -p 127.0.0.1:6380:6380 \
-  ghcr.io/anaregdesign/lantern:v0.35.4
-```
-
-Once the server starts, paste this into a second terminal:
+With **Git and Docker (including Compose)**, start the published stack:
 
 ```sh
-rpc() {
-  curl -fsS -w '\n' \
-    -H 'Content-Type: application/json' \
-    -H 'Connect-Protocol-Version: 1' \
-    -d "$2" \
-    "http://localhost:6380/graph.v1.LanternService/$1"
-}
-
-# Store ordinary values at keys.
-rpc PutVertex '{"vertex":{"key":"user:42","string":"alice"}}'
-rpc PutVertex '{"vertex":{"key":"item:7","string":"desk lamp"}}'
-rpc GetVertex '{"key":"item:7"}'
-
-# Two events contribute to the same directed edge: 1.5 + 0.5 = 2.
-rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":1.5}}'
-rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":0.5}}'
-rpc GetEdge '{"tail":"user:42","head":"item:7"}'
-
-# Query the neighborhood and search the stored content.
-rpc Illuminate '{"seed":"user:42","bfs":{"step":1,"fanOut":10}}'
-rpc SearchVertices '{"query":"lamp","limit":10}'
+git clone --depth 1 https://github.com/anaregdesign/lantern.git
+cd lantern/deploy/compose
+docker compose up -d --pull always --wait
 ```
 
-You should see `PUT_OUTCOME_APPLIED_AND_LIVE` for both writes, `"desk lamp"`
-in the vertex read, and an edge `weight` of **2**. `Illuminate` returns both
-vertices and their connecting edge; search returns a hit for `item:7`.
+No local build or SDK install is needed. Once startup completes, open
+**<http://localhost:8080/cli>**. Check that **Gateway** is
+`http://localhost:6380` (use **Reset** if you have saved another gateway).
+In a fresh demo, paste this block once into the **CLI command input**;
+commands run in order automatically:
 
-This demo uses local HTTP without auth and omits expiration, so its values
-remain until deleted or the container stops. If port `6380` is occupied, change
-the host port in `-p` and the matching port in the `rpc` URL. To stop and discard
-the demo:
+```text
+put vertex user:42 "alice"
+put vertex item:7 "desk lamp"
+get vertex item:7
+add edge user:42 item:7 1.5
+add edge user:42 item:7 0.5
+get edge user:42 item:7
+search lamp
+bfs user:42 1 10
+```
+
+The vertex read shows `desk lamp`, the edge read shows **weight 2**, and search
+finds `item:7`. The final BFS displays both vertices and their directed edge
+in the graph canvas. You can also explore **Data → Vertices** and the **Ops**
+page in the browser. Pasting the block again adds another 2 to the edge.
+
+The stack includes three server replicas, Admin, MCP, and Prometheus. It uses
+host ports `6380`–`6382`, `8080`, `6390`, and `9091`; keep them free for this
+demo. This demo uses HTTP without auth; use a trusted development network.
+The [Compose guide](deploy/compose/README.md) covers configuration.
+
+Stop the stack from the same directory:
 
 ```sh
-docker stop lantern-demo
+docker compose down
 ```
 
-Want a browser console instead? The [Docker Compose stack](#deploying)
-starts three replicas, the Admin UI, MCP, and Prometheus.
+This keeps the backup volumes for your next run. To discard the demo's stored
+snapshots as well, use `docker compose down -v`. Prefer an HTTP-only trial?
+See [Try with curl](#try-with-curl).
 
 ## What makes Lantern different
 
@@ -312,8 +306,9 @@ accepts Connect, gRPC, and gRPC-Web; Connect JSON also works over HTTP/1.1.
 ## CLI and browser console
 
 Install a `lantern-cli` binary from a [root release](https://github.com/anaregdesign/lantern/releases),
-or use `brew install --cask anaregdesign/tap/lantern-cli` on macOS. The interactive REPL,
-verb-first shell commands, and Admin web `/cli` share the same grammar:
+or use `brew install --cask anaregdesign/tap/lantern-cli` on macOS. The CLI and
+interactive REPL support verb-first commands; Admin web `/cli` offers common
+CRUD, search, and traversal commands in the browser:
 
 ```sh
 lantern-cli put vertex user:42 "alice" 3600
@@ -330,6 +325,56 @@ Use `lantern-cli <cmd> --help` for flags and `help bfs|pagerank|community`
 inside the REPL for traversal defaults, bounds, and examples. Reads emit JSON
 by default; search also supports NDJSON and TSV. The [Admin UI](admin/README.md)
 adds graph visualization, data browsing, search, and operational status.
+
+## Try with curl
+
+You need **Docker, curl, and a POSIX shell**. No checkout, build, or SDK install
+is required. Start a released server in one terminal:
+
+```sh
+docker run --rm --name lantern-demo \
+  -p 127.0.0.1:6380:6380 \
+  ghcr.io/anaregdesign/lantern:v0.35.4
+```
+
+Once the server starts, paste this into a second terminal:
+
+```sh
+rpc() {
+  curl -fsS -w '\n' \
+    -H 'Content-Type: application/json' \
+    -H 'Connect-Protocol-Version: 1' \
+    -d "$2" \
+    "http://localhost:6380/graph.v1.LanternService/$1"
+}
+
+# Store ordinary values at keys.
+rpc PutVertex '{"vertex":{"key":"user:42","string":"alice"}}'
+rpc PutVertex '{"vertex":{"key":"item:7","string":"desk lamp"}}'
+rpc GetVertex '{"key":"item:7"}'
+
+# Two events contribute to the same directed edge: 1.5 + 0.5 = 2.
+rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":1.5}}'
+rpc AddEdge '{"edge":{"tail":"user:42","head":"item:7","weight":0.5}}'
+rpc GetEdge '{"tail":"user:42","head":"item:7"}'
+
+# Query the neighborhood and search the stored content.
+rpc Illuminate '{"seed":"user:42","bfs":{"step":1,"fanOut":10}}'
+rpc SearchVertices '{"query":"lamp","limit":10}'
+```
+
+You should see `PUT_OUTCOME_APPLIED_AND_LIVE` for both writes, `"desk lamp"`
+in the vertex read, and an edge `weight` of **2**. `Illuminate` returns both
+vertices and their connecting edge; search returns a hit for `item:7`.
+
+This demo uses local HTTP without auth and omits expiration, so its values
+remain until deleted or the container stops. If port `6380` is occupied, change
+the host port in `-p` and the matching port in the `rpc` URL. To stop and discard
+the demo:
+
+```sh
+docker stop lantern-demo
+```
 
 ## API and safe mutation replay
 
