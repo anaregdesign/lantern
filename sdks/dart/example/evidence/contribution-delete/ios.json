@@ -4,17 +4,17 @@
   "repository": "anaregdesign/lantern",
   "contentFree": true,
   "physicalDevice": true,
-  "testedCommit": "7dbad8d90be0d8b01ec3760e88afc5a92b663840",
-  "runId": "0b2af1f47789ed14f38c16cb268dbd2e",
-  "runStartedAt": "2026-10-01T01:02:24Z",
-  "recordedAt": "2026-10-01T01:02:39Z",
+  "testedCommit": "2dea11e90331fcd05ff58335bf47e0d381276b98",
+  "runId": "989e6b0d4d23d5ef90e40ed3d5a7f6dc",
+  "runStartedAt": "2026-10-01T02:23:48Z",
+  "recordedAt": "2026-10-01T02:24:04Z",
   "platform": {
     "kind": "physical-ios"
   },
   "application": {
     "packageId": "com.anaregdesign.lanternExample",
     "target": "integration_test/physical_contribution_delete_test.dart",
-    "binarySha256": "40856f27fab0740d9835f46711a77f63c1e7acea3e83957faf57001289bc34e6"
+    "binarySha256": "04ff522afaa942338285be9746b945db70bfa3338ded3351d894773662fa6cfe"
   },
   "network": {
     "transport": "Connect/HTTPS",
