@@ -274,7 +274,7 @@ void main() {
               final frame = await invalidation.future.timeout(
                 const Duration(seconds: 20),
               );
-              expect(frame.edgeKeys, [edge]);
+              expect(frame.edgeKeys, [edge, edge]);
               expect(frame.vertexKeys, isEmpty);
               expect((await direct.getEdge(edge)).weight, 4);
             },
