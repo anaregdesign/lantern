@@ -1,6 +1,6 @@
 {
   "application": {
-    "binarySha256": "f08f2993db61157163b25e8f598e04b03024f60a60bb44e46e8021f672089032",
+    "binarySha256": "4f1a4f443d43e3de1ab08f4e0a29a87e832efad5a1a52363c5ffe81d9edf2390",
     "packageId": "com.anaregdesign.lanternExample",
     "target": "integration_test/physical_identity_cdc_test.dart"
   },
@@ -20,12 +20,13 @@
     "model": "iPhone 16 Pro",
     "os": "iOS 26.7"
   },
-  "recordedAt": "2026-09-28T03:43:38.956616Z",
+  "recordedAt": "2026-10-01T08:22:26.776840Z",
   "repository": "anaregdesign/lantern",
   "result": "passed",
   "scenarios": [
     "identity_cancellation",
     "identity_checkpoint_revalidation",
+    "identity_contribution_delete_refetch",
     "identity_cursor_persisted",
     "identity_live_edge_invalidation",
     "identity_live_vertex_invalidation",
@@ -36,7 +37,7 @@
     "identity_unknown_survives_sqlite_reopen"
   ],
   "schema": 1,
-  "testedCommit": "3716d7052ac77eefbf05825e81e64cc603f16287",
+  "testedCommit": "52eaa8f3037ec13c6e7443ff4c5c6b74415cc7ae",
   "toolchain": {
     "dart": "3.12.2",
     "flutter": "3.44.6",

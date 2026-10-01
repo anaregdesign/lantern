@@ -1,6 +1,6 @@
 {
   "application": {
-    "binarySha256": "505fc1cc1a60e29a3d1852203c6d4671cc9938ab8fc34ec560c588fec529f93c",
+    "binarySha256": "1dd5063151a1baa55c218eb6248caff8ff155570a5aa70c837257428f0bbac14",
     "packageId": "com.anaregdesign.lantern_example",
     "target": "integration_test/physical_identity_cdc_test.dart"
   },
@@ -20,12 +20,13 @@
     "model": "Pixel 9a",
     "os": "Android 17 (API 37)"
   },
-  "recordedAt": "2026-09-28T03:29:17.290400Z",
+  "recordedAt": "2026-10-01T08:15:33.727248Z",
   "repository": "anaregdesign/lantern",
   "result": "passed",
   "scenarios": [
     "identity_cancellation",
     "identity_checkpoint_revalidation",
+    "identity_contribution_delete_refetch",
     "identity_cursor_persisted",
     "identity_live_edge_invalidation",
     "identity_live_vertex_invalidation",
@@ -36,7 +37,7 @@
     "identity_unknown_survives_sqlite_reopen"
   ],
   "schema": 1,
-  "testedCommit": "3716d7052ac77eefbf05825e81e64cc603f16287",
+  "testedCommit": "52eaa8f3037ec13c6e7443ff4c5c6b74415cc7ae",
   "toolchain": {
     "dart": "3.12.2",
     "flutter": "3.44.6",
