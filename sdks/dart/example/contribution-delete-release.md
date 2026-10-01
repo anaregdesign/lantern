@@ -1,7 +1,7 @@
 # Contribution Delete Dart release qualification
 
 Issue [#1530](https://github.com/anaregdesign/lantern/issues/1530) adds the online
-`lantern_client 0.4.0` contribution Delete family. The offline outbox remains
+`lantern_client 0.4.1` contribution Delete family. The offline outbox remains
 unsupported for this operation; no new durable offline intent is included.
 The public SDK exposes `EdgeContributionRef`, plural-canonical direct and
 receipt-bearing Delete, distinct `EdgeContributionDeleteReceipt` originals,
@@ -68,10 +68,17 @@ verification; discard and rerun evidence older than 30 days.
 After both captures pass, commit only `android.json`, `android-marker.json`,
 `ios.json` and `ios-marker.json` under `example/evidence/contribution-delete/`
 as the immediate evidence-only child of the tested source. Before pushing
-its unused `sdks/dart/v0.4.0` tag, run the complete local quality gate and
-`scripts/physical_contribution_release_gate.py --tag sdks/dart/v0.4.0`.
+its unused `sdks/dart/v0.4.1` tag, run the complete local quality gate and
+`scripts/physical_contribution_release_gate.py --tag sdks/dart/v0.4.1`.
 The tag's full Dart/native Gate and read-only parent preflight enforce the
 same source, exact scenario sets and physical records. Publication is the
 existing protected pub.dev OIDC workflow; package-admin approval remains
 human-owned. Verify actual hosted archive equality before the exact-title
 GitHub Release and before closing #1530. Artifact publication is not deployment.
+
+The pushed `sdks/dart/v0.4.0` tag remains immutable and unpublished: its full
+Gate passed, but a skipped optional ancestor suppressed release preflight.
+The 0.4.1 workflow explicitly requires a successful direct upstream result and
+an uncanceled run. Manual dispatch and PRs remain test-only. A green aggregate
+Gate alone does not prove publication; require actual preflight, protected OIDC,
+published-archive equality and exact-title Release job success.

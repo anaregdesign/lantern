@@ -1,13 +1,110 @@
 """The Dart workflow's package and native-platform selection contract."""
 
+import ast
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import ci_scope
+
+
+def release_condition(job):
+    workflow = Path(__file__).resolve().parents[3] / '.github/workflows/dart-sdk.yml'
+    body = re.search(
+        rf'(?ms)^  {re.escape(job)}:\n(.*?)(?=^  [\w-]+:\n|\Z)',
+        workflow.read_text(),
+    ).group(1).splitlines()
+    index = next(i for i, line in enumerate(body) if line.startswith('    if:'))
+    expression = body[index].partition(':')[2].strip()
+    if expression in ('>-', '|'):
+        parts = []
+        for line in body[index + 1:]:
+            if not line.startswith('      '):
+                break
+            parts.append(line.strip())
+        expression = ' '.join(parts)
+    return expression.removeprefix('${{').removesuffix('}}').strip()
+
+
+def release_job_runs(expression, context, *, canceled=False):
+    # GitHub's implicit success() includes skipped indirect ancestors. Model
+    # the actual release chain: evidence-only skipped -> Gate succeeded.
+    if not re.search(r'\b(?:success|failure|always|cancelled)\(', expression):
+        return False
+    parsed = ast.parse(expression.replace('&&', ' and ').replace(
+        '!cancelled()', 'not cancelled()'), mode='eval')
+
+    def value(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            return context[node.id]
+        if isinstance(node, ast.Attribute):
+            return value(node.value)[node.attr]
+        if isinstance(node, ast.Subscript):
+            return value(node.value)[value(node.slice)]
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            return all(value(item) for item in node.values)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not value(node.operand)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+            return value(node.left) == value(node.comparators[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == 'cancelled' and not node.args:
+                return canceled
+            if node.func.id == 'startsWith' and len(node.args) == 2:
+                return value(node.args[0]).startswith(value(node.args[1]))
+        raise AssertionError(f'unsupported release expression: {ast.dump(node)}')
+
+    return value(parsed.body)
+
+
+class ReleaseConditionsTest(unittest.TestCase):
+    def test_preflight_survives_skipped_ancestor_and_requires_qualified_push(self):
+        for job, prefix, other in (
+            ('release-preflight', 'refs/tags/sdks/dart/v', 'refs/tags/sdks/dart/offline/v'),
+            ('offline-release-preflight', 'refs/tags/sdks/dart/offline/v', 'refs/tags/sdks/dart/v'),
+        ):
+            expression = release_condition(job)
+            for result, event, ref, canceled, expected in (
+                ('success', 'push', prefix + '0.4.1', False, True),
+                ('failure', 'push', prefix + '0.4.1', False, False),
+                ('cancelled', 'push', prefix + '0.4.1', False, False),
+                ('skipped', 'push', prefix + '0.4.1', False, False),
+                ('success', 'push', prefix + '0.4.1', True, False),
+                ('success', 'workflow_dispatch', prefix + '0.4.1', False, False),
+                ('success', 'pull_request', prefix + '0.4.1', False, False),
+                ('success', 'push', 'refs/heads/main', False, False),
+                ('success', 'push', other + '0.4.1', False, False),
+            ):
+                with self.subTest(job=job, result=result, event=event, ref=ref, canceled=canceled):
+                    context = {'needs': {'gate': {'result': result}},
+                               'github': {'event_name': event, 'ref': ref}}
+                    self.assertEqual(release_job_runs(expression, context, canceled=canceled), expected)
+
+    def test_publish_survives_skipped_ancestor_and_requires_verified_artifact(self):
+        for job, preflight in (
+            ('publish', 'release-preflight'),
+            ('publish-offline', 'offline-release-preflight'),
+        ):
+            expression = release_condition(job)
+            for result, required, canceled, expected in (
+                ('success', 'true', False, True),
+                ('failure', 'true', False, False),
+                ('cancelled', 'true', False, False),
+                ('skipped', 'true', False, False),
+                ('success', 'true', True, False),
+                ('success', 'false', False, False),
+                ('success', None, False, False),
+            ):
+                with self.subTest(job=job, result=result, required=required, canceled=canceled):
+                    context = {'needs': {preflight: {
+                        'result': result, 'outputs': {'publish_required': required}}}}
+                    self.assertEqual(release_job_runs(expression, context, canceled=canceled), expected)
 
 
 class ScopeTest(unittest.TestCase):

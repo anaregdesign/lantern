@@ -1198,7 +1198,9 @@ jobs:
   release-preflight:
     name: Verify parent release candidate
     needs: [gate]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v')
+    if: >-
+      ${{ !cancelled() && needs.gate.result == 'success' &&
+          github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1290,7 +1292,9 @@ jobs:
   publish:
     name: Publish lantern_client
     needs: [release-preflight]
-    if: needs.release-preflight.outputs.publish_required == 'true'
+    if: >-
+      ${{ !cancelled() && needs['release-preflight'].result == 'success' &&
+          needs['release-preflight'].outputs.publish_required == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -1401,7 +1405,9 @@ jobs:
   offline-release-preflight:
     name: Verify offline release candidate
     needs: [gate]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v')
+    if: >-
+      ${{ !cancelled() && needs.gate.result == 'success' &&
+          github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1502,7 +1508,9 @@ jobs:
   publish-offline:
     name: Publish lantern_client_offline
     needs: [offline-release-preflight]
-    if: needs.offline-release-preflight.outputs.publish_required == 'true'
+    if: >-
+      ${{ !cancelled() && needs['offline-release-preflight'].result == 'success' &&
+          needs['offline-release-preflight'].outputs.publish_required == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
