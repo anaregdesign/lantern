@@ -1004,12 +1004,14 @@ func (x *ReplicatedReceiptEdgeContributionDelete) GetItems() []*ReplicatedReceip
 // has no graph effect; when present it is either a live value or an explicit
 // causal barrier and is never re-evaluated against if_absent.
 type ReplicatedReceiptVertexPutItem struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Original      *Vertex                `protobuf:"bytes,1,opt,name=original,proto3" json:"original,omitempty"`
-	Receipt       *MutationReceipt       `protobuf:"bytes,2,opt,name=receipt,proto3" json:"receipt,omitempty"`
-	Accepted      *ReplicatedPutVertex   `protobuf:"bytes,3,opt,name=accepted,proto3" json:"accepted,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Original *Vertex                `protobuf:"bytes,1,opt,name=original,proto3" json:"original,omitempty"`
+	Receipt  *MutationReceipt       `protobuf:"bytes,2,opt,name=receipt,proto3" json:"receipt,omitempty"`
+	Accepted *ReplicatedPutVertex   `protobuf:"bytes,3,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// Immutable origin application-time effect, preserved on replay/status.
+	LifecycleReduced bool `protobuf:"varint,4,opt,name=lifecycle_reduced,json=lifecycleReduced,proto3" json:"lifecycle_reduced,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ReplicatedReceiptVertexPutItem) Reset() {
@@ -1061,6 +1063,13 @@ func (x *ReplicatedReceiptVertexPutItem) GetAccepted() *ReplicatedPutVertex {
 		return x.Accepted
 	}
 	return nil
+}
+
+func (x *ReplicatedReceiptVertexPutItem) GetLifecycleReduced() bool {
+	if x != nil {
+		return x.LifecycleReduced
+	}
+	return false
 }
 
 // A complete ordered conditional Vertex Put call. A call with no accepted
@@ -1769,8 +1778,12 @@ type Mutation struct {
 	// with tombstone retention enabled must reject a Delete without it rather
 	// than extend the deadline from its own wall clock. Other operations omit it.
 	TombstoneExpiration *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=tombstone_expiration,json=tombstoneExpiration,proto3" json:"tombstone_expiration,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Physical storage domain of every graph identity. Public logical keys are
+	// encoded only at ingress; peer apply and WAL never encode them again.
+	// Unknown/missing formats are refused by namespaced production runtimes.
+	NamespaceFormat string `protobuf:"bytes,6,opt,name=namespace_format,json=namespaceFormat,proto3" json:"namespace_format,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Mutation) Reset() {
@@ -1838,6 +1851,13 @@ func (x *Mutation) GetTombstoneExpiration() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Mutation) GetNamespaceFormat() string {
+	if x != nil {
+		return x.NamespaceFormat
+	}
+	return ""
+}
+
 // SubscribeRequest opens a stream of replicated mutations starting at
 // the per-origin cursor in `from_seq_per_origin`.
 //
@@ -1890,8 +1910,10 @@ type SubscribeRequest struct {
 	// arms before the server can send one. Old full-mutation peers/consumers
 	// omit this field and fail closed instead of losing receipt metadata.
 	AcceptReceiptEnvelopes bool `protobuf:"varint,5,opt,name=accept_receipt_envelopes,json=acceptReceiptEnvelopes,proto3" json:"accept_receipt_envelopes,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Explicit physical-key format; peer sessions must match before transfer.
+	NamespaceFormat string `protobuf:"bytes,6,opt,name=namespace_format,json=namespaceFormat,proto3" json:"namespace_format,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SubscribeRequest) Reset() {
@@ -1957,6 +1979,13 @@ func (x *SubscribeRequest) GetAcceptReceiptEnvelopes() bool {
 		return x.AcceptReceiptEnvelopes
 	}
 	return false
+}
+
+func (x *SubscribeRequest) GetNamespaceFormat() string {
+	if x != nil {
+		return x.NamespaceFormat
+	}
+	return ""
 }
 
 // A bootstrap checkpoint is the responder's contiguous publication cut,
@@ -2221,10 +2250,11 @@ func (*SubscribeResponse_IdentityChunk) isSubscribeResponse_Event() {}
 // MUST request RECEIPT and check the first header's format before applying
 // any body frame. The header check remains mandatory.
 type SnapshotRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	RequiredFormat SnapshotFormat         `protobuf:"varint,1,opt,name=required_format,json=requiredFormat,proto3,enum=graph.v1.SnapshotFormat" json:"required_format,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	RequiredFormat  SnapshotFormat         `protobuf:"varint,1,opt,name=required_format,json=requiredFormat,proto3,enum=graph.v1.SnapshotFormat" json:"required_format,omitempty"`
+	NamespaceFormat string                 `protobuf:"bytes,2,opt,name=namespace_format,json=namespaceFormat,proto3" json:"namespace_format,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SnapshotRequest) Reset() {
@@ -2262,6 +2292,13 @@ func (x *SnapshotRequest) GetRequiredFormat() SnapshotFormat {
 		return x.RequiredFormat
 	}
 	return SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED
+}
+
+func (x *SnapshotRequest) GetNamespaceFormat() string {
+	if x != nil {
+		return x.NamespaceFormat
+	}
+	return ""
 }
 
 // Receipt metadata for one RECEIPT publication cut. This message is
@@ -2369,6 +2406,7 @@ func (x *SnapshotReceiptMetadata) GetRetiredPolicies() []*ReceiptPolicy {
 // row; a graph HLC whose origin is absent from that vector is invalid.
 type SnapshotHeader struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
+	NamespaceFormat    string                 `protobuf:"bytes,20,opt,name=namespace_format,json=namespaceFormat,proto3" json:"namespace_format,omitempty"`
 	CutoffSeqPerOrigin map[string]uint64      `protobuf:"bytes,1,rep,name=cutoff_seq_per_origin,json=cutoffSeqPerOrigin,proto3" json:"cutoff_seq_per_origin,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	CutoffHlc          *HLCTimestamp          `protobuf:"bytes,2,opt,name=cutoff_hlc,json=cutoffHlc,proto3" json:"cutoff_hlc,omitempty"`
 	// Replica-local mutation-log position at snapshot open. It is deliberately
@@ -2414,6 +2452,13 @@ func (x *SnapshotHeader) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SnapshotHeader.ProtoReflect.Descriptor instead.
 func (*SnapshotHeader) Descriptor() ([]byte, []int) {
 	return file_graph_v1_replication_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *SnapshotHeader) GetNamespaceFormat() string {
+	if x != nil {
+		return x.NamespaceFormat
+	}
+	return ""
 }
 
 func (x *SnapshotHeader) GetCutoffSeqPerOrigin() map[string]uint64 {
@@ -2633,24 +2678,80 @@ func (x *SnapshotReceiptContribution) GetContributionId() []byte {
 // operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
 // original_result is the exact opaque result bytes retained by the Store; it
 // is not recomputed from the graph at snapshot time.
+type SnapshotReceiptResource struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Authoritative original logical identities. A missing message denotes
+	// unproven legacy evidence, never permission to read arbitrary resources.
+	LogicalKey    string `protobuf:"bytes,1,opt,name=logical_key,json=logicalKey,proto3" json:"logical_key,omitempty"`    // Vertex key or Edge tail.
+	LogicalHead   string `protobuf:"bytes,2,opt,name=logical_head,json=logicalHead,proto3" json:"logical_head,omitempty"` // Present only for Edge mutation families.
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotReceiptResource) Reset() {
+	*x = SnapshotReceiptResource{}
+	mi := &file_graph_v1_replication_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotReceiptResource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotReceiptResource) ProtoMessage() {}
+
+func (x *SnapshotReceiptResource) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_replication_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotReceiptResource.ProtoReflect.Descriptor instead.
+func (*SnapshotReceiptResource) Descriptor() ([]byte, []int) {
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *SnapshotReceiptResource) GetLogicalKey() string {
+	if x != nil {
+		return x.LogicalKey
+	}
+	return ""
+}
+
+func (x *SnapshotReceiptResource) GetLogicalHead() string {
+	if x != nil {
+		return x.LogicalHead
+	}
+	return ""
+}
+
 type SnapshotReceipt struct {
-	state          protoimpl.MessageState       `protogen:"open.v1"`
-	OperationId    []byte                       `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`         // Exactly 49 bytes.
-	LogicalCallId  []byte                       `protobuf:"bytes,2,opt,name=logical_call_id,json=logicalCallId,proto3" json:"logical_call_id,omitempty"` // Exactly 16 nonzero bytes.
-	ItemIndex      uint32                       `protobuf:"varint,3,opt,name=item_index,json=itemIndex,proto3" json:"item_index,omitempty"`
-	ItemCount      uint32                       `protobuf:"varint,4,opt,name=item_count,json=itemCount,proto3" json:"item_count,omitempty"`
-	Kind           SnapshotReceiptKind          `protobuf:"varint,5,opt,name=kind,proto3,enum=graph.v1.SnapshotReceiptKind" json:"kind,omitempty"`
-	IntentSha256   []byte                       `protobuf:"bytes,6,opt,name=intent_sha256,json=intentSha256,proto3" json:"intent_sha256,omitempty"` // Exactly 32 bytes.
-	DeadlineUnixMs uint64                       `protobuf:"varint,7,opt,name=deadline_unix_ms,json=deadlineUnixMs,proto3" json:"deadline_unix_ms,omitempty"`
-	OriginalResult []byte                       `protobuf:"bytes,8,opt,name=original_result,json=originalResult,proto3" json:"original_result,omitempty"`
-	Contribution   *SnapshotReceiptContribution `protobuf:"bytes,9,opt,name=contribution,proto3" json:"contribution,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state            protoimpl.MessageState       `protogen:"open.v1"`
+	OperationId      []byte                       `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`         // Exactly 49 bytes.
+	LogicalCallId    []byte                       `protobuf:"bytes,2,opt,name=logical_call_id,json=logicalCallId,proto3" json:"logical_call_id,omitempty"` // Exactly 16 nonzero bytes.
+	ItemIndex        uint32                       `protobuf:"varint,3,opt,name=item_index,json=itemIndex,proto3" json:"item_index,omitempty"`
+	ItemCount        uint32                       `protobuf:"varint,4,opt,name=item_count,json=itemCount,proto3" json:"item_count,omitempty"`
+	Kind             SnapshotReceiptKind          `protobuf:"varint,5,opt,name=kind,proto3,enum=graph.v1.SnapshotReceiptKind" json:"kind,omitempty"`
+	IntentSha256     []byte                       `protobuf:"bytes,6,opt,name=intent_sha256,json=intentSha256,proto3" json:"intent_sha256,omitempty"` // Exactly 32 bytes.
+	DeadlineUnixMs   uint64                       `protobuf:"varint,7,opt,name=deadline_unix_ms,json=deadlineUnixMs,proto3" json:"deadline_unix_ms,omitempty"`
+	OriginalResult   []byte                       `protobuf:"bytes,8,opt,name=original_result,json=originalResult,proto3" json:"original_result,omitempty"`
+	Contribution     *SnapshotReceiptContribution `protobuf:"bytes,9,opt,name=contribution,proto3" json:"contribution,omitempty"`
+	Resource         *SnapshotReceiptResource     `protobuf:"bytes,10,opt,name=resource,proto3" json:"resource,omitempty"`
+	LifecycleReduced bool                         `protobuf:"varint,11,opt,name=lifecycle_reduced,json=lifecycleReduced,proto3" json:"lifecycle_reduced,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SnapshotReceipt) Reset() {
 	*x = SnapshotReceipt{}
-	mi := &file_graph_v1_replication_proto_msgTypes[28]
+	mi := &file_graph_v1_replication_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2662,7 +2763,7 @@ func (x *SnapshotReceipt) String() string {
 func (*SnapshotReceipt) ProtoMessage() {}
 
 func (x *SnapshotReceipt) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[28]
+	mi := &file_graph_v1_replication_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2675,7 +2776,7 @@ func (x *SnapshotReceipt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotReceipt.ProtoReflect.Descriptor instead.
 func (*SnapshotReceipt) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{28}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SnapshotReceipt) GetOperationId() []byte {
@@ -2741,6 +2842,20 @@ func (x *SnapshotReceipt) GetContribution() *SnapshotReceiptContribution {
 	return nil
 }
 
+func (x *SnapshotReceipt) GetResource() *SnapshotReceiptResource {
+	if x != nil {
+		return x.Resource
+	}
+	return nil
+}
+
+func (x *SnapshotReceipt) GetLifecycleReduced() bool {
+	if x != nil {
+		return x.LifecycleReduced
+	}
+	return false
+}
+
 // SnapshotVertex is the snapshot-time representation of a single live
 // vertex. The HLC field carries the last LWW timestamp the source node
 // recorded for the key (zero when the vertex has never been touched by a
@@ -2757,7 +2872,7 @@ type SnapshotVertex struct {
 
 func (x *SnapshotVertex) Reset() {
 	*x = SnapshotVertex{}
-	mi := &file_graph_v1_replication_proto_msgTypes[29]
+	mi := &file_graph_v1_replication_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2769,7 +2884,7 @@ func (x *SnapshotVertex) String() string {
 func (*SnapshotVertex) ProtoMessage() {}
 
 func (x *SnapshotVertex) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[29]
+	mi := &file_graph_v1_replication_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2782,7 +2897,7 @@ func (x *SnapshotVertex) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotVertex.ProtoReflect.Descriptor instead.
 func (*SnapshotVertex) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{29}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SnapshotVertex) GetVertex() *Vertex {
@@ -2813,7 +2928,7 @@ type SnapshotVertexCausalBarrier struct {
 
 func (x *SnapshotVertexCausalBarrier) Reset() {
 	*x = SnapshotVertexCausalBarrier{}
-	mi := &file_graph_v1_replication_proto_msgTypes[30]
+	mi := &file_graph_v1_replication_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2825,7 +2940,7 @@ func (x *SnapshotVertexCausalBarrier) String() string {
 func (*SnapshotVertexCausalBarrier) ProtoMessage() {}
 
 func (x *SnapshotVertexCausalBarrier) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[30]
+	mi := &file_graph_v1_replication_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2838,7 +2953,7 @@ func (x *SnapshotVertexCausalBarrier) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotVertexCausalBarrier.ProtoReflect.Descriptor instead.
 func (*SnapshotVertexCausalBarrier) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{30}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SnapshotVertexCausalBarrier) GetKey() string {
@@ -2879,7 +2994,7 @@ type SnapshotEdgeContribution struct {
 
 func (x *SnapshotEdgeContribution) Reset() {
 	*x = SnapshotEdgeContribution{}
-	mi := &file_graph_v1_replication_proto_msgTypes[31]
+	mi := &file_graph_v1_replication_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2891,7 +3006,7 @@ func (x *SnapshotEdgeContribution) String() string {
 func (*SnapshotEdgeContribution) ProtoMessage() {}
 
 func (x *SnapshotEdgeContribution) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[31]
+	mi := &file_graph_v1_replication_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2904,7 +3019,7 @@ func (x *SnapshotEdgeContribution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEdgeContribution.ProtoReflect.Descriptor instead.
 func (*SnapshotEdgeContribution) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{31}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SnapshotEdgeContribution) GetWeight() float32 {
@@ -2953,7 +3068,7 @@ type SnapshotEdgeDerivedAggregate struct {
 
 func (x *SnapshotEdgeDerivedAggregate) Reset() {
 	*x = SnapshotEdgeDerivedAggregate{}
-	mi := &file_graph_v1_replication_proto_msgTypes[32]
+	mi := &file_graph_v1_replication_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2965,7 +3080,7 @@ func (x *SnapshotEdgeDerivedAggregate) String() string {
 func (*SnapshotEdgeDerivedAggregate) ProtoMessage() {}
 
 func (x *SnapshotEdgeDerivedAggregate) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[32]
+	mi := &file_graph_v1_replication_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2978,7 +3093,7 @@ func (x *SnapshotEdgeDerivedAggregate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEdgeDerivedAggregate.ProtoReflect.Descriptor instead.
 func (*SnapshotEdgeDerivedAggregate) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{32}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SnapshotEdgeDerivedAggregate) GetWeight() float32 {
@@ -3023,7 +3138,7 @@ type SnapshotEdge struct {
 
 func (x *SnapshotEdge) Reset() {
 	*x = SnapshotEdge{}
-	mi := &file_graph_v1_replication_proto_msgTypes[33]
+	mi := &file_graph_v1_replication_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3035,7 +3150,7 @@ func (x *SnapshotEdge) String() string {
 func (*SnapshotEdge) ProtoMessage() {}
 
 func (x *SnapshotEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[33]
+	mi := &file_graph_v1_replication_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3048,7 +3163,7 @@ func (x *SnapshotEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEdge.ProtoReflect.Descriptor instead.
 func (*SnapshotEdge) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{33}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *SnapshotEdge) GetTail() string {
@@ -3100,7 +3215,7 @@ type SnapshotEdgeCausalBarrier struct {
 
 func (x *SnapshotEdgeCausalBarrier) Reset() {
 	*x = SnapshotEdgeCausalBarrier{}
-	mi := &file_graph_v1_replication_proto_msgTypes[34]
+	mi := &file_graph_v1_replication_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3112,7 +3227,7 @@ func (x *SnapshotEdgeCausalBarrier) String() string {
 func (*SnapshotEdgeCausalBarrier) ProtoMessage() {}
 
 func (x *SnapshotEdgeCausalBarrier) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[34]
+	mi := &file_graph_v1_replication_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3125,7 +3240,7 @@ func (x *SnapshotEdgeCausalBarrier) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEdgeCausalBarrier.ProtoReflect.Descriptor instead.
 func (*SnapshotEdgeCausalBarrier) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{34}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *SnapshotEdgeCausalBarrier) GetTail() string {
@@ -3163,7 +3278,7 @@ type SnapshotVertexTombstone struct {
 
 func (x *SnapshotVertexTombstone) Reset() {
 	*x = SnapshotVertexTombstone{}
-	mi := &file_graph_v1_replication_proto_msgTypes[35]
+	mi := &file_graph_v1_replication_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3175,7 +3290,7 @@ func (x *SnapshotVertexTombstone) String() string {
 func (*SnapshotVertexTombstone) ProtoMessage() {}
 
 func (x *SnapshotVertexTombstone) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[35]
+	mi := &file_graph_v1_replication_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3188,7 +3303,7 @@ func (x *SnapshotVertexTombstone) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotVertexTombstone.ProtoReflect.Descriptor instead.
 func (*SnapshotVertexTombstone) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{35}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SnapshotVertexTombstone) GetKey() string {
@@ -3224,7 +3339,7 @@ type SnapshotEdgeTombstone struct {
 
 func (x *SnapshotEdgeTombstone) Reset() {
 	*x = SnapshotEdgeTombstone{}
-	mi := &file_graph_v1_replication_proto_msgTypes[36]
+	mi := &file_graph_v1_replication_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3236,7 +3351,7 @@ func (x *SnapshotEdgeTombstone) String() string {
 func (*SnapshotEdgeTombstone) ProtoMessage() {}
 
 func (x *SnapshotEdgeTombstone) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[36]
+	mi := &file_graph_v1_replication_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3249,7 +3364,7 @@ func (x *SnapshotEdgeTombstone) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEdgeTombstone.ProtoReflect.Descriptor instead.
 func (*SnapshotEdgeTombstone) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{36}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SnapshotEdgeTombstone) GetTail() string {
@@ -3295,7 +3410,7 @@ type SnapshotEdgeContributionTombstone struct {
 
 func (x *SnapshotEdgeContributionTombstone) Reset() {
 	*x = SnapshotEdgeContributionTombstone{}
-	mi := &file_graph_v1_replication_proto_msgTypes[37]
+	mi := &file_graph_v1_replication_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3307,7 +3422,7 @@ func (x *SnapshotEdgeContributionTombstone) String() string {
 func (*SnapshotEdgeContributionTombstone) ProtoMessage() {}
 
 func (x *SnapshotEdgeContributionTombstone) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[37]
+	mi := &file_graph_v1_replication_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3320,7 +3435,7 @@ func (x *SnapshotEdgeContributionTombstone) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SnapshotEdgeContributionTombstone.ProtoReflect.Descriptor instead.
 func (*SnapshotEdgeContributionTombstone) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{37}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SnapshotEdgeContributionTombstone) GetTail() string {
@@ -3388,7 +3503,7 @@ type SnapshotResponse struct {
 
 func (x *SnapshotResponse) Reset() {
 	*x = SnapshotResponse{}
-	mi := &file_graph_v1_replication_proto_msgTypes[38]
+	mi := &file_graph_v1_replication_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3400,7 +3515,7 @@ func (x *SnapshotResponse) String() string {
 func (*SnapshotResponse) ProtoMessage() {}
 
 func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[38]
+	mi := &file_graph_v1_replication_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3413,7 +3528,7 @@ func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotResponse.ProtoReflect.Descriptor instead.
 func (*SnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{38}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *SnapshotResponse) GetEntry() isSnapshotResponse_Entry {
@@ -3581,14 +3696,15 @@ func (*SnapshotResponse_EdgeContributionTombstone) isSnapshotResponse_Entry() {}
 // returns its full per-origin map. Future revisions may add an
 // optional origin filter without breaking the wire contract.
 type PeerStatusRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	NamespaceFormat string                 `protobuf:"bytes,1,opt,name=namespace_format,json=namespaceFormat,proto3" json:"namespace_format,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PeerStatusRequest) Reset() {
 	*x = PeerStatusRequest{}
-	mi := &file_graph_v1_replication_proto_msgTypes[39]
+	mi := &file_graph_v1_replication_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3600,7 +3716,7 @@ func (x *PeerStatusRequest) String() string {
 func (*PeerStatusRequest) ProtoMessage() {}
 
 func (x *PeerStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[39]
+	mi := &file_graph_v1_replication_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3613,7 +3729,14 @@ func (x *PeerStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerStatusRequest.ProtoReflect.Descriptor instead.
 func (*PeerStatusRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{39}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *PeerStatusRequest) GetNamespaceFormat() string {
+	if x != nil {
+		return x.NamespaceFormat
+	}
+	return ""
 }
 
 // OriginState is the responder's last-applied position for a single
@@ -3632,7 +3755,7 @@ type OriginState struct {
 
 func (x *OriginState) Reset() {
 	*x = OriginState{}
-	mi := &file_graph_v1_replication_proto_msgTypes[40]
+	mi := &file_graph_v1_replication_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3644,7 +3767,7 @@ func (x *OriginState) String() string {
 func (*OriginState) ProtoMessage() {}
 
 func (x *OriginState) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[40]
+	mi := &file_graph_v1_replication_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3657,7 +3780,7 @@ func (x *OriginState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OriginState.ProtoReflect.Descriptor instead.
 func (*OriginState) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{40}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *OriginState) GetOrigin() []byte {
@@ -3688,9 +3811,10 @@ func (x *OriginState) GetLastHlc() *HLCTimestamp {
 // anti-entropy callers can pick out the row that represents this
 // peer's own writes without having to pre-configure peer NodeIDs.
 type PeerStatusResponse struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	SelfOrigin []byte                 `protobuf:"bytes,1,opt,name=self_origin,json=selfOrigin,proto3" json:"self_origin,omitempty"`
-	Origins    []*OriginState         `protobuf:"bytes,2,rep,name=origins,proto3" json:"origins,omitempty"`
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	NamespaceFormat string                 `protobuf:"bytes,20,opt,name=namespace_format,json=namespaceFormat,proto3" json:"namespace_format,omitempty"`
+	SelfOrigin      []byte                 `protobuf:"bytes,1,opt,name=self_origin,json=selfOrigin,proto3" json:"self_origin,omitempty"`
+	Origins         []*OriginState         `protobuf:"bytes,2,rep,name=origins,proto3" json:"origins,omitempty"`
 	// Fingerprint of every search setting that can change capabilities or
 	// ordered results. Replicas compare this before declaring themselves ready;
 	// empty means the responder cannot prove search-config compatibility.
@@ -3705,7 +3829,7 @@ type PeerStatusResponse struct {
 
 func (x *PeerStatusResponse) Reset() {
 	*x = PeerStatusResponse{}
-	mi := &file_graph_v1_replication_proto_msgTypes[41]
+	mi := &file_graph_v1_replication_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3717,7 +3841,7 @@ func (x *PeerStatusResponse) String() string {
 func (*PeerStatusResponse) ProtoMessage() {}
 
 func (x *PeerStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_replication_proto_msgTypes[41]
+	mi := &file_graph_v1_replication_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3730,7 +3854,14 @@ func (x *PeerStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerStatusResponse.ProtoReflect.Descriptor instead.
 func (*PeerStatusResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_replication_proto_rawDescGZIP(), []int{41}
+	return file_graph_v1_replication_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *PeerStatusResponse) GetNamespaceFormat() string {
+	if x != nil {
+		return x.NamespaceFormat
+	}
+	return ""
 }
 
 func (x *PeerStatusResponse) GetSelfOrigin() []byte {
@@ -3814,11 +3945,12 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x10deployment_epoch\x18\x01 \x01(\fR\x0fdeploymentEpoch\x12-\n" +
 	"\x12policy_fingerprint\x18\x02 \x01(\fR\x11policyFingerprint\x12M\n" +
 	"\x14tombstone_expiration\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x13tombstoneExpiration\x12K\n" +
-	"\x05items\x18\x04 \x03(\v25.graph.v1.ReplicatedReceiptEdgeContributionDeleteItemR\x05items\"\xbe\x01\n" +
+	"\x05items\x18\x04 \x03(\v25.graph.v1.ReplicatedReceiptEdgeContributionDeleteItemR\x05items\"\xeb\x01\n" +
 	"\x1eReplicatedReceiptVertexPutItem\x12,\n" +
 	"\boriginal\x18\x01 \x01(\v2\x10.graph.v1.VertexR\boriginal\x123\n" +
 	"\areceipt\x18\x02 \x01(\v2\x19.graph.v1.MutationReceiptR\areceipt\x129\n" +
-	"\baccepted\x18\x03 \x01(\v2\x1d.graph.v1.ReplicatedPutVertexR\baccepted\"\xd3\x01\n" +
+	"\baccepted\x18\x03 \x01(\v2\x1d.graph.v1.ReplicatedPutVertexR\baccepted\x12+\n" +
+	"\x11lifecycle_reduced\x18\x04 \x01(\bR\x10lifecycleReduced\"\xd3\x01\n" +
 	"\x1aReplicatedReceiptVertexPut\x12)\n" +
 	"\x10deployment_epoch\x18\x01 \x01(\fR\x0fdeploymentEpoch\x12-\n" +
 	"\x12policy_fingerprint\x18\x02 \x01(\fR\x11policyFingerprint\x12\x1b\n" +
@@ -3859,13 +3991,14 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\x0ecausal_barrier\x18\x02 \x01(\v2\x1b.graph.v1.EdgeCausalBarrierH\x00R\rcausalBarrierB\t\n" +
 	"\aoutcome\"K\n" +
 	"\x12ReplicatedPutEdges\x125\n" +
-	"\aentries\x18\x01 \x03(\v2\x1b.graph.v1.ReplicatedPutEdgeR\aentries\"\xd3\x01\n" +
+	"\aentries\x18\x01 \x03(\v2\x1b.graph.v1.ReplicatedPutEdgeR\aentries\"\xfe\x01\n" +
 	"\bMutation\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12(\n" +
 	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\x12\x16\n" +
 	"\x06origin\x18\x03 \x01(\fR\x06origin\x12$\n" +
 	"\x02op\x18\x04 \x01(\v2\x14.graph.v1.MutationOpR\x02op\x12M\n" +
-	"\x14tombstone_expiration\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x13tombstoneExpiration\"\xf5\x02\n" +
+	"\x14tombstone_expiration\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x13tombstoneExpiration\x12)\n" +
+	"\x10namespace_format\x18\x06 \x01(\tR\x0fnamespaceFormat\"\xa0\x03\n" +
 	"\x10SubscribeRequest\x12_\n" +
 	"\x13from_seq_per_origin\x18\x01 \x03(\v20.graph.v1.SubscribeRequest.FromSeqPerOriginEntryR\x10fromSeqPerOrigin\x12$\n" +
 	"\x0efrom_local_seq\x18\x02 \x01(\x04R\ffromLocalSeq\x12=\n" +
@@ -3873,7 +4006,8 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"projection\x18\x03 \x01(\x0e2\x1d.graph.v1.SubscribeProjectionR\n" +
 	"projection\x12\x1c\n" +
 	"\tbootstrap\x18\x04 \x01(\bR\tbootstrap\x128\n" +
-	"\x18accept_receipt_envelopes\x18\x05 \x01(\bR\x16acceptReceiptEnvelopes\x1aC\n" +
+	"\x18accept_receipt_envelopes\x18\x05 \x01(\bR\x16acceptReceiptEnvelopes\x12)\n" +
+	"\x10namespace_format\x18\x06 \x01(\tR\x0fnamespaceFormat\x1aC\n" +
 	"\x15FromSeqPerOriginEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xbc\x01\n" +
@@ -3900,15 +4034,17 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"checkpoint\x18\x02 \x01(\v2\x1c.graph.v1.IdentityCheckpointH\x00R\n" +
 	"checkpoint\x12@\n" +
 	"\x0eidentity_chunk\x18\x03 \x01(\v2\x17.graph.v1.IdentityChunkH\x00R\ridentityChunkB\a\n" +
-	"\x05event\"T\n" +
+	"\x05event\"\x7f\n" +
 	"\x0fSnapshotRequest\x12A\n" +
-	"\x0frequired_format\x18\x01 \x01(\x0e2\x18.graph.v1.SnapshotFormatR\x0erequiredFormat\"\x91\x02\n" +
+	"\x0frequired_format\x18\x01 \x01(\x0e2\x18.graph.v1.SnapshotFormatR\x0erequiredFormat\x12)\n" +
+	"\x10namespace_format\x18\x02 \x01(\tR\x0fnamespaceFormat\"\x91\x02\n" +
 	"\x17SnapshotReceiptMetadata\x12<\n" +
 	"\ractive_policy\x18\x01 \x01(\v2\x17.graph.v1.ReceiptPolicyR\factivePolicy\x126\n" +
 	"\x18clock_high_water_unix_ms\x18\x02 \x01(\x04R\x14clockHighWaterUnixMs\x12<\n" +
 	"\x0eorigin_cutoffs\x18\x03 \x03(\v2\x15.graph.v1.OriginStateR\roriginCutoffs\x12B\n" +
-	"\x10retired_policies\x18\x04 \x03(\v2\x17.graph.v1.ReceiptPolicyR\x0fretiredPolicies\"\x9d\x03\n" +
-	"\x0eSnapshotHeader\x12c\n" +
+	"\x10retired_policies\x18\x04 \x03(\v2\x17.graph.v1.ReceiptPolicyR\x0fretiredPolicies\"\xc8\x03\n" +
+	"\x0eSnapshotHeader\x12)\n" +
+	"\x10namespace_format\x18\x14 \x01(\tR\x0fnamespaceFormat\x12c\n" +
 	"\x15cutoff_seq_per_origin\x18\x01 \x03(\v20.graph.v1.SnapshotHeader.CutoffSeqPerOriginEntryR\x12cutoffSeqPerOrigin\x125\n" +
 	"\n" +
 	"cutoff_hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\tcutoffHlc\x12(\n" +
@@ -3933,7 +4069,11 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	" \x01(\x04R\x13retiredReceiptCount\x12I\n" +
 	"!edge_contribution_tombstone_count\x18\v \x01(\x04R\x1eedgeContributionTombstoneCount\"F\n" +
 	"\x1bSnapshotReceiptContribution\x12'\n" +
-	"\x0fcontribution_id\x18\x01 \x01(\fR\x0econtributionId\"\x90\x03\n" +
+	"\x0fcontribution_id\x18\x01 \x01(\fR\x0econtributionId\"]\n" +
+	"\x17SnapshotReceiptResource\x12\x1f\n" +
+	"\vlogical_key\x18\x01 \x01(\tR\n" +
+	"logicalKey\x12!\n" +
+	"\flogical_head\x18\x02 \x01(\tR\vlogicalHead\"\xfc\x03\n" +
 	"\x0fSnapshotReceipt\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\fR\voperationId\x12&\n" +
 	"\x0flogical_call_id\x18\x02 \x01(\fR\rlogicalCallId\x12\x1d\n" +
@@ -3945,7 +4085,10 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\rintent_sha256\x18\x06 \x01(\fR\fintentSha256\x12(\n" +
 	"\x10deadline_unix_ms\x18\a \x01(\x04R\x0edeadlineUnixMs\x12'\n" +
 	"\x0foriginal_result\x18\b \x01(\fR\x0eoriginalResult\x12I\n" +
-	"\fcontribution\x18\t \x01(\v2%.graph.v1.SnapshotReceiptContributionR\fcontribution\"d\n" +
+	"\fcontribution\x18\t \x01(\v2%.graph.v1.SnapshotReceiptContributionR\fcontribution\x12=\n" +
+	"\bresource\x18\n" +
+	" \x01(\v2!.graph.v1.SnapshotReceiptResourceR\bresource\x12+\n" +
+	"\x11lifecycle_reduced\x18\v \x01(\bR\x10lifecycleReduced\"d\n" +
 	"\x0eSnapshotVertex\x12(\n" +
 	"\x06vertex\x18\x01 \x01(\v2\x10.graph.v1.VertexR\x06vertex\x12(\n" +
 	"\x03hlc\x18\x02 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\"Y\n" +
@@ -4010,13 +4153,15 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\areceipt\x18\t \x01(\v2\x19.graph.v1.SnapshotReceiptH\x00R\areceipt\x12m\n" +
 	"\x1bedge_contribution_tombstone\x18\n" +
 	" \x01(\v2+.graph.v1.SnapshotEdgeContributionTombstoneH\x00R\x19edgeContributionTombstoneB\a\n" +
-	"\x05entry\"\x13\n" +
-	"\x11PeerStatusRequest\"s\n" +
+	"\x05entry\">\n" +
+	"\x11PeerStatusRequest\x12)\n" +
+	"\x10namespace_format\x18\x01 \x01(\tR\x0fnamespaceFormat\"s\n" +
 	"\vOriginState\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\fR\x06origin\x12\x19\n" +
 	"\blast_seq\x18\x02 \x01(\x04R\alastSeq\x121\n" +
-	"\blast_hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\alastHlc\"\xf6\x01\n" +
-	"\x12PeerStatusResponse\x12\x1f\n" +
+	"\blast_hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\alastHlc\"\xa1\x02\n" +
+	"\x12PeerStatusResponse\x12)\n" +
+	"\x10namespace_format\x18\x14 \x01(\tR\x0fnamespaceFormat\x12\x1f\n" +
 	"\vself_origin\x18\x01 \x01(\fR\n" +
 	"selfOrigin\x12/\n" +
 	"\aorigins\x18\x02 \x03(\v2\x15.graph.v1.OriginStateR\aorigins\x12:\n" +
@@ -4067,7 +4212,7 @@ func file_graph_v1_replication_proto_rawDescGZIP() []byte {
 }
 
 var file_graph_v1_replication_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_graph_v1_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_graph_v1_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_graph_v1_replication_proto_goTypes = []any{
 	(SubscribeProjection)(0),                            // 0: graph.v1.SubscribeProjection
 	(IdentityOperation)(0),                              // 1: graph.v1.IdentityOperation
@@ -4101,154 +4246,156 @@ var file_graph_v1_replication_proto_goTypes = []any{
 	(*SnapshotHeader)(nil),                              // 29: graph.v1.SnapshotHeader
 	(*SnapshotFooter)(nil),                              // 30: graph.v1.SnapshotFooter
 	(*SnapshotReceiptContribution)(nil),                 // 31: graph.v1.SnapshotReceiptContribution
-	(*SnapshotReceipt)(nil),                             // 32: graph.v1.SnapshotReceipt
-	(*SnapshotVertex)(nil),                              // 33: graph.v1.SnapshotVertex
-	(*SnapshotVertexCausalBarrier)(nil),                 // 34: graph.v1.SnapshotVertexCausalBarrier
-	(*SnapshotEdgeContribution)(nil),                    // 35: graph.v1.SnapshotEdgeContribution
-	(*SnapshotEdgeDerivedAggregate)(nil),                // 36: graph.v1.SnapshotEdgeDerivedAggregate
-	(*SnapshotEdge)(nil),                                // 37: graph.v1.SnapshotEdge
-	(*SnapshotEdgeCausalBarrier)(nil),                   // 38: graph.v1.SnapshotEdgeCausalBarrier
-	(*SnapshotVertexTombstone)(nil),                     // 39: graph.v1.SnapshotVertexTombstone
-	(*SnapshotEdgeTombstone)(nil),                       // 40: graph.v1.SnapshotEdgeTombstone
-	(*SnapshotEdgeContributionTombstone)(nil),           // 41: graph.v1.SnapshotEdgeContributionTombstone
-	(*SnapshotResponse)(nil),                            // 42: graph.v1.SnapshotResponse
-	(*PeerStatusRequest)(nil),                           // 43: graph.v1.PeerStatusRequest
-	(*OriginState)(nil),                                 // 44: graph.v1.OriginState
-	(*PeerStatusResponse)(nil),                          // 45: graph.v1.PeerStatusResponse
-	nil,                                                 // 46: graph.v1.SubscribeRequest.FromSeqPerOriginEntry
-	nil,                                                 // 47: graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry
-	nil,                                                 // 48: graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
-	(*PutVertexRequest)(nil),                            // 49: graph.v1.PutVertexRequest
-	(*PutVerticesRequest)(nil),                          // 50: graph.v1.PutVerticesRequest
-	(*DeleteVertexRequest)(nil),                         // 51: graph.v1.DeleteVertexRequest
-	(*DeleteVerticesRequest)(nil),                       // 52: graph.v1.DeleteVerticesRequest
-	(*DeleteVerticesByPrefixRequest)(nil),               // 53: graph.v1.DeleteVerticesByPrefixRequest
-	(*AddEdgeRequest)(nil),                              // 54: graph.v1.AddEdgeRequest
-	(*AddEdgesRequest)(nil),                             // 55: graph.v1.AddEdgesRequest
-	(*PutEdgeRequest)(nil),                              // 56: graph.v1.PutEdgeRequest
-	(*PutEdgesRequest)(nil),                             // 57: graph.v1.PutEdgesRequest
-	(*DeleteEdgeRequest)(nil),                           // 58: graph.v1.DeleteEdgeRequest
-	(*DeleteEdgesRequest)(nil),                          // 59: graph.v1.DeleteEdgesRequest
-	(*DeleteEdgesByPrefixRequest)(nil),                  // 60: graph.v1.DeleteEdgesByPrefixRequest
-	(*DeleteEdgeContributionRequest)(nil),               // 61: graph.v1.DeleteEdgeContributionRequest
-	(*DeleteEdgeContributionsRequest)(nil),              // 62: graph.v1.DeleteEdgeContributionsRequest
-	(*EdgeKey)(nil),                                     // 63: graph.v1.EdgeKey
-	(*MutationReceipt)(nil),                             // 64: graph.v1.MutationReceipt
-	(*timestamppb.Timestamp)(nil),                       // 65: google.protobuf.Timestamp
-	(*EdgeContributionKey)(nil),                         // 66: graph.v1.EdgeContributionKey
-	(*Vertex)(nil),                                      // 67: graph.v1.Vertex
-	(*Edge)(nil),                                        // 68: graph.v1.Edge
-	(*ReceiptPolicy)(nil),                               // 69: graph.v1.ReceiptPolicy
+	(*SnapshotReceiptResource)(nil),                     // 32: graph.v1.SnapshotReceiptResource
+	(*SnapshotReceipt)(nil),                             // 33: graph.v1.SnapshotReceipt
+	(*SnapshotVertex)(nil),                              // 34: graph.v1.SnapshotVertex
+	(*SnapshotVertexCausalBarrier)(nil),                 // 35: graph.v1.SnapshotVertexCausalBarrier
+	(*SnapshotEdgeContribution)(nil),                    // 36: graph.v1.SnapshotEdgeContribution
+	(*SnapshotEdgeDerivedAggregate)(nil),                // 37: graph.v1.SnapshotEdgeDerivedAggregate
+	(*SnapshotEdge)(nil),                                // 38: graph.v1.SnapshotEdge
+	(*SnapshotEdgeCausalBarrier)(nil),                   // 39: graph.v1.SnapshotEdgeCausalBarrier
+	(*SnapshotVertexTombstone)(nil),                     // 40: graph.v1.SnapshotVertexTombstone
+	(*SnapshotEdgeTombstone)(nil),                       // 41: graph.v1.SnapshotEdgeTombstone
+	(*SnapshotEdgeContributionTombstone)(nil),           // 42: graph.v1.SnapshotEdgeContributionTombstone
+	(*SnapshotResponse)(nil),                            // 43: graph.v1.SnapshotResponse
+	(*PeerStatusRequest)(nil),                           // 44: graph.v1.PeerStatusRequest
+	(*OriginState)(nil),                                 // 45: graph.v1.OriginState
+	(*PeerStatusResponse)(nil),                          // 46: graph.v1.PeerStatusResponse
+	nil,                                                 // 47: graph.v1.SubscribeRequest.FromSeqPerOriginEntry
+	nil,                                                 // 48: graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry
+	nil,                                                 // 49: graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
+	(*PutVertexRequest)(nil),                            // 50: graph.v1.PutVertexRequest
+	(*PutVerticesRequest)(nil),                          // 51: graph.v1.PutVerticesRequest
+	(*DeleteVertexRequest)(nil),                         // 52: graph.v1.DeleteVertexRequest
+	(*DeleteVerticesRequest)(nil),                       // 53: graph.v1.DeleteVerticesRequest
+	(*DeleteVerticesByPrefixRequest)(nil),               // 54: graph.v1.DeleteVerticesByPrefixRequest
+	(*AddEdgeRequest)(nil),                              // 55: graph.v1.AddEdgeRequest
+	(*AddEdgesRequest)(nil),                             // 56: graph.v1.AddEdgesRequest
+	(*PutEdgeRequest)(nil),                              // 57: graph.v1.PutEdgeRequest
+	(*PutEdgesRequest)(nil),                             // 58: graph.v1.PutEdgesRequest
+	(*DeleteEdgeRequest)(nil),                           // 59: graph.v1.DeleteEdgeRequest
+	(*DeleteEdgesRequest)(nil),                          // 60: graph.v1.DeleteEdgesRequest
+	(*DeleteEdgesByPrefixRequest)(nil),                  // 61: graph.v1.DeleteEdgesByPrefixRequest
+	(*DeleteEdgeContributionRequest)(nil),               // 62: graph.v1.DeleteEdgeContributionRequest
+	(*DeleteEdgeContributionsRequest)(nil),              // 63: graph.v1.DeleteEdgeContributionsRequest
+	(*EdgeKey)(nil),                                     // 64: graph.v1.EdgeKey
+	(*MutationReceipt)(nil),                             // 65: graph.v1.MutationReceipt
+	(*timestamppb.Timestamp)(nil),                       // 66: google.protobuf.Timestamp
+	(*EdgeContributionKey)(nil),                         // 67: graph.v1.EdgeContributionKey
+	(*Vertex)(nil),                                      // 68: graph.v1.Vertex
+	(*Edge)(nil),                                        // 69: graph.v1.Edge
+	(*ReceiptPolicy)(nil),                               // 70: graph.v1.ReceiptPolicy
 }
 var file_graph_v1_replication_proto_depIdxs = []int32{
-	49,  // 0: graph.v1.MutationOp.put_vertex:type_name -> graph.v1.PutVertexRequest
-	50,  // 1: graph.v1.MutationOp.put_vertices:type_name -> graph.v1.PutVerticesRequest
-	51,  // 2: graph.v1.MutationOp.delete_vertex:type_name -> graph.v1.DeleteVertexRequest
-	52,  // 3: graph.v1.MutationOp.delete_vertices:type_name -> graph.v1.DeleteVerticesRequest
-	53,  // 4: graph.v1.MutationOp.delete_vertices_by_prefix:type_name -> graph.v1.DeleteVerticesByPrefixRequest
-	54,  // 5: graph.v1.MutationOp.add_edge:type_name -> graph.v1.AddEdgeRequest
-	55,  // 6: graph.v1.MutationOp.add_edges:type_name -> graph.v1.AddEdgesRequest
-	56,  // 7: graph.v1.MutationOp.put_edge:type_name -> graph.v1.PutEdgeRequest
-	57,  // 8: graph.v1.MutationOp.put_edges:type_name -> graph.v1.PutEdgesRequest
-	58,  // 9: graph.v1.MutationOp.delete_edge:type_name -> graph.v1.DeleteEdgeRequest
-	59,  // 10: graph.v1.MutationOp.delete_edges:type_name -> graph.v1.DeleteEdgesRequest
-	60,  // 11: graph.v1.MutationOp.delete_edges_by_prefix:type_name -> graph.v1.DeleteEdgesByPrefixRequest
+	50,  // 0: graph.v1.MutationOp.put_vertex:type_name -> graph.v1.PutVertexRequest
+	51,  // 1: graph.v1.MutationOp.put_vertices:type_name -> graph.v1.PutVerticesRequest
+	52,  // 2: graph.v1.MutationOp.delete_vertex:type_name -> graph.v1.DeleteVertexRequest
+	53,  // 3: graph.v1.MutationOp.delete_vertices:type_name -> graph.v1.DeleteVerticesRequest
+	54,  // 4: graph.v1.MutationOp.delete_vertices_by_prefix:type_name -> graph.v1.DeleteVerticesByPrefixRequest
+	55,  // 5: graph.v1.MutationOp.add_edge:type_name -> graph.v1.AddEdgeRequest
+	56,  // 6: graph.v1.MutationOp.add_edges:type_name -> graph.v1.AddEdgesRequest
+	57,  // 7: graph.v1.MutationOp.put_edge:type_name -> graph.v1.PutEdgeRequest
+	58,  // 8: graph.v1.MutationOp.put_edges:type_name -> graph.v1.PutEdgesRequest
+	59,  // 9: graph.v1.MutationOp.delete_edge:type_name -> graph.v1.DeleteEdgeRequest
+	60,  // 10: graph.v1.MutationOp.delete_edges:type_name -> graph.v1.DeleteEdgesRequest
+	61,  // 11: graph.v1.MutationOp.delete_edges_by_prefix:type_name -> graph.v1.DeleteEdgesByPrefixRequest
 	18,  // 12: graph.v1.MutationOp.replicated_put_vertices:type_name -> graph.v1.ReplicatedPutVertices
 	21,  // 13: graph.v1.MutationOp.replicated_put_edges:type_name -> graph.v1.ReplicatedPutEdges
 	7,   // 14: graph.v1.MutationOp.replicated_receipt_edge_delete:type_name -> graph.v1.ReplicatedReceiptEdgeDelete
 	11,  // 15: graph.v1.MutationOp.replicated_receipt_vertex_put:type_name -> graph.v1.ReplicatedReceiptVertexPut
 	13,  // 16: graph.v1.MutationOp.replicated_receipt_vertex_delete:type_name -> graph.v1.ReplicatedReceiptVertexDelete
 	15,  // 17: graph.v1.MutationOp.replicated_receipt_edge_add:type_name -> graph.v1.ReplicatedReceiptEdgeAdd
-	61,  // 18: graph.v1.MutationOp.delete_edge_contribution:type_name -> graph.v1.DeleteEdgeContributionRequest
-	62,  // 19: graph.v1.MutationOp.delete_edge_contributions:type_name -> graph.v1.DeleteEdgeContributionsRequest
+	62,  // 18: graph.v1.MutationOp.delete_edge_contribution:type_name -> graph.v1.DeleteEdgeContributionRequest
+	63,  // 19: graph.v1.MutationOp.delete_edge_contributions:type_name -> graph.v1.DeleteEdgeContributionsRequest
 	9,   // 20: graph.v1.MutationOp.replicated_receipt_edge_contribution_delete:type_name -> graph.v1.ReplicatedReceiptEdgeContributionDelete
-	63,  // 21: graph.v1.ReplicatedReceiptEdgeDeleteItem.key:type_name -> graph.v1.EdgeKey
-	64,  // 22: graph.v1.ReplicatedReceiptEdgeDeleteItem.receipt:type_name -> graph.v1.MutationReceipt
-	65,  // 23: graph.v1.ReplicatedReceiptEdgeDelete.tombstone_expiration:type_name -> google.protobuf.Timestamp
+	64,  // 21: graph.v1.ReplicatedReceiptEdgeDeleteItem.key:type_name -> graph.v1.EdgeKey
+	65,  // 22: graph.v1.ReplicatedReceiptEdgeDeleteItem.receipt:type_name -> graph.v1.MutationReceipt
+	66,  // 23: graph.v1.ReplicatedReceiptEdgeDelete.tombstone_expiration:type_name -> google.protobuf.Timestamp
 	6,   // 24: graph.v1.ReplicatedReceiptEdgeDelete.items:type_name -> graph.v1.ReplicatedReceiptEdgeDeleteItem
-	66,  // 25: graph.v1.ReplicatedReceiptEdgeContributionDeleteItem.key:type_name -> graph.v1.EdgeContributionKey
-	64,  // 26: graph.v1.ReplicatedReceiptEdgeContributionDeleteItem.receipt:type_name -> graph.v1.MutationReceipt
-	65,  // 27: graph.v1.ReplicatedReceiptEdgeContributionDelete.tombstone_expiration:type_name -> google.protobuf.Timestamp
+	67,  // 25: graph.v1.ReplicatedReceiptEdgeContributionDeleteItem.key:type_name -> graph.v1.EdgeContributionKey
+	65,  // 26: graph.v1.ReplicatedReceiptEdgeContributionDeleteItem.receipt:type_name -> graph.v1.MutationReceipt
+	66,  // 27: graph.v1.ReplicatedReceiptEdgeContributionDelete.tombstone_expiration:type_name -> google.protobuf.Timestamp
 	8,   // 28: graph.v1.ReplicatedReceiptEdgeContributionDelete.items:type_name -> graph.v1.ReplicatedReceiptEdgeContributionDeleteItem
-	67,  // 29: graph.v1.ReplicatedReceiptVertexPutItem.original:type_name -> graph.v1.Vertex
-	64,  // 30: graph.v1.ReplicatedReceiptVertexPutItem.receipt:type_name -> graph.v1.MutationReceipt
+	68,  // 29: graph.v1.ReplicatedReceiptVertexPutItem.original:type_name -> graph.v1.Vertex
+	65,  // 30: graph.v1.ReplicatedReceiptVertexPutItem.receipt:type_name -> graph.v1.MutationReceipt
 	17,  // 31: graph.v1.ReplicatedReceiptVertexPutItem.accepted:type_name -> graph.v1.ReplicatedPutVertex
 	10,  // 32: graph.v1.ReplicatedReceiptVertexPut.items:type_name -> graph.v1.ReplicatedReceiptVertexPutItem
-	64,  // 33: graph.v1.ReplicatedReceiptVertexDeleteItem.receipt:type_name -> graph.v1.MutationReceipt
-	65,  // 34: graph.v1.ReplicatedReceiptVertexDelete.tombstone_expiration:type_name -> google.protobuf.Timestamp
+	65,  // 33: graph.v1.ReplicatedReceiptVertexDeleteItem.receipt:type_name -> graph.v1.MutationReceipt
+	66,  // 34: graph.v1.ReplicatedReceiptVertexDelete.tombstone_expiration:type_name -> google.protobuf.Timestamp
 	12,  // 35: graph.v1.ReplicatedReceiptVertexDelete.items:type_name -> graph.v1.ReplicatedReceiptVertexDeleteItem
-	68,  // 36: graph.v1.ReplicatedReceiptEdgeAddItem.original:type_name -> graph.v1.Edge
-	64,  // 37: graph.v1.ReplicatedReceiptEdgeAddItem.receipt:type_name -> graph.v1.MutationReceipt
+	69,  // 36: graph.v1.ReplicatedReceiptEdgeAddItem.original:type_name -> graph.v1.Edge
+	65,  // 37: graph.v1.ReplicatedReceiptEdgeAddItem.receipt:type_name -> graph.v1.MutationReceipt
 	14,  // 38: graph.v1.ReplicatedReceiptEdgeAdd.items:type_name -> graph.v1.ReplicatedReceiptEdgeAddItem
-	67,  // 39: graph.v1.ReplicatedPutVertex.live:type_name -> graph.v1.Vertex
+	68,  // 39: graph.v1.ReplicatedPutVertex.live:type_name -> graph.v1.Vertex
 	16,  // 40: graph.v1.ReplicatedPutVertex.causal_barrier:type_name -> graph.v1.VertexCausalBarrier
 	17,  // 41: graph.v1.ReplicatedPutVertices.entries:type_name -> graph.v1.ReplicatedPutVertex
-	68,  // 42: graph.v1.ReplicatedPutEdge.live:type_name -> graph.v1.Edge
+	69,  // 42: graph.v1.ReplicatedPutEdge.live:type_name -> graph.v1.Edge
 	19,  // 43: graph.v1.ReplicatedPutEdge.causal_barrier:type_name -> graph.v1.EdgeCausalBarrier
 	20,  // 44: graph.v1.ReplicatedPutEdges.entries:type_name -> graph.v1.ReplicatedPutEdge
 	4,   // 45: graph.v1.Mutation.hlc:type_name -> graph.v1.HLCTimestamp
 	5,   // 46: graph.v1.Mutation.op:type_name -> graph.v1.MutationOp
-	65,  // 47: graph.v1.Mutation.tombstone_expiration:type_name -> google.protobuf.Timestamp
-	46,  // 48: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
+	66,  // 47: graph.v1.Mutation.tombstone_expiration:type_name -> google.protobuf.Timestamp
+	47,  // 48: graph.v1.SubscribeRequest.from_seq_per_origin:type_name -> graph.v1.SubscribeRequest.FromSeqPerOriginEntry
 	0,   // 49: graph.v1.SubscribeRequest.projection:type_name -> graph.v1.SubscribeProjection
-	47,  // 50: graph.v1.IdentityCheckpoint.last_seq_per_origin:type_name -> graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry
+	48,  // 50: graph.v1.IdentityCheckpoint.last_seq_per_origin:type_name -> graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry
 	4,   // 51: graph.v1.IdentityChunk.hlc:type_name -> graph.v1.HLCTimestamp
 	1,   // 52: graph.v1.IdentityChunk.operation:type_name -> graph.v1.IdentityOperation
-	63,  // 53: graph.v1.IdentityChunk.edge_keys:type_name -> graph.v1.EdgeKey
+	64,  // 53: graph.v1.IdentityChunk.edge_keys:type_name -> graph.v1.EdgeKey
 	22,  // 54: graph.v1.SubscribeResponse.mutation:type_name -> graph.v1.Mutation
 	24,  // 55: graph.v1.SubscribeResponse.checkpoint:type_name -> graph.v1.IdentityCheckpoint
 	25,  // 56: graph.v1.SubscribeResponse.identity_chunk:type_name -> graph.v1.IdentityChunk
 	2,   // 57: graph.v1.SnapshotRequest.required_format:type_name -> graph.v1.SnapshotFormat
-	69,  // 58: graph.v1.SnapshotReceiptMetadata.active_policy:type_name -> graph.v1.ReceiptPolicy
-	44,  // 59: graph.v1.SnapshotReceiptMetadata.origin_cutoffs:type_name -> graph.v1.OriginState
-	69,  // 60: graph.v1.SnapshotReceiptMetadata.retired_policies:type_name -> graph.v1.ReceiptPolicy
-	48,  // 61: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
+	70,  // 58: graph.v1.SnapshotReceiptMetadata.active_policy:type_name -> graph.v1.ReceiptPolicy
+	45,  // 59: graph.v1.SnapshotReceiptMetadata.origin_cutoffs:type_name -> graph.v1.OriginState
+	70,  // 60: graph.v1.SnapshotReceiptMetadata.retired_policies:type_name -> graph.v1.ReceiptPolicy
+	49,  // 61: graph.v1.SnapshotHeader.cutoff_seq_per_origin:type_name -> graph.v1.SnapshotHeader.CutoffSeqPerOriginEntry
 	4,   // 62: graph.v1.SnapshotHeader.cutoff_hlc:type_name -> graph.v1.HLCTimestamp
 	2,   // 63: graph.v1.SnapshotHeader.format:type_name -> graph.v1.SnapshotFormat
 	28,  // 64: graph.v1.SnapshotHeader.receipt_metadata:type_name -> graph.v1.SnapshotReceiptMetadata
 	3,   // 65: graph.v1.SnapshotReceipt.kind:type_name -> graph.v1.SnapshotReceiptKind
 	31,  // 66: graph.v1.SnapshotReceipt.contribution:type_name -> graph.v1.SnapshotReceiptContribution
-	67,  // 67: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
-	4,   // 68: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
-	4,   // 69: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
-	65,  // 70: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
-	4,   // 71: graph.v1.SnapshotEdgeContribution.hlc:type_name -> graph.v1.HLCTimestamp
-	65,  // 72: graph.v1.SnapshotEdgeDerivedAggregate.expiration:type_name -> google.protobuf.Timestamp
-	35,  // 73: graph.v1.SnapshotEdgeDerivedAggregate.adds:type_name -> graph.v1.SnapshotEdgeContribution
-	4,   // 74: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
-	35,  // 75: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
-	36,  // 76: graph.v1.SnapshotEdge.derived_aggregate:type_name -> graph.v1.SnapshotEdgeDerivedAggregate
-	4,   // 77: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
-	4,   // 78: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	65,  // 79: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
-	4,   // 80: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	65,  // 81: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
-	4,   // 82: graph.v1.SnapshotEdgeContributionTombstone.hlc:type_name -> graph.v1.HLCTimestamp
-	65,  // 83: graph.v1.SnapshotEdgeContributionTombstone.expiration:type_name -> google.protobuf.Timestamp
-	29,  // 84: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
-	33,  // 85: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
-	37,  // 86: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
-	30,  // 87: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
-	34,  // 88: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
-	38,  // 89: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
-	39,  // 90: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
-	40,  // 91: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
-	32,  // 92: graph.v1.SnapshotResponse.receipt:type_name -> graph.v1.SnapshotReceipt
-	41,  // 93: graph.v1.SnapshotResponse.edge_contribution_tombstone:type_name -> graph.v1.SnapshotEdgeContributionTombstone
-	4,   // 94: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
-	44,  // 95: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
-	2,   // 96: graph.v1.PeerStatusResponse.required_snapshot_format:type_name -> graph.v1.SnapshotFormat
-	23,  // 97: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
-	27,  // 98: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
-	43,  // 99: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
-	26,  // 100: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
-	42,  // 101: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
-	45,  // 102: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
-	100, // [100:103] is the sub-list for method output_type
-	97,  // [97:100] is the sub-list for method input_type
-	97,  // [97:97] is the sub-list for extension type_name
-	97,  // [97:97] is the sub-list for extension extendee
-	0,   // [0:97] is the sub-list for field type_name
+	32,  // 67: graph.v1.SnapshotReceipt.resource:type_name -> graph.v1.SnapshotReceiptResource
+	68,  // 68: graph.v1.SnapshotVertex.vertex:type_name -> graph.v1.Vertex
+	4,   // 69: graph.v1.SnapshotVertex.hlc:type_name -> graph.v1.HLCTimestamp
+	4,   // 70: graph.v1.SnapshotVertexCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	66,  // 71: graph.v1.SnapshotEdgeContribution.expiration:type_name -> google.protobuf.Timestamp
+	4,   // 72: graph.v1.SnapshotEdgeContribution.hlc:type_name -> graph.v1.HLCTimestamp
+	66,  // 73: graph.v1.SnapshotEdgeDerivedAggregate.expiration:type_name -> google.protobuf.Timestamp
+	36,  // 74: graph.v1.SnapshotEdgeDerivedAggregate.adds:type_name -> graph.v1.SnapshotEdgeContribution
+	4,   // 75: graph.v1.SnapshotEdge.hlc:type_name -> graph.v1.HLCTimestamp
+	36,  // 76: graph.v1.SnapshotEdge.contributions:type_name -> graph.v1.SnapshotEdgeContribution
+	37,  // 77: graph.v1.SnapshotEdge.derived_aggregate:type_name -> graph.v1.SnapshotEdgeDerivedAggregate
+	4,   // 78: graph.v1.SnapshotEdgeCausalBarrier.hlc:type_name -> graph.v1.HLCTimestamp
+	4,   // 79: graph.v1.SnapshotVertexTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	66,  // 80: graph.v1.SnapshotVertexTombstone.expiration:type_name -> google.protobuf.Timestamp
+	4,   // 81: graph.v1.SnapshotEdgeTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	66,  // 82: graph.v1.SnapshotEdgeTombstone.expiration:type_name -> google.protobuf.Timestamp
+	4,   // 83: graph.v1.SnapshotEdgeContributionTombstone.hlc:type_name -> graph.v1.HLCTimestamp
+	66,  // 84: graph.v1.SnapshotEdgeContributionTombstone.expiration:type_name -> google.protobuf.Timestamp
+	29,  // 85: graph.v1.SnapshotResponse.header:type_name -> graph.v1.SnapshotHeader
+	34,  // 86: graph.v1.SnapshotResponse.vertex:type_name -> graph.v1.SnapshotVertex
+	38,  // 87: graph.v1.SnapshotResponse.edge:type_name -> graph.v1.SnapshotEdge
+	30,  // 88: graph.v1.SnapshotResponse.footer:type_name -> graph.v1.SnapshotFooter
+	35,  // 89: graph.v1.SnapshotResponse.vertex_causal_barrier:type_name -> graph.v1.SnapshotVertexCausalBarrier
+	39,  // 90: graph.v1.SnapshotResponse.edge_causal_barrier:type_name -> graph.v1.SnapshotEdgeCausalBarrier
+	40,  // 91: graph.v1.SnapshotResponse.vertex_tombstone:type_name -> graph.v1.SnapshotVertexTombstone
+	41,  // 92: graph.v1.SnapshotResponse.edge_tombstone:type_name -> graph.v1.SnapshotEdgeTombstone
+	33,  // 93: graph.v1.SnapshotResponse.receipt:type_name -> graph.v1.SnapshotReceipt
+	42,  // 94: graph.v1.SnapshotResponse.edge_contribution_tombstone:type_name -> graph.v1.SnapshotEdgeContributionTombstone
+	4,   // 95: graph.v1.OriginState.last_hlc:type_name -> graph.v1.HLCTimestamp
+	45,  // 96: graph.v1.PeerStatusResponse.origins:type_name -> graph.v1.OriginState
+	2,   // 97: graph.v1.PeerStatusResponse.required_snapshot_format:type_name -> graph.v1.SnapshotFormat
+	23,  // 98: graph.v1.LanternReplicationService.Subscribe:input_type -> graph.v1.SubscribeRequest
+	27,  // 99: graph.v1.LanternReplicationService.Snapshot:input_type -> graph.v1.SnapshotRequest
+	44,  // 100: graph.v1.LanternReplicationService.PeerStatus:input_type -> graph.v1.PeerStatusRequest
+	26,  // 101: graph.v1.LanternReplicationService.Subscribe:output_type -> graph.v1.SubscribeResponse
+	43,  // 102: graph.v1.LanternReplicationService.Snapshot:output_type -> graph.v1.SnapshotResponse
+	46,  // 103: graph.v1.LanternReplicationService.PeerStatus:output_type -> graph.v1.PeerStatusResponse
+	101, // [101:104] is the sub-list for method output_type
+	98,  // [98:101] is the sub-list for method input_type
+	98,  // [98:98] is the sub-list for extension type_name
+	98,  // [98:98] is the sub-list for extension extendee
+	0,   // [0:98] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_replication_proto_init() }
@@ -4293,7 +4440,7 @@ func file_graph_v1_replication_proto_init() {
 		(*SubscribeResponse_Checkpoint)(nil),
 		(*SubscribeResponse_IdentityChunk)(nil),
 	}
-	file_graph_v1_replication_proto_msgTypes[38].OneofWrappers = []any{
+	file_graph_v1_replication_proto_msgTypes[39].OneofWrappers = []any{
 		(*SnapshotResponse_Header)(nil),
 		(*SnapshotResponse_Vertex)(nil),
 		(*SnapshotResponse_Edge)(nil),
@@ -4311,7 +4458,7 @@ func file_graph_v1_replication_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_replication_proto_rawDesc), len(file_graph_v1_replication_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   45,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -123,6 +123,7 @@ type ObservabilityConfig struct {
 // retained floor. There is deliberately no eviction policy. Pair with
 // GOMEMLIMIT as the second line of defense.
 type CacheConfig struct {
+	namespaceFormat        string
 	TTL                    time.Duration
 	GCInterval             time.Duration
 	GCEdgeBudget           int
@@ -637,7 +638,11 @@ func ConfigureGraphCache(gc *graphcache.GraphCache[string, *v1.Vertex], c CacheC
 			opts = append(opts, graphcache.WithoutSearchPositions())
 		}
 		opts = append(opts, graphcache.WithSearchAnalysisLimits(sc.AnalysisLimits))
-		gc.EnableSearchIndex(vertexSearchDocument, strings.Compare, opts...)
+		projection := vertexSearchDocument
+		if c.namespaceFormat != "" {
+			projection = namespacedVertexSearchDocument
+		}
+		gc.EnableSearchIndex(projection, strings.Compare, opts...)
 	}
 }
 

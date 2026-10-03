@@ -42,7 +42,7 @@ func TestAuth_ReservedSystemImageRemainsPrivateOverConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	stage.Commit()
-	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true}).
+	svc := service.NewLanternService(cache).WithDataNamespace().WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true}).
 		WithCapacityLimits(service.CapacityLimits{MaxVertices: 1})
 	srv := newConnectTestServer(t, svc, nil)
 	l := newConnectClientFor(t, srv.url)
@@ -91,6 +91,134 @@ func TestAuth_ReservedSystemImageRemainsPrivateOverConnect(t *testing.T) {
 	}
 	if len(metadata.Snapshot().Value) == 0 || metadata.Snapshot().Revision != 2 {
 		t.Fatal("ordinary data deletion removed system image")
+	}
+}
+
+func TestAuth_DataNamespacePublicConnectBoundary(t *testing.T) {
+	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
+	svc := service.NewLanternService(cache).WithDataNamespace()
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	keys := []string{"users:user1", "sys:users:user1", "data:users:user1", "日本語:ユーザ"}
+	vertices := make([]*pb.Vertex, len(keys))
+	for i, key := range keys {
+		vertices[i] = &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "sys:literal-value"}}
+	}
+	if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range keys {
+		if value, live := cache.GetVertex("data:" + key); !live || value.GetKey() != "data:"+key || value.GetString_() != "sys:literal-value" {
+			t.Fatalf("physical data identity/value: %q", key)
+		}
+	}
+	physicalKeys := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		physicalKeys["data:"+key] = true
+	}
+	for _, vertex := range cache.SnapshotVertices() {
+		if !physicalKeys[vertex.Key] {
+			t.Fatalf("unexpected physical identity: %q", vertex.Key)
+		}
+	}
+	got, err := raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: append(append([]string(nil), keys...), "sys:missing")}))
+	if err != nil || len(got.Msg.GetVertices()) != len(keys) || !reflect.DeepEqual(got.Msg.GetMissing(), []string{"sys:missing"}) {
+		t.Fatalf("logical plural read: %v %v", got, err)
+	}
+	for _, value := range got.Msg.GetVertices() {
+		if !strings.HasPrefix(value.GetString_(), "sys:") {
+			t.Fatal("ordinary string value was namespace-converted")
+		}
+	}
+	if _, err := raw.PutEdge(ctx, connect.NewRequest(&pb.PutEdgeRequest{Edge: &pb.Edge{Tail: keys[0], Head: keys[1], Weight: 2}})); err != nil {
+		t.Fatal(err)
+	}
+	edge, err := raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: keys[0], Head: keys[1]}))
+	if err != nil || edge.Msg.GetEdge().GetTail() != keys[0] || edge.Msg.GetEdge().GetHead() != keys[1] {
+		t.Fatalf("edge endpoint decoding: %v", err)
+	}
+	first, err := raw.ScanVertexKeys(ctx, connect.NewRequest(&pb.ScanVertexKeysRequest{Limit: 1}))
+	if err != nil || len(first.Msg.GetKeys()) != 1 || len(first.Msg.GetNextCursor()) == 0 {
+		t.Fatalf("empty prefix first page: %v", err)
+	}
+	second, err := raw.ScanVertexKeys(ctx, connect.NewRequest(&pb.ScanVertexKeysRequest{Limit: 10, Cursor: first.Msg.GetNextCursor()}))
+	if err != nil || len(second.Msg.GetKeys()) != len(keys)-1 {
+		t.Fatalf("logical cursor continuation: %v", err)
+	}
+	if _, err := raw.ScanVertexKeys(ctx, connect.NewRequest(&pb.ScanVertexKeysRequest{Prefix: "sys:", Cursor: first.Msg.GetNextCursor()})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("cursor scope substitution accepted: %v", err)
+	}
+	if _, err := raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "safe"}, {Key: ""}}})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("invalid mixed batch: %v", err)
+	}
+	if _, live := cache.GetVertex("data:safe"); live {
+		t.Fatal("invalid mixed batch partially committed")
+	}
+	if _, err := raw.DeleteVerticesByPrefix(ctx, connect.NewRequest(&pb.DeleteVerticesByPrefixRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty destructive prefix guard: %v", err)
+	}
+	count, err := raw.CountVerticesByPrefix(ctx, connect.NewRequest(&pb.CountVerticesByPrefixRequest{Prefix: "sys:"}))
+	if err != nil || count.Msg.GetCount() != 1 {
+		t.Fatalf("literal sys prefix count: %v", err)
+	}
+}
+
+func TestAuth_DataNamespaceReceiptReplayOverConnect(t *testing.T) {
+	config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "receipts.wal"), hlc.NodeID{0x49})
+	config.NamespaceFormat = "namespaced-v1"
+	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	primary := runtime.NewLanternService(nil).WithDataNamespace().WithTombstoneTTL(2 * time.Hour)
+	rep, err := runtime.NewLanternReplicationService(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyInstallation(primary, rep); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CertifyReceiptBackup(primary, rep); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ActivatePublicReceipts(primary, rep); err != nil {
+		t.Fatal(err)
+	}
+	server := newConnectTestServer(t, primary, rep, provider.NewAuthInterceptor(provider.AuthConfig{Tokens: []string{testToken}}))
+	sdk := newConnectClientFor(t, server.url, client.WithAuthToken(testToken))
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	capability, err := sdk.GetReceiptCapability(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := client.NewReceiptOperationID(capability.Continuity.Epoch, time.Now(), [24]byte{0x51})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptContext := client.ReceiptContext{Mutation: client.ReceiptMutationPutVertex, Continuity: capability.Continuity,
+		GroupID: client.ReceiptGroupID{0x52}, OperationIDs: []client.ReceiptOperationID{id}}
+	for range 2 {
+		result, err := sdk.PutVertexWithReceipt(ctx, "sys:client", "logical intent", time.Hour, receiptContext)
+		if err != nil || result.Outcome != client.PutOutcomeAppliedAndLive {
+			t.Fatalf("namespaced receipt Put/replay: %v", err)
+		}
+	}
+	if got, live := runtime.GraphCache().GetVertex("data:sys:client"); !live || got.GetString_() != "logical intent" || primary.LocalSeq(config.NodeID) != 1 {
+		t.Fatal("receipt replay duplicated or misclassified the graph effect")
+	}
+	status, err := sdk.GetReceiptStatus(ctx, id)
+	if err != nil || status.State != client.ReceiptConfirmed || status.Receipt == nil {
+		t.Fatalf("namespaced receipt status: %v", err)
+	}
+	if _, err := sdk.PutVertexWithReceipt(ctx, "data:sys:client", "logical intent", time.Hour, receiptContext); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("distinct logical identity reused receipt intent: %v", err)
+	}
+	if _, live := runtime.GraphCache().GetVertex("data:data:sys:client"); live {
+		t.Fatal("conflicting receipt created a second data identity")
 	}
 }
 
@@ -545,3 +673,6 @@ func connectCode(err error) connect.Code {
 	}
 	return 0
 }
+
+// This fixture composes the new boundary explicitly while production OIDC
+// remains guarded until data, browser and peer admission are installed.

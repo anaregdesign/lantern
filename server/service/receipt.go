@@ -249,6 +249,9 @@ func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetRece
 		return nil, receiptLookupError(err)
 	}
 
+	if err := s.authorizeReceiptObservations(ctx, observations); err != nil {
+		return nil, err
+	}
 	statuses := make([]*pb.ReceiptStatus, len(ids))
 	var noLongerProvable uint64
 	for i, observation := range observations {

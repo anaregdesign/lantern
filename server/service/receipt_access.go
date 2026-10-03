@@ -1,0 +1,138 @@
+package service
+
+import (
+	"context"
+
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/security"
+	"google.golang.org/protobuf/proto"
+)
+
+// Receipt disclosure uses original provenance and today's captured Role cut.
+// This check performs no control Store access or I/O while a receipt/graph
+// transaction is open; protected publication separately fences the admission.
+func allowsReceiptResource(access *security.Access, receipt mutationreceipt.Receipt) bool {
+	resource := receipt.Resource
+	allow := func(action security.Action) bool {
+		if resource == (mutationreceipt.ResourceIdentity{}) {
+			return access.AllowsAll(action)
+		}
+		return access.Allows(action, resource.Key) && (resource.Head == "" || access.Allows(action, resource.Head))
+	}
+	if !allow(security.ReceiptRead) || !allow(security.VertexRead) {
+		return false
+	}
+	switch receipt.Kind {
+	case mutationreceipt.PutVertex:
+		return resource.Head == "" && allow(security.VertexWrite) && ((!receipt.LifecycleReduction && resource != (mutationreceipt.ResourceIdentity{})) || allow(security.VertexDelete))
+	case mutationreceipt.DeleteVertex:
+		return resource.Head == "" && allow(security.VertexDelete)
+	case mutationreceipt.AddEdge, mutationreceipt.PutEdge:
+		mutation := security.EdgeAdd
+		if receipt.Kind == mutationreceipt.PutEdge {
+			mutation = security.EdgeWrite
+		}
+		return (resource.Head != "" || resource == (mutationreceipt.ResourceIdentity{})) && allow(security.EdgeRead) && allow(security.VertexWrite) && allow(mutation) && ((!receipt.LifecycleReduction && (resource != (mutationreceipt.ResourceIdentity{}) || receipt.Kind == mutationreceipt.AddEdge)) || allow(security.EdgeDelete))
+	case mutationreceipt.DeleteEdge, mutationreceipt.DeleteEdgeContribution:
+		return (resource.Head != "" || resource == (mutationreceipt.ResourceIdentity{})) && allow(security.EdgeRead) && allow(security.EdgeDelete)
+	default:
+		return false
+	}
+}
+
+func wholeReceiptAbsence(access *security.Access) bool {
+	return access.AllowsAll(security.ReceiptRead) && access.AllowsAll(security.VertexRead) && access.AllowsAll(security.EdgeRead)
+}
+
+// Public mutation ingress is checked before resource lookup. Original replay
+// rows subsequently add the stored lifecycle-effect requirement.
+func authorizeReceiptRequest(access *security.Access, message proto.Message) error {
+	check := func(key, head string) error {
+		if !access.Allows(security.ReceiptRead, key) || (head != "" && !access.Allows(security.ReceiptRead, head)) {
+			return dataPermissionError()
+		}
+		return nil
+	}
+	switch req := message.(type) {
+	case *pb.PutVertexRequest:
+		return check(req.GetVertex().GetKey(), "")
+	case *pb.PutVerticesRequest:
+		for _, v := range req.GetVertices() {
+			if err := check(v.GetKey(), ""); err != nil {
+				return err
+			}
+		}
+	case *pb.DeleteVertexRequest:
+		return check(req.GetKey(), "")
+	case *pb.DeleteVerticesRequest:
+		for _, key := range req.GetKeys() {
+			if err := check(key, ""); err != nil {
+				return err
+			}
+		}
+	case *pb.AddEdgeRequest:
+		return check(req.GetEdge().GetTail(), req.GetEdge().GetHead())
+	case *pb.AddEdgesRequest:
+		for _, edge := range req.GetEdges() {
+			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	case *pb.DeleteEdgeRequest:
+		return check(req.GetTail(), req.GetHead())
+	case *pb.DeleteEdgesRequest:
+		for _, edge := range req.GetEdges() {
+			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	case *pb.DeleteEdgeContributionRequest:
+		return check(req.GetTail(), req.GetHead())
+	case *pb.DeleteEdgeContributionsRequest:
+		for _, edge := range req.GetContributions() {
+			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	default:
+		return dataPermissionError()
+	}
+	return nil
+}
+
+func (s *LanternService) authorizeReceiptRows(ctx context.Context, receipts []mutationreceipt.Receipt) error {
+	if !s.dataAuthorization {
+		return nil
+	}
+	admission, known := security.AdmissionFromContext(ctx)
+	if !known {
+		return dataPermissionError()
+	}
+	for _, receipt := range receipts {
+		if !allowsReceiptResource(admission.Access(), receipt) {
+			return dataPermissionError()
+		}
+	}
+	return nil
+}
+
+func (s *LanternService) authorizeReceiptObservations(ctx context.Context, observations []mutationreceipt.Observation) error {
+	if !s.dataAuthorization {
+		return nil
+	}
+	admission, known := security.AdmissionFromContext(ctx)
+	if !known {
+		return dataPermissionError()
+	}
+	for _, observation := range observations {
+		if observation.Status == mutationreceipt.Confirmed {
+			if !allowsReceiptResource(admission.Access(), observation.Receipt) {
+				return dataPermissionError()
+			}
+		} else if !wholeReceiptAbsence(admission.Access()) {
+			return dataPermissionError()
+		}
+	}
+	return nil
+}

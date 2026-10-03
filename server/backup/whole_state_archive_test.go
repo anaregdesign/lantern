@@ -110,6 +110,7 @@ func TestWholeStateArchiveRejectsShortWrite(t *testing.T) {
 
 func TestWholeStateArchiveRoundTrip(t *testing.T) {
 	a := wholeStateArchiveFixture(t)
+	a.Receipts.Receipts[0].Resource = mutationreceipt.ResourceIdentity{Key: "sys:logical:tail", Head: "data:logical:head"}
 	raw := encodedWholeStateArchive(t, a)
 	got, err := decodeWholeStateArchive(bytes.NewReader(raw))
 	if err != nil {
@@ -268,7 +269,9 @@ func TestWholeStateArchiveRejectsDamageAndDowngrade(t *testing.T) {
 		{"truncated", raw[:len(raw)-1]},
 		{"extra byte", append(append([]byte(nil), raw...), 0)},
 		{"bad magic", mutate(func(b []byte) { b[0] ^= 1 })},
-		{"future version", mutate(func(b []byte) { b[9] = 2 })},
+		{"unclassified v1", mutate(func(b []byte) { b[9] = 1 })},
+		{"unproven v2", mutate(func(b []byte) { b[9] = 2 })},
+		{"future version", mutate(func(b []byte) { b[9] = byte(wholeStateArchiveVersion + 1) })},
 		{"missing receipt feature", mutate(func(b []byte) { b[11] = 0 })},
 		{"unknown feature", mutate(func(b []byte) { b[11] = 3 })},
 		{"nonzero reserved", mutate(func(b []byte) { b[15] = 1 })},

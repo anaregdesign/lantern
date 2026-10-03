@@ -87,6 +87,7 @@ func (s *LanternService) commitPublicReceiptEdgeDelete(
 // bound. Graph-only Snapshot/BackupSnapshot remain receipt-unaware; the
 // certified RECEIPT source captures this state through its separate path.
 type edgeDeleteReceiptEnvelope struct {
+	NamespaceFormat     string
 	Mutation            *pb.Mutation
 	Origin              hlc.NodeID
 	OriginSeq           uint64
@@ -134,7 +135,19 @@ func newEdgeDeleteReceiptCoordinator(s *LanternService, store *mutationreceipt.S
 // edgeDeleteDigest encodes the validated semantic intent, independent of
 // protobuf serialization and unknown fields. The Store separately binds the
 // logical-call group, index, and count to each operation ID.
-func edgeDeleteDigest(tail, head string) [32]byte {
+func edgeDeleteDigest(tail, head string, namespace ...string) [32]byte {
+	logical, err := receiptLogicalKey(tail, namespace)
+	if err != nil {
+		return [32]byte{}
+	}
+	tail = logical
+
+	logical, err = receiptLogicalKey(head, namespace)
+	if err != nil {
+		return [32]byte{}
+	}
+	head = logical
+
 	canonical := make([]byte, 0, 1+8+len(tail)+8+len(head))
 	canonical = append(canonical, byte(mutationreceipt.DeleteEdge))
 	var length [8]byte
@@ -147,7 +160,7 @@ func edgeDeleteDigest(tail, head string) [32]byte {
 	return mutationreceipt.IntentDigest(canonical)
 }
 
-func prepareEdgeDeleteReceiptCall(call receiptEdgeDeleteCall) ([]graphcache.EdgeKey[string], []mutationreceipt.Intent, error) {
+func prepareEdgeDeleteReceiptCall(call receiptEdgeDeleteCall, namespace ...string) ([]graphcache.EdgeKey[string], []mutationreceipt.Intent, error) {
 	if len(call.Items) == 0 || len(call.Items) > math.MaxInt32 || call.Group == (mutationreceipt.GroupID{}) {
 		return nil, nil, connect.NewError(connect.CodeInvalidArgument, mutationreceipt.ErrInvalidBatch)
 	}
@@ -160,7 +173,14 @@ func prepareEdgeDeleteReceiptCall(call receiptEdgeDeleteCall) ([]graphcache.Edge
 		keys[i] = graphcache.EdgeKey[string]{Tail: item.Tail, Head: item.Head}
 		intents[i] = mutationreceipt.Intent{
 			ID: item.ID, Group: call.Group, Index: uint32(i), Count: uint32(len(call.Items)),
-			Kind: mutationreceipt.DeleteEdge, Digest: edgeDeleteDigest(item.Tail, item.Head),
+			Kind: mutationreceipt.DeleteEdge, Digest: edgeDeleteDigest(item.Tail, item.Head, namespace...),
+		}
+		if len(namespace) > 0 {
+			resource, err := receiptResourceIdentity(namespace[0], item.Tail, item.Head)
+			if err != nil {
+				return nil, nil, invalidReceiptRequest(err)
+			}
+			intents[i].Resource = resource
 		}
 	}
 	return keys, intents, nil
@@ -220,7 +240,7 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	keys, intents, err := prepareEdgeDeleteReceiptCall(call)
+	keys, intents, err := prepareEdgeDeleteReceiptCall(call, c.service.namespaceFormat)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +277,9 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		return nil, receiptStoreError(err)
 	}
 	if classification == mutationreceipt.Duplicate {
+		if err := c.service.authorizeReceiptRows(ctx, prior); err != nil {
+			return nil, err
+		}
 		return receiptDeleteResponse(prior)
 	}
 	clockFloor, err := receiptClockFloor(tx)
@@ -306,12 +329,14 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		accepted[i] = &pb.EdgeKey{Tail: item.Key.Tail, Head: item.Key.Head}
 	}
 	mutation := &pb.Mutation{
-		Origin: append([]byte(nil), origin[:]...), Seq: seq, Hlc: hlcToProto(ts),
+		NamespaceFormat: s.namespaceFormat,
+		Origin:          append([]byte(nil), origin[:]...), Seq: seq, Hlc: hlcToProto(ts),
 		Op:                  &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: accepted}}},
 		TombstoneExpiration: timestamppb.New(expiration),
 	}
 	envelope := &edgeDeleteReceiptEnvelope{
-		Mutation: mutation, Origin: origin, OriginSeq: seq, HLC: ts,
+		NamespaceFormat: s.namespaceFormat,
+		Mutation:        mutation, Origin: origin, OriginSeq: seq, HLC: ts,
 		Epoch: c.store.Epoch(), PolicyFingerprint: c.store.PolicyFingerprint(),
 		TombstoneExpiration: expiration,
 		OriginalKeys:        append([]graphcache.EdgeKey[string](nil), keys...),
@@ -449,6 +474,7 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	defer graphTx.Abort()
 	result := graphTx.Result()
 	localEnvelope := &edgeDeleteReceiptEnvelope{
+		NamespaceFormat:     e.NamespaceFormat,
 		Origin:              origin,
 		OriginSeq:           seq,
 		HLC:                 ts,
@@ -533,6 +559,7 @@ func maximalReceiptEdgeDeleteEnvelope(
 	e *edgeDeleteReceiptEnvelope,
 ) *edgeDeleteReceiptEnvelope {
 	maximal := &edgeDeleteReceiptEnvelope{
+		NamespaceFormat:     e.NamespaceFormat,
 		Origin:              e.Origin,
 		OriginSeq:           e.OriginSeq,
 		HLC:                 e.HLC,

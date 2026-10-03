@@ -3045,6 +3045,9 @@ pub struct ReplicatedReceiptVertexPutItem {
     pub receipt: ::core::option::Option<MutationReceipt>,
     #[prost(message, optional, tag = "3")]
     pub accepted: ::core::option::Option<ReplicatedPutVertex>,
+    /// Immutable origin application-time effect, preserved on replay/status.
+    #[prost(bool, tag = "4")]
+    pub lifecycle_reduced: bool,
 }
 /// A complete ordered conditional Vertex Put call. A call with no accepted
 /// graph effects still consumes Mutation.seq and persists every exact result.
@@ -3188,6 +3191,11 @@ pub struct Mutation {
     /// than extend the deadline from its own wall clock. Other operations omit it.
     #[prost(message, optional, tag = "5")]
     pub tombstone_expiration: ::core::option::Option<::prost_types::Timestamp>,
+    /// Physical storage domain of every graph identity. Public logical keys are
+    /// encoded only at ingress; peer apply and WAL never encode them again.
+    /// Unknown/missing formats are refused by namespaced production runtimes.
+    #[prost(string, tag = "6")]
+    pub namespace_format: ::prost::alloc::string::String,
 }
 /// SubscribeRequest opens a stream of replicated mutations starting at
 /// the per-origin cursor in `from_seq_per_origin`.
@@ -3249,6 +3257,9 @@ pub struct SubscribeRequest {
     /// omit this field and fail closed instead of losing receipt metadata.
     #[prost(bool, tag = "5")]
     pub accept_receipt_envelopes: bool,
+    /// Explicit physical-key format; peer sessions must match before transfer.
+    #[prost(string, tag = "6")]
+    pub namespace_format: ::prost::alloc::string::String,
 }
 /// A bootstrap checkpoint is the responder's contiguous publication cut,
 /// not a cluster-wide consensus or freshness barrier.
@@ -3307,10 +3318,12 @@ pub mod subscribe_response {
 /// Zero means graph-only while receipt writes are disabled. A durable receiver
 /// MUST request RECEIPT and check the first header's format before applying
 /// any body frame. The header check remains mandatory.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SnapshotRequest {
     #[prost(enumeration = "SnapshotFormat", tag = "1")]
     pub required_format: i32,
+    #[prost(string, tag = "2")]
+    pub namespace_format: ::prost::alloc::string::String,
 }
 /// Receipt metadata for one RECEIPT publication cut. This message is
 /// required exactly when an RPC Snapshot header's format is RECEIPT and is
@@ -3359,6 +3372,8 @@ pub struct SnapshotReceiptMetadata {
 /// row; a graph HLC whose origin is absent from that vector is invalid.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SnapshotHeader {
+    #[prost(string, tag = "20")]
+    pub namespace_format: ::prost::alloc::string::String,
     #[prost(map = "string, uint64", tag = "1")]
     pub cutoff_seq_per_origin: ::std::collections::HashMap<
         ::prost::alloc::string::String,
@@ -3427,6 +3442,18 @@ pub struct SnapshotReceiptContribution {
 /// original_result is the exact opaque result bytes retained by the Store; it
 /// is not recomputed from the graph at snapshot time.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SnapshotReceiptResource {
+    /// Authoritative original logical identities. A missing message denotes
+    /// unproven legacy evidence, never permission to read arbitrary resources.
+    ///
+    /// Vertex key or Edge tail.
+    #[prost(string, tag = "1")]
+    pub logical_key: ::prost::alloc::string::String,
+    /// Present only for Edge mutation families.
+    #[prost(string, tag = "2")]
+    pub logical_head: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SnapshotReceipt {
     /// Exactly 49 bytes.
     #[prost(bytes = "vec", tag = "1")]
@@ -3449,6 +3476,10 @@ pub struct SnapshotReceipt {
     pub original_result: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "9")]
     pub contribution: ::core::option::Option<SnapshotReceiptContribution>,
+    #[prost(message, optional, tag = "10")]
+    pub resource: ::core::option::Option<SnapshotReceiptResource>,
+    #[prost(bool, tag = "11")]
+    pub lifecycle_reduced: bool,
 }
 /// SnapshotVertex is the snapshot-time representation of a single live
 /// vertex. The HLC field carries the last LWW timestamp the source node
@@ -3627,8 +3658,11 @@ pub mod snapshot_response {
 /// PeerStatusRequest is intentionally empty — the responder always
 /// returns its full per-origin map. Future revisions may add an
 /// optional origin filter without breaking the wire contract.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PeerStatusRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PeerStatusRequest {
+    #[prost(string, tag = "1")]
+    pub namespace_format: ::prost::alloc::string::String,
+}
 /// OriginState is the responder's last-applied position for a single
 /// origin. origin is the 16-byte HLC NodeID; last_seq is the highest
 /// per-origin seq ever passed through ApplyMutation (or appended to the
@@ -3651,6 +3685,8 @@ pub struct OriginState {
 /// peer's own writes without having to pre-configure peer NodeIDs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PeerStatusResponse {
+    #[prost(string, tag = "20")]
+    pub namespace_format: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "1")]
     pub self_origin: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, repeated, tag = "2")]

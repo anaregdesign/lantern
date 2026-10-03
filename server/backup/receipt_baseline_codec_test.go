@@ -26,6 +26,7 @@ import (
 
 func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
 	archive := wholeStateArchiveFixture(t)
+	archive.Receipts.Receipts[0].Resource = mutationreceipt.ResourceIdentity{Key: "sys:public-tail", Head: "data:public-head"}
 	codec := ReceiptBaselineCodec{}
 	capture := producerCapture(archive)
 	capture.Retired = producerRetiredSnapshot(
@@ -34,6 +35,12 @@ func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
 		archive.Receipts.ClockHighWaterMillis,
 		0x72,
 	)
+	for i := range capture.Retired.Epochs {
+		for j := range capture.Retired.Epochs[i].State.Receipts {
+			row := &capture.Retired.Epochs[i].State.Receipts[j]
+			row.Resource = mutationreceipt.ResourceIdentity{Key: "retired:vertex"}
+		}
+	}
 	raw, err := codec.EncodeCombinedReceiptBaseline(context.Background(), capture)
 	if err != nil {
 		t.Fatal(err)
@@ -41,8 +48,8 @@ func TestReceiptBaselineCodecCanonicalRoundTrip(t *testing.T) {
 	if got := string(raw[:8]); got != "LANTCBLN" {
 		t.Fatalf("combined baseline magic = %q", got)
 	}
-	if got := binary.BigEndian.Uint16(raw[8:10]); got != 1 {
-		t.Fatalf("combined baseline version = %d, want 1", got)
+	if got := binary.BigEndian.Uint16(raw[8:10]); got != 3 {
+		t.Fatalf("combined baseline version = %d, want 3", got)
 	}
 	active, retired, metadata, err := decodeCombinedReceiptBaseline(raw)
 	if err != nil {
@@ -165,9 +172,9 @@ func TestReceiptBaselineCodecRejectsNoncanonicalAndMismatchedPolicy(t *testing.T
 				},
 			},
 			{
-				name: "retired version",
+				name: "unclassified combined version",
 				mutate: func(raw []byte) []byte {
-					binary.BigEndian.PutUint16(raw[8:10], 2)
+					binary.BigEndian.PutUint16(raw[8:10], 1)
 					return raw
 				},
 			},

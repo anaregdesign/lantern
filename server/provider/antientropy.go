@@ -95,6 +95,7 @@ func newAntiEntropyReplicationConfig(
 		Metrics:                 m,
 		PeerTransport:           peerTransport,
 		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
+		NamespaceFormat:         svc.DataNamespaceFormat(),
 		SnapshotInstaller:       installer.selected(),
 	}
 }

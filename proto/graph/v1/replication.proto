@@ -110,6 +110,8 @@ message ReplicatedReceiptVertexPutItem {
   Vertex original = 1;
   MutationReceipt receipt = 2;
   ReplicatedPutVertex accepted = 3;
+  // Immutable origin application-time effect, preserved on replay/status.
+  bool lifecycle_reduced = 4;
 }
 
 // A complete ordered conditional Vertex Put call. A call with no accepted
@@ -209,6 +211,10 @@ message Mutation {
   // with tombstone retention enabled must reject a Delete without it rather
   // than extend the deadline from its own wall clock. Other operations omit it.
   google.protobuf.Timestamp tombstone_expiration = 5;
+  // Physical storage domain of every graph identity. Public logical keys are
+  // encoded only at ingress; peer apply and WAL never encode them again.
+  // Unknown/missing formats are refused by namespaced production runtimes.
+  string namespace_format = 6;
 }
 
 // SubscribeRequest opens a stream of replicated mutations starting at
@@ -262,6 +268,8 @@ message SubscribeRequest {
   // arms before the server can send one. Old full-mutation peers/consumers
   // omit this field and fail closed instead of losing receipt metadata.
   bool accept_receipt_envelopes = 5;
+  // Explicit physical-key format; peer sessions must match before transfer.
+  string namespace_format = 6;
 }
 
 enum SubscribeProjection {
@@ -335,6 +343,7 @@ enum SnapshotFormat {
 // any body frame. The header check remains mandatory.
 message SnapshotRequest {
   SnapshotFormat required_format = 1;
+  string namespace_format = 2;
 }
 
 // Receipt metadata for one RECEIPT publication cut. This message is
@@ -380,6 +389,7 @@ message SnapshotReceiptMetadata {
 // HLC must be at or below cutoff_hlc and at or below the matching full origin
 // row; a graph HLC whose origin is absent from that vector is invalid.
 message SnapshotHeader {
+  string namespace_format = 20;
   map<string, uint64> cutoff_seq_per_origin = 1;
   HLCTimestamp cutoff_hlc = 2;
   // Replica-local mutation-log position at snapshot open. It is deliberately
@@ -439,6 +449,12 @@ message SnapshotReceiptContribution {
 // operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
 // original_result is the exact opaque result bytes retained by the Store; it
 // is not recomputed from the graph at snapshot time.
+message SnapshotReceiptResource {
+  // Authoritative original logical identities. A missing message denotes
+  // unproven legacy evidence, never permission to read arbitrary resources.
+  string logical_key = 1; // Vertex key or Edge tail.
+  string logical_head = 2; // Present only for Edge mutation families.
+}
 message SnapshotReceipt {
   bytes operation_id = 1; // Exactly 49 bytes.
   bytes logical_call_id = 2; // Exactly 16 nonzero bytes.
@@ -449,6 +465,8 @@ message SnapshotReceipt {
   uint64 deadline_unix_ms = 7;
   bytes original_result = 8;
   SnapshotReceiptContribution contribution = 9;
+  SnapshotReceiptResource resource = 10;
+  bool lifecycle_reduced = 11;
 }
 
 // SnapshotVertex is the snapshot-time representation of a single live
@@ -648,7 +666,9 @@ service LanternReplicationService {
 // PeerStatusRequest is intentionally empty — the responder always
 // returns its full per-origin map. Future revisions may add an
 // optional origin filter without breaking the wire contract.
-message PeerStatusRequest {}
+message PeerStatusRequest {
+  string namespace_format = 1;
+}
 
 // OriginState is the responder's last-applied position for a single
 // origin. origin is the 16-byte HLC NodeID; last_seq is the highest
@@ -668,6 +688,7 @@ message OriginState {
 // anti-entropy callers can pick out the row that represents this
 // peer's own writes without having to pre-configure peer NodeIDs.
 message PeerStatusResponse {
+  string namespace_format = 20;
   bytes self_origin = 1;
   repeated OriginState origins = 2;
   // Fingerprint of every search setting that can change capabilities or

@@ -930,6 +930,9 @@ type Config struct {
 	// and metrics remain degraded until every observed peer matches.
 	SearchConfigFingerprint string
 
+	// NamespaceFormat is the exact classified physical-key representation.
+	NamespaceFormat string
+
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each bearer-free peer. When nil, defaultH2CClient() is
 	// used. This client never receives the HA deployment bearer.
@@ -1139,9 +1142,12 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	cli := graphv1connect.NewLanternReplicationServiceClient(
 		p.cfg.HTTPClient, baseURL,
 	)
-	status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+	status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: p.cfg.NamespaceFormat}))
 	if err != nil {
 		return fmt.Errorf("peer capability status: %w", err)
+	}
+	if err := compatibleDataNamespace(p.cfg.NamespaceFormat, status.Msg.GetNamespaceFormat()); err != nil {
+		return err
 	}
 	if !snapshotInstallerCompatible(p.installer, status.Msg.GetRequiredSnapshotFormat()) {
 		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
@@ -1362,6 +1368,7 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 		cursor[hex.EncodeToString(p.cfg.NodeID[:])] = math.MaxUint64
 	}
 	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		NamespaceFormat:        p.cfg.NamespaceFormat,
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           fromLocalSeq,
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(p.installer),
@@ -1375,6 +1382,9 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 		mu := resp.GetMutation()
 		if mu == nil {
 			continue
+		}
+		if err := validateDataMutation(mu, p.cfg.NamespaceFormat); err != nil {
+			return err
 		}
 		if p.isSelfEcho(mu) {
 			local, hasLocalSeq := p.apply.(interface{ LocalSeq(hlc.NodeID) uint64 })
@@ -1419,14 +1429,15 @@ func (p *Pump) snapshot(ctx context.Context, addr string) (*pb.SnapshotHeader, e
 		return nil, err
 	}
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: p.installer.RequiredFormat(),
+		RequiredFormat:  p.installer.RequiredFormat(),
+		NamespaceFormat: p.cfg.NamespaceFormat,
 	}))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
 	start := time.Now()
-	result, err := installSnapshot(ctx, p.installer, stream)
+	result, err := installSnapshot(ctx, p.installer, &namespaceSnapshotStream{stream: stream, format: p.cfg.NamespaceFormat})
 	if err != nil {
 		return nil, err
 	}

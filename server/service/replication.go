@@ -150,6 +150,7 @@ type SearchConfigFingerprintProvider interface {
 // LanternService.WithReplication wired into the write path, so
 // subscribers see every successfully appended mutation in seq order.
 type LanternReplicationService struct {
+	namespaceFormat           string
 	log                       *mutationlog.Log
 	backend                   Backend
 	clock                     *hlc.Clock
@@ -207,6 +208,9 @@ func (s *LanternReplicationService) WithLogger(l *slog.Logger) *LanternReplicati
 // instance — its OriginStates() method satisfies the interface.
 func (s *LanternReplicationService) WithOriginStates(p OriginStatesProvider) *LanternReplicationService {
 	s.origins = p
+	if provider, ok := p.(interface{ DataNamespaceFormat() string }); ok {
+		s.namespaceFormat = provider.DataNamespaceFormat()
+	}
 	return s
 }
 
@@ -287,6 +291,9 @@ func (s *LanternReplicationService) ConfigureReceiptSnapshot(source *ReceiptWhol
 // Send errors terminate the stream and increment
 // dropped{reason="send_failed"}.
 func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.SubscribeRequest, stream Sender[pb.SubscribeResponse]) error {
+	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
+		return err
+	}
 	if s.log == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("replication is not enabled on this server"))
 	}
@@ -432,6 +439,14 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 					"replication: malformed mutation log entry at seq=%d", entry.Seq))
 			}
 			mu := frame.GetMutation()
+			if mu.GetNamespaceFormat() != s.namespaceFormat {
+				return connect.NewError(connect.CodeInternal, errors.New("retained mutation namespace format differs"))
+			}
+			if s.namespaceFormat != "" {
+				if err := validatePhysicalDataIdentities(mu.ProtoReflect()); err != nil {
+					return connect.NewError(connect.CodeInternal, err)
+				}
+			}
 			if s.replicationFrameCertified {
 				if _, err := validateReplicationFrameSize(entry.Op, s.replicationSendMaxBytes); err != nil {
 					l := s.loggerOrDefault()
@@ -500,6 +515,9 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // the O(N+E) memory overhead is acceptable. True streaming is a follow-up
 // once the snapshot path is wired end-to-end.
 func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.SnapshotRequest, stream Sender[pb.SnapshotResponse]) error {
+	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
+		return err
+	}
 	if s.backend == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("snapshot is not enabled on this server"))
 	}
@@ -585,6 +603,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		capture()
 	}
 	return sendSnapshotFrames(ctx, replicationSnapshotCut{
+		namespaceFormat: s.namespaceFormat,
 		cutoffPerOrigin: cutoffPerOrigin,
 		cutoffHLC:       cutoffHLC,
 		cutoffLocalSeq:  cutoffLocalSeq,
@@ -605,7 +624,10 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 // Returns Unavailable when the origin-state provider is unwired —
 // either because replication is disabled on this server (single-
 // instance test path) or because WithOriginStates was never called.
-func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerStatusRequest) (*pb.PeerStatusResponse, error) {
+func (s *LanternReplicationService) PeerStatus(ctx context.Context, req *pb.PeerStatusRequest) (*pb.PeerStatusResponse, error) {
+	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
@@ -622,7 +644,7 @@ func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerSt
 	} else {
 		rows = s.origins.OriginStates()
 	}
-	out := &pb.PeerStatusResponse{Origins: make([]*pb.OriginState, 0, len(rows))}
+	out := &pb.PeerStatusResponse{NamespaceFormat: s.namespaceFormat, Origins: make([]*pb.OriginState, 0, len(rows))}
 	if s.receiptSnapshotRequired {
 		out.RequiredSnapshotFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
 	} else {
@@ -644,4 +666,11 @@ func (s *LanternReplicationService) PeerStatus(ctx context.Context, _ *pb.PeerSt
 		})
 	}
 	return out, nil
+}
+
+func (s *LanternReplicationService) requireDataFormat(format string) error {
+	if err := validateDataFormat(format); err != nil || format != s.namespaceFormat {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("peer namespace format is incompatible"))
+	}
+	return nil
 }

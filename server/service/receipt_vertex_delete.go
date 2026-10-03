@@ -36,6 +36,7 @@ type receiptVertexDeleteCall struct {
 }
 
 type vertexDeleteReceiptEnvelope struct {
+	NamespaceFormat     string
 	Mutation            *pb.Mutation
 	Origin              hlc.NodeID
 	OriginSeq           uint64
@@ -108,7 +109,13 @@ func newVertexDeleteReceiptCoordinator(
 	return coordinator, nil
 }
 
-func vertexDeleteDigest(key string) [32]byte {
+func vertexDeleteDigest(key string, namespace ...string) [32]byte {
+	logical, err := receiptLogicalKey(key, namespace)
+	if err != nil {
+		return [32]byte{}
+	}
+	key = logical
+
 	canonical := []byte{byte(mutationreceipt.DeleteVertex)}
 	canonical = appendReceiptCanonicalString(canonical, key)
 	return mutationreceipt.IntentDigest(canonical)
@@ -116,6 +123,7 @@ func vertexDeleteDigest(key string) [32]byte {
 
 func prepareVertexDeleteReceiptCall(
 	call receiptVertexDeleteCall,
+	namespace ...string,
 ) ([]string, []mutationreceipt.Intent, error) {
 	if len(call.Items) == 0 || len(call.Items) > receiptVertexWALMaxItems ||
 		call.Group == (mutationreceipt.GroupID{}) {
@@ -131,7 +139,14 @@ func prepareVertexDeleteReceiptCall(
 		keys[i] = item.Key
 		intents[i] = mutationreceipt.Intent{
 			ID: item.ID, Group: call.Group, Index: uint32(i), Count: uint32(len(call.Items)),
-			Kind: mutationreceipt.DeleteVertex, Digest: vertexDeleteDigest(item.Key),
+			Kind: mutationreceipt.DeleteVertex, Digest: vertexDeleteDigest(item.Key, namespace...),
+		}
+		if len(namespace) > 0 {
+			resource, err := receiptResourceIdentity(namespace[0], item.Key, "")
+			if err != nil {
+				return nil, nil, invalidReceiptRequest(err)
+			}
+			intents[i].Resource = resource
 		}
 	}
 	return keys, intents, nil
@@ -158,11 +173,12 @@ func receiptVertexDeleteResponse(
 func (c *vertexDeleteReceiptCoordinator) Commit(
 	ctx context.Context,
 	call receiptVertexDeleteCall,
+	namespace ...string,
 ) (*pb.DeleteVerticesResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	keys, intents, err := prepareVertexDeleteReceiptCall(call)
+	keys, intents, err := prepareVertexDeleteReceiptCall(call, c.service.namespaceFormat)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +212,9 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 		return nil, receiptStoreError(err)
 	}
 	if classification == mutationreceipt.Duplicate {
+		if err := c.service.authorizeReceiptRows(ctx, prior); err != nil {
+			return nil, err
+		}
 		return receiptVertexDeleteResponse(prior)
 	}
 	placeholders := make([][]byte, len(keys))
@@ -248,7 +267,8 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 		return nil, receiptStoreError(err)
 	}
 	envelope := &vertexDeleteReceiptEnvelope{
-		Origin: origin, OriginSeq: seq, HLC: ts,
+		NamespaceFormat: s.namespaceFormat,
+		Origin:          origin, OriginSeq: seq, HLC: ts,
 		Epoch: c.store.Epoch(), PolicyFingerprint: c.store.PolicyFingerprint(),
 		TombstoneExpiration: expiration,
 		OriginalKeys:        append([]string(nil), keys...),
@@ -385,7 +405,8 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 	defer graphTx.Abort()
 	result := graphTx.Result()
 	localEnvelope := &vertexDeleteReceiptEnvelope{
-		Origin: origin, OriginSeq: seq, HLC: ts, Epoch: e.Epoch,
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          origin, OriginSeq: seq, HLC: ts, Epoch: e.Epoch,
 		PolicyFingerprint: e.PolicyFingerprint, TombstoneExpiration: e.TombstoneExpiration,
 		OriginalKeys: append([]string(nil), e.OriginalKeys...),
 		Accepted:     append([]graphcache.IndexedVertexDelete[string](nil), result.Accepted...),
@@ -446,6 +467,7 @@ func maximalReceiptVertexDeleteEnvelope(
 	e *vertexDeleteReceiptEnvelope,
 ) *vertexDeleteReceiptEnvelope {
 	maximal := &vertexDeleteReceiptEnvelope{
+		NamespaceFormat:     e.NamespaceFormat,
 		Origin:              e.Origin,
 		OriginSeq:           e.OriginSeq,
 		HLC:                 e.HLC,
@@ -506,7 +528,8 @@ func receiptVertexDeleteGraphMutation(e *vertexDeleteReceiptEnvelope) *pb.Mutati
 		keys[i] = item.Key
 	}
 	return &pb.Mutation{
-		Origin: append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
 		Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteVertices{
 			DeleteVertices: &pb.DeleteVerticesRequest{Keys: keys},
 		}},

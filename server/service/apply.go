@@ -58,6 +58,14 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}
+	if m.GetNamespaceFormat() != s.namespaceFormat {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("replication namespace format mismatch"))
+	}
+	if s.namespaceFormat != "" {
+		if err := validatePhysicalDataIdentities(m.ProtoReflect()); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("replication contains a non-data identity"))
+		}
+	}
 	if err := validateGenericGraphReceiptContext(m); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
 	}
