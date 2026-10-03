@@ -1,10 +1,39 @@
 package security
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"strings"
+	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/anaregdesign/lantern/core/graphcache"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func nativeTestOptions(t *testing.T, path string) NativeStoreOptions {
+	t.Helper()
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	return NativeStoreOptions{Path: path, Generation: [16]byte{1}, PublicKey: privateKey.Public().(ed25519.PublicKey),
+		PrivateKey: privateKey, Limits: DefaultPolicyLimits(), Graph: graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)}
+}
+
+func nativeTestSuspendedImage() Image {
+	image := testImage()
+	image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: MachinePrincipal, MachineName: "former_reader"},
+		State: Suspended, Assignments: []RoleAssignment{{RoleID: "reader"}}})
+	return image
+}
+
+func cleanupNativeStore(t *testing.T, native *NativeStore) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := native.Close(); err != nil {
+			t.Errorf("close native Store: %v", err)
+		}
+	})
+}
 
 func dataRule(effect Effect, action Action, prefix string) PermissionRule {
 	return PermissionRule{Effect: effect, Action: action, Resource: DataResource, Prefix: &prefix}

@@ -9,6 +9,12 @@ fail-closed mode preflight. It does not enable OIDC: `LANTERN_AUTH_MODE=oidc`
 currently rejects startup until the complete serving boundary is installed.
 The following sections define the target contract, not completed qualification.
 
+The staged native Store reserves a private nonexpiring GraphCache image and
+reuses FileWAL framing, process ownership, sync and lower-bound tip proofs.
+It verifies full signed history before installing the recovered image. Its
+hard journal cap fails closed; checkpoint/rotation, audit, public namespace
+mapping and serving leases remain prerequisites for production activation.
+
 ## Context
 
 Lantern is the database. Security state belongs in Lantern's own storage,
@@ -147,7 +153,7 @@ mapping. Policy schema versions and limits are checked before publication.
 For each action/resource, any matching Deny across any assigned Role wins.
 Otherwise at least one matching Allow is required. More specific Allows
 cannot override a Deny. Unknown actions, resource kinds or Roles fail closed.
-Compile action-specific prefix tries once per immutable revision; capture one
+Compile action-specific prefix ranges once per immutable revision; capture one
 coherent snapshot per RPC or exact batch before graph locks. Evaluation does
 not perform network access or persistence under graph locks.
 

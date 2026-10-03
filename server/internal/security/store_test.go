@@ -145,6 +145,40 @@ func TestStoreSignedReplicaApply(t *testing.T) {
 
 func optionsPrivateKey(store *Store) ed25519.PrivateKey { return store.privateKey }
 
+func TestStoreSignedApplyPreservesBootstrapLocks(t *testing.T) {
+	writer, _, options := testStore(t, true)
+	if _, err := writer.ReconcileBootstrap(t.Context(), 0, [16]byte{1}, testImage()); err != nil {
+		t.Fatal(err)
+	}
+	one, _ := writer.Current()
+	options.PrivateKey = nil
+	options.Committer = &fakeCommitter{}
+	replica, err := NewStore(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replica.Apply(t.Context(), one.Encode()); err != nil {
+		t.Fatal(err)
+	}
+	changed := testImage()
+	changed.Roles[0].Rules = append(changed.Roles[0].Rules, dataRule(Allow, VertexRead, ""))
+	snapshot, err := CompileImage(changed, options.Limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := SignRevision(options.Generation, 2, one.Digest(), [16]byte{2}, snapshot, writer.privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replica.Apply(t.Context(), signed.Encode()); !errors.Is(err, ErrBootstrapLocked) {
+		t.Fatal("signed apply bypassed env-owned Role lock", err)
+	}
+	current, healthy := replica.Current()
+	if !healthy || current.Digest() != one.Digest() {
+		t.Fatal("invalid signed transaction changed replica authority")
+	}
+}
+
 func TestStorePublicationAfterPersistence(t *testing.T) {
 	_, _, options := testStore(t, true)
 	sink := &blockingCommitter{entered: make(chan struct{}), release: make(chan struct{})}

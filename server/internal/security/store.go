@@ -193,12 +193,16 @@ func (s *Store) Apply(ctx context.Context, encoded []byte) error {
 		return nil
 	}
 	if current == nil {
-		if revision.sequence != 1 || revision.previous != [32]byte{} {
+		if revision.sequence != 1 || revision.previous != [32]byte{} || revision.snapshot.Image().BootstrapRevision == 0 {
 			return ErrRevisionConflict
 		}
 	} else if revision.sequence != current.sequence+1 || revision.previous != current.digest ||
 		revision.snapshot.Image().BootstrapRevision < current.snapshot.Image().BootstrapRevision {
 		return ErrRevisionConflict
+	}
+	if current != nil && revision.snapshot.Image().BootstrapRevision == current.snapshot.Image().BootstrapRevision &&
+		!sameEnvOwned(current.snapshot.Image(), revision.snapshot.Image()) {
+		return ErrBootstrapLocked
 	}
 	if _, known := s.changes[revision.changeID]; known {
 		return ErrChangeConflict

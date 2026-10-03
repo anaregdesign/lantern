@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -27,6 +28,71 @@ import (
 )
 
 const testToken = "integration-s3cret"
+
+// The reserved system image is private even before the full public-key mapper
+// is installed. A same-named client vertex is a distinct data record.
+func TestAuth_ReservedSystemImageRemainsPrivateOverConnect(t *testing.T) {
+	cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Minute}, provider.SearchConfig{Enabled: true, Positions: true})
+	metadata, err := cache.EnableSystemMetadata("sys:security:revision", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := metadata.Prepare([32]byte{}, 1, []byte("hidden systemword"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Commit()
+	svc := service.NewLanternService(cache).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true}).
+		WithCapacityLimits(service.CapacityLimits{MaxVertices: 1})
+	srv := newConnectTestServer(t, svc, nil)
+	l := newConnectClientFor(t, srv.url)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := l.GetVertex(ctx, metadata.Key()); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("system key lookup: %v", err)
+	}
+	if count, err := l.CountVerticesByPrefix(ctx, ""); err != nil || count != 0 {
+		t.Fatalf("system image counted as data: %d %v", count, err)
+	}
+	if _, err := l.PutVertex(ctx, metadata.Key(), "public clientword", time.Minute); err != nil {
+		t.Fatal("system reserve consumed the data capacity", err)
+	}
+	value, err := l.GetVertex(ctx, metadata.Key())
+	if err != nil || value.GetString_() != "public clientword" {
+		t.Fatalf("same-named client record: %v %v", value, err)
+	}
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	before, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "clientword"}))
+	if err != nil || len(before.Msg.GetHits()) != 1 {
+		t.Fatal("client search failed", err)
+	}
+	stage, err = metadata.Prepare(metadata.Snapshot().Digest, 2, []byte("changed systemword systemword"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Commit()
+	after, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{Query: "clientword"}))
+	if err != nil || len(after.Msg.GetHits()) != 1 || after.Msg.GetHits()[0].GetScore() != before.Msg.GetHits()[0].GetScore() {
+		t.Fatal("system-only change affected public ranking", err)
+	}
+	hidden, err := raw.SearchVertices(ctx, connect.NewRequest(&pb.SearchVerticesRequest{
+		Query: "systemword", Options: &pb.SearchOptions{MatchMode: pb.MatchMode_MATCH_MODE_ALL},
+	}))
+	if err != nil || len(hidden.Msg.GetHits()) != 0 {
+		t.Fatal("system content entered business search", err)
+	}
+	var dump bytes.Buffer
+	stats, err := l.Backup(ctx, &dump, client.WithBackupFormat(client.FormatNDJSON))
+	if err != nil || stats.Vertices != 1 || bytes.Contains(dump.Bytes(), []byte("systemword")) {
+		t.Fatalf("public export leaked reserved image: %+v %v", stats, err)
+	}
+	if deleted, err := l.DeleteVerticesByPrefix(ctx, "sys:"); err != nil || deleted != 1 {
+		t.Fatalf("data prefix delete: %d %v", deleted, err)
+	}
+	if len(metadata.Snapshot().Value) == 0 || metadata.Snapshot().Revision != 2 {
+		t.Fatal("ordinary data deletion removed system image")
+	}
+}
 
 func TestAuth_ModePreflightAndAnonymousConnect(t *testing.T) {
 	for _, setting := range os.Environ() {
