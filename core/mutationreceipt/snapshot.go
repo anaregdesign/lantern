@@ -286,7 +286,7 @@ func validateRetainedReceiptDominance(candidate, current map[ID]Receipt, effecti
 			continue
 		}
 		replacement, ok := candidate[id]
-		if !ok || replacement.Intent != retained.Intent ||
+		if !ok || replacement.Intent != retained.Intent || replacement.LifecycleReduction != retained.LifecycleReduction ||
 			replacement.DeadlineMillis != retained.DeadlineMillis ||
 			!bytes.Equal(replacement.Result, retained.Result) {
 			return ErrSnapshotDoesNotDominate
@@ -301,11 +301,11 @@ func (s *Store) validateSnapshotReceipt(receipt Receipt, snapshotHighWater int64
 	if err != nil || epoch != s.epoch || issued > math.MaxInt64-s.retentionMS ||
 		tooFarFuture(issued, snapshotHighWater) ||
 		item.Group == (GroupID{}) || item.Count == 0 || item.Index >= item.Count ||
-		item.Kind < PutVertex || item.Kind > DeleteEdgeContribution ||
+		item.Kind < PutVertex || item.Kind > DeleteEdgeContribution || !item.Resource.valid(item.Kind) ||
 		(item.Kind == AddEdge) != item.HasContrib ||
 		(item.HasContrib && item.ContribID == (ContribID{})) ||
 		(!item.HasContrib && item.ContribID != (ContribID{})) ||
-		(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) ||
+		(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) || !validLifecycleReduction(receipt) ||
 		receipt.DeadlineMillis != issued+s.retentionMS ||
 		receipt.DeadlineMillis <= snapshotHighWater {
 		return ErrInvalidSnapshot

@@ -21,8 +21,9 @@ type IndexedVertexPut[S comparable, T any] struct {
 // entry per input item. Accepted retains every admitted request position in
 // request order, including duplicate keys and accepted-expired effects.
 type VertexPutStageResult[S comparable, T any] struct {
-	Outcomes []PutOutcome
-	Accepted []IndexedVertexPut[S, T]
+	Outcomes            []PutOutcome
+	Accepted            []IndexedVertexPut[S, T]
+	LifecycleReductions []bool
 }
 
 // VertexPutTransaction owns GraphCache visibility locks until Commit or Abort.
@@ -155,6 +156,10 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		applicationTime := c.applicationTime()
 		outcomes := make([]PutOutcome, len(items))
 		applied = c.planStagedVertexPutLocked(items, ts, ifAbsent, applicationTime, outcomes)
+		if err := c.validateVertexLifecycleLocked(items, applied, applicationTime, false); err != nil {
+			unlockAll()
+			return nil, err
+		}
 		if strict && ts != (hlc.Timestamp{}) {
 			keys := vertexKeysAt(items, applied)
 			if err := c.checkVertexCausalCapacityLocked(keys); err != nil {
@@ -204,6 +209,7 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		}
 
 		accepted := make([]IndexedVertexPut[S, T], len(applied))
+		reductions := c.vertexLifecycleReductionsLocked(items, applied, applicationTime)
 		for i, index := range applied {
 			accepted[i] = IndexedVertexPut[S, T]{
 				Index: index, Item: items[index], Outcome: outcomes[index],
@@ -222,8 +228,9 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		return &VertexPutTransaction[S, T]{
 			stage: stage,
 			result: VertexPutStageResult[S, T]{
-				Outcomes: outcomes,
-				Accepted: accepted,
+				Outcomes:            outcomes,
+				Accepted:            accepted,
+				LifecycleReductions: reductions,
 			},
 		}, nil
 	}
@@ -257,8 +264,9 @@ func (c *GraphCache[S, T]) planStagedVertexPutLocked(
 // accepted effects.
 func (tx *VertexPutTransaction[S, T]) Result() VertexPutStageResult[S, T] {
 	return VertexPutStageResult[S, T]{
-		Outcomes: append([]PutOutcome{}, tx.result.Outcomes...),
-		Accepted: append([]IndexedVertexPut[S, T]{}, tx.result.Accepted...),
+		Outcomes:            append([]PutOutcome{}, tx.result.Outcomes...),
+		Accepted:            append([]IndexedVertexPut[S, T]{}, tx.result.Accepted...),
+		LifecycleReductions: append([]bool(nil), tx.result.LifecycleReductions...),
 	}
 }
 

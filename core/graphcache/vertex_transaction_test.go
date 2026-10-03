@@ -99,6 +99,45 @@ func TestVertexPutTransactionConditionalResultAndCommit(t *testing.T) {
 	}
 }
 
+func TestVertexPutTransactionLifecycleEvidenceUsesOriginalApplicationCut(t *testing.T) {
+	c := NewGraphCacheWithStaging[string, string](time.Hour)
+	now := time.Now()
+	c.applicationClock = func() time.Time { return now }
+	if err := c.PutVertex("permanent", "before"); err != nil {
+		t.Fatal(err)
+	}
+	items := []VertexItem[string, string]{
+		{Key: "permanent", Value: "finite", Expiration: now.Add(time.Hour), CaptureLifecycleReduction: true},
+		{Key: "permanent", Value: "extended", Expiration: now.Add(2 * time.Hour), CaptureLifecycleReduction: true},
+		{Key: "permanent", Value: "shortened", Expiration: now.Add(time.Minute), CaptureLifecycleReduction: true},
+		{Key: "expired", Expiration: now.Add(-time.Second), CaptureLifecycleReduction: true},
+	}
+	tx, err := c.BeginVertexPut(items, hlc.Timestamp{WallNs: now.UnixNano()}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if got := tx.Result().LifecycleReductions; !slices.Equal(got, []bool{true, false, true, true}) {
+		t.Fatal(got)
+	}
+	copy := tx.Result()
+	copy.LifecycleReductions[0] = false
+	if !tx.Result().LifecycleReductions[0] {
+		t.Fatal("effect result aliased transaction")
+	}
+	tx.Commit()
+	miss, err := c.BeginVertexPut([]VertexItem[string, string]{{Key: "permanent", Expiration: now.Add(-time.Second), CaptureLifecycleReduction: true}}, hlc.Timestamp{WallNs: now.UnixNano() + 1}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer miss.Abort()
+	for _, reduced := range miss.Result().LifecycleReductions {
+		if reduced {
+			t.Fatal("condition miss invented a reduction")
+		}
+	}
+}
+
 func TestVertexPutTransactionUnconditionalResultAndCommit(t *testing.T) {
 	c := NewGraphCacheWithStaging[string, string](time.Hour)
 	applicationTime := time.Now()
