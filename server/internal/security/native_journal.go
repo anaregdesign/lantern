@@ -27,19 +27,24 @@ func systemJournalSize(offset int64, sequence uint64) (int64, error) {
 }
 
 // nativeJournal is private to NativeStore. Its bounded retained Log holds only
-// one revision; the on-disk hard cap is enforced before any append. Future
-// checkpoint rotation must preserve tip proof before production enables it.
+// one revision. Signed checkpoints and a synced selector bound the on-disk
+// history while preserving original authority and lower-bound tip proofs.
 type nativeJournal struct {
-	mu         sync.Mutex
-	metadata   *graphcache.SystemMetadata
-	log        *mutationlog.Log
-	provenance *mutationlog.FileWALTipProvenance
-	owner      io.Closer
-	tip        *mutationlog.FileWALTipJournal
-	lease      *mutationlog.FileWALLease
-	path       string
-	maxBytes   int64
-	closed     bool
+	mu            sync.Mutex
+	metadata      *graphcache.SystemMetadata
+	log           *mutationlog.Log
+	provenance    *mutationlog.FileWALTipProvenance
+	owner         io.Closer
+	tip           *mutationlog.FileWALTipJournal
+	lease         *mutationlog.FileWALLease
+	path          string
+	anchor        string
+	binding       [32]byte
+	base          uint64
+	store         *Store
+	rotationFault func(rotationFaultPoint) error
+	maxBytes      int64
+	closed        bool
 }
 
 func (j *nativeJournal) attach(log *mutationlog.Log, owner io.Closer, path string) error {
@@ -71,7 +76,26 @@ func (j *nativeJournal) CommitRevision(ctx context.Context, revision *Revision) 
 	if err != nil {
 		return err
 	}
-	if witness.Seq != revision.sequence-1 || int64(len(revision.encoded))+systemFrameBytes+systemTipRecordBytes > j.maxBytes-used {
+	if witness.Seq+j.base != revision.sequence-1 {
+		return ErrInvalidRevision
+	}
+	used += int64(systemManifestBytes)
+	nextBytes := int64(len(revision.encoded)) + systemFrameBytes + systemTipRecordBytes
+	if used+nextBytes > j.maxBytes/2 && witness.Seq != 0 {
+		if err := j.rotate(ctx, used, nextBytes); err != nil {
+			return err
+		}
+		witness, err = j.provenance.TipWitness(j.path)
+		if err != nil {
+			return err
+		}
+		used, err = systemJournalSize(witness.Offset, witness.Seq)
+		if err != nil {
+			return err
+		}
+		used += int64(systemManifestBytes)
+	}
+	if nextBytes > j.maxBytes-used {
 		return ErrSystemJournalCapacity
 	}
 	stage, err := j.metadata.Prepare(revision.previous, revision.sequence, revision.encoded)

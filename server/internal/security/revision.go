@@ -11,48 +11,65 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 )
 
-const revisionPrefix = "LNSEC01\n" + keyspace.Version + "\x00"
-const revisionHeaderBytes = len(revisionPrefix) + 16 + 32 + 8 + 32 + 16 + 4
+const revisionPrefix = "LNSEC02\n" + keyspace.Version + "\x00"
+const revisionHeaderBytes = len(revisionPrefix) + 16 + 32 + 8 + 32 + 16 + 32 + 2 + 4
 
 var ErrInvalidRevision = errors.New("invalid signed security revision")
 
 // Revision is a signed complete image from the original security writer. Its
 // private fields and owned encoding prevent mutation after validation.
 type Revision struct {
-	generation [16]byte
-	writer     [32]byte
-	sequence   uint64
-	previous   [32]byte
-	changeID   [16]byte
-	snapshot   *Snapshot
-	encoded    []byte
-	digest     [32]byte
+	generation   [16]byte
+	writer       [32]byte
+	sequence     uint64
+	previous     [32]byte
+	changeID     [16]byte
+	snapshot     *Snapshot
+	history      []checkpointChange
+	intentDigest [32]byte
+	encoded      []byte
+	digest       [32]byte
 }
 
 // SignRevision is used only by the pinned writer, after complete image
 // validation. Generation and change ID are random operator/transaction IDs.
 func SignRevision(generation [16]byte, sequence uint64, previous [32]byte,
 	changeID [16]byte, snapshot *Snapshot, privateKey ed25519.PrivateKey) (*Revision, error) {
+	return signRevisionWithHistory(generation, sequence, previous, changeID, snapshot, privateKey, nil, [32]byte{})
+}
+
+func signRevisionWithHistory(generation [16]byte, sequence uint64, previous [32]byte,
+	changeID [16]byte, snapshot *Snapshot, privateKey ed25519.PrivateKey, history []checkpointChange, intentDigest [32]byte) (*Revision, error) {
+	if err := validateChangeHistory(history, sequence, changeID); err != nil {
+		return nil, err
+	}
+
 	if len(privateKey) != ed25519.PrivateKeySize ||
 		!bytes.Equal(privateKey, ed25519.NewKeyFromSeed(privateKey[:ed25519.SeedSize])) ||
 		!validRevisionHeader(generation, sequence, previous, changeID) || snapshot == nil {
 		return nil, ErrInvalidRevision
 	}
+	if intentDigest == [32]byte{} {
+		intentDigest = sha256.Sum256(snapshot.image)
+	}
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 	writer := sha256.Sum256(publicKey)
-	encoded := make([]byte, 0, revisionHeaderBytes+len(snapshot.image)+ed25519.SignatureSize)
+	encoded := make([]byte, 0, revisionHeaderBytes+len(history)*changeRecordBytes+len(snapshot.image)+ed25519.SignatureSize)
 	encoded = append(encoded, revisionPrefix...)
 	encoded = append(encoded, generation[:]...)
 	encoded = append(encoded, writer[:]...)
 	encoded = binary.BigEndian.AppendUint64(encoded, sequence)
 	encoded = append(encoded, previous[:]...)
 	encoded = append(encoded, changeID[:]...)
+	encoded = append(encoded, intentDigest[:]...)
+	encoded = binary.BigEndian.AppendUint16(encoded, uint16(len(history)))
 	encoded = binary.BigEndian.AppendUint32(encoded, uint32(len(snapshot.image)))
+	encoded = appendChangeHistory(encoded, history)
 	encoded = append(encoded, snapshot.image...)
 	signature := ed25519.Sign(privateKey, encoded)
 	encoded = append(encoded, signature...)
 	return &Revision{generation: generation, writer: writer, sequence: sequence,
-		previous: previous, changeID: changeID, snapshot: snapshot,
+		previous: previous, changeID: changeID, snapshot: snapshot, history: append([]checkpointChange(nil), history...), intentDigest: intentDigest,
 		encoded: encoded, digest: sha256.Sum256(encoded)}, nil
 }
 
@@ -60,7 +77,7 @@ func SignRevision(generation [16]byte, sequence uint64, previous [32]byte,
 // pinned key comes from operator authority, never from the relaying peer.
 func DecodeRevision(encoded []byte, pinnedKey ed25519.PublicKey, limits PolicyLimits) (*Revision, error) {
 	if len(pinnedKey) != ed25519.PublicKeySize || len(encoded) <= revisionHeaderBytes+ed25519.SignatureSize ||
-		len(encoded) > revisionHeaderBytes+MaxImageBytes+ed25519.SignatureSize || !bytes.HasPrefix(encoded, []byte(revisionPrefix)) {
+		len(encoded) > maxRevisionBytes || !bytes.HasPrefix(encoded, []byte(revisionPrefix)) {
 		return nil, ErrInvalidRevision
 	}
 	unsigned := encoded[:len(encoded)-ed25519.SignatureSize]
@@ -79,13 +96,23 @@ func DecodeRevision(encoded []byte, pinnedKey ed25519.PublicKey, limits PolicyLi
 	offset += 32
 	copy(revision.changeID[:], encoded[offset:offset+16])
 	offset += 16
+	copy(revision.intentDigest[:], encoded[offset:offset+32])
+	offset += 32
+	historyCount := int(binary.BigEndian.Uint16(encoded[offset : offset+2]))
+	offset += 2
 	imageBytes := binary.BigEndian.Uint32(encoded[offset : offset+4])
 	offset += 4
-	if revision.writer != sha256.Sum256(pinnedKey) || int64(imageBytes) != int64(len(unsigned)-offset) ||
+	if revision.intentDigest == [32]byte{} || historyCount > retainedChanges-1 || revision.writer != sha256.Sum256(pinnedKey) ||
+		int64(imageBytes)+int64(historyCount)*changeRecordBytes != int64(len(unsigned)-offset) ||
 		!validRevisionHeader(revision.generation, revision.sequence, revision.previous, revision.changeID) {
 		return nil, ErrInvalidRevision
 	}
-	snapshot, err := DecodeImage(unsigned[offset:], limits)
+	historyEnd := offset + historyCount*changeRecordBytes
+	revision.history = decodeChangeHistory(unsigned[offset:historyEnd], historyCount)
+	if err := validateChangeHistory(revision.history, revision.sequence, revision.changeID); err != nil {
+		return nil, err
+	}
+	snapshot, err := DecodeImage(unsigned[historyEnd:], limits)
 	if err != nil {
 		return nil, err
 	}

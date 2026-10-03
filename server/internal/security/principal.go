@@ -5,6 +5,7 @@ type PrincipalState string
 const (
 	Active    PrincipalState = "active"
 	Suspended PrincipalState = "suspended"
+	Deleted   PrincipalState = "deleted"
 )
 
 // RoleAssignment is the only path from a Principal to permissions. EnvOwned

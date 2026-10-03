@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+func TestAccessWholeDomainProof(t *testing.T) {
+	policy, err := CompileRoles([]Role{{ID: "all", Rules: []PermissionRule{dataRule(Allow, VertexRead, "")}}, {ID: "deny", Rules: []PermissionRule{dataRule(Deny, VertexRead, "private:")}}, {ID: "scoped", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:")}}}, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, _ := policy.ForRoles([]string{"all"})
+	blocked, _ := policy.ForRoles([]string{"all", "deny"})
+	scoped, _ := policy.ForRoles([]string{"scoped"})
+	if !all.AllowsAll(VertexRead) || blocked.AllowsAll(VertexRead) || scoped.AllowsAll(VertexRead) || all.AllowsAll(VertexWrite) || all.AllowsAll(SecurityManage) {
+		t.Fatal("whole-domain proof ignored action or Deny")
+	}
+}
+
 func TestAccessDenyAndIsolation(t *testing.T) {
 	roles := []Role{
 		{ID: "reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, ""), dataRule(Allow, VertexRead, "orders:private:allowed:")}},

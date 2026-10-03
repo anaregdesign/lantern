@@ -16,10 +16,12 @@ type Snapshot struct {
 	image      []byte
 	roleBytes  []byte
 	limits     PolicyLimits
+	accessSets map[string]*Access
 	policy     *CompiledPolicy
 	issuers    map[string]Issuer
 	principals map[Identity]principalAccess
 	sessions   map[string]Session
+	machines   map[string]MachineCredential
 }
 
 func (s *Snapshot) AccessFor(identity Identity) (*Access, bool) {
@@ -50,7 +52,8 @@ func (s *Snapshot) SessionAccess(digest string, now time.Time) (*Access, time.Ti
 		return nil, time.Time{}, false
 	}
 	session, known := s.sessions[digest]
-	if !known || session.Revoked || now.Before(session.CreatedAt) || !now.Before(session.ExpiresAt) {
+	issuer, issuerKnown := s.issuers[session.Identity.Issuer]
+	if !known || !issuerKnown || session.IssuerConfigRevision != issuer.ConfigRevision || session.Revoked || now.Before(session.CreatedAt) || !now.Before(session.ExpiresAt) {
 		return nil, time.Time{}, false
 	}
 	access, active := s.AccessFor(session.Identity)
@@ -65,4 +68,13 @@ func (s *Snapshot) Image() Image {
 		_ = json.Unmarshal(s.image, &image)
 	}
 	return image
+}
+
+// Session returns immutable digest metadata, never the raw cookie or IdP token.
+func (s *Snapshot) Session(digest string) (Session, bool) {
+	if s == nil {
+		return Session{}, false
+	}
+	session, known := s.sessions[digest]
+	return session, known
 }

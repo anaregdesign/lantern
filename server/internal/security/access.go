@@ -2,13 +2,17 @@ package security
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"unicode/utf8"
 )
 
 // Access captures one Principal's explicit Role membership. It is immutable
 // and safe to share for a complete batch; it performs no I/O or graph lookup.
 type Access struct {
-	roles []*compiledRole
+	roles  []*compiledRole
+	cache  *scopeCache
+	setKey string
 }
 
 func (p *CompiledPolicy) ForRoles(ids []string) (*Access, error) {
@@ -28,6 +32,9 @@ func (p *CompiledPolicy) ForRoles(ids []string) (*Access, error) {
 		seen[id] = true
 		access.roles = append(access.roles, role)
 	}
+	canonical := append([]string(nil), ids...)
+	sort.Strings(canonical)
+	access.cache, access.setKey = p.scopeCache, strings.Join(canonical, "\x00")
 	return access, nil
 }
 
@@ -59,6 +66,24 @@ func (a *Access) AllowsGlobal(action Action) bool {
 			return false
 		}
 		allowed = allowed || flags.allow
+	}
+	return allowed
+}
+
+// AllowsAll proves a whole-data-domain fast path. Any applicable Deny defeats
+// it, including a descendant Deny alongside an explicit empty-prefix Allow.
+func (a *Access) AllowsAll(action Action) bool {
+	kind, known := actionResource(action)
+	if a == nil || !known || kind != DataResource {
+		return false
+	}
+	allowed := false
+	for _, role := range a.roles {
+		rules := role.data[action]
+		if len(rules.deny) > 0 {
+			return false
+		}
+		allowed = allowed || len(rules.allow) > 0 && rules.allow[0] == ""
 	}
 	return allowed
 }

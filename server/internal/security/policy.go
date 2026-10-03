@@ -28,6 +28,7 @@ type compiledRole struct {
 type CompiledPolicy struct {
 	roles          map[string]*compiledRole
 	maxAssignments int
+	scopeCache     *scopeCache
 }
 
 func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
@@ -35,7 +36,7 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 		return nil, ErrInvalidPolicy
 	}
 	policy := &CompiledPolicy{roles: make(map[string]*compiledRole, len(roles)),
-		maxAssignments: limits.MaxAssignments}
+		maxAssignments: limits.MaxAssignments, scopeCache: newScopeCache()}
 	totalBytes := 0
 	for _, role := range roles {
 		if !validRoleID(role.ID) || role.ID == "cluster_replica" ||
@@ -47,7 +48,14 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 		}
 		compiled := &compiledRole{data: make(map[Action]prefixRules),
 			global: make(map[Action]struct{ allow, deny bool })}
+		ruleIDs := make(map[string]bool, len(role.Rules))
 		for _, rule := range role.Rules {
+			if rule.ID != "" {
+				if !validRoleID(rule.ID) || ruleIDs[rule.ID] {
+					return nil, ErrInvalidPolicy
+				}
+				ruleIDs[rule.ID] = true
+			}
 			kind, known := actionResource(rule.Action)
 			if !known || rule.Resource != kind || (rule.Effect != Allow && rule.Effect != Deny) {
 				return nil, fmt.Errorf("%w: action, resource or effect", ErrInvalidPolicy)
@@ -102,7 +110,7 @@ func validateRoleBounds(roles []Role, limits PolicyLimits) error {
 			return ErrInvalidPolicy
 		}
 		for _, rule := range role.Rules {
-			if len(rule.Action) > 64 || len(rule.Resource) > 16 || len(rule.Effect) > 16 {
+			if len(rule.ID) > 64 || len(rule.Action) > 64 || len(rule.Resource) > 16 || len(rule.Effect) > 16 {
 				return ErrInvalidPolicy
 			}
 			if rule.Prefix != nil {

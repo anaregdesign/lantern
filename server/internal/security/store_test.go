@@ -242,13 +242,6 @@ func (panicCommitter) CommitRevision(context.Context, *Revision) error {
 	panic("indeterminate durable write")
 }
 
-type fakeCommitter struct {
-	calls int
-	err   error
-}
-
-func (c *fakeCommitter) CommitRevision(context.Context, *Revision) error { c.calls++; return c.err }
-
 func testStore(t *testing.T, writer bool) (*Store, *fakeCommitter, StoreOptions) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

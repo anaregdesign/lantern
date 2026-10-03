@@ -14,6 +14,49 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 )
 
+func TestNativeStoreMachineDigestsSurviveSignedRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "system.wal")
+	native, err := CreateNativeStore(nativeTestOptions(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, token, now := machineBootstrapFixture(t)
+	if _, err := native.Store().ApplyBootstrap(t.Context(), bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := native.Store().Current()
+	encoded := current.Encode()
+	if err := native.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(path); err != nil || bytes.Contains(raw, []byte(token)) {
+		t.Fatal("raw machine credential persisted", err)
+	}
+	resumed, err := ResumeNativeStore(nativeTestOptions(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupNativeStore(t, resumed)
+	current, _ = resumed.Store().Current()
+	if _, _, valid := current.Snapshot().MachineAccess(token, now); !valid {
+		t.Fatal("restart lost authenticated credential binding")
+	}
+	options := nativeTestOptions(t, filepath.Join(t.TempDir(), "replica.wal"))
+	options.PrivateKey = nil
+	replica, err := CreateNativeStore(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupNativeStore(t, replica)
+	if err := replica.Store().Apply(t.Context(), encoded); err != nil {
+		t.Fatal(err)
+	}
+	cut, _ := replica.Store().Current()
+	if identity, _, valid := cut.Snapshot().MachineAccess(token, now); !valid || identity.Kind != MachinePrincipal {
+		t.Fatal("signed apply lost Principal kind")
+	}
+}
+
 func TestNativeStoreDurableOwnershipAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "system.wal")
 	options := nativeTestOptions(t, path)

@@ -10,6 +10,7 @@ const (
 // PermissionRule belongs exclusively to a Role. A pointer distinguishes an
 // explicit all-data prefix ("") from an omitted prefix on a global rule.
 type PermissionRule struct {
+	ID       string       `json:"id,omitempty"`
 	Effect   Effect       `json:"effect"`
 	Action   Action       `json:"action"`
 	Resource ResourceKind `json:"resource"`

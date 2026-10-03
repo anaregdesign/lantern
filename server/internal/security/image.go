@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -26,12 +28,15 @@ var ErrLastAdministrator = errors.New("security image requires a usable OIDC adm
 // Image is one complete typed sys security revision, not independently merged
 // graph records. No Principal or Session can carry direct permission rules.
 type Image struct {
-	Version           int         `json:"version"`
-	BootstrapRevision uint64      `json:"bootstrap_revision"`
-	Issuers           []Issuer    `json:"issuers"`
-	Roles             []Role      `json:"roles"`
-	Principals        []Principal `json:"principals"`
-	Sessions          []Session   `json:"sessions"`
+	Version            int                 `json:"version"`
+	BootstrapRevision  uint64              `json:"bootstrap_revision"`
+	BootstrapDigest    string              `json:"bootstrap_digest,omitempty"`
+	Issuers            []Issuer            `json:"issuers"`
+	Roles              []Role              `json:"roles"`
+	Principals         []Principal         `json:"principals"`
+	Sessions           []Session           `json:"sessions"`
+	MachineCredentials []MachineCredential `json:"machine_credentials,omitempty"`
+	Audit              []AuditRecord       `json:"audit,omitempty"`
 }
 
 // CompileImage validates the complete image before any durable commit. A
@@ -41,9 +46,12 @@ func CompileImage(image Image, limits PolicyLimits) (*Snapshot, error) {
 }
 
 func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapshot, error) {
-	if image.Version != ImageVersion || len(image.Issuers) > MaxIssuers ||
-		len(image.Principals) > MaxPrincipals || len(image.Sessions) > MaxSessions {
+	if image.Version != ImageVersion || image.BootstrapDigest != "" && !validHexDigest(image.BootstrapDigest) || len(image.Issuers) > MaxIssuers ||
+		len(image.Principals) > MaxPrincipals || len(image.Sessions) > MaxSessions || len(image.Audit) > retainedChanges || len(image.MachineCredentials) > MaxMachineCredentials {
 		return nil, ErrInvalidImage
+	}
+	if err := validateAudit(image.Audit); err != nil {
+		return nil, err
 	}
 	// Validate coarse lengths before marshaling untrusted input.
 	if err := validateRoleBounds(image.Roles, limits); err != nil {
@@ -67,9 +75,13 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 	}
 	snapshot := &Snapshot{policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
 		principals: make(map[Identity]principalAccess, len(image.Principals)), sessions: make(map[string]Session, len(image.Sessions))}
+	snapshot.accessSets = make(map[string]*Access)
 	snapshot.roleBytes = roleBytes
 	snapshot.limits = limits
 	for _, issuer := range image.Issuers {
+		if issuer.Deleted && issuer.Enabled {
+			return nil, ErrInvalidImage
+		}
 		if !validIssuerURL(issuer.URL) || !boundedText(issuer.ClientID, 512) ||
 			!boundedText(issuer.APIAudience, 512) || len(issuer.Algorithms) == 0 || len(issuer.Algorithms) > 4 ||
 			len(issuer.SecretRef) > 64 || (issuer.SecretRef != "" && !validRoleID(issuer.SecretRef)) {
@@ -97,9 +109,12 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 		snapshot.issuers[issuer.URL] = issuer
 	}
 	for _, principal := range image.Principals {
-		if !principal.Identity.valid() || (principal.State != Active && principal.State != Suspended) ||
+		if !principal.Identity.valid() || (principal.State != Active && principal.State != Suspended && principal.State != Deleted) ||
 			len(principal.Assignments) > limits.MaxAssignments {
 			return nil, fmt.Errorf("%w: Principal", ErrInvalidImage)
+		}
+		if principal.State == Deleted && len(principal.Assignments) != 0 {
+			return nil, ErrInvalidImage
 		}
 		if principal.Identity.Kind == OIDCPrincipal {
 			if _, registered := snapshot.issuers[principal.Identity.Issuer]; !registered {
@@ -113,14 +128,33 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 		for i, assignment := range principal.Assignments {
 			ids[i] = assignment.RoleID
 		}
-		access, err := policy.ForRoles(ids)
-		if err != nil {
-			return nil, err
+		sort.Strings(ids)
+		for i := 1; i < len(ids); i++ {
+			if ids[i] == ids[i-1] {
+				return nil, ErrInvalidPolicy
+			}
 		}
+		// Only the current and previous bounded Principal membership sets
+		// retain views; membership churn cannot grow a policy-global cache.
+		setKey := strings.Join(ids, "\x00")
+		access := snapshot.accessSets[setKey]
+		if access == nil && previous != nil && policy == previous.policy {
+			access = previous.accessSets[setKey]
+		}
+		if access == nil {
+			access, err = policy.ForRoles(ids)
+			if err != nil {
+				return nil, err
+			}
+		}
+		snapshot.accessSets[setKey] = access
 		snapshot.principals[principal.Identity] = principalAccess{state: principal.State, access: access}
 	}
+	if err := snapshot.compileMachines(image.MachineCredentials); err != nil {
+		return nil, err
+	}
 	for _, session := range image.Sessions {
-		if !validHexDigest(session.Digest) || session.Identity.Kind != OIDCPrincipal ||
+		if !validHexDigest(session.Digest) || (session.CSRFDigest != "" && !validHexDigest(session.CSRFDigest)) || session.Identity.Kind != OIDCPrincipal ||
 			session.CreatedAt.IsZero() || session.AuthTime.IsZero() || !session.ExpiresAt.After(session.CreatedAt) ||
 			session.ExpiresAt.Sub(session.CreatedAt) > MaxSessionLifetime || session.AuthTime.After(session.CreatedAt) {
 			return nil, fmt.Errorf("%w: Session", ErrInvalidImage)
