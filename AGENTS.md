@@ -38,6 +38,13 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
 
 ## Architecture notes
 
+- **Minimize external dependencies.** Lantern is the database; do not add
+  PostgreSQL as a runtime dependency. Prefer native storage/replication/
+  persistence. ADR 0012 (#1599/#1615) plans internal `sys:` metadata and
+  physical `data:` keys behind unchanged logical keys; this is not yet a
+  qualified runtime boundary. Namespace isolation does not prove policy
+  freshness. The Dart SDK SQLite route, including `offline_sqlite`, is approved.
+
 - **RPC service surface**: [server/service/service.go](server/service/service.go) implements `LanternService`. Every read/write/delete has a **singular** and a **plural** form: `Illuminate`, `GetVertex`/`GetVertices`, `PutVertex`/`PutVertices`, `DeleteVertex`/`DeleteVertices`, `GetEdge`/`GetEdges`, `AddEdge`/`AddEdges`, `PutEdge`/`PutEdges`, `DeleteEdge`/`DeleteEdges`. Plural-only / unpaired RPCs round out the surface: `ScanVertices`, `ScanVertexKeys` (wire-efficient keys-only prefix listing), `SearchVertices`, `CountVerticesByPrefix`, `DeleteVerticesByPrefix`, `ScanEdges`, `BackupSnapshot` (whole-graph point-in-time stream, no replication gate), plus the read-only `GetServerStatus` / `GetReplicationStatus`. The plural is the canonical implementation; the singular forwards a one-element batch to its plural counterpart (for `GetVertex`/`GetEdge`, `len(Missing)==1` maps to `codes.NotFound`; for `DeleteVertex`/`DeleteEdge`, `Existed = resp.GetExisted()[0]`). Plural Delete returns a request-index-aligned `existed` result for every item, including duplicate identities, and `deleted` is their true count. When you add new write surface, **always implement plural first and singular as the facade** — do not duplicate logic.
   Put responses are also plural-canonical: `PutVertices` / `PutEdges` return an exact request-index-aligned `PutOutcome` for every item and singular facades require exactly one. `UNSPECIFIED`, unknown values, and length drift fail closed. `APPLIED_AND_LIVE` / `EXPIRED` are decided from the same server application-time sample used by storage and indexing; an unconditional born-expired Put is a replicated delete-like overwrite, while `if_absent` checks an existing live value before expiration.
 - **DI**: [google/wire](https://github.com/google/wire). [server/cmd/wire.go](server/cmd/wire.go) holds the definitions; [server/cmd/wire_gen.go](server/cmd/wire_gen.go) is generated — **never edit it by hand**. After changing providers, regenerate with `go generate ./...` (or `make wire` for just the wire step). Wire itself is pulled in via the `tool` directive in `go.mod`, so no install is required.
@@ -167,6 +174,8 @@ Release workflows publish artifacts only. Project-managed GKE deployment is reti
   defers to the RFC on any disagreement.
 
 ## Workflow & maintenance
+
+Write GitHub Issue titles, bodies, comments and updates in English.
 
 The full release/CI/maintenance contract — issue triage, code-generation steps, the
 release tag order, the toolchain-bump checklist, and the doc-staleness sweep — lives in

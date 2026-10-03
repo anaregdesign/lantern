@@ -6,6 +6,18 @@
 
 ## Context and boundary
 
+The OIDC/Role-only prefix extension is defined by
+[ADR 0012](0012-oidc-prefix-rbac.md) and #1599. It is a separately gated
+implementation: current deployment-bearer receipt qualification does not
+establish scoped receipt authorization. Canonical public intent continues to
+use logical keys after physical `data:` mapping. Scoped status/replay requires
+durable original-resource provenance and current rights; an operation ID does
+not authorize disclosure, including an absent-ID result. Raw peer history
+remains internal. Until those gates pass, scoped receipt capability stays
+disabled; only an explicitly authorized whole-data-domain receipt Role can
+use the qualified protocol. Namespace migration must preserve possibly sent
+IDs, canonical digests and original result bytes.
+
 Published `lantern_client_offline` 0.4.0 implements receipt-backed conditional
 Vertex Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add and
 completed final #1399 performance, physical, and publication gates. The 0.5.0

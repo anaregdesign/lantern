@@ -24,6 +24,12 @@ they must not conflict.
 
 ## Architecture invariants
 
+- **Minimize external dependencies.** Lantern is the database; Server auth
+  uses native storage/replication/persistence, never PostgreSQL. ADR 0012 plans
+  `sys:` metadata and physical `data:` keys behind public logical keys; the
+  boundary is not yet qualified and does not itself prove policy freshness.
+  The Dart SDK SQLite route, including `offline_sqlite`, is approved.
+
 - **The RPC surface is plural-first.** Every read/write/delete has a singular and a
   plural form; the plural is the canonical implementation and the singular forwards a
   one-element batch to it. When adding write surface, implement the plural first and
@@ -59,6 +65,8 @@ they must not conflict.
   there, never assume or hard-code a number.
 
 ## Workflow (hard rules)
+
+- Write GitHub Issue titles, bodies, comments and updates in English.
 
 - **Search existing Issues; link or file one before any non-trivial change**, including
   bugs, improvements, and validation repairs discovered mid-PR. Only already-scoped
