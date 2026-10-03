@@ -239,7 +239,7 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 
 func receiptWALDecisionCost(receipt mutationreceipt.Receipt) uint64 {
 	return uint64(len(receipt.ID) + len(receipt.Digest) + len(receipt.Group) +
-		4 + 4 + 8 + 1 + len(receipt.Result))
+		4 + 4 + 8 + 1 + 1 + len(receipt.Result))
 }
 
 func sameReceiptWALDecision(a, b mutationreceipt.Receipt) bool {
