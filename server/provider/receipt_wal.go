@@ -155,7 +155,7 @@ func NewServingRuntime(
 	case ReceiptWALModeGraphOnly:
 		graph := NewGraphCache(cacheConfig, searchConfig)
 		log := mutationlog.New(options)
-		runtime, err = service.NewGraphOnlyServingRuntime(graph, log, NewHLCClock(replicationConfig))
+		runtime, err = service.NewGraphOnlyServingRuntime(graph, log, NewHLCClock(replicationConfig), cacheConfig.namespaceFormat)
 		if err != nil {
 			_ = log.Close()
 			return nil, nil, err
@@ -163,14 +163,15 @@ func NewServingRuntime(
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 		now := time.Now()
 		runtimeConfig := service.DurableReceiptWALRuntimeConfig{
-			Path:           config.Path,
-			Receipt:        config.receiptConfig(now),
-			Log:            options,
-			DefaultTTL:     cacheConfig.TTL,
-			ConfigureGraph: receiptWALGraphConfigurator(cacheConfig, searchConfig),
-			NodeID:         replicationConfig.NodeID,
-			Now:            now,
-			BaselineCodec:  backup.ReceiptBaselineCodec{},
+			Path:            config.Path,
+			NamespaceFormat: cacheConfig.namespaceFormat,
+			Receipt:         config.receiptConfig(now),
+			Log:             options,
+			DefaultTTL:      cacheConfig.TTL,
+			ConfigureGraph:  receiptWALGraphConfigurator(cacheConfig, searchConfig),
+			NodeID:          replicationConfig.NodeID,
+			Now:             now,
+			BaselineCodec:   backup.ReceiptBaselineCodec{},
 		}
 		if config.Mode == ReceiptWALModeFresh {
 			restore, restoreErr := prepareFreshReceiptStartupRestore(

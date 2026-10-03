@@ -471,14 +471,14 @@ type blockingPrefixCountBackend struct {
 	release chan struct{}
 }
 
-func (b *blockingPrefixCountBackend) CountByPrefix(prefix string) int {
+func (b *blockingPrefixCountBackend) CountByPrefixContext(ctx context.Context, prefix string) int {
 	select {
 	case <-b.entered:
 	default:
 		close(b.entered)
 		<-b.release
 	}
-	return b.Backend.CountByPrefix(prefix)
+	return b.Backend.CountByPrefixContext(ctx, prefix)
 }
 
 func TestConnectAdapter_PrefixCountRetriesWithoutBlockingPublication(t *testing.T) {
@@ -513,7 +513,13 @@ func TestConnectAdapter_PrefixCountRetriesWithoutBlockingPublication(t *testing.
 			handler := NewLanternServiceConnectHandler(svc)
 			readDone := make(chan error, 1)
 			go func() { readDone <- tc.read(handler) }()
-			<-backend.entered
+			select {
+			case <-backend.entered:
+			case err := <-readDone:
+				t.Fatalf("prefix count skipped the blocking Backend probe: %v", err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("prefix count did not enter the blocking Backend probe")
+			}
 			writerDone := make(chan struct{})
 			go func() {
 				svc.replicationCutMu.Lock()

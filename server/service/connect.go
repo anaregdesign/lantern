@@ -63,100 +63,115 @@ func unary[Req, Resp any](ctx context.Context, req *connect.Request[Req], fn fun
 }
 
 func (h *lanternServiceConnect) Illuminate(ctx context.Context, req *connect.Request[pb.IlluminateRequest]) (*connect.Response[pb.IlluminateResponse], error) {
-	return unary(ctx, req, h.svc.Illuminate)
+	return dataUnary(ctx, req, h.svc, h.svc.Illuminate)
 }
 func (h *lanternServiceConnect) GetVertex(ctx context.Context, req *connect.Request[pb.GetVertexRequest]) (*connect.Response[pb.GetVertexResponse], error) {
-	return unary(ctx, req, h.svc.GetVertex)
+	return dataUnary(ctx, req, h.svc, h.svc.GetVertex)
 }
 func (h *lanternServiceConnect) GetVertices(ctx context.Context, req *connect.Request[pb.GetVerticesRequest]) (*connect.Response[pb.GetVerticesResponse], error) {
-	return unary(ctx, req, h.svc.GetVertices)
+	return dataUnary(ctx, req, h.svc, h.svc.GetVertices)
 }
 func (h *lanternServiceConnect) PutVertex(ctx context.Context, req *connect.Request[pb.PutVertexRequest]) (*connect.Response[pb.PutVertexResponse], error) {
-	return unary(ctx, req, h.svc.PutVertex)
+	return dataUnary(ctx, req, h.svc, h.svc.PutVertex)
 }
 func (h *lanternServiceConnect) PutVertices(ctx context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
-	return unary(ctx, req, h.svc.PutVertices)
+	return dataUnary(ctx, req, h.svc, h.svc.PutVertices)
 }
 func (h *lanternServiceConnect) DeleteVertex(ctx context.Context, req *connect.Request[pb.DeleteVertexRequest]) (*connect.Response[pb.DeleteVertexResponse], error) {
-	return unary(ctx, req, h.svc.DeleteVertex)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteVertex)
 }
 func (h *lanternServiceConnect) DeleteVertices(ctx context.Context, req *connect.Request[pb.DeleteVerticesRequest]) (*connect.Response[pb.DeleteVerticesResponse], error) {
-	return unary(ctx, req, h.svc.DeleteVertices)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteVertices)
 }
 func (h *lanternServiceConnect) ScanVertices(ctx context.Context, req *connect.Request[pb.ScanVerticesRequest]) (*connect.Response[pb.ScanVerticesResponse], error) {
-	return unary(ctx, req, h.svc.ScanVertices)
+	return dataUnary(ctx, req, h.svc, h.svc.ScanVertices)
 }
 func (h *lanternServiceConnect) ScanVertexKeys(ctx context.Context, req *connect.Request[pb.ScanVertexKeysRequest]) (*connect.Response[pb.ScanVertexKeysResponse], error) {
-	return unary(ctx, req, h.svc.ScanVertexKeys)
+	return dataUnary(ctx, req, h.svc, h.svc.ScanVertexKeys)
 }
 func (h *lanternServiceConnect) SearchVertices(ctx context.Context, req *connect.Request[pb.SearchVerticesRequest]) (*connect.Response[pb.SearchVerticesResponse], error) {
-	return unary(ctx, req, h.svc.SearchVertices)
+	return dataUnary(ctx, req, h.svc, h.svc.SearchVertices)
 }
 func (h *lanternServiceConnect) CountVerticesByPrefix(ctx context.Context, req *connect.Request[pb.CountVerticesByPrefixRequest]) (*connect.Response[pb.CountVerticesByPrefixResponse], error) {
-	return unary(ctx, req, h.svc.CountVerticesByPrefix)
+	return dataUnary(ctx, req, h.svc, h.svc.CountVerticesByPrefix)
 }
 func (h *lanternServiceConnect) DeleteVerticesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteVerticesByPrefixRequest]) (*connect.Response[pb.DeleteVerticesByPrefixResponse], error) {
-	return unary(ctx, req, h.svc.DeleteVerticesByPrefix)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteVerticesByPrefix)
 }
 func (h *lanternServiceConnect) TopVerticesByDegree(ctx context.Context, req *connect.Request[pb.TopVerticesByDegreeRequest]) (*connect.Response[pb.TopVerticesByDegreeResponse], error) {
-	return unary(ctx, req, h.svc.TopVerticesByDegree)
+	return dataUnary(ctx, req, h.svc, h.svc.TopVerticesByDegree)
 }
 func (h *lanternServiceConnect) GetEdge(ctx context.Context, req *connect.Request[pb.GetEdgeRequest]) (*connect.Response[pb.GetEdgeResponse], error) {
-	return unary(ctx, req, h.svc.GetEdge)
+	return dataUnary(ctx, req, h.svc, h.svc.GetEdge)
 }
 func (h *lanternServiceConnect) GetEdges(ctx context.Context, req *connect.Request[pb.GetEdgesRequest]) (*connect.Response[pb.GetEdgesResponse], error) {
-	return unary(ctx, req, h.svc.GetEdges)
+	return dataUnary(ctx, req, h.svc, h.svc.GetEdges)
 }
 func (h *lanternServiceConnect) AddEdge(ctx context.Context, req *connect.Request[pb.AddEdgeRequest]) (*connect.Response[pb.AddEdgeResponse], error) {
-	return unary(ctx, req, h.svc.AddEdge)
+	return dataUnary(ctx, req, h.svc, h.svc.AddEdge)
 }
 func (h *lanternServiceConnect) AddEdges(ctx context.Context, req *connect.Request[pb.AddEdgesRequest]) (*connect.Response[pb.AddEdgesResponse], error) {
-	return unary(ctx, req, h.svc.AddEdges)
+	return dataUnary(ctx, req, h.svc, h.svc.AddEdges)
 }
 func (h *lanternServiceConnect) PutEdge(ctx context.Context, req *connect.Request[pb.PutEdgeRequest]) (*connect.Response[pb.PutEdgeResponse], error) {
-	return unary(ctx, req, h.svc.PutEdge)
+	return dataUnary(ctx, req, h.svc, h.svc.PutEdge)
 }
 func (h *lanternServiceConnect) PutEdges(ctx context.Context, req *connect.Request[pb.PutEdgesRequest]) (*connect.Response[pb.PutEdgesResponse], error) {
-	return unary(ctx, req, h.svc.PutEdges)
+	return dataUnary(ctx, req, h.svc, h.svc.PutEdges)
 }
 func (h *lanternServiceConnect) DeleteEdge(ctx context.Context, req *connect.Request[pb.DeleteEdgeRequest]) (*connect.Response[pb.DeleteEdgeResponse], error) {
-	return unary(ctx, req, h.svc.DeleteEdge)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteEdge)
 }
 func (h *lanternServiceConnect) DeleteEdges(ctx context.Context, req *connect.Request[pb.DeleteEdgesRequest]) (*connect.Response[pb.DeleteEdgesResponse], error) {
-	return unary(ctx, req, h.svc.DeleteEdges)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteEdges)
 }
 func (h *lanternServiceConnect) DeleteEdgeContribution(ctx context.Context, req *connect.Request[pb.DeleteEdgeContributionRequest]) (*connect.Response[pb.DeleteEdgeContributionResponse], error) {
-	return unary(ctx, req, h.svc.DeleteEdgeContribution)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteEdgeContribution)
 }
 func (h *lanternServiceConnect) DeleteEdgeContributions(ctx context.Context, req *connect.Request[pb.DeleteEdgeContributionsRequest]) (*connect.Response[pb.DeleteEdgeContributionsResponse], error) {
-	return unary(ctx, req, h.svc.DeleteEdgeContributions)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteEdgeContributions)
 }
 func (h *lanternServiceConnect) DeleteEdgesByPrefix(ctx context.Context, req *connect.Request[pb.DeleteEdgesByPrefixRequest]) (*connect.Response[pb.DeleteEdgesByPrefixResponse], error) {
-	return unary(ctx, req, h.svc.DeleteEdgesByPrefix)
+	return dataUnary(ctx, req, h.svc, h.svc.DeleteEdgesByPrefix)
 }
 func (h *lanternServiceConnect) ScanEdges(ctx context.Context, req *connect.Request[pb.ScanEdgesRequest]) (*connect.Response[pb.ScanEdgesResponse], error) {
-	return unary(ctx, req, h.svc.ScanEdges)
+	return dataUnary(ctx, req, h.svc, h.svc.ScanEdges)
 }
 func (h *lanternServiceConnect) GetServerStatus(ctx context.Context, req *connect.Request[pb.GetServerStatusRequest]) (*connect.Response[pb.GetServerStatusResponse], error) {
 	// GetServerStatus owns its committed view so direct service callers and
 	// this adapter observe the same fail-closed cut without nested RLocks.
-	return unary(ctx, req, h.svc.GetServerStatus)
+	return dataUnary(ctx, req, h.svc, h.svc.GetServerStatus)
 }
 func (h *lanternServiceConnect) GetReplicationStatus(ctx context.Context, req *connect.Request[pb.GetReplicationStatusRequest]) (*connect.Response[pb.GetReplicationStatusResponse], error) {
-	return unary(ctx, req, h.svc.GetReplicationStatus)
+	return dataUnary(ctx, req, h.svc, h.svc.GetReplicationStatus)
 }
 func (h *lanternServiceConnect) GetReceiptCapability(ctx context.Context, req *connect.Request[pb.GetReceiptCapabilityRequest]) (*connect.Response[pb.GetReceiptCapabilityResponse], error) {
-	return unary(ctx, req, h.svc.GetReceiptCapability)
+	return dataUnary(ctx, req, h.svc, h.svc.GetReceiptCapability)
 }
 func (h *lanternServiceConnect) GetReceiptStatus(ctx context.Context, req *connect.Request[pb.GetReceiptStatusRequest]) (*connect.Response[pb.GetReceiptStatusResponse], error) {
-	return unary(ctx, req, h.svc.GetReceiptStatus)
+	return dataUnary(ctx, req, h.svc, h.svc.GetReceiptStatus)
 }
 func (h *lanternServiceConnect) GetReceiptStatuses(ctx context.Context, req *connect.Request[pb.GetReceiptStatusesRequest]) (*connect.Response[pb.GetReceiptStatusesResponse], error) {
-	return unary(ctx, req, h.svc.GetReceiptStatuses)
+	return dataUnary(ctx, req, h.svc, h.svc.GetReceiptStatuses)
 }
 func (h *lanternServiceConnect) BackupSnapshot(ctx context.Context, req *connect.Request[pb.BackupSnapshotRequest], stream *connect.ServerStream[pb.BackupSnapshotResponse]) error {
+	admission, err := h.svc.authorizeData(ctx, req.Msg)
+	if err != nil {
+		return err
+	}
+	ctx, err = h.svc.dataQueryContext(ctx, req.Msg, admission)
+	if err != nil {
+		return err
+	}
 	// *connect.ServerStream[T] satisfies service.Sender[T] directly.
-	return h.svc.BackupSnapshot(ctx, req.Msg, stream)
+	if h.svc.namespaceFormat == "" {
+		return h.svc.BackupSnapshot(ctx, req.Msg, stream)
+	}
+	mapped, _, err := h.svc.mapDataRequest(req.Msg)
+	if err != nil {
+		return err
+	}
+	return h.svc.BackupSnapshot(ctx, mapped.(*pb.BackupSnapshotRequest), dataBackupSender{ctx: ctx, service: h.svc, next: stream})
 }
 
 type lanternReplicationServiceConnect struct {

@@ -101,7 +101,8 @@ func receiptVertexDeleteReplicationMutation(e *vertexDeleteReceiptEnvelope) *pb.
 		}
 	}
 	return &pb.Mutation{
-		Seq: e.OriginSeq, Origin: append([]byte(nil), e.Origin[:]...), Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Seq:             e.OriginSeq, Origin: append([]byte(nil), e.Origin[:]...), Hlc: hlcToProto(e.HLC),
 		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptVertexDelete{
 			ReplicatedReceiptVertexDelete: &pb.ReplicatedReceiptVertexDelete{
 				DeploymentEpoch:     append([]byte(nil), e.Epoch[:]...),
@@ -147,7 +148,8 @@ func decodeReceiptVertexDeleteMutation(m *pb.Mutation) (*vertexDeleteReceiptEnve
 		return nil, receiptVertexDeleteWALError("invalid wire envelope header")
 	}
 	e := &vertexDeleteReceiptEnvelope{
-		OriginSeq: m.GetSeq(), HLC: hlcFromProto(m.GetHlc()),
+		NamespaceFormat: m.GetNamespaceFormat(),
+		OriginSeq:       m.GetSeq(), HLC: hlcFromProto(m.GetHlc()),
 		TombstoneExpiration: call.GetTombstoneExpiration().AsTime(),
 		OriginalKeys:        make([]string, len(call.GetItems())),
 		Receipts:            make([]mutationreceipt.Receipt, len(call.GetItems())),
@@ -172,6 +174,11 @@ func decodeReceiptVertexDeleteMutation(m *pb.Mutation) (*vertexDeleteReceiptEnve
 		}
 		e.OriginalKeys[i] = item.GetKey()
 		receipt := &e.Receipts[i]
+		resource, resourceErr := receiptResourceIdentity(e.NamespaceFormat, item.GetKey(), "")
+		if resourceErr != nil {
+			return nil, resourceErr
+		}
+		receipt.Resource = resource
 		copy(receipt.ID[:], wireReceipt.GetOperationId())
 		copy(receipt.Group[:], wireReceipt.GetLogicalCallId())
 		receipt.Index, receipt.Count, receipt.Kind = wireReceipt.GetItemIndex(),
@@ -263,7 +270,7 @@ func validateReceiptVertexDeleteWALEntry(entry mutationlog.Entry) error {
 }
 
 func validateReceiptVertexDeleteWALEnvelope(e *vertexDeleteReceiptEnvelope) (int, error) {
-	if e == nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
+	if e == nil || validateDataFormat(e.NamespaceFormat) != nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
 		e.HLC.WallNs <= 0 || e.HLC.NodeID != e.Origin ||
 		e.Epoch == (mutationreceipt.Epoch{}) || e.PolicyFingerprint == ([32]byte{}) {
 		return 0, receiptVertexDeleteWALError("invalid origin, HLC, epoch, or policy metadata")
@@ -286,6 +293,12 @@ func validateReceiptVertexDeleteWALEnvelope(e *vertexDeleteReceiptEnvelope) (int
 	var retentionMS int64
 	for i, receipt := range e.Receipts {
 		key := e.OriginalKeys[i]
+		if err := validateReceiptDataIdentity(e.NamespaceFormat, key); err != nil {
+			return 0, receiptVertexDeleteWALError("invalid physical identity")
+		}
+		if !receiptResourceMatches(receipt, e.NamespaceFormat, key, "") {
+			return 0, receiptVertexDeleteWALError("original resource provenance drift")
+		}
 		if key == "" || !utf8.ValidString(key) || len(key) > receiptVertexWALMaxBytes {
 			return 0, receiptVertexDeleteWALError("invalid key at item %d", i)
 		}
@@ -297,7 +310,7 @@ func validateReceiptVertexDeleteWALEnvelope(e *vertexDeleteReceiptEnvelope) (int
 		}
 		seen[receipt.ID] = struct{}{}
 		horizon, err := validateReceiptVertexRow(
-			receipt, mutationreceipt.DeleteVertex, i, count, e.Epoch, vertexDeleteDigest(key),
+			receipt, mutationreceipt.DeleteVertex, i, count, e.Epoch, vertexDeleteDigest(key, e.NamespaceFormat),
 		)
 		if err != nil {
 			return 0, receiptVertexDeleteWALError("%v", err)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/search"
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 )
 
 // jsonStringValueNormalizer extracts only the string values from a JSON
@@ -140,4 +141,14 @@ func vertexValueTexts(v *v1.Vertex) []string {
 		// Vertex_Nil and the unset oneof: key-only indexing.
 		return nil
 	}
+}
+
+// namespacedVertexSearchDocument keeps the storage-domain prefix out of query
+// tokens and BM25 length statistics. Logical data:/sys: remain ordinary text.
+func namespacedVertexSearchDocument(key string, vertex *v1.Vertex) search.Document {
+	logical, err := keyspace.LogicalKey(key)
+	if err != nil {
+		return vertexSearchProjection{}
+	}
+	return vertexSearchDocument(logical, vertex)
 }

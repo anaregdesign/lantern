@@ -54,7 +54,7 @@ func (s *LanternService) TopVerticesByDegree(ctx context.Context, in *pb.TopVert
 	dir := degreeDirection(in.GetDirection())
 	var ranked []graphcache.DegreeEntry[string]
 	if err := s.withPublicGraphReadRetry(ctx, func() error {
-		ranked = s.cache.TopVerticesByDegree(in.GetPrefix(), int(k), dir, in.GetWeighted())
+		ranked = s.cache.TopVerticesByDegreeContext(ctx, in.GetPrefix(), int(k), dir, in.GetWeighted())
 		return nil
 	}); err != nil {
 		return nil, err

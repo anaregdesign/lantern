@@ -14,6 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/readiness"
@@ -245,7 +246,7 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	// LANTERN_BACKUP_RESTORE_REQUIRED is set.
 	if !a.runtime.DurableReceiptWAL() {
 		if _, err := a.backupper.RestoreOnStartup(ctx); err != nil {
-			if a.restoreReq {
+			if a.restoreReq || errors.Is(err, keyspace.ErrNamespaceFormat) {
 				return fmt.Errorf("restore-on-startup: %w", err)
 			}
 			a.logger.Warn("restore-on-startup failed; starting with current state", slog.Any("err", err))

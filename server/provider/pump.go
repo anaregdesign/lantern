@@ -129,6 +129,7 @@ func newReplicationPumpConfig(
 		DiscoveryInterval:       pc.DiscoveryInterval,
 		PeerTransport:           peerTransport,
 		SearchConfigFingerprint: svc.SearchConfigFingerprint(),
+		NamespaceFormat:         svc.DataNamespaceFormat(),
 		SnapshotInstaller:       installer.selected(),
 	}
 	if resolver != nil {

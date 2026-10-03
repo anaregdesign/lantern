@@ -578,6 +578,7 @@ mod tests {
                         PutOutcome::ConditionNotMet as i32,
                     ))),
                     accepted: None,
+                    lifecycle_reduced: false,
                 }],
             }),
             Op::ReplicatedReceiptVertexDelete(WireReceiptVertexDelete {
@@ -646,6 +647,7 @@ mod tests {
             origin: origin().as_bytes().to_vec(),
             op: Some(MutationOp { op: Some(op) }),
             tombstone_expiration: None,
+            namespace_format: String::new(),
         }
     }
 

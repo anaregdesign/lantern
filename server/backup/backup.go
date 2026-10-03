@@ -4,10 +4,10 @@
 // Graph-only restore-on-startup re-seeds the in-memory graph from the newest
 // dump before serving; durable receipt restore remains a separate layer.
 //
-// Reuse, not reinvention: the periodic dump drives the existing
-// LanternService.BackupSnapshot RPC verbatim through a file-backed Sender,
-// so files are byte-identical to `lantern-cli dump --format proto` and
-// interchange with the CLI. Restore replays frames through the in-process
+// The private namespaced graph dump carries a classified physical-key header.
+// Public CLI exports carry logical keys and must be reimported through public
+// Put RPCs; they cannot be installed as private recovery files. Restore replays
+// fully validated physical frames through the in-process
 // RestoreVertices / RestoreEdges. Restore preserves graph values even
 // when local search-index limits differ, while the born-expired delete-like
 // application (#698) prevents an entry whose TTL elapsed since the dump from
@@ -45,6 +45,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -53,7 +54,8 @@ const (
 	fileSuffix = ".lbk"
 	tmpSuffix  = ".lbk.tmp"
 
-	restoreChunkSize = 1000
+	restoreChunkSize     = 1000
+	graphDataBackupMagic = "LANTLBK2\x00namespaced-v1\n"
 )
 
 // Config is the resolved backup configuration. It lives in this package
@@ -61,6 +63,8 @@ const (
 // provider's loader resolves RestoreOnStart from the LANTERN_BACKUP_* env
 // before constructing the Backupper.
 type Config struct {
+	// NamespaceFormat classifies private graph recovery keys; never inferred from values.
+	NamespaceFormat string
 	// Enabled gates the periodic dump loop. Resolved to false when
 	// LANTERN_BACKUP_DIR is empty even if LANTERN_BACKUP_ENABLED is set.
 	Enabled bool
@@ -185,11 +189,14 @@ func (b *Backupper) RestoreOnStartup(ctx context.Context) (Stats, error) {
 
 	var lastErr error
 	for _, path := range candidates {
-		vertices, edges, derr := decodeFile(path)
+		vertices, edges, derr := decodeFile(path, b.cfg.NamespaceFormat)
 		if derr != nil {
 			b.logger.Warn("backup: dump failed to decode; trying older file",
 				slog.String("file", path), slog.Any("err", derr))
 			lastErr = derr
+			if errors.Is(derr, keyspace.ErrNamespaceFormat) {
+				return Stats{}, derr
+			}
 			continue
 		}
 		stats, aerr := b.apply(ctx, vertices, edges)
@@ -270,6 +277,12 @@ func (b *Backupper) backupOnceWithSource(ctx context.Context, source string) (St
 }
 
 func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string) (Stats, error) {
+	if err := keyspace.ValidateFormat(b.cfg.NamespaceFormat); err != nil {
+		return Stats{}, err
+	}
+	if provider, ok := b.svc.(interface{ DataNamespaceFormat() string }); ok && provider.DataNamespaceFormat() != b.cfg.NamespaceFormat {
+		return Stats{}, errors.New("backup: service namespace format differs")
+	}
 	start := b.now()
 	tickID := strconv.FormatInt(start.UnixNano(), 10)
 	b.logger.Info("backup: dump started",
@@ -289,9 +302,20 @@ func (b *Backupper) backupGraphOnceWithSource(ctx context.Context, source string
 		b.failed()
 		return Stats{}, fmt.Errorf("backup: create %s: %w", tmp, err)
 	}
-	sender := &protoFileSender{w: bufio.NewWriter(f), now: b.now}
+	sender := &protoFileSender{w: bufio.NewWriter(f), now: b.now, namespaceFormat: b.cfg.NamespaceFormat}
+	if b.cfg.NamespaceFormat != "" {
+		if _, err := sender.w.WriteString(graphDataBackupMagic); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return Stats{}, err
+		}
+	}
 	snapshotStart := b.now()
-	serr := b.svc.BackupSnapshot(ctx, &pb.BackupSnapshotRequest{}, sender)
+	request := &pb.BackupSnapshotRequest{}
+	if b.cfg.NamespaceFormat != "" {
+		request.VertexPrefix = keyspace.DataPrefix
+	}
+	serr := b.svc.BackupSnapshot(ctx, request, sender)
 	snapshotEnd := b.now()
 	materializationEnd := sender.firstSend
 	if materializationEnd.IsZero() {
@@ -508,14 +532,20 @@ func fileStamp(name string) (int64, bool) {
 // writing each frame as length-delimited protobuf — byte-identical to the
 // SDK / CLI proto dump format.
 type protoFileSender struct {
-	w         *bufio.Writer
-	now       func() time.Time
-	firstSend time.Time
-	vertices  int
-	edges     int
+	namespaceFormat string
+	w               *bufio.Writer
+	now             func() time.Time
+	firstSend       time.Time
+	vertices        int
+	edges           int
 }
 
 func (s *protoFileSender) Send(rec *pb.BackupSnapshotResponse) error {
+	if s.namespaceFormat != "" {
+		if err := keyspace.ValidatePhysicalGraphMessage(rec.ProtoReflect()); err != nil {
+			return err
+		}
+	}
 	if s.firstSend.IsZero() {
 		if s.now == nil {
 			s.firstSend = time.Now()
@@ -539,7 +569,17 @@ func (s *protoFileSender) Send(rec *pb.BackupSnapshotResponse) error {
 // decodes. A mid-stream decode error (a truncated / corrupt file) is
 // returned so the caller can fall back to an older dump WITHOUT having
 // applied a partial file.
-func decodeFile(path string) (vertices []*pb.Vertex, edges []*pb.Edge, err error) {
+func decodeFile(path string, expectedFormat ...string) (vertices []*pb.Vertex, edges []*pb.Edge, err error) {
+	format := ""
+	if len(expectedFormat) > 1 {
+		return nil, nil, keyspace.ErrInvalidKey
+	}
+	if len(expectedFormat) == 1 {
+		format = expectedFormat[0]
+	}
+	if err := keyspace.ValidateFormat(format); err != nil {
+		return nil, nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, err
@@ -547,6 +587,12 @@ func decodeFile(path string) (vertices []*pb.Vertex, edges []*pb.Edge, err error
 	defer func() { _ = f.Close() }()
 
 	r := bufio.NewReader(f)
+	if format != "" {
+		magic := make([]byte, len(graphDataBackupMagic))
+		if _, err := io.ReadFull(r, magic); err != nil || string(magic) != graphDataBackupMagic {
+			return nil, nil, fmt.Errorf("%w: explicit logical-key migration required", keyspace.ErrNamespaceFormat)
+		}
+	}
 	for {
 		rec := &pb.BackupSnapshotResponse{}
 		if uerr := protodelim.UnmarshalFrom(r, rec); uerr != nil {
@@ -555,11 +601,18 @@ func decodeFile(path string) (vertices []*pb.Vertex, edges []*pb.Edge, err error
 			}
 			return nil, nil, uerr
 		}
+		if format != "" {
+			if err := keyspace.ValidatePhysicalGraphMessage(rec.ProtoReflect()); err != nil {
+				return nil, nil, err
+			}
+		}
 		switch x := rec.GetRecord().(type) {
 		case *pb.BackupSnapshotResponse_Vertex:
 			vertices = append(vertices, x.Vertex)
 		case *pb.BackupSnapshotResponse_Edge:
 			edges = append(edges, x.Edge)
+		default:
+			return nil, nil, errors.New("backup: missing or unknown graph record")
 		}
 	}
 	return vertices, edges, nil

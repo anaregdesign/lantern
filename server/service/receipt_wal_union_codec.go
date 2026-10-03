@@ -21,12 +21,11 @@ import (
 // This private, unwired codec covers graph-only Mutations, accepted-effect
 // sidecars, and receipt-bearing exact mutation envelopes. The
 // FileWAL frame owns its checksum, replica-local sequence and HLC. The union
-// header is versioned independently of the inner receipt formats. V4 rows
-// remain readable because their existing arm numbers and inner layouts are
-// unchanged; only V5 may introduce contribution Delete graph or receipt arms.
+// header is versioned independently of the inner receipt formats. V7 freezes
+// physical namespaces and original receipt lifecycle effects. Earlier histories are
+// refused; operators must perform an explicit offline migration.
 const (
-	receiptWALUnionMagic                  = "LRWU\x05\x00\x00\x00"
-	receiptWALUnionLegacyMagicV4          = "LRWU\x04\x00\x00\x00"
+	receiptWALUnionMagic                  = "LRWU\x07\x00\x00\x00"
 	receiptWALUnionHeaderSize             = 16 // magic, kind, reserved[3], body length
 	receiptWALUnionGraph                  = byte(1)
 	receiptWALUnionEdgeDelete             = byte(2)
@@ -42,17 +41,17 @@ const (
 	// Each receipt-envelope body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
 	// Every reachable Mutation field is reviewed before advancing this pin.
-	// The V5 descriptor adds contribution Delete graph and receipt arms;
+	// The V7 descriptor includes immutable origin lifecycle effects;
 	// graph-only codec paths still reject populated receipt contexts.
-	receiptWALGraphSchemaFingerprintV5 = "c0edee85c6b3e7bffc729691829ac8c24d86f9be8761c432e3e2126127ebf92d"
+	receiptWALGraphSchemaFingerprintV7 = "51bda5ea3bc175f194da944c8d2fb3cb3bc57d7a68e143c7e53afe1aeeacadf1"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
 
 var receiptWALGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
-	if digest != receiptWALGraphSchemaFingerprintV5 {
-		return receiptWALUnionError("WAL union v5 graph schema changed: %s", digest)
+	if digest != receiptWALGraphSchemaFingerprintV7 {
+		return receiptWALUnionError("WAL union v7 graph schema changed: %s", digest)
 	}
 	return nil
 })
@@ -133,7 +132,7 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 	if len(raw) < receiptWALUnionHeaderSize || len(raw) > receiptWALUnionMaxBytes {
 		return nil, receiptWALUnionError("invalid payload size %d", len(raw))
 	}
-	if (string(raw[:8]) != receiptWALUnionMagic && string(raw[:8]) != receiptWALUnionLegacyMagicV4) ||
+	if string(raw[:8]) != receiptWALUnionMagic ||
 		raw[9] != 0 || raw[10] != 0 || raw[11] != 0 {
 		return nil, receiptWALUnionError("unknown version or nonzero reserved header")
 	}
@@ -170,12 +169,6 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 		value, err := decodeGraphDeleteEffectWAL(body)
 		if err != nil {
 			return nil, err
-		}
-		if string(raw[:8]) == receiptWALUnionLegacyMagicV4 {
-			switch value.Mutation.GetOp().GetOp().(type) {
-			case *pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
-				return nil, receiptWALUnionError("contribution Delete requires union v5")
-			}
 		}
 		return value, nil
 	case receiptWALUnionGraphPutEffect:

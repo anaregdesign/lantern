@@ -92,6 +92,7 @@ func stageReceiptStartupRestore(
 		return nil, fmt.Errorf("service: stage receipt startup restore: %w", err)
 	}
 	if stage == nil || stage.Graph == nil || stage.Receipts == nil ||
+		stage.NamespaceFormat != config.NamespaceFormat ||
 		stage.CutoffLocalSeq != restore.WALCut.Seq ||
 		!stage.CutoffHLC.Equal(mustReceiptStartupRestoreCutoff(restore)) {
 		return nil, errors.New("service: staged receipt startup restore provenance differs")
@@ -189,6 +190,12 @@ func openReceiptWALBackupCandidate(
 	var cut mutationlog.FileWALCut
 	var damagedBaseline bool
 	err = lease.WithPath(func(path string) error {
+		if err := preflightDataNamespaceWAL(path, config, false); err != nil {
+			return err
+		}
+		if err := ValidateDataSnapshotNamespace(restore.Capture.Graph, config.NamespaceFormat); err != nil {
+			return err
+		}
 		var scanErr error
 		scan, scanErr = scanReceiptBaselineWAL(path, config.Receipt, config.NodeID)
 		if scanErr != nil {

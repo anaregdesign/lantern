@@ -68,7 +68,7 @@ func TestReceiptWALUnionCodecRejectsSupersededVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, version := range []byte{2, 3} {
+	for _, version := range []byte{2, 3, 4, 5, 6} {
 		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
 			old := append([]byte(nil), current...)
 			old[4] = version
@@ -79,30 +79,18 @@ func TestReceiptWALUnionCodecRejectsSupersededVersions(t *testing.T) {
 	}
 }
 
-func TestReceiptWALUnionV5ReadsExistingV4GraphAndReceipts(t *testing.T) {
-	graph := receiptWALUnionGraphFixture(&pb.MutationOp{
-		Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{}},
-	})
+func TestReceiptWALUnionV7RefusesUnclassifiedGraphAndReceipts(t *testing.T) {
+	graph := receiptWALUnionGraphFixture(&pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{}}})
 	_, oldReceipt := receiptEdgeDeleteCodecFixture(t, nil)
 	for _, op := range []mutationlog.MutationOp{graph, oldReceipt} {
 		raw, err := encodeReceiptWALUnion(op)
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw[4] = 4
-		decoded, err := decodeReceiptWALUnion(raw)
-		if err != nil {
-			t.Fatalf("preexisting v4 WAL row %T cannot restart: %v", op, err)
-		}
-		switch wanted := op.(type) {
-		case *pb.Mutation:
-			if got, ok := decoded.(*pb.Mutation); !ok || !proto.Equal(got, wanted) {
-				t.Fatalf("v4 graph row changed: %T %+v", decoded, decoded)
-			}
-		case *edgeDeleteReceiptEnvelope:
-			if got, ok := decoded.(*edgeDeleteReceiptEnvelope); !ok ||
-				!reflect.DeepEqual(got.Receipts, wanted.Receipts) {
-				t.Fatalf("v4 receipt row changed: %T %+v", decoded, decoded)
+		for _, version := range []byte{4, 5, 6} {
+			raw[4] = version
+			if _, err := decodeReceiptWALUnion(raw); !errors.Is(err, errReceiptWALUnion) {
+				t.Fatalf("unclassified v%d history accepted: %v", version, err)
 			}
 		}
 	}
@@ -233,8 +221,8 @@ func TestReceiptWALUnionGraphOnlyContributionDeleteEffect(t *testing.T) {
 
 func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
-	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV5 {
-		t.Fatalf("WAL union v5 graph schema changed to %s; review replay and migration", got)
+	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV7 {
+		t.Fatalf("WAL union v7 graph schema changed to %s; review replay and migration", got)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -264,8 +252,8 @@ func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV5 {
-				t.Fatal("new graph mutation field did not invalidate WAL union v5 schema")
+			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV7 {
+				t.Fatal("new graph mutation field did not invalidate WAL union v7 schema")
 			}
 		})
 	}

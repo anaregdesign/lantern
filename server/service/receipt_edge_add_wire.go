@@ -75,7 +75,7 @@ func receiptEdgeAddWireCapacityError(size int) error {
 	)
 }
 
-func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID) ([32]byte, error) {
+func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID, namespace ...string) ([32]byte, error) {
 	if edge == nil || contribID.IsZero() {
 		return [32]byte{}, fmt.Errorf("nil Edge or zero ContribID")
 	}
@@ -96,8 +96,16 @@ func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID) ([32]by
 	}
 	canonical := make([]byte, 0, 66+len(edge.GetTail())+len(edge.GetHead()))
 	canonical = append(canonical, byte(mutationreceipt.AddEdge))
-	canonical = appendReceiptCanonicalString(canonical, edge.GetTail())
-	canonical = appendReceiptCanonicalString(canonical, edge.GetHead())
+	tail, err := receiptLogicalKey(edge.GetTail(), namespace)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	head, err := receiptLogicalKey(edge.GetHead(), namespace)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	canonical = appendReceiptCanonicalString(canonical, tail)
+	canonical = appendReceiptCanonicalString(canonical, head)
 	canonical = binary.BigEndian.AppendUint32(canonical, math.Float32bits(edge.GetWeight()))
 	if edge.GetExpiration() == nil {
 		canonical = append(canonical, 0)
@@ -146,9 +154,10 @@ func receiptEdgeAddMutation(e *graphAddEffectEnvelope) *pb.Mutation {
 		}
 	}
 	return &pb.Mutation{
-		Origin: append([]byte(nil), e.Origin[:]...),
-		Seq:    e.OriginSeq,
-		Hlc:    hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          append([]byte(nil), e.Origin[:]...),
+		Seq:             e.OriginSeq,
+		Hlc:             hlcToProto(e.HLC),
 		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeAdd{
 			ReplicatedReceiptEdgeAdd: &pb.ReplicatedReceiptEdgeAdd{
 				DeploymentEpoch:   append([]byte(nil), e.Epoch[:]...),
@@ -179,12 +188,13 @@ func decodeReceiptEdgeAddMutation(m *pb.Mutation) (*graphAddEffectEnvelope, erro
 		return nil, receiptWALUnionError("invalid receipt Add wire envelope header")
 	}
 	e := &graphAddEffectEnvelope{
-		Mutation:   proto.Clone(m).(*pb.Mutation),
-		OriginSeq:  m.GetSeq(),
-		HLC:        hlcFromProto(m.GetHlc()),
-		Original:   make([]*pb.Edge, len(call.GetItems())),
-		ContribIDs: make([]graphcache.ContribID, len(call.GetItems())),
-		Receipts:   make([]mutationreceipt.Receipt, len(call.GetItems())),
+		NamespaceFormat: m.GetNamespaceFormat(),
+		Mutation:        proto.Clone(m).(*pb.Mutation),
+		OriginSeq:       m.GetSeq(),
+		HLC:             hlcFromProto(m.GetHlc()),
+		Original:        make([]*pb.Edge, len(call.GetItems())),
+		ContribIDs:      make([]graphcache.ContribID, len(call.GetItems())),
+		Receipts:        make([]mutationreceipt.Receipt, len(call.GetItems())),
 	}
 	copy(e.Origin[:], m.GetOrigin())
 	copy(e.Epoch[:], call.GetDeploymentEpoch())
@@ -211,6 +221,11 @@ func decodeReceiptEdgeAddMutation(m *pb.Mutation) (*graphAddEffectEnvelope, erro
 			return nil, receiptWALUnionError("invalid receipt Add wire item %d result", i)
 		}
 		receipt := &e.Receipts[i]
+		resource, resourceErr := receiptResourceIdentity(e.NamespaceFormat, e.Original[i].GetTail(), e.Original[i].GetHead())
+		if resourceErr != nil {
+			return nil, resourceErr
+		}
+		receipt.Resource = resource
 		copy(receipt.ID[:], wireReceipt.GetOperationId())
 		copy(receipt.Group[:], wireReceipt.GetLogicalCallId())
 		receipt.Index, receipt.Count = wireReceipt.GetItemIndex(), wireReceipt.GetItemCount()
@@ -255,13 +270,14 @@ func hydrateReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) error {
 		return receiptWALUnionError("receipt Add accepted projection differs from WAL sidecar")
 	}
 	e.Origin, e.OriginSeq, e.HLC = parsed.Origin, parsed.OriginSeq, parsed.HLC
+	e.NamespaceFormat = parsed.NamespaceFormat
 	e.Epoch, e.PolicyFingerprint = parsed.Epoch, parsed.PolicyFingerprint
 	e.Original, e.ContribIDs, e.Receipts = parsed.Original, parsed.ContribIDs, parsed.Receipts
 	return nil
 }
 
 func validateReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (int64, error) {
-	if e == nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
+	if e == nil || validateDataFormat(e.NamespaceFormat) != nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
 		e.HLC.WallNs <= 0 || e.HLC.NodeID != e.Origin ||
 		e.Epoch == (mutationreceipt.Epoch{}) || e.PolicyFingerprint == ([32]byte{}) {
 		return 0, receiptWALUnionError("invalid receipt Add origin, HLC, epoch, or policy metadata")
@@ -289,9 +305,12 @@ func validateReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (int64, error) {
 		); err != nil {
 			return 0, receiptWALUnionError("%v", err)
 		}
-		digest, err := receiptEdgeAddDigest(e.Original[i], e.ContribIDs[i])
+		digest, err := receiptEdgeAddDigest(e.Original[i], e.ContribIDs[i], e.NamespaceFormat)
 		if err != nil {
 			return 0, receiptWALUnionError("invalid receipt Add item %d: %v", i, err)
+		}
+		if !receiptResourceMatches(receipt, e.NamespaceFormat, e.Original[i].GetTail(), e.Original[i].GetHead()) {
+			return 0, receiptWALUnionError("original resource provenance drift")
 		}
 		if receipt.Group != group {
 			return 0, receiptWALUnionError("receipt Add logical-call ID drift at item %d", i)
@@ -355,6 +374,7 @@ func maximalReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (*graphAddEffectEn
 		return nil, receiptWALUnionError("maximal receipt Edge Add envelope is not receipt-bearing")
 	}
 	maximal := &graphAddEffectEnvelope{
+		NamespaceFormat:   e.NamespaceFormat,
 		Origin:            e.Origin,
 		OriginSeq:         e.OriginSeq,
 		HLC:               e.HLC,
@@ -399,7 +419,7 @@ func validateReceiptEdgeAddRow(
 	if receipt.Group == (mutationreceipt.GroupID{}) ||
 		receipt.Index != uint32(index) || receipt.Count != uint32(count) ||
 		receipt.Kind != mutationreceipt.AddEdge || !receipt.HasContrib ||
-		receiptContrib != contribID || receipt.Digest != digest {
+		receiptContrib != contribID || receipt.Digest != digest || receipt.LifecycleReduction {
 		return 0, fmt.Errorf("receipt Add intent or index drift at item %d", index)
 	}
 	return horizon, nil

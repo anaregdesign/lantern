@@ -36,11 +36,12 @@ type ReceiptBaselineArchiveCodec interface {
 // ReceiptBaselineCandidate is a fully validated detached archive image.
 // Only ServingRuntime may install it into its identity-stable live objects.
 type ReceiptBaselineCandidate struct {
-	Graph          *graphcache.GraphCache[string, *pb.Vertex]
-	Receipts       *mutationreceipt.Store
-	Retired        mutationreceipt.RetiredCatalogSnapshot
-	Policy         mutationreceipt.Config
-	Origins        []OriginState
-	CutoffLocalSeq uint64
-	CutoffHLC      hlc.Timestamp
+	NamespaceFormat string
+	Graph           *graphcache.GraphCache[string, *pb.Vertex]
+	Receipts        *mutationreceipt.Store
+	Retired         mutationreceipt.RetiredCatalogSnapshot
+	Policy          mutationreceipt.Config
+	Origins         []OriginState
+	CutoffLocalSeq  uint64
+	CutoffHLC       hlc.Timestamp
 }

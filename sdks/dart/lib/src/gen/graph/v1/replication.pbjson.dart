@@ -534,16 +534,23 @@ const ReplicatedReceiptVertexPutItem$json = {
       '6': '.graph.v1.ReplicatedPutVertex',
       '10': 'accepted'
     },
+    {
+      '1': 'lifecycle_reduced',
+      '3': 4,
+      '4': 1,
+      '5': 8,
+      '10': 'lifecycleReduced'
+    },
   ],
 };
 
 /// Descriptor for `ReplicatedReceiptVertexPutItem`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List replicatedReceiptVertexPutItemDescriptor =
-    $convert.base64Decode(
-        'Ch5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEl0ZW0SLAoIb3JpZ2luYWwYASABKAsyEC5ncm'
-        'FwaC52MS5WZXJ0ZXhSCG9yaWdpbmFsEjMKB3JlY2VpcHQYAiABKAsyGS5ncmFwaC52MS5NdXRh'
-        'dGlvblJlY2VpcHRSB3JlY2VpcHQSOQoIYWNjZXB0ZWQYAyABKAsyHS5ncmFwaC52MS5SZXBsaW'
-        'NhdGVkUHV0VmVydGV4UghhY2NlcHRlZA==');
+final $typed_data.Uint8List replicatedReceiptVertexPutItemDescriptor = $convert.base64Decode(
+    'Ch5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEl0ZW0SLAoIb3JpZ2luYWwYASABKAsyEC5ncm'
+    'FwaC52MS5WZXJ0ZXhSCG9yaWdpbmFsEjMKB3JlY2VpcHQYAiABKAsyGS5ncmFwaC52MS5NdXRh'
+    'dGlvblJlY2VpcHRSB3JlY2VpcHQSOQoIYWNjZXB0ZWQYAyABKAsyHS5ncmFwaC52MS5SZXBsaW'
+    'NhdGVkUHV0VmVydGV4UghhY2NlcHRlZBIrChFsaWZlY3ljbGVfcmVkdWNlZBgEIAEoCFIQbGlm'
+    'ZWN5Y2xlUmVkdWNlZA==');
 
 @$core.Deprecated('Use replicatedReceiptVertexPutDescriptor instead')
 const ReplicatedReceiptVertexPut$json = {
@@ -877,6 +884,7 @@ const Mutation$json = {
       '6': '.google.protobuf.Timestamp',
       '10': 'tombstoneExpiration'
     },
+    {'1': 'namespace_format', '3': 6, '4': 1, '5': 9, '10': 'namespaceFormat'},
   ],
 };
 
@@ -885,7 +893,8 @@ final $typed_data.Uint8List mutationDescriptor = $convert.base64Decode(
     'CghNdXRhdGlvbhIQCgNzZXEYASABKARSA3NlcRIoCgNobGMYAiABKAsyFi5ncmFwaC52MS5ITE'
     'NUaW1lc3RhbXBSA2hsYxIWCgZvcmlnaW4YAyABKAxSBm9yaWdpbhIkCgJvcBgEIAEoCzIULmdy'
     'YXBoLnYxLk11dGF0aW9uT3BSAm9wEk0KFHRvbWJzdG9uZV9leHBpcmF0aW9uGAUgASgLMhouZ2'
-    '9vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFITdG9tYnN0b25lRXhwaXJhdGlvbg==');
+    '9vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFITdG9tYnN0b25lRXhwaXJhdGlvbhIpChBuYW1lc3Bh'
+    'Y2VfZm9ybWF0GAYgASgJUg9uYW1lc3BhY2VGb3JtYXQ=');
 
 @$core.Deprecated('Use subscribeRequestDescriptor instead')
 const SubscribeRequest$json = {
@@ -916,6 +925,7 @@ const SubscribeRequest$json = {
       '5': 8,
       '10': 'acceptReceiptEnvelopes'
     },
+    {'1': 'namespace_format', '3': 6, '4': 1, '5': 9, '10': 'namespaceFormat'},
   ],
   '3': [SubscribeRequest_FromSeqPerOriginEntry$json],
 };
@@ -937,8 +947,9 @@ final $typed_data.Uint8List subscribeRequestDescriptor = $convert.base64Decode(
     'aWdpbhIkCg5mcm9tX2xvY2FsX3NlcRgCIAEoBFIMZnJvbUxvY2FsU2VxEj0KCnByb2plY3Rpb2'
     '4YAyABKA4yHS5ncmFwaC52MS5TdWJzY3JpYmVQcm9qZWN0aW9uUgpwcm9qZWN0aW9uEhwKCWJv'
     'b3RzdHJhcBgEIAEoCFIJYm9vdHN0cmFwEjgKGGFjY2VwdF9yZWNlaXB0X2VudmVsb3BlcxgFIA'
-    'EoCFIWYWNjZXB0UmVjZWlwdEVudmVsb3BlcxpDChVGcm9tU2VxUGVyT3JpZ2luRW50cnkSEAoD'
-    'a2V5GAEgASgJUgNrZXkSFAoFdmFsdWUYAiABKARSBXZhbHVlOgI4AQ==');
+    'EoCFIWYWNjZXB0UmVjZWlwdEVudmVsb3BlcxIpChBuYW1lc3BhY2VfZm9ybWF0GAYgASgJUg9u'
+    'YW1lc3BhY2VGb3JtYXQaQwoVRnJvbVNlcVBlck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2'
+    'V5EhQKBXZhbHVlGAIgASgEUgV2YWx1ZToCOAE=');
 
 @$core.Deprecated('Use identityCheckpointDescriptor instead')
 const IdentityCheckpoint$json = {
@@ -1076,13 +1087,15 @@ const SnapshotRequest$json = {
       '6': '.graph.v1.SnapshotFormat',
       '10': 'requiredFormat'
     },
+    {'1': 'namespace_format', '3': 2, '4': 1, '5': 9, '10': 'namespaceFormat'},
   ],
 };
 
 /// Descriptor for `SnapshotRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List snapshotRequestDescriptor = $convert.base64Decode(
     'Cg9TbmFwc2hvdFJlcXVlc3QSQQoPcmVxdWlyZWRfZm9ybWF0GAEgASgOMhguZ3JhcGgudjEuU2'
-    '5hcHNob3RGb3JtYXRSDnJlcXVpcmVkRm9ybWF0');
+    '5hcHNob3RGb3JtYXRSDnJlcXVpcmVkRm9ybWF0EikKEG5hbWVzcGFjZV9mb3JtYXQYAiABKAlS'
+    'D25hbWVzcGFjZUZvcm1hdA==');
 
 @$core.Deprecated('Use snapshotReceiptMetadataDescriptor instead')
 const SnapshotReceiptMetadata$json = {
@@ -1134,6 +1147,7 @@ final $typed_data.Uint8List snapshotReceiptMetadataDescriptor = $convert.base64D
 const SnapshotHeader$json = {
   '1': 'SnapshotHeader',
   '2': [
+    {'1': 'namespace_format', '3': 20, '4': 1, '5': 9, '10': 'namespaceFormat'},
     {
       '1': 'cutoff_seq_per_origin',
       '3': 1,
@@ -1183,14 +1197,15 @@ const SnapshotHeader_CutoffSeqPerOriginEntry$json = {
 
 /// Descriptor for `SnapshotHeader`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List snapshotHeaderDescriptor = $convert.base64Decode(
-    'Cg5TbmFwc2hvdEhlYWRlchJjChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC'
-    '52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeVISY3V0b2ZmU2VxUGVy'
-    'T3JpZ2luEjUKCmN1dG9mZl9obGMYAiABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSCWN1dG'
-    '9mZkhsYxIoChBjdXRvZmZfbG9jYWxfc2VxGAMgASgEUg5jdXRvZmZMb2NhbFNlcRIwCgZmb3Jt'
-    'YXQYBCABKA4yGC5ncmFwaC52MS5TbmFwc2hvdEZvcm1hdFIGZm9ybWF0EkwKEHJlY2VpcHRfbW'
-    'V0YWRhdGEYBSABKAsyIS5ncmFwaC52MS5TbmFwc2hvdFJlY2VpcHRNZXRhZGF0YVIPcmVjZWlw'
-    'dE1ldGFkYXRhGkUKF0N1dG9mZlNlcVBlck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2V5Eh'
-    'QKBXZhbHVlGAIgASgEUgV2YWx1ZToCOAE=');
+    'Cg5TbmFwc2hvdEhlYWRlchIpChBuYW1lc3BhY2VfZm9ybWF0GBQgASgJUg9uYW1lc3BhY2VGb3'
+    'JtYXQSYwoVY3V0b2ZmX3NlcV9wZXJfb3JpZ2luGAEgAygLMjAuZ3JhcGgudjEuU25hcHNob3RI'
+    'ZWFkZXIuQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnlSEmN1dG9mZlNlcVBlck9yaWdpbhI1CgpjdX'
+    'RvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wUgljdXRvZmZIbGMSKAoQY3V0'
+    'b2ZmX2xvY2FsX3NlcRgDIAEoBFIOY3V0b2ZmTG9jYWxTZXESMAoGZm9ybWF0GAQgASgOMhguZ3'
+    'JhcGgudjEuU25hcHNob3RGb3JtYXRSBmZvcm1hdBJMChByZWNlaXB0X21ldGFkYXRhGAUgASgL'
+    'MiEuZ3JhcGgudjEuU25hcHNob3RSZWNlaXB0TWV0YWRhdGFSD3JlY2VpcHRNZXRhZGF0YRpFCh'
+    'dDdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEo'
+    'BFIFdmFsdWU6AjgB');
 
 @$core.Deprecated('Use snapshotFooterDescriptor instead')
 const SnapshotFooter$json = {
@@ -1286,6 +1301,21 @@ final $typed_data.Uint8List snapshotReceiptContributionDescriptor =
         'ChtTbmFwc2hvdFJlY2VpcHRDb250cmlidXRpb24SJwoPY29udHJpYnV0aW9uX2lkGAEgASgMUg'
         '5jb250cmlidXRpb25JZA==');
 
+@$core.Deprecated('Use snapshotReceiptResourceDescriptor instead')
+const SnapshotReceiptResource$json = {
+  '1': 'SnapshotReceiptResource',
+  '2': [
+    {'1': 'logical_key', '3': 1, '4': 1, '5': 9, '10': 'logicalKey'},
+    {'1': 'logical_head', '3': 2, '4': 1, '5': 9, '10': 'logicalHead'},
+  ],
+};
+
+/// Descriptor for `SnapshotReceiptResource`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotReceiptResourceDescriptor =
+    $convert.base64Decode(
+        'ChdTbmFwc2hvdFJlY2VpcHRSZXNvdXJjZRIfCgtsb2dpY2FsX2tleRgBIAEoCVIKbG9naWNhbE'
+        'tleRIhCgxsb2dpY2FsX2hlYWQYAiABKAlSC2xvZ2ljYWxIZWFk');
+
 @$core.Deprecated('Use snapshotReceiptDescriptor instead')
 const SnapshotReceipt$json = {
   '1': 'SnapshotReceipt',
@@ -1313,6 +1343,21 @@ const SnapshotReceipt$json = {
       '6': '.graph.v1.SnapshotReceiptContribution',
       '10': 'contribution'
     },
+    {
+      '1': 'resource',
+      '3': 10,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotReceiptResource',
+      '10': 'resource'
+    },
+    {
+      '1': 'lifecycle_reduced',
+      '3': 11,
+      '4': 1,
+      '5': 8,
+      '10': 'lifecycleReduced'
+    },
   ],
 };
 
@@ -1325,7 +1370,9 @@ final $typed_data.Uint8List snapshotReceiptDescriptor = $convert.base64Decode(
     'GAYgASgMUgxpbnRlbnRTaGEyNTYSKAoQZGVhZGxpbmVfdW5peF9tcxgHIAEoBFIOZGVhZGxpbm'
     'VVbml4TXMSJwoPb3JpZ2luYWxfcmVzdWx0GAggASgMUg5vcmlnaW5hbFJlc3VsdBJJCgxjb250'
     'cmlidXRpb24YCSABKAsyJS5ncmFwaC52MS5TbmFwc2hvdFJlY2VpcHRDb250cmlidXRpb25SDG'
-    'NvbnRyaWJ1dGlvbg==');
+    'NvbnRyaWJ1dGlvbhI9CghyZXNvdXJjZRgKIAEoCzIhLmdyYXBoLnYxLlNuYXBzaG90UmVjZWlw'
+    'dFJlc291cmNlUghyZXNvdXJjZRIrChFsaWZlY3ljbGVfcmVkdWNlZBgLIAEoCFIQbGlmZWN5Y2'
+    'xlUmVkdWNlZA==');
 
 @$core.Deprecated('Use snapshotVertexDescriptor instead')
 const SnapshotVertex$json = {
@@ -1718,11 +1765,15 @@ final $typed_data.Uint8List snapshotResponseDescriptor = $convert.base64Decode(
 @$core.Deprecated('Use peerStatusRequestDescriptor instead')
 const PeerStatusRequest$json = {
   '1': 'PeerStatusRequest',
+  '2': [
+    {'1': 'namespace_format', '3': 1, '4': 1, '5': 9, '10': 'namespaceFormat'},
+  ],
 };
 
 /// Descriptor for `PeerStatusRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List peerStatusRequestDescriptor =
-    $convert.base64Decode('ChFQZWVyU3RhdHVzUmVxdWVzdA==');
+final $typed_data.Uint8List peerStatusRequestDescriptor = $convert.base64Decode(
+    'ChFQZWVyU3RhdHVzUmVxdWVzdBIpChBuYW1lc3BhY2VfZm9ybWF0GAEgASgJUg9uYW1lc3BhY2'
+    'VGb3JtYXQ=');
 
 @$core.Deprecated('Use originStateDescriptor instead')
 const OriginState$json = {
@@ -1751,6 +1802,7 @@ final $typed_data.Uint8List originStateDescriptor = $convert.base64Decode(
 const PeerStatusResponse$json = {
   '1': 'PeerStatusResponse',
   '2': [
+    {'1': 'namespace_format', '3': 20, '4': 1, '5': 9, '10': 'namespaceFormat'},
     {'1': 'self_origin', '3': 1, '4': 1, '5': 12, '10': 'selfOrigin'},
     {
       '1': 'origins',
@@ -1780,11 +1832,12 @@ const PeerStatusResponse$json = {
 
 /// Descriptor for `PeerStatusResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List peerStatusResponseDescriptor = $convert.base64Decode(
-    'ChJQZWVyU3RhdHVzUmVzcG9uc2USHwoLc2VsZl9vcmlnaW4YASABKAxSCnNlbGZPcmlnaW4SLw'
-    'oHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlUgdvcmlnaW5zEjoKGXNlYXJj'
-    'aF9jb25maWdfZmluZ2VycHJpbnQYAyABKAlSF3NlYXJjaENvbmZpZ0ZpbmdlcnByaW50ElIKGH'
-    'JlcXVpcmVkX3NuYXBzaG90X2Zvcm1hdBgEIAEoDjIYLmdyYXBoLnYxLlNuYXBzaG90Rm9ybWF0'
-    'UhZyZXF1aXJlZFNuYXBzaG90Rm9ybWF0');
+    'ChJQZWVyU3RhdHVzUmVzcG9uc2USKQoQbmFtZXNwYWNlX2Zvcm1hdBgUIAEoCVIPbmFtZXNwYW'
+    'NlRm9ybWF0Eh8KC3NlbGZfb3JpZ2luGAEgASgMUgpzZWxmT3JpZ2luEi8KB29yaWdpbnMYAiAD'
+    'KAsyFS5ncmFwaC52MS5PcmlnaW5TdGF0ZVIHb3JpZ2lucxI6ChlzZWFyY2hfY29uZmlnX2Zpbm'
+    'dlcnByaW50GAMgASgJUhdzZWFyY2hDb25maWdGaW5nZXJwcmludBJSChhyZXF1aXJlZF9zbmFw'
+    'c2hvdF9mb3JtYXQYBCABKA4yGC5ncmFwaC52MS5TbmFwc2hvdEZvcm1hdFIWcmVxdWlyZWRTbm'
+    'Fwc2hvdEZvcm1hdA==');
 
 const $core.Map<$core.String, $core.dynamic>
     LanternReplicationServiceBase$json = {
@@ -1891,6 +1944,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SnapshotEdgeTombstone': SnapshotEdgeTombstone$json,
   '.graph.v1.SnapshotReceipt': SnapshotReceipt$json,
   '.graph.v1.SnapshotReceiptContribution': SnapshotReceiptContribution$json,
+  '.graph.v1.SnapshotReceiptResource': SnapshotReceiptResource$json,
   '.graph.v1.SnapshotEdgeContributionTombstone':
       SnapshotEdgeContributionTombstone$json,
   '.graph.v1.PeerStatusRequest': PeerStatusRequest$json,

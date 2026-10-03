@@ -28,6 +28,7 @@ const receiptSnapshotMaxFrameBytes = 8 << 20
 // graph-only and receipt captures clone mutable Vertex payloads before
 // releasing their cuts so off-lock streaming cannot observe later writes.
 type replicationSnapshotCut struct {
+	namespaceFormat string
 	cutoffPerOrigin map[string]uint64
 	cutoffHLC       hlc.Timestamp
 	cutoffLocalSeq  uint64
@@ -46,6 +47,7 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 	header := &pb.SnapshotResponse{
 		Entry: &pb.SnapshotResponse_Header{
 			Header: &pb.SnapshotHeader{
+				NamespaceFormat:    cut.namespaceFormat,
 				CutoffSeqPerOrigin: cutoffPerOrigin,
 				CutoffHlc:          hlcToProto(cutoffHLC),
 				CutoffLocalSeq:     cutoffLocalSeq,
@@ -465,6 +467,9 @@ func ValidateReceiptSnapshotGraphCapture(frames []*pb.SnapshotResponse, origins 
 		return fmt.Errorf("receipt Snapshot graph capture lacks header or footer")
 	}
 	header := frames[0].GetHeader()
+	if err := ValidateDataSnapshotNamespace(frames, header.GetNamespaceFormat()); err != nil {
+		return err
+	}
 	footer := frames[len(frames)-1].GetFooter()
 	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		header.GetReceiptMetadata() != nil ||
@@ -913,19 +918,23 @@ func receiptSnapshotRow(receipt mutationreceipt.Receipt) (*pb.SnapshotReceipt, e
 		return nil, err
 	}
 	row := &pb.SnapshotReceipt{
-		OperationId:    receipt.ID.Bytes(),
-		LogicalCallId:  append([]byte(nil), receipt.Group[:]...),
-		ItemIndex:      receipt.Index,
-		ItemCount:      receipt.Count,
-		Kind:           kind,
-		IntentSha256:   append([]byte(nil), receipt.Digest[:]...),
-		DeadlineUnixMs: uint64(receipt.DeadlineMillis),
-		OriginalResult: append([]byte(nil), receipt.Result...),
+		OperationId:      receipt.ID.Bytes(),
+		LogicalCallId:    append([]byte(nil), receipt.Group[:]...),
+		ItemIndex:        receipt.Index,
+		ItemCount:        receipt.Count,
+		Kind:             kind,
+		IntentSha256:     append([]byte(nil), receipt.Digest[:]...),
+		DeadlineUnixMs:   uint64(receipt.DeadlineMillis),
+		OriginalResult:   append([]byte(nil), receipt.Result...),
+		LifecycleReduced: receipt.LifecycleReduction,
 	}
 	if receipt.HasContrib {
 		row.Contribution = &pb.SnapshotReceiptContribution{
 			ContributionId: append([]byte(nil), receipt.ContribID[:]...),
 		}
+	}
+	if receipt.Resource != (mutationreceipt.ResourceIdentity{}) {
+		row.Resource = &pb.SnapshotReceiptResource{LogicalKey: receipt.Resource.Key, LogicalHead: receipt.Resource.Head}
 	}
 	return row, nil
 }
@@ -1017,6 +1026,9 @@ func DecodeReceiptSnapshotFrames(
 		return ReceiptWholeStateCapture{}, fmt.Errorf("receipt Snapshot stream lacks header or footer")
 	}
 	header := frames[0].GetHeader()
+	if err := ValidateDataSnapshotNamespace(frames, header.GetNamespaceFormat()); err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
 	footer := frames[len(frames)-1].GetFooter()
 	if header.GetFormat() != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT ||
 		header.GetReceiptMetadata() == nil || header.GetReceiptMetadata().GetActivePolicy() == nil {
@@ -1313,11 +1325,18 @@ func receiptFromSnapshotRow(row *pb.SnapshotReceipt) (mutationreceipt.Receipt, e
 			Count: row.GetItemCount(),
 			Kind:  kind,
 		},
-		Result:         append([]byte(nil), row.GetOriginalResult()...),
-		DeadlineMillis: int64(row.GetDeadlineUnixMs()),
+		Result:             append([]byte(nil), row.GetOriginalResult()...),
+		DeadlineMillis:     int64(row.GetDeadlineUnixMs()),
+		LifecycleReduction: row.GetLifecycleReduced(),
 	}
 	copy(receipt.Group[:], row.GetLogicalCallId())
 	copy(receipt.Digest[:], row.GetIntentSha256())
+	if row.GetResource() != nil {
+		if row.GetResource().GetLogicalKey() == "" {
+			return mutationreceipt.Receipt{}, fmt.Errorf("receipt Snapshot has empty resource provenance")
+		}
+		receipt.Resource = mutationreceipt.ResourceIdentity{Key: row.GetResource().GetLogicalKey(), Head: row.GetResource().GetLogicalHead()}
+	}
 	if row.GetContribution() != nil {
 		if len(row.GetContribution().GetContributionId()) != len(mutationreceipt.ContribID{}) {
 			return mutationreceipt.Receipt{}, fmt.Errorf("receipt Snapshot contribution metadata is invalid")

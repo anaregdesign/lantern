@@ -40,6 +40,7 @@ type receiptVertexPutCall struct {
 }
 
 type vertexPutReceiptEnvelope struct {
+	NamespaceFormat   string
 	Mutation          *pb.Mutation
 	Origin            hlc.NodeID
 	OriginSeq         uint64
@@ -129,13 +130,17 @@ func appendReceiptCanonicalTime(dst []byte, seconds int64, nanos int32) []byte {
 	return binary.BigEndian.AppendUint32(dst, uint32(nanos))
 }
 
-func vertexPutDigest(vertex *pb.Vertex, ifAbsent bool) ([32]byte, error) {
+func vertexPutDigest(vertex *pb.Vertex, ifAbsent bool, namespace ...string) ([32]byte, error) {
 	if err := validateReceiptVertex(vertex); err != nil {
 		return [32]byte{}, err
 	}
-	canonical := make([]byte, 0, 64+len(vertex.GetKey()))
+	logicalKey, err := receiptLogicalKey(vertex.GetKey(), namespace)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	canonical := make([]byte, 0, 64+len(logicalKey))
 	canonical = append(canonical, byte(mutationreceipt.PutVertex))
-	canonical = appendReceiptCanonicalString(canonical, vertex.GetKey())
+	canonical = appendReceiptCanonicalString(canonical, logicalKey)
 	switch value := vertex.GetValue().(type) {
 	case nil:
 		canonical = append(canonical, 0)
@@ -246,7 +251,7 @@ func prepareVertexPutReceiptCall(
 	items := make([]graphcache.VertexItem[string, *pb.Vertex], len(call.Items))
 	intents := make([]mutationreceipt.Intent, len(call.Items))
 	for i, item := range call.Items {
-		digest, err := vertexPutDigest(item.Vertex, call.IfAbsent)
+		digest, err := vertexPutDigest(item.Vertex, call.IfAbsent, s.namespaceFormat)
 		if err != nil {
 			return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -264,6 +269,10 @@ func prepareVertexPutReceiptCall(
 		intents[i] = mutationreceipt.Intent{
 			ID: item.ID, Group: call.Group, Index: uint32(i), Count: uint32(len(call.Items)),
 			Kind: mutationreceipt.PutVertex, Digest: digest,
+		}
+		intents[i].Resource, err = receiptResourceIdentity(s.namespaceFormat, item.Vertex.GetKey(), "")
+		if err != nil {
+			return nil, nil, nil, invalidReceiptRequest(err)
 		}
 	}
 	if err := validateReceiptVertexPutWALRequestCapacity(original); err != nil {
@@ -383,6 +392,10 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	if err != nil {
 		return nil, err
 	}
+	for i := range items {
+		items[i].DenyLifecycleReduction = c.service.denyVertexLifecycle(ctx, items[i].Key)
+		items[i].CaptureLifecycleReduction = c.service.namespaceFormat != ""
+	}
 	s := c.service
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
@@ -410,6 +423,9 @@ func (c *vertexPutReceiptCoordinator) Commit(
 		return nil, receiptStoreError(err)
 	}
 	if classification == mutationreceipt.Duplicate {
+		if err := c.service.authorizeReceiptRows(ctx, prior); err != nil {
+			return nil, err
+		}
 		return receiptVertexPutResponse(prior)
 	}
 	placeholders := make([][]byte, len(items))
@@ -453,6 +469,11 @@ func (c *vertexPutReceiptCoordinator) Commit(
 	if err := storeTx.ReplaceReservedResults(results); err != nil {
 		return nil, receiptStoreError(err)
 	}
+	if result.LifecycleReductions != nil {
+		if err := storeTx.SetReservedLifecycleReductions(result.LifecycleReductions); err != nil {
+			return nil, receiptStoreError(err)
+		}
+	}
 	receipts, err := storeTx.ReservedReceipts()
 	if err != nil {
 		return nil, receiptStoreError(err)
@@ -462,7 +483,8 @@ func (c *vertexPutReceiptCoordinator) Commit(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	envelope := &vertexPutReceiptEnvelope{
-		Origin: origin, OriginSeq: seq, HLC: ts,
+		NamespaceFormat: s.namespaceFormat,
+		Origin:          origin, OriginSeq: seq, HLC: ts,
 		Epoch: c.store.Epoch(), PolicyFingerprint: c.store.PolicyFingerprint(),
 		IfAbsent: call.IfAbsent, Original: original, Accepted: accepted, Receipts: receipts,
 	}
@@ -597,7 +619,8 @@ func (c *vertexPutReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal, err)
 	}
 	localEnvelope := &vertexPutReceiptEnvelope{
-		Origin: origin, OriginSeq: seq, HLC: ts, Epoch: e.Epoch,
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          origin, OriginSeq: seq, HLC: ts, Epoch: e.Epoch,
 		PolicyFingerprint: e.PolicyFingerprint, IfAbsent: e.IfAbsent,
 		Original: cloneReceiptVertices(e.Original),
 		Accepted: accepted,
@@ -674,6 +697,7 @@ func maximalReceiptVertexPutEnvelope(
 		}
 	}
 	maximal := &vertexPutReceiptEnvelope{
+		NamespaceFormat:   e.NamespaceFormat,
 		Origin:            e.Origin,
 		OriginSeq:         e.OriginSeq,
 		HLC:               e.HLC,
@@ -757,7 +781,7 @@ func sameReceiptVertexPutIntent(a, b *vertexPutReceiptEnvelope) bool {
 			return false
 		}
 		ar, br := a.Receipts[i], b.Receipts[i]
-		if ar.Intent != br.Intent || ar.DeadlineMillis != br.DeadlineMillis ||
+		if ar.Intent != br.Intent || ar.DeadlineMillis != br.DeadlineMillis || ar.LifecycleReduction != br.LifecycleReduction ||
 			!bytes.Equal(ar.Result, br.Result) {
 			return false
 		}

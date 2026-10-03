@@ -60,6 +60,7 @@ fn unknown_or_malformed_frames_fail_closed_before_cursor_advances() {
                 op: Some(Op::DeleteVertex(Default::default())),
             }),
             tombstone_expiration: None,
+            namespace_format: String::new(),
         })),
     };
     let mut payload = known.encode_to_vec();
