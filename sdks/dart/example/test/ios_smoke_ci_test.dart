@@ -387,12 +387,7 @@ os.write(1, b'diagnostic-tail-after-noise\\n')
 ${success ? '' : 'time.sleep(30)'}
 ''');
 
-        final result = await _runAttempt(
-          sandbox,
-          fakeFlutter,
-          fakeXcrun,
-          extraEnvironment: {'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '3'},
-        );
+        final result = await _runAttempt(sandbox, fakeFlutter, fakeXcrun);
 
         expect(
           result.exitCode,
