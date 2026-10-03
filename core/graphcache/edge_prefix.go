@@ -158,11 +158,7 @@ func (c *GraphCache[S, T]) collectEdgeScanRowsLocked(
 		return !full()
 	}
 	tailWalk := func(visit func(string) bool) {
-		if afterTail == "" && afterHead == "" {
-			c.prefixIndex.walkPrefix(tailPrefix, visit)
-			return
-		}
-		c.prefixIndex.walkPrefixBound(tailPrefix, afterTail, true, visit)
+		walkVisiblePrefix(ctx, c.prefixIndex, tailPrefix, afterTail, true, false, true, visit)
 	}
 	tailWalk(func(tailProj string) bool {
 		if err := ctx.Err(); err != nil {
@@ -185,9 +181,9 @@ func (c *GraphCache[S, T]) collectEdgeScanRowsLocked(
 			headAfter = afterHead
 		}
 		if c.headByTail != nil {
-			c.scanTailHeadsFast(tail, tailProj, headPrefix, headAfter, heads, collect)
+			c.scanTailHeadsFastView(ctx, tail, tailProj, headPrefix, headAfter, heads, collect)
 		} else {
-			c.scanTailHeadsFallback(tail, tailProj, headPrefix, headAfter, heads, collect)
+			c.scanTailHeadsFallbackView(ctx, tail, tailProj, headPrefix, headAfter, heads, collect)
 		}
 		return !full()
 	})
@@ -206,18 +202,29 @@ func (c *GraphCache[S, T]) scanTailHeadsFast(
 	heads map[vertexID]*weight,
 	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
 ) bool {
+	return c.scanTailHeadsFastView(context.Background(), tail, tailProj, headPrefix, headAfter, heads, fn)
+}
+
+func (c *GraphCache[S, T]) scanTailHeadsFastView(
+	ctx context.Context,
+	tail S,
+	tailProj string,
+	headPrefix, headAfter string,
+	heads map[vertexID]*weight,
+	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
+) bool {
 	tailID, ok := c.edges.dict.lookup(tail)
 	if !ok {
-		return c.scanTailHeadsFallback(tail, tailProj, headPrefix, headAfter, heads, fn)
+		return c.scanTailHeadsFallbackView(ctx, tail, tailProj, headPrefix, headAfter, heads, fn)
 	}
 	hi, ok := c.headByTail[tailID]
 	if !ok || hi == nil {
 		// No per-tail index yet (or out of sync). Fall back to the safe
 		// path so we never silently under-report.
-		return c.scanTailHeadsFallback(tail, tailProj, headPrefix, headAfter, heads, fn)
+		return c.scanTailHeadsFallbackView(ctx, tail, tailProj, headPrefix, headAfter, heads, fn)
 	}
 	keepGoing := true
-	hi.walkPrefixBound(headPrefix, headAfter, func(headProj string, headID vertexID) bool {
+	hi.walkPrefixView(ctx, headPrefix, headAfter, func(headProj string, headID vertexID) bool {
 		w, ok := heads[headID]
 		if !ok {
 			// Index/edge drift: skip rather than crash. This window is
@@ -259,6 +266,17 @@ func (c *GraphCache[S, T]) scanTailHeadsFallback(
 	heads map[vertexID]*weight,
 	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
 ) bool {
+	return c.scanTailHeadsFallbackView(context.Background(), tail, tailProj, headPrefix, headAfter, heads, fn)
+}
+
+func (c *GraphCache[S, T]) scanTailHeadsFallbackView(
+	ctx context.Context,
+	tail S,
+	tailProj string,
+	headPrefix, headAfter string,
+	heads map[vertexID]*weight,
+	fn func(tailProjected string, tail S, headProjected string, head S, weight float32, expiration time.Time) bool,
+) bool {
 	type headEntry struct {
 		proj string
 		head S
@@ -271,6 +289,9 @@ func (c *GraphCache[S, T]) scanTailHeadsFallback(
 			continue
 		}
 		proj := c.prefixExtract(head)
+		if view := queryViewFromContext(ctx); view != nil && !view.Edge(tailProj, proj) {
+			continue
+		}
 		if headPrefix != "" && !strings.HasPrefix(proj, headPrefix) {
 			continue
 		}

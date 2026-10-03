@@ -303,6 +303,46 @@ func (r *radix) walkPrefixBound(prefix, bound string, inclusive bool, fn func(ke
 	walkBound(node, &buf, bound, inclusive, fn)
 }
 
+// walkRange combines the existing lower/upper seek with an opposite stop bound.
+// The stop callback never resolves a value outside the requested interval.
+func (r *radix) walkRange(lower, upper, after string, inclusive, desc bool, fn func(string) bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	r.walkRangeLocked(lower, upper, after, inclusive, desc, fn)
+}
+
+func (r *radix) walkRangeLocked(lower, upper, after string, inclusive, desc bool, fn func(string) bool) {
+	buf := make([]byte, 0, 32)
+	if desc {
+		bound, boundInclusive := upper, false
+		if after != "" && (bound == "" || after < bound) {
+			bound, boundInclusive = after, inclusive
+		}
+		visit := func(key string) bool {
+			if key < lower {
+				return false
+			}
+			return fn(key)
+		}
+		if bound == "" {
+			walkAllDesc(r.root, &buf, visit)
+		} else {
+			walkBoundDesc(r.root, &buf, bound, boundInclusive, visit)
+		}
+	} else {
+		bound, boundInclusive := lower, true
+		if after != "" && after >= lower {
+			bound, boundInclusive = after, inclusive
+		}
+		walkBound(r.root, &buf, bound, boundInclusive, func(key string) bool {
+			if upper != "" && key >= upper {
+				return false
+			}
+			return fn(key)
+		})
+	}
+}
+
 // walkBound visits the terminals under n (whose accumulated path is *buf)
 // that satisfy the bound, pruning subtrees that provably cannot. The three
 // path-vs-bound relationships drive it:
