@@ -1,6 +1,7 @@
 package graphcache
 
 import (
+	"context"
 	"sort"
 	"time"
 
@@ -65,6 +66,12 @@ type DegreeEntry[S comparable] struct {
 // The prefix index must be enabled (EnablePrefixIndex); otherwise the method
 // returns nil.
 func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeDirection, weighted bool) []DegreeEntry[S] {
+	return c.TopVerticesByDegreeContext(context.Background(), prefix, k, dir, weighted)
+}
+
+// TopVerticesByDegreeContext ranks the authorized induced graph only.
+func (c *GraphCache[S, T]) TopVerticesByDegreeContext(ctx context.Context, prefix string, k int, dir DegreeDirection, weighted bool) []DegreeEntry[S] {
+	view := queryViewFromContext(ctx)
 	if k <= 0 {
 		return nil
 	}
@@ -100,7 +107,7 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 	// 1. Enumerate the live vertices under prefix as ranking candidates.
 	// resolveProjected confirms liveness against the vertex cache, so a stale
 	// radix posting for an expired-but-unflushed vertex is not a candidate.
-	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
 		if key, ok := c.resolveProjected(projected); ok {
 			if _, seen := accum[key]; !seen {
 				accum[key] = degreeAcc{}
@@ -126,7 +133,7 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 			a := accum[tail]
 			for headID, w := range heads {
 				head, ok := c.edges.resolveID(headID)
-				if !ok || !c.vertices.Has(head) {
+				if !ok || !c.vertices.Has(head) || !c.queryEdgeVisible(view, tail, head) {
 					continue
 				}
 				sum, _, nonZero := w.snapshotAt(now)
@@ -145,6 +152,9 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 		// no weight snapshot — then release the lock so the O(E) weight reads do
 		// not stall writers waiting on c.mu.
 		c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
+			if !c.queryEdgeVisible(view, tail, head) {
+				return true
+			}
 			_, tailIn := accum[tail]
 			_, headIn := accum[head]
 			if tailIn || headIn {
@@ -196,6 +206,9 @@ func (c *GraphCache[S, T]) TopVerticesByDegree(prefix string, k int, dir DegreeD
 		}
 	}
 	top := scores.Top(k)
+	if view != nil {
+		top = scores.TopStable(k, stableKeyLess[S])
+	}
 
 	entries := make([]DegreeEntry[S], 0, len(top))
 	for key := range top {

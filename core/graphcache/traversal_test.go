@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -949,4 +950,115 @@ func TestGraphCache_LocalCommunity(t *testing.T) {
 			t.Errorf("BM25 edge a->b = %v, want != raw(%v) — transform not applied", wb, wr)
 		}
 	})
+}
+
+func BenchmarkAuthorizationTraversalCosts(b *testing.B) {
+	for _, edges := range []int{1000, 10000} {
+		b.Run(fmt.Sprintf("edges_%d", edges), func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			c.EnablePrefixIndex(identityExtract)
+			for i := 0; i < edges; i++ {
+				c.AddEdge(fmt.Sprintf("visible:%06d", i), fmt.Sprintf("visible:%06d", i+1), 1)
+				c.AddEdge(fmt.Sprintf("hidden:%06d", i), "visible:000000", 10)
+			}
+			ranges := []KeyRange{{"visible:", "visible;"}}
+			view, _ := NewQueryView(ranges, ranges)
+			for _, weighting := range []EdgeWeighting{WeightingRaw, WeightingTFIDF, WeightingBM25} {
+				for _, family := range []string{"bfs", "ppr"} {
+					for _, restricted := range []bool{false, true} {
+						b.Run(fmt.Sprintf("%s/weight_%d/scoped_%v", family, weighting, restricted), func(b *testing.B) {
+							ctx := context.Background()
+							if restricted {
+								ctx = WithQueryView(ctx, view)
+							}
+							b.ReportAllocs()
+							for b.Loop() {
+								var err error
+								if family == "bfs" {
+									_, _, err = c.NeighborWithExpirationsContext(ctx, "visible:000000", 3, 8, weighting, false, nil)
+								} else {
+									_, err = c.PersonalizedPageRankWithWorkBudgetContext(ctx, "visible:000000", 10, .2, 1e-3, weighting, nil, PPRWorkBudget{MaxPushes: 10000, MaxTouchedEdges: 100000})
+								}
+								if err != nil {
+									b.Fatal(err)
+								}
+							}
+						})
+					}
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkAuthorizationTraversalWorkloads(b *testing.B) {
+	workloads := []struct {
+		name   string
+		every  int
+		prefix string
+		fresh  bool
+	}{
+		{"first_scope", 0, "", true}, {"reused_scope", 0, "", false},
+		{"visible_put_delete_100", 100, "visible:", false}, {"hidden_put_delete_100", 100, "hidden:", false},
+		{"visible_put_delete_1", 1, "visible:", false}, {"hidden_put_delete_1", 1, "hidden:", false},
+	}
+	for _, family := range []string{"bfs", "ppr"} {
+		for _, workload := range workloads {
+			for _, constrained := range []bool{false, true} {
+				b.Run(fmt.Sprintf("%s/%s/constrained_%v", family, workload.name, constrained), func(b *testing.B) {
+					c := NewGraphCache[string, string](time.Hour)
+					c.EnablePrefixIndex(identityExtract)
+					deadline := time.Now().Add(time.Hour)
+					for i := range 10000 {
+						c.PutEdgeWithExpiration(fmt.Sprintf("visible:%06d", i), fmt.Sprintf("visible:%06d", i+1), 1, deadline)
+						c.PutEdgeWithExpiration(fmt.Sprintf("hidden:%06d", i), "visible:000000", 10, deadline)
+					}
+					if workload.every > 0 {
+						if err := c.PutVertexWithExpiration(workload.prefix+"writer", "", deadline); err != nil {
+							b.Fatal(err)
+						}
+					}
+					ranges := []KeyRange{{"visible:", "visible;"}}
+					view, _ := NewQueryView(ranges, ranges)
+					ctx := context.Background()
+					if constrained {
+						ctx = WithQueryView(ctx, view)
+					}
+					runtime.GC()
+					var before runtime.MemStats
+					runtime.ReadMemStats(&before)
+					iteration := 0
+					b.ReportAllocs()
+					for b.Loop() {
+						iteration++
+						if constrained && workload.fresh {
+							fresh, _ := NewQueryView(ranges, ranges)
+							ctx = WithQueryView(context.Background(), fresh)
+						}
+						if workload.every > 0 && iteration%workload.every == 0 {
+							if iteration/workload.every%2 == 0 {
+								c.PutEdgeWithExpiration(workload.prefix+"writer", "visible:009999", 3, deadline)
+							} else {
+								c.DeleteEdge(workload.prefix+"writer", "visible:009999")
+							}
+						}
+						var err error
+						if family == "bfs" {
+							_, _, err = c.NeighborWithExpirationsContext(ctx, "visible:000000", 3, 8, WeightingBM25, false, nil)
+						} else {
+							_, err = c.PersonalizedPageRankWithWorkBudgetContext(ctx, "visible:000000", 10, .2, 1e-3, WeightingBM25, nil, PPRWorkBudget{MaxPushes: 10000, MaxTouchedEdges: 100000})
+						}
+						if err != nil {
+							b.Fatal(err)
+						}
+					}
+					runtime.GC()
+					var after runtime.MemStats
+					runtime.ReadMemStats(&after)
+					b.ReportMetric(float64(after.HeapAlloc)-float64(before.HeapAlloc), "retained_delta_B")
+					runtime.KeepAlive(c)
+				})
+			}
+		}
+	}
 }

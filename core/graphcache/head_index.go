@@ -1,5 +1,7 @@
 package graphcache
 
+import "context"
+
 // headIndex is the per-tail head-side prefix index that backs the head
 // dimension of ScanEdgesByPrefix. For one tail vertex it carries:
 //
@@ -97,4 +99,16 @@ func (h *headIndex) walkPrefixBound(prefix, after string, fn func(projected stri
 		return
 	}
 	h.radix.walkPrefixBound(prefix, after, false, visit)
+}
+
+// walkPrefixView excludes denied head intervals before bucket resolution.
+func (h *headIndex) walkPrefixView(ctx context.Context, prefix, after string, fn func(string, vertexID) bool) {
+	walkVisiblePrefix(ctx, h.radix, prefix, after, false, false, true, func(projected string) bool {
+		for headID := range h.byProj[projected] {
+			if !fn(projected, headID) {
+				return false
+			}
+		}
+		return true
+	})
 }

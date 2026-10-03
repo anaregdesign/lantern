@@ -259,6 +259,19 @@ func (h *postingCursorHeap) Pop() any {
 }
 
 func (idx *InvertedIndex[S, D]) executeTopKLocked(plan scoringPlan, k int, accept func(S) bool, source CandidateSource[S], work *workTracker) ([]Result[S], error) {
+	if candidateFilterFromContext[S](work.ctx) != nil {
+		var lists []*postingList
+		for _, clause := range plan.clauses {
+			for _, term := range clause.terms {
+				lists = append(lists, term.pl)
+			}
+		}
+		var err error
+		source, err = idx.scopedCandidatesLocked(lists, false, source, work)
+		if err != nil {
+			return nil, err
+		}
+	}
 	h := topKHeap[S]{entries: make([]Result[S], 0, k), better: idx.betterResult}
 	var scratch executorScratch
 	visit := func(ord uint32, chargeProbes bool) error {
@@ -379,6 +392,13 @@ func (idx *InvertedIndex[S, D]) executePhraseTopKLocked(terms []string, k int, a
 		}
 		seen[term] = struct{}{}
 		distinct = append(distinct, lists[i])
+	}
+	if candidateFilterFromContext[S](work.ctx) != nil {
+		var err error
+		source, err = idx.scopedCandidatesLocked(distinct, true, source, work)
+		if err != nil {
+			return nil, err
+		}
 	}
 	h := topKHeap[S]{entries: make([]Result[S], 0, k), better: idx.betterResult}
 	var scratch executorScratch

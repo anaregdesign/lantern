@@ -1,0 +1,54 @@
+# Shared corpus ranking with mixed index updates/deletes and BM25 graph walks
+# (#1612). Diagnostic only: excluded from release-scenarios.txt until exact-source
+# OFF/namespace-OFF/OIDC qualification sets producer-owned floors. This scenario
+# exercises shared-statistics hot paths; its literal Search prefix is a query
+# constraint, not proof that the production OIDC boundary is active. Core's
+# BenchmarkAuthorization{Search,Traversal}Workloads compares admitted ranges.
+name: shared_ranking
+cluster:
+  search_enabled: true
+preflight:
+  kind: broad_illuminate
+phases:
+  warmup: { duration: 15s, concurrency: 4, rps: 100 }
+  steady: { duration: 2m, concurrency: 8, rps: 300 }
+  cooldown: 60s
+target:
+  endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
+  calls:
+    - name: corpus_writer
+      rps: 80
+      call: graph.v1.LanternService/PutVertices
+      data_template: |
+        {"vertices":[
+          {"key":"bench:ranking:{{mod .RequestNumber 1000}}","string":"shared searchable ordinary document","expiration":"{{ now | dateModify `10s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"},
+          {"key":"bench:private:stats:{{mod .RequestNumber 1000}}","string":"private unrelated longer ordinary corpus document","expiration":"{{ now | dateModify `10s` | date `2006-01-02T15:04:05.999999999Z07:00` }}"}
+        ]}
+    - name: corpus_delete
+      rps: 20
+      call: graph.v1.LanternService/DeleteVertices
+      data_template: |
+        {"keys":["bench:ranking:{{mod .RequestNumber 1000}}","bench:private:stats:{{mod .RequestNumber 1000}}"]}
+    - name: scoped_search
+      rps: 80
+      call: graph.v1.LanternService/SearchVertices
+      data_template: |
+        {"query":"shared","limit":20,"prefix":"bench:ranking:"}
+    - name: bfs_bm25
+      rps: 40
+      call: graph.v1.LanternService/Illuminate
+      data_template: |
+        {"seed":"bench:walk:root","weighting":3,"bfs":{"step":2,"fan_out":32}}
+    - name: ppr_bm25
+      rps: 40
+      call: graph.v1.LanternService/Illuminate
+      data_template: |
+        {"seed":"bench:walk:root","weighting":3,"ppr":{"top_n":32,"restart_prob":0.2,"epsilon":0.0001}}
+    - name: community_bm25
+      rps: 40
+      call: graph.v1.LanternService/Illuminate
+      data_template: |
+        {"seed":"bench:community:alpha:00","weighting":3,"community":{"max_size":32,"restart_prob":0.2,"epsilon":0.0001}}
+leak_gate:
+  goroutine_max_delta: 25
+  heap_alloc_max_delta_mb: 48

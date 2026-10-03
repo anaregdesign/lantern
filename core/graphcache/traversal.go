@@ -115,6 +115,9 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		return nil, nil, err
 	}
 
+	if view := queryViewFromContext(ctx); view != nil && !view.Vertex(c.queryProjection(seed)) {
+		return g, nil, nil
+	}
 	if v, ok := c.vertices.Get(seed); !ok {
 		return g, nil, nil
 	} else {
@@ -146,8 +149,9 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 	// One liveness instant for the whole walk (#838): every edge snapshot in
 	// this traversal decides expiration against the same clock reading.
 	now := time.Now()
+	view := queryViewFromContext(ctx)
 
-	// BM25 corpus statistics are read once here (O(#tails), and only for the
+	// BM25 corpus statistics are read once here (O(1), and only for the
 	// BM25 weighting) under the same RLock the per-edge accessors rely on.
 	// N = number of tails (documents); avgLen = mean out-degree. Each tail's
 	// own out-degree is the per-document length, computed inside processTail.
@@ -179,10 +183,14 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 		// once here so BM25 length-normalises every edge of the tail against
 		// the corpus mean (bm25AvgLen).
 		docLen := len(heads)
-		edges := make(pq.SortableMap[S, float32], len(heads))
+		capacity := len(heads)
+		if view != nil {
+			capacity = min(capacity, max(k, 0))
+		}
+		edges := make(pq.SortableMap[S, float32], capacity)
 		var expRow map[S]time.Time
 		if collectExpirations {
-			expRow = make(map[S]time.Time, len(heads))
+			expRow = make(map[S]time.Time, capacity)
 		}
 		for headID, w := range heads {
 			head, ok := c.edges.resolveID(headID)
@@ -199,7 +207,7 @@ func (c *GraphCache[S, T]) neighborContext(ctx context.Context, seed S, step int
 			// scoring and the Top(k)/Bottom(k) prune below, so top-k selects
 			// the k best *accepted* neighbours. The seed is set on g.Vertices
 			// before the walk and never reaches this loop, so it is exempt.
-			if keep != nil && !keep(head) {
+			if !c.queryEdgeVisible(view, t, head) || keep != nil && !keep(head) {
 				continue
 			}
 			sum, latest, nonZero := w.snapshotAt(now)
@@ -426,6 +434,9 @@ func (c *GraphCache[S, T]) PersonalizedPageRankWithWorkBudgetContext(ctx context
 		return nil, err
 	}
 
+	if view := queryViewFromContext(ctx); view != nil && !view.Vertex(c.queryProjection(seed)) {
+		return g, nil
+	}
 	sv, ok := c.vertices.Get(seed)
 	if !ok {
 		return g, nil
@@ -491,6 +502,7 @@ func stableKeyLess[S comparable](a, b S) bool {
 // instant for the whole walk (#838).
 func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, epsilon float64, weighting EdgeWeighting, keep func(S) bool, now time.Time, budget PPRWorkBudget) (map[S]float64, error) {
 	budget = budget.normalized()
+	view := queryViewFromContext(ctx)
 	// BM25 corpus statistics are read once, only for the BM25 weighting, under
 	// the same RLock the per-edge accessors rely on — identical to
 	// neighborContext so PPR transitions and the BFS prune weight edges alike.
@@ -541,9 +553,15 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 		var docLen int
 		if c.vertices.Has(u) {
 			if heads, ok := c.edges.headsOf(u); ok {
-				docLen = len(heads) // BM25 document length = raw out-degree
-				outs = make([]scoredEdge, 0, len(heads))
+				docLen = len(heads)
+				capacity := len(heads)
+				if view != nil {
+					capacity = min(capacity, 64)
+				}
+				outs = make([]scoredEdge, 0, capacity)
 				for headID, w := range heads {
+					// Bound physical adjacency work, including rejected edges. This
+					// counter is not an aggregate of the traversable graph.
 					touchedEdges++
 					if touchedEdges > budget.MaxTouchedEdges {
 						return nil, &PPRWorkBudgetExceededError{Budget: budget, Pushes: pushes, TouchedEdges: touchedEdges}
@@ -560,7 +578,7 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 					if !c.vertices.Has(head) {
 						continue
 					}
-					if keep != nil && !keep(head) {
+					if !c.queryEdgeVisible(view, u, head) || keep != nil && !keep(head) {
 						continue
 					}
 					sum, _, nonZero := w.snapshotAt(now)
@@ -574,6 +592,16 @@ func (c *GraphCache[S, T]) pprPushLocked(ctx context.Context, seed S, alpha, eps
 					outs = append(outs, scoredEdge{head: head, a: a})
 					wu += a
 				}
+			}
+		}
+
+		if view != nil {
+			// Stable ordering makes constrained path normalization reproducible;
+			// ranking weights still use the shared graph corpus statistics.
+			sort.Slice(outs, func(i, j int) bool { return stableKeyLess(outs[i].head, outs[j].head) })
+			wu = 0
+			for _, edge := range outs {
+				wu += edge.a
 			}
 		}
 
@@ -675,6 +703,10 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	view := queryViewFromContext(ctx)
+	if view != nil && !view.Vertex(c.queryProjection(seed)) {
+		return g, nil, nil
+	}
 	sv, ok := c.vertices.Get(seed)
 	if !ok {
 		return g, nil, nil
@@ -716,6 +748,9 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 		}
 		touched = append(touched, v)
 	}
+	if view != nil {
+		sort.Slice(touched, func(i, j int) bool { return stableKeyLess(touched[i], touched[j]) })
+	}
 	adj := make(map[S][]outEdge, len(touched))
 	dw := make(map[S]float64, len(touched))
 	var volTouched float64
@@ -732,7 +767,7 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 				if !c.vertices.Has(head) {
 					continue
 				}
-				if keep != nil && !keep(head) && head != seed {
+				if !c.queryEdgeVisible(view, u, head) || keep != nil && !keep(head) && head != seed {
 					continue
 				}
 				sum, _, nonZero := w.snapshotAt(now)
@@ -745,6 +780,13 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 				}
 				outs = append(outs, outEdge{head: head, a: a})
 				du += a
+			}
+		}
+		if view != nil {
+			sort.Slice(outs, func(i, j int) bool { return stableKeyLess(outs[i].head, outs[j].head) })
+			du = 0
+			for _, edge := range outs {
+				du += edge.a
 			}
 		}
 		adj[u] = outs
@@ -878,7 +920,7 @@ func (c *GraphCache[S, T]) LocalCommunityWithWorkBudgetContext(ctx context.Conte
 		expRow := make(map[S]time.Time)
 		for headID, w := range heads {
 			head, ok := c.edges.resolveID(headID)
-			if !ok || !inS[head] {
+			if !ok || !inS[head] || !c.queryEdgeVisible(view, v, head) {
 				continue
 			}
 			if !c.vertices.Has(head) {
