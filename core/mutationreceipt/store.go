@@ -21,7 +21,7 @@ const (
 	// count, deadline, and original result. An Add reverse-index binding
 	// additionally owns a copied ContribID and ID. Entry caps bound Go map/
 	// heap overhead separately from this logical byte cap.
-	receiptFixedBytes = uint64(idSize + sha256.Size + 16 + 4 + 4 + 8 + 1)
+	receiptFixedBytes = uint64(idSize + sha256.Size + 16 + 4 + 4 + 8 + 1 + 1)
 	bindingBytes      = uint64(24 + idSize)
 )
 
@@ -84,6 +84,7 @@ type Intent struct {
 	Digest     [sha256.Size]byte
 	ContribID  ContribID
 	HasContrib bool
+	Resource   ResourceIdentity
 }
 
 // Receipt retains the original public result, including no-op outcomes.
@@ -91,12 +92,13 @@ type Intent struct {
 // contract. Store methods copy it on entry and exit.
 type Receipt struct {
 	Intent
-	Result         []byte
-	DeadlineMillis int64
+	Result             []byte
+	DeadlineMillis     int64
+	LifecycleReduction bool
 }
 
 func (r Receipt) cost() uint64 {
-	n := receiptFixedBytes + uint64(len(r.Result))
+	n := receiptFixedBytes + uint64(len(r.Result)) + r.Resource.cost()
 	if r.HasContrib {
 		n += bindingBytes
 	}
@@ -104,6 +106,7 @@ func (r Receipt) cost() uint64 {
 }
 
 func cloneReceipt(r Receipt) Receipt {
+	r.Intent = cloneIntent(r.Intent)
 	r.Result = append([]byte(nil), r.Result...)
 	return r
 }
@@ -512,7 +515,7 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 	stale := false
 	for i, item := range intents {
 		if item.Group != group || item.Count != uint32(len(intents)) || item.Index != uint32(i) ||
-			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution ||
+			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution || !item.Resource.valid(item.Kind) ||
 			(item.Kind == AddEdge) != item.HasContrib ||
 			(item.HasContrib && item.ContribID == (ContribID{})) ||
 			(!item.HasContrib && item.ContribID != (ContribID{})) {
@@ -577,6 +580,9 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 		}
 	}
 	tx.intents = append([]Intent(nil), intents...)
+	for i := range tx.intents {
+		tx.intents[i] = cloneIntent(tx.intents[i])
+	}
 	tx.mode = txFresh
 	return Fresh, nil, nil
 }
@@ -620,7 +626,7 @@ func (tx *Tx) PrepareCommitted(receipts []Receipt, acceptedAtMillis int64) error
 			continue
 		}
 		if prior, ok := s.receipts[item.ID]; ok {
-			if prior.Intent != item || prior.DeadlineMillis != receipt.DeadlineMillis ||
+			if prior.Intent != item || prior.DeadlineMillis != receipt.DeadlineMillis || prior.LifecycleReduction != receipt.LifecycleReduction ||
 				!bytes.Equal(prior.Result, receipt.Result) {
 				return ErrIntentConflict
 			}
@@ -700,11 +706,11 @@ func (s *Store) validateCommitted(receipts []Receipt, acceptedAtMillis int64) (G
 	for i, receipt := range receipts {
 		item := receipt.Intent
 		if item.Group != group || item.Count != uint32(len(receipts)) || item.Index != uint32(i) ||
-			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution ||
+			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution || !item.Resource.valid(item.Kind) ||
 			(item.Kind == AddEdge) != item.HasContrib ||
 			(item.HasContrib && item.ContribID == (ContribID{})) ||
 			(!item.HasContrib && item.ContribID != (ContribID{})) ||
-			(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) {
+			(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) || !validLifecycleReduction(receipt) {
 			return GroupID{}, nil, ErrInvalidBatch
 		}
 		if _, duplicate := seenID[item.ID]; duplicate {
@@ -751,7 +757,7 @@ func (tx *Tx) Reserve(results [][]byte) error {
 		if tx.intents[i].Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(result) {
 			return ErrInvalidBatch
 		}
-		cost := receiptFixedBytes + uint64(len(result))
+		cost := receiptFixedBytes + uint64(len(result)) + tx.intents[i].Resource.cost()
 		if tx.intents[i].HasContrib {
 			cost += bindingBytes
 		}

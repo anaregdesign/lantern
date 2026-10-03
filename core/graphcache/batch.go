@@ -19,6 +19,13 @@ type VertexItem[S comparable, T any] struct {
 	// wall clock is behind the origin from reclassifying the entry as live,
 	// while preserving duplicate-key request order inside one atomic batch.
 	CausalBarrier bool
+	// DenyLifecycleReduction is an ingress-derived effect constraint. A true
+	// value rejects accepted-expired or lifetime-shortening Put at the same
+	// application instant as storage. It is never replicated as data policy.
+	DenyLifecycleReduction bool
+	// CaptureLifecycleReduction requests request-aligned effect evidence from
+	// a staged local Put at its storage application instant.
+	CaptureLifecycleReduction bool
 }
 
 // EdgeItem is a single (tail, head, weight, expiration) tuple supplied to
@@ -42,7 +49,8 @@ type EdgeItem[S comparable] struct {
 	// CausalBarrier is the edge sibling of VertexItem.CausalBarrier. It is
 	// consumed only by the HLC Put batch path and never creates a bucket or
 	// endpoint vertices.
-	CausalBarrier bool
+	CausalBarrier          bool
+	DenyLifecycleReduction bool
 }
 
 func vertexItemLiveAt[S comparable, T any](item VertexItem[S, T], now time.Time) bool {
@@ -309,6 +317,13 @@ func (c *GraphCache[S, T]) putVerticesWithExpiration(items []VertexItem[S, T], o
 		// after every final commit lock is held, then shared by validation,
 		// index/storage mutation, and returned outcomes.
 		applicationTime := c.applicationTime()
+		if err := c.validateVertexLifecycleLocked(items, nil, applicationTime, true); err != nil {
+			if c.searchIndex != nil {
+				c.searchCommitMu.Unlock()
+			}
+			unlock()
+			return err
+		}
 		missing := missingPreparedIndexesAt(preparation, items, final, applicationTime)
 		if len(missing) > 0 {
 			if c.searchIndex != nil {
@@ -439,6 +454,13 @@ func (c *GraphCache[S, T]) putVerticesIfAbsentChecked(items []VertexItem[S, T], 
 			applicationTime = c.applicationTime()
 		}
 		finalAccepted, finalApplied, finalSkipped := c.planVerticesIfAbsentLocked(items, ts, useHLC, applicationTime, outcomes)
+		if err := c.validateVertexLifecycleLocked(items, finalApplied, applicationTime, false); err != nil {
+			if c.searchIndex != nil {
+				c.searchCommitMu.Unlock()
+			}
+			unlock()
+			return nil, nil, err
+		}
 		if useHLC && ts != (hlc.Timestamp{}) && c.causalLimits.MaxVertexEntries > 0 {
 			keys := make([]S, 0, len(finalApplied))
 			for _, index := range finalApplied {
@@ -628,24 +650,33 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContrib(items []EdgeItem[S]) (e
 // resulting weight is exactly the supplied weight — matching
 // PutEdgeWithExpiration semantics for each item in the batch.
 func (c *GraphCache[S, T]) PutEdgesWithExpiration(items []EdgeItem[S]) {
-	c.putEdgesWithExpiration(items, nil)
+	_ = c.putEdgesWithExpiration(items, nil)
 }
 
 // PutEdgesWithExpirationOutcomes is PutEdgesWithExpiration plus one result per
 // input. Liveness is sampled once for the batch under the final write lock.
 func (c *GraphCache[S, T]) PutEdgesWithExpirationOutcomes(items []EdgeItem[S]) []PutOutcome {
 	outcomes := make([]PutOutcome, len(items))
-	c.putEdgesWithExpiration(items, outcomes)
+	_ = c.putEdgesWithExpiration(items, outcomes)
 	return outcomes
 }
 
-func (c *GraphCache[S, T]) putEdgesWithExpiration(items []EdgeItem[S], outcomes []PutOutcome) {
+func (c *GraphCache[S, T]) PutEdgesWithExpirationOutcomesChecked(items []EdgeItem[S]) ([]PutOutcome, error) {
+	outcomes := make([]PutOutcome, len(items))
+	err := c.putEdgesWithExpiration(items, outcomes)
+	return outcomes, err
+}
+
+func (c *GraphCache[S, T]) putEdgesWithExpiration(items []EdgeItem[S], outcomes []PutOutcome) error {
 	if len(items) == 0 {
-		return
+		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.applicationTime()
+	if err := c.validateEdgeLifecycleLocked(items, nil, now, true); err != nil {
+		return err
+	}
 	for i, it := range items {
 		stored := c.putEdgeLockedAt(it.Tail, it.Head, it.Weight, it.Expiration, now)
 		if outcomes != nil {
@@ -656,6 +687,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpiration(items []EdgeItem[S], outcomes 
 			}
 		}
 	}
+	return nil
 }
 
 // DeleteVertices removes every supplied vertex under a single write lock
@@ -849,6 +881,13 @@ func (c *GraphCache[S, T]) putVerticesWithExpirationHLC(items []VertexItem[S, T]
 			c.searchCommitMu.Lock()
 		}
 		applicationTime := c.applicationTime()
+		if err := c.validateVertexLifecycleLocked(items, accepted, applicationTime, false); err != nil {
+			if c.searchIndex != nil {
+				c.searchCommitMu.Unlock()
+			}
+			c.mu.Unlock()
+			return rejected, err
+		}
 		if indexErr == nil {
 			missing := missingPreparedIndexesAt(preparation, items, final, applicationTime)
 			if len(missing) > 0 {
@@ -994,6 +1033,9 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.applicationTime()
+	if err := c.validateEdgeHLCLifecycleLocked(items, ts, now); err != nil {
+		return 0, err
+	}
 	if strict && ts != (hlc.Timestamp{}) && c.causalLimits.MaxEdgeEntries > 0 {
 		keys := make([]EdgeKey[S], 0, len(items))
 		for _, it := range items {
