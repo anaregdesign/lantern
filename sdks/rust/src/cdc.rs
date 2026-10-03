@@ -208,6 +208,7 @@ impl LanternClient {
                 projection: SubscribeProjection::IdentityOnly as i32,
                 bootstrap: true,
                 accept_receipt_envelopes: false,
+                namespace_format: String::new(),
             },
             options,
         )?;
@@ -233,6 +234,7 @@ impl LanternClient {
                 projection: SubscribeProjection::IdentityOnly as i32,
                 bootstrap: false,
                 accept_receipt_envelopes: false,
+                namespace_format: String::new(),
             },
             options,
         )?;
@@ -255,6 +257,7 @@ impl LanternClient {
                 projection: SubscribeProjection::FullMutation as i32,
                 bootstrap: false,
                 accept_receipt_envelopes: true,
+                namespace_format: String::new(),
             },
             options,
         )?;
