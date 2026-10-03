@@ -35,7 +35,7 @@ type Image struct {
 }
 
 // CompileImage validates the complete image before any durable commit. A
-// round-trip creates owned input and caps total materialized metadata bytes.
+// snapshot owns all compiled input and caps total materialized metadata bytes.
 func CompileImage(image Image, limits PolicyLimits) (*Snapshot, error) {
 	return compileImage(image, limits, nil)
 }

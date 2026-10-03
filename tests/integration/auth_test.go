@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -26,6 +27,53 @@ import (
 )
 
 const testToken = "integration-s3cret"
+
+func TestAuth_ModePreflightAndAnonymousConnect(t *testing.T) {
+	for _, setting := range os.Environ() {
+		name, _, _ := strings.Cut(setting, "=")
+		if strings.HasPrefix(name, "LANTERN_AUTH_") || strings.HasPrefix(name, "LANTERN_OIDC_") || strings.HasPrefix(name, "LANTERN_SECURITY_") {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, explicit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unset", true: "explicit off"}[explicit], func(t *testing.T) {
+			if explicit {
+				t.Setenv("LANTERN_AUTH_MODE", "off")
+			}
+			cfg, err := provider.NewConfig()
+			if err != nil || cfg.Auth.Enabled() {
+				t.Fatalf("anonymous config: %v", err)
+			}
+			cache := provider.NewGraphCache(cfg.Cache, cfg.Search)
+			srv := newConnectTestServer(t, service.NewLanternService(cache), nil)
+			l := newConnectClientFor(t, srv.url)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := l.PutVertex(ctx, "anonymous:1", "value", time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := l.GetVertex(ctx, "anonymous:1"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := l.GetVertex(ctx, "missing"); connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatalf("missing contract: %v", err)
+			}
+		})
+	}
+	t.Run("OIDC settings never fall through to OFF", func(t *testing.T) {
+		t.Setenv("LANTERN_OIDC_ADMIN_ISSUER", "https://idp.example")
+		if cfg, err := provider.NewConfig(); err == nil || cfg != nil {
+			t.Fatal("partial OIDC configuration produced an anonymous serving config")
+		}
+		t.Setenv("LANTERN_AUTH_MODE", "oidc")
+		if cfg, err := provider.NewConfig(); !errors.Is(err, provider.ErrOIDCRuntimeUnavailable) || cfg != nil {
+			t.Fatalf("staged OIDC runtime: %v", err)
+		}
+	})
+}
 
 // newAuthedServer stands up an in-process Lantern (data plane + replication
 // service) with the #850 bearer-token interceptor armed, mirroring how the

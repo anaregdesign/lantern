@@ -160,11 +160,9 @@ func (s *Store) commit(ctx context.Context, expected uint64, changeID [16]byte, 
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	if err := s.committer.CommitRevision(ctx, revision); err != nil {
-		s.faulted.Store(true)
-		return ChangeResult{}, errors.Join(ErrStoreUnavailable, err)
+	if err := s.persistAndPublish(ctx, revision); err != nil {
+		return ChangeResult{}, err
 	}
-	s.publish(revision)
 	return ChangeResult{Revision: revision.sequence, Digest: revision.digest}, nil
 }
 
@@ -205,11 +203,23 @@ func (s *Store) Apply(ctx context.Context, encoded []byte) error {
 	if _, known := s.changes[revision.changeID]; known {
 		return ErrChangeConflict
 	}
+	return s.persistAndPublish(ctx, revision)
+}
+
+func (s *Store) persistAndPublish(ctx context.Context, revision *Revision) error {
+	complete := false
+	defer func() {
+		// HTTP recovery must not leave old authority healthy if a committer
+		// panics after a partial durable write or GraphCache installation.
+		if !complete {
+			s.faulted.Store(true)
+		}
+	}()
 	if err := s.committer.CommitRevision(ctx, revision); err != nil {
-		s.faulted.Store(true)
 		return errors.Join(ErrStoreUnavailable, err)
 	}
 	s.publish(revision)
+	complete = true
 	return nil
 }
 

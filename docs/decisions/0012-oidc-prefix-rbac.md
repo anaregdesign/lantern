@@ -4,6 +4,11 @@
 - Driving issue: [#1599](https://github.com/anaregdesign/lantern/issues/1599)
 - Contract issue: [#1600](https://github.com/anaregdesign/lantern/issues/1600)
 
+The initial implementation supplies inactive policy/state foundations and a
+fail-closed mode preflight. It does not enable OIDC: `LANTERN_AUTH_MODE=oidc`
+currently rejects startup until the complete serving boundary is installed.
+The following sections define the target contract, not completed qualification.
+
 ## Context
 
 Lantern is the database. Security state belongs in Lantern's own storage,

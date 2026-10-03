@@ -179,6 +179,35 @@ func (c *blockingCommitter) CommitRevision(context.Context, *Revision) error {
 	return nil
 }
 
+func TestStoreIndeterminatePanic(t *testing.T) {
+	_, _, options := testStore(t, true)
+	options.Committer = panicCommitter{}
+	store, err := NewStore(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("committer did not panic")
+			}
+		}()
+		_, _ = store.ReconcileBootstrap(context.Background(), 0, [16]byte{1}, testImage())
+	}()
+	if _, healthy := store.Current(); healthy {
+		t.Fatal("old authority healthy after indeterminate panic")
+	}
+	if _, err := store.ReconcileBootstrap(context.Background(), 0, [16]byte{2}, testImage()); !errors.Is(err, ErrStoreUnavailable) {
+		t.Fatal("panic-poisoned store resumed")
+	}
+}
+
+type panicCommitter struct{}
+
+func (panicCommitter) CommitRevision(context.Context, *Revision) error {
+	panic("indeterminate durable write")
+}
+
 type fakeCommitter struct {
 	calls int
 	err   error

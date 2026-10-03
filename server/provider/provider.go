@@ -293,6 +293,9 @@ type Config struct {
 // semantic validation failures such as negative capacity budgets are rejected
 // in every mode.
 func NewConfig() (*Config, error) {
+	if err := validateAuthMode(); err != nil {
+		return nil, err
+	}
 	rps := envconfig.Float("LANTERN_RATE_LIMIT_RPS", 0)
 	burst := envconfig.Int("LANTERN_RATE_LIMIT_BURST", int(2*rps))
 	if burst <= 0 && rps > 0 {
