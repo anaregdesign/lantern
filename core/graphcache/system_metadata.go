@@ -64,13 +64,25 @@ func (m *SystemMetadata) InstallRecovered(revision uint64, value []byte) error {
 // blocks system readers until Commit or Abort, without holding any graph lock.
 // The caller must resolve the stage on every path, including I/O failures.
 func (m *SystemMetadata) Prepare(expected [32]byte, revision uint64, value []byte) (*SystemMetadataStage, error) {
+	return m.prepare(expected, revision, value, false)
+}
+
+// PrepareCheckpoint is exclusively for a typed owner that has authenticated a
+// complete newer checkpoint and a fresh serving-authority proof. It permits a
+// revision gap, but never rollback or replacement without the exact prior
+// digest. It does not itself verify that proof or authorize public sys: CRUD.
+func (m *SystemMetadata) PrepareCheckpoint(expected [32]byte, revision uint64, value []byte) (*SystemMetadataStage, error) {
+	return m.prepare(expected, revision, value, true)
+}
+
+func (m *SystemMetadata) prepare(expected [32]byte, revision uint64, value []byte, checkpoint bool) (*SystemMetadataStage, error) {
 	if m == nil || revision == 0 || revision == math.MaxUint64 || len(value) == 0 || len(value) > m.maxBytes {
 		return nil, ErrSystemMetadataInvalid
 	}
 	owned := bytes.Clone(value)
 	record := SystemMetadataRecord{Revision: revision, Value: owned, Digest: sha256.Sum256(owned)}
 	m.mu.Lock()
-	if expected != m.current.Digest || revision != m.current.Revision+1 {
+	if expected != m.current.Digest || revision <= m.current.Revision || !checkpoint && revision != m.current.Revision+1 {
 		m.mu.Unlock()
 		return nil, ErrSystemMetadataConflict
 	}

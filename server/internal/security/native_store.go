@@ -34,10 +34,10 @@ type NativeStoreOptions struct {
 }
 
 // NativeStore owns a synchronous typed WAL and its process lease. It is an
-// inactive recovery component: production construction still needs namespace
-// isolation, bounded checkpoint/rotation, audit, and serving-lease admission.
-// Reaching the hard journal cap fails closed; this is not yet a renewable
-// production control-capacity guarantee. No data RPC uses this journal.
+// inactive recovery component: production construction still needs audit,
+// management transactions and serving-lease admission. Its manifest-selected
+// signed checkpoints rotate the independent bounded control journal; no data
+// RPC uses this synchronous durability lane.
 type NativeStore struct {
 	store   *Store
 	journal *nativeJournal
@@ -61,14 +61,33 @@ func CreateNativeStore(options NativeStoreOptions) (*NativeStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	log, owner, err := mutationlog.CreateLeasedLogWithFileWALTip(options.Path,
-		mutationlog.Options{Capacity: 1}, encodeSystemRevision, systemJournalBinding(options))
+
+	lease, err := mutationlog.AcquireFileWALLease(native.journal.anchor)
 	if err != nil {
 		return nil, err
 	}
-	if err := native.journal.attach(log, owner, native.journal.path); err != nil {
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = lease.Close()
+		}
+	}()
+	if err := requireFreshNativeFamily(native.journal.anchor); err != nil {
+		return nil, err
+	}
+	log, owner, err := createNativeSegment(native.journal.anchor, native.journal.binding)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeNativeManifest(native.journal.anchor, nativeManifest{binding: native.journal.binding}, true); err != nil {
 		return nil, errors.Join(err, owner.Close())
 	}
+	if err := native.journal.attach(log, owner, native.journal.anchor); err != nil {
+		return nil, errors.Join(err, owner.Close())
+	}
+	native.journal.lease = lease
+	transferred = true
+
 	return native, nil
 }
 
@@ -99,7 +118,13 @@ func ResumeNativeStore(options NativeStoreOptions) (_ *NativeStore, err error) {
 			err = errors.Join(err, lease.Close())
 		}
 	}()
-	err = lease.WithPath(func(path string) error {
+	err = lease.WithPath(func(anchor string) error {
+		manifest, err := readNativeManifest(anchor, native.journal.binding)
+		if err != nil {
+			return err
+		}
+		native.journal.base = manifest.base
+		path := manifest.path(anchor)
 		info, statErr := os.Lstat(path)
 		if statErr != nil {
 			return statErr
@@ -118,7 +143,11 @@ func ResumeNativeStore(options NativeStoreOptions) (_ *NativeStore, err error) {
 			return DecodeRevision(raw, native.store.publicKey, options.Limits)
 		}
 		validate := func(entry mutationlog.Entry) error {
-			_, entryErr := native.store.systemEntry(entry)
+			revision, entryErr := native.store.systemEntry(entry)
+			if entryErr == nil && entry.Seq == 1 && manifest.segment != [16]byte{} &&
+				(revision.digest != manifest.checkpoint || !revision.completeCheckpointHistory()) {
+				return ErrInvalidRevision
+			}
 			return entryErr
 		}
 		// Account for all tip records needed to attest an unpublished suffix
@@ -127,8 +156,11 @@ func ResumeNativeStore(options NativeStoreOptions) (_ *NativeStore, err error) {
 		if openErr != nil {
 			return openErr
 		}
+		if manifest.segment != [16]byte{} && cut.ObservedLast == 0 {
+			return ErrInvalidRevision
+		}
 		fullBytes, openErr := systemJournalSize(cut.ObservedOffset, cut.ObservedLast)
-		if openErr != nil || fullBytes > native.journal.maxBytes {
+		if openErr != nil || fullBytes+int64(systemManifestBytes) > native.journal.maxBytes {
 			return ErrSystemJournalCapacity
 		}
 		tip, openErr = mutationlog.ResumeFileWALTipJournal(path, systemJournalBinding(options))
@@ -140,6 +172,9 @@ func ResumeNativeStore(options NativeStoreOptions) (_ *NativeStore, err error) {
 			if entryErr != nil {
 				return entryErr
 			}
+			if entry.Seq == 1 && manifest.segment != [16]byte{} {
+				return native.store.restoreCheckpoint(revision)
+			}
 			return native.store.restoreNativeRevision(revision)
 		}
 		var log *mutationlog.Log
@@ -150,6 +185,9 @@ func ResumeNativeStore(options NativeStoreOptions) (_ *NativeStore, err error) {
 		}
 		if openErr = native.journal.attach(log, owner, path); openErr != nil {
 			return openErr
+		}
+		if err := cleanupNativeSegments(anchor, path); err != nil {
+			return err
 		}
 		if revision := native.store.current.Load(); revision != nil {
 			return native.journal.metadata.InstallRecovered(revision.sequence, revision.encoded)
@@ -180,14 +218,16 @@ func prepareNativeStore(options NativeStoreOptions) (*NativeStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	journal := &nativeJournal{maxBytes: maxBytes, path: filepath.Join(directory, filepath.Base(options.Path))}
+	path := filepath.Join(directory, filepath.Base(options.Path))
+	journal := &nativeJournal{maxBytes: maxBytes, path: path, anchor: path, binding: systemJournalBinding(options)}
 	store, err := NewStore(StoreOptions{Generation: options.Generation, PublicKey: options.PublicKey,
 		PrivateKey: options.PrivateKey, Limits: options.Limits, Committer: journal})
 	if err != nil {
 		return nil, err
 	}
+	journal.store = store
 	journal.metadata, err = options.Graph.EnableSystemMetadata(SystemRevisionKey,
-		revisionHeaderBytes+MaxImageBytes+ed25519.SignatureSize)
+		maxRevisionBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +251,11 @@ func encodeSystemRevision(op mutationlog.MutationOp) ([]byte, error) {
 
 func (s *Store) systemEntry(entry mutationlog.Entry) (*Revision, error) {
 	revision, ok := entry.Op.(*Revision)
-	if !ok || revision == nil || entry.HLC != (hlc.Timestamp{}) || entry.Seq != revision.sequence ||
+	journal, journalOK := s.committer.(*nativeJournal)
+	if !journalOK || entry.Seq > ^uint64(0)-journal.base {
+		return nil, ErrInvalidRevision
+	}
+	if !ok || revision == nil || entry.HLC != (hlc.Timestamp{}) || entry.Seq+journal.base != revision.sequence ||
 		revision.generation != s.generation {
 		return nil, ErrInvalidRevision
 	}

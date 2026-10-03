@@ -41,9 +41,9 @@ type ChangeResult struct {
 }
 
 type changeRecord struct {
-	expected    uint64
-	imageDigest [32]byte
-	result      ChangeResult
+	expected     uint64
+	intentDigest [32]byte
+	result       ChangeResult
 }
 
 const retainedChanges = 256
@@ -116,7 +116,7 @@ func (s *Store) commit(ctx context.Context, expected uint64, changeID [16]byte, 
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	imageDigest := sha256.Sum256(snapshot.image)
+	intentDigest := sha256.Sum256(snapshot.image)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.faulted.Load() {
@@ -126,7 +126,7 @@ func (s *Store) commit(ctx context.Context, expected uint64, changeID [16]byte, 
 		return ChangeResult{}, err
 	}
 	if record, known := s.changes[changeID]; known {
-		if record.expected != expected || record.imageDigest != imageDigest {
+		if record.expected != expected || record.intentDigest != intentDigest {
 			return ChangeResult{}, ErrChangeConflict
 		}
 		result := record.result
@@ -151,12 +151,12 @@ func (s *Store) commit(ctx context.Context, expected uint64, changeID [16]byte, 
 			if image.BootstrapRevision <= old.BootstrapRevision {
 				return ChangeResult{}, ErrBootstrapLocked
 			}
-		} else if image.BootstrapRevision != old.BootstrapRevision || !sameEnvOwned(old, image) {
+		} else if image.BootstrapRevision != old.BootstrapRevision || image.BootstrapDigest != old.BootstrapDigest || !sameEnvOwned(old, image) {
 			return ChangeResult{}, ErrBootstrapLocked
 		}
 		previous = current.digest
 	}
-	revision, err := SignRevision(s.generation, expected+1, previous, changeID, snapshot, s.privateKey)
+	revision, err := signRevisionWithHistory(s.generation, expected+1, previous, changeID, snapshot, s.privateKey, s.checkpointHistory(), [32]byte{})
 	if err != nil {
 		return ChangeResult{}, err
 	}
@@ -201,7 +201,7 @@ func (s *Store) Apply(ctx context.Context, encoded []byte) error {
 		return ErrRevisionConflict
 	}
 	if current != nil && revision.snapshot.Image().BootstrapRevision == current.snapshot.Image().BootstrapRevision &&
-		!sameEnvOwned(current.snapshot.Image(), revision.snapshot.Image()) {
+		(current.snapshot.Image().BootstrapDigest != revision.snapshot.Image().BootstrapDigest || !sameEnvOwned(current.snapshot.Image(), revision.snapshot.Image())) {
 		return ErrBootstrapLocked
 	}
 	if _, known := s.changes[revision.changeID]; known {
@@ -229,8 +229,8 @@ func (s *Store) persistAndPublish(ctx context.Context, revision *Revision) error
 
 func (s *Store) publish(revision *Revision) {
 	s.changes[revision.changeID] = changeRecord{expected: revision.sequence - 1,
-		imageDigest: sha256.Sum256(revision.snapshot.image),
-		result:      ChangeResult{Revision: revision.sequence, Digest: revision.digest}}
+		intentDigest: revision.intentDigest,
+		result:       ChangeResult{Revision: revision.sequence, Digest: revision.digest}}
 	s.order = append(s.order, revision.changeID)
 	if len(s.order) > retainedChanges {
 		delete(s.changes, s.order[0])
@@ -240,6 +240,9 @@ func (s *Store) publish(revision *Revision) {
 }
 
 func sameEnvOwned(old, next Image) bool {
+	if !reflect.DeepEqual(old.MachineCredentials, next.MachineCredentials) {
+		return false
+	}
 	locked := func(image Image) (map[Identity]map[string]bool, map[string][]PermissionRule) {
 		assignments := make(map[Identity]map[string]bool)
 		roles := make(map[string][]PermissionRule)
@@ -262,6 +265,18 @@ func sameEnvOwned(old, next Image) bool {
 			}
 		}
 		return assignments, roles
+	}
+	envIssuers := func(image Image) map[string]Issuer {
+		result := make(map[string]Issuer)
+		for _, issuer := range image.Issuers {
+			if issuer.EnvOwned {
+				result[issuer.URL] = issuer
+			}
+		}
+		return result
+	}
+	if !reflect.DeepEqual(envIssuers(old), envIssuers(next)) {
+		return false
 	}
 	oldAssignments, oldRoles := locked(old)
 	nextAssignments, nextRoles := locked(next)

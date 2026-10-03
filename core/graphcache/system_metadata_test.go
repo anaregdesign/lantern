@@ -108,3 +108,36 @@ func BenchmarkSystemMetadataPrepare(b *testing.B) {
 		})
 	}
 }
+
+func TestSystemMetadataCheckpointMonotonicCAS(t *testing.T) {
+	graph := NewGraphCache[string, string](time.Minute)
+	metadata, err := graph.EnableSystemMetadata("sys:security", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := metadata.PrepareCheckpoint([32]byte{}, 10, []byte("verified checkpoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Commit()
+	before := metadata.Snapshot()
+	for _, revision := range []uint64{9, 10} {
+		if _, err = metadata.PrepareCheckpoint(before.Digest, revision, []byte("old")); !errors.Is(err, ErrSystemMetadataConflict) {
+			t.Fatal("checkpoint rolled back", err)
+		}
+	}
+	if _, err = metadata.PrepareCheckpoint([32]byte{1}, 11, []byte("new")); !errors.Is(err, ErrSystemMetadataConflict) {
+		t.Fatal("stale CAS accepted", err)
+	}
+	if _, err = metadata.Prepare(before.Digest, 12, []byte("ordinary gap")); !errors.Is(err, ErrSystemMetadataConflict) {
+		t.Fatal("ordinary transaction skipped sequence", err)
+	}
+	stage, err = metadata.PrepareCheckpoint(before.Digest, 100, []byte("new checkpoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Abort()
+	if metadata.Snapshot().Revision != 10 {
+		t.Fatal("aborted checkpoint installed")
+	}
+}
