@@ -1002,7 +1002,7 @@ func BenchmarkAuthorizationTraversalWorkloads(b *testing.B) {
 		{"visible_put_delete_100", 100, "visible:", false}, {"hidden_put_delete_100", 100, "hidden:", false},
 		{"visible_put_delete_1", 1, "visible:", false}, {"hidden_put_delete_1", 1, "hidden:", false},
 	}
-	for _, family := range []string{"bfs", "ppr"} {
+	for _, family := range []string{"bfs", "ppr", "community"} {
 		for _, workload := range workloads {
 			for _, constrained := range []bool{false, true} {
 				b.Run(fmt.Sprintf("%s/%s/constrained_%v", family, workload.name, constrained), func(b *testing.B) {
@@ -1045,8 +1045,10 @@ func BenchmarkAuthorizationTraversalWorkloads(b *testing.B) {
 						var err error
 						if family == "bfs" {
 							_, _, err = c.NeighborWithExpirationsContext(ctx, "visible:000000", 3, 8, WeightingBM25, false, nil)
-						} else {
+						} else if family == "ppr" {
 							_, err = c.PersonalizedPageRankWithWorkBudgetContext(ctx, "visible:000000", 10, .2, 1e-3, WeightingBM25, nil, PPRWorkBudget{MaxPushes: 10000, MaxTouchedEdges: 100000})
+						} else {
+							_, _, err = c.LocalCommunityWithWorkBudgetContext(ctx, "visible:000000", 10, .2, 1e-3, WeightingBM25, nil, PPRWorkBudget{MaxPushes: 10000, MaxTouchedEdges: 100000})
 						}
 						if err != nil {
 							b.Fatal(err)

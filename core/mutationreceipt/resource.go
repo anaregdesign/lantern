@@ -27,7 +27,7 @@ func (r ResourceIdentity) valid(kind Kind) bool {
 	switch kind {
 	case PutVertex, DeleteVertex:
 		return r.Head == ""
-	case PutEdge, AddEdge, DeleteEdge, DeleteEdgeContribution:
+	case PutEdge, AddEdge, DeleteEdge, DeleteEdgeContribution, CreateEdge:
 		return r.Head != ""
 	default:
 		return false

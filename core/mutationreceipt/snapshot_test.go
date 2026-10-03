@@ -462,3 +462,37 @@ func TestSnapshotRestoreBoundsRelationshipsByEntryCapacity(t *testing.T) {
 		)
 	}
 }
+
+func TestSnapshotCreateOriginalOutcomesArePreservedAndCorruptionRejected(t *testing.T) {
+	config := Config{Epoch: Epoch{1}, Retention: time.Hour, MaxEntries: 8, MaxBytes: 4096}
+	s, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for outcome := byte(1); outcome <= 4; outcome++ {
+		item := testIntent(t, outcome, testStart, GroupID{outcome}, 0, 1)
+		item.Kind = CreateEdge
+		commitTestBatch(t, s, testStart, []Intent{item}, [][]byte{{outcome}})
+	}
+	state, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewFromSnapshot(config, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range state.Receipts {
+		status, got, err := restored.Lookup(row.ID, testStart)
+		if err != nil || status != Confirmed || !reflect.DeepEqual(got, row) {
+			t.Fatalf("original Create changed: %v, %+v, %v", status, got, err)
+		}
+	}
+	for _, bad := range [][]byte{nil, {}, {0}, {5}, {1, 1}} {
+		corrupt := cloneSnapshot(state)
+		corrupt.Receipts[0].Result = bad
+		if _, err := NewFromSnapshot(config, corrupt); !errors.Is(err, ErrInvalidSnapshot) {
+			t.Fatalf("corrupt Create accepted %v: %v", bad, err)
+		}
+	}
+}

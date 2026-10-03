@@ -68,6 +68,7 @@ const (
 	DeleteVertex
 	DeleteEdge
 	DeleteEdgeContribution
+	CreateEdge
 )
 
 // Intent names one operation in an ordered logical call. Digest must be
@@ -515,7 +516,7 @@ func (tx *Tx) Classify(intents []Intent) (Classification, []Receipt, error) {
 	stale := false
 	for i, item := range intents {
 		if item.Group != group || item.Count != uint32(len(intents)) || item.Index != uint32(i) ||
-			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution || !item.Resource.valid(item.Kind) ||
+			item.Kind < PutVertex || item.Kind > CreateEdge || !item.Resource.valid(item.Kind) ||
 			(item.Kind == AddEdge) != item.HasContrib ||
 			(item.HasContrib && item.ContribID == (ContribID{})) ||
 			(!item.HasContrib && item.ContribID != (ContribID{})) {
@@ -706,11 +707,11 @@ func (s *Store) validateCommitted(receipts []Receipt, acceptedAtMillis int64) (G
 	for i, receipt := range receipts {
 		item := receipt.Intent
 		if item.Group != group || item.Count != uint32(len(receipts)) || item.Index != uint32(i) ||
-			item.Kind < PutVertex || item.Kind > DeleteEdgeContribution || !item.Resource.valid(item.Kind) ||
+			item.Kind < PutVertex || item.Kind > CreateEdge || !item.Resource.valid(item.Kind) ||
 			(item.Kind == AddEdge) != item.HasContrib ||
 			(item.HasContrib && item.ContribID == (ContribID{})) ||
 			(!item.HasContrib && item.ContribID != (ContribID{})) ||
-			(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) || !validLifecycleReduction(receipt) {
+			(item.Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(receipt.Result)) || (item.Kind == CreateEdge && !validCreateEdgeResult(receipt.Result)) || !validLifecycleReduction(receipt) {
 			return GroupID{}, nil, ErrInvalidBatch
 		}
 		if _, duplicate := seenID[item.ID]; duplicate {
@@ -754,7 +755,7 @@ func (tx *Tx) Reserve(results [][]byte) error {
 	}
 	var additional uint64
 	for i, result := range results {
-		if tx.intents[i].Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(result) {
+		if tx.intents[i].Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(result) || tx.intents[i].Kind == CreateEdge && !validCreateEdgeResult(result) {
 			return ErrInvalidBatch
 		}
 		cost := receiptFixedBytes + uint64(len(result)) + tx.intents[i].Resource.cost()
@@ -794,7 +795,7 @@ func (tx *Tx) ReplaceReservedResults(results [][]byte) error {
 	}
 	for i, result := range results {
 		if len(result) != len(tx.staged[i].Result) ||
-			(tx.intents[i].Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(result)) {
+			(tx.intents[i].Kind == DeleteEdgeContribution && !validEdgeContributionDeleteResult(result)) || (tx.intents[i].Kind == CreateEdge && !validCreateEdgeResult(result)) {
 			return ErrInvalidBatch
 		}
 	}
@@ -913,4 +914,8 @@ func (tx *Tx) close() {
 	tx.intents = nil
 	tx.staged = nil
 	tx.store.mu.Unlock()
+}
+
+func validCreateEdgeResult(result []byte) bool {
+	return len(result) == 1 && result[0] >= 1 && result[0] <= 4
 }

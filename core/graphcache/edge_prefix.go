@@ -225,6 +225,9 @@ func (c *GraphCache[S, T]) scanTailHeadsFastView(
 	}
 	keepGoing := true
 	hi.walkPrefixView(ctx, headPrefix, headAfter, func(headProj string, headID vertexID) bool {
+		if view := queryViewFromContext(ctx); view != nil && !view.Edge(tailProj, headProj) {
+			return true
+		}
 		w, ok := heads[headID]
 		if !ok {
 			// Index/edge drift: skip rather than crash. This window is

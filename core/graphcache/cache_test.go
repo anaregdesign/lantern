@@ -1722,3 +1722,35 @@ func TestGraph_EdgeReadsHideDeadEndpoints(t *testing.T) {
 		assertHidden(t, c)
 	})
 }
+
+func BenchmarkGraphCacheStagingCosts(b *testing.B) {
+	for _, staging := range []bool{false, true} {
+		for _, operation := range []string{"get_vertex", "put_vertex", "get_weight"} {
+			b.Run(fmt.Sprintf("staging_%v/%s", staging, operation), func(b *testing.B) {
+				c := NewGraphCache[string, string](time.Hour)
+				if staging {
+					c = NewGraphCacheWithStaging[string, string](time.Hour)
+				}
+				c.EnablePrefixIndex(identityExtract)
+				c.PutVertex("a", "source")
+				c.PutVertex("b", "target")
+				c.AddEdge("a", "b", 1)
+				b.ReportAllocs()
+				for b.Loop() {
+					switch operation {
+					case "get_vertex":
+						if _, ok := c.GetVertex("a"); !ok {
+							b.Fatal("missing")
+						}
+					case "put_vertex":
+						c.PutVertex("a", "source")
+					case "get_weight":
+						if _, ok := c.GetWeight("a", "b"); !ok {
+							b.Fatal("missing")
+						}
+					}
+				}
+			})
+		}
+	}
+}

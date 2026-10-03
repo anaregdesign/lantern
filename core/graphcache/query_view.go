@@ -19,6 +19,7 @@ type KeyRange struct {
 type QueryView struct {
 	vertices []KeyRange
 	edges    []KeyRange
+	filters  []EdgeRangeFilter
 }
 
 func NewQueryView(vertices, edges []KeyRange) (*QueryView, error) {
@@ -51,7 +52,18 @@ func (v *QueryView) Vertex(projected string) bool {
 	return v == nil || containsRange(v.vertices, projected)
 }
 func (v *QueryView) Edge(tail, head string) bool {
-	return v == nil || v.Vertex(tail) && v.Vertex(head) && containsRange(v.edges, tail) && containsRange(v.edges, head)
+	if v == nil {
+		return true
+	}
+	if !v.Vertex(tail) || !v.Vertex(head) || !containsRange(v.edges, tail) || !containsRange(v.edges, head) {
+		return false
+	}
+	for _, filter := range v.filters {
+		if !filter.contains(tail, head) {
+			return false
+		}
+	}
+	return true
 }
 
 type queryViewKey struct{}
