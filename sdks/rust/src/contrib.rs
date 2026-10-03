@@ -116,13 +116,23 @@ impl ContribIdGenerator {
                 "contribution index exceeds 16 bits",
             ));
         }
-        let previous = self
-            .sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |seq| {
-                (seq < MAX_SEQUENCE).then(|| seq + 1)
-            })
-            .map_err(|_| LanternError::InvalidInput("contribution sequence exhausted"))?;
-        let sequence = previous + 1;
+        let mut previous = self.sequence.load(Ordering::Relaxed);
+        let sequence = loop {
+            if previous >= MAX_SEQUENCE {
+                return Err(LanternError::InvalidInput(
+                    "contribution sequence exhausted",
+                ));
+            }
+            match self.sequence.compare_exchange_weak(
+                previous,
+                previous + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break previous + 1,
+                Err(current) => previous = current,
+            }
+        };
         Ok(indices
             .iter()
             .map(|index| {

@@ -10,6 +10,27 @@ from the invariants below requires amending this file in the same PR.
 
 ---
 
+## OIDC/RBAC extension boundary
+
+[ADR 0012](decisions/0012-oidc-prefix-rbac.md), tracked by
+[#1599](https://github.com/anaregdesign/lantern/issues/1599), defines the
+security extension. Its implementation and final qualification are pending;
+the existing deployment-wide bearer/CDC runtime is not prefix authorization.
+The leaderless invariants below apply to application data. Physical `data:`
+keys preserve public logical keys; physical `sys:` contains native metadata.
+System security changes use signed atomic revisions from one operator-pinned
+internal writer and bounded serving leases, not independent HLC/LWW merges.
+The existing log/Snapshot transport is reused with typed system envelopes.
+Replicas must validate public mode, storage version and peer trust before
+bootstrap. Public scoped CDC is a separate authorized protocol; raw peer
+Subscribe/Snapshot remains complete internal synchronization.
+
+Control commit, cluster-wide enforcement and graph availability are distinct.
+Writer loss prevents control changes/login and eventually protected serving
+when leases expire. Manual replacement requires fencing and certified state;
+there is no automatic security election. See ADR 0012 for the lease,
+anti-rollback, durable system lane, recovery and response-publication contracts.
+
 ## 1. Goal
 
 Lantern must run as a **leaderless, full-replica cluster** with the operational
@@ -26,9 +47,10 @@ Client (sdks/go: Connect over h2c or HTTPS to a ClusterIP / reverse proxy)
  full replica / any pod accepts any R/W / no leader / no consensus
 ```
 
-Every replica holds the **full graph**. Writes accepted on any node are
+Every replica holds the **full graph**. Application writes accepted on any node are
 replicated asynchronously to all peers. No single node is special; no quorum
-is required for either reads or writes.
+is required for application data reads or writes. Protected serving additionally
+requires the independent security authority described above.
 
 ## 2. Invariants
 

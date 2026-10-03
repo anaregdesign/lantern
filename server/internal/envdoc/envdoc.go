@@ -18,6 +18,7 @@ import (
 // descriptions is the curated one-line operator description per variable.
 // Render enforces that this table and the envconfig registry agree exactly.
 var descriptions = map[string]string{
+	"LANTERN_AUTH_MODE":              "OIDC/RBAC rollout preflight: unset preserves the existing optional static-token tier; explicit off requires no credentials. Partial OIDC/security settings, empty/unknown modes and conflicting settings fail startup. oidc is rejected until its complete runtime is installed (#1599).",
 	"LANTERN_PORT":                   "TCP port of the primary Connect listener (h2c without TLS, HTTPS when TLS is configured).",
 	"LANTERN_MAX_RECV_MSG_BYTES":     "Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited); independent of replication response expansion.",
 	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response size per Protobuf message (0 = unlimited); certified before publication against both actual binary SubscribeResponse frames and maximal receiver-local receipt relays.",

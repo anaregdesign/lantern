@@ -31,6 +31,8 @@ may stay because they are harmless, but they are **not** required going forward.
 
 ## Issue triage — the `Lantern roadmap` project
 
+Write every GitHub Issue title, body, comment and update in English.
+
 Cross-track triage lives in a single GitHub Project named `Lantern roadmap`. Issues
 remain the source of truth — the Project is only a view layer + lightweight kanban on
 top of them.
@@ -424,6 +426,15 @@ new sub-config, update the **Providers** note in `AGENTS.md`.
 - Update the affected notes in `AGENTS.md` and `README.md` in the same PR.
 
 ## After adding a dependency
+
+- Minimize external dependencies. Lantern is the database; do not add
+  PostgreSQL or another external runtime store for Server authentication.
+  Prefer native storage, replication and persistence primitives. The planned
+  OIDC boundary uses internal `sys:` metadata and physical `data:` keys behind
+  unchanged public logical keys (ADR 0012, #1599, #1615); namespace isolation
+  alone does not prove asynchronous authorization freshness.
+- The Dart SDK SQLite route, including `sdks/dart/offline_sqlite`, is explicitly
+  approved. This Server-auth policy does not revoke that exception.
 
 - Add the require to the module that **actually imports** it (server-only middleware →
   `server/go.mod`; client transport → `sdks/go/go.mod`; cli or integration tests only →
