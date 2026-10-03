@@ -10,6 +10,7 @@ const (
 	VertexWrite    Action = "vertex.write"
 	VertexDelete   Action = "vertex.delete"
 	EdgeRead       Action = "edge.read"
+	EdgeCreate     Action = "edge.create"
 	EdgeAdd        Action = "edge.add"
 	EdgeWrite      Action = "edge.write"
 	EdgeDelete     Action = "edge.delete"
@@ -33,7 +34,7 @@ const (
 
 func actionResource(action Action) (ResourceKind, bool) {
 	switch action {
-	case VertexRead, VertexWrite, VertexDelete, EdgeRead, EdgeAdd, EdgeWrite,
+	case VertexRead, VertexWrite, VertexDelete, EdgeRead, EdgeCreate, EdgeAdd, EdgeWrite,
 		EdgeDelete, Query, CDCIdentity, CDCValue, Export, ReceiptRead:
 		return DataResource, true
 	case OperationsRead, SchemaRead, SecurityManage:
@@ -41,5 +42,15 @@ func actionResource(action Action) (ResourceKind, bool) {
 	default:
 		// cluster.replicate belongs to operator peer trust, never user Roles.
 		return "", false
+	}
+}
+
+// Pair selectors grant Edge capabilities only, never access to a Vertex.
+func edgeSelectorAction(action Action) bool {
+	switch action {
+	case EdgeRead, EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete, CDCIdentity, CDCValue, Export, ReceiptRead:
+		return true
+	default:
+		return false
 	}
 }

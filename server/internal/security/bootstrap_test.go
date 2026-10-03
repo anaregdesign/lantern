@@ -51,6 +51,23 @@ func TestBootstrapMonotonicConfigAndNoUserResurrection(t *testing.T) {
 		t.Fatal("old pod restored removed subject", err)
 	}
 }
+
+func TestBootstrapCanonicalDirectedPairsAreDetached(t *testing.T) {
+	pair := &PrefixPair{Tail: "users:alice:", Head: "profiles:"}
+	configuration := Bootstrap{Revision: 1, Issuer: testImage().Issuers[0], AdminSubjects: []string{"admin"}, Roles: []Role{{ID: "connections", Rules: []PermissionRule{{ID: "create", Effect: Allow, Action: EdgeCreate, Resource: DataResource, Pair: pair}}}}}
+	canonical, digest, err := configuration.canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair.Tail = ""
+	if canonical.Roles[0].Rules[0].Pair.Tail != "users:alice:" {
+		t.Fatal("canonical policy retained mutable pair input")
+	}
+	_, changed, err := configuration.canonical()
+	if err != nil || changed == digest {
+		t.Fatal("directed pair omitted from bootstrap digest", err)
+	}
+}
 func TestBootstrapRejectsImplicitMachineAdministration(t *testing.T) {
 	store, _, _ := testStore(t, true)
 	configuration := Bootstrap{Revision: 1, Issuer: testImage().Issuers[0], AdminSubjects: []string{"admin"}, Machines: []BootstrapMachine{{Name: "machine", RoleIDs: []string{"security_admin"}}}}

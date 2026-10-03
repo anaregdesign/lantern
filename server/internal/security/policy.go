@@ -18,8 +18,11 @@ type prefixRules struct {
 	deny  []string
 }
 
+type pairRules struct{ allow, deny []PrefixPair }
+
 type compiledRole struct {
 	data   map[Action]prefixRules
+	pairs  map[Action]pairRules
 	global map[Action]struct{ allow, deny bool }
 }
 
@@ -46,7 +49,7 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 		if _, exists := policy.roles[role.ID]; exists {
 			return nil, fmt.Errorf("%w: duplicate Role", ErrInvalidPolicy)
 		}
-		compiled := &compiledRole{data: make(map[Action]prefixRules),
+		compiled := &compiledRole{data: make(map[Action]prefixRules), pairs: make(map[Action]pairRules),
 			global: make(map[Action]struct{ allow, deny bool })}
 		ruleIDs := make(map[string]bool, len(role.Rules))
 		for _, rule := range role.Rules {
@@ -61,8 +64,8 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 				return nil, fmt.Errorf("%w: action, resource or effect", ErrInvalidPolicy)
 			}
 			if kind == GlobalResource {
-				if rule.Prefix != nil {
-					return nil, fmt.Errorf("%w: global prefix", ErrInvalidPolicy)
+				if rule.Prefix != nil || rule.Pair != nil {
+					return nil, fmt.Errorf("%w: global selector", ErrInvalidPolicy)
 				}
 				flags := compiled.global[rule.Action]
 				if rule.Effect == Deny {
@@ -72,6 +75,28 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 				}
 				compiled.global[rule.Action] = flags
 				continue
+			}
+			if rule.Pair != nil {
+				if rule.Prefix != nil || !edgeSelectorAction(rule.Action) {
+					return nil, fmt.Errorf("%w: directed pair action", ErrInvalidPolicy)
+				}
+				for _, prefix := range []string{rule.Pair.Tail, rule.Pair.Head} {
+					if !utf8.ValidString(prefix) || len(prefix) > limits.MaxPrefixBytes || len(prefix) > limits.MaxTotalBytes-totalBytes {
+						return nil, ErrInvalidPolicy
+					}
+					totalBytes += len(prefix)
+				}
+				pairs := compiled.pairs[rule.Action]
+				if rule.Effect == Deny {
+					pairs.deny = append(pairs.deny, *rule.Pair)
+				} else {
+					pairs.allow = append(pairs.allow, *rule.Pair)
+				}
+				compiled.pairs[rule.Action] = pairs
+				continue
+			}
+			if rule.Action == EdgeCreate {
+				return nil, fmt.Errorf("%w: edge.create requires a directed pair", ErrInvalidPolicy)
 			}
 			if rule.Prefix == nil || !utf8.ValidString(*rule.Prefix) || len(*rule.Prefix) > limits.MaxPrefixBytes {
 				return nil, fmt.Errorf("%w: data prefix", ErrInvalidPolicy)
@@ -112,6 +137,14 @@ func validateRoleBounds(roles []Role, limits PolicyLimits) error {
 		for _, rule := range role.Rules {
 			if len(rule.ID) > 64 || len(rule.Action) > 64 || len(rule.Resource) > 16 || len(rule.Effect) > 16 {
 				return ErrInvalidPolicy
+			}
+			if rule.Pair != nil {
+				for _, prefix := range []string{rule.Pair.Tail, rule.Pair.Head} {
+					if !utf8.ValidString(prefix) || len(prefix) > limits.MaxPrefixBytes || len(prefix) > limits.MaxTotalBytes-total {
+						return ErrInvalidPolicy
+					}
+					total += len(prefix)
+				}
 			}
 			if rule.Prefix != nil {
 				if !utf8.ValidString(*rule.Prefix) || len(*rule.Prefix) > limits.MaxPrefixBytes || len(*rule.Prefix) > limits.MaxTotalBytes-total {

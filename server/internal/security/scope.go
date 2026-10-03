@@ -90,6 +90,8 @@ func scopeActionIndex(action Action) int {
 		return 10
 	case ReceiptRead:
 		return 11
+	case EdgeCreate:
+		return 12
 	default:
 		return -1
 	}
@@ -112,6 +114,10 @@ func (a *Access) compileScope(action Action) *Scope {
 		allow = append(allow, role.data[action].allow...)
 		deny = append(deny, role.data[action].deny...)
 	}
+	return prefixScope(allow, deny)
+}
+
+func prefixScope(allow, deny []string) *Scope {
 	allow, deny = disjointPrefixes(allow), disjointPrefixes(deny)
 	result := &Scope{}
 	d := 0

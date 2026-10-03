@@ -22,6 +22,7 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	actions := []security.Action{security.VertexRead, security.Query}
 	var vertexPrefix, tailPrefix, headPrefix string
 	edgeCollection, needsEdges := false, false
+	var extraEdgeActions []security.Action
 	switch request := message.(type) {
 	case *pb.ScanVerticesRequest:
 		actions = []security.Action{security.VertexRead}
@@ -40,7 +41,8 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	case *pb.DeleteVerticesByPrefixRequest:
 		actions, vertexPrefix = []security.Action{security.VertexRead, security.VertexDelete}, request.GetPrefix()
 	case *pb.DeleteEdgesByPrefixRequest:
-		actions = []security.Action{security.VertexRead, security.EdgeRead, security.EdgeDelete}
+		actions = []security.Action{security.VertexRead}
+		extraEdgeActions = []security.Action{security.EdgeDelete}
 		tailPrefix, headPrefix, edgeCollection, needsEdges = request.GetTailPrefix(), request.GetHeadPrefix(), true, true
 	case *pb.IlluminateRequest:
 		needsEdges = true
@@ -65,7 +67,8 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	var edges *security.Scope
 	if needsEdges {
 		edgeActions = append(edgeActions, security.EdgeRead)
-		edges = access.Scope(edgeActions...)
+		edgeActions = append(edgeActions, extraEdgeActions...)
+		edges = access.EdgeCandidateScope(edgeActions...)
 	}
 	if edgeCollection && (edges.Within(tailPrefix).Empty() || edges.Within(headPrefix).Empty()) {
 		return nil, dataPermissionError()
@@ -77,19 +80,40 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	if all {
 		return ctx, nil
 	}
-	physical := func(scope *security.Scope) []graphcache.KeyRange {
-		ranges := scope.Ranges()
+	physicalRange := func(r security.Range) graphcache.KeyRange {
+		upper := "data;"
+		if r.Upper != "" {
+			upper = keyspace.DataPrefix + r.Upper
+		}
+		return graphcache.KeyRange{Lower: keyspace.DataPrefix + r.Lower, Upper: upper}
+	}
+	physicalRanges := func(ranges []security.Range) []graphcache.KeyRange {
 		result := make([]graphcache.KeyRange, len(ranges))
 		for i, r := range ranges {
-			upper := "data;"
-			if r.Upper != "" {
-				upper = keyspace.DataPrefix + r.Upper
-			}
-			result[i] = graphcache.KeyRange{Lower: keyspace.DataPrefix + r.Lower, Upper: upper}
+			result[i] = physicalRange(r)
 		}
 		return result
 	}
-	view, err := graphcache.NewQueryView(physical(vertices), physical(edges))
+	var filters []graphcache.EdgeRangeFilter
+	if needsEdges && access.HasPairSelectors(edgeActions...) {
+		seen := make(map[security.Action]bool, len(edgeActions))
+		for _, action := range edgeActions {
+			if seen[action] {
+				continue
+			}
+			seen[action] = true
+			ranges := access.EdgeRanges(action)
+			filter := graphcache.EdgeRangeFilter{Endpoints: physicalRanges(ranges.Endpoints), ExcludedEndpoints: physicalRanges(ranges.ExcludedEndpoints)}
+			for _, pair := range ranges.Pairs {
+				filter.Included = append(filter.Included, graphcache.KeyPairRange{Tail: physicalRange(pair[0]), Head: physicalRange(pair[1])})
+			}
+			for _, pair := range ranges.ExcludedPairs {
+				filter.Excluded = append(filter.Excluded, graphcache.KeyPairRange{Tail: physicalRange(pair[0]), Head: physicalRange(pair[1])})
+			}
+			filters = append(filters, filter)
+		}
+	}
+	view, err := graphcache.NewQueryViewWithEdgeFilters(physicalRanges(vertices.Ranges()), physicalRanges(edges.Ranges()), filters)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("invalid authorized view"))
 	}

@@ -27,6 +27,14 @@ func TestRoleTemplatesSeparateDataCDCExportAndControl(t *testing.T) {
 	if err != nil || !operations.AllowsGlobal(OperationsRead) || operations.AllowsGlobal(SecurityManage) {
 		t.Fatal("operations access acquired management", err)
 	}
+	creator, err := policy.ForRoles([]string{"connection_creator"})
+	if err != nil || !creator.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:1:b") || creator.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:2:b") || creator.AllowsEdge(EdgeDelete, "tenant:1:a", "tenant:1:b") || creator.AllowsEdge(EdgeAdd, "tenant:1:a", "tenant:1:b") || creator.Allows(VertexWrite, "tenant:1:a") || creator.AllowsEdge(EdgeRead, "tenant:1:a", "tenant:1:b") {
+		t.Fatal("connection creator acquired unrelated rights", err)
+	}
+	deleter, err := policy.ForRoles([]string{"connection_deleter"})
+	if err != nil || !deleter.AllowsEdge(EdgeDelete, "tenant:1:a", "tenant:1:b") || deleter.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:1:b") {
+		t.Fatal("connection deletion implies creation", err)
+	}
 	// Editor-owned templates are detached from a later caller and each other.
 	*roles[0].Rules[0].Prefix = "different:"
 	if *roles[0].Rules[1].Prefix != "tenant:1:" {

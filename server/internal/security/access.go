@@ -80,6 +80,9 @@ func (a *Access) AllowsAll(action Action) bool {
 	allowed := false
 	for _, role := range a.roles {
 		rules := role.data[action]
+		if len(role.pairs[action].deny) > 0 {
+			return false
+		}
 		if len(rules.deny) > 0 {
 			return false
 		}
@@ -91,19 +94,19 @@ func (a *Access) AllowsAll(action Action) bool {
 // AllowsEdge includes both endpoint reads and, for Add/Put, creation rights.
 // Lifecycle reduction additionally needs EdgeDelete at the mutation preflight.
 func (a *Access) AllowsEdge(action Action, tail, head string) bool {
-	if action != EdgeRead && action != EdgeAdd && action != EdgeWrite && action != EdgeDelete {
+	if action != EdgeRead && action != EdgeCreate && action != EdgeAdd && action != EdgeWrite && action != EdgeDelete {
 		return false
 	}
-	if !a.Allows(action, tail) || !a.Allows(action, head) ||
+	if !a.AllowsEdgeAction(action, tail, head) ||
 		!a.Allows(VertexRead, tail) || !a.Allows(VertexRead, head) {
 		return false
 	}
 	if action == EdgeAdd || action == EdgeWrite {
-		return a.Allows(EdgeRead, tail) && a.Allows(EdgeRead, head) &&
+		return a.AllowsEdgeAction(EdgeRead, tail, head) &&
 			a.Allows(VertexWrite, tail) && a.Allows(VertexWrite, head)
 	}
 	if action == EdgeDelete {
-		return a.Allows(EdgeRead, tail) && a.Allows(EdgeRead, head)
+		return a.AllowsEdgeAction(EdgeRead, tail, head)
 	}
 	return true
 }

@@ -31,6 +31,22 @@ func RoleTemplates(prefix string) ([]Role, error) {
 			roles[i].Rules = append(roles[i].Rules, rule)
 		}
 	}
+	// Operators edit and explicitly assign each literal pair. A Principal's
+	// own prefix comes from its trusted assignment, never a client assertion.
+	for _, template := range []struct {
+		id, name string
+		actions  []Action
+	}{
+		{"connection_creator", "Create connections between existing endpoints", []Action{EdgeCreate, ReceiptRead}},
+		{"connection_deleter", "Delete connections", []Action{EdgeRead, EdgeDelete, ReceiptRead}},
+	} {
+		literal := prefix
+		role := Role{ID: template.id, Name: template.name, Rules: []PermissionRule{{ID: "endpoint-read", Effect: Allow, Action: VertexRead, Resource: DataResource, Prefix: &literal}}}
+		for _, action := range template.actions {
+			role.Rules = append(role.Rules, PermissionRule{ID: strings.ReplaceAll(string(action), ".", "-"), Effect: Allow, Action: action, Resource: DataResource, Pair: &PrefixPair{Tail: prefix, Head: prefix}})
+		}
+		roles = append(roles, role)
+	}
 	if _, err := CompileRoles(roles, DefaultPolicyLimits()); err != nil {
 		return nil, err
 	}

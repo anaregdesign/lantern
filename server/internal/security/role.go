@@ -15,6 +15,13 @@ type PermissionRule struct {
 	Action   Action       `json:"action"`
 	Resource ResourceKind `json:"resource"`
 	Prefix   *string      `json:"prefix,omitempty"`
+	Pair     *PrefixPair  `json:"pair,omitempty"`
+}
+
+// PrefixPair is one directed selector. Both literals belong to the same rule.
+type PrefixPair struct {
+	Tail string `json:"tail_prefix"`
+	Head string `json:"head_prefix"`
 }
 
 type Role struct {

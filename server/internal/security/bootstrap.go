@@ -48,6 +48,10 @@ func (b Bootstrap) canonical() (Bootstrap, string, error) {
 		}
 		b.Roles[i].Rules = append([]PermissionRule(nil), b.Roles[i].Rules...)
 		for j := range b.Roles[i].Rules {
+			if b.Roles[i].Rules[j].Pair != nil {
+				value := *b.Roles[i].Rules[j].Pair
+				b.Roles[i].Rules[j].Pair = &value
+			}
 			if b.Roles[i].Rules[j].Prefix != nil {
 				value := *b.Roles[i].Rules[j].Prefix
 				b.Roles[i].Rules[j].Prefix = &value
